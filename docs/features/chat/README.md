@@ -138,7 +138,8 @@ render them, but neither one *runs* them.
   changes on thread/turn start. When a live Codex session is switched to
   Full Auto while an active turn still emits approval requests from its
   older policy, the service auto-responds to stale lane-confined
-  command/file/permissions gates and clears existing approval cards, while
+  command/file/permissions gates and clears existing approval cards. Permission
+  auto-grants validate the request `cwd` and concrete filesystem grant paths;
   escaped paths remain manual and the planner guard still declines mutation
   requests from turns that started in plan mode.
 - **Steer queue.** Follow-up user messages during an active turn are

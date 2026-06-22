@@ -14875,11 +14875,30 @@ describe("createAgentChatService", () => {
           command: "/bin/zsh -lc 'npm test'",
         },
       });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-switch-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-switch-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          permissions: {
+            fileSystem: {
+              write: [path.join(tmpRoot, "generated.txt")],
+            },
+          },
+        },
+      });
 
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.event.type === "approval_request"
           && event.event.itemId === "cmd-switch-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-switch-1"
         )).toBe(true);
       });
 
@@ -14892,9 +14911,25 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-switch-1")).toMatchObject({
           result: { decision: "accept" },
         });
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-switch-1")).toMatchObject({
+          result: {
+            permissions: {
+              fileSystem: {
+                write: [path.join(tmpRoot, "generated.txt")],
+              },
+            },
+            scope: "session",
+          },
+        });
         expect(events.some((event) =>
           event.event.type === "pending_input_resolved"
           && event.event.itemId === "cmd-switch-1"
+          && event.event.resolution === "accepted"
+          && event.event.turnId === "turn-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "pending_input_resolved"
+          && event.event.itemId === "perm-switch-1"
           && event.event.resolution === "accepted"
           && event.event.turnId === "turn-1"
         )).toBe(true);
@@ -14974,6 +15009,30 @@ describe("createAgentChatService", () => {
         )).toBe(true);
       });
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-escape-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-escape-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          permissions: {
+            fileSystem: {
+              write: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-escape-1")).toBeUndefined();
     });
 
     it("keeps escaped pending Codex approvals manual when switched to full-auto", async () => {
@@ -15030,6 +15089,21 @@ describe("createAgentChatService", () => {
           reason: "Edit outside the lane",
         },
       });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-pending-escape-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-pending-escape-1",
+          turnId: "turn-1",
+          cwd: outsideLane,
+          permissions: {
+            fileSystem: {
+              write: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
 
       await vi.waitFor(() => {
         expect(events.some((event) =>
@@ -15040,6 +15114,10 @@ describe("createAgentChatService", () => {
           event.event.type === "approval_request"
           && event.event.itemId === "file-pending-escape-1"
         )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-pending-escape-1"
+        )).toBe(true);
       });
 
       await service.updateSession({
@@ -15049,9 +15127,14 @@ describe("createAgentChatService", () => {
 
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-pending-escape-1")).toBeUndefined();
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-pending-escape-1")).toBeUndefined();
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-pending-escape-1")).toBeUndefined();
       expect(events.some((event) =>
         event.event.type === "pending_input_resolved"
-        && (event.event.itemId === "cmd-pending-escape-1" || event.event.itemId === "file-pending-escape-1")
+        && (
+          event.event.itemId === "cmd-pending-escape-1"
+          || event.event.itemId === "file-pending-escape-1"
+          || event.event.itemId === "perm-pending-escape-1"
+        )
       )).toBe(false);
 
       await service.respondToInput({
@@ -15062,6 +15145,11 @@ describe("createAgentChatService", () => {
       await service.respondToInput({
         sessionId: session.id,
         itemId: "file-pending-escape-1",
+        decision: "decline",
+      });
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "perm-pending-escape-1",
         decision: "decline",
       });
     });

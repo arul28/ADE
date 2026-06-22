@@ -4462,6 +4462,82 @@ function codexApprovalPathStaysWithinLane(
   }
 }
 
+function codexPermissionPathStaysWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string,
+  candidate: string | null | undefined,
+): boolean {
+  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
+  if (!trimmed.length) return false;
+  const resolvedCandidate = path.isAbsolute(trimmed)
+    ? trimmed
+    : path.join(cwd, trimmed);
+  return codexApprovalPathStaysWithinLane(managed, resolvedCandidate);
+}
+
+function codexFileSystemPermissionsStayWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string,
+  fileSystemPermissions: Record<string, unknown>,
+): boolean {
+  const legacyPaths = [
+    ...(Array.isArray(fileSystemPermissions.read) ? fileSystemPermissions.read : []),
+    ...(Array.isArray(fileSystemPermissions.write) ? fileSystemPermissions.write : []),
+  ];
+  for (const candidate of legacyPaths) {
+    if (typeof candidate !== "string" || !codexPermissionPathStaysWithinLane(managed, cwd, candidate)) {
+      return false;
+    }
+  }
+
+  const entries = fileSystemPermissions.entries;
+  if (entries == null) return true;
+  if (!Array.isArray(entries)) return false;
+  for (const entryValue of entries) {
+    const entry = asRecord(entryValue);
+    if (!entry) return false;
+    if (entry.access === "deny") continue;
+    const entryPath = asRecord(entry.path);
+    if (!entryPath) return false;
+    if (entryPath.type === "path") {
+      if (!codexPermissionPathStaysWithinLane(managed, cwd, typeof entryPath.path === "string" ? entryPath.path : null)) {
+        return false;
+      }
+      continue;
+    }
+    if (entryPath.type === "special") {
+      const value = asRecord(entryPath.value);
+      if (value?.kind !== "project_roots") return false;
+      const subpath = value.subpath;
+      if (subpath == null) continue;
+      if (typeof subpath !== "string" || !codexPermissionPathStaysWithinLane(managed, cwd, subpath)) {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function codexPermissionsStayWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string | null | undefined,
+  permissions: Record<string, unknown> | null | undefined,
+): boolean {
+  const permissionCwd = typeof cwd === "string" && cwd.trim().length
+    ? cwd.trim()
+    : managed.laneWorktreePath;
+  if (!codexApprovalPathStaysWithinLane(managed, permissionCwd)) return false;
+  const permissionRecord = asRecord(permissions);
+  if (!permissionRecord) return permissions == null;
+  if (permissionRecord.fileSystem == null) return true;
+  const fileSystemPermissions = asRecord(permissionRecord.fileSystem);
+  return fileSystemPermissions
+    ? codexFileSystemPermissionsStayWithinLane(managed, permissionCwd, fileSystemPermissions)
+    : false;
+}
+
 type CodexCollaborationModePayload = {
   mode: "default" | "plan";
   settings: {
@@ -9673,6 +9749,10 @@ export function createAgentChatService(args: {
       ? providerMetadata as Record<string, unknown>
       : {};
     if (pending.kind === "permissions") {
+      const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
+        ? metadata.cwd
+        : managed.laneWorktreePath;
+      if (!codexPermissionsStayWithinLane(managed, cwd, pending.permissions)) return;
       runtime.sendResponse(pending.requestId, {
         permissions: pending.permissions ?? {},
         scope: "session",
@@ -14227,6 +14307,7 @@ export function createAgentChatService(args: {
     if (method === "item/permissions/requestApproval") {
       const params = (payload.params as {
         itemId?: string;
+        cwd?: string;
         permissions?: Record<string, unknown> | null;
         reason?: string | null;
         threadId?: string;
@@ -14254,7 +14335,11 @@ export function createAgentChatService(args: {
           return;
         }
       }
-      if (isSessionCodexFullAuto(managed.session) && !isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
+      if (
+        isSessionCodexFullAuto(managed.session)
+        && !isPlanningApprovalGuarded(managed, runtime, requestTurnId)
+        && codexPermissionsStayWithinLane(managed, params.cwd, params.permissions)
+      ) {
         runtime.sendResponse(id, {
           permissions: params.permissions ?? {},
           scope: "session",
@@ -14273,6 +14358,7 @@ export function createAgentChatService(args: {
         blocking: true,
         canProceedWithoutAnswer: false,
         providerMetadata: {
+          cwd: params.cwd ?? null,
           permissions: params.permissions ?? null,
           threadId: params.threadId ?? null,
           turnId: requestTurnId,
@@ -14289,6 +14375,7 @@ export function createAgentChatService(args: {
         kind: "tool_call",
         description,
         detail: {
+          cwd: params.cwd ?? null,
           permissions: params.permissions ?? null,
           reason: params.reason ?? null,
         },
