@@ -14835,6 +14835,76 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.effort).toBe("medium");
     });
 
+    it("auto-approves pending Codex approvals when switched to full-auto during an active turn", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Make the change.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-switch-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-switch-1",
+          turnId: "turn-1",
+          command: "/bin/zsh -lc 'npm test'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-switch-1"
+        )).toBe(true);
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-switch-1")).toMatchObject({
+          result: { decision: "accept" },
+        });
+        expect(events.some((event) =>
+          event.event.type === "pending_input_resolved"
+          && event.event.itemId === "cmd-switch-1"
+          && event.event.resolution === "accepted"
+        )).toBe(true);
+      });
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.permissionMode).toBe("full-auto");
+      expect(summary?.codexApprovalPolicy).toBe("never");
+      expect(summary?.codexSandbox).toBe("danger-full-access");
+    });
+
     it("keeps Codex planner approval guard scoped to the turn that started in plan mode", async () => {
       vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
         if (mode === "full-auto") {
@@ -14932,11 +15002,14 @@ describe("createAgentChatService", () => {
       });
 
       await vi.waitFor(() => {
-        expect(events.some((event) =>
-          event.event.type === "approval_request"
-          && event.event.itemId === "cmd-full-auto-1"
-        )).toBe(true);
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-full-auto-1")).toMatchObject({
+          result: { decision: "accept" },
+        });
       });
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-full-auto-1"
+      )).toBe(false);
       expect(events.some((event) =>
         event.event.type === "error"
         && event.event.turnId === "turn-2"

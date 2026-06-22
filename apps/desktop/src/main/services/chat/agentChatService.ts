@@ -4430,6 +4430,17 @@ function resolveSessionCodexConfigSource(
     ?? "flags";
 }
 
+function isSessionCodexFullAuto(
+  session: Pick<
+    AgentChatSession,
+    "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "permissionMode"
+  >,
+): boolean {
+  if (resolveSessionCodexConfigSource(session) === "config-toml") return false;
+  return resolveSessionCodexApprovalPolicy(session, "on-request") === "never"
+    && resolveSessionCodexSandbox(session, "read-only") === "danger-full-access";
+}
+
 type CodexCollaborationModePayload = {
   mode: "default" | "plan";
   settings: {
@@ -9625,6 +9636,43 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  const autoApproveCodexRuntimeApproval = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    pending: PendingCodexApproval,
+  ): void => {
+    if (isPlanningApprovalGuarded(managed, runtime, pending.request?.turnId ?? null)) return;
+    if (pending.kind === "permissions") {
+      runtime.sendResponse(pending.requestId, {
+        permissions: pending.permissions ?? {},
+        scope: "session",
+      });
+    } else if (pending.kind === "command" || pending.kind === "file_change") {
+      runtime.sendResponse(pending.requestId, {
+        decision: mapApprovalDecisionForCodex("accept"),
+      });
+    } else {
+      return;
+    }
+    runtime.approvals.delete(itemId);
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: "accept",
+      turnId: pending.request?.turnId ?? null,
+    });
+  };
+
+  const autoApprovePendingCodexRuntimeApprovals = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): void => {
+    if (!isSessionCodexFullAuto(managed.session)) return;
+    for (const [itemId, pending] of [...runtime.approvals.entries()]) {
+      autoApproveCodexRuntimeApproval(managed, runtime, itemId, pending);
+    }
+  };
+
   const normalizePendingInputAnswers = (
     request: PendingInputRequest | undefined,
     answers: Record<string, string | string[]> | undefined,
@@ -14052,6 +14100,10 @@ export function createAgentChatService(args: {
         runtime.sendResponse(id, { decision: "decline" });
         return;
       }
+      if (isSessionCodexFullAuto(managed.session)) {
+        runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
+        return;
+      }
       const itemId = String(params.itemId ?? randomUUID());
       const description = params.reason?.trim() || `Run command: ${params.command ?? "command"}`;
       const request: PendingInputRequest = {
@@ -14096,6 +14148,10 @@ export function createAgentChatService(args: {
         runtime.sendResponse(id, { decision: "decline" });
         return;
       }
+      if (isSessionCodexFullAuto(managed.session)) {
+        runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
+        return;
+      }
       const itemId = String(params.itemId ?? randomUUID());
       const description = params.reason?.trim() || "Approve file changes";
       const request: PendingInputRequest = {
@@ -14135,6 +14191,7 @@ export function createAgentChatService(args: {
         turnId?: string;
       } | null) ?? {};
       const itemId = String(params.itemId ?? randomUUID());
+      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null;
       const description = typeof params.reason === "string" && params.reason.trim().length
         ? params.reason.trim()
         : "Codex requested additional permissions";
@@ -14155,6 +14212,13 @@ export function createAgentChatService(args: {
           return;
         }
       }
+      if (isSessionCodexFullAuto(managed.session) && !isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
+        runtime.sendResponse(id, {
+          permissions: params.permissions ?? {},
+          scope: "session",
+        });
+        return;
+      }
       const request: PendingInputRequest = {
         requestId: String(id),
         itemId,
@@ -14171,7 +14235,7 @@ export function createAgentChatService(args: {
           threadId: params.threadId ?? null,
           turnId: params.turnId ?? null,
         },
-        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
+        turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, {
         requestId: id,
@@ -25022,6 +25086,9 @@ export function createAgentChatService(args: {
       ) {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
+      }
+      if (managed.runtime?.kind === "codex") {
+        autoApprovePendingCodexRuntimeApprovals(managed, managed.runtime);
       }
       if (
         managed.runtime?.kind === "claude"
