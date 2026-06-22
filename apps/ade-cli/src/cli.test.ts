@@ -1061,6 +1061,7 @@ describe("ADE CLI", () => {
 
     expect(plan.kind).toBe("static");
     if (plan.kind !== "static") return;
+    const value = plan.value as { input: Record<string, unknown> };
     expect(plan.value).toMatchObject({
       ok: true,
       dryRun: true,
@@ -1087,6 +1088,48 @@ describe("ADE CLI", () => {
         },
       },
     });
+    expect(value.input).not.toHaveProperty("droidPermissionMode");
+    expect(value.input).not.toHaveProperty("title");
+  });
+
+  it("omits unset optional fields from chat create config previews", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--print-config",
+    ]);
+
+    expect(plan.kind).toBe("static");
+    if (plan.kind !== "static") return;
+    const value = plan.value as { input: Record<string, unknown> };
+    expect(plan.value).toMatchObject({
+      input: {
+        laneId: "lane-1",
+        provider: "codex",
+        model: "openai/gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        surface: "work",
+      },
+      resolved: {
+        provider: "codex",
+        model: "openai/gpt-5.5",
+        reasoningEffort: null,
+        fastMode: null,
+        permissionMode: "default",
+      },
+    });
+    expect(value.input).not.toHaveProperty("reasoningEffort");
+    expect(value.input).not.toHaveProperty("permissionMode");
+    expect(value.input).not.toHaveProperty("droidPermissionMode");
+    expect(value.input).not.toHaveProperty("title");
+    expect(value.input).not.toHaveProperty("fastMode");
+    expect(value.input).not.toHaveProperty("codexFastMode");
   });
 
   it("rejects reasoning effort on legacy agent spawn", () => {

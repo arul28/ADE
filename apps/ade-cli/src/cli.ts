@@ -3555,18 +3555,38 @@ function permissionModePreview(permissionMode: string): JsonObject {
   };
 }
 
+function compactPreviewValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => compactPreviewValue(item));
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  return compactPreviewObject(value as JsonObject);
+}
+
+function compactPreviewObject(input: JsonObject): JsonObject {
+  const output: JsonObject = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value == null) continue;
+    output[key] = compactPreviewValue(value);
+  }
+  return output;
+}
+
 function buildChatCreateConfigPreview(args: JsonObject): JsonObject {
-  const permissionMode = asString(args.permissionMode) ?? "default";
+  const input = compactPreviewObject(args);
+  const permissionMode = asString(input.permissionMode) ?? "default";
   return {
     ok: true,
     dryRun: true,
     action: "chat.createSession",
-    input: args,
+    input,
     resolved: {
-      provider: asString(args.provider) ?? null,
-      model: asString(args.model) ?? asString(args.modelId) ?? null,
-      reasoningEffort: asString(args.reasoningEffort) ?? null,
-      fastMode: typeof args.fastMode === "boolean" ? args.fastMode : null,
+      provider: asString(input.provider) ?? null,
+      model: asString(input.model) ?? asString(input.modelId) ?? null,
+      reasoningEffort: asString(input.reasoningEffort) ?? null,
+      fastMode: typeof input.fastMode === "boolean" ? input.fastMode : null,
       ...permissionModePreview(permissionMode),
     },
   };
