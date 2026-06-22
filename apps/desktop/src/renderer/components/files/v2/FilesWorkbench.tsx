@@ -417,7 +417,7 @@ export function FilesWorkbench({
       if (parentPaths.length > 0) {
         const directoryRefreshes = parentPaths.map((parentPath) => (
           refreshLoadedDirectory(parentPath, reqId, {
-            suppressMissingError: hasAncestorDirectoryPath(parentPath, parentPaths),
+            suppressMissingError: shouldRefreshRoot || hasAncestorDirectoryPath(parentPath, parentPaths),
           })
         ));
         void Promise.allSettled(directoryRefreshes)
