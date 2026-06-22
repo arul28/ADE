@@ -6117,6 +6117,14 @@ app.whenReady().then(async () => {
     await openAdeWindow({ projectRoot: normalizedRoot });
   };
 
+  const repoRootSearchPathForOpenFileRequest = (filePath: string): string => {
+    try {
+      return fs.statSync(filePath).isFile() ? path.dirname(filePath) : filePath;
+    } catch {
+      return filePath;
+    }
+  };
+
   const openProjectFileRequest = async (filePath: string): Promise<void> => {
     const projectRoot = normalizeProjectPath(filePath);
     if (isLikelyRepoRoot(projectRoot)) {
@@ -6125,7 +6133,7 @@ app.whenReady().then(async () => {
     }
 
     try {
-      const repoRoot = normalizeProjectRoot(await resolveRepoRoot(filePath));
+      const repoRoot = normalizeProjectRoot(await resolveRepoRoot(repoRootSearchPathForOpenFileRequest(filePath)));
       if (isLikelyRepoRoot(repoRoot)) {
         await deliverAppNavigationToProject(repoRoot, {
           target: { kind: "files-external", path: filePath },
