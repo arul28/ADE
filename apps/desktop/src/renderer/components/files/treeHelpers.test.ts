@@ -4,6 +4,7 @@ import {
   isUnavailableGitDecorationsError,
   loadedDirectoryChildrenCount,
   parentPathForFileChange,
+  replaceTreeNodeChildren,
 } from "./treeHelpers";
 
 describe("isUnavailableGitDecorationsError", () => {
@@ -65,5 +66,55 @@ describe("file tree change refresh helpers", () => {
     expect(loadedDirectoryChildrenCount(tree, "marketing")).toBe(1);
     expect(loadedDirectoryChildrenCount(tree, "src")).toBe(0);
     expect(loadedDirectoryChildrenCount(tree, "missing")).toBe(0);
+  });
+
+  it("preserves loaded descendant folders during a scoped directory refresh", () => {
+    const tree = [
+      {
+        name: "marketing",
+        path: "marketing",
+        type: "directory" as const,
+        children: [
+          {
+            name: "assets",
+            path: "marketing/assets",
+            type: "directory" as const,
+            children: [
+              {
+                name: "logo.png",
+                path: "marketing/assets/logo.png",
+                type: "file" as const,
+              },
+            ],
+            childrenTruncated: true,
+            loadMoreOffset: 2000,
+          },
+          {
+            name: "old.md",
+            path: "marketing/old.md",
+            type: "file" as const,
+          },
+        ],
+      },
+    ];
+
+    const refreshed = replaceTreeNodeChildren(tree, "marketing", [
+      {
+        name: "assets",
+        path: "marketing/assets",
+        type: "directory" as const,
+      },
+      {
+        name: "new.md",
+        path: "marketing/new.md",
+        type: "file" as const,
+      },
+    ]);
+
+    expect(refreshed[0].children?.map((node) => node.path)).toEqual(["marketing/assets", "marketing/new.md"]);
+    const assets = refreshed[0].children?.find((node) => node.path === "marketing/assets");
+    expect(assets?.children?.map((node) => node.path)).toEqual(["marketing/assets/logo.png"]);
+    expect(assets?.childrenTruncated).toBe(true);
+    expect(assets?.loadMoreOffset).toBe(2000);
   });
 });

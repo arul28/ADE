@@ -193,19 +193,9 @@ export function FilesWorkbench({
   }, [workspaces, globalLaneId]);
 
   /* ---- Tree loading ---- */
-  const refreshRoot = useCallback(async (options: { preserveLoadedChildren?: boolean } = {}) => {
-    if (!workspaceId) return;
-    const reqId = workspaceId;
-    const preserveLoadedChildren = options.preserveLoadedChildren !== false;
-    try {
-      const nodes = await window.ade.files.listTree({ workspaceId: reqId, depth: 1, includeIgnored: true });
-      if (workspaceIdRef.current !== reqId) return;
-      setTree((prev) => {
-        const merged = preserveLoadedChildren ? mergeTreePreservingLoadedChildren(nodes, prev) : nodes;
-        rootTreeCacheByKey.set(rootTreeCacheKey(projectRootPath, reqId), merged);
-        return merged;
-      });
-      setError(null);
+  const refreshTreeGitDecorations = useCallback(
+    async (reqId = workspaceId) => {
+      if (!reqId) return;
       let decorations = null;
       try {
         decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh: true });
@@ -219,10 +209,28 @@ export function FilesWorkbench({
         rootTreeCacheByKey.set(rootTreeCacheKey(projectRootPath, reqId), decorated);
         return decorated;
       });
+    },
+    [projectRootPath, workspaceId],
+  );
+
+  const refreshRoot = useCallback(async (options: { preserveLoadedChildren?: boolean } = {}) => {
+    if (!workspaceId) return;
+    const reqId = workspaceId;
+    const preserveLoadedChildren = options.preserveLoadedChildren !== false;
+    try {
+      const nodes = await window.ade.files.listTree({ workspaceId: reqId, depth: 1, includeIgnored: true });
+      if (workspaceIdRef.current !== reqId) return;
+      setTree((prev) => {
+        const merged = preserveLoadedChildren ? mergeTreePreservingLoadedChildren(nodes, prev) : nodes;
+        rootTreeCacheByKey.set(rootTreeCacheKey(projectRootPath, reqId), merged);
+        return merged;
+      });
+      setError(null);
+      await refreshTreeGitDecorations(reqId);
     } catch (err) {
       if (workspaceIdRef.current === reqId) setError(err instanceof Error ? err.message : String(err));
     }
-  }, [workspaceId, projectRootPath]);
+  }, [workspaceId, projectRootPath, refreshTreeGitDecorations]);
 
   // Reset + load when the workspace changes; dispose models from the old lane.
   useEffect(() => {
@@ -398,8 +406,13 @@ export function FilesWorkbench({
       if (shouldRefreshRoot) {
         void refreshRoot();
       }
-      for (const parentPath of parentPaths) {
-        void refreshLoadedDirectory(parentPath, reqId);
+      if (parentPaths.length > 0) {
+        const directoryRefreshes = parentPaths.map((parentPath) => refreshLoadedDirectory(parentPath, reqId));
+        void Promise.allSettled(directoryRefreshes)
+          .then(() => refreshTreeGitDecorations(reqId))
+          .catch((err) => {
+            if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
+          });
       }
     };
 
@@ -421,7 +434,7 @@ export function FilesWorkbench({
       unsub();
       void window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
     };
-  }, [active, workspaceId, refreshLoadedDirectory, refreshRoot]);
+  }, [active, workspaceId, refreshLoadedDirectory, refreshRoot, refreshTreeGitDecorations]);
 
   /* ---- Open file ---- */
   const openFile = useCallback(
