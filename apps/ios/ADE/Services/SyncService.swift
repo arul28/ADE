@@ -2511,7 +2511,8 @@ final class SyncService: ObservableObject {
   }
 
   private static func tableAffectsLanesProjection(_ table: String) -> Bool {
-    [
+    if table == "projects" { return true }
+    return [
       "lanes",
       "lane_list_snapshots",
       "lane_state_snapshots",
@@ -2524,7 +2525,8 @@ final class SyncService: ObservableObject {
   }
 
   private static func tableAffectsLaneDetailProjection(_ table: String) -> Bool {
-    [
+    if table == "projects" { return true }
+    return [
       "lanes",
       "lane_detail_snapshots",
       "pull_requests",
@@ -2535,7 +2537,8 @@ final class SyncService: ObservableObject {
   }
 
   private static func tableAffectsWorkProjection(_ table: String) -> Bool {
-    [
+    if table == "projects" { return true }
+    return [
       "terminal_sessions",
       "session_deltas",
       "checkpoints",
@@ -2549,7 +2552,8 @@ final class SyncService: ObservableObject {
   }
 
   private static func tableAffectsFilesProjection(_ table: String) -> Bool {
-    [
+    if table == "projects" { return true }
+    return [
       "files_workspaces",
       "file_directory_snapshots",
       "file_content_snapshots",
@@ -2560,7 +2564,8 @@ final class SyncService: ObservableObject {
   }
 
   private static func tableAffectsPrsProjection(_ table: String) -> Bool {
-    [
+    if table == "projects" { return true }
+    return [
       "pull_requests",
       "pull_request_snapshots",
       "lanes",
@@ -2569,7 +2574,8 @@ final class SyncService: ObservableObject {
   }
 
   private static func tableAffectsProofArtifactsProjection(_ table: String) -> Bool {
-    [
+    if table == "projects" { return true }
+    return [
       "computer_use_artifacts",
       "computer_use_artifact_links",
     ].contains(table)

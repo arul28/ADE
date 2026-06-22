@@ -2228,6 +2228,94 @@ export function createLaneService({
     invalidateLaneListCache();
   };
 
+  const createLaneStatusResolver = async (args: {
+    rows: LaneRow[];
+    rowsById: Map<string, LaneRow>;
+    includeStatus: boolean;
+    logContext: string;
+  }): Promise<{
+    resolveWorktreeAvailable: (row: LaneRow) => Promise<boolean>;
+    resolveStatus: (laneId: string) => Promise<LaneStatus>;
+  }> => {
+    const statusCache = new Map<string, LaneStatus>();
+    const worktreeAvailabilityCache = new Map<string, boolean>();
+    const queueOverrideCache = new Map<string, QueueRebaseOverride | null>();
+
+    if (args.includeStatus) {
+      const laneIdsToResolve = new Set<string>();
+      for (const row of args.rows) {
+        laneIdsToResolve.add(row.id);
+        if (row.parent_lane_id) laneIdsToResolve.add(row.parent_lane_id);
+      }
+      await Promise.all(
+        [...laneIdsToResolve].map(async (laneId) => {
+          try {
+            const override = await resolveQueueRebaseOverride({
+              db,
+              projectId,
+              projectRoot,
+              laneId,
+            });
+            queueOverrideCache.set(laneId, override);
+          } catch (err) {
+            logger.warn(`laneService.${args.logContext}.queue_override_failed`, { laneId, error: String(err) });
+            queueOverrideCache.set(laneId, null);
+          }
+        }),
+      );
+    }
+
+    const resolveWorktreeAvailable = async (row: LaneRow): Promise<boolean> => {
+      const cached = worktreeAvailabilityCache.get(row.id);
+      if (cached != null) return cached;
+      const available = await isExpectedGitWorktreeRoot(row.worktree_path);
+      worktreeAvailabilityCache.set(row.id, available);
+      return available;
+    };
+
+    const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
+      const cached = statusCache.get(laneId);
+      if (cached) return cached;
+      const row = args.rowsById.get(laneId);
+      if (!row) return DEFAULT_LANE_STATUS;
+      const worktreeAvailable = await resolveWorktreeAvailable(row);
+      if (!worktreeAvailable) {
+        const status = cloneLaneStatus(DEFAULT_LANE_STATUS);
+        statusCache.set(laneId, status);
+        return status;
+      }
+      const parent = row.parent_lane_id ? args.rowsById.get(row.parent_lane_id) : null;
+      const queueOverride = queueOverrideCache.get(row.id) ?? null;
+      let baseRef = queueOverride?.comparisonRef ?? (rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref);
+
+      // For primary lanes with no parent, compare against the upstream tracking ref
+      // instead of base_ref (which equals branchRef, giving 0 behind).
+      if (!queueOverride && !parent && row.lane_type === "primary") {
+        const upstreamRes = await runGit(
+          ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
+          { cwd: row.worktree_path, timeoutMs: 5_000 }
+        );
+        if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
+          baseRef = upstreamRes.stdout.trim();
+        } else {
+          const originRes = await runGit(
+            ["rev-parse", "--verify", `origin/${row.branch_ref}`],
+            { cwd: row.worktree_path, timeoutMs: 5_000 }
+          );
+          if (originRes.exitCode === 0 && originRes.stdout.trim()) {
+            baseRef = originRes.stdout.trim();
+          }
+        }
+      }
+
+      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref);
+      statusCache.set(laneId, status);
+      return status;
+    };
+
+    return { resolveWorktreeAvailable, resolveStatus };
+  };
+
   const listLanes = async ({
     includeArchived = false,
     includeStatus = true
@@ -2280,8 +2368,6 @@ export function createLaneService({
     const activeRows = contextRows.filter((row) => row.status !== "archived");
     const rowsById = new Map(contextRows.map((row) => [row.id, row] as const));
     const depthMemo = new Map<string, number>();
-    const statusCache = new Map<string, LaneStatus>();
-    const worktreeAvailabilityCache = new Map<string, boolean>();
     const childCountMap = new Map<string, number>();
 
     // Fetch all lane_linear_issues in a single query and build a map keyed by
@@ -2338,83 +2424,12 @@ export function createLaneService({
       childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
     }
 
-    // Precompute queue rebase overrides for all lanes to avoid N+1 DB queries
-    // inside resolveStatus(). Each call does multiple DB queries and may run
-    // git commands, so batching up-front is significantly cheaper.
-    const queueOverrideCache = new Map<string, QueueRebaseOverride | null>();
-    if (includeStatus) {
-      const laneIdsToResolve = new Set<string>();
-      for (const row of rows) {
-        laneIdsToResolve.add(row.id);
-        if (row.parent_lane_id) laneIdsToResolve.add(row.parent_lane_id);
-      }
-      await Promise.all(
-        [...laneIdsToResolve].map(async (laneId) => {
-          try {
-            const override = await resolveQueueRebaseOverride({
-              db,
-              projectId,
-              projectRoot,
-              laneId,
-            });
-            queueOverrideCache.set(laneId, override);
-          } catch (err) {
-            logger.warn("laneService.lane_list.queue_override_failed", { laneId, error: String(err) });
-            queueOverrideCache.set(laneId, null);
-          }
-        }),
-      );
-    }
-
-    const resolveWorktreeAvailable = async (row: LaneRow): Promise<boolean> => {
-      const cached = worktreeAvailabilityCache.get(row.id);
-      if (cached != null) return cached;
-      const available = await isExpectedGitWorktreeRoot(row.worktree_path);
-      worktreeAvailabilityCache.set(row.id, available);
-      return available;
-    };
-
-    const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
-      const cached = statusCache.get(laneId);
-      if (cached) return cached;
-      const row = rowsById.get(laneId);
-      if (!row) return DEFAULT_LANE_STATUS;
-      const worktreeAvailable = await resolveWorktreeAvailable(row);
-      if (!worktreeAvailable) {
-        const status = cloneLaneStatus(DEFAULT_LANE_STATUS);
-        statusCache.set(laneId, status);
-        return status;
-      }
-      const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-      const queueOverride = queueOverrideCache.get(row.id) ?? null;
-      let baseRef = queueOverride?.comparisonRef ?? (rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref);
-
-      // For primary lanes with no parent, compare against the upstream tracking ref
-      // instead of base_ref (which equals branchRef, giving 0 behind).
-      if (!queueOverride && !parent && row.lane_type === "primary") {
-        const upstreamRes = await runGit(
-          ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
-          { cwd: row.worktree_path, timeoutMs: 5_000 }
-        );
-        if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
-          baseRef = upstreamRes.stdout.trim();
-        } else {
-          // Fallback: try origin/<branch>
-          const originRes = await runGit(
-            ["rev-parse", "--verify", `origin/${row.branch_ref}`],
-            { cwd: row.worktree_path, timeoutMs: 5_000 }
-          );
-          if (originRes.exitCode === 0 && originRes.stdout.trim()) {
-            baseRef = originRes.stdout.trim();
-          }
-          // else: keep row.base_ref as final fallback
-        }
-      }
-
-      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref);
-      statusCache.set(laneId, status);
-      return status;
-    };
+    const { resolveWorktreeAvailable, resolveStatus } = await createLaneStatusResolver({
+      rows,
+      rowsById,
+      includeStatus,
+      logContext: "lane_list",
+    });
 
     const out: LaneSummary[] = [];
     for (const row of rows) {
@@ -2922,14 +2937,16 @@ export function createLaneService({
       let worktreeAvailable: boolean | undefined;
 
       if (options.includeStatus !== false) {
+        const { resolveWorktreeAvailable, resolveStatus } = await createLaneStatusResolver({
+          rows: [row],
+          rowsById,
+          includeStatus: true,
+          logContext: "lane_summary",
+        });
         try {
-          worktreeAvailable = await isExpectedGitWorktreeRoot(row.worktree_path);
+          worktreeAvailable = await resolveWorktreeAvailable(row);
           if (worktreeAvailable) {
-            status = await computeLaneStatus(
-              row.worktree_path,
-              rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref,
-              row.branch_ref,
-            );
+            status = await resolveStatus(row.id);
           }
         } catch {
           logger.warn("laneService.getSummary.status_failed", { laneId });
@@ -2939,12 +2956,7 @@ export function createLaneService({
 
         if (parent) {
           try {
-            const grandParent = parent.parent_lane_id ? rowsById.get(parent.parent_lane_id) ?? null : null;
-            parentStatus = await computeLaneStatus(
-              parent.worktree_path,
-              rowTracksParent(parent, grandParent) ? grandParent?.branch_ref ?? parent.base_ref : parent.base_ref,
-              parent.branch_ref,
-            );
+            parentStatus = await resolveStatus(parent.id);
           } catch {
             logger.warn("laneService.getSummary.parent_status_failed", { laneId, parentLaneId: parent.id });
             parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);

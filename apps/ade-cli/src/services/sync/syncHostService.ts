@@ -2318,10 +2318,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return peer.ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES;
   }
 
-  function shouldPrioritizeChatForPeer(peer: PeerState): boolean {
-    return peer.subscribedChatSessionIds.size > 0;
-  }
-
   function shouldDeferBackgroundChangesForChat(peer: PeerState): boolean {
     return shouldDeferSyncHostBackgroundChangesForChat({
       subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
