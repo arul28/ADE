@@ -4448,6 +4448,20 @@ function isSessionCodexFullAuto(
     && resolveSessionCodexSandbox(session, "read-only") === "danger-full-access";
 }
 
+function codexApprovalPathStaysWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  candidate: string | null | undefined,
+): boolean {
+  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
+  if (!trimmed.length) return false;
+  try {
+    resolvePathWithinRoot(managed.laneWorktreePath, trimmed, { allowMissing: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 type CodexCollaborationModePayload = {
   mode: "default" | "plan";
   settings: {
@@ -9654,12 +9668,26 @@ export function createAgentChatService(args: {
       runtime.activeTurnId ?? runtime.startedTurnId ?? null,
     );
     if (isPlanningApprovalGuarded(managed, runtime, pendingTurnId)) return;
+    const providerMetadata = pending.request?.providerMetadata;
+    const metadata = providerMetadata && typeof providerMetadata === "object" && !Array.isArray(providerMetadata)
+      ? providerMetadata as Record<string, unknown>
+      : {};
     if (pending.kind === "permissions") {
       runtime.sendResponse(pending.requestId, {
         permissions: pending.permissions ?? {},
         scope: "session",
       });
-    } else if (pending.kind === "command" || pending.kind === "file_change") {
+    } else if (pending.kind === "command") {
+      const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
+        ? metadata.cwd
+        : managed.laneWorktreePath;
+      if (!codexApprovalPathStaysWithinLane(managed, cwd)) return;
+      runtime.sendResponse(pending.requestId, {
+        decision: mapApprovalDecisionForCodex("accept"),
+      });
+    } else if (pending.kind === "file_change") {
+      const grantRoot = typeof metadata.grantRoot === "string" ? metadata.grantRoot : null;
+      if (!codexApprovalPathStaysWithinLane(managed, grantRoot)) return;
       runtime.sendResponse(pending.requestId, {
         decision: mapApprovalDecisionForCodex("accept"),
       });
@@ -14091,20 +14119,6 @@ export function createAgentChatService(args: {
           text: error instanceof Error ? error.message : String(error),
         }],
       });
-    }
-  };
-
-  const codexApprovalPathStaysWithinLane = (
-    managed: ManagedChatSession,
-    candidate: string | null | undefined,
-  ): boolean => {
-    const trimmed = typeof candidate === "string" ? candidate.trim() : "";
-    if (!trimmed.length) return false;
-    try {
-      resolvePathWithinRoot(managed.laneWorktreePath, trimmed, { allowMissing: true });
-      return true;
-    } catch {
-      return false;
     }
   };
 
