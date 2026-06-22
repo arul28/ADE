@@ -29,10 +29,10 @@ import {
 import {
   AgentChatPane,
   buildParallelLaunchPrompt,
-  cleanupSubagentAutoOpenStorage,
+  cleanupChatActionsAutoOpenStorage,
   cleanupTransientParallelLaunchLanes,
   formatParallelLaunchFailureMessage,
-  getSubagentAutoOpenStorageKey,
+  getChatActionsAutoOpenStorageKey,
   advanceOlderHistoryCursor,
   isMatchingOptimisticUserMessage,
   mergeChatHistorySnapshot,
@@ -6320,9 +6320,9 @@ describe("subagent auto-open storage", () => {
 
   it("expires timestamped auto-open markers and migrates legacy markers", () => {
     const now = Date.parse("2026-05-14T12:00:00.000Z");
-    const freshKey = getSubagentAutoOpenStorageKey("fresh-session");
-    const staleKey = getSubagentAutoOpenStorageKey("stale-session");
-    const legacyKey = getSubagentAutoOpenStorageKey("legacy-session");
+    const freshKey = getChatActionsAutoOpenStorageKey("fresh-session");
+    const staleKey = getChatActionsAutoOpenStorageKey("stale-session");
+    const legacyKey = getChatActionsAutoOpenStorageKey("legacy-session");
     const storage = createStorageShim();
 
     storage.setItem(freshKey, JSON.stringify({ firedAt: now - 60_000 }));
@@ -6330,7 +6330,7 @@ describe("subagent auto-open storage", () => {
     storage.setItem(legacyKey, "1");
     storage.setItem("ade.chat.other", "keep");
 
-    cleanupSubagentAutoOpenStorage(storage, now);
+    cleanupChatActionsAutoOpenStorage(storage, now);
 
     expect(storage.getItem(freshKey)).toBe(JSON.stringify({ firedAt: now - 60_000 }));
     expect(storage.getItem(staleKey)).toBeNull();

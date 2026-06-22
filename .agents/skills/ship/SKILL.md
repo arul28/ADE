@@ -133,16 +133,14 @@ scheduler re-invokes `/ship $ARGUMENTS` later. Use it at the end of each
 iteration with the playbook cadence (270s just-pushed / 720s CI or bots running /
 1800s waiting on human review).
 
-**ADE Work chat (Claude Agent SDK):** `ScheduleWakeup` is **NOT honored** — the
-host only advances on a fresh user message, and `run_in_background` task
-notifications flush on the next user turn, not autonomously. So do NOT pretend to
-self-resume. Either:
+**ADE Work chat (Claude Agent SDK):** Work confidently inside the current turn,
+but treat `ScheduleWakeup` as unavailable in this harness. It does not start a
+later turn by itself, and `run_in_background` notifications are not a reliable
+self-resume signal. Either:
 - Poll synchronously inside the current turn (one bounded foreground
   `until ... ; do sleep N; done`), then fix/merge/exit; or
 - Stop the turn cleanly, write the state file with `status: running`, and tell
-  the user to re-ping `/ship` when they want the next iteration.
-
-Do not start a background poller and claim it will wake you — it won't.
+  the user exactly when to re-ping `/ship` for the next iteration.
 
 ---
 

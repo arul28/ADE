@@ -2072,6 +2072,7 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        includeHookEvents?: boolean;
         promptSuggestions?: boolean;
         settingSources?: string[];
         settings?: {
@@ -2083,7 +2084,8 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
       expect(opts?.skills).toBe("all");
-      expect(opts?.promptSuggestions).toBe(false);
+      expect(opts?.includeHookEvents).toBe(true);
+      expect(opts?.promptSuggestions).toBe(true);
       expect(opts?.settings).toEqual(expect.objectContaining({
         outputStyle: "Default",
         fastMode: false,
@@ -2920,32 +2922,48 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("returns the session even when the kickoff turn never settles", async () => {
-      // A turn that hangs forever would block the launch if it were awaited.
-      const send = vi.fn(() => new Promise<void>(() => {}));
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send,
-        stream: vi.fn(() => (async function* () {
-          await new Promise<void>(() => {});
-        })()),
-        close: vi.fn(),
-        sessionId: "sdk-headless-pending",
-        query: {
-          setPermissionMode: vi.fn(async () => undefined),
-          supportedCommands: vi.fn(async () => []),
-        },
-      } as any);
+    it("returns the session and lets a pending kickoff turn outlive the default runSessionTurn timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        // A turn that hangs forever would block the launch if it were awaited.
+        const send = vi.fn(() => new Promise<void>(() => {}));
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream: vi.fn(() => (async function* () {
+            await new Promise<void>(() => {});
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-headless-pending",
+          query: {
+            setPermissionMode: vi.fn(async () => undefined),
+            supportedCommands: vi.fn(async () => []),
+          },
+        } as any);
 
-      const { service } = createService();
-      // Resolves promptly despite the hanging turn -> fire-and-forget.
-      const session = await service.launchHeadless({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        kickoffText: "Start the work.",
-      });
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        // Resolves promptly despite the hanging turn -> fire-and-forget.
+        const session = await service.launchHeadless({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          kickoffText: "Start the work.",
+        });
 
-      expect(session).toBeDefined();
+        expect(session).toBeDefined();
+
+        await vi.advanceTimersByTimeAsync(300_001);
+        expect(events.find((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted",
+        )).toBeUndefined();
+        expect(events.find((event) =>
+          event.event.type === "error" && event.event.message.includes("Timed out waiting for session"),
+        )).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("defaults the session to autonomous full-auto when no permission controls are supplied", async () => {
@@ -4724,6 +4742,285 @@ describe("createAgentChatService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("surfaces Claude SDK retry, refusal fallback, informational, memory, notification, mirror, and denial events", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        if (streamCall === 2) {
+          yield {
+            type: "system",
+            subtype: "api_retry",
+            session_id: "sdk-session-events",
+            attempt: 1,
+            max_retries: 3,
+            retry_delay_ms: 2_000,
+            error_status: 529,
+            error: "overloaded",
+          };
+          yield {
+            type: "system",
+            subtype: "informational",
+            session_id: "sdk-session-events",
+            content: "Prompt blocked by hook",
+            level: "warning",
+            prevent_continuation: true,
+          };
+          yield {
+            type: "system",
+            subtype: "permission_denied",
+            session_id: "sdk-session-events",
+            tool_name: "Bash",
+            tool_use_id: "tool-denied-direct",
+            decision_reason_type: "classifier",
+            decision_reason: "blocked by safety policy",
+            message: "Denied",
+          };
+          yield {
+            type: "system",
+            subtype: "model_refusal_fallback",
+            session_id: "sdk-session-events",
+            original_model: "claude-opus-4-8",
+            fallback_model: "claude-sonnet-4-6",
+            api_refusal_category: "cyber",
+            api_refusal_explanation: "The original model refused.",
+            content: "Retrying on fallback model.",
+            retracted_message_uuids: ["refused-message-1", "refused-tool-result-1"],
+          };
+          yield {
+            type: "system",
+            subtype: "notification",
+            session_id: "sdk-session-events",
+            key: "heads-up",
+            text: "Background monitor finished",
+            priority: "high",
+          };
+          yield {
+            type: "system",
+            subtype: "memory_recall",
+            session_id: "sdk-session-events",
+            mode: "select",
+            memories: [{
+              path: "/tmp/memory.md",
+              scope: "personal",
+              content: "Prefer small focused patches.",
+            }],
+          };
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-events",
+            error: "store unavailable",
+          };
+          // This replayed/historical shutdown should be ignored because a
+          // result follows it in the same stream.
+          yield {
+            type: "system",
+            subtype: "worker_shutting_down",
+            session_id: "sdk-session-events",
+            reason: "host_exit",
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            permission_denials: [
+              { tool_name: "Bash", tool_use_id: "tool-denied-direct" },
+            ],
+          };
+          return;
+        }
+
+        return;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-events",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-events",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "show new sdk event handling",
+        timeoutMs: 15_000,
+      });
+
+      const notices = events
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+          event.type === "system_notice",
+        );
+      expect(notices.some((event) => {
+        const detail = typeof event.detail === "string" ? event.detail : "";
+        return event.noticeKind === "rate_limit"
+          && event.message === "Claude API retry 1/3: overloaded"
+          && detail.includes("HTTP 529")
+          && detail.includes("retrying in 2s");
+      })).toBe(true);
+      expect(notices.some((event) =>
+        event.noticeKind === "warning"
+        && event.message === "Prompt blocked by hook",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.message === "Claude denied Bash: blocked by safety policy"
+        && event.detail === "classifier",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.status === "model_refusal_fallback"
+        && event.message === "Claude retried with claude-sonnet-4-6 after claude-opus-4-8 refused the request.",
+      )).toBe(true);
+      const refusalFallbackNotice = notices.find((event) => event.status === "model_refusal_fallback");
+      expect(refusalFallbackNotice?.detail).toContain("retracted 2 SDK messages: refused-message-1, refused-tool-result-1");
+      expect(notices.some((event) =>
+        event.status === "notification"
+        && event.noticeKind === "warning"
+        && event.message === "Background monitor finished",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.status === "memory_recall"
+        && event.message === "Claude recalled 1 memory.",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.status === "mirror_error"
+        && event.noticeKind === "error"
+        && event.detail === "store unavailable",
+      )).toBe(true);
+      expect(notices.filter((event) => event.message.includes("denied this turn"))).toHaveLength(0);
+      expect(notices.filter((event) => event.status === "worker_shutting_down")).toHaveLength(0);
+    });
+
+    it("surfaces Claude prompt suggestions emitted after the result message", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        yield {
+          type: "prompt_suggestion",
+          session_id: "sdk-session-prompt-suggestion",
+          uuid: "suggestion-1",
+          suggestion: "Audit the Work tab",
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-prompt-suggestion",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-prompt-suggestion",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "suggest the next prompt",
+        timeoutMs: 15_000,
+      });
+
+      const eventTypes = events.map((envelope) => envelope.event.type);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "prompt_suggestion",
+            suggestion: "Audit the Work tab",
+          }),
+        }),
+      ]));
+      expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
+    });
+
+    it("surfaces Claude worker shutdown when it is the live stream tail", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "worker_shutting_down",
+          session_id: "sdk-session-worker-shutdown",
+          reason: "remote_control_disabled",
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-worker-shutdown",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "show live-tail shutdown",
+        timeoutMs: 15_000,
+      });
+
+      const notices = events
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+          event.type === "system_notice",
+        );
+      expect(notices.some((event) =>
+        event.status === "worker_shutting_down"
+        && event.message === "Claude worker is shutting down: remote control disabled",
+      )).toBe(true);
     });
 
     it("trims oversized PostToolUse outputs before they return to Claude", async () => {

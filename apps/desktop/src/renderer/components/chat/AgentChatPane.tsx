@@ -197,8 +197,8 @@ const COMPOSER_DRAFT_STORAGE_KEY_PREFIX = "ade.chat.composerDraft.v1";
 const WORK_START_DRAFT_COMPANION_STATE_KEY = "draft:work-start";
 const WORK_START_DRAFT_LAUNCH_SCOPE_ID = "work-start";
 const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
-const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
-const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
+const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
@@ -220,17 +220,17 @@ const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
 
-type SubagentAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
+type ChatActionsAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 
-export function getSubagentAutoOpenStorageKey(sessionId: string): string {
-  return `${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`;
+export function getChatActionsAutoOpenStorageKey(sessionId: string): string {
+  return `${CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`;
 }
 
-function encodeSubagentAutoOpenRecord(nowMs: number): string {
+function encodeChatActionsAutoOpenRecord(nowMs: number): string {
   return JSON.stringify({ firedAt: nowMs });
 }
 
-function parseSubagentAutoOpenFiredAt(raw: string | null): number | "legacy" | null {
+function parseChatActionsAutoOpenFiredAt(raw: string | null): number | "legacy" | null {
   if (!raw) return null;
   if (raw === "1") return "legacy";
   try {
@@ -243,34 +243,34 @@ function parseSubagentAutoOpenFiredAt(raw: string | null): number | "legacy" | n
   }
 }
 
-export function cleanupSubagentAutoOpenStorage(storage: SubagentAutoOpenStorage, nowMs = Date.now()): void {
+export function cleanupChatActionsAutoOpenStorage(storage: ChatActionsAutoOpenStorage, nowMs = Date.now()): void {
   const keys: string[] = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (key?.startsWith(`${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:`)) keys.push(key);
+    if (key?.startsWith(`${CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX}:`)) keys.push(key);
   }
   for (const key of keys) {
-    const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+    const firedAt = parseChatActionsAutoOpenFiredAt(storage.getItem(key));
     if (firedAt === "legacy") {
-      storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
-    } else if (firedAt === null || nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+      storage.setItem(key, encodeChatActionsAutoOpenRecord(nowMs));
+    } else if (firedAt === null || nowMs - firedAt > CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS) {
       storage.removeItem(key);
     }
   }
 }
 
-function hasSubagentAutoOpenFired(storage: SubagentAutoOpenStorage, sessionId: string, nowMs = Date.now()): boolean {
-  const key = getSubagentAutoOpenStorageKey(sessionId);
-  const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+function hasChatActionsAutoOpenFired(storage: ChatActionsAutoOpenStorage, sessionId: string, nowMs = Date.now()): boolean {
+  const key = getChatActionsAutoOpenStorageKey(sessionId);
+  const firedAt = parseChatActionsAutoOpenFiredAt(storage.getItem(key));
   if (firedAt === "legacy") {
-    storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
+    storage.setItem(key, encodeChatActionsAutoOpenRecord(nowMs));
     return true;
   }
   if (firedAt === null) {
     storage.removeItem(key);
     return false;
   }
-  if (nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+  if (nowMs - firedAt > CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS) {
     storage.removeItem(key);
     return false;
   }
@@ -3813,15 +3813,16 @@ export function AgentChatPane({
     }
   }, []);
   // Per-session memo of which sessions have already triggered the auto-open
-  // affordance, so the panel doesn't keep re-opening every time a new subagent
-  // appears or the user navigates back to the chat. We only slide it in on the
-  // *first* spawn within a session — after that, opening is up to the user.
+  // affordance, so the panel doesn't keep re-opening every time a new task or
+  // subagent appears or the user navigates back to the chat. We only slide it in
+  // on the first tracked action within a session — after that, opening is up to
+  // the user.
   // Persisted to localStorage so the suppression survives remounts.
-  const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
+  const chatActionsAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     try {
-      cleanupSubagentAutoOpenStorage(window.localStorage);
+      cleanupChatActionsAutoOpenStorage(window.localStorage);
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
@@ -3832,22 +3833,23 @@ export function AgentChatPane({
       if (chatActionsOpen) setChatActionsOpen(false);
       return;
     }
-    if (selectedSubagentSnapshots.length === 0) {
+    const trackedActionCount = selectedSubagentSnapshots.length + selectedTodoItems.length;
+    if (trackedActionCount === 0) {
       return;
     }
-    if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
+    if (chatActionsAutoOpenedSessionsRef.current.has(selectedSessionId)) {
       return;
     }
     try {
-      if (hasSubagentAutoOpenFired(window.localStorage, selectedSessionId)) {
-        subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+      if (hasChatActionsAutoOpenFired(window.localStorage, selectedSessionId)) {
+        chatActionsAutoOpenedSessionsRef.current.add(selectedSessionId);
         return;
       }
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
     // Don't consume the once-per-session auto-open until we can actually surface
-    // the agents panel. If the chat-actions pane is already open (possibly on a
+    // the actions panel. If the chat-actions pane is already open (possibly on a
     // different tab), leave the user where they are and retry when it next closes
     // — otherwise the flag gets burned without the agents panel ever opening,
     // which is exactly why subagents sometimes didn't auto-open (it was runtime-
@@ -3855,11 +3857,11 @@ export function AgentChatPane({
     if (chatActionsOpen) {
       return;
     }
-    subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+    chatActionsAutoOpenedSessionsRef.current.add(selectedSessionId);
     try {
       window.localStorage.setItem(
-        getSubagentAutoOpenStorageKey(selectedSessionId),
-        encodeSubagentAutoOpenRecord(Date.now()),
+        getChatActionsAutoOpenStorageKey(selectedSessionId),
+        encodeChatActionsAutoOpenRecord(Date.now()),
       );
     } catch {
       /* best-effort persistence */
@@ -3869,7 +3871,7 @@ export function AgentChatPane({
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length]);
+  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedTodoItems.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -9101,6 +9103,9 @@ export function AgentChatPane({
                   selectedSubagentSnapshots.length > 0
                     ? `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"}`
                     : null,
+                  selectedTodoItems.length > 0
+                    ? `${selectedTodoItems.length} task${selectedTodoItems.length === 1 ? "" : "s"}`
+                    : null,
                 ].filter(Boolean).join(" · ") || undefined,
               }}
             >
@@ -9137,6 +9142,10 @@ export function AgentChatPane({
                 ) : selectedSubagentSnapshots.length > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
                     {selectedSubagentSnapshots.length}
+                  </span>
+                ) : selectedTodoItems.length > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-violet-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+                    {selectedTodoItems.length}
                   </span>
                 ) : null}
                 {!chatActionsOpen && hasRunningBackgroundSubagent ? (
