@@ -354,6 +354,136 @@ it("prioritizes active chat by deferring and slicing background sync batches", (
   });
 });
 
+function makeAckRetryChange(dbVersion: number) {
+  return {
+    table: "kv",
+    pk: "key-0",
+    cid: "value",
+    val: "value-0",
+    col_version: dbVersion,
+    db_version: dbVersion,
+    site_id: "site-host-ack",
+    cl: 1,
+    seq: 0,
+  };
+}
+
+function createAckRetryHost(projectRoot: string) {
+  const changes = [makeAckRetryChange(1)];
+  return createSyncHostService({
+    db: {
+      sync: {
+        getSiteId: () => "site-host-ack",
+        getDbVersion: () => 1,
+        exportChangesSince: (fromDbVersion: number) =>
+          changes.filter((change) => Number(change.db_version) > fromDbVersion),
+        applyChanges: () => ({ appliedCount: 0 }),
+        discardUnpublishedChangesForTables: () => {},
+      },
+    } as any,
+    logger: createLogger() as any,
+    projectId: "project-1",
+    projectRoot,
+    port: 0,
+    pollIntervalMs: 25,
+    discoveryEnabled: false,
+    pinStore: createStubPinStore(),
+    fileService: createStubFileService(projectRoot) as any,
+    laneService: {
+      list: vi.fn().mockResolvedValue([]),
+      create: vi.fn(),
+      archive: vi.fn(),
+    } as any,
+    prService: {
+      listAll: vi.fn().mockResolvedValue([]),
+      getDetail: vi.fn(),
+      getStatus: vi.fn(),
+      getChecks: vi.fn(),
+      getReviews: vi.fn(),
+      getComments: vi.fn(),
+      getFiles: vi.fn(),
+      createFromLane: vi.fn(),
+      land: vi.fn(),
+      closePr: vi.fn(),
+      requestReviewers: vi.fn(),
+    } as any,
+    sessionService: {
+      list: () => [],
+      get: () => null,
+      readTranscriptTail: async () => "",
+    } as any,
+    ptyService: {
+      create: vi.fn(),
+      readTranscriptTail: vi.fn(async () => ""),
+      hasLivePty: () => true,
+      enrichSessions: (rows: unknown[]) => rows,
+    } as any,
+    computerUseArtifactBrokerService: {
+      listArtifacts: () => [],
+    } as any,
+    projectCatalogProvider: {
+      listProjects: vi.fn(async () => ({ projects: [] })),
+      prepareProjectConnection: vi.fn(),
+    } as any,
+  });
+}
+
+it("processes pending ACK retries before active-chat background deferral through the desktop host", async () => {
+  const projectRoot = makeProjectRoot("ade-sync-desktop-ack-retry-");
+  const host = createAckRetryHost(projectRoot);
+  let client: Awaited<ReturnType<typeof connectClient>> | null = null;
+  let bufferedAmountSpy: { mockRestore(): void } | null = null;
+  let dateNowSpy: { mockRestore(): void } | null = null;
+  try {
+    const port = await host.waitUntilListening();
+    client = await connectClient({
+      port,
+      token: host.getBootstrapToken(),
+      deviceId: "ios-ack-retry",
+      deviceName: "iOS ACK retry",
+      siteId: "ios-ack-retry-site",
+      dbVersion: 0,
+      platform: "iOS",
+      deviceType: "phone",
+      capabilities: ["changesetAck"],
+    });
+
+    const firstBatch = await client.queue.next("changeset_batch");
+    const firstPayload = firstBatch.payload as { batchId: string; toDbVersion: number };
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      requestId: "chat-subscribe",
+      payload: { sessionId: "session-1" },
+    }));
+    await client.queue.next("chat_subscribe");
+
+    bufferedAmountSpy = vi
+      .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+      .mockReturnValue(SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES);
+    const realDateNow = Date.now.bind(Date);
+    dateNowSpy = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realDateNow() + 11_000);
+
+    const resentBatch = await client.queue.next("changeset_batch");
+    expect(resentBatch.payload).toMatchObject({
+      batchId: firstPayload.batchId,
+      toDbVersion: firstPayload.toDbVersion,
+    });
+  } finally {
+    dateNowSpy?.mockRestore();
+    bufferedAmountSpy?.mockRestore();
+    try {
+      await client?.close();
+    } catch {
+      // ignore
+    }
+    await host.dispose();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  }
+});
+
 it("parses ADE dns-sd discovery processes for orphan recovery", () => {
   const stdout = [
     " 111 1 dns-sd -R ADE Sync lappy 8788 _ade-sync._tcp local 8788 version=1",

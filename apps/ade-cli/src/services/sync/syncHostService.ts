@@ -1487,6 +1487,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
   let discoveryEnabled = args.discoveryEnabled !== false;
+  let chatPumpInFlight = false;
+  let changesPumpInFlight = false;
   let tailnetDiscoveryStatus: SyncTailnetDiscoveryStatus = {
     state: !discoveryEnabled
       ? "disabled"
@@ -1518,19 +1520,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     args.onStateChanged?.();
   });
 
-  const pollTimer = setInterval(() => {
-    void (async () => {
-      try {
-        await pumpChatEvents();
-      } catch (error) {
+  const runChatPump = (): void => {
+    if (disposed || chatPumpInFlight) return;
+    chatPumpInFlight = true;
+    void pumpChatEvents()
+      .catch((error) => {
         args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
-      try {
-        await pumpChanges();
-      } catch (error) {
+      })
+      .finally(() => {
+        chatPumpInFlight = false;
+      });
+  };
+
+  const runChangesPump = (): void => {
+    if (disposed || changesPumpInFlight) return;
+    changesPumpInFlight = true;
+    void pumpChanges()
+      .catch((error) => {
         args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
-    })();
+      })
+      .finally(() => {
+        changesPumpInFlight = false;
+      });
+  };
+
+  const pollTimer = setInterval(() => {
+    runChatPump();
+    runChangesPump();
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
     pruneExpiredPairFailures();

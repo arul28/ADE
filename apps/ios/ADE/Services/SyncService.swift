@@ -2163,6 +2163,9 @@ final class SyncService: ObservableObject {
     activeProjectId = projectId
     activeProjectRootPath = nextRootPath
     database.setActiveProjectId(projectId)
+    if scopeChanged {
+      bumpProjectionRevisions(for: Set())
+    }
     if let projectId {
       UserDefaults.standard.set(projectId, forKey: activeProjectIdKey)
     } else {
