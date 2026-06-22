@@ -713,6 +713,44 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
 };
 
+export type AdeActionInputContract = {
+  description?: string;
+  input?: string;
+  example?: string;
+};
+
+const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>> = {
+  chat: {
+    createSession: {
+      description: "Create a persistent ADE Work chat session.",
+      input: "object { laneId?, provider?, model?/modelId?, reasoningEffort?, permissionMode?, fastMode?, title?, surface? }",
+      example: "ade actions run chat.createSession --input-json '{\"laneId\":\"lane-1\",\"provider\":\"codex\",\"model\":\"openai/gpt-5.5\",\"reasoningEffort\":\"xhigh\",\"permissionMode\":\"full-auto\",\"fastMode\":false}'",
+    },
+    getAvailableModels: {
+      description: "List available chat models, optionally filtered by provider.",
+      input: "object { provider?: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"opencode\" }",
+      example: "ade actions run chat.getAvailableModels --input-json '{\"provider\":\"codex\"}'",
+    },
+    getSessionSummary: {
+      description: "Read one chat session summary.",
+      input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
+      example: "ade actions run chat.getSessionSummary --scalar chat-123",
+    },
+    modelCatalog: {
+      description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
+      input: "object { mode?: \"cached\" | \"refresh-stale\" | \"force\", refreshProvider?: string, cursorSource?: string }",
+      example: "ade actions run chat.modelCatalog --input-json '{\"mode\":\"cached\"}' --json",
+    },
+  },
+};
+
+export function getAdeActionInputContract(
+  domain: AdeActionDomain,
+  action: string,
+): AdeActionInputContract | undefined {
+  return ADE_ACTION_INPUT_CONTRACTS[domain]?.[action];
+}
+
 type AutomationsDomainService = {
   list(): AutomationRuleSummary[];
   get(args: { id: string }): AutomationRule | null;
@@ -988,7 +1026,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const agentChatService = runtime.agentChatService;
   if (!agentChatService) return null;
   const base = agentChatService as unknown as OpaqueService;
-  return {
+  const service: OpaqueService = {
     ...base,
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
       const laneId = await resolvePrimaryLaneId(runtime);
@@ -1050,8 +1088,6 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         Object.keys(options).length ? options : undefined,
       );
     },
-    modelCatalog: (args?: unknown) =>
-      agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
@@ -1081,6 +1117,23 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     getImageDataUrl: (args?: { path?: string }) =>
       getAgentChatImageDataUrl(runtime.projectRoot, args ?? {}),
   };
+  if (typeof base.createSession === "function") {
+    service.createSession = (args?: unknown) =>
+      agentChatService.createSession(readObjectActionArg(args, "chat.createSession") as never);
+  }
+  if (typeof base.getAvailableModels === "function") {
+    service.getAvailableModels = (args?: unknown) =>
+      agentChatService.getAvailableModels(readObjectActionArg(args, "chat.getAvailableModels") as never);
+  }
+  if (typeof base.getSessionSummary === "function") {
+    service.getSessionSummary = (args?: unknown) =>
+      agentChatService.getSessionSummary(readStringActionArg(args, "sessionId"));
+  }
+  if (typeof agentChatService.getModelCatalog === "function") {
+    service.modelCatalog = (args?: unknown) =>
+      agentChatService.getModelCatalog(readObjectActionArg(args, "chat.modelCatalog") as never);
+  }
+  return service;
 }
 
 async function resolvePrimaryLaneId(runtime: AdeRuntime): Promise<string> {
@@ -1844,6 +1897,14 @@ function asActionRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function readObjectActionArg(value: unknown, actionName: string): Record<string, unknown> {
+  if (value == null) return {};
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  throw new Error(`${actionName} expects an object input. Use --input-json '{...}' or see \`ade actions list --domain chat --text\`.`);
 }
 
 function readRuntimeFileWatchSenderId(args: Record<string, unknown>): number {

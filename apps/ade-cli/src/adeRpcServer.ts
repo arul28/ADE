@@ -13,6 +13,7 @@ import {
   ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
   callerHasRoleAtLeast,
+  getAdeActionInputContract,
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
@@ -3338,12 +3339,18 @@ async function runTool(args: {
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
-        .map((action) => ({
-          domain: entry,
-          action,
-          name: `${entry}.${action}`,
-          usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
-        }));
+        .map((action) => {
+          const contract = getAdeActionInputContract(entry, action);
+          return {
+            domain: entry,
+            action,
+            name: `${entry}.${action}`,
+            ...(contract?.description ? { description: contract.description } : {}),
+            ...(contract?.input ? { input: contract.input } : {}),
+            ...(contract?.example ? { example: contract.example } : {}),
+            usage: `ade actions run ${entry}.${action} --input-json '{"key":"value"}' (or --scalar value / --args-list-json '[...]' for scalar or positional service methods)`,
+          };
+        });
     });
     return {
       count: actions.length,

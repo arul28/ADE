@@ -176,6 +176,7 @@ type FormatterId =
 
 type CliPlan =
   | { kind: "help"; text: string }
+  | { kind: "static"; value: unknown; formatter?: FormatterId }
   | {
       kind: "execute";
       label: string;
@@ -560,6 +561,15 @@ function commandHelpText(key: string): string | undefined {
       .replace(/    \$ ade linear ingress start-local --text\s+Start only the local Linear webhook listener\n/, "");
   }
   return HELP_BY_COMMAND[key];
+}
+
+function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): string {
+  const subcommand = args.find((arg) => arg !== "--" && !arg.startsWith("-"));
+  if (!subcommand) return primaryKey;
+  const normalizedSubcommand = subcommand.toLowerCase();
+  if (primaryKey === "chat" && normalizedSubcommand === "spawn") return "chat create";
+  if (primaryKey === "agent" && normalizedSubcommand === "start") return "agent spawn";
+  return `${primaryKey} ${normalizedSubcommand}`;
 }
 
 const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
@@ -1320,7 +1330,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --include-automation --no-archived --text
-    $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -1331,14 +1341,113 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session>                  Stop an active turn
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
+
+  Create flags:
+    --provider <name>       claude | codex | cursor | droid | opencode.
+    --model <id>            Model id, also sent as modelId for runtime parity.
+    --reasoning-effort <v>  Reasoning tier when the selected model supports it.
+                            Common tiers: minimal, low, medium, high, xhigh, max.
+    --permissions <mode>    Alias for --permission-mode.
+    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+    --fast                  Request fast service tier when the model advertises it.
+    --no-fast, --standard   Disable fast mode explicitly.
+    --print-config          Print the createSession payload and permission mapping.
+    --dry-run               Alias for --print-config; does not create a chat.
+
+  Permission notes:
+    full-auto maps Codex to sandbox=danger-full-access and approval=never.
+    config-toml is only meaningful for Codex/OpenCode provider-native config.
+    Use ade actions run chat.modelCatalog --json to inspect model-specific
+    reasoning tiers and fast-mode support.
+`,
+  "chat create": `${ADE_BANNER}
+  Chat create
+
+  Create a persistent ADE Work chat session with provider/model/runtime settings.
+
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort high --permissions plan
+    $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
+    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.5 --prompt "Work this issue"
+
+  Flags:
+    --lane <lane>           Lane/worktree for the chat.
+    --provider <name>       claude | codex | cursor | droid | opencode.
+    --model <id>            Model id, also sent as modelId for runtime parity.
+    --reasoning-effort <v>  Reasoning tier when supported by the model.
+    --effort <v>            Alias for --reasoning-effort.
+    --permissions <mode>    Alias for --permission-mode.
+    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+    --fast                  Request fast service tier when supported.
+    --no-fast, --standard   Disable fast mode explicitly.
+    --print                 Start the session runtime in print mode.
+    --print-config          Print the resolved CLI launch config.
+    --dry-run               Alias for --print-config; no session is created.
+
+  Permission mapping highlights:
+    codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.
+    codex plan        -> codexSandbox=read-only, codexApprovalPolicy=on-request.
+    codex edit        -> codexSandbox=workspace-write, codexApprovalPolicy=untrusted.
+    codex default     -> codexSandbox=workspace-write, codexApprovalPolicy=on-request.
+    claude full-auto  -> bypassPermissions.
+    cursor full-auto  -> full-auto native mode.
+    droid full-auto   -> auto-high autonomy.
+    opencode full-auto -> allow permissions.
+
+  Discovery:
+    $ ade actions run chat.modelCatalog --input-json '{"mode":"cached"}' --json
+    $ ade actions run chat.getAvailableModels --input-json '{"provider":"codex"}' --json
 `,
   agent: `${ADE_BANNER}
   Agent sessions
 
     $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
-    $ ade agent spawn --lane <lane> --provider codex --model <model> --permissions workspace-write
+    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto
     $ ade agent spawn --lane <lane> --context-file docs/context.md --prompt "continue"
     $ ade agent spawn --lane <lane> --tool=git --tool=files --prompt "review changes"
+
+  Spawn flags:
+    --provider <name>       codex | claude. Defaults to codex.
+    --model <id>            Provider CLI model id.
+    --permissions <mode>    Alias for --permission-mode.
+    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+                            auto is Claude-only; config-toml is Codex-only here.
+    --context-file <path>   Include a file as extra context for the prompt.
+    --tool <name>           Add an allowlisted tool hint.
+
+  Reasoning effort:
+    ade agent spawn launches the older CLI-session agent tool and does not
+    support reasoning effort. Use ade chat create for persistent Work chats,
+    or ade shell start-cli ... --reasoning-effort <tier> for tracked CLI
+    sessions that support reasoning tiers.
+`,
+  "agent spawn": `${ADE_BANNER}
+  Agent spawn
+
+  Launch a Codex or Claude CLI-session agent in a lane-scoped tracked terminal.
+  This is not the same as chat.createSession; it does not persist chat runtime
+  settings such as reasoning effort.
+
+    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto --prompt "Fix the failing test"
+    $ ade agent spawn --lane <lane> --provider claude --model claude-opus-4-8 --permissions plan --prompt "Review the diff"
+
+  Flags:
+    --lane <lane>           Required lane/worktree.
+    --prompt <text>         Initial task prompt.
+    --provider <name>       codex | claude. Defaults to codex.
+    --model <id>            Provider CLI model id.
+    --permissions <mode>    Alias for --permission-mode.
+    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+    --context-file <path>   Include a file as extra context for the prompt.
+    --tool <name>           Add an allowlisted tool hint.
+
+  Permission mode values:
+    default, plan, edit, full-auto work for Codex and Claude.
+    auto is Claude-only. config-toml is Codex-only.
+
+  Not supported:
+    --reasoning-effort / --effort. Use ade chat create or
+    ade shell start-cli when the launch must set a reasoning tier.
 `,
   proof: `${ADE_BANNER}
   Proof and computer use
@@ -3380,6 +3489,87 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     config.codexFastMode = false;
   }
   return config;
+}
+
+function codexPermissionPreview(permissionMode: string): JsonObject | null {
+  if (permissionMode === "config-toml") {
+    return { codexConfigSource: "config-toml" };
+  }
+  if (permissionMode === "full-auto") {
+    return {
+      codexConfigSource: "flags",
+      codexSandbox: "danger-full-access",
+      codexApprovalPolicy: "never",
+    };
+  }
+  if (permissionMode === "edit") {
+    return {
+      codexConfigSource: "flags",
+      codexSandbox: "workspace-write",
+      codexApprovalPolicy: "untrusted",
+    };
+  }
+  if (permissionMode === "plan" || permissionMode === "auto") {
+    return {
+      codexConfigSource: "flags",
+      codexSandbox: "read-only",
+      codexApprovalPolicy: "on-request",
+    };
+  }
+  return {
+    codexConfigSource: "flags",
+    codexSandbox: "workspace-write",
+    codexApprovalPolicy: "on-request",
+  };
+}
+
+function permissionModePreview(permissionMode: string): JsonObject {
+  const mode = permissionMode || "default";
+  return {
+    permissionMode: mode,
+    claudePermissionMode: mode === "full-auto"
+      ? "bypassPermissions"
+      : mode === "edit"
+        ? "acceptEdits"
+        : mode === "plan"
+          ? "plan"
+          : mode === "auto"
+            ? "auto"
+            : "default",
+    codex: codexPermissionPreview(mode),
+    cursorMode: mode === "full-auto"
+      ? "full-auto"
+      : mode === "plan"
+        ? "plan"
+        : mode === "edit"
+          ? "ask"
+          : "agent",
+    droidPermissionMode: mode === "full-auto"
+      ? "auto-high"
+      : mode === "edit"
+        ? "auto-low"
+        : mode === "plan"
+          ? "read-only"
+          : "auto-medium",
+    opencodePermissionMode: mode === "default" ? "edit" : mode,
+  };
+}
+
+function buildChatCreateConfigPreview(args: JsonObject): JsonObject {
+  const permissionMode = asString(args.permissionMode) ?? "default";
+  return {
+    ok: true,
+    dryRun: true,
+    action: "chat.createSession",
+    input: args,
+    resolved: {
+      provider: asString(args.provider) ?? null,
+      model: asString(args.model) ?? asString(args.modelId) ?? null,
+      reasoningEffort: asString(args.reasoningEffort) ?? null,
+      fastMode: typeof args.fastMode === "boolean" ? args.fastMode : null,
+      ...permissionModePreview(permissionMode),
+    },
+  };
 }
 
 /**
@@ -5554,6 +5744,7 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "create" || sub === "spawn") {
     const modelArg = readValue(args, ["--model", "--model-id"]);
+    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
     const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
     const standardRequested = readFlag(args, [
       "--standard",
@@ -5574,6 +5765,7 @@ function buildChatPlan(args: string[]): CliPlan {
     // print-mode (suppresses delta notification streams). Must be set at create
     // time because the handshake runs once when the runtime starts.
     const createRuntimeMode = readFlag(args, ["--print"]) ? "print" : undefined;
+    const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
     // `--from-linear-issue <id>` / `--linear-issue-json` start the chat with an
     // attached issue: create the session, attach the issue to it, then send an
     // issue-grounded kickoff (skipped with --no-kickoff). Read these before
@@ -5605,6 +5797,7 @@ function buildChatPlan(args: string[]): CliPlan {
         provider: readValue(args, ["--provider"]),
         model: modelArg,
         modelId: modelArg,
+        reasoningEffort,
         permissionMode: readValue(args, [
           "--permission-mode",
           "--permissions",
@@ -5620,6 +5813,15 @@ function buildChatPlan(args: string[]): CliPlan {
         ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
       }),
     );
+    const createArgs = (createStep.params as JsonObject).arguments as JsonObject;
+    const actionArgs = createArgs.args as JsonObject;
+    if (printConfig) {
+      return {
+        kind: "static",
+        value: buildChatCreateConfigPreview(actionArgs),
+        formatter: "action-result",
+      };
+    }
     if (!linearIssue) {
       return { kind: "execute", label: "chat create", steps: [createStep] };
     }
@@ -8313,6 +8515,12 @@ function buildAgentPlan(args: string[]): CliPlan {
       readValue(args, ["--prompt"]) ?? args.join(" "),
       "prompt",
     );
+    const unsupportedReasoningEffort = readValue(args, ["--reasoning-effort", "--reasoning", "--effort"]);
+    if (unsupportedReasoningEffort != null) {
+      throw new CliUsageError(
+        "agent spawn does not support reasoning effort. Use `ade chat create --reasoning-effort <tier>` for Work chats or `ade shell start-cli ... --reasoning-effort <tier>` for tracked CLI sessions.",
+      );
+    }
     return {
       kind: "execute",
       label: "agent spawn",
@@ -9610,6 +9818,7 @@ function buildCliPlan(
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
+    const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "ios-sim") {
       return { kind: "help", text: buildIosSimulatorHelp(args) };
     }
@@ -9621,24 +9830,32 @@ function buildCliPlan(
     }
     return {
       kind: "help",
-      text: commandHelpText(primaryHelpKey) ?? topLevelHelpText(),
+      text: commandHelpText(helpKey) ?? commandHelpText(primaryHelpKey) ?? topLevelHelpText(),
     };
   }
   if (primary === "help") {
-    const topic = (firstPositional(args) ?? "").toLowerCase();
+    const topics = args
+      .filter((arg) => arg !== "--" && !arg.startsWith("-"))
+      .map((arg) => arg.toLowerCase());
+    const topic = topics[0] ?? "";
     const key = aliases[topic] ?? topic;
+    const subtopic = topics[1];
+    const helpKey = subtopic ? helpKeyWithSubcommand(key, [subtopic]) : key;
+    const nestedHelpArgs = subtopic ? topics.slice(1) : [];
     if (key === "ios-sim") {
-      return { kind: "help", text: buildIosSimulatorHelp(args) };
+      return { kind: "help", text: buildIosSimulatorHelp(nestedHelpArgs) };
     }
     if (key === "cursor") {
-      return { kind: "help", text: buildCursorHelp(args) };
+      return { kind: "help", text: buildCursorHelp(nestedHelpArgs) };
     }
     if (key === "app-control") {
-      return { kind: "help", text: buildAppControlHelp(args) };
+      return { kind: "help", text: buildAppControlHelp(nestedHelpArgs) };
     }
     return {
       kind: "help",
-      text: key ? commandHelpText(key) ?? topLevelHelpText() : topLevelHelpText(),
+      text: key
+        ? commandHelpText(helpKey) ?? commandHelpText(key) ?? topLevelHelpText()
+        : topLevelHelpText(),
     };
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
@@ -13474,9 +13691,13 @@ function formatActionsList(value: unknown): string {
       const name =
         asString(action.action) ?? asString(action.name) ?? "(unknown)";
       const description = asString(action.description) ?? "";
+      const input = asString(action.input) ?? "";
+      const example = asString(action.example) ?? "";
       lines.push(
         `  ${name}${description ? ` - ${truncateCell(description, 86)}` : ""}`,
       );
+      if (input) lines.push(`    input: ${input}`);
+      if (example) lines.push(`    example: ${example}`);
     }
   }
   return lines.join("\n");
@@ -15007,6 +15228,11 @@ async function runCli(
   if (plan.kind === "help")
     return {
       output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
+      exitCode: 0,
+    };
+  if (plan.kind === "static")
+    return {
+      output: formatOutput(plan.value, parsed.options, plan.formatter),
       exitCode: 0,
     };
   // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime

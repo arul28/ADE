@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  getAdeActionInputContract,
   getAdeActionDomainServices,
   isCtoOnlyAdeAction,
   isAllowedAdeAction,
@@ -339,6 +340,61 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
     expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("modelCatalog");
     expect(getModelCatalog).toHaveBeenCalledWith({ mode: "cached" });
+  });
+
+  it("documents chat action input contracts for CLI action discovery", () => {
+    expect(getAdeActionInputContract("chat", "createSession")).toMatchObject({
+      input: expect.stringContaining("reasoningEffort"),
+      example: expect.stringContaining("permissionMode"),
+    });
+    expect(getAdeActionInputContract("chat", "getSessionSummary")).toMatchObject({
+      input: expect.stringContaining("scalar sessionId"),
+    });
+  });
+
+  it("normalizes chat action argument shapes for model discovery and session summaries", async () => {
+    const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
+    const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);
+    const getSessionSummary = vi.fn(async (sessionId: string) => ({ sessionId }));
+    const runtime = {
+      agentChatService: {
+        createSession,
+        getAvailableModels,
+        getSessionSummary,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      createSession?: (args?: unknown) => Promise<unknown>;
+      getAvailableModels?: (args?: unknown) => Promise<unknown>;
+      getSessionSummary?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.getAvailableModels?.({})).resolves.toEqual([{ id: "any" }]);
+    expect(getAvailableModels).toHaveBeenCalledWith({});
+
+    await expect(chat.getSessionSummary?.({ sessionId: " chat-1 " })).resolves.toEqual({ sessionId: "chat-1" });
+    await expect(chat.getSessionSummary?.("chat-2")).resolves.toEqual({ sessionId: "chat-2" });
+    expect(getSessionSummary).toHaveBeenNthCalledWith(1, "chat-1");
+    expect(getSessionSummary).toHaveBeenNthCalledWith(2, "chat-2");
+
+    await expect(chat.createSession?.({
+      laneId: "lane-1",
+      provider: "codex",
+      reasoningEffort: "xhigh",
+    })).resolves.toMatchObject({
+      sessionId: "chat-new",
+      args: {
+        laneId: "lane-1",
+        provider: "codex",
+        reasoningEffort: "xhigh",
+      },
+    });
+    expect(createSession).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      provider: "codex",
+      reasoningEffort: "xhigh",
+    });
   });
 
   it("unwraps chat.listSessions action args before calling the positional chat service API", async () => {
