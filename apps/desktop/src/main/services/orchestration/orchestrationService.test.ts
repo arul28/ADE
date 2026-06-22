@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 
 import {
   createOrchestrationService,
@@ -1911,5 +1912,338 @@ describe("orchestration watcher resilience", () => {
       off();
       await svc.dispose();
     }
+  });
+
+  describe("delegation lineage", () => {
+    const BRIEF =
+      "## TASK\ndo it\n## FILES\nx\n## DEPENDENCIES\nnone\n## GATES\nnone\n## PEERS\nnone\n## SUCCESS\ndone";
+
+    function makeRun(svc: ReturnType<typeof createOrchestrationService>) {
+      return svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    }
+
+    async function seedChild(
+      svc: ReturnType<typeof createOrchestrationService>,
+      manifest: { runId: string; etag: string; bundlePath: string },
+      opts: { sessionId: string; role?: "worker" | "validator"; status?: string; taskId?: string },
+    ) {
+      const res = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead" as const,
+          actorSessionId: "S-lead",
+          patches: [
+            {
+              op: "add" as const,
+              path: "/agents/-",
+              value: {
+                sessionId: opts.sessionId,
+                role: opts.role ?? "worker",
+                tag: "impl",
+                goalSummary: "g",
+                status: opts.status ?? "running",
+                spawnedAt: "now",
+              },
+            },
+            ...(opts.taskId
+              ? [
+                  {
+                    op: "add" as const,
+                    path: "/tasks/-",
+                    value: {
+                      id: opts.taskId,
+                      phaseId: "developing",
+                      title: "t",
+                      description: "",
+                      status: "claimed",
+                      validationGate: { required: false, stepIds: [] },
+                      assigneeSessionId: opts.sessionId,
+                      claimLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+                    },
+                  },
+                ]
+              : []),
+          ],
+        },
+        manifest.bundlePath,
+      );
+      if (!res.ok) throw new Error("failed to seed child agent");
+    }
+
+    it("records a running delegation edge at spawn with a brief digest + fingerprint", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker" });
+      const res = await svc.recordDelegationSpawn(
+        {
+          runId: manifest.runId,
+          parentSessionId: "S-lead",
+          childSessionId: "S-worker",
+          childRole: "worker",
+          childTag: "impl",
+          stepId: "T-1",
+          briefText: BRIEF,
+          spawnFingerprint: {
+            provider: "claude",
+            modelId: "claude-sonnet-4-6",
+            reasoningEffort: null,
+            resolvedAt: "now",
+            routingKey: "default",
+          },
+        },
+        manifest.bundlePath,
+      );
+      expect(res.ok).toBe(true);
+      const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      const lineage = bundle.manifest.lineage ?? [];
+      expect(lineage).toHaveLength(1);
+      const edge = lineage[0]!;
+      expect(edge.status).toBe("running");
+      expect(edge.parentSessionId).toBe("S-lead");
+      expect(edge.childSessionId).toBe("S-worker");
+      expect(edge.childRole).toBe("worker");
+      expect(edge.briefDigest).toBe(crypto.createHash("sha256").update(BRIEF).digest("hex"));
+      expect(edge.spawnFingerprint?.provider).toBe("claude");
+      expect(edge.resultSummary).toBeUndefined();
+      await svc.dispose();
+    });
+
+    it("recordDelegationSpawn is idempotent per child session", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker" });
+      const first = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const second = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(first.ok && second.ok).toBe(true);
+      if (first.ok && second.ok) expect(second.edgeId).toBe(first.edgeId);
+      const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      expect(bundle.manifest.lineage ?? []).toHaveLength(1);
+      await svc.dispose();
+    });
+
+    it("rejects a spawn edge with an unregistered parent/child or a role mismatch (no orphan edges)", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      const noChild = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-ghost", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(noChild.ok).toBe(false);
+      await seedChild(svc, manifest, { sessionId: "S-worker" });
+      const noParent = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-nobody", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(noParent.ok).toBe(false);
+      const roleMismatch = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "validator", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(roleMismatch.ok).toBe(false);
+      const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      expect(bundle.manifest.lineage ?? []).toHaveLength(0);
+      await svc.dispose();
+    });
+
+    it("closes the edge to completed when the worker releases its task done", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker", taskId: "T-1" });
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const released = await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      const edge = (released.manifest.lineage ?? []).find((e) => e.childSessionId === "S-worker")!;
+      expect(edge.status).toBe("completed");
+      expect(edge.resultSummary).toBe("done: T-1");
+      expect(edge.completedAt).toBeTruthy();
+      expect(edge.taskIds).toContain("T-1");
+      await svc.dispose();
+    });
+
+    it("closes the edge to failed when the worker releases its task failed", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker", taskId: "T-1" });
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const released = await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "failed" },
+        manifest.bundlePath,
+      );
+      const edge = (released.manifest.lineage ?? []).find((e) => e.childSessionId === "S-worker")!;
+      expect(edge.status).toBe("failed");
+      expect(edge.resultSummary).toContain("failed: T-1");
+      await svc.dispose();
+    });
+
+    it("reconciles a running edge whose child agent has gone terminal (validator self-completed)", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      // Validator self-marks completed (an allowed self-status patch); no task release fires.
+      await seedChild(svc, manifest, { sessionId: "S-val", role: "validator", status: "completed" });
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-val", childRole: "validator", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const before = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      expect((before.manifest.lineage ?? []).find((e) => e.childSessionId === "S-val")!.status).toBe("running");
+      const recovered = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+      expect(recovered.ok).toBe(true);
+      const after = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      const edge = (after.manifest.lineage ?? []).find((e) => e.childSessionId === "S-val")!;
+      expect(edge.status).toBe("completed");
+      expect(edge.completedAt).toBeTruthy();
+      await svc.dispose();
+    });
+
+    it("reconcile snapshots taskIds against the post-reset state (excludes a recovered stale task)", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      // A failed worker still holding a stale (expired-lease) claimed task.
+      const seeded = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead" as const,
+          actorSessionId: "S-lead",
+          patches: [
+            {
+              op: "add" as const,
+              path: "/agents/-",
+              value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "g", status: "failed", spawnedAt: "now" },
+            },
+            {
+              op: "add" as const,
+              path: "/tasks/-",
+              value: {
+                id: "T-stale",
+                phaseId: "developing",
+                title: "t",
+                description: "",
+                status: "claimed",
+                validationGate: { required: false, stepIds: [] },
+                assigneeSessionId: "S-worker",
+                claimLeaseUntil: new Date(Date.now() - 60_000).toISOString(),
+              },
+            },
+          ],
+        },
+        manifest.bundlePath,
+      );
+      expect(seeded.ok).toBe(true);
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const recovered = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+      expect(recovered.ok).toBe(true);
+      const after = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      const edge = (after.manifest.lineage ?? []).find((e) => e.childSessionId === "S-worker")!;
+      expect(edge.status).toBe("failed");
+      // T-stale was un-assigned in the same transaction → not snapshotted onto the edge.
+      expect(edge.taskIds ?? []).not.toContain("T-stale");
+      await svc.dispose();
+    });
+
+    it("keeps the edge at its first terminal outcome when the worker takes a second task (v1 per-session-lifetime semantic)", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      const seeded = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead" as const,
+          actorSessionId: "S-lead",
+          patches: [
+            {
+              op: "add" as const,
+              path: "/agents/-",
+              value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "g", status: "running", spawnedAt: "now" },
+            },
+            {
+              op: "add" as const,
+              path: "/tasks/-",
+              value: {
+                id: "T-1",
+                phaseId: "developing",
+                title: "t1",
+                description: "",
+                status: "claimed",
+                validationGate: { required: false, stepIds: [] },
+                assigneeSessionId: "S-worker",
+                claimLeaseUntil: new Date(Date.now() + 60_000).toISOString(),
+              },
+            },
+            {
+              op: "add" as const,
+              path: "/tasks/-",
+              value: {
+                id: "T-2",
+                phaseId: "developing",
+                title: "t2",
+                description: "",
+                status: "pending",
+                validationGate: { required: false, stepIds: [] },
+              },
+            },
+          ],
+        },
+        manifest.bundlePath,
+      );
+      expect(seeded.ok).toBe(true);
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      // The worker picks up a second task after completing the first.
+      const claimed = await svc.claimTask(
+        { runId: manifest.runId, taskId: "T-2", sessionId: "S-worker", leaseMs: 60_000 },
+        manifest.bundlePath,
+      );
+      expect(claimed.ok).toBe(true);
+      const released2 = await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-2", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      const edges = (released2.manifest.lineage ?? []).filter((e) => e.childSessionId === "S-worker");
+      // Exactly one edge per child session; it stays at the first terminal outcome.
+      expect(edges).toHaveLength(1);
+      expect(edges[0]!.status).toBe("completed");
+      expect(edges[0]!.resultSummary).toBe("done: T-1");
+      await svc.dispose();
+    });
+
+    it("defaults lineage to [] for a legacy manifest persisted without it", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      const manifestPath = path.join(manifest.bundlePath, "manifest.json");
+      const onDisk = JSON.parse(await fsp.readFile(manifestPath, "utf-8"));
+      delete onDisk.lineage;
+      await fsp.writeFile(manifestPath, JSON.stringify(onDisk, null, 2));
+      await svc.dispose();
+      const restarted = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const bundle = await restarted.bundleRead(manifest.runId, manifest.bundlePath);
+      expect(Array.isArray(bundle.manifest.lineage)).toBe(true);
+      expect(bundle.manifest.lineage ?? []).toHaveLength(0);
+      await restarted.dispose();
+    });
   });
 });

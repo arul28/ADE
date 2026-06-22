@@ -314,6 +314,36 @@ function createSpawnAgentTool(
                 : "unknown"),
           };
         }
+        // Record the lead→child delegation edge (best-effort; never fails the
+        // spawn — the agent row is the source of truth, the edge is provenance).
+        // The ledger write advances the manifest etag, so surface its etag to
+        // the caller (fall back to the agent-append etag only if it failed).
+        let latestEtag = patchRes.etag;
+        try {
+          const ledger = await svc.recordDelegationSpawn(
+            {
+              runId: ctx.runId,
+              parentSessionId: ctx.sessionId,
+              childSessionId: created.id,
+              childRole: input.role,
+              childTag: input.tag,
+              stepId: input.stepId,
+              briefText: input.initialMessage,
+              spawnFingerprint: {
+                provider: routedSelection.provider,
+                modelId: routedSelection.modelId,
+                reasoningEffort: routedSelection.reasoningEffort ?? null,
+                fastMode: routedSelection.fastMode,
+                resolvedAt: spawnedAt,
+                routingKey: routedSelection.routingKey,
+              },
+            },
+            ctx.bundlePath,
+          );
+          if (ledger.ok) latestEtag = ledger.etag;
+        } catch {
+          // Supplementary provenance only — swallow.
+        }
         try {
           await chat.sendMessage(
             {
@@ -335,14 +365,14 @@ function createSpawnAgentTool(
           return {
             ok: true as const,
             sessionId: created.id,
-            etag: patchRes.etag,
+            etag: latestEtag,
             warning: `agent spawned but initial message delivery failed: ${errorMessage(err)}`,
           };
         }
         return {
           ok: true as const,
           sessionId: created.id,
-          etag: patchRes.etag,
+          etag: latestEtag,
         };
       });
     },

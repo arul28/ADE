@@ -128,6 +128,12 @@ const LEAD_DENY_PATTERNS = [
   "/leadState/planning/**",
   "/planSpec",
   "/planSpec/**",
+  // Delegation lineage is authoritative coordination state, written only
+  // through service methods (recordDelegationSpawn + the release/reconcile
+  // result paths), never raw manifestPatch — so spawn/result edges cannot be
+  // forged or rewritten by an agent.
+  "/lineage",
+  "/lineage/**",
   "/phases/{id:planning}/status",
   "/phases/{id:planning}/completedAt",
   "/currentPhase",
