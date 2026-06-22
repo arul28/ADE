@@ -91,7 +91,8 @@ describe("getToolMeta", () => {
     const meta = getToolMeta("EnterWorktree");
     expect(meta.getTarget).toBeDefined();
     expect(meta.getTarget!({ name: "feature/sdk-upgrade" })).toBe("feature/sdk-upgrade");
-    expect(meta.getTarget!({ branch: "unused", path: "/tmp/unused" })).toBeNull();
+    expect(meta.getTarget!({ path: "/tmp/existing-worktree" })).toBe("/tmp/existing-worktree");
+    expect(meta.getTarget!({ branch: "unused" })).toBeNull();
   });
 
   it("returns null or empty for getTarget when args are missing", () => {
