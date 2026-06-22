@@ -5,6 +5,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
+import { setLaneNaming } from "../../state/laneNamingStore";
 
 vi.mock("./useSessionDelta", () => ({
   useSessionDelta: () => null,
@@ -12,6 +13,7 @@ vi.mock("./useSessionDelta", () => ({
 
 afterEach(() => {
   cleanup();
+  setLaneNaming("lane-1", false);
 });
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
@@ -102,5 +104,38 @@ describe("SessionCard orchestration identity", () => {
     );
 
     expect(screen.queryByLabelText("Awaiting your input")).toBeNull();
+  });
+});
+
+describe("SessionCard auto-naming status", () => {
+  it("shows the auto-naming status in place of the preview while the lane is being named", () => {
+    setLaneNaming("lane-1", true);
+    render(
+      <SessionCard
+        session={makeSession({ lastOutputPreview: "running the build" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/Auto-naming lane underway/i)).toBeTruthy();
+    expect(screen.queryByText(/running the build/i)).toBeNull();
+  });
+
+  it("shows the normal preview line when the lane is not being named", () => {
+    render(
+      <SessionCard
+        session={makeSession({ lastOutputPreview: "running the build" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(/Auto-naming lane underway/i)).toBeNull();
+    expect(screen.getByText(/running the build/i)).toBeTruthy();
   });
 });

@@ -215,6 +215,7 @@ import {
   ensureNodePtySpawnHelperExecutable,
   PTY_AI_TITLE_DEBOUNCE_MS,
   PTY_AI_TITLE_TIMEOUT_MS,
+  EARLY_CLI_AI_TITLE_DELAY_MS,
 } from "./ptyService";
 
 const originalPlatform = process.platform;
@@ -1020,6 +1021,9 @@ describe("ptyService", () => {
 
         mockPty._emitter.emit("data", "\x1b[2J\x1b[Hmodel: gpt-5.4 medium\nMCP startup incomplete (failed: linear)\n› ");
         await vi.advanceTimersByTimeAsync(600);
+        // The early CLI title pass is deferred so it can read a slice of output
+        // (seed + transcript); advance past that delay before asserting.
+        await vi.advanceTimersByTimeAsync(EARLY_CLI_AI_TITLE_DELAY_MS + 100);
         await Promise.resolve();
 
         expect(sessionService.get(createdSessionId!)?.goal).toBe("print cwd");
@@ -3197,7 +3201,8 @@ describe("ptyService", () => {
         expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
 
         service.write({ ptyId, data: "Fix the flaky login tests\r" });
-        await vi.advanceTimersByTimeAsync(0);
+        // Early CLI title is deferred so it can read a slice of session output.
+        await vi.advanceTimersByTimeAsync(EARLY_CLI_AI_TITLE_DELAY_MS + 100);
         await Promise.resolve();
 
         expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
@@ -3330,33 +3335,45 @@ describe("ptyService", () => {
       }
     });
 
-    it("uses ADE first-prompt AI title generation for Claude CLI sessions", async () => {
-      const aiIntegrationService = {
-        getMode: vi.fn(() => "subscription"),
-        summarizeTerminal: vi.fn(async () => ({ text: "ADE generated title" })),
-      };
-      const { service, sessionService } = createHarness({ aiIntegrationService });
-      const { ptyId } = await service.create({
-        laneId: "lane-1",
-        title: "Claude Code",
-        cols: 80,
-        rows: 24,
-        toolType: "claude",
-      });
+    it("sets a deterministic title immediately, then upgrades it via a deferred AI pass for Claude CLI sessions", async () => {
+      vi.useFakeTimers();
+      try {
+        const aiIntegrationService = {
+          getMode: vi.fn(() => "subscription"),
+          summarizeTerminal: vi.fn(async () => ({ text: "ADE generated title" })),
+        };
+        const { service, sessionService } = createHarness({ aiIntegrationService });
+        const { ptyId } = await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+        });
 
-      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
-      expect(createdSessionId).toBeTruthy();
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        expect(createdSessionId).toBeTruthy();
 
-      service.write({ ptyId, data: "Fix the flaky login tests\r" });
-      await Promise.resolve();
+        service.write({ ptyId, data: "Fix the flaky login tests\r" });
+        await Promise.resolve();
 
-      expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
-      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prompt: expect.stringContaining("Fix the flaky login tests"),
-          taskType: "session_title",
-        }),
-      );
+        // Instant deterministic title; AI pass is deferred so it can read output.
+        expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
+        expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(EARLY_CLI_AI_TITLE_DELAY_MS + 100);
+        await Promise.resolve();
+
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+          expect.objectContaining({
+            prompt: expect.stringContaining("Fix the flaky login tests"),
+            taskType: "session_title",
+          }),
+        );
+        expect(sessionService.get(createdSessionId)?.title).toBe("ADE generated title");
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("treats legacy slash-command CLI titles as placeholders", async () => {

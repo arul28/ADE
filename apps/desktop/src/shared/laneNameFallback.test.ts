@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cleanPromptForNaming,
   deriveDeterministicLaneNameFromPrompt,
   genericLaneFallbackName,
   genericSuffixFromLaneFallbackName,
@@ -9,6 +10,23 @@ import {
 describe("lane name fallback", () => {
   it("derives compact task slugs from prompts", () => {
     expect(deriveDeterministicLaneNameFromPrompt("Can you please fix the login bug?")).toBe("fix-login-bug");
+  });
+
+  it("turns a URL-heavy 'take a look at' prompt into clean tokens, not url noise", () => {
+    // Regression for "take-look-at-https-github".
+    expect(
+      deriveDeterministicLaneNameFromPrompt("Take a look at https://github.com/org/repo/pull/5"),
+    ).toBe("github-org-repo-pull");
+  });
+
+  it("strips bare domains and filler verbs", () => {
+    expect(deriveDeterministicLaneNameFromPrompt("look into github.com flaky tests")).toBe("github-flaky-tests");
+  });
+
+  it("cleanPromptForNaming preserves casing while removing url/filler noise", () => {
+    expect(cleanPromptForNaming("Please refactor the Parser at https://example.com/docs")).toBe(
+      "refactor the Parser at example docs",
+    );
   });
 
   it("uses the generic suffix only when the prompt has no meaningful slug", () => {

@@ -498,6 +498,7 @@ function installAdeMocks(options?: {
     parentLaneId: "lane-primary",
   });
   const suggestLaneName = vi.fn().mockResolvedValue("parallel-task");
+  const renameLane = vi.fn().mockResolvedValue(undefined);
   const parallelLaunchStateGet = vi.fn().mockResolvedValue(options?.parallelLaunchState ?? null);
   const parallelLaunchStateSet = vi.fn().mockResolvedValue(undefined);
   const deleteChat = vi.fn().mockResolvedValue(undefined);
@@ -608,6 +609,7 @@ function installAdeMocks(options?: {
       create: createLane,
       createChild: vi.fn(),
       delete: deleteLane,
+      rename: renameLane,
     },
     git: {
       fetch: vi.fn().mockResolvedValue(undefined),
@@ -670,6 +672,7 @@ function installAdeMocks(options?: {
     unarchive,
     deleteLane,
     suggestLaneName,
+    renameLane,
     parallelLaunchStateGet,
     parallelLaunchStateSet,
     handoff,
@@ -3298,7 +3301,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("foreground auto-create opens the new chat in Work instead of routing to Lanes", async () => {
     const onSessionCreated = vi.fn();
-    const { send, create, createLane, suggestLaneName, writeClipboardText } = installAdeMocks({ sessions: [] });
+    const { send, create, createLane, suggestLaneName, renameLane, writeClipboardText } = installAdeMocks({ sessions: [] });
     suggestLaneName.mockResolvedValue("fix-auto-create-flow");
     createLane.mockResolvedValue({
       id: "lane-created",
@@ -3327,15 +3330,18 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
-        laneId: "lane-primary",
+        laneId: "lane-created",
         prompt: "Fix auto create lane routing.",
         modelId: "openai/gpt-5.4",
         fallbackName: "fix-auto-create-lane-routing",
       }));
+      // The lane is created instantly with the deterministic name; the AI name is
+      // applied in the background via lanes.rename.
       expect(createLane).toHaveBeenCalledWith({
-        name: "fix-auto-create-flow",
+        name: "fix-auto-create-lane-routing",
         baseBranch: "origin/main",
       });
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-created", name: "fix-auto-create-flow" });
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
@@ -3356,6 +3362,8 @@ describe("AgentChatPane submit recovery", () => {
     const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
     suggestLaneName.mockResolvedValue("fallback-base-flow");
     ((window as any).ade.git.listBranches as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    // Auto-create now names the lane deterministically from the prompt; the AI
+    // suggestion is applied later via lanes.rename.
 
     renderAutoCreateDraftPane();
 
@@ -3375,7 +3383,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledWith({
-        name: "fallback-base-flow",
+        name: "default-base-when-remote-refs",
       });
     });
   });
@@ -3424,7 +3432,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(createLane).toHaveBeenCalledWith({
-        name: "local-base-flow",
+        name: "create-local-main-without-fetching",
         baseBranch: "main",
       });
     });
@@ -3836,12 +3844,15 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("aborts an auto-create launch before creating a lane when the project changes mid-naming", async () => {
-    const { createLane, suggestLaneName, deleteLane } = installAdeMocks({ sessions: [] });
-    let resolveName!: (name: string) => void;
-    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
-      resolveName = resolve;
-    }));
+  it("aborts an auto-create launch before creating a lane when the project changes mid-launch", async () => {
+    const { createLane, deleteLane } = installAdeMocks({ sessions: [] });
+    // Naming no longer blocks lane creation; branch discovery (git.fetch) is now
+    // the async step before the irreversible create, so gate the project switch
+    // on it to exercise the same "abort before creating in the wrong project" guard.
+    let resolveFetch!: () => void;
+    ((window as any).ade.git.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<void>((resolve) => { resolveFetch = () => resolve(undefined); }),
+    );
     // The originating project's binding is captured when the launch starts.
     useAppStore.setState({
       projectBinding: {
@@ -3868,12 +3879,12 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "Switch projects mid-launch." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect(suggestLaneName).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect((window as any).ade.git.fetch).toHaveBeenCalled());
 
-    // Switch the active project to a different one, then let lane naming resolve.
-    // selectActiveProjectRoot reads project.rootPath for local bindings, so the
-    // scope key (and thus the status banner) stays addressable while only the
-    // binding key drifts.
+    // Switch the active project to a different one, then let branch discovery
+    // resolve. selectActiveProjectRoot reads project.rootPath for local bindings,
+    // so the scope key (and thus the status banner) stays addressable while only
+    // the binding key drifts.
     await act(async () => {
       useAppStore.setState({
         projectBinding: {
@@ -3883,7 +3894,7 @@ describe("AgentChatPane submit recovery", () => {
           displayName: "other-project",
         } as any,
       });
-      resolveName("would-be-lane");
+      resolveFetch();
       await Promise.resolve();
     });
 
@@ -4090,10 +4101,18 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("clears the submitted draft and keeps the composer usable while auto-create launch is pending", async () => {
-    const { suggestLaneName } = installAdeMocks({ sessions: [] });
-    let resolveSuggestedName!: (value: string) => void;
-    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
-      resolveSuggestedName = resolve;
+    const { createLane } = installAdeMocks({ sessions: [] });
+    // Naming is background now; gate on lane creation to hold the launch pending.
+    let resolveCreateLane!: () => void;
+    createLane.mockImplementation(({ name }: { name: string }) => new Promise((resolve) => {
+      resolveCreateLane = () => resolve({
+        id: `lane-${name}`,
+        name,
+        laneType: "worktree",
+        branchRef: `refs/heads/${name}`,
+        worktreePath: `/tmp/project-under-test/${name}`,
+        parentLaneId: "lane-primary",
+      });
     }));
 
     renderAutoCreateDraftPane();
@@ -4113,8 +4132,8 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalled();
-      expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
+      expect(createLane).toHaveBeenCalled();
+      expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
       expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
@@ -4126,7 +4145,7 @@ describe("AgentChatPane submit recovery", () => {
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(false);
 
-    resolveSuggestedName("still-editable-lane");
+    resolveCreateLane();
     await waitFor(() => {
       expect(screen.getByText(/Launch this and let me keep typing\./i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
@@ -4134,12 +4153,10 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps a pending auto-create launch visible after the new chat pane remounts", async () => {
-    const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
-    let resolveSuggestedName!: (value: string) => void;
+    const { createLane } = installAdeMocks({ sessions: [] });
+    // Naming is background now; lane creation is the pending step that holds the
+    // "Creating lane…" status, which must survive a remount.
     let resolveCreateLane!: () => void;
-    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
-      resolveSuggestedName = resolve;
-    }));
     createLane.mockImplementation(({ name }: { name: string; parentLaneId: string }) => new Promise((resolve) => {
       resolveCreateLane = () => resolve({
         id: `lane-${name}`,
@@ -4168,23 +4185,16 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
+      expect(createLane).toHaveBeenCalledTimes(1);
+      expect(screen.getByText(/^Creating lane for chat\.\.\.$/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     rendered.unmount();
     renderAutoCreateDraftPane();
 
-    expect(await screen.findByText(/Naming lane with/i)).toBeTruthy();
+    expect(await screen.findByText(/^Creating lane for chat\.\.\.$/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
-
-    await act(async () => {
-      resolveSuggestedName("remounted-lane");
-    });
-    await waitFor(() => {
-      expect(screen.getByText(/^Creating lane for chat\.\.\.$/i)).toBeTruthy();
-    });
 
     await act(async () => {
       resolveCreateLane();
@@ -4251,12 +4261,14 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("ignores late failures from hidden stale draft launch rows", async () => {
-    const { suggestLaneName } = installAdeMocks({ sessions: [] });
+    const { createLane } = installAdeMocks({ sessions: [] });
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let rejectSuggestedName!: (error: Error) => void;
+    let rejectCreateLane!: (error: Error) => void;
     try {
-      suggestLaneName.mockImplementation(() => new Promise<string>((_resolve, reject) => {
-        rejectSuggestedName = reject;
+      // Lane creation is the pending step now; fail it late to simulate the
+      // launch failing after its row was hidden.
+      createLane.mockImplementation(() => new Promise((_resolve, reject) => {
+        rejectCreateLane = reject;
       }));
 
       renderAutoCreateDraftPane();
@@ -4276,8 +4288,8 @@ describe("AgentChatPane submit recovery", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
 
       await waitFor(() => {
-        expect(suggestLaneName).toHaveBeenCalledTimes(1);
-        expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
+        expect(createLane).toHaveBeenCalledTimes(1);
+        expect(screen.getByText(/Creating lane for chat/i)).toBeTruthy();
       });
 
       const scopeKey = draftLaunchJobsScopeKeyForTest({
@@ -4303,7 +4315,7 @@ describe("AgentChatPane submit recovery", () => {
       });
 
       await act(async () => {
-        rejectSuggestedName(new Error("hidden stale launch failed"));
+        rejectCreateLane(new Error("hidden stale launch failed"));
       });
 
       expect(screen.queryByText(/hidden stale launch failed/i)).toBeNull();
@@ -4355,9 +4367,9 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("ignores duplicate auto-create submits for the same draft while lane naming is pending", async () => {
-    const { suggestLaneName } = installAdeMocks({ sessions: [] });
-    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
+  it("ignores duplicate auto-create submits for the same draft while lane creation is pending", async () => {
+    const { createLane } = installAdeMocks({ sessions: [] });
+    createLane.mockImplementation(() => new Promise(() => {
       // Keep the first launch in-flight so duplicate clicks race the same snapshot.
     }));
 
@@ -4382,15 +4394,15 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(1);
+      expect(createLane).toHaveBeenCalledTimes(1);
+      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(1);
     });
   });
 
   it("keeps draft launch rows scoped to the lane pane that launched them", async () => {
-    const { suggestLaneName } = installAdeMocks({ sessions: [] });
-    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
-      // Keep the launch in-flight so the status row remains visible.
+    const { createLane } = installAdeMocks({ sessions: [] });
+    createLane.mockImplementation(() => new Promise(() => {
+      // Keep the launch in-flight (pending lane creation) so the row stays visible.
     }));
     const lanes = [
       {
@@ -4463,17 +4475,17 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await within(paneOne).findByRole("button", { name: "Auto-create in background" }));
 
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(within(paneOne).getByText(/Naming lane with/i)).toBeTruthy();
+      expect(createLane).toHaveBeenCalledTimes(1);
+      expect(within(paneOne).getByText(/Creating lane for chat/i)).toBeTruthy();
     });
-    expect(within(paneTwo).queryByText(/Naming lane with/i)).toBeNull();
+    expect(within(paneTwo).queryByText(/Creating lane for chat/i)).toBeNull();
     expect(within(paneTwo).queryByTestId("draft-launch-job")).toBeNull();
   });
 
   it("keeps every in-flight background draft launch visible past the completed-notice cap", async () => {
-    const { suggestLaneName } = installAdeMocks({ sessions: [] });
-    suggestLaneName.mockImplementation(() => new Promise<string>(() => {
-      // keep the launch in-flight
+    const { createLane } = installAdeMocks({ sessions: [] });
+    createLane.mockImplementation(() => new Promise(() => {
+      // keep the launch in-flight (pending lane creation)
     }));
 
     renderAutoCreateDraftPane();
@@ -4493,27 +4505,27 @@ describe("AgentChatPane submit recovery", () => {
       fireEvent.change(textbox, { target: { value: `Launch background chat ${index}.` } });
       fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
       await waitFor(() => {
-        expect(suggestLaneName).toHaveBeenCalledTimes(index);
+        expect(createLane).toHaveBeenCalledTimes(index);
       });
     }
 
     expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
-    expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(9);
+    expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(9);
   });
 
   it("allows multiple background auto-create launches to stay pending at the same time", async () => {
-    const { suggestLaneName, createLane, create, send } = installAdeMocks({ sessions: [] });
-    const suggestResolvers: Array<(value: string) => void> = [];
-    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
-      suggestResolvers.push(resolve);
-    }));
-    createLane.mockImplementation(async ({ name }: { name: string; parentLaneId: string }) => ({
-      id: `lane-${name}`,
-      name,
-      laneType: "worktree",
-      branchRef: `refs/heads/${name}`,
-      worktreePath: `/tmp/project-under-test/${name}`,
-      parentLaneId: "lane-primary",
+    const { createLane, create, send } = installAdeMocks({ sessions: [] });
+    // Lane creation is the pending step now; hold each launch there until resolved.
+    const createLaneResolvers: Array<() => void> = [];
+    createLane.mockImplementation(({ name }: { name: string; parentLaneId: string }) => new Promise((resolve) => {
+      createLaneResolvers.push(() => resolve({
+        id: `lane-${name}`,
+        name,
+        laneType: "worktree",
+        branchRef: `refs/heads/${name}`,
+        worktreePath: `/tmp/project-under-test/${name}`,
+        parentLaneId: "lane-primary",
+      }));
     }));
 
     renderAutoCreateDraftPane();
@@ -4532,24 +4544,23 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "First auto lane." } });
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalledTimes(1);
+      expect(createLane).toHaveBeenCalledTimes(1);
       expect((textbox as HTMLTextAreaElement).value).toBe("");
     });
 
     fireEvent.change(textbox, { target: { value: "Second auto lane." } });
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
-      expect(suggestLaneName).toHaveBeenCalledTimes(2);
-      expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(2);
+      expect(createLane).toHaveBeenCalledTimes(2);
+      expect(screen.getAllByText(/Creating lane for chat/i)).toHaveLength(2);
     });
 
     await act(async () => {
-      suggestResolvers[0]?.("first-lane");
-      suggestResolvers[1]?.("second-lane");
+      createLaneResolvers[0]?.();
+      createLaneResolvers[1]?.();
     });
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenCalledTimes(2);
       expect(screen.getByText(/First auto lane\./i)).toBeTruthy();
@@ -5147,12 +5158,12 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledWith(expect.objectContaining({
-        laneId: "lane-primary",
+        laneId: "lane-created",
         prompt: "Launch a CLI agent on a new lane.",
         modelId: "openai/gpt-5.4",
       }));
       expect(createLane).toHaveBeenCalledWith({
-        name: "cli-auto-lane",
+        name: "launch-cli-agent-new-lane",
         baseBranch: "origin/main",
       });
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
@@ -5709,7 +5720,7 @@ describe("AgentChatPane submit recovery", () => {
 
   it("launches one child lane per parallel model and opens work-focus tiling", async () => {
     const createdLanes: Array<Record<string, unknown>> = [];
-    const { send, suggestLaneName, parallelLaunchStateSet, writeClipboardText } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    const { send, suggestLaneName, renameLane, parallelLaunchStateSet, writeClipboardText } = installAdeMocks({ sessions: [], includeClaudeModel: true });
     const createChild = vi.fn().mockImplementation(async ({ name, parentLaneId }: { name: string; parentLaneId: string }) => {
       const lane = {
         id: `lane-child-${createdLanes.length + 1}`,
@@ -5782,10 +5793,16 @@ describe("AgentChatPane submit recovery", () => {
       }));
       expect(createChild).toHaveBeenCalledTimes(2);
     });
+    // Child lanes are created instantly with the deterministic base name…
     expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
-      "fix-login-codex-gpt-5-4",
-      "fix-login-claude-sonnet",
+      "fix-login-bug-codex-gpt-5-4",
+      "fix-login-bug-claude-sonnet",
     ]);
+    // …then renamed to the AI base name in the background.
+    await waitFor(() => {
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-4" });
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet" });
+    });
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledTimes(2);

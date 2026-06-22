@@ -256,7 +256,17 @@ Renderer surfaces:
   delta chips). Surfaces a small amber warning pip next to the title
   when `getStaleRunningCliSessionAgeHours` returns a value, so users
   can spot long-running CLI/shell sessions without opening them. The
-  card also reports its multi-select state via `isMultiSelected`.
+  card also reports its multi-select state via `isMultiSelected`. While
+  the card's lane is mid background AI auto-naming it swaps the preview
+  line for an "Auto-naming lane underway…" status and warm-highlights the
+  title when it changes (subscribes to `laneNamingStore.ts`).
+- `apps/desktop/src/renderer/state/laneNamingStore.ts` — ephemeral,
+  renderer-only zustand store tracking which lanes have an AI
+  auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
+  imperative setter the draft-launch / parallel-launch flow toggles;
+  `useLaneNaming(laneId)` is the card-side subscription. Bridges the
+  draft-launch flow (which owns the naming lifecycle) to session cards in
+  a separate component tree.
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from

@@ -535,11 +535,18 @@ Claude runtime-title capture, which is free):
   immediately from the seed via `deterministicCliTitleFromSeed` (strips
   filler lead-ins like "ok"/"please", clips to 72 chars on a clause or
   word boundary, strips natural-language `/`-prefixes that are not
-  provider slash commands, sentence-cases). The AI title call still
-  runs after and overwrites with the model's output if it succeeds, but
-  the user no longer stares at "Codex" while the model is thinking. AI
-  title calls use `PTY_AI_TITLE_TIMEOUT_MS` (60 s) since slower local
-  models were timing out at the prior 8 s budget.
+  provider slash commands, sentence-cases). The AI title call no longer
+  fires immediately: `runEarlyCliAiTitle` is deferred by
+  `EARLY_CLI_AI_TITLE_DELAY_MS` (5 s) so a slice of the session's actual
+  output exists to summarize. It feeds the seed **plus** the
+  ANSI-stripped `recentOutputTail` (last ~4000 chars) to the model, so
+  the title reflects what the session is doing ("Inspect GitHub login
+  screenshot") rather than echoing the opening line ("Take a look at …").
+  The deterministic fallback shows until then, the early pass never
+  overwrites a user rename, and the on-complete pass refines it later.
+  The timer is stored on `entry.aiTitleTimer` (unref'd) and cleared on
+  dispose. AI title calls use `PTY_AI_TITLE_TIMEOUT_MS` (60 s) since
+  slower local models were timing out at the prior 8 s budget.
 
 At session close, when `refreshOnComplete` is enabled, the transcript
 tail (last 2000 chars) is re-summarized into a final title through the
