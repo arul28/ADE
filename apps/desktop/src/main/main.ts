@@ -11,6 +11,7 @@ import {
 } from "../shared/automationAvailability";
 import {
   handleDeeplinkUrl,
+  isAdeDeeplinkArg,
   registerAdeProtocolHandler,
 } from "./services/deeplinks/protocolHandler";
 import { selectWindowForProjectNavigation } from "./services/deeplinks/projectNavigationWindowSelection";
@@ -826,15 +827,61 @@ registerAdeProtocolHandler({
 let pendingProjectOpenFiles: string[] = [];
 let handleProjectOpenFile: ((filePath: string) => void) | null = null;
 
-app.on("open-file", (event, filePath) => {
-  event.preventDefault();
-  if (!filePath) return;
+const normalizeExistingAbsoluteOpenFileArg = (arg: unknown): string | null => {
+  if (typeof arg !== "string") return null;
+  const value = arg.trim();
+  if (!value || value.startsWith("-") || isAdeDeeplinkArg(value) || !path.isAbsolute(value)) return null;
+  let normalized: string;
+  try {
+    normalized = path.normalize(value);
+  } catch {
+    return null;
+  }
+  const appPath = path.normalize(app.getAppPath());
+  const resourcesPath = typeof process.resourcesPath === "string" ? path.normalize(process.resourcesPath) : null;
+  if (
+    normalized === path.normalize(process.execPath) ||
+    normalized === appPath ||
+    (resourcesPath != null && (normalized === resourcesPath || normalized.startsWith(`${resourcesPath}${path.sep}`)))
+  ) {
+    return null;
+  }
+  try {
+    const stat = fs.statSync(normalized);
+    return stat.isFile() || stat.isDirectory() ? normalized : null;
+  } catch {
+    return null;
+  }
+};
+
+const enqueueProjectOpenFile = (filePath: string): void => {
   if (handleProjectOpenFile) {
     handleProjectOpenFile(filePath);
     return;
   }
   pendingProjectOpenFiles.push(filePath);
+};
+
+app.on("open-file", (event, filePath) => {
+  event.preventDefault();
+  if (!filePath) return;
+  enqueueProjectOpenFile(filePath);
 });
+
+app.on("second-instance", (_event, argv) => {
+  if (process.platform === "darwin") return;
+  for (const arg of argv) {
+    const filePath = normalizeExistingAbsoluteOpenFileArg(arg);
+    if (filePath) enqueueProjectOpenFile(filePath);
+  }
+});
+
+if (process.platform !== "darwin") {
+  for (const arg of process.argv.slice(1)) {
+    const filePath = normalizeExistingAbsoluteOpenFileArg(arg);
+    if (filePath) pendingProjectOpenFiles.push(filePath);
+  }
+}
 
 app.whenReady().then(async () => {
   // Perf run init — must come first so subsequent IPC + sampler hooks can see the active run.

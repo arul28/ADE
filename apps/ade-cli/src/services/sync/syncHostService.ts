@@ -14,7 +14,11 @@ import type {
   DeviceMarker,
   FileContent,
   FileTreeNode,
+  FilesGitBlameResult,
+  FilesGitStatusEvent,
+  FilesListTreeChildrenResult,
   FilesQuickOpenItem,
+  FilesReadFileRangeResult,
   FilesSearchTextMatch,
   FilesWorkspace,
   LaneDetailPayload,
@@ -200,12 +204,18 @@ const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
 export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
   switch (payload.action) {
     case "listTree":
+    case "listTreeChildren":
+    case "refreshGitDecorations":
     case "readFile":
+    case "readFileRange":
+    case "gitBlame":
     case "writeText":
     case "createFile":
     case "createDirectory":
     case "rename":
     case "deletePath":
+    case "watchChanges":
+    case "stopWatching":
     case "quickOpen":
     case "searchText":
       return toOptionalString(payload.args.workspaceId);
@@ -3159,6 +3169,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         | FilesWorkspace[]
         | FileTreeNode[]
         | FileContent
+        | FilesListTreeChildrenResult
+        | FilesGitStatusEvent
+        | FilesReadFileRangeResult
+        | FilesGitBlameResult
         | FilesQuickOpenItem[]
         | FilesSearchTextMatch[]
         | SyncFileBlob
@@ -3173,8 +3187,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         case "listTree":
           result = await args.fileService.listTree(payload.args);
           break;
+        case "listTreeChildren":
+          result = await args.fileService.listTreeChildren(payload.args);
+          break;
+        case "refreshGitDecorations":
+          result = await args.fileService.refreshGitDecorations(payload.args);
+          break;
         case "readFile":
           result = fileContentToBlob(payload.args.path, await args.fileService.readFile(payload.args));
+          break;
+        case "readFileRange":
+          result = await args.fileService.readFileRange(payload.args);
+          break;
+        case "gitBlame":
+          result = await args.fileService.blame(payload.args);
           break;
         case "writeText":
           args.fileService.writeWorkspaceText(payload.args);
@@ -3196,6 +3222,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           args.fileService.deletePath(payload.args);
           result = { ok: true };
           break;
+        case "watchChanges":
+        case "stopWatching":
+          throw new Error(`Unsupported file action: ${payload.action}`);
         case "quickOpen":
           result = await args.fileService.quickOpen(payload.args);
           break;

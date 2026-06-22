@@ -13,11 +13,13 @@ import {
   parseNativeLanDiscoveryProcessList,
   shouldDeferSyncHostBackgroundChangesForChat,
   syncHostChangesetBatchOptionsForChat,
+  syncFileRequestWorkspaceId,
   syncHeartbeatMissLimitForPeerMetadata,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES,
   visibleFileWorkspacesForPeer,
 } from "./syncHostService";
+import type { SyncFileRequest } from "../../../shared/types";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
@@ -533,6 +535,32 @@ it("blocks mobile file requests that target external workspaces", () => {
     isMobile: false,
     workspace: externalWorkspace,
   })).not.toThrow();
+});
+
+it("extracts workspace ids from every workspace-scoped file request", () => {
+  const requests: SyncFileRequest[] = [
+    { action: "listTree", args: { workspaceId: "external-local:test" } },
+    { action: "listTreeChildren", args: { workspaceId: "external-local:test", parentPath: "nested" } },
+    { action: "refreshGitDecorations", args: { workspaceId: "external-local:test" } },
+    { action: "readFile", args: { workspaceId: "external-local:test", path: "notes.txt" } },
+    { action: "readFileRange", args: { workspaceId: "external-local:test", path: "notes.txt", offset: 0 } },
+    { action: "gitBlame", args: { workspaceId: "external-local:test", path: "notes.txt" } },
+    { action: "writeText", args: { workspaceId: "external-local:test", path: "notes.txt", text: "hi" } },
+    { action: "createFile", args: { workspaceId: "external-local:test", path: "new.txt" } },
+    { action: "createDirectory", args: { workspaceId: "external-local:test", path: "new-dir" } },
+    { action: "rename", args: { workspaceId: "external-local:test", oldPath: "a.txt", newPath: "b.txt" } },
+    { action: "deletePath", args: { workspaceId: "external-local:test", path: "b.txt" } },
+    { action: "watchChanges", args: { workspaceId: "external-local:test", includeIgnored: true } },
+    { action: "stopWatching", args: { workspaceId: "external-local:test", includeIgnored: true } },
+    { action: "quickOpen", args: { workspaceId: "external-local:test", query: "note" } },
+    { action: "searchText", args: { workspaceId: "external-local:test", query: "note" } },
+  ];
+
+  for (const request of requests) {
+    expect(syncFileRequestWorkspaceId(request)).toBe("external-local:test");
+  }
+  expect(syncFileRequestWorkspaceId({ action: "listWorkspaces", args: {} })).toBeNull();
+  expect(syncFileRequestWorkspaceId({ action: "readArtifact", args: { artifactId: "artifact-1" } })).toBeNull();
 });
 
 it("parses ADE dns-sd discovery processes for orphan recovery", () => {

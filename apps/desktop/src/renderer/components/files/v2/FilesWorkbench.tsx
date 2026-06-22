@@ -371,6 +371,15 @@ export function FilesWorkbench({
     [refreshLoadedDirectory],
   );
 
+  const loadDirectoryPath = useCallback(
+    async (directoryPath: string) => {
+      for (const ancestor of pathAncestors(directoryPath)) {
+        await refreshLoadedDirectory(ancestor);
+      }
+    },
+    [refreshLoadedDirectory],
+  );
+
   const loadMoreChildren = useCallback(
     async (parentPath: string, startOffset: number) => {
       if (!workspaceId) return;
@@ -591,11 +600,14 @@ export function FilesWorkbench({
         for (const ancestor of pathAncestors(pending.path ?? "")) next.add(ancestor);
         return next;
       });
-      void loadDirectory(pending.path).catch((err) => setError(formatFilesError(err)));
+      void (async () => {
+        await refreshRoot({ preserveLoadedChildren: true });
+        await loadDirectoryPath(pending.path ?? "");
+      })().catch((err) => setError(formatFilesError(err)));
     } else {
       void refreshRoot({ preserveLoadedChildren: false });
     }
-  }, [active, loadDirectory, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
+  }, [active, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(
