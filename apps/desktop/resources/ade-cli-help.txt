@@ -574,7 +574,7 @@ _    ____  _____
 
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --include-automation --no-archived --text
-    $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -586,6 +586,24 @@ _    ____  _____
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
 
+  Create flags:
+    --provider <name>       claude | codex | cursor | droid | opencode.
+    --model <id>            Model id, also sent as modelId for runtime parity.
+    --reasoning-effort <v>  Reasoning tier when the selected model supports it.
+                            Common tiers: minimal, low, medium, high, xhigh, max.
+    --permissions <mode>    Alias for --permission-mode.
+    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+    --fast                  Request fast service tier when the model advertises it.
+    --no-fast, --standard   Disable fast mode explicitly.
+    --print-config          Print the createSession payload and permission mapping.
+    --dry-run               Alias for --print-config; does not create a chat.
+
+  Permission notes:
+    full-auto maps Codex to sandbox=danger-full-access and approval=never.
+    config-toml is only meaningful for Codex/OpenCode provider-native config.
+    Use ade actions run chat.modelCatalog --json to inspect model-specific
+    reasoning tiers and fast-mode support.
+
 ## ade agent --help
 _    ____  _____
     / \  |  _ \| ____|
@@ -596,9 +614,24 @@ _    ____  _____
   Agent sessions
 
     $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
-    $ ade agent spawn --lane <lane> --provider codex --model <model> --permissions workspace-write
+    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto
     $ ade agent spawn --lane <lane> --context-file docs/context.md --prompt "continue"
     $ ade agent spawn --lane <lane> --tool=git --tool=files --prompt "review changes"
+
+  Spawn flags:
+    --provider <name>       codex | claude. Defaults to codex.
+    --model <id>            Provider CLI model id.
+    --permissions <mode>    Alias for --permission-mode.
+    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
+                            auto is Claude-only; config-toml is Codex-only here.
+    --context-file <path>   Include a file as extra context for the prompt.
+    --tool <name>           Add an allowlisted tool hint.
+
+  Reasoning effort:
+    ade agent spawn launches the older CLI-session agent tool and does not
+    support reasoning effort. Use ade chat create for persistent Work chats,
+    or ade shell start-cli ... --reasoning-effort <tier> for tracked CLI
+    sessions that support reasoning tiers.
 
 ## ade cto --help
 _    ____  _____

@@ -996,7 +996,7 @@ describe("ADE CLI", () => {
     ).toThrow(/--args-list-json must be a JSON array/);
   });
 
-  it("builds chat create with both model and modelId plus generic args", () => {
+  it("builds chat create with both model and modelId plus explicit reasoning and fast-mode args", () => {
     const plan = buildCliPlan([
       "chat",
       "create",
@@ -1008,8 +1008,9 @@ describe("ADE CLI", () => {
       "anthropic/claude-opus-4-8",
       "--permissions",
       "full-auto",
-      "--arg",
-      "reasoningEffort=xhigh",
+      "--reasoning-effort",
+      "xhigh",
+      "--no-fast",
       "--arg",
       "openInUi=true",
     ]);
@@ -1031,11 +1032,119 @@ describe("ADE CLI", () => {
           droidPermissionMode: null,
           title: null,
           surface: "work",
+          fastMode: false,
+          codexFastMode: false,
           reasoningEffort: "xhigh",
           openInUi: true,
         },
       },
     });
+  });
+
+  it("prints chat create config without launching a session", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--reasoning-effort",
+      "xhigh",
+      "--permissions",
+      "full-auto",
+      "--no-fast",
+      "--print-config",
+    ]);
+
+    expect(plan.kind).toBe("static");
+    if (plan.kind !== "static") return;
+    const value = plan.value as { input: Record<string, unknown> };
+    expect(plan.value).toMatchObject({
+      ok: true,
+      dryRun: true,
+      action: "chat.createSession",
+      input: {
+        laneId: "lane-1",
+        provider: "codex",
+        model: "openai/gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "xhigh",
+        permissionMode: "full-auto",
+        fastMode: false,
+        codexFastMode: false,
+      },
+      resolved: {
+        provider: "codex",
+        model: "openai/gpt-5.5",
+        reasoningEffort: "xhigh",
+        fastMode: false,
+        permissionMode: "full-auto",
+        codex: {
+          codexSandbox: "danger-full-access",
+          codexApprovalPolicy: "never",
+        },
+      },
+    });
+    expect(value.input).not.toHaveProperty("droidPermissionMode");
+    expect(value.input).not.toHaveProperty("title");
+  });
+
+  it("omits unset optional fields from chat create config previews", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--print-config",
+    ]);
+
+    expect(plan.kind).toBe("static");
+    if (plan.kind !== "static") return;
+    const value = plan.value as { input: Record<string, unknown> };
+    expect(plan.value).toMatchObject({
+      input: {
+        laneId: "lane-1",
+        provider: "codex",
+        model: "openai/gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        surface: "work",
+      },
+      resolved: {
+        provider: "codex",
+        model: "openai/gpt-5.5",
+        reasoningEffort: null,
+        fastMode: null,
+        permissionMode: "default",
+      },
+    });
+    expect(value.input).not.toHaveProperty("reasoningEffort");
+    expect(value.input).not.toHaveProperty("permissionMode");
+    expect(value.input).not.toHaveProperty("droidPermissionMode");
+    expect(value.input).not.toHaveProperty("title");
+    expect(value.input).not.toHaveProperty("fastMode");
+    expect(value.input).not.toHaveProperty("codexFastMode");
+  });
+
+  it("rejects reasoning effort on legacy agent spawn", () => {
+    expect(() =>
+      buildCliPlan([
+        "agent",
+        "spawn",
+        "--lane",
+        "lane-1",
+        "--prompt",
+        "fix",
+        "--reasoning-effort",
+        "xhigh",
+      ]),
+    ).toThrow(/agent spawn does not support reasoning effort/);
   });
 
   it("rejects --print=value on chat send", () => {
@@ -2276,6 +2385,18 @@ describe("ADE CLI", () => {
     if (actionsHelp.kind !== "help") return;
     expect(actionsHelp.text).toContain("Argument shapes");
     expect(actionsHelp.text).toContain("--args-list-json");
+
+    const chatCreateHelp = buildCliPlan(["help", "chat", "create"]);
+    expect(chatCreateHelp.kind).toBe("help");
+    if (chatCreateHelp.kind !== "help") return;
+    expect(chatCreateHelp.text).toContain("--reasoning-effort");
+    expect(chatCreateHelp.text).toContain("codexSandbox=danger-full-access");
+
+    const agentSpawnHelp = buildCliPlan(["agent", "spawn", "--help"]);
+    expect(agentSpawnHelp.kind).toBe("help");
+    if (agentSpawnHelp.kind !== "help") return;
+    expect(agentSpawnHelp.text).toContain("does not");
+    expect(agentSpawnHelp.text).toContain("--reasoning-effort");
 
     // Regression: --text as output flag must not swallow --help.
     const lanesHelp = buildCliPlan(["lanes", "list", "--text", "--help"]);

@@ -294,7 +294,9 @@ ade shell start --lane lane-id -- npm test
 ade shell start-cli codex --lane lane-id --permission-mode edit --message "fix failing tests"
 ade shell start-cli --provider claude --lane lane-id --permission-mode default
 ade chat list --lane lane-id --include-automation --no-archived --text
-ade chat create --lane lane-id --model gpt-5.5
+ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
+ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --print-config --json
+ade agent spawn --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --prompt "fix failing tests"
 ade code
 ade code --embedded
 ade tests run --lane lane-id --suite unit --wait
@@ -319,7 +321,7 @@ ade usage budget get --text
 ade usage budget set --from-file budget.json
 ade usage budget check --provider claude --scope global
 ade usage budget cumulative --scope global --text
-ade actions list
+ade actions list --domain chat --text
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
 ade cursor cloud agents list --text

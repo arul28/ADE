@@ -2513,6 +2513,18 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.actions.some((entry: { action: string }) => entry.action === "stageFile")).toBe(true);
     expect(response.structuredContent.actions.every((entry: { name?: string; usage?: string }) => entry.name && entry.usage)).toBe(true);
 
+    const chatActions = await callTool(handler, "list_ade_actions", { domain: "chat" });
+    expect(chatActions?.isError).toBeUndefined();
+    const createSession = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "createSession");
+    expect(createSession).toMatchObject({
+      input: expect.stringContaining("reasoningEffort"),
+      example: expect.stringContaining("chat.createSession"),
+    });
+    const getSessionSummary = chatActions.structuredContent.actions.find((entry: { action: string }) => entry.action === "getSessionSummary");
+    expect(getSessionSummary).toMatchObject({
+      input: expect.stringContaining("scalar sessionId"),
+    });
+
     const allDomains = await callTool(handler, "list_ade_actions", { domain: "all" });
     expect(allDomains?.isError).toBeUndefined();
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "ai")).toBe(true);
@@ -2563,6 +2575,25 @@ describe("adeRpcServer", () => {
     });
     expect(keybindings?.isError).toBeUndefined();
     expect(fixture.runtime.keybindingsService.get).toHaveBeenCalled();
+
+    (fixture.runtime.agentChatService as any).getAvailableModels = vi.fn(async ({ provider }: { provider?: string }) => [
+      { id: provider ?? "all" },
+    ]);
+    const availableModels = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getAvailableModels",
+      args: {},
+    });
+    expect(availableModels?.isError).toBeUndefined();
+    expect((fixture.runtime.agentChatService as any).getAvailableModels).toHaveBeenCalledWith({});
+
+    const chatSummary = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "getSessionSummary",
+      args: { sessionId: " chat-1 " },
+    });
+    expect(chatSummary?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-1");
 
     const aiStatus = await callTool(handler, "run_ade_action", {
       domain: "ai",
