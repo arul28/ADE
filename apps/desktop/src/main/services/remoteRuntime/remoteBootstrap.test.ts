@@ -11,6 +11,7 @@ import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import {
   bootstrapRemoteRuntime,
   buildRemoteRuntimeEnvironmentPrefix,
+  coerceProjects,
   normalizeRemoteArch,
   normalizeRuntimeVersion,
   resolveRemoteRuntimeLayout,
@@ -1575,5 +1576,50 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).toHaveBeenCalledTimes(1);
     expect(commands.some((command) => command.includes("runtime stop --text"))).toBe(false);
+  });
+});
+
+describe("coerceProjects icon coercion", () => {
+  const baseRecord = {
+    projectId: "p1",
+    rootPath: "/home/user/proj",
+    displayName: "proj",
+    addedAt: 1,
+    lastOpenedAt: 2,
+    gitOriginUrl: null,
+  };
+
+  it("coerces a well-formed icon from the wire into a ProjectIcon", () => {
+    const [record] = coerceProjects([
+      {
+        ...baseRecord,
+        icon: {
+          dataUrl: "data:image/png;base64,AAA",
+          sourcePath: "/home/user/proj/logo.png",
+          mimeType: "image/png",
+        },
+      },
+    ]);
+    expect(record.icon).toEqual({
+      dataUrl: "data:image/png;base64,AAA",
+      sourcePath: "/home/user/proj/logo.png",
+      mimeType: "image/png",
+    });
+  });
+
+  it("defaults the icon to null when the host omits it (older brain)", () => {
+    const [record] = coerceProjects([baseRecord]);
+    expect(record.icon).toBeNull();
+  });
+
+  it("rejects malformed icon payloads, coercing each to null", () => {
+    const [fromString, fromArray, fromWrongTypes] = coerceProjects([
+      { ...baseRecord, projectId: "a", icon: "not-an-object" },
+      { ...baseRecord, projectId: "b", icon: ["nope"] },
+      { ...baseRecord, projectId: "c", icon: { dataUrl: 123, sourcePath: false } },
+    ]);
+    expect(fromString.icon).toBeNull();
+    expect(fromArray.icon).toBeNull();
+    expect(fromWrongTypes.icon).toBeNull();
   });
 });

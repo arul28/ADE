@@ -530,6 +530,7 @@ function ProjectTabIcon({
   animate,
   disabled,
   readOnly = false,
+  iconDataUrlOverride,
   onAccentColorChange,
 }: {
   rootPath: string;
@@ -537,6 +538,13 @@ function ProjectTabIcon({
   animate: boolean;
   disabled: boolean;
   readOnly?: boolean;
+  /**
+   * When defined, the caller owns this tab's icon (remote tabs, whose files
+   * live on another machine). A non-empty data URL is rendered directly; null
+   * falls back to the folder glyph. Either way the local resolveIcon path is
+   * skipped, since it can only read the local filesystem.
+   */
+  iconDataUrlOverride?: string | null;
   onAccentColorChange?: (rootPath: string, color: string | null) => void;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(() =>
@@ -548,8 +556,22 @@ function ProjectTabIcon({
   const [removing, setRemoving] = useState(false);
   const [iconError, setIconError] = useState<string | null>(null);
 
+  // Remote tabs supply their icon via the override (resolved on the host), so
+  // the local resolveIcon path is bypassed entirely.
+  const managedIcon = iconDataUrlOverride !== undefined;
+  const overrideIcon: ProjectIcon | null = iconDataUrlOverride
+    ? { dataUrl: iconDataUrlOverride, sourcePath: null, mimeType: null }
+    : null;
+  const displayIcon: ProjectIcon | null = managedIcon ? overrideIcon : icon;
+
   useEffect(() => {
     setFailed(false);
+    // Caller-managed icons (remote tabs) never resolve against the local
+    // filesystem — the project lives on another machine.
+    if (managedIcon) {
+      setIcon(null);
+      return;
+    }
     // Honor `disabled` (e.g. project marked missing) BEFORE consulting the
     // cache. Otherwise a project that was successfully resolved earlier in
     // the session keeps showing its stale icon after it goes missing.
@@ -584,7 +606,7 @@ function ProjectTabIcon({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [disabled, isCurrent, rootPath]);
+  }, [disabled, isCurrent, rootPath, managedIcon, iconDataUrlOverride]);
 
   useEffect(() => {
     let cancelled = false;
@@ -620,11 +642,11 @@ function ProjectTabIcon({
   );
 
   const iconNode =
-    !icon?.dataUrl || failed ? (
+    !displayIcon?.dataUrl || failed ? (
       fallbackIcon
     ) : (
       <img
-        src={icon.dataUrl}
+        src={displayIcon.dataUrl}
         alt=""
         className={cn(
           "h-[14px] w-[14px] shrink-0 rounded-[3px] object-contain transition-opacity duration-150",
@@ -1932,7 +1954,7 @@ export function TopBar() {
                     "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     "cursor-pointer border",
                     remoteTabConnected
-                      ? "border-warning/40"
+                      ? "border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)]"
                       : remoteTabConnecting
                         ? "border-amber-400/60"
                         : "border-red-400/60",
@@ -1955,6 +1977,7 @@ export function TopBar() {
                     animate={false}
                     disabled={false}
                     readOnly={true}
+                    iconDataUrlOverride={remoteTab.iconDataUrl ?? null}
                   />
                   <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                     {remoteTab.displayName}
@@ -1977,7 +2000,7 @@ export function TopBar() {
                     <DesktopTower
                       size={11}
                       weight="duotone"
-                      className="shrink-0 text-warning"
+                      className="shrink-0 text-[var(--color-warning)]"
                       aria-label={`Remote: ${remoteTab.runtimeName}`}
                     />
                   )}

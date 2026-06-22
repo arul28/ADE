@@ -1,3 +1,5 @@
+import type { ProjectIcon } from "./core";
+
 export type RemoteRuntimeTargetRouteSource =
   | "manual"
   | "bonjour"
@@ -70,6 +72,13 @@ export type RemoteRuntimeProjectRecord = {
   addedAt: number;
   lastOpenedAt: number;
   gitOriginUrl: string | null;
+  /**
+   * The project's icon as resolved on the host machine, inlined as a base64
+   * data URL so a connected desktop can render the real project logo in its
+   * tab instead of a blank folder. Null/absent when the host can't resolve an
+   * icon (older host, no icon file, or an oversized icon dropped from the wire).
+   */
+  icon?: ProjectIcon | null;
 };
 
 export type RemoteRuntimeConnectResult = {

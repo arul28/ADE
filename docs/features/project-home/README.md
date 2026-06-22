@@ -235,9 +235,11 @@ Shared types:
   `LaneOverlayPolicy`, `ProxyConfig`, `PortLease`, `LanePreviewInfo`.
 - `apps/desktop/src/shared/types/core.ts` — `ProjectIcon` (`{ dataUrl,
   sourcePath, mimeType }`), `RecentProjectSummary` (`kind`, `remote`,
-  `pinned`), remote `OpenProjectBinding` metadata, and `ProjectDetail`
-  dirty breakdowns consumed by the TopBar tab strip, welcome rows,
-  project browser preview, and mobile-facing project catalog.
+  `pinned`), remote `OpenProjectBinding` metadata (including
+  `iconDataUrl`, the host-resolved logo for the remote project tab),
+  and `ProjectDetail` dirty breakdowns consumed by the TopBar tab
+  strip, welcome rows, project browser preview, and mobile-facing
+  project catalog.
 
 Preload bridge:
 
@@ -490,6 +492,26 @@ detection or override). The override is committed to `.ade/ade.yaml`
 (shared, committed) so collaborators see the same project icon, and
 the `.ade/project-icons/` directory is part of the tracked shared
 scaffold so the actual bytes travel with the override.
+
+Remote project tabs cannot run the local resolver — the project files
+live on another machine. Instead the host brain resolves the icon and
+inlines it: the ade-cli `projects.list` RPC stamps each record with an
+`icon: { dataUrl, sourcePath, mimeType }` produced by
+`resolveRemoteProjectIcon` (`apps/ade-cli/src/services/projects/projectIconResolver.ts`),
+a compact electron-free port of the desktop resolver that covers the
+`.ade/ade.yaml` override, the conventional icon/logo files, and an
+`index.html` `<link rel="icon">` (resolution is best-effort and
+capped at 2 MB so it stays inline-safe on the wire; a failure for one
+project degrades to a null icon rather than breaking the list). That
+icon rides through `RemoteRuntimeProjectRecord.icon` →
+`OpenProjectBinding.iconDataUrl` → the remote project tab. `TopBar`'s
+`ProjectTabIcon` takes an `iconDataUrlOverride`: when the caller owns
+the icon (remote tabs), it renders the data URL directly and skips the
+local `resolveIcon` path entirely (falling back to the folder glyph
+when the host returned no icon). The binding's `iconDataUrl` is
+persisted to `globalState.lastRemoteProjectBinding` and restored on a
+cold start so the real logo shows immediately, before the remote
+reconnects and refreshes it.
 
 The mobile companion gets the icon through a dedicated path: the host's
 `mobileProjectSummaryForContext` / `mobileProjectSummaryForRecent` in

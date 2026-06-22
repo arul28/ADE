@@ -22,6 +22,7 @@ import {
   type JsonRpcRequest,
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import {
   ProjectRegistry,
   type ProjectId,
@@ -474,7 +475,14 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.list") {
-      return projectRegistry.list();
+      // Inline each project's icon so a remote desktop can render the real
+      // project logo in its tab instead of a blank folder. Resolution is a
+      // best-effort local filesystem read; a failure for one project must not
+      // break the whole list, so it degrades to a null icon.
+      return projectRegistry.list().map((record) => ({
+        ...record,
+        icon: resolveRemoteProjectIcon(record.rootPath),
+      }));
     }
 
     if (method === "projects.add") {

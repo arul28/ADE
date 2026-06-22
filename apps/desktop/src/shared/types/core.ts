@@ -150,6 +150,12 @@ export type OpenProjectBinding =
       projectId: string;
       rootPath: string;
       displayName: string;
+      /**
+       * The remote project's icon as a base64 data URL, resolved on the host
+       * machine. Lets the project tab show the real project logo instead of a
+       * blank folder. Null/absent when the host couldn't resolve an icon.
+       */
+      iconDataUrl?: string | null;
     };
 
 export type AppNavigationTarget =
