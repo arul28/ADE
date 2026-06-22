@@ -16,6 +16,8 @@ import {
   WORK_SURFACE_HEADER_ACTION_IDLE,
   WorkSurfaceHeader,
 } from "../work/WorkSurfaceHeader";
+import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
+import { shouldShowClaudeCliLoginPrompt } from "../../lib/claudeAuthPrompt";
 
 type SessionMouseHandler = (
   session: TerminalSessionSummary,
@@ -149,6 +151,16 @@ function SessionActionsButton({
         <DotsThreeVertical size={14} weight="bold" />
       </button>
     </SmartTooltip>
+  );
+}
+
+function ClaudeLoginHeaderAction({ session }: { session: TerminalSessionSummary }) {
+  return (
+    <ClaudeLoginPromptButton
+      visible={shouldShowClaudeCliLoginPrompt(session)}
+      storageKey={`cli:${session.id}`}
+      laneId={session.laneId}
+    />
   );
 }
 
@@ -294,6 +306,7 @@ export function CliSessionWorkSurfaceHeader({
       toolsPaneOpen={toolsPaneOpen}
       trailingActions={
         <>
+          <ClaudeLoginHeaderAction session={session} />
           <SessionStatusDot session={session} />
           <CliSurfaceTrailingActions
             session={session}

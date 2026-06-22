@@ -112,6 +112,17 @@ describe("CliSessionWorkSurfaceHeader", () => {
     expect(screen.queryByTestId("cache-badge")).toBeNull();
   });
 
+  it("renders Claude login prompt when the Claude CLI session preview reports auth failure", () => {
+    renderHeader({
+      status: "failed",
+      runtimeState: "exited",
+      ptyId: null,
+      lastOutputPreview: "Please run /login · API Error: 401 Invalid authentication credentials",
+    });
+
+    expect(screen.getByRole("button", { name: "Login to Claude" })).toBeTruthy();
+  });
+
   it("fires onInfoClick when the Info button is pressed", () => {
     const onInfoClick = vi.fn();
     renderHeader({}, { onInfoClick });

@@ -26,7 +26,7 @@ describe("classifyAgentCliError", () => {
       agent: "claude",
       displayName: "Claude Code",
       category: "unauthenticated",
-      authCommand: "claude /login",
+      authCommand: "claude auth login",
     });
   });
 });
