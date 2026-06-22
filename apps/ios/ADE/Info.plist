@@ -79,10 +79,6 @@
   <string>ADE uses the microphone to dictate prompts. Audio is transcribed on your device and is never uploaded.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
   <string>ADE transcribes your dictated prompts on device so you can speak instead of type. Speech is processed locally.</string>
-  <key>NSSupportsLiveActivities</key>
-  <true/>
-  <key>NSSupportsLiveActivitiesFrequentUpdates</key>
-  <true/>
   <key>UIApplicationSceneManifest</key>
   <dict/>
   <key>UIBackgroundModes</key>

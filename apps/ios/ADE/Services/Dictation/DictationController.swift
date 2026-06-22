@@ -1,16 +1,14 @@
-import ActivityKit
 import Combine
 import Foundation
 import SwiftUI
 import UIKit
 
 /// App-level singleton that owns the **single** `SpeechDictationService` and
-/// the dictation Dynamic Island Live Activity.
+/// routes dictated text back into whichever composer owns the microphone.
 ///
 /// Lifting capture above any individual composer is what lets recording survive
 /// navigation: the user can start dictating in the Work composer, switch tabs,
-/// and keep watching the waveform animate in the Dynamic Island. Only one
-/// recording exists at a time.
+/// and finish from the global in-app pill. Only one recording exists at a time.
 ///
 /// ## Insertion target
 /// The controller does not know how to mutate a specific composer's text, so
@@ -21,17 +19,11 @@ import UIKit
 /// it still copies to the clipboard — clipboard is always written as a recovery
 /// net, matching the previous behavior.
 ///
-/// ## Live Activity
-/// While recording, the controller drives a `DictationActivityAttributes`
-/// activity, pushing a throttled `ContentState` (waveform window + timer) a few
-/// times a second. The island's Done/Cancel buttons run in this process and
-/// call back through `DictationActivityActionRegistry`.
 @MainActor
-final class DictationController: ObservableObject, DictationActivityActionHandler {
+final class DictationController: ObservableObject {
     enum FinishOrigin {
         case composer
         case globalPill
-        case liveActivity
     }
 
     struct ClipboardNotice: Identifiable, Equatable {
@@ -40,13 +32,13 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     }
 
     /// The one capture service. Composers observe this for `isRecording`,
-    /// `audioLevel`, and `elapsedTime` so the in-app pill and the island reflect
+    /// `audioLevel`, and `elapsedTime` so the in-app recording pills reflect
     /// the same global state.
     let service: SpeechDictationService
 
     /// True from the moment Done is tapped until insertion completes. Mirrors
     /// the old per-composer `coordinator.isFinishing` but lives globally so the
-    /// island and whichever composer is on screen both show the finalizing
+    /// global pill and whichever composer is on screen both show the finalizing
     /// state.
     @Published private(set) var isFinishing = false
 
@@ -88,28 +80,14 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     private var visibleTargetOrder: [String] = []
     private var latestTargetId: String?
 
-    // MARK: - Live Activity
-
-    /// Rolling waveform window (each 0...1), newest pushed on the right. Seeded
-    /// flat and updated from `service.audioLevel`.
-    private var levelWindow: [Double] = DictationActivityAttributes.idleLevels
-    private var liveActivityUpdateTask: Task<Void, Never>?
     private var clipboardNoticeTask: Task<Void, Never>?
     private var cancellables = Set<AnyCancellable>()
-    /// Throttle ActivityKit updates to ~1/sec. The tiny Dynamic Island only
-    /// needs the timer (which ticks once a second) and a calm, non-animating
-    /// waveform — the live high-frequency waveform is for the in-app pill, not
-    /// the island. Pushing at ~4/sec is what made the island relayout/"bounce"
-    /// on every update, so we deliberately keep it slow here.
-    private let activityUpdateInterval: TimeInterval = 1.0
-    private var lastActivityPush = Date.distantPast
 
     // MARK: - Init
 
     init(glossary: VoiceGlossary = .shared) {
         self.glossary = glossary
         self.service = SpeechDictationService(glossary: glossary)
-        DictationActivityActionRegistry.register(self)
 
         // Republish nested service state so SwiftUI views (which observe this
         // controller, not the inner service) actually re-render on changes.
@@ -118,7 +96,6 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
             .sink { [weak self] level in
                 guard let self else { return }
                 self.audioLevel = level   // drives the in-app waveform
-                self.pushLevel(level)     // drives the island rolling window
             }
             .store(in: &cancellables)
         service.$elapsedTime
@@ -193,7 +170,6 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
         refreshActiveTargetVisibility()
         do {
             try await service.start()
-            startLiveActivity()
         } catch is CancellationError {
             activeTargetId = nil
             refreshActiveTargetVisibility()
@@ -205,12 +181,10 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     }
 
     /// Finish the active recording: transcribe, then insert into the registered
-    /// target (or clipboard-only if none). Invoked by the composer's Done button
-    /// AND by the Dynamic Island Done intent.
+    /// target (or clipboard-only if none).
     func finishRecording(origin: FinishOrigin = .composer) {
         guard service.isRecording, !isFinishing else { return }
         isFinishing = true
-        updateLiveActivity(force: true)
         Task { [weak self] in
             guard let self else { return }
             let raw = await self.service.stop()
@@ -220,8 +194,7 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
         }
     }
 
-    /// Cancel the active recording without producing a transcript. Invoked by
-    /// the composer's Cancel button AND the island Cancel intent.
+    /// Cancel the active recording without producing a transcript.
     func cancelRecording() {
         guard service.isRecording || service.isStarting || service.isPreparing else { return }
         ADEHaptics.warning()
@@ -232,7 +205,6 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
                 self.isFinishing = false
                 self.activeTargetId = nil
                 self.refreshActiveTargetVisibility()
-                self.endLiveActivity()
             }
         }
     }
@@ -247,7 +219,6 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
         let originalTargetVisible = originalVisibleTarget != nil
         activeTargetId = nil
         refreshActiveTargetVisibility()
-        endLiveActivity()
 
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -299,112 +270,4 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
         }
     }
 
-    // MARK: - DictationActivityActionHandler
-
-    /// Done tapped in the Dynamic Island. Routes to the same finish path as the
-    /// in-app pill.
-    func finishFromLiveActivity() {
-        finishRecording(origin: .liveActivity)
-    }
-
-    /// Cancel tapped in the Dynamic Island.
-    func cancelFromLiveActivity() {
-        cancelRecording()
-    }
-
-    // MARK: - Waveform window
-
-    private func pushLevel(_ level: Float) {
-        guard service.isRecording else { return }
-        var next = levelWindow
-        if next.count >= DictationActivityAttributes.barCount {
-            next.removeFirst(next.count - DictationActivityAttributes.barCount + 1)
-        }
-        next.append(Double(max(0.08, min(1, level))))
-        levelWindow = next
-        maybePushActivity()
-    }
-
-    // MARK: - Live Activity lifecycle
-
-    private func startLiveActivity() {
-        guard #available(iOS 17.0, *) else { return }
-        levelWindow = DictationActivityAttributes.idleLevels
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
-        // End any stray dictation activity first so we never stack two.
-        for activity in Activity<DictationActivityAttributes>.activities {
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
-        }
-
-        let attributes = DictationActivityAttributes()
-        let state = makeContentState()
-        let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(60 * 30))
-        do {
-            _ = try Activity<DictationActivityAttributes>.request(
-                attributes: attributes,
-                content: content,
-                pushType: nil
-            )
-            lastActivityPush = Date()
-            // A steady tick drives the timer even during silence (when no new
-            // audio-level samples arrive to push updates).
-            startActivityTick()
-        } catch {
-            // User disabled Live Activities, no foreground gesture, or budget
-            // exhausted — recording still works; the in-app pill carries on.
-        }
-    }
-
-    private func startActivityTick() {
-        liveActivityUpdateTask?.cancel()
-        liveActivityUpdateTask = Task { [weak self] in
-            while !Task.isCancelled {
-                // ~1s cadence: just enough to advance the m:ss timer during
-                // silence. The waveform-driven pushes from `pushLevel` are
-                // already throttled to the same interval, so the island stays
-                // calm instead of re-animating several times a second.
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-                guard let self else { return }
-                if !self.service.isRecording && !self.isFinishing { return }
-                self.updateLiveActivity(force: false)
-            }
-        }
-    }
-
-    private func maybePushActivity() {
-        guard Date().timeIntervalSince(lastActivityPush) >= activityUpdateInterval else { return }
-        updateLiveActivity(force: false)
-    }
-
-    private func updateLiveActivity(force: Bool) {
-        guard #available(iOS 17.0, *) else { return }
-        if !force {
-            guard Date().timeIntervalSince(lastActivityPush) >= activityUpdateInterval else { return }
-        }
-        lastActivityPush = Date()
-        let state = makeContentState()
-        let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(60 * 30))
-        for activity in Activity<DictationActivityAttributes>.activities {
-            Task { await activity.update(content) }
-        }
-    }
-
-    private func endLiveActivity() {
-        liveActivityUpdateTask?.cancel()
-        liveActivityUpdateTask = nil
-        levelWindow = DictationActivityAttributes.idleLevels
-        guard #available(iOS 17.0, *) else { return }
-        for activity in Activity<DictationActivityAttributes>.activities {
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
-        }
-    }
-
-    private func makeContentState() -> DictationActivityAttributes.ContentState {
-        DictationActivityAttributes.ContentState(
-            levels: levelWindow,
-            elapsedTime: service.elapsedTime,
-            isFinishing: isFinishing,
-            generatedAt: Date()
-        )
-    }
 }

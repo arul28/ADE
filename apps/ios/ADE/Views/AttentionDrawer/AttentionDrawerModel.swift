@@ -2,6 +2,15 @@ import Combine
 import Foundation
 import SwiftUI
 
+@available(iOS 17.0, *)
+public enum AttentionKind: String, Codable, Hashable, Sendable {
+    case awaitingInput
+    case failed
+    case ciFailing
+    case reviewRequested
+    case mergeReady
+}
+
 /// A single row rendered inside the in-app Attention Drawer sheet.
 ///
 /// Built by `AttentionDrawerModel.rebuild(from:)` from the active
@@ -46,21 +55,6 @@ public struct AttentionItem: Identifiable, Equatable {
         self.timestamp = timestamp
     }
 
-    /// Materialise a typed `ADESessionAttributes.ContentState.Attention`
-    /// for reuse by `AttentionActionRow`, so the drawer's action pills share
-    /// styling with the Live Activity / lock-screen card.
-    public var attentionPayload: ADESessionAttributes.ContentState.Attention {
-        .init(
-            kind: kind,
-            title: title,
-            subtitle: subtitle,
-            providerSlug: providerSlug,
-            sessionId: sessionId,
-            itemId: itemId,
-            prId: prId,
-            prNumber: prNumber
-        )
-    }
 }
 
 /// Source of truth for the in-app Attention Drawer.

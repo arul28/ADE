@@ -1338,11 +1338,41 @@ struct PRsTabView: View {
   @MainActor
   private func handleRequestedPrNavigation() async {
     guard let request = syncService.requestedPrNavigation else { return }
+    var target = prNavigationTarget(
+      for: request,
+      pullRequests: prs,
+      githubItems: githubDerived.repoItems + githubDerived.externalItems
+    )
+    if case .unresolved = target {
+      await reload(refreshRemote: false)
+      recomputeGitHubDerived()
+      target = prNavigationTarget(
+        for: request,
+        pullRequests: prs,
+        githubItems: githubDerived.repoItems + githubDerived.externalItems
+      )
+    }
+
     rootSurfaceRawValue = PrRootSurface.github.rawValue
-    selectedPrTransitionId = request.prId
-    laneContextLaneId = request.laneId
     path = NavigationPath()
-    path.append(request.prId)
+    selectedPrTransitionId = nil
+    laneContextLaneId = nil
+
+    switch target {
+    case .detail(let prId, let laneId):
+      selectedPrTransitionId = prId
+      laneContextLaneId = laneId
+      path.append(prId)
+    case .github(let item):
+      if item.scope == "external" {
+        openGitHub(urlString: item.githubUrl)
+      } else {
+        githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
+      }
+    case .unresolved:
+      errorMessage = "That pull request is not available on this phone yet."
+    }
+
     syncService.requestedPrNavigation = nil
   }
 

@@ -2,22 +2,13 @@ import SwiftUI
 import WidgetKit
 
 /// The single `@main` entry point for the ADE widget extension. Registers
-/// the Live Activity (owned by WS3), the workspace dashboard widget, the
-/// lock-screen glance widgets, and — on iOS 18+ — the Control Center widget.
+/// only the lock-screen glance widget. ADE keeps external system surfaces calm:
+/// the in-app Attention Drawer owns details, while this widget owns glanceable
+/// status.
 @main
 struct ADEWidgetBundle: WidgetBundle {
     @WidgetBundleBuilder
     var body: some Widget {
-        if #available(iOS 16.2, *) {
-            ADELiveActivity()
-        }
-        if #available(iOS 17.0, *) {
-            DictationLiveActivity()
-        }
-        ADEWorkspaceWidget()
         ADELockScreenWidget()
-        if #available(iOS 18.0, *) {
-            ADEControlWidget()
-        }
     }
 }

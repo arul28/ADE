@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Intentionally decoupled from `RemoteModels.swift` — widgets must not import
 /// heavyweight renderer code, and the shapes here only carry what we actually
-/// render on a lock screen / live activity.
+/// render in the lock-screen widget and in-app attention feed.
 
 public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     public var id: String { sessionId }
@@ -139,10 +139,10 @@ public struct PrSnapshot: Codable, Hashable, Identifiable, Sendable {
 
 public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
     public let generatedAt: Date
-    /// All live chat sessions — running, awaiting-input, and idle. Widgets and
-    /// the Live Activity render `runningAgents` (only currently-producing
-    /// sessions) so old / pending sessions don't pollute the roster; the
-    /// in-app Attention Drawer reads the full set.
+    /// All live chat sessions — running, awaiting-input, and idle. The
+    /// lock-screen widget narrows this to currently-producing sessions so old /
+    /// pending sessions don't pollute the glance; the in-app Attention Drawer
+    /// reads the full set.
     public let agents: [AgentSnapshot]
     public let prs: [PrSnapshot]
     /// "connected" | "syncing" | "disconnected".

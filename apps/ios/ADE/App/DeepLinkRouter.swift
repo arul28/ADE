@@ -31,14 +31,16 @@ final class DeepLinkRouter {
     if routeHttpsOpenURL(url) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
-    let pathComponents = url.pathComponents.filter { $0 != "/" }
+    let pathComponents = url.pathComponents
+      .filter { $0 != "/" }
+      .map { $0.removingPercentEncoding ?? $0 }
     switch host {
     case "session":
       guard let sessionId = pathComponents.first, !sessionId.isEmpty else { return }
       post(kind: "session", identifier: sessionId)
     case "pr":
       // Two accepted shapes today:
-      //   `ade://pr/<n>`                       (legacy widget/live-activity)
+      //   `ade://pr/<n>`                       (compact local link)
       //   `ade://pr/<owner>/<repo>/<number>`   (desktop cross-machine form)
       // Anything else is ignored so a malformed link can't crash navigation.
       if pathComponents.count >= 3 {
@@ -128,7 +130,11 @@ final class DeepLinkRouter {
       return
     }
     if let prId = userInfo["prId"] as? String, !prId.isEmpty {
-      post(kind: "pr", identifier: prId)
+      post(
+        kind: "pr",
+        identifier: prId,
+        prNumber: prNumberValue(from: userInfo["prNumber"])
+      )
       return
     }
     if let pr = userInfo["prNumber"] {
@@ -138,7 +144,7 @@ final class DeepLinkRouter {
     }
   }
 
-  private func post(kind: String, identifier: String) {
+  private func post(kind: String, identifier: String, prNumber: Int? = nil) {
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
       object: nil,
@@ -150,7 +156,10 @@ final class DeepLinkRouter {
     if kind == "pr" {
       let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
       if let prId = resolvePrId(from: trimmed) {
-        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId, prNumber: Int(trimmed))
+        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
+          prId: prId,
+          prNumber: prNumber ?? Int(trimmed)
+        )
       } else if let prNumber = Int(trimmed), prNumber > 0 {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prNumber: prNumber)
       }
@@ -169,8 +178,21 @@ final class DeepLinkRouter {
     )
   }
 
+  private func prNumberValue(from value: Any?) -> Int? {
+    if let number = value as? Int, number > 0 { return number }
+    if let number = value as? NSNumber {
+      let intValue = number.intValue
+      if intValue > 0 { return intValue }
+    }
+    if let string = value as? String {
+      let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let number = Int(trimmed), number > 0 { return number }
+    }
+    return nil
+  }
+
   /// PR deep links carry either a numeric PR number (from `ade://pr/<n>`
-  /// widget/live-activity URLs) or a stable `prId` (from notification payloads
+  /// compact local URLs) or a stable `prId` (from notification payloads
   /// that include both). Resolve the number to the matching `prId` via the
   /// App Group workspace snapshot so navigation always uses the same
   /// identifier as `PrsRootScreen`.

@@ -1391,14 +1391,14 @@ final class SyncService: ObservableObject {
   private var forceReducedSyncLoadUntil: TimeInterval?
 
   /// Process-wide singleton populated by the first `init` and consumed by
-  /// `AppDelegate`, Live Activity intents, and the `@EnvironmentObject`
-  /// propagated by `ADEApp`. Optional so tests / previews that spin up a
-  /// secondary instance do not clobber the primary one.
+  /// App Intent bridges plus the `@EnvironmentObject` propagated by `ADEApp`.
+  /// Optional so tests / previews that spin up a secondary instance do not
+  /// clobber the primary one.
   static var shared: SyncService?
 
-  /// Sessions currently eligible for a Live Activity. Rebuilt from
-  /// `localStateRevision` changes and consumed by `LiveActivityCoordinator`.
-  /// Roster only — sessions whose runtime is *actively* producing output.
+  /// Sessions currently eligible for glance surfaces. Rebuilt from
+  /// `localStateRevision` changes and written into the App Group snapshot for
+  /// the lock-screen widget and in-app Attention Drawer.
   @Published private(set) var activeSessions: [AgentSnapshot] = []
 
   /// Chat sessions currently waiting on user input. Surfaced as a count chip
@@ -1408,9 +1408,6 @@ final class SyncService: ObservableObject {
   /// Chat sessions paused / idle (connected but not producing output). Counted
   /// for context but never listed.
   @Published private(set) var idleSessionsCount: Int = 0
-
-  /// Owns the iOS 16.2+ Live Activity lifecycle; wired with `self` as host.
-  private var liveActivityCoordinator: Any?
 
   /// 2s debounce task shared by all writers of the App Group workspace
   /// snapshot. Coalesces bursty state changes into a single widget reload.
@@ -2436,13 +2433,10 @@ final class SyncService: ObservableObject {
     socketSessionDelegate.service = self
 
     // Publish this instance as the singleton consumed by AppDelegate and the
-    // LiveActivityIntentsForward entry points. Tests that need an isolated
-    // instance may overwrite it after init.
+    // attention action intent bridge. Tests that need an isolated instance may
+    // overwrite it after init.
     Self.shared = self
 
-    if #available(iOS 16.2, *) {
-      liveActivityCoordinator = LiveActivityCoordinator(host: self)
-    }
     refreshActiveSessionsAndSnapshot()
   }
 
@@ -9147,7 +9141,7 @@ final class SyncService: ObservableObject {
   }
 }
 
-// MARK: - Live Activities and remote commands (WS6)
+// MARK: - Remote commands (WS6)
 
 /// Kinds of remote commands the iOS client sends to the ADE brain.
 ///
@@ -9156,40 +9150,31 @@ final class SyncService: ObservableObject {
 enum RemoteCommandKind: String, Sendable {
   case approveSession
   case denySession
-  case pauseSession
-  case replyToSession
   case restartSession
   case retryPrChecks
-  case openPr
   /// Ask the paired desktop to open an `ade://...` deep link locally.
   /// Used when iOS encounters a link it can't render itself (lane, repo
   /// branch, owner/repo PR) and the user wants to bounce it to their Mac.
   case openDeeplink
 }
 
-extension SyncService: LiveActivityHost {}
-
 extension SyncService {
 
   /// Dispatch a remote command over the existing sync WebSocket. Used by:
-  ///   • Live Activity `LiveActivityIntent` perform handlers (WS7)
-  ///   • Control Widget intents (WS7)
+  ///   • in-app Attention Drawer App Intents
+  ///   • "Send to Mac" deep-link handoff
   ///
   /// The caller supplies a loosely-typed payload so action-specific fields
-  /// (sessionId, prNumber, text, ...) can be forwarded without defining one
-  /// envelope per variant. Never logs the payload in plaintext because `text`
-  /// for `.replyToSession` is user-authored content.
+  /// (sessionId, prNumber, url, ...) can be forwarded without defining one
+  /// envelope per variant.
   @discardableResult
   func sendRemoteCommand(_ kind: RemoteCommandKind, payload: [String: Any]) async -> SyncRemoteCommandDelivery {
     let action: String
     switch kind {
     case .approveSession: action = "chat.approve"
     case .denySession: action = "chat.approve"
-    case .pauseSession: action = "chat.interrupt"
-    case .replyToSession: action = "chat.respondToInput"
     case .restartSession: action = "chat.restart"
     case .retryPrChecks: action = "prs.rerunChecks"
-    case .openPr: action = "prs.getDetail"
     case .openDeeplink: action = "deeplinks.open"
     }
 
@@ -9204,14 +9189,6 @@ extension SyncService {
       if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
       if let itemId = payload["itemId"] as? String { args["itemId"] = itemId }
       args["decision"] = "decline"
-    case .pauseSession:
-      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
-    case .replyToSession:
-      // Desktop `chat.respondToInput` requires both sessionId AND itemId; the
-      // itemId is the pending input marker the agent is waiting on.
-      if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
-      if let itemId = payload["itemId"] as? String { args["itemId"] = itemId }
-      if let text = payload["text"] as? String { args["responseText"] = text }
     case .restartSession:
       if let sessionId = payload["sessionId"] as? String { args["sessionId"] = sessionId }
     case .retryPrChecks:
@@ -9224,15 +9201,6 @@ extension SyncService {
         args["prNumber"] = prNumber
       } else if let prString = payload["prNumber"] as? String, let pr = Int(prString) {
         args["prNumber"] = pr
-      }
-    case .openPr:
-      if let prId = (payload["prId"] as? String)?
-        .trimmingCharacters(in: .whitespacesAndNewlines),
-        !prId.isEmpty {
-        args["prId"] = prId
-      }
-      if let prNumber = payload["prNumber"] {
-        args["prNumber"] = prNumber
       }
     case .openDeeplink:
       // Desktop `deeplinks.open` expects a `url` arg — the same `ade://...`
@@ -9350,20 +9318,19 @@ extension SyncService {
     let now = Date()
 
     // `activeSessions` holds every relevant chat session — running,
-    // awaiting-input, idle, and failed. The Live Activity / widget filter to
-    // running-only at render time so the user-facing roster never lists
-    // multi-hour-old zombies, while the in-app Attention Drawer still gets its
-    // full set. Non-chat (shell / CLI) sessions are excluded entirely.
+    // awaiting-input, idle, and failed. The widget reads the running subset
+    // while the in-app Attention Drawer still gets the full set. Non-chat
+    // (shell / CLI) sessions are excluded entirely.
     // Completed / ended sessions are dropped since they're terminal.
     var allAgents: [AgentSnapshot] = []
     var runningAgents: [AgentSnapshot] = []
     var awaitingInputCount = 0
     var idleCount = 0
 
-    // The Live Activity should only ever surface a chat that is actively
-    // streaming output right now. Anything older than this gate is dropped
-    // from the LA roster (it can still appear in the in-app Attention Drawer
-    // via `allAgents`).
+    // The lock-screen widget should only surface chats actively streaming
+    // output right now. Anything older than this gate is dropped from the
+    // running roster, but can still appear in the in-app Attention Drawer via
+    // `allAgents`.
     let runningRecencyCutoff = now.addingTimeInterval(-120)
 
     for session in sessions {
@@ -9445,38 +9412,6 @@ extension SyncService {
     activeSessions = allAgents
     awaitingInputSessionsCount = awaitingInputCount
     idleSessionsCount = idleCount
-
-    if #available(iOS 16.2, *),
-       let coord = liveActivityCoordinator as? LiveActivityCoordinator {
-      let currentPrs: [PrSnapshot] = database
-        .fetchPullRequestListItems()
-        .prefix(12)
-        .map { item in
-          PrSnapshot(
-            id: item.id,
-            number: item.githubPrNumber,
-            title: item.title,
-            checks: item.checksStatus,
-            review: item.reviewStatus,
-            state: item.state,
-            mergeReady: (item.reviewStatus == "approved")
-              && (item.checksStatus == "passing")
-              && item.state == "open",
-            branch: item.headBranch.isEmpty ? nil : item.headBranch,
-            updatedAt: Self.parseIso8601(item.updatedAt)
-          )
-        }
-      // Header label = focused (most-recently-active) running chat's lane.
-      // Falls back to nil → "ADE" alone in the system header.
-      let focusedLaneName = runningAgents
-        .max(by: { $0.lastActivityAt < $1.lastActivityAt })?
-        .laneName
-      coord.reconcile(
-        with: runningAgents,
-        prs: currentPrs,
-        focusedLaneName: focusedLaneName
-      )
-    }
 
     scheduleWorkspaceSnapshotWrite()
   }
