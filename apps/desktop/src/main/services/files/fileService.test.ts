@@ -237,6 +237,39 @@ describe("fileService", () => {
     }
   });
 
+  it("streams generic binary byte ranges as base64 after the first chunk", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-generic-binary-range-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      const bytes = Buffer.concat([
+        Buffer.from([0x00, 0xff, 0x10, 0x20, 0x30]),
+        Buffer.alloc(30, 0x41),
+      ]);
+      fs.writeFileSync(path.join(rootPath, "archive.dat"), bytes);
+
+      let offset = 0;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const page = await service.readFileRange({
+          workspaceId: "workspace-1",
+          path: "archive.dat",
+          offset,
+          length: 5,
+        });
+        expect(page.encoding).toBe("base64");
+        chunks.push(Buffer.from(page.content, "base64"));
+        if (page.nextOffset == null) break;
+        offset = page.nextOffset;
+      }
+
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("registers external file and folder workspaces for explicit local opens", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-external-project-"));
     const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-external-root-"));

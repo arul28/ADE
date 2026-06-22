@@ -2275,6 +2275,18 @@ export function registerIpc({
     assertAppControlRateLimit(event, channel, limit);
   };
 
+  const assertTrustedFilesSender = (event: IpcMainInvokeEvent, channel: string): void => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const senderUrl = event.senderFrame?.url || event.sender.getURL();
+    if (win && !win.isDestroyed() && isTrustedAppControlRendererUrl(senderUrl)) return;
+    getCtx().logger.warn("ipc.files.untrusted_sender", {
+      channel,
+      windowId: win?.id ?? null,
+      senderUrl: senderUrl || null,
+    });
+    throw new Error("Files access is only available to the ADE renderer.");
+  };
+
   const assertBuiltInBrowserRateLimit = (
     event: IpcMainInvokeEvent,
     channel: string,
@@ -7422,7 +7434,8 @@ export function registerIpc({
     );
   });
 
-  ipcMain.handle(IPC.filesOpenExternalPath, async (_event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
+  ipcMain.handle(IPC.filesOpenExternalPath, async (event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
+    assertTrustedFilesSender(event, "files.openExternalPath");
     const ctx = ensureFileContext();
     return await withIpcTiming(
       ctx,

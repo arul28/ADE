@@ -131,6 +131,21 @@ const TEXT_EXTENSIONS = new Set([
   ".zsh",
 ]);
 const BASE64_RANGE_EXTENSIONS = new Set([
+  ".7z",
+  ".bin",
+  ".bz2",
+  ".dat",
+  ".db",
+  ".dmg",
+  ".gz",
+  ".iso",
+  ".rar",
+  ".sqlite",
+  ".tar",
+  ".tgz",
+  ".wasm",
+  ".xz",
+  ".zip",
   ".pdf",
   ".mp3",
   ".m4a",
@@ -1122,7 +1137,7 @@ export function createFileService({
         const { bytesRead } = await fd.read(buf, 0, buf.length, offset);
         const slice = buf.subarray(0, bytesRead);
         const treatAsBinary = shouldReturnRangeAsBase64(normalizedRel)
-          || (offset === 0 && looksLikeBinary(slice, normalizedRel));
+          || looksLikeBinary(slice, normalizedRel);
 
         if (treatAsBinary) {
           const rangeEnd = offset + bytesRead;
