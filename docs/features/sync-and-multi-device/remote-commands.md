@@ -140,6 +140,15 @@ preferring `origin/<branch>`, persists it as the lane's `base_ref`,
 and rebases the lane onto that resolved branch. When omitted, the brain
 uses the selected parent lane's current branch.
 
+`lanes.refreshSnapshots` accepts lightweight-decoration flags:
+`includeConflictStatus`, `includeRebaseSuggestions`, and
+`includeAutoRebaseStatus`. Mobile list refreshes set these to `false`
+when they only need runtime/session bucket updates, avoiding extra git
+and rebase-status work on routine refreshes. `lanes.getDetail` reads the
+requested lane through the scoped lane-summary path and then fetches the
+detail overlays for that lane, instead of forcing a full lane list as a
+side effect of opening a detail screen.
+
 **Work** (`work.*`)
 - `listSessions`, `updateSessionMeta`, `runQuickCommand`,
   `startCliSession`, `sendToSession`, `stopRuntime`
