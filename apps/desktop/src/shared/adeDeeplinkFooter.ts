@@ -8,6 +8,8 @@
 
 import { buildDeeplink } from "./deeplinks";
 
+export const ADE_DEEPLINK_FOOTER_LOGO_URL = "https://ade-app.dev/logo.png";
+
 const MARKER_OPEN_RE = /<!--\s*ade:link\s+v=\d+[^>]*-->/i;
 const MARKER_CLOSE = "<!-- /ade:link -->";
 const MARKER_CLOSE_RE = /<!--\s*\/ade:link\s*-->/i;
@@ -47,7 +49,7 @@ export function renderAdeDeeplinkFooter(opts: AdeDeeplinkFooterOptions): string 
   const lines = [
     meta,
     "<p>",
-    '  <img src="https://ade-app.dev/images/ade-mark.svg" height="18" align="left" alt="ADE">',
+    `  <img src="${ADE_DEEPLINK_FOOTER_LOGO_URL}" height="18" align="left" alt="ADE">`,
     "  &nbsp;&nbsp;<strong>Open in ADE</strong>",
     `  &nbsp;·&nbsp; <a href="${escapeHtml(branchUrl)}">${escapeHtml(opts.branch)} branch</a>`,
     prUrl
