@@ -678,6 +678,7 @@ function ProjectTabHost() {
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
+  const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
   const activeBinding = !showWelcome && activeProject?.rootPath
     ? bindingForProject(activeProject, activeProjectBinding)
     : null;
@@ -818,6 +819,16 @@ function ProjectTabHost() {
       if (!mountedKeys.has(key)) storesRef.current.delete(key);
     }
   }, [mountedProjects]);
+
+  if (isExternalFilesRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+    return (
+      <PageErrorBoundary>
+        <React.Suspense fallback={LazyFallback}>
+          {React.createElement(FilesTab as React.ComponentType<{ active?: boolean }>, { active: true })}
+        </React.Suspense>
+      </PageErrorBoundary>
+    );
+  }
 
   if (!projectHydrated && !activeProject) {
     return GuardLoadingFallback;
