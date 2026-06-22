@@ -33,6 +33,10 @@ struct LaneDetailScreen: View {
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
+
+  var laneDetailProjectionReloadKey: String {
+    "\(laneId)-\(syncService.laneDetailProjectionRevision)"
+  }
   @State private var copiedLinkNotice: String?
   @State private var showRescueSheet = false
   @State private var rescueLaneName = ""
@@ -107,7 +111,7 @@ struct LaneDetailScreen: View {
       syncService.announceLaneOpen(laneId: laneId)
       await loadDetail(refreshRemote: canRunLiveActions)
     }
-    .task(id: syncService.localStateRevision) {
+    .task(id: laneDetailProjectionReloadKey) {
       guard busyAction == nil else { return }
       if detail == nil, canRunLiveActions {
         await loadDetail(refreshRemote: true)

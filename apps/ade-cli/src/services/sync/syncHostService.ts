@@ -169,6 +169,8 @@ const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
 const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
 const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
+export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
@@ -541,6 +543,26 @@ export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMet
   return metadata?.platform === "iOS" || metadata?.deviceType === "phone"
     ? MOBILE_SYNC_HEARTBEAT_MISS_LIMIT
     : DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT;
+}
+
+export function shouldDeferSyncHostBackgroundChangesForChat(args: {
+  subscribedChatSessionCount: number;
+  bufferedAmount: number;
+}): boolean {
+  return args.subscribedChatSessionCount > 0
+    && args.bufferedAmount >= SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES;
+}
+
+export function syncHostChangesetBatchOptionsForChat(args: {
+  subscribedChatSessionCount: number;
+  maxRows: number;
+  maxBytes: number;
+}): { maxRows?: number; maxBytes?: number } | undefined {
+  if (args.subscribedChatSessionCount <= 0) return undefined;
+  return {
+    maxRows: Math.min(args.maxRows, 64),
+    maxBytes: Math.min(args.maxBytes, SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES),
+  };
 }
 
 /**
@@ -1497,12 +1519,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   });
 
   const pollTimer = setInterval(() => {
-    void pumpChanges().catch((error) => {
-      args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
-    });
-    void pumpChatEvents().catch((error) => {
-      args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
-    });
+    void (async () => {
+      try {
+        await pumpChatEvents();
+      } catch (error) {
+        args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+      try {
+        await pumpChanges();
+      } catch (error) {
+        args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    })();
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
     pruneExpiredPairFailures();
@@ -2290,6 +2318,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return peer.ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES;
   }
 
+  function shouldPrioritizeChatForPeer(peer: PeerState): boolean {
+    return peer.subscribedChatSessionIds.size > 0;
+  }
+
+  function shouldDeferBackgroundChangesForChat(peer: PeerState): boolean {
+    return shouldDeferSyncHostBackgroundChangesForChat({
+      subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
+      bufferedAmount: peer.ws.bufferedAmount,
+    });
+  }
+
   function sendAndWait<TPayload>(
     ws: WebSocket,
     type: SyncEnvelope["type"],
@@ -2355,6 +2394,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     fromDbVersion: number,
     toDbVersion: number,
     changes: CrsqlChangeRow[],
+    options: { maxRows?: number; maxBytes?: number } = {},
   ): PendingChangesetBatch | null {
     const payload = buildChangesetBatchPayload({
       deviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "peer",
@@ -2362,8 +2402,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       fromDbVersion,
       toDbVersion,
       changes,
-      maxRows: maxChangesetBatchRows,
-      maxBytes: maxChangesetBatchBytes,
+      maxRows: options.maxRows ?? maxChangesetBatchRows,
+      maxBytes: options.maxBytes ?? maxChangesetBatchBytes,
     });
     if (!payload) return null;
     const batch: PendingChangesetBatch = {
@@ -2834,6 +2874,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
+      if (shouldDeferBackgroundChangesForChat(peer)) {
+        args.logger.debug("sync_host.changeset_deferred_chat_backpressure", {
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          bufferedAmount: peer.ws.bufferedAmount,
+          thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+        });
+        continue;
+      }
       if (peer.pendingChangesetBatch) {
         if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
           const pending = peer.pendingChangesetBatch;
@@ -2901,7 +2949,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
         continue;
       }
-      const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, exportedThroughDbVersion, changes);
+      const prioritizeChat = shouldPrioritizeChatForPeer(peer);
+      const pending = sendNextChangesetBatch(
+        peer,
+        "broadcast",
+        peer.lastKnownServerDbVersion,
+        exportedThroughDbVersion,
+        changes,
+        syncHostChangesetBatchOptionsForChat({
+          subscribedChatSessionCount: prioritizeChat ? peer.subscribedChatSessionIds.size : 0,
+          maxRows: maxChangesetBatchRows,
+          maxBytes: maxChangesetBatchBytes,
+        }),
+      );
       if (pending) {
         if (peerSupportsChangesetAck(peer)) {
           peer.pendingChangesetBatch = pending;

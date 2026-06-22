@@ -623,7 +623,7 @@ struct WorkSessionDestinationView: View {
   }
 
   var artifactObservationKey: String {
-    "\(sessionId)-\(syncService.localStateRevision)"
+    "\(sessionId)-work:\(syncService.workProjectionRevision)-proof:\(syncService.proofArtifactsProjectionRevision)"
   }
 
   var trimmedInitialOpeningPrompt: String {

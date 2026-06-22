@@ -10,7 +10,11 @@ import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import {
   createSyncHostService,
   parseNativeLanDiscoveryProcessList,
+  shouldDeferSyncHostBackgroundChangesForChat,
+  syncHostChangesetBatchOptionsForChat,
   syncHeartbeatMissLimitForPeerMetadata,
+  SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+  SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES,
 } from "./syncHostService";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
@@ -311,6 +315,43 @@ it("allows a wider heartbeat grace window for mobile peers", () => {
   expect(syncHeartbeatMissLimitForPeerMetadata({ platform: "unknown", deviceType: "phone" })).toBeGreaterThan(
     syncHeartbeatMissLimitForPeerMetadata(null),
   );
+});
+
+it("prioritizes active chat by deferring and slicing background sync batches", () => {
+  expect(shouldDeferSyncHostBackgroundChangesForChat({
+    subscribedChatSessionCount: 0,
+    bufferedAmount: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+  })).toBe(false);
+  expect(shouldDeferSyncHostBackgroundChangesForChat({
+    subscribedChatSessionCount: 1,
+    bufferedAmount: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES - 1,
+  })).toBe(false);
+  expect(shouldDeferSyncHostBackgroundChangesForChat({
+    subscribedChatSessionCount: 1,
+    bufferedAmount: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+  })).toBe(true);
+
+  expect(syncHostChangesetBatchOptionsForChat({
+    subscribedChatSessionCount: 0,
+    maxRows: 250,
+    maxBytes: 256 * 1024,
+  })).toBeUndefined();
+  expect(syncHostChangesetBatchOptionsForChat({
+    subscribedChatSessionCount: 1,
+    maxRows: 250,
+    maxBytes: 256 * 1024,
+  })).toEqual({
+    maxRows: 64,
+    maxBytes: SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES,
+  });
+  expect(syncHostChangesetBatchOptionsForChat({
+    subscribedChatSessionCount: 1,
+    maxRows: 12,
+    maxBytes: 16 * 1024,
+  })).toEqual({
+    maxRows: 12,
+    maxBytes: 16 * 1024,
+  });
 });
 
 it("parses ADE dns-sd discovery processes for orphan recovery", () => {

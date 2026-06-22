@@ -2911,6 +2911,66 @@ export function createLaneService({
       return await listLanes(args);
     },
 
+    async getSummary(laneId: string, options: { includeStatus?: boolean } = {}): Promise<LaneSummary | null> {
+      const row = getLaneRow(laneId);
+      if (!row) return null;
+
+      const rowsById = getRowsById(true);
+      const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) ?? null : null;
+      let status: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
+      let parentStatus: LaneStatus | null = parent ? cloneLaneStatus(DEFAULT_LANE_STATUS) : null;
+      let worktreeAvailable: boolean | undefined;
+
+      if (options.includeStatus !== false) {
+        try {
+          worktreeAvailable = await isExpectedGitWorktreeRoot(row.worktree_path);
+          if (worktreeAvailable) {
+            status = await computeLaneStatus(
+              row.worktree_path,
+              rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref,
+              row.branch_ref,
+            );
+          }
+        } catch {
+          logger.warn("laneService.getSummary.status_failed", { laneId });
+          worktreeAvailable = false;
+          status = cloneLaneStatus(DEFAULT_LANE_STATUS);
+        }
+
+        if (parent) {
+          try {
+            const grandParent = parent.parent_lane_id ? rowsById.get(parent.parent_lane_id) ?? null : null;
+            parentStatus = await computeLaneStatus(
+              parent.worktree_path,
+              rowTracksParent(parent, grandParent) ? grandParent?.branch_ref ?? parent.base_ref : parent.base_ref,
+              parent.branch_ref,
+            );
+          } catch {
+            logger.warn("laneService.getSummary.parent_status_failed", { laneId, parentLaneId: parent.id });
+            parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
+          }
+        }
+
+        upsertLaneStateSnapshot({
+          laneId: row.id,
+          status,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
+      return toLaneSummary({
+        row,
+        status,
+        parentStatus,
+        childCount: getChildrenRows(row.id, false).length,
+        stackDepth: computeStackDepth({ laneId: row.id, rowsById, memo: new Map() }),
+        worktreeAvailable,
+        activeBranchProfile: ensureBranchProfileForRow(row),
+        linearIssue: getLaneLinearIssue(row.id),
+        linearIssueLinks: getLaneLinearIssueLinks(row.id),
+      });
+    },
+
     async listUnregisteredWorktrees(): Promise<UnregisteredLaneCandidate[]> {
       return listUnregisteredWorktreeCandidates();
     },
@@ -2955,7 +3015,7 @@ export function createLaneService({
       invalidateLaneListCache();
       const summaries = await listLanes({
         includeArchived: args.includeArchived ?? true,
-        includeStatus: true,
+        includeStatus: args.includeStatus ?? true,
       });
       return {
         refreshedCount: summaries.length,

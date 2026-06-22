@@ -8,6 +8,7 @@ struct LanesTabView: View {
 
   @State var laneSnapshots: [LaneListSnapshot] = []
   @State var pullRequests: [PullRequestListItem] = []
+  @State var laneListPresentation = LaneListPresentation.empty
   @State var errorMessage: String?
   @State var searchText = ""
   @State var scope: LaneListScope = .active
@@ -48,7 +49,7 @@ struct LanesTabView: View {
   }
 
   var lanesProjectionReloadKey: Int? {
-    isActive ? syncService.localStateRevision : nil
+    isActive ? syncService.lanesProjectionRevision : nil
   }
 
   var primaryBranchReloadKey: String? {
@@ -176,6 +177,11 @@ struct LanesTabView: View {
         guard isActive, syncService.requestedLaneNavigation != nil else { return }
         Task { await handleRequestedLaneNavigation() }
       }
+      .onChange(of: searchText) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: scope) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: runtimeFilter) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
       .onChange(of: isActive) { _, active in
         guard active, syncService.requestedLaneNavigation != nil else { return }
         Task { await handleRequestedLaneNavigation() }
@@ -212,7 +218,7 @@ struct LanesTabView: View {
             initialSnapshot: target.snapshot,
             allLaneSnapshots: laneSnapshots,
             initialSection: target.initialSection,
-            onRefreshRoot: { await reload(refreshRemote: true) }
+            onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
           )
         }
       }
