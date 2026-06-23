@@ -64,6 +64,38 @@ describe("chatUserMinimap.logic", () => {
     expect(entries.map((e) => e.fullUserOrdinal)).toEqual([0, 1]);
   });
 
+  it("uses display text for hidden handoff prompts and skips empty hidden prompts", () => {
+    const rows: ChatTranscriptGroupedEnvelope[] = [
+      {
+        key: "handoff-display",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Internal handoff prompt that should not appear in the minimap.",
+          displayText: "Chat handoff from previous session",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+        },
+      },
+      {
+        key: "handoff-hidden",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        event: {
+          type: "user_message",
+          text: "Internal handoff prompt without display text.",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+        },
+      },
+      userRow("normal prompt", "normal"),
+    ];
+
+    const entries = collectUserMessageMinimapSourceEntries(rows);
+
+    expect(entries.map((entry) => entry.preview)).toEqual([
+      "Chat handoff from previous session",
+      "normal prompt",
+    ]);
+  });
+
   it("samples when above max markers", () => {
     const entries = Array.from({ length: 100 }, (_, i) => ({
       rowIndex: i,
