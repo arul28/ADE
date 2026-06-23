@@ -247,4 +247,29 @@ describe("ReasoningEffortPicker", () => {
     await user.click(trigger);
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
   });
+
+  it("ignores family defaults when useFamilyDefaults is false", async () => {
+    reasoningByFamilyStore.anthropic = "high";
+    const onChange = vi.fn();
+    render(
+      <ReasoningEffortPicker
+        modelId={ANTHROPIC_MODEL_ID}
+        reasoningEffort={null}
+        onChange={onChange}
+        useFamilyDefaults={false}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Reasoning effort/i });
+    expect(trigger.textContent).toContain("AUTO");
+
+    const user = userEvent.setup();
+    await user.click(trigger);
+    const radios = screen.getAllByRole("radio");
+    const low = radios.find((el) => el.textContent?.includes("Low"));
+    expect(low).toBeTruthy();
+    await user.click(low!);
+
+    expect(onChange).toHaveBeenCalledWith("low");
+    expect(reasoningByFamilyStore.anthropic).toBe("high");
+  });
 });

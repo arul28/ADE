@@ -1247,7 +1247,7 @@ describe("TopBar", () => {
 
     expect(await screen.findByText("Connect Linear to open ADE-125")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /open linear settings/i }));
-    expect(window.location.hash).toBe("#/settings?tab=integrations&integration=linear");
+    expect(window.location.hash).toBe("#/settings?tab=general#linear-connection");
   });
 
   it("offers the project picker when a Linear issue deeplink opens without an ADE project", async () => {

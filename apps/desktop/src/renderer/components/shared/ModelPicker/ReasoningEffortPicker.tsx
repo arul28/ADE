@@ -10,6 +10,8 @@ export type ReasoningEffortPickerProps = {
   modelId: string;
   reasoningEffort: string | null;
   onChange: (effort: string | null) => void;
+  /** When false, each picker uses only its explicit value (no shared per-family defaults). */
+  useFamilyDefaults?: boolean;
   compact?: boolean;
   disabled?: boolean;
   className?: string;
@@ -41,6 +43,7 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
   modelId,
   reasoningEffort,
   onChange,
+  useFamilyDefaults = true,
   compact = false,
   disabled = false,
   className,
@@ -59,18 +62,18 @@ export const ReasoningEffortPicker = memo(function ReasoningEffortPicker({
 
   const displayedEffort = useMemo<string | null>(() => {
     if (reasoningEffort) return reasoningEffort;
-    if (family) return getReasoningForFamily(family);
+    if (useFamilyDefaults && family) return getReasoningForFamily(family);
     return null;
-  }, [reasoningEffort, family, getReasoningForFamily]);
+  }, [reasoningEffort, family, getReasoningForFamily, useFamilyDefaults]);
 
   const handleSelect = useCallback(
     (tier: string) => {
       const next = displayedEffort === tier ? null : tier;
-      if (family) rememberReasoning(family, next);
+      if (useFamilyDefaults && family) rememberReasoning(family, next);
       onChange(next);
       setOpen(false);
     },
-    [displayedEffort, family, onChange, rememberReasoning],
+    [displayedEffort, family, onChange, rememberReasoning, useFamilyDefaults],
   );
 
   if (tiers.length === 0) return null;

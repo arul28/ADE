@@ -1,5 +1,5 @@
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
-import { Brain, ChartLineUp, FolderSimple, GearSix, Palette, Plugs, Stack } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, FolderSimple, GearSix, Palette, Stack } from "@phosphor-icons/react";
 
 type SettingsSectionDefinition = {
   id: string;
@@ -13,7 +13,6 @@ export const SETTINGS_SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "workspace", label: "Workspace", icon: FolderSimple },
   { id: "ai", label: "AI", icon: Brain },
-  { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
   { id: "ade-usage", label: "Stats", icon: ChartLineUp },
 ] as const satisfies readonly SettingsSectionDefinition[];

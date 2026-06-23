@@ -563,7 +563,7 @@ export function LinearSyncPanel({ lanes, selectedLaneId }: { lanes: LaneSummary[
           onAddPreset={addPreset}
           onRefresh={() => void loadAll()}
           onSyncNow={() => void runSyncNow()}
-          onNavigateSettings={() => navigate("/settings?tab=integrations")}
+          onNavigateSettings={() => navigate("/settings?tab=general#linear-connection")}
         />
 
         <main className="min-h-0 overflow-auto p-4">

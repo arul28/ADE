@@ -634,11 +634,11 @@ export function CommandPalette({
         run: () => navigate("/settings?tab=background-jobs"),
       },
       {
-        id: "go-settings-integrations",
-        title: "Go to Integrations",
-        hint: "GitHub, Linear, computer use",
+        id: "go-settings-connections",
+        title: "Go to Connections",
+        hint: "GitHub and Linear setup in General settings",
         group: "Settings",
-        run: () => navigate("/settings?tab=integrations"),
+        run: () => navigate("/settings?tab=general#github-connection"),
       },
       {
         id: "go-settings-usage",

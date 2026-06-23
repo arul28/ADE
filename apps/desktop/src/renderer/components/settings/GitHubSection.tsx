@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import type { GitHubStatus, ProjectConfigSnapshot } from "../../../shared/types";
+import type { GitHubStatus } from "../../../shared/types";
 import {
   GithubLogo,
   CheckCircle,
@@ -83,16 +83,14 @@ function tokenTypeLabel(status: GitHubStatus | null): string {
   }
 }
 
-export function GitHubSection() {
+export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [githubTokenDraft, setGithubTokenDraft] = useState("");
   const [githubBusy, setGithubBusy] = useState(false);
-  const [configBusy, setConfigBusy] = useState(false);
   const [tokenFocused, setTokenFocused] = useState(false);
   const [showPatSetup, setShowPatSetup] = useState(false);
-  const [projectConfig, setProjectConfig] = useState<ProjectConfigSnapshot | null>(null);
   const [transcriptGistsEnabled, setTranscriptGistsEnabled] = useState(false);
 
   useEffect(() => {
@@ -108,7 +106,6 @@ export function GitHubSection() {
       .get()
       .then((snapshot) => {
         if (cancelled) return;
-        setProjectConfig(snapshot);
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
       })
       .catch(() => {});
@@ -177,32 +174,6 @@ export function GitHubSection() {
       .then((status) => setGithubStatus(status))
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));
-  };
-
-  const handleToggleTranscriptGists = async (enabled: boolean) => {
-    setConfigBusy(true);
-    setActionError(null);
-    setSaveNotice(null);
-    try {
-      const snapshot = await window.ade.projectConfig.get();
-      const next = await window.ade.projectConfig.save({
-        shared: snapshot.shared,
-        local: {
-          ...snapshot.local,
-          github: {
-            ...(snapshot.local.github ?? {}),
-            prTranscriptGists: { enabled },
-          },
-        },
-      });
-      setProjectConfig(next);
-      setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
-      setSaveNotice(enabled ? "PR chat transcripts enabled." : "PR chat transcripts disabled.");
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setConfigBusy(false);
-    }
   };
 
   const tokenAuthenticated = Boolean(githubStatus?.tokenStored && githubStatus?.userLogin);
@@ -337,13 +308,22 @@ export function GitHubSection() {
       <div style={cardStyle({
         borderColor: isConnected ? "color-mix(in srgb, var(--color-success) 30%, transparent)" : tokenAuthenticated ? "color-mix(in srgb, var(--color-warning) 30%, transparent)" : undefined,
       })}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <GithubLogo size={28} weight="fill" style={{ color: statusColor }} />
-            <span style={{ fontSize: 16, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              GitHub connection
-            </span>
-          </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: embedded ? "flex-end" : "space-between",
+            marginBottom: 20,
+          }}
+        >
+          {!embedded ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <GithubLogo size={28} weight="fill" style={{ color: statusColor }} />
+              <span style={{ fontSize: 16, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                GitHub connection
+              </span>
+            </div>
+          ) : null}
           {githubStatus ? <span style={inlineBadge(statusColor)}>{statusLabel}</span> : null}
         </div>
 
@@ -471,44 +451,6 @@ export function GitHubSection() {
             </button>
           </div>
         </div>
-      </div>
-
-      <div style={cardStyle()}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <ShieldCheck size={18} color={transcriptGistsEnabled ? COLORS.success : COLORS.textMuted} weight="fill" />
-            <span style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              PR chat transcripts
-            </span>
-          </div>
-          <span style={inlineBadge(transcriptGistsEnabled ? COLORS.success : COLORS.textMuted)}>
-            {transcriptGistsEnabled ? "On" : "Off"}
-          </span>
-        </div>
-        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: configBusy ? "default" : "pointer" }}>
-          <input
-            type="checkbox"
-            checked={transcriptGistsEnabled}
-            disabled={configBusy}
-            onChange={(event) => {
-              void handleToggleTranscriptGists(event.currentTarget.checked);
-            }}
-            style={{ marginTop: 2 }}
-          />
-          <span style={{ display: "grid", gap: 6 }}>
-            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              Attach ADE chat transcript links when creating or linking PRs.
-            </span>
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: "18px" }}>
-              Transcripts are published as secret gists, which are link-accessible. ADE publishes only structured chat turns, not raw terminal logs.
-            </span>
-          </span>
-        </label>
-        {transcriptGistsEnabled ? (
-          <div style={{ ...infoBoxStyle, marginTop: 12 }}>
-            GitHub CLI auth needs the gist scope. Classic PATs need gist, and fine-grained tokens need Gists read/write permission.
-          </div>
-        ) : null}
       </div>
 
       {showPatSetup ? (

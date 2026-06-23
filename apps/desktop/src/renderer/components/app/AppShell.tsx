@@ -229,7 +229,7 @@ function GithubBanner({
     <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
       <span>
         {message}
-        <Link to="/settings?tab=integrations" className="underline">
+        <Link to="/settings?tab=general#github-connection" className="underline">
           {linkLabel}
         </Link>
       </span>

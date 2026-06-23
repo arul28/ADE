@@ -95,6 +95,21 @@ describe("ChatAppearancePreview", () => {
     }
   });
 
+  it("wraps assistant markdown within column width at large font sizes", () => {
+    const { container } = render(
+      <ChatAppearancePreview
+        theme="dark"
+        chatFontSizePx={22}
+        transcriptDensity="comfortable"
+        chromeTint="colored"
+        shellGeometry="default"
+      />,
+    );
+    const assistantRow = container.querySelector(".overflow-hidden .min-w-0.max-w-full");
+    expect(assistantRow).toBeTruthy();
+    expect(container.innerHTML).not.toContain("max-w-[min(104ch,100%)]");
+  });
+
   it("scopes theme to the preview subtree", () => {
     const { container } = render(
       <ChatAppearancePreview

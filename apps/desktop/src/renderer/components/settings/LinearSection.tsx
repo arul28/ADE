@@ -36,7 +36,7 @@ const FEATURES = [
   { icon: Plugs, title: "CTO workflows", desc: "Dispatch work directly from Linear and keep status context close" },
 ];
 
-export function LinearSection() {
+export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   // Linear connection, GitHub repo, and team keys are all scoped to the active
   // project (credentials are project-scoped). Re-run the loaders whenever the
   // active project changes so the autolink commands target the right repo and
@@ -403,7 +403,7 @@ export function LinearSection() {
   }, [githubRepo, loadGithubAutolinks]);
 
   return (
-    <div style={{ display: "flex", maxWidth: 780, flexDirection: "column", gap: 20 }}>
+    <div style={{ display: "flex", maxWidth: embedded ? undefined : 780, flexDirection: "column", gap: 20 }}>
 
       {/* ── Connected State ── */}
       {isConnected ? (

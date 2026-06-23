@@ -89,7 +89,7 @@ function formatReleasedAgo(iso: string | null): string | null {
   return `released ${years} year${years === 1 ? "" : "s"} ago`;
 }
 
-export function AboutSection() {
+export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [latest, setLatest] = useState<LatestReleaseInfo | null>(null);
   const [checking, setChecking] = useState(false);
@@ -138,9 +138,11 @@ export function AboutSection() {
 
   if (!info) {
     return (
-      <div style={cardStyle()}>
-        <div style={{ fontSize: 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>ADE</div>
-        <div style={{ marginTop: 14, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+      <div style={embedded ? undefined : cardStyle()}>
+        <div style={{ fontSize: embedded ? 13 : 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+          {embedded ? "App" : "ADE"}
+        </div>
+        <div style={{ marginTop: 10, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
           Loading app info...
         </div>
       </div>
@@ -170,20 +172,16 @@ export function AboutSection() {
     );
   }
 
-  return (
-    <div
-      style={cardStyle(
-        updateAvailable
-          ? { borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" }
-          : undefined,
-      )}
-    >
+  const content = (
+    <>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>ADE</div>
+        <div style={{ fontSize: embedded ? 13 : 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+          {embedded ? "App" : "ADE"}
+        </div>
         {pill}
       </div>
 
-      <div style={{ display: "grid", gap: 10, marginTop: 18 }}>
+      <div style={{ display: "grid", gap: 10, marginTop: embedded ? 14 : 18 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <span style={labelStyle}>Installed</span>
           <span style={valueStyle}>{info.appVersion}</span>
@@ -204,7 +202,7 @@ export function AboutSection() {
       </div>
 
       {(updateAvailable || !isDev) ? (
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: embedded ? 14 : 18, flexWrap: "wrap" }}>
           {updateAvailable && latest?.htmlUrl ? (
             <button type="button" style={outlineButton()} onClick={openReleaseNotes}>
               View release notes
@@ -222,19 +220,17 @@ export function AboutSection() {
       ) : null}
 
       {info.localRuntime ? (
-        <div style={{ marginTop: 18, paddingTop: 18, borderTop: `1px solid ${COLORS.border}`, display: "grid", gap: 12 }}>
+        <div style={{ marginTop: embedded ? 14 : 18, paddingTop: embedded ? 14 : 18, borderTop: `1px solid ${COLORS.border}`, display: "grid", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                ADE runtime service
+                {embedded ? "Background service" : "ADE runtime service"}
               </div>
-              <div style={{ marginTop: 5, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                Connection: {info.localRuntime.connectionState}
-                {info.localRuntime.runtimeMode === "isolated" ? " (fallback brain — phone sync unavailable, retrying)" : ""}
-                . Install: {info.localRuntime.serviceInstall.message ?? "No install status."}
-              </div>
-              <div style={{ marginTop: 3, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                Login service: {info.localRuntime.serviceHealth.message ?? "No service health status."}
+              <div style={{ marginTop: 5, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                {info.localRuntime.connectionState === "connected"
+                  ? "Connected and ready."
+                  : `Status: ${info.localRuntime.connectionState}.`}
+                {info.localRuntime.runtimeMode === "isolated" ? " Running in fallback mode." : ""}
               </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
@@ -246,22 +242,38 @@ export function AboutSection() {
               </span>
             </div>
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-            {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (
-              <span>Path: {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path}</span>
-            ) : null}
-            {info.localRuntime.serviceInstall.exitCode != null ? (
-              <span>Exit code: {info.localRuntime.serviceInstall.exitCode}</span>
-            ) : null}
-            {info.localRuntime.serviceHealth.checkedAt ? (
-              <span>Service checked: {formatRuntimeTimestamp(info.localRuntime.serviceHealth.checkedAt)}</span>
-            ) : null}
-            {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt) ? (
-              <span>Updated: {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt)}</span>
-            ) : null}
-          </div>
+          {!embedded && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+              {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (
+                <span>Path: {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path}</span>
+              ) : null}
+              {info.localRuntime.serviceInstall.exitCode != null ? (
+                <span>Exit code: {info.localRuntime.serviceInstall.exitCode}</span>
+              ) : null}
+              {info.localRuntime.serviceHealth.checkedAt ? (
+                <span>Service checked: {formatRuntimeTimestamp(info.localRuntime.serviceHealth.checkedAt)}</span>
+              ) : null}
+              {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt) ? (
+                <span>Updated: {formatRuntimeTimestamp(info.localRuntime.serviceInstall.updatedAt)}</span>
+              ) : null}
+            </div>
+          )}
         </div>
       ) : null}
+    </>
+  );
+
+  if (embedded) return content;
+
+  return (
+    <div
+      style={cardStyle(
+        updateAvailable
+          ? { borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" }
+          : undefined,
+      )}
+    >
+      {content}
     </div>
   );
 }

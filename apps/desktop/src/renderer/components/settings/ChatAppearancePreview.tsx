@@ -46,7 +46,7 @@ const SAMPLE_ASSISTANT_MARKDOWN = [
 ].join("\n");
 
 const transcriptPaneClass =
-  "flex w-full min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)] pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]";
+  "flex w-full min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)] overflow-x-hidden pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]";
 
 const PREVIEW_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [
   {
@@ -243,9 +243,11 @@ function SharedAppearanceTranscript({
 
       {/* Assistant text is unbubbled — matches the real chat (AgentChatMessageList):
           bare markdown on the canvas, no card / accent line. */}
-      <div className="flex min-w-0 w-full justify-start">
-        <div className="group relative min-w-0 w-full max-w-[min(104ch,100%)] overflow-visible py-0.5 pr-7">
-          <ChatMarkdown tone={neu ? "neutral" : "sky"}>{SAMPLE_ASSISTANT_MARKDOWN}</ChatMarkdown>
+      <div className="flex min-w-0 max-w-full w-full justify-start overflow-hidden">
+        <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 pr-7 text-[length:var(--chat-font-size)] leading-[1.7]">
+          <div className="min-w-0 max-w-full">
+            <ChatMarkdown tone={neu ? "neutral" : "sky"}>{SAMPLE_ASSISTANT_MARKDOWN}</ChatMarkdown>
+          </div>
         </div>
       </div>
 

@@ -69,7 +69,7 @@ export function ChatSurfaceShell({
       ) : null}
       <div
         className={cn(
-          autoHeight ? "relative min-w-0 max-w-full flex-none overflow-visible" : "relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden",
+          autoHeight ? "relative min-w-0 max-w-full flex-none overflow-x-hidden overflow-y-visible" : "relative min-h-0 min-w-0 max-w-full flex-1 overflow-hidden",
           bodyClassName,
         )}
       >

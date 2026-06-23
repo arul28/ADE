@@ -39,13 +39,6 @@ const FEATURES: FeatureInfo[] = [
   { key: "commit_messages", label: "Commit messages", description: "Generate a brief git commit subject when the field is empty", subtitle: "Meaningful commit messages generated from your staged changes", icon: GitCommit },
 ];
 
-const sectionLabelStyle: React.CSSProperties = {
-  ...LABEL_STYLE,
-  fontSize: 11,
-  marginBottom: 10,
-};
-
-
 function normalizeModelSetting(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw.length) return "";
@@ -336,9 +329,18 @@ export function AiFeaturesSection() {
   return (
     <>
       <style>{featureRowHoverCss}</style>
-      <div style={{ maxWidth: 720 }}>
-        <div style={sectionLabelStyle}>AI-Powered Automations</div>
-        <div style={{ fontSize: 12, color: COLORS.textSecondary, fontFamily: SANS_FONT, marginBottom: 12, lineHeight: 1.6 }}>
+      <div>
+        <div
+          style={{
+            fontSize: 12,
+            fontWeight: 700,
+            color: COLORS.textPrimary,
+            fontFamily: SANS_FONT,
+            marginBottom: 12,
+            lineHeight: 1.4,
+            whiteSpace: "nowrap",
+          }}
+        >
           ADE can handle routine tasks in the background while you focus on what matters. Enable the helpers you want and pick a model for each.
         </div>
 
@@ -449,6 +451,7 @@ export function AiFeaturesSection() {
                     modelId={selectedModel}
                     reasoningEffort={featureReasoning[feature.key] ?? null}
                     onChange={(effort) => void handleReasoningChange(feature.key, effort)}
+                    useFamilyDefaults={false}
                     disabled={!enabled}
                   />
                 </div>
@@ -559,6 +562,7 @@ export function AiFeaturesSection() {
                   setChatAutoTitleReasoning(effort);
                   void saveChatTitleSettings({ reasoningEffort: effort });
                 }}
+                useFamilyDefaults={false}
                 disabled={!chatAutoTitleEnabled}
               />
             </div>
