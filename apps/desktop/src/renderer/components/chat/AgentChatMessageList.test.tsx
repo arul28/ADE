@@ -515,6 +515,37 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
   });
 
+  it("does not fall back to hidden handoff prompt text when display text is missing", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Internal handoff prompt that should never be exposed.",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Internal handoff prompt/)).toBeNull();
+    });
+    expect(screen.queryByText("Full prompt")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("");
+    });
+  });
+
   it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
     renderMessageList([
       {

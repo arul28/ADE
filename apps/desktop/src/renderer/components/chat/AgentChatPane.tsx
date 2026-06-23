@@ -3048,6 +3048,7 @@ export function AgentChatPane({
   const [loading, setLoading] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
   const [chatActionsOpen, setChatActionsOpen] = useState(
@@ -3079,6 +3080,12 @@ export function AgentChatPane({
     });
     return () => { cancelled = true; unsubscribe(); };
   }, [laneId]);
+  useEffect(() => () => {
+    if (handoffErrorClearTimerRef.current != null) {
+      window.clearTimeout(handoffErrorClearTimerRef.current);
+      handoffErrorClearTimerRef.current = null;
+    }
+  }, []);
   const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
@@ -7536,7 +7543,11 @@ export function AgentChatPane({
     } catch (handoffError) {
       const message = handoffError instanceof Error ? handoffError.message : String(handoffError);
       setError(message);
-      window.setTimeout(() => {
+      if (handoffErrorClearTimerRef.current != null) {
+        window.clearTimeout(handoffErrorClearTimerRef.current);
+      }
+      handoffErrorClearTimerRef.current = window.setTimeout(() => {
+        handoffErrorClearTimerRef.current = null;
         setError((current) => (current === message ? null : current));
       }, 6000);
     } finally {
