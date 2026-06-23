@@ -5159,6 +5159,111 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    it("does not discard first next-turn system events from a carried post-result read", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let releaseFollowUpStream!: () => void;
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after an empty post-result drain")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-next-turn-system",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          await followUpStreamReady;
+          yield {
+            type: "system",
+            subtype: "memory_recall",
+            session_id: "sdk-session-next-turn-system",
+            mode: "select",
+            memories: [{
+              path: "/tmp/preference.md",
+              scope: "project",
+              content: "Prefer preserving next-turn system events.",
+            }],
+          };
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-next-turn-system",
+            message: {
+              content: [{ type: "text", text: "Memory recall reached the next turn." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-next-turn-system",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-next-turn-system",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-next-turn-system",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "complete without a post-result tail",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after an empty post-result drain",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("Memory recall reached the next turn");
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "memory_recall"
+          && event.event.message === "Claude recalled 1 memory.",
+        )).toBe(true);
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps the live Claude query without replaying late post-result tail messages into the next turn", async () => {
       vi.useFakeTimers();
       try {

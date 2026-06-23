@@ -11593,9 +11593,7 @@ export function createAgentChatService(args: {
       let resultSeen = false;
       const isStalePostResultTailMessage = (message: SDKMessage): boolean => {
         const messageType = (message as any).type;
-        if (messageType === "prompt_suggestion" || messageType === "tool_use_summary") {
-          return true;
-        }
+        if (isPostResultOnlyTailMessage(message)) return true;
         if (messageType !== "system") {
           return false;
         }
@@ -11606,6 +11604,10 @@ export function createAgentChatService(args: {
           || subtype === "notification"
           || subtype === "permission_denied"
           || subtype === "worker_shutting_down";
+      };
+      const isPostResultOnlyTailMessage = (message: SDKMessage): boolean => {
+        const messageType = (message as any).type;
+        return messageType === "prompt_suggestion" || messageType === "tool_use_summary";
       };
       const logStalePostResultTailDiscard = (message: SDKMessage): void => {
         logger.debug("agent_chat.claude_stale_post_result_tail_discarded", {
@@ -11635,7 +11637,7 @@ export function createAgentChatService(args: {
               logPostResultDrainRejected(error);
               continue;
             }
-            if (!replayed.done && isStalePostResultTailMessage(replayed.value)) {
+            if (!replayed.done && isPostResultOnlyTailMessage(replayed.value)) {
               discardedPostResultTail = true;
               logStalePostResultTailDiscard(replayed.value);
               continue;
