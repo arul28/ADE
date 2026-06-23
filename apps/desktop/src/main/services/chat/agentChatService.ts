@@ -14357,9 +14357,20 @@ export function createAgentChatService(args: {
           return;
         }
       }
+      if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
+        emitChatEvent(managed, {
+          type: "error",
+          message: buildPlanningApprovalViolation(description),
+          turnId: requestTurnId ?? undefined,
+        });
+        runtime.sendResponse(id, {
+          permissions: {},
+          scope: "turn",
+        });
+        return;
+      }
       if (
         isSessionCodexFullAuto(managed.session)
-        && !isPlanningApprovalGuarded(managed, runtime, requestTurnId)
         && codexPermissionsStayWithinLane(managed, params.cwd, params.permissions)
       ) {
         runtime.sendResponse(id, {

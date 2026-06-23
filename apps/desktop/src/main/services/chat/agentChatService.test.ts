@@ -15305,6 +15305,36 @@ describe("createAgentChatService", () => {
 
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
+        id: "perm-plan-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-plan-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          reason: "Allow write access",
+          permissions: {
+            fileSystem: {
+              write: [path.join(tmpRoot, "planned-edit.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-plan-1")).toMatchObject({
+          result: {
+            permissions: {},
+            scope: "turn",
+          },
+        });
+      });
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "perm-plan-1"
+      )).toBe(false);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
         method: "turn/completed",
         params: {
           turn: {
