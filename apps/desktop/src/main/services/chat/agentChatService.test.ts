@@ -4981,9 +4981,10 @@ describe("createAgentChatService", () => {
       expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
     });
 
-    it("keeps the live Claude query when post-result prompt suggestions are suppressed", async () => {
+    it("keeps the live Claude query without replaying late prompt suggestions into the next turn", async () => {
       vi.useFakeTimers();
       try {
+        const events: AgentChatEventEnvelope[] = [];
         const close = vi.fn();
         let streamCall = 0;
         let releaseFollowUpStream!: () => void;
@@ -5014,6 +5015,12 @@ describe("createAgentChatService", () => {
 
           await followUpStreamReady;
           yield {
+            type: "prompt_suggestion",
+            session_id: "sdk-session-no-suggestion",
+            uuid: "late-suggestion-1",
+            suggestion: "This suggestion belongs to the previous turn",
+          };
+          yield {
             type: "assistant",
             session_id: "sdk-session-no-suggestion",
             message: {
@@ -5040,7 +5047,9 @@ describe("createAgentChatService", () => {
           sessionId: "sdk-session-no-suggestion",
         } as any);
 
-        const { service } = createService();
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
         const session = await service.createSession({
           laneId: "lane-1",
           provider: "claude",
@@ -5066,6 +5075,7 @@ describe("createAgentChatService", () => {
         });
 
         expect(followUp.outputText).toContain("same Claude query");
+        expect(events.filter((event) => event.event.type === "prompt_suggestion")).toHaveLength(0);
         expect(close).not.toHaveBeenCalled();
         expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
         expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();

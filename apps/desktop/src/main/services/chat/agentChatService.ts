@@ -11593,10 +11593,18 @@ export function createAgentChatService(args: {
       let resultSeen = false;
       const readNextClaudeTurnMessage = async (): Promise<IteratorResult<SDKMessage, void> | null> => {
         if (!resultSeen) {
-          if (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
+          while (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
             const pending = runtime.pendingPostResultNext;
             runtime.pendingPostResultNext = null;
-            return await pending;
+            const replayed = await pending;
+            if (!replayed.done && (replayed.value as any).type === "prompt_suggestion") {
+              logger.debug("agent_chat.claude_late_prompt_suggestion_discarded", {
+                sessionId: managed.session.id,
+                turnId,
+              });
+              continue;
+            }
+            return replayed;
           }
           return await sessionQuery.next();
         }
