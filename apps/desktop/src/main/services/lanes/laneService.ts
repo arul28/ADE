@@ -19,6 +19,7 @@ import {
 } from "../../../shared/laneLinearIssue";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
+import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import type {
   AdoptAttachedLaneArgs,
   AttachLaneArgs,
@@ -1821,6 +1822,17 @@ export function createLaneService({
     return parseGitWorktreePorcelain(worktreeStdout(result));
   };
 
+  const residualWorktreeCleanup = createWorktreeResidualCleanup({
+    db,
+    projectId,
+    projectRoot,
+    worktreesDir,
+    logger,
+    listGitWorktrees,
+    isPendingWorktreeCreation: (worktreePath) => pendingWorktreeCreationPaths.has(normAbs(worktreePath)),
+    removeWorktreeDirectory: removeWorktreeDirectoryWithRecovery,
+  });
+
   const findGitWorktreeForBranch = async (branchRef: string): Promise<GitWorktreeInfo | null> => {
     const normalizedBranch = normalizeBranchKey(branchRef);
     if (!normalizedBranch) return null;
@@ -2345,6 +2357,11 @@ export function createLaneService({
       repairLegacyPrimaryBaseRootLanes();
     } catch (err) {
       logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      await residualWorktreeCleanup.retry();
+    } catch (err) {
+      logger.warn("laneService.residualWorktreeCleanup_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       await recoverManagedWorktreeRows();
@@ -5119,9 +5136,16 @@ export function createLaneService({
                   if (await isStillRegisteredWorktree()) {
                     throw new Error(fullMessage);
                   }
+                  residualWorktreeCleanup.recordFailure({
+                    laneId,
+                    branchRef: row.branch_ref,
+                    worktreePath: row.worktree_path,
+                    error: fullMessage,
+                  });
                   recordNonFatalFailure("git_worktree_remove", fullMessage);
                   return { detail: `${detail}; warning: ${fullMessage}` };
                 }
+                residualWorktreeCleanup.deleteRow(row.worktree_path);
                 const pruneFailure = await pruneWorktreesBestEffort();
                 if (pruneFailure) {
                   const message = `git worktree prune failed: ${pruneFailure}`;
@@ -5141,6 +5165,7 @@ export function createLaneService({
                 if (fs.existsSync(row.worktree_path)) {
                   return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
                 }
+                residualWorktreeCleanup.deleteRow(row.worktree_path);
                 return { detail: row.worktree_path };
               }
               // Recovery path: a previous failed delete (or this one's first attempt)

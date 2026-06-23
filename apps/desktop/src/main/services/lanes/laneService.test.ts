@@ -3166,7 +3166,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       projectRoot: repoRoot,
       projectId,
       defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
+      worktreesDir: repoRoot,
       onDeleteEvent: (event) => opts.events.push(event),
       teardownDeps: {
         processService: opts.teardown.processService,
@@ -3290,7 +3290,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(last.progress.steps.find((s: any) => s.name === "git_worktree_remove")?.detail).toContain("recovered from stale state");
   });
 
-  it("deletes the lane row with a warning when only unregistered residual files remain", async () => {
+  it("deletes the lane row and records retryable cleanup when only unregistered residual files remain", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
     const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
@@ -3331,6 +3331,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       return "";
     });
 
+    await service.list({ includeStatus: false });
+
     try {
       await service.delete({ laneId: "lane-child", deleteBranch: false, force: true });
     } finally {
@@ -3339,11 +3341,100 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     expect(db.get<{ id: string }>("select id from lanes where id = ?", ["lane-child"])).toBeNull();
     expect(fs.existsSync(childPath)).toBe(true);
+    expect(
+      db.get<{ lane_id: string; worktree_path: string; attempts: number; last_error: string }>(
+        "select lane_id, worktree_path, attempts, last_error from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+        ["proj-delete", childPath],
+      ),
+    ).toMatchObject({
+      lane_id: "lane-child",
+      worktree_path: childPath,
+      attempts: 0,
+    });
     const last = events[events.length - 1];
     expect(last.progress.overallStatus).toBe("completed_with_warnings");
     const wtStep = last.progress.steps.find((s: any) => s.name === "git_worktree_remove");
     expect(wtStep?.status).toBe("completed");
     expect(wtStep?.detail).toContain("manual cleanup failed");
+
+    await service.list({ includeStatus: false });
+
+    expect(fs.existsSync(childPath)).toBe(false);
+    expect(
+      db.get<{ lane_id: string }>(
+        "select lane_id from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+        ["proj-delete", childPath],
+      ),
+    ).toBeNull();
+  });
+
+  it("does not clean up non-git directories still referenced by archived lanes", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
+    const archivedPath = path.join(repoRoot, "archived");
+    fs.mkdirSync(archivedPath, { recursive: true });
+    fs.writeFileSync(path.join(archivedPath, "keep.txt"), "archived lane files\n", "utf8");
+    const now = "2026-03-11T12:00:00.000Z";
+    db.run(
+      `
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+      ["lane-archived", "proj-delete", "Archived", null, "worktree", "main", "feature/archived", archivedPath, null, 0, null, null, null, null, "archived", now, now],
+    );
+    db.run(
+      `
+        insert into local_worktree_residual_cleanups(
+          id, project_id, lane_id, branch_ref, worktree_path, reason, attempts, last_error, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, 'delete_residual', 0, ?, ?, ?)
+      `,
+      ["cleanup-archived", "proj-delete", "lane-archived", "feature/archived", archivedPath, "stale cleanup debt", now, now],
+    );
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") return "";
+      return "";
+    });
+
+    await service.list({ includeStatus: false });
+
+    expect(fs.existsSync(path.join(archivedPath, "keep.txt"))).toBe(true);
+    expect(
+      db.get<{ lane_id: string }>(
+        "select lane_id from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+        ["proj-delete", archivedPath],
+      ),
+    ).not.toBeNull();
+  });
+
+  it("cleans only empty untracked directories and leaves unknown non-empty directories alone", async () => {
+    const events: any[] = [];
+    const fake = makeFakeServices();
+    const { service, repoRoot } = await setupWithLane({ teardown: fake, events });
+    const emptyPath = path.join(repoRoot, "empty-residual");
+    const youngEmptyPath = path.join(repoRoot, "young-empty-residual");
+    const nonEmptyPath = path.join(repoRoot, "non-empty-residual");
+    fs.mkdirSync(path.join(emptyPath, ".ade"), { recursive: true });
+    fs.mkdirSync(path.join(youngEmptyPath, ".ade"), { recursive: true });
+    fs.mkdirSync(nonEmptyPath, { recursive: true });
+    fs.writeFileSync(path.join(nonEmptyPath, "user-file.txt"), "not ours\n", "utf8");
+    const oldEnough = new Date(Date.now() - 15 * 60_000);
+    fs.utimesSync(path.join(emptyPath, ".ade"), oldEnough, oldEnough);
+    fs.utimesSync(emptyPath, oldEnough, oldEnough);
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") return "";
+      return "";
+    });
+
+    await service.list({ includeStatus: false });
+
+    expect(fs.existsSync(emptyPath)).toBe(false);
+    expect(fs.existsSync(youngEmptyPath)).toBe(true);
+    expect(fs.existsSync(path.join(nonEmptyPath, "user-file.txt"))).toBe(true);
   });
 
   it("keeps retained delete progress queryable for remounted renderers", async () => {
