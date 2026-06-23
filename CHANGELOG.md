@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-06-23
+
+### Added
+
+- Claude chat: upgraded Agent SDK integration with long-lived and background chat timeout handling and new chat surfaces, plus a dedicated Claude login prompt that recovers stale auth in one click.
+- Orchestration delegation lineage: lead↔worker and lead↔validator spawns and results are recorded as first-class manifest state — who spawned whom, with what brief and resolved model, and what came back.
+
+### Changed
+
+- Instant lane and chat/CLI naming: sessions get a deterministic name immediately and are upgraded to an AI name in the background, removing the 10-second race that left many stuck on the fallback name; deterministic names now strip URLs and markdown.
+- Codex full-auto permission switching is fixed and hardened: queued approvals are guarded by lane path, grants are validated before they apply, and project-root permission paths resolve safely.
+- Remote project tabs show the real project icon and the correct yellow machine accent instead of a blank folder glyph.
+- Faster mobile realtime sync, including changeset-ack backpressure handling so a busy stream stays responsive.
+
+### Fixed
+
+- Files tree refreshes on external directory changes, with better external opening and previews; remote ADE Code clipboard paste; the ADE deeplink footer logo; and mobile notification, widget, and PR-navigation fixes.
+
 ## [1.2.8] - 2026-06-19
 
 ### Added
@@ -448,7 +466,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.8...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.9...HEAD
+[1.2.9]: https://github.com/arul28/ADE/compare/v1.2.8...v1.2.9
 [1.2.8]: https://github.com/arul28/ADE/compare/v1.2.7...v1.2.8
 [1.2.7]: https://github.com/arul28/ADE/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/arul28/ADE/compare/v1.2.5...v1.2.6
