@@ -15033,6 +15033,39 @@ describe("createAgentChatService", () => {
         )).toBe(true);
       });
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-project-roots-escape-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-project-roots-escape-1",
+          turnId: "turn-1",
+          cwd: path.join(tmpRoot, "src"),
+          permissions: {
+            fileSystem: {
+              entries: [{
+                access: "write",
+                path: {
+                  type: "special",
+                  value: {
+                    kind: "project_roots",
+                    subpath: "..",
+                  },
+                },
+              }],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-project-roots-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-project-roots-escape-1")).toBeUndefined();
     });
 
     it("keeps escaped pending Codex approvals manual when switched to full-auto", async () => {

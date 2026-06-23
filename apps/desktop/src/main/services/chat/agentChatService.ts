@@ -4510,7 +4510,7 @@ function codexFileSystemPermissionsStayWithinLane(
       if (value?.kind !== "project_roots") return false;
       const subpath = value.subpath;
       if (subpath == null) continue;
-      if (typeof subpath !== "string" || !codexPermissionPathStaysWithinLane(managed, cwd, subpath)) {
+      if (typeof subpath !== "string" || !codexPermissionPathStaysWithinLane(managed, managed.laneWorktreePath, subpath)) {
         return false;
       }
       continue;
