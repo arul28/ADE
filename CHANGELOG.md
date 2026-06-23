@@ -19,11 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Instant lane and chat/CLI naming: sessions get a deterministic name immediately and are upgraded to an AI name in the background, removing the 10-second race that left many stuck on the fallback name; deterministic names now strip URLs and markdown.
 - Codex full-auto permission switching is fixed and hardened: queued approvals are guarded by lane path, grants are validated before they apply, and project-root permission paths resolve safely.
 - Remote project tabs show the real project icon and the correct yellow machine accent instead of a blank folder glyph.
+- Settings General tab reorganized: GitHub, Linear, voice input, launch prompts, completion sound, PR transcripts, project files, and environment are consolidated under branded section headers and the separate Integrations tab is removed; background-job reasoning effort is now independent, with refreshed web-renderer UX.
 - Faster mobile realtime sync, including changeset-ack backpressure handling so a busy stream stays responsive.
 
 ### Fixed
 
-- Files tree refreshes on external directory changes, with better external opening and previews; remote ADE Code clipboard paste; the ADE deeplink footer logo; and mobile notification, widget, and PR-navigation fixes.
+- Stale lane worktree cleanup is recorded and safely retried after a delete; Files tree refreshes on external directory changes, with better external opening and previews; remote ADE Code clipboard paste; the ADE deeplink footer logo; and mobile notification, widget, and PR-navigation fixes.
 
 ## [1.2.8] - 2026-06-19
 
