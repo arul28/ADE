@@ -3858,6 +3858,17 @@ export function AgentChatPane({
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
+    const markChatActionsAutoOpened = () => {
+      chatActionsAutoOpenedSessionsRef.current.add(selectedSessionId);
+      try {
+        window.localStorage.setItem(
+          getChatActionsAutoOpenStorageKey(selectedSessionId),
+          encodeChatActionsAutoOpenRecord(Date.now()),
+        );
+      } catch {
+        /* best-effort persistence */
+      }
+    };
     // Don't consume the once-per-session auto-open until we can actually surface
     // the actions panel. If the chat-actions pane is already open (possibly on a
     // different tab), leave the user where they are and retry when it next closes
@@ -3865,23 +3876,18 @@ export function AgentChatPane({
     // which is exactly why subagents sometimes didn't auto-open (it was runtime-
     // independent; it depended on whether the pane happened to be open already).
     if (chatActionsOpen) {
+      if (chatActionsTab === "agents") {
+        markChatActionsAutoOpened();
+      }
       return;
     }
-    chatActionsAutoOpenedSessionsRef.current.add(selectedSessionId);
-    try {
-      window.localStorage.setItem(
-        getChatActionsAutoOpenStorageKey(selectedSessionId),
-        encodeChatActionsAutoOpenRecord(Date.now()),
-      );
-    } catch {
-      /* best-effort persistence */
-    }
+    markChatActionsAutoOpened();
     setChatActionsTab("agents");
     setIosSimulatorOpen(false);
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedTodoItems.length]);
+  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots.length, selectedTodoItems.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -5857,6 +5863,26 @@ export function AgentChatPane({
         return;
       }
 
+      // Keep prompt suggestions keyed by session so suggestions never leak
+      // across chat tabs before the composer renders the new selection. These
+      // are composer UI hints, not transcript content.
+      if (envelope.event.type === "prompt_suggestion" && "suggestion" in envelope.event) {
+        const suggestion = typeof (envelope.event as any).suggestion === "string"
+          ? (envelope.event as any).suggestion.trim()
+          : "";
+        setPromptSuggestionsBySession((prev) => (
+          suggestion.length > 0
+            ? { ...prev, [envelope.sessionId]: suggestion }
+            : (() => {
+                if (!(envelope.sessionId in prev)) return prev;
+                const next = { ...prev };
+                delete next[envelope.sessionId];
+                return next;
+              })()
+        ));
+        return;
+      }
+
       pendingEventQueueRef.current.push(envelope);
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
@@ -5898,24 +5924,6 @@ export function AgentChatPane({
       if (lockSessionId && envelope.sessionId === lockSessionId) {
         draftSelectionLockedRef.current = false;
         setSelectedSessionId(lockSessionId);
-      }
-
-      // Keep prompt suggestions keyed by session so suggestions never leak
-      // across chat tabs before the composer renders the new selection.
-      if (envelope.event.type === "prompt_suggestion" && "suggestion" in envelope.event) {
-        const suggestion = typeof (envelope.event as any).suggestion === "string"
-          ? (envelope.event as any).suggestion
-          : "";
-        setPromptSuggestionsBySession((prev) => (
-          suggestion.length > 0
-            ? { ...prev, [envelope.sessionId]: suggestion }
-            : (() => {
-                if (!(envelope.sessionId in prev)) return prev;
-                const next = { ...prev };
-                delete next[envelope.sessionId];
-                return next;
-              })()
-        ));
       }
 
       // Clear prompt suggestion when a new turn starts

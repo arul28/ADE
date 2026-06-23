@@ -1261,6 +1261,41 @@ describe("AgentChatPane companion drawers", () => {
     });
   });
 
+  it("does not reopen chat actions after tasks arrive while the Agents tab is already open", async () => {
+    const session = buildSession("session-1");
+    const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Agents" }));
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T06:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "todo_update",
+          items: [
+            { id: "task-1", description: "Inspect Claude task events", status: "in_progress" },
+          ],
+        },
+      } as AgentChatEventEnvelope);
+    });
+
+    expect((await screen.findAllByText("Inspect Claude task events")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(window.localStorage.getItem(getChatActionsAutoOpenStorageKey(session.sessionId))).toContain("firedAt");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
+  });
+
   it("persists split resize from the real divider on a working panel", async () => {
     renderDrawerPane();
 
@@ -5358,6 +5393,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const primaryTab = await screen.findByRole("button", { name: /Primary chat/i });
     const backgroundTab = await screen.findByRole("button", { name: /Background chat/i });
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
 
     act(() => {
       emitChatEvent({
@@ -5379,6 +5415,8 @@ describe("AgentChatPane submit recovery", () => {
         },
       } as AgentChatEventEnvelope);
     });
+    expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 16)).toBe(false);
+    setTimeoutSpy.mockRestore();
 
     await waitFor(() => {
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");

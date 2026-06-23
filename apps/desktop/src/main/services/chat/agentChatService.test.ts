@@ -4981,6 +4981,100 @@ describe("createAgentChatService", () => {
       expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
     });
 
+    it("keeps the live Claude query when post-result prompt suggestions are suppressed", async () => {
+      vi.useFakeTimers();
+      try {
+        const close = vi.fn();
+        let streamCall = 0;
+        let releaseFollowUpStream!: () => void;
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after the suppressed suggestion")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-no-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+
+          await followUpStreamReady;
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-no-suggestion",
+            message: {
+              content: [{ type: "text", text: "Still on the same Claude query." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-no-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close,
+          sessionId: "sdk-session-no-suggestion",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close,
+          sessionId: "sdk-session-no-suggestion",
+        } as any);
+
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "wait for a suppressed prompt suggestion",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        expect(close).not.toHaveBeenCalled();
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after the suppressed suggestion",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("same Claude query");
+        expect(close).not.toHaveBeenCalled();
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("surfaces Claude worker shutdown when it is the live stream tail", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {

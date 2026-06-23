@@ -656,6 +656,7 @@ type ClaudeRuntime = {
   forkFromSdkSessionId: string | null;
   query: ClaudeQuery | null;
   inputPump: ClaudeInputPump | null;
+  pendingPostResultNext: Promise<IteratorResult<SDKMessage, void>> | null;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -11591,16 +11592,28 @@ export function createAgentChatService(args: {
 
       let resultSeen = false;
       const readNextClaudeTurnMessage = async (): Promise<IteratorResult<SDKMessage, void> | null> => {
-        if (!resultSeen) return await sessionQuery.next();
+        if (!resultSeen) {
+          if (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
+            const pending = runtime.pendingPostResultNext;
+            runtime.pendingPostResultNext = null;
+            return await pending;
+          }
+          return await sessionQuery.next();
+        }
 
         let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-        const nextMessage = sessionQuery.next();
+        const nextMessage = runtime.pendingPostResultNext ?? sessionQuery.next();
+        runtime.pendingPostResultNext = nextMessage;
         void nextMessage.catch(() => undefined);
         const timeout = new Promise<null>((resolve) => {
           timeoutHandle = setTimeout(() => resolve(null), CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS);
         });
         try {
-          return await Promise.race([nextMessage, timeout]);
+          const drained = await Promise.race([nextMessage, timeout]);
+          if (drained && runtime.pendingPostResultNext === nextMessage) {
+            runtime.pendingPostResultNext = null;
+          }
+          return drained;
         } finally {
           if (timeoutHandle) clearTimeout(timeoutHandle);
         }
@@ -11614,9 +11627,6 @@ export function createAgentChatService(args: {
             turnId,
             timeoutMs: CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS,
           });
-          if (runtime.query === sessionQuery) {
-            resetClaudeQuerySession(managed, runtime, "timeout");
-          }
           break;
         }
         if (nextMessage.done) break;
@@ -17673,6 +17683,7 @@ export function createAgentChatService(args: {
     runtime.inputPump?.close();
     runtime.query = null;
     runtime.inputPump = null;
+    runtime.pendingPostResultNext = null;
     runtime.warmupDone = null;
     if (options.clearSdkSessionId && runtime.sdkSessionId) {
       logger.info("agent_chat.claude_sdk_session_cleared", {
@@ -18206,6 +18217,7 @@ export function createAgentChatService(args: {
       forkFromSdkSessionId,
       query: null,
       inputPump: null,
+      pendingPostResultNext: null,
       warmQuery: null,
       warmupDone: null,
       warmupCancel: null,
