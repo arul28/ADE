@@ -511,6 +511,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "runtime_processes",
   "stack_buttons",
   "test_suites",
+  "local_worktree_residual_cleanups",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -2937,6 +2938,26 @@ function migrate(db: MigrationDb) {
   `);
   db.run("create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc)");
   db.run("create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key)");
+
+  // Machine-local cleanup debt for lane delete residual directories. Absolute
+  // worktree paths are local machine state and must not replicate to phones or
+  // peer desktops.
+  db.run(`
+    create table if not exists local_worktree_residual_cleanups (
+      id text primary key,
+      project_id text not null,
+      lane_id text not null,
+      branch_ref text,
+      worktree_path text not null,
+      reason text not null default 'delete_residual',
+      attempts integer not null default 0,
+      last_error text,
+      created_at text not null,
+      updated_at text not null
+    )
+  `);
+  db.run("create unique index if not exists idx_local_worktree_residual_cleanups_path on local_worktree_residual_cleanups(project_id, worktree_path)");
+  db.run("create index if not exists idx_local_worktree_residual_cleanups_updated on local_worktree_residual_cleanups(project_id, updated_at)");
 
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.

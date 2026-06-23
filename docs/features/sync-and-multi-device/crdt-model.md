@@ -261,8 +261,9 @@ should live outside `.ade/ade.db` or be designed so the host owns
 all writes and controllers only read. The local-only excluded set
 is enumerated in `kvDb.ts`'s `LOCAL_ONLY_CRR_EXCLUDED_TABLES` and
 includes `lane_detail_snapshots`, `lane_list_snapshots`,
-`local_crr_change_suppressions`, `pr_auto_link_ignores`,
-`pull_request_ai_summaries`, and `runtime_processes`.
+`local_crr_change_suppressions`, `local_worktree_residual_cleanups`,
+`pr_auto_link_ignores`, `pull_request_ai_summaries`, and
+`runtime_processes`.
 
 ### Local clears that must not propagate
 

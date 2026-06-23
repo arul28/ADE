@@ -100,7 +100,10 @@ the directory first:
    is no longer registered and manual cleanup or prune fails, the lane
    delete can complete with warnings so the stale row and lane-owned
    metadata are still removed; the warning tells the user what residual
-   directory or registry cleanup remains manual. If attached: skip.
+   directory or registry cleanup could not be completed immediately.
+   Failed residual-directory cleanup is recorded in the machine-local
+   `local_worktree_residual_cleanups` table so later `lanes.list` calls
+   can retry it. If attached: skip.
 6. If caller requested `deleteBranch`: `git branch -D <branch>`.
    Optional remote branch cleanup uses `git push <remote> --delete
    <branch>` and is non-fatal.
@@ -124,6 +127,33 @@ lane-local Git reads. When the top-level is missing or differs from
 the saved path, ADE returns the default clean lane status and avoids
 probing `git status`, branch detection, stashes, or change inspection
 from the wrong checkout.
+
+## Residual cleanup retry sweep
+
+`worktreeResidualCleanup.ts` is the safety net for managed worktree
+directories that survive a delete after the lane row and lane-owned
+metadata are gone. The cleanup debt is local machine state, not project
+state: `local_worktree_residual_cleanups` stores absolute paths, is
+excluded from CRR replication, and is only interpreted by the runtime
+that owns those paths.
+
+The sweep runs from `laneService.list()` with a short TTL so normal lane
+refreshes can clear previous warnings without a dedicated user action.
+Before removing anything it rebuilds three guard sets:
+
+- registered non-bare paths from `git worktree list --porcelain`
+- `lanes.worktree_path` values still present for the current project,
+  including archived lanes
+- paths currently being created by an in-flight lane create
+
+Only direct children of the managed `.ade/worktrees/` directory are
+eligible. Unsafe records are dropped, registered Git worktrees and
+active lane paths are skipped, and pending creations are left alone.
+Recorded delete failures are retried until they disappear or the row is
+cleared. Unknown directories under `.ade/worktrees/` are removed only
+when they are empty, contain no files or symlinks, and are old enough
+to avoid racing a create; unknown non-empty directories are treated as
+user data and left in place.
 
 ## Per-lane state directories
 
