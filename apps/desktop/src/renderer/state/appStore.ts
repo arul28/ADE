@@ -10,6 +10,7 @@ import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
+import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -788,6 +789,7 @@ export type AppState = {
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
   draftLaunchJobsByScope: Record<string, DraftLaunchJob[]>;
+  handoffLaunchJobsByScope: Record<string, HandoffLaunchJob[]>;
   /**
    * Per-project lane / chat selection. Switching projects stashes the current
    * selection here keyed by project root so switching BACK restores the same
@@ -890,6 +892,12 @@ export type AppState = {
     next:
       | DraftLaunchJob[]
       | ((prev: DraftLaunchJob[]) => DraftLaunchJob[])
+  ) => void;
+  setHandoffLaunchJobs: (
+    scopeKey: string | null | undefined,
+    next:
+      | HandoffLaunchJob[]
+      | ((prev: HandoffLaunchJob[]) => HandoffLaunchJob[])
   ) => void;
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
@@ -1062,6 +1070,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
   draftLaunchJobsByScope: {},
+  handoffLaunchJobsByScope: {},
   laneSelectionByProject: {},
   laneCacheByProject: {},
   sessionsCacheByProject: {},
@@ -1423,6 +1432,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         delete nextByScope[key];
       }
       return { draftLaunchJobsByScope: nextByScope };
+    });
+  },
+  setHandoffLaunchJobs: (scopeKey, next) => {
+    const key = typeof scopeKey === "string" ? scopeKey.trim() : "";
+    if (!key) return;
+    set((prev) => {
+      const current = prev.handoffLaunchJobsByScope[key] ?? [];
+      const updated = typeof next === "function" ? next(current) : next;
+      const nextJobs = Array.isArray(updated) ? updated : [];
+      const nextByScope = { ...prev.handoffLaunchJobsByScope };
+      if (nextJobs.length > 0) {
+        nextByScope[key] = nextJobs;
+      } else {
+        delete nextByScope[key];
+      }
+      return { handoffLaunchJobsByScope: nextByScope };
     });
   },
 

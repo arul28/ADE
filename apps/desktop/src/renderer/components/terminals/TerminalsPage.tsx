@@ -17,13 +17,17 @@ import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { selectActiveProjectRoot, useAppStore, type WorkDraftKind } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useRootAppStore, type WorkDraftKind } from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
+import {
+  buildHandoffLaunchJobsScopeKey,
+  type HandoffLaunchJob,
+} from "../../lib/handoffLaunchJobs";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -37,6 +41,7 @@ const TERMINALS_TILING_TREE: PaneSplit = {
 const MIN_WORK_SIDEBAR_WIDTH_PCT = 26;
 const MAX_WORK_SIDEBAR_WIDTH_PCT = 55;
 const BULK_SESSION_DELETE_CONCURRENCY = 4;
+const EMPTY_HANDOFF_LAUNCH_JOBS: HandoffLaunchJob[] = [];
 
 function clampWorkSidebarWidthPct(widthPct: number): number {
   return Math.max(MIN_WORK_SIDEBAR_WIDTH_PCT, Math.min(MAX_WORK_SIDEBAR_WIDTH_PCT, widthPct));
@@ -109,8 +114,16 @@ async function allSettledWithConcurrency<T>(
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
+  const handoffLaunchJobsScopeKey = useMemo(
+    () => buildHandoffLaunchJobsScopeKey({ projectBinding, projectRoot }),
+    [projectBinding, projectRoot],
+  );
+  const handoffLaunchJobs = useRootAppStore((s) => (
+    s.handoffLaunchJobsByScope[handoffLaunchJobsScopeKey] ?? EMPTY_HANDOFF_LAUNCH_JOBS
+  ));
 
   const [contextMenu, setContextMenu] = useState<SessionContextMenuState>(null);
   const [infoPopover, setInfoPopover] = useState<InfoPopoverState>(null);
@@ -1025,6 +1038,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             workCollapsedSectionIds={work.workCollapsedSectionIds}
             toggleWorkSectionCollapsed={work.toggleWorkSectionCollapsed}
             sessionsGroupedByLane={work.sessionsGroupedByLane}
+            handoffJobs={handoffLaunchJobs}
           />
           </div>
         ),
@@ -1051,6 +1065,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleBulkStopAndDeleteSelected,
       handleInfoClick,
       handleContextMenu,
+      handoffLaunchJobs,
       workViewWithSidebar,
     ],
   );

@@ -344,6 +344,7 @@ export type AgentChatEvent =
       type: "user_message";
       text: string;
       displayText?: string;
+      metadata?: AgentChatEventMetadata | null | undefined;
       messageId?: string;
       attachments?: AgentChatFileRef[];
       contextAttachments?: AgentChatContextAttachment[];

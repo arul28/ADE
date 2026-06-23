@@ -336,7 +336,11 @@ on the Claude Agent SDK:
    12-message handoff brief built by `generateHandoffBrief()`:
    summarize the current session, end it gracefully, create a new
    session with the target model, and inject the brief as a continuity
-   message. `buildDeterministicHandoffBrief()` provides a deterministic
+   message. The injected user message stores the full continuity prompt
+   internally while exposing a short `displayText` breadcrumb with
+   `metadata.hideFullPrompt`, so desktop transcripts do not show or copy
+   the internal brief body as ordinary user-authored text.
+   `buildDeterministicHandoffBrief()` provides a deterministic
    fallback when the LLM summarization call fails or no eligible
    summarizer is available; `AgentChatHandoffResult.usedFallbackSummary`
    surfaces which path was taken.

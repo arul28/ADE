@@ -46,7 +46,10 @@ export function collectUserMessageMinimapSourceEntries(
     const row = groupedRows[rowIndex]!;
     if (!isTimelineUserMessageRow(row)) continue;
     const event = row.event;
-    const preview = summarizeInlineText(event.text ?? "", PREVIEW_MAX_CHARS);
+    const hideFullPrompt = event.metadata?.hideFullPrompt === true;
+    const previewSource = hideFullPrompt ? (event.displayText?.trim() ?? "") : (event.text ?? "");
+    const preview = summarizeInlineText(previewSource, PREVIEW_MAX_CHARS);
+    if (hideFullPrompt && preview.length === 0) continue;
     out.push({
       rowIndex,
       key: row.key,

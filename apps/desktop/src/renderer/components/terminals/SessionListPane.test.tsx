@@ -110,6 +110,31 @@ describe("SessionListPane", () => {
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
   });
 
+  it("renders in-flight handoff placeholders in the matching lane group", () => {
+    renderPane({
+      runningFiltered: [],
+      sessionsGroupedByLane: new Map(),
+      handoffJobs: [
+        {
+          id: "handoff-job-1",
+          sourceSessionId: "source-session",
+          laneId: "lane-known",
+          laneName: "Known Lane",
+          targetModelId: "openai/gpt-5.4-mini",
+          targetModelLabel: "GPT-5.4-Mini",
+          targetToolType: "codex-chat",
+          status: "creating-chat",
+          createdAtMs: Date.now(),
+        },
+      ],
+    });
+
+    expect(screen.getByTestId("handoff-launch-placeholder")).toBeTruthy();
+    expect(screen.getByText("Handoff to GPT-5.4-Mini")).toBeTruthy();
+    expect(screen.getByText("Creating chat...")).toBeTruthy();
+    expect(screen.getByText("First message: Chat handoff from previous session")).toBeTruthy();
+  });
+
   it("lets the user set the group organization from the filter panel", () => {
     const setSessionListOrganization = vi.fn();
     const view = renderPane({ setSessionListOrganization });

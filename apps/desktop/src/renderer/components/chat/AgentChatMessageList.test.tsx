@@ -494,6 +494,58 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Full handoff prompt with all implementation details.")).toBeTruthy();
   });
 
+  it("hides the full handoff prompt when handoff metadata marks it internal", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "This message was injected automatically by ADE during a chat handoff.\n\nSecret implementation brief.",
+          displayText: "Chat handoff from previous session",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Chat handoff from previous session")).toBeTruthy();
+    });
+    expect(screen.queryByText("Full prompt")).toBeNull();
+    expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
+  });
+
+  it("does not fall back to hidden handoff prompt text when display text is missing", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Internal handoff prompt that should never be exposed.",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.queryByText(/Internal handoff prompt/)).toBeNull();
+    });
+    expect(screen.queryByText("Full prompt")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith("");
+    });
+  });
+
   it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
     renderMessageList([
       {
