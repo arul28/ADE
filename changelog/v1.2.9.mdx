@@ -1,0 +1,27 @@
+---
+title: "v1.2.9"
+description: "Release notes for ADE v1.2.9 - June 23, 2026"
+---
+
+v1.2.9 sharpens the chat and agent experience: an upgraded Claude integration with a real login flow, instant lane and chat naming that no longer stalls on a cold model, safer Codex full-auto permission switching, and a first-class record of who delegated what to whom in orchestration. Mobile gets snappier realtime sync.
+
+---
+
+## Desktop
+
+- **Claude chat upgrade and login.** ADE's Claude Agent SDK chat integration is upgraded with long-lived and background chat timeout handling and new chat surfaces, backed by regression coverage for prompt suggestions, task updates, and post-result stream tails. A dedicated Claude login prompt now handles stale auth signals so a lapsed session is fixed in one click instead of a silent failure.
+- **Instant lane and chat naming.** Auto-created lanes and chat/CLI sessions are named instantly with a deterministic name and quietly upgraded to an AI name in the background, removing the 10-second renderer race against a cold model that previously left half of them stuck on the fallback name. The session card shows an "auto-naming underway" status and warm-swaps the title when the AI name lands, and the deterministic name is smarter — it strips URLs and markdown (so "take a look at https://github…" becomes "github-org-repo").
+- **Codex full-auto permission switching.** Live switching of Codex full-auto approval is fixed: queued approvals are guarded by lane path, permission grants are validated before they apply, command-permission amendments are guarded, and project-root permission paths resolve safely.
+- **Orchestration delegation lineage.** Lead↔worker and lead↔validator spawns and results are now recorded as first-class manifest state — who spawned whom, with what brief and resolved model, and what came back — written only through the service's guarded patch path and denied to every role directly.
+- **Remote project tab branding.** Connecting to another machine's runtime and opening a remote project now shows the real project icon and the correct yellow machine accent instead of a blank folder glyph and a washed-out logo.
+- **Chat handoff and CLI help.** A cleaner chat-handoff launch UI and improved ADE chat CLI creation help make starting and moving work between sessions clearer.
+- **Files.** The Files tree refreshes on external directory changes, with better external opening and previews.
+- **More fixes.** Remote ADE Code clipboard paste and the ADE deeplink footer logo.
+
+---
+
+## iOS
+
+- **Faster realtime sync.** Mobile sync responsiveness is optimized end to end, including changeset-ack backpressure handling so a busy stream stays responsive instead of falling behind.
+- **Files.** Improved external file opening and previews carry over to the companion app.
+- **Notifications and widgets.** Mobile notification cleanup plus widget documentation and PR-navigation fixes.
