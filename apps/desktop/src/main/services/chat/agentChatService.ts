@@ -2937,6 +2937,13 @@ function rememberCodexPlanningApprovalGuard(
   }
 }
 
+function normalizeCodexTurnId(turnId: unknown, fallback?: string | null): string | null {
+  const normalized = typeof turnId === "string" ? turnId.trim() : "";
+  if (normalized.length > 0) return normalized;
+  const normalizedFallback = typeof fallback === "string" ? fallback.trim() : "";
+  return normalizedFallback.length > 0 ? normalizedFallback : null;
+}
+
 function isPlanningApprovalGuarded(
   managed: ManagedChatSession,
   runtime: CodexRuntime,
@@ -4428,6 +4435,117 @@ function resolveSessionCodexConfigSource(
   return session.codexConfigSource
     ?? legacyPermissionModeToCodexConfigSource(session.permissionMode)
     ?? "flags";
+}
+
+function isSessionCodexFullAuto(
+  session: Pick<
+    AgentChatSession,
+    "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "permissionMode"
+  >,
+): boolean {
+  if (resolveSessionCodexConfigSource(session) === "config-toml") return false;
+  return resolveSessionCodexApprovalPolicy(session, "on-request") === "never"
+    && resolveSessionCodexSandbox(session, "read-only") === "danger-full-access";
+}
+
+function codexApprovalPathStaysWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  candidate: string | null | undefined,
+): boolean {
+  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
+  if (!trimmed.length) return false;
+  try {
+    resolvePathWithinRoot(managed.laneWorktreePath, trimmed, { allowMissing: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function codexPermissionPathStaysWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string,
+  candidate: string | null | undefined,
+): boolean {
+  const trimmed = typeof candidate === "string" ? candidate.trim() : "";
+  if (!trimmed.length) return false;
+  const resolvedCandidate = path.isAbsolute(trimmed)
+    ? trimmed
+    : path.join(cwd, trimmed);
+  return codexApprovalPathStaysWithinLane(managed, resolvedCandidate);
+}
+
+function codexFileSystemPermissionsStayWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string,
+  fileSystemPermissions: Record<string, unknown>,
+): boolean {
+  const legacyPaths = [
+    ...(Array.isArray(fileSystemPermissions.read) ? fileSystemPermissions.read : []),
+    ...(Array.isArray(fileSystemPermissions.write) ? fileSystemPermissions.write : []),
+  ];
+  for (const candidate of legacyPaths) {
+    if (typeof candidate !== "string" || !codexPermissionPathStaysWithinLane(managed, cwd, candidate)) {
+      return false;
+    }
+  }
+
+  const entries = fileSystemPermissions.entries;
+  if (entries == null) return true;
+  if (!Array.isArray(entries)) return false;
+  for (const entryValue of entries) {
+    const entry = asRecord(entryValue);
+    if (!entry) return false;
+    if (entry.access === "deny") continue;
+    const entryPath = asRecord(entry.path);
+    if (!entryPath) return false;
+    if (entryPath.type === "path") {
+      if (!codexPermissionPathStaysWithinLane(managed, cwd, typeof entryPath.path === "string" ? entryPath.path : null)) {
+        return false;
+      }
+      continue;
+    }
+    if (entryPath.type === "special") {
+      const value = asRecord(entryPath.value);
+      if (value?.kind !== "project_roots") return false;
+      const subpath = value.subpath;
+      if (subpath == null) return false;
+      if (typeof subpath !== "string" || !codexPermissionPathStaysWithinLane(managed, managed.laneWorktreePath, subpath)) {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+function codexPermissionsStayWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string | null | undefined,
+  permissions: unknown,
+): boolean {
+  const permissionCwd = typeof cwd === "string" && cwd.trim().length
+    ? cwd.trim()
+    : managed.laneWorktreePath;
+  if (!codexApprovalPathStaysWithinLane(managed, permissionCwd)) return false;
+  const permissionRecord = asRecord(permissions);
+  if (!permissionRecord) return permissions == null;
+  if (permissionRecord.fileSystem == null) return true;
+  const fileSystemPermissions = asRecord(permissionRecord.fileSystem);
+  return fileSystemPermissions
+    ? codexFileSystemPermissionsStayWithinLane(managed, permissionCwd, fileSystemPermissions)
+    : false;
+}
+
+function codexCommandApprovalStaysWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string | null | undefined,
+  additionalPermissions: unknown,
+): boolean {
+  if (!codexApprovalPathStaysWithinLane(managed, cwd)) return false;
+  return additionalPermissions == null
+    || codexPermissionsStayWithinLane(managed, cwd, additionalPermissions);
 }
 
 type CodexCollaborationModePayload = {
@@ -9625,6 +9743,65 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  const autoApproveCodexRuntimeApproval = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    itemId: string,
+    pending: PendingCodexApproval,
+  ): void => {
+    const pendingTurnId = normalizeCodexTurnId(
+      pending.request?.turnId,
+      runtime.activeTurnId ?? runtime.startedTurnId ?? null,
+    );
+    if (isPlanningApprovalGuarded(managed, runtime, pendingTurnId)) return;
+    const providerMetadata = pending.request?.providerMetadata;
+    const metadata = providerMetadata && typeof providerMetadata === "object" && !Array.isArray(providerMetadata)
+      ? providerMetadata as Record<string, unknown>
+      : {};
+    if (pending.kind === "permissions") {
+      const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
+        ? metadata.cwd
+        : managed.laneWorktreePath;
+      if (!codexPermissionsStayWithinLane(managed, cwd, pending.permissions)) return;
+      runtime.sendResponse(pending.requestId, {
+        permissions: pending.permissions ?? {},
+        scope: "turn",
+      });
+    } else if (pending.kind === "command") {
+      const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
+        ? metadata.cwd
+        : managed.laneWorktreePath;
+      if (!codexCommandApprovalStaysWithinLane(managed, cwd, metadata.additionalPermissions)) return;
+      runtime.sendResponse(pending.requestId, {
+        decision: mapApprovalDecisionForCodex("accept"),
+      });
+    } else if (pending.kind === "file_change") {
+      const grantRoot = typeof metadata.grantRoot === "string" ? metadata.grantRoot : null;
+      if (!codexApprovalPathStaysWithinLane(managed, grantRoot)) return;
+      runtime.sendResponse(pending.requestId, {
+        decision: mapApprovalDecisionForCodex("accept"),
+      });
+    } else {
+      return;
+    }
+    runtime.approvals.delete(itemId);
+    emitPendingInputResolved(managed, {
+      itemId,
+      decision: "accept",
+      turnId: pendingTurnId,
+    });
+  };
+
+  const autoApprovePendingCodexRuntimeApprovals = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): void => {
+    if (!isSessionCodexFullAuto(managed.session)) return;
+    for (const [itemId, pending] of [...runtime.approvals.entries()]) {
+      autoApproveCodexRuntimeApproval(managed, runtime, itemId, pending);
+    }
+  };
+
   const normalizePendingInputAnswers = (
     request: PendingInputRequest | undefined,
     answers: Record<string, string | string[]> | undefined,
@@ -14041,8 +14218,15 @@ export function createAgentChatService(args: {
     if (id == null) return;
 
     if (method === "item/commandExecution/requestApproval") {
-      const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string; turnId?: string } | null) ?? {};
-      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      const params = (payload.params as {
+        itemId?: string;
+        command?: string;
+        cwd?: string;
+        reason?: string;
+        turnId?: string;
+        additionalPermissions?: Record<string, unknown> | null;
+      } | null) ?? {};
+      const requestTurnId = normalizeCodexTurnId(params.turnId, runtime.activeTurnId ?? runtime.startedTurnId ?? null);
       if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
           type: "error",
@@ -14050,6 +14234,16 @@ export function createAgentChatService(args: {
           turnId: requestTurnId ?? undefined,
         });
         runtime.sendResponse(id, { decision: "decline" });
+        return;
+      }
+      const commandCwd = typeof params.cwd === "string" && params.cwd.trim().length
+        ? params.cwd
+        : managed.laneWorktreePath;
+      if (
+        isSessionCodexFullAuto(managed.session)
+        && codexCommandApprovalStaysWithinLane(managed, commandCwd, params.additionalPermissions)
+      ) {
+        runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
       }
       const itemId = String(params.itemId ?? randomUUID());
@@ -14065,6 +14259,7 @@ export function createAgentChatService(args: {
         blocking: true,
         canProceedWithoutAnswer: false,
         providerMetadata: {
+          additionalPermissions: params.additionalPermissions ?? null,
           command: params.command ?? null,
           cwd: params.cwd ?? null,
           reason: params.reason ?? null,
@@ -14076,6 +14271,7 @@ export function createAgentChatService(args: {
         kind: "command",
         description,
         detail: {
+          additionalPermissions: params.additionalPermissions ?? null,
           command: params.command ?? null,
           cwd: params.cwd ?? null,
           reason: params.reason ?? null,
@@ -14086,7 +14282,7 @@ export function createAgentChatService(args: {
 
     if (method === "item/fileChange/requestApproval") {
       const params = (payload.params as { itemId?: string; reason?: string; grantRoot?: string; turnId?: string } | null) ?? {};
-      const requestTurnId = typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? runtime.startedTurnId ?? null;
+      const requestTurnId = normalizeCodexTurnId(params.turnId, runtime.activeTurnId ?? runtime.startedTurnId ?? null);
       if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
           type: "error",
@@ -14094,6 +14290,10 @@ export function createAgentChatService(args: {
           turnId: requestTurnId ?? undefined,
         });
         runtime.sendResponse(id, { decision: "decline" });
+        return;
+      }
+      if (isSessionCodexFullAuto(managed.session) && codexApprovalPathStaysWithinLane(managed, params.grantRoot)) {
+        runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
       }
       const itemId = String(params.itemId ?? randomUUID());
@@ -14129,12 +14329,14 @@ export function createAgentChatService(args: {
     if (method === "item/permissions/requestApproval") {
       const params = (payload.params as {
         itemId?: string;
+        cwd?: string;
         permissions?: Record<string, unknown> | null;
         reason?: string | null;
         threadId?: string;
         turnId?: string;
       } | null) ?? {};
       const itemId = String(params.itemId ?? randomUUID());
+      const requestTurnId = normalizeCodexTurnId(params.turnId, runtime.activeTurnId ?? runtime.startedTurnId ?? null);
       const description = typeof params.reason === "string" && params.reason.trim().length
         ? params.reason.trim()
         : "Codex requested additional permissions";
@@ -14155,6 +14357,28 @@ export function createAgentChatService(args: {
           return;
         }
       }
+      if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
+        emitChatEvent(managed, {
+          type: "error",
+          message: buildPlanningApprovalViolation(description),
+          turnId: requestTurnId ?? undefined,
+        });
+        runtime.sendResponse(id, {
+          permissions: {},
+          scope: "turn",
+        });
+        return;
+      }
+      if (
+        isSessionCodexFullAuto(managed.session)
+        && codexPermissionsStayWithinLane(managed, params.cwd, params.permissions)
+      ) {
+        runtime.sendResponse(id, {
+          permissions: params.permissions ?? {},
+          scope: "turn",
+        });
+        return;
+      }
       const request: PendingInputRequest = {
         requestId: String(id),
         itemId,
@@ -14167,11 +14391,12 @@ export function createAgentChatService(args: {
         blocking: true,
         canProceedWithoutAnswer: false,
         providerMetadata: {
+          cwd: params.cwd ?? null,
           permissions: params.permissions ?? null,
           threadId: params.threadId ?? null,
-          turnId: params.turnId ?? null,
+          turnId: requestTurnId,
         },
-        turnId: typeof params.turnId === "string" ? params.turnId : runtime.activeTurnId ?? null,
+        turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, {
         requestId: id,
@@ -14183,6 +14408,7 @@ export function createAgentChatService(args: {
         kind: "tool_call",
         description,
         detail: {
+          cwd: params.cwd ?? null,
           permissions: params.permissions ?? null,
           reason: params.reason ?? null,
         },
@@ -25022,6 +25248,9 @@ export function createAgentChatService(args: {
       ) {
         managed.runtime.threadResumed = false;
         managed.runtime.canAttachResumedTurnStart = false;
+      }
+      if (managed.runtime?.kind === "codex") {
+        autoApprovePendingCodexRuntimeApprovals(managed, managed.runtime);
       }
       if (
         managed.runtime?.kind === "claude"

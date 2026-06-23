@@ -14835,6 +14835,442 @@ describe("createAgentChatService", () => {
       expect(turnStartParams?.effort).toBe("medium");
     });
 
+    it("auto-approves pending Codex approvals when switched to full-auto during an active turn", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Make the change.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-switch-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-switch-1",
+          turnId: "  turn-1  ",
+          command: "/bin/zsh -lc 'npm test'",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-switch-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-switch-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          permissions: {
+            fileSystem: {
+              write: [path.join(tmpRoot, "generated.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-switch-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-switch-1"
+        )).toBe(true);
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-switch-1")).toMatchObject({
+          result: { decision: "accept" },
+        });
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-switch-1")).toMatchObject({
+          result: {
+            permissions: {
+              fileSystem: {
+                write: [path.join(tmpRoot, "generated.txt")],
+              },
+            },
+            scope: "turn",
+          },
+        });
+        expect(events.some((event) =>
+          event.event.type === "pending_input_resolved"
+          && event.event.itemId === "cmd-switch-1"
+          && event.event.resolution === "accepted"
+          && event.event.turnId === "turn-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "pending_input_resolved"
+          && event.event.itemId === "perm-switch-1"
+          && event.event.resolution === "accepted"
+          && event.event.turnId === "turn-1"
+        )).toBe(true);
+      });
+
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.permissionMode).toBe("full-auto");
+      expect(summary?.codexApprovalPolicy).toBe("never");
+      expect(summary?.codexSandbox).toBe("danger-full-access");
+    });
+
+    it("keeps escaped Codex command and file-change approvals manual in full-auto", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "full-auto",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Make the change.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.codexRequestPayloads = [];
+
+      const outsideLane = path.dirname(tmpRoot);
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-escape-1",
+          turnId: "turn-1",
+          cwd: outsideLane,
+          command: "/bin/zsh -lc 'pwd'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-additional-perms-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-additional-perms-escape-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          command: "/bin/zsh -lc 'cat /tmp/escape.txt'",
+          additionalPermissions: {
+            fileSystem: {
+              read: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-additional-perms-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-additional-perms-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "file-escape-1",
+        method: "item/fileChange/requestApproval",
+        params: {
+          itemId: "file-escape-1",
+          turnId: "turn-1",
+          grantRoot: outsideLane,
+          reason: "Edit outside the lane",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "file-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-escape-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-escape-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          permissions: {
+            fileSystem: {
+              write: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-project-roots-escape-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-project-roots-escape-1",
+          turnId: "turn-1",
+          cwd: path.join(tmpRoot, "src"),
+          permissions: {
+            fileSystem: {
+              entries: [{
+                access: "write",
+                path: {
+                  type: "special",
+                  value: {
+                    kind: "project_roots",
+                    subpath: "..",
+                  },
+                },
+              }],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-project-roots-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-project-roots-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-project-roots-whole-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-project-roots-whole-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          permissions: {
+            fileSystem: {
+              entries: [{
+                access: "write",
+                path: {
+                  type: "special",
+                  value: {
+                    kind: "project_roots",
+                  },
+                },
+              }],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-project-roots-whole-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-project-roots-whole-1")).toBeUndefined();
+    });
+
+    it("keeps escaped pending Codex approvals manual when switched to full-auto", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        if (mode === "edit") {
+          return { approvalPolicy: "untrusted", sandbox: "workspace-write" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "edit",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Make the change.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.codexRequestPayloads = [];
+
+      const outsideLane = path.dirname(tmpRoot);
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-pending-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-pending-escape-1",
+          turnId: "turn-1",
+          cwd: outsideLane,
+          command: "/bin/zsh -lc 'pwd'",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "file-pending-escape-1",
+        method: "item/fileChange/requestApproval",
+        params: {
+          itemId: "file-pending-escape-1",
+          turnId: "turn-1",
+          grantRoot: outsideLane,
+          reason: "Edit outside the lane",
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-pending-additional-perms-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-pending-additional-perms-escape-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          command: "/bin/zsh -lc 'cat /tmp/escape.txt'",
+          additionalPermissions: {
+            fileSystem: {
+              read: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "perm-pending-escape-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-pending-escape-1",
+          turnId: "turn-1",
+          cwd: outsideLane,
+          permissions: {
+            fileSystem: {
+              write: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-pending-escape-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "file-pending-escape-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-pending-additional-perms-escape-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "perm-pending-escape-1"
+        )).toBe(true);
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-pending-escape-1")).toBeUndefined();
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-pending-escape-1")).toBeUndefined();
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-pending-additional-perms-escape-1")).toBeUndefined();
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-pending-escape-1")).toBeUndefined();
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved"
+        && (
+          event.event.itemId === "cmd-pending-escape-1"
+          || event.event.itemId === "file-pending-escape-1"
+          || event.event.itemId === "cmd-pending-additional-perms-escape-1"
+          || event.event.itemId === "perm-pending-escape-1"
+        )
+      )).toBe(false);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "cmd-pending-escape-1",
+        decision: "decline",
+      });
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "file-pending-escape-1",
+        decision: "decline",
+      });
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "cmd-pending-additional-perms-escape-1",
+        decision: "decline",
+      });
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "perm-pending-escape-1",
+        decision: "decline",
+      });
+    });
+
     it("keeps Codex planner approval guard scoped to the turn that started in plan mode", async () => {
       vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
         if (mode === "full-auto") {
@@ -14901,6 +15337,36 @@ describe("createAgentChatService", () => {
 
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
+        id: "perm-plan-1",
+        method: "item/permissions/requestApproval",
+        params: {
+          itemId: "perm-plan-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          reason: "Allow write access",
+          permissions: {
+            fileSystem: {
+              write: [path.join(tmpRoot, "planned-edit.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-plan-1")).toMatchObject({
+          result: {
+            permissions: {},
+            scope: "turn",
+          },
+        });
+      });
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "perm-plan-1"
+      )).toBe(false);
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
         method: "turn/completed",
         params: {
           turn: {
@@ -14932,11 +15398,14 @@ describe("createAgentChatService", () => {
       });
 
       await vi.waitFor(() => {
-        expect(events.some((event) =>
-          event.event.type === "approval_request"
-          && event.event.itemId === "cmd-full-auto-1"
-        )).toBe(true);
+        expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-full-auto-1")).toMatchObject({
+          result: { decision: "accept" },
+        });
       });
+      expect(events.some((event) =>
+        event.event.type === "approval_request"
+        && event.event.itemId === "cmd-full-auto-1"
+      )).toBe(false);
       expect(events.some((event) =>
         event.event.type === "error"
         && event.event.turnId === "turn-2"
