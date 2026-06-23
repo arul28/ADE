@@ -105,8 +105,7 @@ export const ChatTaskList = React.memo(function ChatTaskList({
       .map((status) => ({
         status,
         items: items
-          .filter((item) => item.status === status)
-          .sort((a, b) => a.description.localeCompare(b.description)),
+          .filter((item) => item.status === status),
       }))
       .filter((group) => group.items.length > 0),
     [items],

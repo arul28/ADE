@@ -4983,6 +4983,121 @@ describe("createAgentChatService", () => {
         .some((event) => event.event.type === "prompt_suggestion")).toBe(false);
     });
 
+    it("continues draining stale post-result tail messages after a prompt suggestion", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let releaseFollowUpStream!: () => void;
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after the drained suggestion")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-drain-after-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          yield {
+            type: "prompt_suggestion",
+            session_id: "sdk-session-drain-after-suggestion",
+            uuid: "suggestion-tail-1",
+            suggestion: "Audit the next action",
+          };
+          yield {
+            type: "tool_use_summary",
+            session_id: "sdk-session-drain-after-suggestion",
+            summary: "This stale summary should stay out of the next turn",
+            preceding_tool_use_ids: ["stale-tool-use-1"],
+          };
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-drain-after-suggestion",
+            error: "stale mirror error after suggestion",
+          };
+          await followUpStreamReady;
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-drain-after-suggestion",
+            message: {
+              content: [{ type: "text", text: "Still on the same Claude query after draining." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-drain-after-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-drain-after-suggestion",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-drain-after-suggestion",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "suggest the next prompt and drain stale tail",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        expect(events.filter((event) => event.event.type === "prompt_suggestion")).toHaveLength(1);
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after the drained suggestion",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("same Claude query after draining");
+        expect(events.filter((event) => event.event.type === "tool_use_summary")).toHaveLength(0);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "mirror_error"
+          && event.event.detail === "stale mirror error after suggestion",
+        )).toBe(false);
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps the live Claude query without replaying late post-result tail messages into the next turn", async () => {
       vi.useFakeTimers();
       try {

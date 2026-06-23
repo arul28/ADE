@@ -11692,6 +11692,11 @@ export function createAgentChatService(args: {
           persistChatState(managed);
         }
 
+        if (resultSeen && (msg as any).type !== "prompt_suggestion" && isStalePostResultTailMessage(msg)) {
+          logStalePostResultTailDiscard(msg);
+          continue;
+        }
+
         // system:init — capture data silently (no UI emission)
         if (msg.type === "system" && (msg as any).subtype === "init") {
           const initMsg = msg as any;
@@ -12712,7 +12717,7 @@ export function createAgentChatService(args: {
               turnId,
             });
           }
-          if (resultSeen) break;
+          if (resultSeen) continue;
           continue;
         }
 
