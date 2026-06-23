@@ -12047,7 +12047,7 @@ export function createAgentChatService(args: {
               turnId,
             });
           }
-          if (toolUseId && openClaudeToolUses.has(toolUseId)) {
+          if (toolUseId && !runtime.resolvedToolUseIds.has(toolUseId) && openClaudeToolUses.has(toolUseId)) {
             emitClaudeToolCompletion(toolUseId, {
               synthetic: true,
               source: "permission_denied",
@@ -12675,7 +12675,7 @@ export function createAgentChatService(args: {
             [suggestionMsg.suggestion, suggestionMsg.prompt, suggestionMsg.text]
               .find((v): v is string => typeof v === "string" && v.trim().length > 0)?.trim() ?? null;
           if (suggestionText) {
-            emitChatEvent(managed, {
+            emitLiveOnlyChatEvent(managed, {
               type: "prompt_suggestion",
               suggestion: suggestionText,
               turnId,

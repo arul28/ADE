@@ -4979,6 +4979,8 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
+      expect(service.getChatEventHistory(session.id, { maxEvents: 50 }).events
+        .some((event) => event.event.type === "prompt_suggestion")).toBe(false);
     });
 
     it("keeps the live Claude query without replaying late prompt suggestions into the next turn", async () => {
@@ -18474,6 +18476,27 @@ describe("createAgentChatService", () => {
       await exitPromise;
 
       yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-exit-plan-suppress",
+            name: "ExitPlanMode",
+            input: { planDescription: "Ship the approved plan." },
+          },
+        },
+      };
+      yield {
+        type: "system",
+        subtype: "permission_denied",
+        session_id: "sdk-session-denial-suppression",
+        tool_name: "ExitPlanMode",
+        tool_use_id: "tool-exit-plan-suppress",
+        decision_reason: "echoed denial from the SDK",
+      };
+      yield {
         type: "result",
         usage: { input_tokens: 1, output_tokens: 1 },
         permission_denials: [
@@ -18520,6 +18543,11 @@ describe("createAgentChatService", () => {
     expect(denialNotices[0]!.message).toContain("Bash");
     expect(denialNotices[0]!.message).not.toContain("ExitPlanMode");
     expect(denialNotices[0]!.message).toMatch(/^1 tool call was denied this turn/);
+    expect(events.filter((envelope) =>
+      envelope.event.type === "tool_result"
+      && envelope.event.itemId === "tool-exit-plan-suppress"
+      && envelope.event.status === "failed"
+    )).toHaveLength(0);
   });
 
   it("bridges Claude AskUserQuestion through ADE's question UI", async () => {
