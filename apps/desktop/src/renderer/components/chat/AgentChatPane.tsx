@@ -172,6 +172,12 @@ import {
   type PreparedDraftLaunch,
 } from "../../lib/draftLaunchJobs";
 import {
+  buildHandoffLaunchJobsScopeKey,
+  createHandoffLaunchJobId,
+  type HandoffLaunchJob,
+  type HandoffLaunchJobStatus,
+} from "../../lib/handoffLaunchJobs";
+import {
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
   createIosContextInstanceId,
@@ -2924,6 +2930,15 @@ export function AgentChatPane({
   ) => {
     rootAppStoreApi.getState().setDraftLaunchJobs(draftLaunchJobsScopeKey, next);
   }, [draftLaunchJobsScopeKey]);
+  const handoffLaunchJobsScopeKey = useMemo(
+    () => buildHandoffLaunchJobsScopeKey({ projectBinding, projectRoot }),
+    [projectBinding, projectRoot],
+  );
+  const setHandoffLaunchJobs = useCallback((
+    next: HandoffLaunchJob[] | ((prev: HandoffLaunchJob[]) => HandoffLaunchJob[]),
+  ) => {
+    rootAppStoreApi.getState().setHandoffLaunchJobs(handoffLaunchJobsScopeKey, next);
+  }, [handoffLaunchJobsScopeKey]);
   const hasActiveDraftLaunchJobs = useMemo(
     () => draftLaunchJobs.some((job) => !isDraftLaunchJobTerminal(job.status)),
     [draftLaunchJobs],
@@ -7465,8 +7480,36 @@ export function AgentChatPane({
 
   const handoffSession = useCallback(async (mode: "brief" | "fork" = "brief") => {
     if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
+    const sourceLaneId = selectedSession?.laneId ?? laneId;
+    if (!sourceLaneId) return;
+    const jobId = createHandoffLaunchJobId();
+    const stageTimerIds: number[] = [];
+    const patchHandoffJob = (status: HandoffLaunchJobStatus) => {
+      setHandoffLaunchJobs((current) => current.map((job) => (
+        job.id === jobId ? { ...job, status } : job
+      )));
+    };
+    const targetModelLabel = handoffTargetDescriptor?.displayName
+      ?? formatLocalModelLabel(handoffModelId);
+    setHandoffLaunchJobs((current) => [
+      {
+        id: jobId,
+        sourceSessionId: selectedSessionId,
+        laneId: sourceLaneId,
+        laneName: laneDisplayLabel ?? sourceLaneId,
+        targetModelId: handoffModelId,
+        targetModelLabel,
+        targetToolType: handoffTargetProvider ? chatToolTypeForProvider(handoffTargetProvider) : "other",
+        status: "preparing-summary",
+        createdAtMs: Date.now(),
+      },
+      ...current.filter((job) => job.sourceSessionId !== selectedSessionId),
+    ]);
     setError(null);
     setHandoffBusy(true);
+    setChatActionsOpen(false);
+    stageTimerIds.push(window.setTimeout(() => patchHandoffJob("creating-chat"), 700));
+    stageTimerIds.push(window.setTimeout(() => patchHandoffJob("sending-handoff"), 1500));
     try {
       const resolvedHandoffPermissionMode = handoffNativePermissionMode ?? selectedSession?.permissionMode;
       const result = await window.ade.agentChat.handoff({
@@ -7487,13 +7530,18 @@ export function AgentChatPane({
         cursorModeId: handoffCursorModeId,
         cursorConfigValues: handoffCursorConfigValues,
       });
-      setChatActionsOpen(false);
-      notifySessionCreated(result.session);
+      notifySessionCreated(result.session, { source: "handoff" });
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
-      setError(handoffError instanceof Error ? handoffError.message : String(handoffError));
+      const message = handoffError instanceof Error ? handoffError.message : String(handoffError);
+      setError(message);
+      window.setTimeout(() => {
+        setError((current) => (current === message ? null : current));
+      }, 6000);
     } finally {
+      stageTimerIds.forEach((timerId) => window.clearTimeout(timerId));
+      setHandoffLaunchJobs((current) => current.filter((job) => job.id !== jobId));
       setHandoffBusy(false);
     }
   }, [
@@ -7502,6 +7550,7 @@ export function AgentChatPane({
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,
+    handoffTargetDescriptor,
     handoffFastMode,
     handoffCodexSandbox,
     handoffCursorConfigValues,
@@ -7513,10 +7562,14 @@ export function AgentChatPane({
     handoffReasoningEffort,
     handoffTargetProvider,
     invalidateCurrentChatSessionList,
+    laneDisplayLabel,
+    laneId,
     notifySessionCreated,
     refreshSessions,
     selectedSession?.permissionMode,
+    selectedSession?.laneId,
     selectedSessionId,
+    setHandoffLaunchJobs,
   ]);
 
   const handleDeleteSelectedChat = useCallback(() => {

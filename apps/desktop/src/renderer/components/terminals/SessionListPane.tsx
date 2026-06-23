@@ -1,10 +1,11 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CaretDown, CaretRight, Funnel, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { CaretDown, CaretRight, CircleNotch, Funnel, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
+import { ToolLogo } from "./ToolLogos";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization } from "../../state/appStore";
@@ -16,6 +17,13 @@ import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
+import { relativeTimeCompact } from "../../lib/format";
+import {
+  handoffLaunchMatchesQuery,
+  handoffLaunchStatusMessage,
+  handoffLaunchTitle,
+  type HandoffLaunchJob,
+} from "../../lib/handoffLaunchJobs";
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -37,6 +45,86 @@ function bucketByTime(sessions: TerminalSessionSummary[]) {
     else older.push(s);
   }
   return { today, yesterday, older };
+}
+
+function bucketHandoffJobsByTime(jobs: HandoffLaunchJob[]) {
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const yesterdayStart = todayStart - 86400000;
+  const today: HandoffLaunchJob[] = [];
+  const yesterday: HandoffLaunchJob[] = [];
+  const older: HandoffLaunchJob[] = [];
+  const sorted = [...jobs].sort((a, b) => b.createdAtMs - a.createdAtMs);
+  for (const job of sorted) {
+    if (job.createdAtMs >= todayStart) today.push(job);
+    else if (job.createdAtMs >= yesterdayStart) yesterday.push(job);
+    else older.push(job);
+  }
+  return { today, yesterday, older };
+}
+
+function HandoffSessionPlaceholderCard({ job }: { job: HandoffLaunchJob }) {
+  const title = handoffLaunchTitle(job);
+  const status = handoffLaunchStatusMessage(job.status);
+  return (
+    <motion.div
+      key={job.id}
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -4 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className="group relative"
+      data-testid="handoff-launch-placeholder"
+    >
+      <div
+        className="relative w-full overflow-hidden rounded-lg text-left"
+        style={{
+          border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.035)",
+        }}
+        aria-label={`${title}: ${status}`}
+      >
+        <motion.div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          animate={{ opacity: [0.2, 0.42, 0.2] }}
+          transition={{ duration: 1.8, repeat: Infinity, ease: "easeInOut" }}
+          style={{
+            background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent)",
+          }}
+        />
+        <div className="relative flex items-stretch gap-2.5 px-2.5 py-2">
+          <div className="flex shrink-0 self-stretch items-center justify-center">
+            <ToolLogo toolType={job.targetToolType} size={26} className="opacity-90" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-fg/90" title={title}>
+                {title}
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <CircleNotch size={11} className="animate-spin text-muted-fg/55" />
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/45">
+                  {relativeTimeCompact(new Date(job.createdAtMs).toISOString())}
+                </span>
+              </div>
+            </div>
+            <div className="mt-0.5 min-w-0">
+              <span className="block truncate text-[10px] leading-snug text-muted-fg/55">
+                {status}
+              </span>
+            </div>
+            <div className="mt-0.5 min-w-0">
+              <span className="block truncate text-[10px] leading-snug text-muted-fg/40">
+                First message: Chat handoff from previous session
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
 }
 
 function StickyGroupHeader({
@@ -198,6 +286,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   sessionsGroupedByLane,
   gridSets = EMPTY_GRID_SETS,
   activeItemId = null,
+  handoffJobs = [],
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -228,19 +317,27 @@ export const SessionListPane = React.memo(function SessionListPane({
   workCollapsedSectionIds: string[];
   toggleWorkSectionCollapsed: (sectionId: string) => void;
   sessionsGroupedByLane: Map<string, TerminalSessionSummary[]> | null;
+  handoffJobs?: HandoffLaunchJob[];
 }) {
   const navigate = useNavigate();
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
-
-  const hasAnySessions =
-    runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length > 0;
 
   const isByLane = sessionListOrganization === "by-lane";
   const isByTime = sessionListOrganization === "by-time";
   const normalizedFilterLaneId = filterLaneId.trim();
   const laneFilterActive = normalizedFilterLaneId.length > 0 && normalizedFilterLaneId !== "all";
   const [filterOpen, setFilterOpen] = useState(false);
+  const filteredHandoffJobs = useMemo(() => {
+    const filtered = handoffJobs.filter((job) => {
+      if (laneFilterActive && job.laneId !== normalizedFilterLaneId) return false;
+      return handoffLaunchMatchesQuery(job, q);
+    });
+    return filtered.sort((a, b) => b.createdAtMs - a.createdAtMs);
+  }, [handoffJobs, laneFilterActive, normalizedFilterLaneId, q]);
+
+  const hasAnySessions =
+    runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length + filteredHandoffJobs.length > 0;
 
   const allSessions = useMemo(
     () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered],
@@ -286,6 +383,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     [toggleWorkSectionCollapsed],
   );
   const timeBuckets = useMemo(() => bucketByTime(allSessions), [allSessions]);
+  const handoffTimeBuckets = useMemo(() => bucketHandoffJobsByTime(filteredHandoffJobs), [filteredHandoffJobs]);
   const selectedCount = selectedSessionIds?.size ?? 0;
   const selectedSessions = useMemo(
     () => allSessions.filter((session) => selectedSessionIds?.has(session.id)),
@@ -298,6 +396,15 @@ export const SessionListPane = React.memo(function SessionListPane({
     for (const lane of lanes) map.set(lane.id, lane);
     return map;
   }, [lanes]);
+  const handoffJobsByLaneId = useMemo(() => {
+    const map = new Map<string, HandoffLaunchJob[]>();
+    for (const job of filteredHandoffJobs) {
+      const list = map.get(job.laneId) ?? [];
+      list.push(job);
+      map.set(job.laneId, list);
+    }
+    return map;
+  }, [filteredHandoffJobs]);
   const missingLaneSessionGroups = useMemo(() => {
     if (!sessionsGroupedByLane) return [];
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
@@ -322,6 +429,20 @@ export const SessionListPane = React.memo(function SessionListPane({
         return leftName.localeCompare(rightName);
       });
   }, [lanes, sessionsGroupedByLane]);
+  const handoffOnlyMissingLaneGroups = useMemo(() => {
+    const knownLaneIds = new Set(lanes.map((lane) => lane.id));
+    const missingSessionLaneIds = new Set(missingLaneSessionGroups.map(([laneId]) => laneId));
+    return [...handoffJobsByLaneId.entries()]
+      .filter(([laneId, jobs]) => !knownLaneIds.has(laneId) && !missingSessionLaneIds.has(laneId) && jobs.length > 0)
+      .sort(([leftLaneId, leftJobs], [rightLaneId, rightJobs]) => {
+        const leftLatest = Math.max(...leftJobs.map((job) => job.createdAtMs));
+        const rightLatest = Math.max(...rightJobs.map((job) => job.createdAtMs));
+        if (leftLatest !== rightLatest) return rightLatest - leftLatest;
+        const leftName = leftJobs[0]?.laneName ?? leftLaneId;
+        const rightName = rightJobs[0]?.laneName ?? rightLaneId;
+        return leftName.localeCompare(rightName);
+      });
+  }, [handoffJobsByLaneId, lanes, missingLaneSessionGroups]);
   const expandSessionWithChildren = useCallback((session: TerminalSessionSummary): string[] => {
     const children = childrenByParentId.get(session.id) ?? [];
     if (children.length === 0) return [session.id];
@@ -464,6 +585,13 @@ export const SessionListPane = React.memo(function SessionListPane({
           </div>
         );
       });
+  const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (
+    <AnimatePresence initial={false}>
+      {jobs.map((job) => (
+        <HandoffSessionPlaceholderCard key={job.id} job={job} />
+      ))}
+    </AnimatePresence>
+  );
 
   const groupedByStatusList = (
     <div className="px-1.5 pb-2">
@@ -471,10 +599,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         sectionId="status:running"
         icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-success)" }} />}
         label="Running"
-        count={runningFiltered.length}
+        count={runningFiltered.length + filteredHandoffJobs.length}
         collapsed={workCollapsedSectionIds.includes("status:running")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:running")}
       >
+        {renderHandoffCards(filteredHandoffJobs)}
         {renderCards(runningFiltered)}
       </StickyGroupHeader>
       <StickyGroupHeader
@@ -504,8 +633,9 @@ export const SessionListPane = React.memo(function SessionListPane({
     <div className="space-y-1 px-2 pb-3">
       {orderedLanes.map((lane) => {
         const list = sessionsGroupedByLane?.get(lane.id) ?? [];
+        const laneHandoffJobs = handoffJobsByLaneId.get(lane.id) ?? [];
         const collapsed = workCollapsedLaneIds.includes(lane.id);
-        const total = list.length;
+        const total = list.length + laneHandoffJobs.length;
         const laneAccent = lane.color ?? null;
         const laneHeaderTint = laneSurfaceTint(laneAccent, "pastel");
         const laneIcon = (
@@ -530,14 +660,16 @@ export const SessionListPane = React.memo(function SessionListPane({
             onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
             onContextMenu={(e) => triggerLaneContextMenu(lane.id, e)}
           >
+            {renderHandoffCards(laneHandoffJobs)}
             {renderCards(list)}
           </StickyGroupHeader>
         );
       })}
       {missingLaneSessionGroups.map(([laneId, list]) => {
+        const laneHandoffJobs = handoffJobsByLaneId.get(laneId) ?? [];
         const collapsed = workCollapsedLaneIds.includes(laneId);
         const trimmedLaneName = (list[0]?.laneName ?? "").trim();
-        const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneId;
+        const label = trimmedLaneName.length > 0 ? trimmedLaneName : laneHandoffJobs[0]?.laneName ?? laneId;
         return (
           <StickyGroupHeader
             key={laneId}
@@ -545,11 +677,30 @@ export const SessionListPane = React.memo(function SessionListPane({
             icon={<LaneIcon size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
             label={label}
             variant="lane"
-            count={list.length}
+            count={list.length + laneHandoffJobs.length}
             collapsed={collapsed}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
+            {renderHandoffCards(laneHandoffJobs)}
             {renderCards(list)}
+          </StickyGroupHeader>
+        );
+      })}
+      {handoffOnlyMissingLaneGroups.map(([laneId, jobs]) => {
+        const collapsed = workCollapsedLaneIds.includes(laneId);
+        const label = jobs[0]?.laneName ?? laneId;
+        return (
+          <StickyGroupHeader
+            key={laneId}
+            sectionId={laneId}
+            icon={<LaneIcon size={12} weight="regular" className="h-3.5 w-3.5 shrink-0 text-muted-fg/55" />}
+            label={label}
+            variant="lane"
+            count={jobs.length}
+            collapsed={collapsed}
+            onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
+          >
+            {renderHandoffCards(jobs)}
           </StickyGroupHeader>
         );
       })}
@@ -562,30 +713,33 @@ export const SessionListPane = React.memo(function SessionListPane({
         sectionId="time:today"
         icon={null}
         label="Today"
-        count={timeBuckets.today.length}
+        count={timeBuckets.today.length + handoffTimeBuckets.today.length}
         collapsed={workCollapsedSectionIds.includes("time:today")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("time:today")}
       >
+        {renderHandoffCards(handoffTimeBuckets.today)}
         {renderCards(timeBuckets.today)}
       </StickyGroupHeader>
       <StickyGroupHeader
         sectionId="time:yesterday"
         icon={null}
         label="Yesterday"
-        count={timeBuckets.yesterday.length}
+        count={timeBuckets.yesterday.length + handoffTimeBuckets.yesterday.length}
         collapsed={workCollapsedSectionIds.includes("time:yesterday")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("time:yesterday")}
       >
+        {renderHandoffCards(handoffTimeBuckets.yesterday)}
         {renderCards(timeBuckets.yesterday)}
       </StickyGroupHeader>
       <StickyGroupHeader
         sectionId="time:older"
         icon={null}
         label="Older"
-        count={timeBuckets.older.length}
+        count={timeBuckets.older.length + handoffTimeBuckets.older.length}
         collapsed={workCollapsedSectionIds.includes("time:older")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("time:older")}
       >
+        {renderHandoffCards(handoffTimeBuckets.older)}
         {renderCards(timeBuckets.older)}
       </StickyGroupHeader>
     </div>

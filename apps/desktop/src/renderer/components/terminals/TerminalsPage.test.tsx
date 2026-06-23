@@ -151,6 +151,7 @@ const workMocks = vi.hoisted(() => {
       kind: "remote";
       rootPath: string;
     },
+    handoffLaunchJobsByScope: {} as Record<string, unknown[]>,
     fns,
     makeTerminalSession,
   };
@@ -197,6 +198,12 @@ vi.mock("../../state/appStore", () => ({
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
         : null,
+    }),
+  useRootAppStore: <T,>(selector: (state: {
+    handoffLaunchJobsByScope: typeof workMocks.handoffLaunchJobsByScope;
+  }) => T): T =>
+    selector({
+      handoffLaunchJobsByScope: workMocks.handoffLaunchJobsByScope,
     }),
 }));
 
@@ -312,6 +319,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.currentWork = { ...workMocks.baseWork, closingPtyIds: new Set<string>() };
     workMocks.projectRoot = null;
     workMocks.projectBinding = null;
+    workMocks.handoffLaunchJobsByScope = {};
     sidebarProps.latest = null;
     sessionListPaneProps.latest = null;
     vi.clearAllMocks();

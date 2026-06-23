@@ -19266,6 +19266,7 @@ export function createAgentChatService(args: {
         sessionId: created.id,
         text: buildHandoffPrompt(brief),
         displayText: "Chat handoff from previous session",
+        metadata: { kind: "handoff", hideFullPrompt: true },
         reasoningEffort: targetReasoningEffort,
         executionMode: createdManaged.session.executionMode ?? null,
         interactionMode: createdManaged.session.interactionMode ?? null,

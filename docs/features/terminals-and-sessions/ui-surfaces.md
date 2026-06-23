@@ -103,6 +103,14 @@ collapses an orphan group sees it stay collapsed on reload. This keeps
 sessions reachable when their lane has been archived, deleted, or not
 yet loaded, instead of quietly dropping them from the sidebar.
 
+In-flight chat handoffs are rendered as temporary placeholder cards in
+the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
+rows from the root store and passes them into `SessionListPane`, which
+lets them participate in the current lane, status, time, and search
+filters. Placeholder rows are non-selectable, show the target model and
+current handoff phase, and disappear when the new chat is created or
+the handoff fails.
+
 Also renders:
 
 - draft-kind switcher (chat vs terminal) at the top

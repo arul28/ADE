@@ -453,7 +453,8 @@ function installAdeMocks(options?: {
   steerError?: Error;
   listError?: Error;
   createError?: Error;
-  handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean };
+  handoffResult?: { session: AgentChatSession; usedFallbackSummary: boolean } | Promise<{ session: AgentChatSession; usedFallbackSummary: boolean }>;
+  handoffError?: Error;
   sessions?: AgentChatSessionSummary[];
   eventHistory?: AgentChatEventHistorySnapshot | ((args: { sessionId: string; maxEvents?: number }) => Promise<AgentChatEventHistorySnapshot> | AgentChatEventHistorySnapshot);
   includeClaudeModel?: boolean;
@@ -470,10 +471,13 @@ function installAdeMocks(options?: {
   const list = options?.listError
     ? vi.fn().mockRejectedValue(options.listError)
     : vi.fn().mockResolvedValue(options?.sessions ?? [buildSession("session-1")]);
-  const handoff = vi.fn().mockResolvedValue(options?.handoffResult ?? {
+  const defaultHandoffResult = {
     session: buildCreatedSession("handoff-session-1"),
     usedFallbackSummary: false,
-  });
+  };
+  const handoff = options?.handoffError
+    ? vi.fn().mockRejectedValue(options.handoffError)
+    : vi.fn().mockImplementation(() => options?.handoffResult ?? Promise.resolve(defaultHandoffResult));
   const create = options?.createError
     ? vi.fn().mockRejectedValue(options.createError)
     : vi.fn().mockImplementation(async (args: Record<string, unknown> = {}) => {
@@ -705,6 +709,7 @@ function resetChatTestStore() {
     workViewByProject: {},
     laneWorkViewByScope: {},
     draftLaunchJobsByScope: {},
+    handoffLaunchJobsByScope: {},
   });
 }
 
@@ -3070,7 +3075,48 @@ describe("AgentChatPane submit recovery", () => {
         cursorModeId: "agent",
         cursorConfigValues: {},
       }));
-      expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }));
+      expect(onSessionCreated).toHaveBeenCalledWith(expect.objectContaining({ id: "session-2" }), { source: "handoff" });
+    });
+  });
+
+  it("tracks an ephemeral sidebar handoff launch job while handoff is in flight", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    let resolveHandoff!: (result: { session: AgentChatSession; usedFallbackSummary: boolean }) => void;
+    const pendingHandoff = new Promise<{ session: AgentChatSession; usedFallbackSummary: boolean }>((resolve) => {
+      resolveHandoff = resolve;
+    });
+    installAdeMocks({
+      handoffResult: pendingHandoff,
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+
+    await waitFor(() => {
+      const jobs = Object.values(useAppStore.getState().handoffLaunchJobsByScope).flat();
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]).toEqual(expect.objectContaining({
+        sourceSessionId: session.sessionId,
+        laneId: session.laneId,
+        targetModelLabel: "GPT-5.4-Mini",
+        targetToolType: "codex-chat",
+        status: "preparing-summary",
+      }));
+    });
+
+    await act(async () => {
+      resolveHandoff({
+        session: buildCreatedSession("session-2"),
+        usedFallbackSummary: false,
+      });
+      await pendingHandoff;
+    });
+
+    await waitFor(() => {
+      expect(Object.values(useAppStore.getState().handoffLaunchJobsByScope).flat()).toHaveLength(0);
     });
   });
 

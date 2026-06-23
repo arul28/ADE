@@ -494,6 +494,27 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Full handoff prompt with all implementation details.")).toBeTruthy();
   });
 
+  it("hides the full handoff prompt when handoff metadata marks it internal", async () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "This message was injected automatically by ADE during a chat handoff.\n\nSecret implementation brief.",
+          displayText: "Chat handoff from previous session",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+        },
+      },
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Chat handoff from previous session")).toBeTruthy();
+    });
+    expect(screen.queryByText("Full prompt")).toBeNull();
+    expect(screen.queryByText(/Secret implementation brief/)).toBeNull();
+  });
+
   it("shows attachment and simulator send confirmations for delivered user messages with context", async () => {
     renderMessageList([
       {

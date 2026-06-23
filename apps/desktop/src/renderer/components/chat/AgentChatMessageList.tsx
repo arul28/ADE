@@ -2298,11 +2298,18 @@ function renderEvent(
                 <span aria-hidden>↶</span>
               </button>
             ) : null}
-            <MessageCopyButton value={event.text} />
+            <MessageCopyButton value={event.metadata?.hideFullPrompt === true && event.displayText?.trim() ? event.displayText.trim() : event.text} />
           </div>
           {(() => {
             const displayText = event.displayText?.trim();
             if (displayText && displayText !== event.text.trim()) {
+              if (event.metadata?.hideFullPrompt === true) {
+                return (
+                  <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] font-medium leading-[1.7] text-white">
+                    {displayText}
+                  </div>
+                );
+              }
               return (
                 <div className="space-y-2 text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                   <div className="whitespace-pre-wrap break-words font-medium">{displayText}</div>
