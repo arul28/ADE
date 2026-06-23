@@ -3155,18 +3155,21 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
   async function setupWithLane(opts: { teardown: ReturnType<typeof makeFakeServices>; events: any[]; createWorktree?: boolean }) {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-delete-"));
+    const worktreesDir = path.join(repoRoot, "worktrees");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = "proj-delete";
     await seedProjectAndStack(db, { projectId, repoRoot });
+    db.run("update lanes set worktree_path = ? where id = ?", [path.join(worktreesDir, "parent"), "lane-parent"]);
+    db.run("update lanes set worktree_path = ? where id = ?", [path.join(worktreesDir, "child"), "lane-child"]);
     // Materialize the lane-child worktree dir so the delete flow exercises git_worktree_remove.
-    const childPath = path.join(repoRoot, "child");
+    const childPath = path.join(worktreesDir, "child");
     if (opts.createWorktree !== false) fs.mkdirSync(childPath, { recursive: true });
     const service = createLaneService({
       db,
       projectRoot: repoRoot,
       projectId,
       defaultBaseRef: "main",
-      worktreesDir: repoRoot,
+      worktreesDir,
       onDeleteEvent: (event) => opts.events.push(event),
       teardownDeps: {
         processService: opts.teardown.processService,
@@ -3178,7 +3181,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       },
     });
     // First call (lane-child) has no children rows after the seed; we delete lane-child.
-    return { db, service, repoRoot };
+    return { db, service, repoRoot, worktreesDir, childPath };
   }
 
   it("runs teardown steps before git_worktree_remove and broadcasts per-step progress", async () => {
@@ -3228,8 +3231,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("removes residual worktree files before deleting the lane row", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
-    const childPath = path.join(repoRoot, "child");
+    const { service, db, childPath } = await setupWithLane({ teardown: fake, events });
     fs.writeFileSync(path.join(childPath, "residual.log"), "left behind by git\n", "utf8");
 
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
@@ -3257,8 +3259,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("recovers stale worktree directories with unreadable residual folders", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, repoRoot } = await setupWithLane({ teardown: fake, events });
-    const childPath = path.join(repoRoot, "child");
+    const { service, childPath } = await setupWithLane({ teardown: fake, events });
     const guestTrashPath = path.join(childPath, ".Trashes");
     fs.mkdirSync(guestTrashPath, { recursive: true });
     fs.chmodSync(guestTrashPath, 0o311);
@@ -3293,8 +3294,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("deletes the lane row and records retryable cleanup when only unregistered residual files remain", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
-    const childPath = path.join(repoRoot, "child");
+    const { service, db, repoRoot, childPath } = await setupWithLane({ teardown: fake, events });
     fs.writeFileSync(path.join(childPath, "residual.log"), "left behind by git\n", "utf8");
     const realRm = fs.promises.rm.bind(fs.promises);
     const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementation(async (target: fs.PathLike, options?: Parameters<typeof fs.promises.rm>[1]) => {
@@ -3371,8 +3371,8 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("does not clean up non-git directories still referenced by archived lanes", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
-    const archivedPath = path.join(repoRoot, "archived");
+    const { service, db, worktreesDir } = await setupWithLane({ teardown: fake, events });
+    const archivedPath = path.join(worktreesDir, "archived");
     fs.mkdirSync(archivedPath, { recursive: true });
     fs.writeFileSync(path.join(archivedPath, "keep.txt"), "archived lane files\n", "utf8");
     const now = "2026-03-11T12:00:00.000Z";
@@ -3413,10 +3413,10 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("cleans only empty untracked directories and leaves unknown non-empty directories alone", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, repoRoot } = await setupWithLane({ teardown: fake, events });
-    const emptyPath = path.join(repoRoot, "empty-residual");
-    const youngEmptyPath = path.join(repoRoot, "young-empty-residual");
-    const nonEmptyPath = path.join(repoRoot, "non-empty-residual");
+    const { service, worktreesDir } = await setupWithLane({ teardown: fake, events });
+    const emptyPath = path.join(worktreesDir, "empty-residual");
+    const youngEmptyPath = path.join(worktreesDir, "young-empty-residual");
+    const nonEmptyPath = path.join(worktreesDir, "non-empty-residual");
     fs.mkdirSync(path.join(emptyPath, ".ade"), { recursive: true });
     fs.mkdirSync(path.join(youngEmptyPath, ".ade"), { recursive: true });
     fs.mkdirSync(nonEmptyPath, { recursive: true });
@@ -3507,9 +3507,9 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("runs independent lane delete teardown concurrently", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events });
+    const { service, db, worktreesDir } = await setupWithLane({ teardown: fake, events });
     const now = "2026-03-11T12:00:00.000Z";
-    const siblingPath = path.join(repoRoot, "sibling");
+    const siblingPath = path.join(worktreesDir, "sibling");
     fs.mkdirSync(siblingPath, { recursive: true });
     db.run(
       `
@@ -3756,7 +3756,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   it("cleans lane-owned database state when deleting a lane", async () => {
     const events: any[] = [];
     const fake = makeFakeServices();
-    const { service, db, repoRoot } = await setupWithLane({ teardown: fake, events, createWorktree: false });
+    const { service, db, repoRoot, childPath } = await setupWithLane({ teardown: fake, events, createWorktree: false });
     const projectId = "proj-delete";
     const now = "2026-03-11T12:30:00.000Z";
 
@@ -3789,7 +3789,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     );
     db.run(
       "insert into files_workspaces(id, kind, lane_id, name, root_path, updated_at) values (?, ?, ?, ?, ?, ?)",
-      ["workspace-child", "lane", "lane-child", "Child", path.join(repoRoot, "child"), now],
+      ["workspace-child", "lane", "lane-child", "Child", childPath, now],
     );
     db.run(
       "insert into file_directory_snapshots(workspace_id, parent_path, include_hidden, nodes_json, updated_at) values (?, ?, ?, ?, ?)",
@@ -3866,7 +3866,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
           created_at, heartbeat_at, expires_at
         ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
-      ["child-key", path.join(repoRoot, "child"), "lane-child", "pr", "PR #1", "token", now, now, now],
+      ["child-key", childPath, "lane-child", "pr", "PR #1", "token", now, now, now],
     );
 
     db.run(
