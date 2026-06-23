@@ -2845,10 +2845,10 @@ export function AgentChatPane({
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
   const openLinearSettings = useCallback(() => {
-    navigate("/settings?tab=integrations&integration=linear");
+    navigate("/settings?tab=general#linear-connection");
   }, [navigate]);
   const openLaunchPromptClipboardSettings = useCallback(() => {
-    navigate("/settings?tab=appearance#chat-launch-clipboard");
+    navigate("/settings?tab=general#chat-launch-clipboard");
   }, [navigate]);
   const copyPromptForLaunch = useCallback(async (promptText: string) => {
     if (!launchPromptClipboardEnabled) return;

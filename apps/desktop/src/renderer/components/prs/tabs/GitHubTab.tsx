@@ -1269,7 +1269,7 @@ export function GitHubTab({
       <EmptyState title="GitHub" description={error}>
         <button
           type="button"
-          onClick={() => navigate("/settings?tab=integrations")}
+          onClick={() => navigate("/settings?tab=general#github-connection")}
           style={primaryButton({ marginTop: 16 })}
         >
           <GithubLogo size={14} weight="fill" />

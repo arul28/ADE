@@ -5,6 +5,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { cn } from "../ui/cn";
 
 export const SAFE_PREVIEW_SCHEMA = {
   ...defaultSchema,
@@ -84,7 +85,7 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     ),
     ul: ({ children }) => <ul className="mb-3 list-disc space-y-1 pl-5 last:mb-0">{children}</ul>,
     ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
-    li: ({ children }) => <li>{children}</li>,
+    li: ({ children }) => <li className="break-words [overflow-wrap:anywhere]">{children}</li>,
     h1: ({ children }) => (
       <h1 className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*19/14)] font-semibold leading-snug tracking-[-0.015em] text-fg/92 first:mt-0">
         {children}
@@ -134,7 +135,9 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
       }
       return (
         <code
-          className={className ?? "rounded-sm px-1 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)]"}
+          className={cn(
+            className ?? "rounded-sm px-1 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*11/14)] break-words [overflow-wrap:anywhere]",
+          )}
           style={className ? undefined : { background: "var(--chat-inline-code-bg)" }}
         >
           {children}

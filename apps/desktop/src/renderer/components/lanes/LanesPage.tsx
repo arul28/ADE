@@ -4333,7 +4333,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         currentGitUserName={createGitUserName}
         loadingBranches={createBranchesLoading}
         loadingBranchPullRequests={createBranchPullRequestsLoading}
-        onOpenLinearSettings={() => navigate("/settings?tab=integrations&integration=linear")}
+        onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
         importBranchWarning={
           createMode === "existing" && createImportBranch && primaryLane?.status.dirty

@@ -5,6 +5,7 @@ import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, pr
 
 type Props = {
   compact?: boolean;
+  embedded?: boolean;
 };
 
 type Notice = {
@@ -12,7 +13,7 @@ type Notice = {
   text: string;
 } | null;
 
-export function AdeCliSection({ compact = false }: Props) {
+export function AdeCliSection({ compact = false, embedded = false }: Props) {
   const [status, setStatus] = useState<AdeCliStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [installing, setInstalling] = useState(false);
@@ -76,35 +77,39 @@ export function AdeCliSection({ compact = false }: Props) {
   }
   const installDisabled = loading || installing || terminalReady || !status?.installAvailable || !window.ade?.adeCli;
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}>
+  const body = (
+    <>
       {notice ? (
         <div style={noticeStyle(notice.kind)}>
           {notice.text}
         </div>
       ) : null}
 
-      <div style={cardStyle({ borderColor: `${statusColor}30` })}>
+      <div style={embedded ? undefined : cardStyle({ borderColor: `${statusColor}30` })}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <TerminalWindow size={28} weight="duotone" style={{ color: statusColor, flexShrink: 0 }} />
+            {!embedded ? (
+              <TerminalWindow size={28} weight="duotone" style={{ color: statusColor, flexShrink: 0 }} />
+            ) : null}
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                ADE command
+              <div style={{ fontSize: embedded ? 13 : 15, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                {embedded ? "Terminal CLI" : "ADE command"}
               </div>
               <div style={{ marginTop: 4, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "18px" }}>
-                Agents launched by ADE get the bundled CLI automatically. Installing it here makes <code style={codeStyle()}>ade</code> available in your Terminal.
+                {embedded
+                  ? <>Use <code style={codeStyle()}>ade</code> in your own Terminal. Agents launched by ADE already get the bundled CLI.</>
+                  : <>Agents launched by ADE get the bundled CLI automatically. Installing it here makes <code style={codeStyle()}>ade</code> available in your Terminal.</>}
               </div>
             </div>
           </div>
           <span style={inlineBadge(statusColor)}>{loading ? "Checking" : statusLabel}</span>
         </div>
 
-        <div style={{ display: "grid", gap: 8, marginTop: 18 }}>
+        <div style={{ display: "grid", gap: 8, marginTop: embedded ? 14 : 18 }}>
           <ReadinessRow
             ready={agentReady}
             label="Agent sessions"
-            value={agentReady ? "ade is on the ADE agent PATH" : status?.nextAction ?? "Checking agent PATH"}
+            value={agentReady ? "Ready for ADE agents" : status?.nextAction ?? "Checking agent PATH"}
           />
           <ReadinessRow
             ready={terminalReady}
@@ -113,7 +118,7 @@ export function AdeCliSection({ compact = false }: Props) {
           />
         </div>
 
-        {status?.bundledCommandPath ? (
+        {!embedded && status?.bundledCommandPath ? (
           <div style={{ marginTop: 14, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, overflowWrap: "anywhere" }}>
             {status.bundledCommandPath}
           </div>
@@ -125,7 +130,7 @@ export function AdeCliSection({ compact = false }: Props) {
           </div>
         ) : null}
 
-        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 18, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: embedded ? 14 : 18, flexWrap: "wrap" }}>
           <button type="button" style={outlineButton({ height: 32 })} disabled={loading || installing} onClick={() => void refresh()}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <ArrowsClockwise size={13} weight="bold" />
@@ -147,6 +152,12 @@ export function AdeCliSection({ compact = false }: Props) {
           </div>
         ) : null}
       </div>
+    </>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: compact ? 12 : 16 }}>
+      {body}
     </div>
   );
 }

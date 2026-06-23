@@ -1,6 +1,5 @@
 import React, { useId, useState } from "react";
 import {
-  AGENT_TURN_COMPLETION_SOUND_IDS,
   CHAT_FONT_SIZE_MAX_PX,
   CHAT_FONT_SIZE_MIN_PX,
   CHAT_CHROME_TINT_IDS,
@@ -12,14 +11,12 @@ import {
   useAppStore,
 } from "../../state/appStore";
 import type {
-  AgentTurnCompletionSound,
   ChatChromeTint,
   ChatShellGeometry,
   ChatTranscriptDensity,
   CodeBlockCopyButtonPosition,
   ThemeId,
 } from "../../state/appStore";
-import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 import {
   TERMINAL_FONT_FAMILY_OPTIONS,
   TERMINAL_FONT_SIZE_OPTIONS,
@@ -190,11 +187,6 @@ function pillToggleStyle(selected: boolean): React.CSSProperties {
 
 export function AppearanceSection() {
   const chatFontSliderId = useId();
-  const agentSoundSelectId = useId();
-  const volumeSliderId = useId();
-  const quietToggleId = useId();
-  const launchPromptClipboardToggleId = useId();
-  const launchPromptClipboardNoticeToggleId = useId();
   const terminalFieldId = useId();
 
   const theme = useAppStore((s) => s.theme);
@@ -211,30 +203,12 @@ export function AppearanceSection() {
   const setChatShellGeometry = useAppStore((s) => s.setChatShellGeometry);
   const chatUserMinimapEnabled = useAppStore((s) => s.chatUserMinimapEnabled);
   const setChatUserMinimapEnabled = useAppStore((s) => s.setChatUserMinimapEnabled);
-  const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
-  const setLaunchPromptClipboardEnabled = useAppStore((s) => s.setLaunchPromptClipboardEnabled);
-  const launchPromptClipboardNoticeEnabled = useAppStore((s) => s.launchPromptClipboardNoticeEnabled);
-  const setLaunchPromptClipboardNoticeEnabled = useAppStore((s) => s.setLaunchPromptClipboardNoticeEnabled);
 
   const codeBlockCopyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const setCodeBlockCopyButtonPosition = useAppStore((s) => s.setCodeBlockCopyButtonPosition);
 
-  const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
-  const setAgentTurnCompletionSound = useAppStore((s) => s.setAgentTurnCompletionSound);
-  const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
-  const setAgentTurnCompletionSoundVolume = useAppStore((s) => s.setAgentTurnCompletionSoundVolume);
-  const agentTurnCompletionSoundQuietWhenFocused = useAppStore(
-    (s) => s.agentTurnCompletionSoundQuietWhenFocused,
-  );
-  const setAgentTurnCompletionSoundQuietWhenFocused = useAppStore(
-    (s) => s.setAgentTurnCompletionSoundQuietWhenFocused,
-  );
-
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
-
-  const volumePercent = Math.round(agentTurnCompletionSoundVolume * 100);
-  const soundIsOff = agentTurnCompletionSound === "off";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
@@ -437,7 +411,7 @@ export function AppearanceSection() {
                 border: `1px solid ${COLORS.border}`,
                 background: COLORS.recessedBg,
                 padding: 14,
-                overflowX: "auto",
+                overflow: "hidden",
                 maxWidth: "100%",
               }}
             >
@@ -451,152 +425,6 @@ export function AppearanceSection() {
               />
             </div>
           </div>
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>Chat & notifications</div>
-        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 20 }}>
-          <div>
-            <label
-              id="chat-launch-clipboard"
-              htmlFor={launchPromptClipboardToggleId}
-              style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}
-            >
-              <input
-                id={launchPromptClipboardToggleId}
-                type="checkbox"
-                checked={launchPromptClipboardEnabled}
-                onChange={(e) => setLaunchPromptClipboardEnabled(e.target.checked)}
-                style={{ accentColor: COLORS.accent, width: 14, height: 14 }}
-              />
-              <span style={{ display: "flex", flexDirection: "column" }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
-                  Copy launch prompts to clipboard
-                </span>
-                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                  Saves chat, CLI, and agent launch prompts before ADE sends them.
-                </span>
-              </span>
-            </label>
-            {launchPromptClipboardEnabled ? (
-              <label
-                htmlFor={launchPromptClipboardNoticeToggleId}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginTop: 10,
-                  marginLeft: 24,
-                  cursor: "pointer",
-                }}
-              >
-                <input
-                  id={launchPromptClipboardNoticeToggleId}
-                  type="checkbox"
-                  checked={launchPromptClipboardNoticeEnabled}
-                  onChange={(e) => setLaunchPromptClipboardNoticeEnabled(e.target.checked)}
-                  style={{ accentColor: COLORS.accent, width: 14, height: 14 }}
-                />
-                <span style={{ display: "flex", flexDirection: "column" }}>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
-                    Show clipboard reminder
-                  </span>
-                  <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                    Shows the composer reminder before ADE copies the prompt.
-                  </span>
-                </span>
-              </label>
-            ) : null}
-          </div>
-
-
-          <div>
-            <label htmlFor={agentSoundSelectId} style={{ ...LABEL_STYLE, marginBottom: 8, display: "block" }}>
-              Agent turn completion sound
-            </label>
-            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              Plays when the assistant completes a turn and the chat is idle. Rapid successive turns collapse to a single chime.
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-              <select
-                id={agentSoundSelectId}
-                value={agentTurnCompletionSound}
-                onChange={(e) => setAgentTurnCompletionSound(e.target.value as AgentTurnCompletionSound)}
-                style={{ height: 34, minWidth: 160, border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg, color: COLORS.textPrimary, fontSize: 12, fontFamily: MONO_FONT, padding: "0 10px" }}
-              >
-                {AGENT_TURN_COMPLETION_SOUND_IDS.map((id) => (
-                  <option key={id} value={id}>
-                    {id === "off" ? "Off" : id.charAt(0).toUpperCase() + id.slice(1)}
-                  </option>
-                ))}
-              </select>
-              <button
-                type="button"
-                disabled={soundIsOff}
-                onClick={() => {
-                  if (soundIsOff) return;
-                  // Skip the global debounce on manual previews so rapid clicks always produce a tone.
-                  playAgentTurnCompletionSound(agentTurnCompletionSound, {
-                    volume: agentTurnCompletionSoundVolume,
-                    skipWhenFocused: false,
-                  });
-                }}
-                title={soundIsOff ? "Pick a sound to preview" : "Preview selected sound"}
-                style={{
-                  ...primaryButton({ height: 32, padding: "0 12px", fontSize: 10 }),
-                  opacity: soundIsOff ? 0.45 : 1,
-                  cursor: soundIsOff ? "not-allowed" : "pointer",
-                }}
-              >
-                Preview
-              </button>
-              {soundIsOff ? (
-                <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                  Pick a sound to preview.
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          <div style={{ display: "grid", gap: 6 }}>
-            <label htmlFor={volumeSliderId} style={{ ...LABEL_STYLE, marginBottom: 0 }}>
-              Volume ({volumePercent}%)
-            </label>
-            <input
-              id={volumeSliderId}
-              type="range"
-              min={0}
-              max={100}
-              step={5}
-              value={volumePercent}
-              disabled={soundIsOff}
-              onChange={(e) => setAgentTurnCompletionSoundVolume(Number(e.target.value) / 100)}
-              style={{ width: 260, accentColor: COLORS.accent, opacity: soundIsOff ? 0.5 : 1 }}
-            />
-          </div>
-
-          <label
-            htmlFor={quietToggleId}
-            style={{ display: "flex", alignItems: "center", gap: 10, cursor: soundIsOff ? "not-allowed" : "pointer", opacity: soundIsOff ? 0.5 : 1 }}
-          >
-            <input
-              id={quietToggleId}
-              type="checkbox"
-              checked={agentTurnCompletionSoundQuietWhenFocused}
-              disabled={soundIsOff}
-              onChange={(e) => setAgentTurnCompletionSoundQuietWhenFocused(e.target.checked)}
-              style={{ accentColor: COLORS.accent, width: 14, height: 14 }}
-            />
-            <span style={{ display: "flex", flexDirection: "column" }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.textPrimary }}>
-                Only play when window is in the background
-              </span>
-              <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                Skips the chime when ADE is the focused window.
-              </span>
-            </span>
-          </label>
         </div>
       </section>
 

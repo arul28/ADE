@@ -155,7 +155,7 @@ export function LinearQuickViewButton({
 
   const openLinearSettings = useCallback(() => {
     setConnectionPrompt(null);
-    window.location.hash = "#/settings?tab=integrations&integration=linear";
+    window.location.hash = "#/settings?tab=general#linear-connection";
   }, []);
 
   const handleQuickViewRequest = useCallback((request: LinearIssueQuickViewRequest) => {

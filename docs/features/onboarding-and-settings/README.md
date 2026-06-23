@@ -182,24 +182,37 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  AI Connections, Background Jobs, Integrations, Lane Templates, and
-  Lane Behavior. Legacy `workspace`, `project`, and
-  `context` deep links land in General; `providers` lands in AI
+  AI Connections, Background Jobs, Lane Templates, and Stats. Legacy
+  `workspace`, `project`, `context`, `integrations`, `github`, and
+  `linear` deep links land in General; `providers` lands in AI
   Connections; `automations` lands in Background Jobs. Tutorial replay
   and tour entry points live under the Help menu in the top bar, not
   as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
-  — project setup re-entry, the compact `AdeCliSection`, and the
-  project health / repair surface. Setup status comes from
-  `ade.onboarding.getStatus`; ADE runtime health lives in the
-  `AboutSection`, and AI provider controls live in AI Connections.
+  — consolidated general preferences: GitHub and Linear connections,
+  voice input, launch-prompt clipboard, agent completion sound, PR
+  chat transcript gists, project `.ade` health, and environment
+  (About + compact `AdeCliSection`). Each block uses
+  `SettingsSectionShell` for a branded header. Deep links:
+  `#github-connection`, `#linear-connection`, `#voice-input`,
+  `#chat-launch-clipboard`, `#agent-completion-sound`,
+  `#pr-chat-transcripts`.
+- `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
+  and `GitHubSection.tsx` — GitHub CLI / PAT auth, scope diagnostics,
+  and permission guidance. Embedded inside General.
+- `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
+  and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
+  and GitHub autolink setup. Embedded inside General.
+- `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
+  — toggles `prTranscriptGists.enabled` in project local config.
+- `apps/desktop/src/renderer/components/settings/EnvironmentSection.tsx`
+  — About (version, runtime) plus compact ADE CLI install surface.
+- `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
+  — shared section headers (`SettingsSectionShell`) and toggle styling.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme and chat appearance preferences. Renders `ChatAppearancePreview`
-  and writes local user preferences through `appStore`, including
-  `launchPromptClipboardEnabled` (whether Work draft launches copy the
-  submitted prompt), `launchPromptClipboardNoticeEnabled` (whether
-  composer reminder text is shown before the copy), and the
-  `DictationSection` voice-input toggle.
+  and writes local user preferences through `appStore` (font size,
+  transcript density, chrome tint, shell geometry, user minimap).
 - `apps/desktop/src/renderer/components/settings/DictationSection.tsx`
   — voice input settings. Persists `voiceInputEnabled`, shows whether
   the bundled on-device transcription model is installed, and gates the
@@ -225,14 +238,12 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
   — Background Jobs settings for AI-powered helpers: auto-naming chats,
   CLI sessions, and lanes; summarizing completed chats and terminals;
-  PR description drafting; and commit message drafting.
+  PR description drafting; and commit message drafting. Reasoning-effort
+  pickers use `useFamilyDefaults={false}` so each row keeps an
+  independent effort override.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
   — AI Connections settings for provider CLIs, authentication, API keys,
   and model availability.
-- `apps/desktop/src/renderer/components/settings/IntegrationsSettingsSection.tsx`
-  — GitHub, Linear, and ADE CLI integration tabs with branded tab icons.
-  The old dedicated `ComputerUseSection.tsx` was removed; its content
-  folded into the relevant integration surfaces.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
@@ -430,11 +441,10 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` (embeds `AdeCliSection` in compact form) | AI mode, task routing, terminal preferences (font size, line height, scrollback), keybindings link, and the `ade` CLI install / status surface. The CLI card reports whether the bundled `ade-<platform-arch>` binary is on `PATH`, the resolved install target, and exposes one-click Install / Repair backed by the platform install-path helper. Receives the legacy `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` deep links via `TAB_ALIASES`. |
-| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, agent-turn completion sound + volume + quiet-when-focused, chat font size (`chatFontSizePx`), chat transcript density (`chatTranscriptDensity` — `compact` / `comfortable` / `spacious`), chat chrome tint (`chatChromeTint` — `colored` default vs `neutral` for monochrome chrome; the legacy `chatLaneAccentEmphasis` preset slug is still read so older user-pref blobs migrate cleanly), chat shell geometry (`chatShellGeometry` — `soft` / `default` / `sharp` corners), the user-message minimap toggle (`chatUserMinimapEnabled` — drives the inline `ChatUserMinimap`), and the Work launch-prompt clipboard preferences (`launchPromptClipboardEnabled` for copying submitted prompts, `launchPromptClipboardNoticeEnabled` for the composer reminder). Persisted to `localStorage` under `ade.userPreferences.v1`. |
-| Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files. (`SyncDevicesSection.tsx` — multi-device sync, host transfer, peer status, pairing PIN, Tailscale discovery — is mounted from the top bar's Sync popover, not as a Settings tab.) |
-| AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics, and AI feature flags. The same status surface is exposed through ADE actions for `ade code` model setup. |
-| Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
+| General | `GeneralSection.tsx` (GitHub/Linear connections, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
+| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, and the user-message minimap toggle. Persisted to `localStorage` under `ade.userPreferences.v1`. |
+| AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. Legacy `?tab=providers` lands here. |
+| Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 | Stats | `AdeUsageSection.tsx` | Local runtime token / cost summaries and GitHub-backed PR, commit, and code movement totals. Deep links from `?tab=usage` and `?tab=stats` land here. |
 

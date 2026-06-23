@@ -1,13 +1,12 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation, useNavigate } from "react-router-dom";
-import { Brain, ChartLineUp, GearSix, Stack, Plugs, Palette, Robot } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, GearSix, Stack, Palette, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
 import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
-import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -17,7 +16,6 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "ai", label: "AI Connections", icon: Brain },
   { id: "background-jobs", label: "Background Jobs", icon: Robot },
-  { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
   { id: "ade-usage", label: "Stats", icon: ChartLineUp },
 ] as const;
@@ -30,12 +28,13 @@ const TAB_ALIASES: Record<string, SectionId> = {
   context: "general",
   providers: "ai",
   automations: "background-jobs",
+  integrations: "general",
   sync: "general",
   devices: "general",
   "multi-device": "general",
-  github: "integrations",
-  linear: "integrations",
-  "computer-use": "integrations",
+  github: "general",
+  linear: "general",
+  "computer-use": "general",
   keybindings: "general",
   onboarding: "general",
   help: "general",
@@ -47,13 +46,20 @@ const TAB_ALIASES: Record<string, SectionId> = {
 
 const HASH_TARGET_SECTIONS: Partial<Record<string, SectionId>> = {
   "ai-providers": "ai",
-  "chat-launch-clipboard": "appearance",
+  "chat-launch-clipboard": "general",
+  "agent-completion-sound": "general",
   "voice-input": "general",
+  "github-connection": "general",
+  "linear-connection": "general",
+  "pr-chat-transcripts": "general",
+  github: "general",
+  linear: "general",
 };
 
-function padIndex(i: number): string {
-  return String(i + 1).padStart(2, "0");
-}
+const LEGACY_INTEGRATION_HASH_TARGETS: Partial<Record<string, string>> = {
+  github: "github-connection",
+  linear: "linear-connection",
+};
 
 /* ──────────────── Main Settings Page ──────────────── */
 
@@ -86,6 +92,25 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     nextParams.set("tab", canonicalTab);
     setSearchParams(nextParams, { replace: true });
   }, [active, canonicalTab, searchParams, setSearchParams, tabParam]);
+
+  useEffect(() => {
+    if (!active) return;
+    const integration = searchParams.get("integration")?.trim().toLowerCase() ?? "";
+    if (!integration) return;
+    if (!["github", "linear", "cli"].includes(integration)) return;
+    const hashTarget = LEGACY_INTEGRATION_HASH_TARGETS[integration];
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set("tab", "general");
+    nextParams.delete("integration");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: `?${nextParams.toString()}`,
+        hash: hashTarget ? `#${hashTarget}` : "",
+      },
+      { replace: true },
+    );
+  }, [active, location.pathname, navigate, searchParams]);
 
   const navigateToSection = useCallback((next: SectionId) => {
     setSection(next);
@@ -132,7 +157,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           SETTINGS
         </div>
 
-        {SECTIONS.map((s, i) => {
+        {SECTIONS.map((s) => {
           const isActive = section === s.id;
           const isHovered = hoveredId === s.id;
 
@@ -143,7 +168,6 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             gap: 10,
             padding: "8px 10px",
             border: "none",
-            borderLeft: isActive ? "3px solid var(--shell-sidebar-item-active-rail)" : "3px solid transparent",
             background: isActive
               ? "var(--shell-sidebar-item-active-bg)"
               : isHovered
@@ -171,7 +195,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               style={itemStyle}
             >
               <s.icon size={14} weight="regular" style={{ flexShrink: 0 }} />
-              <span>{padIndex(i)} {s.label}</span>
+              <span>{s.label}</span>
             </button>
           );
         })}
@@ -192,7 +216,6 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {section === "ai" && <ProvidersSection />}
         {section === "background-jobs" && <AiFeaturesSection />}
         {section === "ade-usage" && <AdeUsageSection />}
-        {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "lane-templates" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             <LaneTemplatesSection />
