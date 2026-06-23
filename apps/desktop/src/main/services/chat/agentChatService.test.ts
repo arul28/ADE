@@ -14918,7 +14918,7 @@ describe("createAgentChatService", () => {
                 write: [path.join(tmpRoot, "generated.txt")],
               },
             },
-            scope: "session",
+            scope: "turn",
           },
         });
         expect(events.some((event) =>
@@ -14989,6 +14989,31 @@ describe("createAgentChatService", () => {
         )).toBe(true);
       });
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-additional-perms-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-additional-perms-escape-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          command: "/bin/zsh -lc 'cat /tmp/escape.txt'",
+          additionalPermissions: {
+            fileSystem: {
+              read: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-additional-perms-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-additional-perms-escape-1")).toBeUndefined();
 
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
@@ -15124,6 +15149,22 @@ describe("createAgentChatService", () => {
       });
       mockState.emitCodexPayload({
         jsonrpc: "2.0",
+        id: "cmd-pending-additional-perms-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-pending-additional-perms-escape-1",
+          turnId: "turn-1",
+          cwd: tmpRoot,
+          command: "/bin/zsh -lc 'cat /tmp/escape.txt'",
+          additionalPermissions: {
+            fileSystem: {
+              read: [path.join(outsideLane, "escape.txt")],
+            },
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
         id: "perm-pending-escape-1",
         method: "item/permissions/requestApproval",
         params: {
@@ -15149,6 +15190,10 @@ describe("createAgentChatService", () => {
         )).toBe(true);
         expect(events.some((event) =>
           event.event.type === "approval_request"
+          && event.event.itemId === "cmd-pending-additional-perms-escape-1"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
           && event.event.itemId === "perm-pending-escape-1"
         )).toBe(true);
       });
@@ -15160,12 +15205,14 @@ describe("createAgentChatService", () => {
 
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-pending-escape-1")).toBeUndefined();
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-pending-escape-1")).toBeUndefined();
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-pending-additional-perms-escape-1")).toBeUndefined();
       expect(mockState.codexRequestPayloads.find((payload) => payload.id === "perm-pending-escape-1")).toBeUndefined();
       expect(events.some((event) =>
         event.event.type === "pending_input_resolved"
         && (
           event.event.itemId === "cmd-pending-escape-1"
           || event.event.itemId === "file-pending-escape-1"
+          || event.event.itemId === "cmd-pending-additional-perms-escape-1"
           || event.event.itemId === "perm-pending-escape-1"
         )
       )).toBe(false);
@@ -15178,6 +15225,11 @@ describe("createAgentChatService", () => {
       await service.respondToInput({
         sessionId: session.id,
         itemId: "file-pending-escape-1",
+        decision: "decline",
+      });
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: "cmd-pending-additional-perms-escape-1",
         decision: "decline",
       });
       await service.respondToInput({

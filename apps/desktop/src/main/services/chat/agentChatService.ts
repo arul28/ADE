@@ -4523,7 +4523,7 @@ function codexFileSystemPermissionsStayWithinLane(
 function codexPermissionsStayWithinLane(
   managed: Pick<ManagedChatSession, "laneWorktreePath">,
   cwd: string | null | undefined,
-  permissions: Record<string, unknown> | null | undefined,
+  permissions: unknown,
 ): boolean {
   const permissionCwd = typeof cwd === "string" && cwd.trim().length
     ? cwd.trim()
@@ -4536,6 +4536,16 @@ function codexPermissionsStayWithinLane(
   return fileSystemPermissions
     ? codexFileSystemPermissionsStayWithinLane(managed, permissionCwd, fileSystemPermissions)
     : false;
+}
+
+function codexCommandApprovalStaysWithinLane(
+  managed: Pick<ManagedChatSession, "laneWorktreePath">,
+  cwd: string | null | undefined,
+  additionalPermissions: unknown,
+): boolean {
+  if (!codexApprovalPathStaysWithinLane(managed, cwd)) return false;
+  return additionalPermissions == null
+    || codexPermissionsStayWithinLane(managed, cwd, additionalPermissions);
 }
 
 type CodexCollaborationModePayload = {
@@ -9755,13 +9765,13 @@ export function createAgentChatService(args: {
       if (!codexPermissionsStayWithinLane(managed, cwd, pending.permissions)) return;
       runtime.sendResponse(pending.requestId, {
         permissions: pending.permissions ?? {},
-        scope: "session",
+        scope: "turn",
       });
     } else if (pending.kind === "command") {
       const cwd = typeof metadata.cwd === "string" && metadata.cwd.trim().length
         ? metadata.cwd
         : managed.laneWorktreePath;
-      if (!codexApprovalPathStaysWithinLane(managed, cwd)) return;
+      if (!codexCommandApprovalStaysWithinLane(managed, cwd, metadata.additionalPermissions)) return;
       runtime.sendResponse(pending.requestId, {
         decision: mapApprovalDecisionForCodex("accept"),
       });
@@ -14208,7 +14218,14 @@ export function createAgentChatService(args: {
     if (id == null) return;
 
     if (method === "item/commandExecution/requestApproval") {
-      const params = (payload.params as { itemId?: string; command?: string; cwd?: string; reason?: string; turnId?: string } | null) ?? {};
+      const params = (payload.params as {
+        itemId?: string;
+        command?: string;
+        cwd?: string;
+        reason?: string;
+        turnId?: string;
+        additionalPermissions?: Record<string, unknown> | null;
+      } | null) ?? {};
       const requestTurnId = normalizeCodexTurnId(params.turnId, runtime.activeTurnId ?? runtime.startedTurnId ?? null);
       if (isPlanningApprovalGuarded(managed, runtime, requestTurnId)) {
         emitChatEvent(managed, {
@@ -14222,7 +14239,10 @@ export function createAgentChatService(args: {
       const commandCwd = typeof params.cwd === "string" && params.cwd.trim().length
         ? params.cwd
         : managed.laneWorktreePath;
-      if (isSessionCodexFullAuto(managed.session) && codexApprovalPathStaysWithinLane(managed, commandCwd)) {
+      if (
+        isSessionCodexFullAuto(managed.session)
+        && codexCommandApprovalStaysWithinLane(managed, commandCwd, params.additionalPermissions)
+      ) {
         runtime.sendResponse(id, { decision: mapApprovalDecisionForCodex("accept") });
         return;
       }
@@ -14239,6 +14259,7 @@ export function createAgentChatService(args: {
         blocking: true,
         canProceedWithoutAnswer: false,
         providerMetadata: {
+          additionalPermissions: params.additionalPermissions ?? null,
           command: params.command ?? null,
           cwd: params.cwd ?? null,
           reason: params.reason ?? null,
@@ -14250,6 +14271,7 @@ export function createAgentChatService(args: {
         kind: "command",
         description,
         detail: {
+          additionalPermissions: params.additionalPermissions ?? null,
           command: params.command ?? null,
           cwd: params.cwd ?? null,
           reason: params.reason ?? null,
@@ -14342,7 +14364,7 @@ export function createAgentChatService(args: {
       ) {
         runtime.sendResponse(id, {
           permissions: params.permissions ?? {},
-          scope: "session",
+          scope: "turn",
         });
         return;
       }

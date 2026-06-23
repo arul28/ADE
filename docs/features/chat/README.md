@@ -139,9 +139,9 @@ render them, but neither one *runs* them.
   Full Auto while an active turn still emits approval requests from its
   older policy, the service auto-responds to stale lane-confined
   command/file/permissions gates and clears existing approval cards. Permission
-  auto-grants validate the request `cwd` and concrete filesystem grant paths;
-  escaped paths remain manual and the planner guard still declines mutation
-  requests from turns that started in plan mode.
+  auto-grants are turn-scoped and validate the request `cwd` and concrete
+  filesystem grant paths; escaped paths remain manual and the planner guard
+  still declines mutation requests from turns that started in plan mode.
 - **Steer queue.** Follow-up user messages during an active turn are
   queued (cap 10) with per-entry edit/cancel/dispatch. Default delivery
   happens on turn boundaries; for Claude SDK sessions the user can also
