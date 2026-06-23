@@ -657,6 +657,7 @@ type ClaudeRuntime = {
   query: ClaudeQuery | null;
   inputPump: ClaudeInputPump | null;
   pendingPostResultNext: Promise<IteratorResult<SDKMessage, void>> | null;
+  pendingPostResultNextSettledAt: number | null;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -11583,6 +11584,7 @@ export function createAgentChatService(args: {
       messageToSend.uuid = userMessageId;
       messageToSend.timestamp = new Date().toISOString();
 
+      const pendingPostResultSettledBeforeInput = runtime.pendingPostResultNextSettledAt != null;
       bumpClaudeIdleDeadline();
       runtime.inputPump?.push(messageToSend);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -11630,6 +11632,8 @@ export function createAgentChatService(args: {
           while (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
             const pending = runtime.pendingPostResultNext;
             runtime.pendingPostResultNext = null;
+            const pendingSettledBeforeInput = pendingPostResultSettledBeforeInput;
+            runtime.pendingPostResultNextSettledAt = null;
             let replayed: IteratorResult<SDKMessage, void>;
             try {
               replayed = await pending;
@@ -11637,7 +11641,14 @@ export function createAgentChatService(args: {
               logPostResultDrainRejected(error);
               continue;
             }
-            if (!replayed.done && isPostResultOnlyTailMessage(replayed.value)) {
+            if (
+              !replayed.done
+              && (
+                pendingSettledBeforeInput
+                  ? isStalePostResultTailMessage(replayed.value)
+                  : isPostResultOnlyTailMessage(replayed.value)
+              )
+            ) {
               discardedPostResultTail = true;
               logStalePostResultTailDiscard(replayed.value);
               continue;
@@ -11657,7 +11668,22 @@ export function createAgentChatService(args: {
 
         let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
         const nextMessage = runtime.pendingPostResultNext ?? sessionQuery.next();
-        runtime.pendingPostResultNext = nextMessage;
+        if (runtime.pendingPostResultNext !== nextMessage) {
+          runtime.pendingPostResultNext = nextMessage;
+          runtime.pendingPostResultNextSettledAt = null;
+          nextMessage.then(
+            () => {
+              if (runtime.pendingPostResultNext === nextMessage) {
+                runtime.pendingPostResultNextSettledAt = Date.now();
+              }
+            },
+            () => {
+              if (runtime.pendingPostResultNext === nextMessage) {
+                runtime.pendingPostResultNextSettledAt = Date.now();
+              }
+            },
+          );
+        }
         void nextMessage.catch(() => undefined);
         const timeout = new Promise<null>((resolve) => {
           timeoutHandle = setTimeout(() => resolve(null), CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS);
@@ -11666,11 +11692,13 @@ export function createAgentChatService(args: {
           const drained = await Promise.race([nextMessage, timeout]);
           if (drained && runtime.pendingPostResultNext === nextMessage) {
             runtime.pendingPostResultNext = null;
+            runtime.pendingPostResultNextSettledAt = null;
           }
           return drained;
         } catch (error) {
           if (runtime.pendingPostResultNext === nextMessage) {
             runtime.pendingPostResultNext = null;
+            runtime.pendingPostResultNextSettledAt = null;
           }
           logPostResultDrainRejected(error);
           return null;
@@ -17749,6 +17777,7 @@ export function createAgentChatService(args: {
     runtime.query = null;
     runtime.inputPump = null;
     runtime.pendingPostResultNext = null;
+    runtime.pendingPostResultNextSettledAt = null;
     runtime.warmupDone = null;
     if (options.clearSdkSessionId && runtime.sdkSessionId) {
       logger.info("agent_chat.claude_sdk_session_cleared", {
@@ -18283,6 +18312,7 @@ export function createAgentChatService(args: {
       query: null,
       inputPump: null,
       pendingPostResultNext: null,
+      pendingPostResultNextSettledAt: null,
       warmQuery: null,
       warmupDone: null,
       warmupCancel: null,

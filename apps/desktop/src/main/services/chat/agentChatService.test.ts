@@ -5264,6 +5264,114 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("drops stale system tails that settle before the next Claude turn starts", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let releaseStaleTail!: () => void;
+        let releaseFollowUpStream!: () => void;
+        const staleTailReady = new Promise<void>((resolve) => {
+          releaseStaleTail = resolve;
+        });
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after a stale settled tail")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-settled-stale-tail",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          await staleTailReady;
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-settled-stale-tail",
+            error: "stale mirror error before the follow-up",
+          };
+          await followUpStreamReady;
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-settled-stale-tail",
+            message: {
+              content: [{ type: "text", text: "Follow-up started after dropping the stale tail." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-settled-stale-tail",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-settled-stale-tail",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-settled-stale-tail",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "complete before a stale system tail",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        releaseStaleTail();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after a stale settled tail",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("Follow-up started after dropping the stale tail");
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "mirror_error"
+          && event.event.detail === "stale mirror error before the follow-up",
+        )).toBe(false);
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("keeps the live Claude query without replaying late post-result tail messages into the next turn", async () => {
       vi.useFakeTimers();
       try {
