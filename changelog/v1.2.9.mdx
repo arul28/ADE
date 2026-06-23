@@ -14,9 +14,10 @@ v1.2.9 sharpens the chat and agent experience: an upgraded Claude integration wi
 - **Codex full-auto permission switching.** Live switching of Codex full-auto approval is fixed: queued approvals are guarded by lane path, permission grants are validated before they apply, command-permission amendments are guarded, and project-root permission paths resolve safely.
 - **Orchestration delegation lineage.** Lead↔worker and lead↔validator spawns and results are now recorded as first-class manifest state — who spawned whom, with what brief and resolved model, and what came back — written only through the service's guarded patch path and denied to every role directly.
 - **Remote project tab branding.** Connecting to another machine's runtime and opening a remote project now shows the real project icon and the correct yellow machine accent instead of a blank folder glyph and a washed-out logo.
+- **Settings, reorganized.** The General tab now gathers GitHub, Linear, voice input, launch prompts, the completion sound, PR transcripts, project files, and environment under branded section headers, retiring the separate Integrations tab. Background-job reasoning effort is now set independently, alongside refreshed web-renderer UX.
 - **Chat handoff and CLI help.** A cleaner chat-handoff launch UI and improved ADE chat CLI creation help make starting and moving work between sessions clearer.
 - **Files.** The Files tree refreshes on external directory changes, with better external opening and previews.
-- **More fixes.** Remote ADE Code clipboard paste and the ADE deeplink footer logo.
+- **More fixes.** Stale lane worktree cleanup is now recorded and safely retried after a delete, plus remote ADE Code clipboard paste and the ADE deeplink footer logo.
 
 ---
 
