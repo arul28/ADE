@@ -87,6 +87,38 @@ describe("getToolMeta", () => {
     expect(meta.getTarget!({})).toBe("0 task(s)");
   });
 
+  it("extracts worktree names for Claude worktree tools", () => {
+    const meta = getToolMeta("EnterWorktree");
+    expect(meta.getTarget).toBeDefined();
+    expect(meta.getTarget!({ name: "feature/sdk-upgrade" })).toBe("feature/sdk-upgrade");
+    expect(meta.getTarget!({ path: "/tmp/existing-worktree" })).toBe("/tmp/existing-worktree");
+    expect(meta.getTarget!({ branch: "unused" })).toBeNull();
+  });
+
+  it("extracts targets for Claude SDK tool metadata", () => {
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ["TaskCreate", { subject: "ship SDK" }, "ship SDK"],
+      ["TaskGet", { taskId: "task-123" }, "task-123"],
+      ["TaskUpdate", { description: "update docs" }, "update docs"],
+      ["REPL", { description: "run snippet" }, "run snippet"],
+      ["Workflow", { name: "nightly-sync" }, "nightly-sync"],
+      ["CronCreate", { cron: "0 * * * *" }, "0 * * * *"],
+      ["CronDelete", { id: "cron-1" }, "cron-1"],
+      ["ScheduleWakeup", { reason: "retry later" }, "retry later"],
+      ["Monitor", { command: "tail -f logs" }, "tail -f logs"],
+      ["Artifact", { file_path: "/tmp/out.txt" }, "/tmp/out.txt"],
+      ["PushNotification", { message: "done" }, "done"],
+      ["RemoteTrigger", { action: "deploy" }, "deploy"],
+      ["EnterWorktree", { path: "/tmp/wt" }, "/tmp/wt"],
+    ];
+
+    for (const [tool, args, expected] of cases) {
+      const meta = getToolMeta(tool);
+      expect(meta.getTarget).toBeDefined();
+      expect(meta.getTarget!(args)).toBe(expected);
+    }
+  });
+
   it("returns null or empty for getTarget when args are missing", () => {
     const readMeta = getToolMeta("Read");
     const result = readMeta.getTarget!({});

@@ -23,8 +23,8 @@ function describeRuntime(runtime: AdeRuntimeKind): string[] {
     case "claude-agent-sdk-query":
       return [
         "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
-        "**Wake-up semantics:** The session only advances when ADE streams a fresh user message into the SDK query. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
-        "**To wait:** Either poll synchronously inside the active turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop the turn cleanly and ask the user to re-ping when ready. Do not run a background poller and claim it will wake you — it will not.",
+        "**Wake-up semantics:** Work confidently inside the active turn. ADE keeps the SDK query alive for streamed user and steer messages, but this chat does not currently expose Claude Code CLI's scheduled self-resume. Treat `ScheduleWakeup` as unavailable in this ADE chat: it will not start a later turn by itself. `Bash run_in_background: true` notifications may appear in the SDK stream when ADE is reading a turn, but do not rely on them to begin a new turn.",
+        "**To wait:** For bounded waits, keep the turn active with a foreground command such as `sleep ... && <one-shot command>` or one bounded `until ... ; do sleep N; done` loop. For longer external waits, save state and tell the user exactly what to re-ping when ready.",
       ];
     case "codex-cli":
       return [

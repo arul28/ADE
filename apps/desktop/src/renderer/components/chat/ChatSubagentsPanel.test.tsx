@@ -7,6 +7,7 @@ import type { AgentChatEventEnvelope } from "../../../shared/types";
 import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
+import { ChatTaskList } from "./ChatTasksPanel";
 
 // Real per-runtime descriptors so the tests exercise the actual capability
 // matrix: codex = takeover + immediate-for-running; claude = takeover via probe;
@@ -288,6 +289,28 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByText("Wire task pane")).toBeTruthy();
     expect(screen.getByText("Run focused checks")).toBeTruthy();
     expect(screen.queryByText(/No agent activity/i)).toBeNull();
+  });
+
+  it("preserves task order within each status group", () => {
+    const { container } = render(
+      <ChatTaskList
+        items={[
+          { id: "todo-1", description: "Write docs", status: "pending" },
+          { id: "todo-2", description: "Audit API", status: "pending" },
+          { id: "todo-3", description: "Ship old item", status: "completed" },
+          { id: "todo-4", description: "Implement fix", status: "in_progress" },
+        ]}
+      />,
+    );
+
+    const rows = Array.from(container.querySelectorAll(".ade-chat-task-row"))
+      .map((row) => row.textContent?.trim());
+    expect(rows).toEqual([
+      "Implement fix",
+      "Write docs",
+      "Audit API",
+      "Ship old item",
+    ]);
   });
 
   it("toggles the inline drawer closed on a second click of the same row", async () => {

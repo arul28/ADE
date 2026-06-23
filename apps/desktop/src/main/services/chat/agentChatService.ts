@@ -30,6 +30,7 @@ import type {
   Query as ClaudeQuery,
   RewindFilesResult as ClaudeRewindFilesResult,
   SDKControlGetContextUsageResponse,
+  SDKMessage,
   SDKUserMessage,
   WarmQuery,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -378,8 +379,9 @@ import {
 } from "../../../shared/orchestrationRuntimePolicy";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
-const CLAUDE_AGENT_SDK_VERSION = "0.3.170";
+const CLAUDE_AGENT_SDK_VERSION = "0.3.186";
 const CLAUDE_AGENT_SDK_API = "v1_query";
+const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
   "claude_sdk.api": CLAUDE_AGENT_SDK_API,
@@ -654,6 +656,8 @@ type ClaudeRuntime = {
   forkFromSdkSessionId: string | null;
   query: ClaudeQuery | null;
   inputPump: ClaudeInputPump | null;
+  pendingPostResultNext: Promise<IteratorResult<SDKMessage, void>> | null;
+  pendingPostResultNextSettledAt: number | null;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -11563,9 +11567,11 @@ export function createAgentChatService(args: {
     let firstStreamEventLogged = false;
     const emittedClaudeToolIds = new Set<string>();
     const emittedSyntheticItemIds = new Set<string>();
+    const emittedPermissionDeniedToolUseIds = new Set<string>();
     const streamedClaudeTextContentKeys = new Set<string>();
     const streamedClaudeThinkingContentKeys = new Set<string>();
     let currentClaudeStreamMessageId: string | null = null;
+    let pendingWorkerShutdownReason: string | null = null;
     let recentClaudeTextDeltaBuffer = "";
     // Track a running boundary for assistant messages whose snapshot has no id
     // (and whose stream preamble didn't carry a `message_start` id either — real
@@ -11755,6 +11761,7 @@ export function createAgentChatService(args: {
       messageToSend.uuid = userMessageId;
       messageToSend.timestamp = new Date().toISOString();
 
+      const pendingPostResultSettledBeforeInput = runtime.pendingPostResultNextSettledAt != null;
       bumpClaudeIdleDeadline();
       runtime.inputPump?.push(messageToSend);
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -11762,10 +11769,137 @@ export function createAgentChatService(args: {
       // Don't emit a pre-emptive "thinking" activity — wait for actual content from the stream.
       // The renderer will show the turn as "started" (from the status event above) which is sufficient.
 
+      let resultSeen = false;
+      const isStalePostResultTailMessage = (message: SDKMessage): boolean => {
+        const messageType = (message as any).type;
+        if (isPostResultOnlyTailMessage(message)) return true;
+        if (messageType !== "system") {
+          return false;
+        }
+        const subtype = (message as any).subtype;
+        return subtype === "memory_recall"
+          || subtype === "mirror_error"
+          || subtype === "model_refusal_fallback"
+          || subtype === "notification"
+          || subtype === "permission_denied"
+          || subtype === "worker_shutting_down";
+      };
+      const isPostResultOnlyTailMessage = (message: SDKMessage): boolean => {
+        const messageType = (message as any).type;
+        return messageType === "prompt_suggestion" || messageType === "tool_use_summary";
+      };
+      const logStalePostResultTailDiscard = (message: SDKMessage): void => {
+        logger.debug("agent_chat.claude_stale_post_result_tail_discarded", {
+          sessionId: managed.session.id,
+          turnId,
+          type: (message as any).type,
+          subtype: typeof (message as any).subtype === "string" ? (message as any).subtype : undefined,
+        });
+      };
+      const logPostResultDrainRejected = (error: unknown): void => {
+        logger.debug("agent_chat.claude_post_result_drain_rejected", {
+          sessionId: managed.session.id,
+          turnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      };
+      const readNextClaudeTurnMessage = async (): Promise<IteratorResult<SDKMessage, void> | null> => {
+        if (!resultSeen) {
+          let discardedPostResultTail = false;
+          while (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
+            const pending = runtime.pendingPostResultNext;
+            runtime.pendingPostResultNext = null;
+            const pendingSettledBeforeInput = pendingPostResultSettledBeforeInput;
+            runtime.pendingPostResultNextSettledAt = null;
+            let replayed: IteratorResult<SDKMessage, void>;
+            try {
+              replayed = await pending;
+            } catch (error) {
+              logPostResultDrainRejected(error);
+              continue;
+            }
+            if (
+              !replayed.done
+              && (
+                pendingSettledBeforeInput
+                  ? isStalePostResultTailMessage(replayed.value)
+                  : isPostResultOnlyTailMessage(replayed.value)
+              )
+            ) {
+              discardedPostResultTail = true;
+              logStalePostResultTailDiscard(replayed.value);
+              continue;
+            }
+            return replayed;
+          }
+          while (discardedPostResultTail) {
+            const next = await sessionQuery.next();
+            if (!next.done && isStalePostResultTailMessage(next.value)) {
+              logStalePostResultTailDiscard(next.value);
+              continue;
+            }
+            return next;
+          }
+          return await sessionQuery.next();
+        }
+
+        let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+        const nextMessage = runtime.pendingPostResultNext ?? sessionQuery.next();
+        if (runtime.pendingPostResultNext !== nextMessage) {
+          runtime.pendingPostResultNext = nextMessage;
+          runtime.pendingPostResultNextSettledAt = null;
+          nextMessage.then(
+            () => {
+              if (runtime.pendingPostResultNext === nextMessage) {
+                runtime.pendingPostResultNextSettledAt = Date.now();
+              }
+            },
+            () => {
+              if (runtime.pendingPostResultNext === nextMessage) {
+                runtime.pendingPostResultNextSettledAt = Date.now();
+              }
+            },
+          );
+        }
+        void nextMessage.catch(() => undefined);
+        const timeout = new Promise<null>((resolve) => {
+          timeoutHandle = setTimeout(() => resolve(null), CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS);
+        });
+        try {
+          const drained = await Promise.race([nextMessage, timeout]);
+          if (drained && runtime.pendingPostResultNext === nextMessage) {
+            runtime.pendingPostResultNext = null;
+            runtime.pendingPostResultNextSettledAt = null;
+          }
+          return drained;
+        } catch (error) {
+          if (runtime.pendingPostResultNext === nextMessage) {
+            runtime.pendingPostResultNext = null;
+            runtime.pendingPostResultNextSettledAt = null;
+          }
+          logPostResultDrainRejected(error);
+          return null;
+        } finally {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+        }
+      };
+
       while (true) {
-        const nextMessage = await sessionQuery.next();
+        const nextMessage = await readNextClaudeTurnMessage();
+        if (!nextMessage) {
+          logger.debug("agent_chat.claude_post_result_drain_timeout", {
+            sessionId: managed.session.id,
+            turnId,
+            timeoutMs: CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS,
+          });
+          break;
+        }
         if (nextMessage.done) break;
         const msg = nextMessage.value;
+        const msgSubtype = typeof (msg as any).subtype === "string" ? (msg as any).subtype : null;
+        if (pendingWorkerShutdownReason && !(msg.type === "system" && msgSubtype === "worker_shutting_down")) {
+          pendingWorkerShutdownReason = null;
+        }
         if (runtime.interrupted) break;
         if (timeoutError) {
           throw timeoutError;
@@ -11782,6 +11916,11 @@ export function createAgentChatService(args: {
           runtime.sdkSessionId = messageSessionId;
           mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
           persistChatState(managed);
+        }
+
+        if (resultSeen && (msg as any).type !== "prompt_suggestion" && isStalePostResultTailMessage(msg)) {
+          logStalePostResultTailDiscard(msg);
+          continue;
         }
 
         // system:init — capture data silently (no UI emission)
@@ -11980,6 +12119,15 @@ export function createAgentChatService(args: {
             const resetDate = new Date(resetMs);
             if (!Number.isNaN(resetDate.getTime())) details.push(`resets ${resetDate.toISOString()}`);
           }
+          if (typeof info.errorCode === "string" && info.errorCode.trim().length > 0) {
+            details.push(`error: ${info.errorCode.replace(/_/g, " ")}`);
+          }
+          if (typeof info.canUserPurchaseCredits === "boolean") {
+            details.push(info.canUserPurchaseCredits ? "credits can be purchased" : "credits cannot be purchased here");
+          }
+          if (typeof info.hasChargeableSavedPaymentMethod === "boolean") {
+            details.push(info.hasChargeableSavedPaymentMethod ? "payment method available" : "no chargeable payment method");
+          }
           const message = isError
             ? `Claude rate limit ${rawStatus.replace(/_/g, " ")}`
             : "Approaching Claude plan limit";
@@ -11992,6 +12140,193 @@ export function createAgentChatService(args: {
             detail: details.length ? details.join(" | ") : undefined,
             turnId,
           });
+          continue;
+        }
+
+        // system:api_retry — transient provider/API failure with a scheduled retry.
+        if (msg.type === "system" && (msg as any).subtype === "api_retry") {
+          const retryMsg = msg as any;
+          const error = typeof retryMsg.error === "string" ? retryMsg.error : "transient_error";
+          const retryDelayMs = typeof retryMsg.retry_delay_ms === "number" ? retryMsg.retry_delay_ms : null;
+          const retryDelay = retryDelayMs != null ? Math.max(0, Math.round(retryDelayMs / 1000)) : null;
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: error === "rate_limit" || error === "overloaded" ? "rate_limit" : "warning",
+            severity: error === "rate_limit" || error === "overloaded" ? "warning" : "info",
+            status: error,
+            message: `Claude API retry ${retryMsg.attempt ?? "?"}/${retryMsg.max_retries ?? "?"}: ${error.replace(/_/g, " ")}`,
+            detail: [
+              typeof retryMsg.error_status === "number" ? `HTTP ${retryMsg.error_status}` : null,
+              retryDelay != null ? `retrying in ${retryDelay}s` : null,
+            ].filter((entry): entry is string => Boolean(entry)).join(" | ") || undefined,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:model_refusal_fallback — Claude retried the turn on a fallback model.
+        if (msg.type === "system" && (msg as any).subtype === "model_refusal_fallback") {
+          const fallbackMsg = msg as any;
+          const original = typeof fallbackMsg.original_model === "string" ? fallbackMsg.original_model : "the selected model";
+          const fallback = typeof fallbackMsg.fallback_model === "string" ? fallbackMsg.fallback_model : "a fallback model";
+          const retractedUuids = Array.isArray(fallbackMsg.retracted_message_uuids)
+            ? fallbackMsg.retracted_message_uuids
+              .filter((uuid: unknown): uuid is string => typeof uuid === "string" && uuid.trim().length > 0)
+              .map((uuid: string) => uuid.trim())
+            : [];
+          const details = [
+            typeof fallbackMsg.api_refusal_category === "string" && fallbackMsg.api_refusal_category.trim().length
+              ? `category: ${fallbackMsg.api_refusal_category.trim()}`
+              : null,
+            typeof fallbackMsg.api_refusal_explanation === "string" && fallbackMsg.api_refusal_explanation.trim().length
+              ? fallbackMsg.api_refusal_explanation.trim()
+              : null,
+            typeof fallbackMsg.content === "string" && fallbackMsg.content.trim().length
+              ? fallbackMsg.content.trim()
+              : null,
+            retractedUuids.length
+              ? `retracted ${retractedUuids.length} SDK message${retractedUuids.length === 1 ? "" : "s"}: ${retractedUuids.slice(0, 5).join(", ")}${retractedUuids.length > 5 ? ", ..." : ""}`
+              : null,
+          ].filter((entry): entry is string => Boolean(entry));
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            status: "model_refusal_fallback",
+            message: `Claude retried with ${fallback} after ${original} refused the request.`,
+            detail: details.length ? details.join(" | ") : undefined,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:informational — loop banners such as hook block feedback.
+        if (msg.type === "system" && (msg as any).subtype === "informational") {
+          const infoMsg = msg as any;
+          const content = typeof infoMsg.content === "string" ? infoMsg.content.trim() : "";
+          const level = typeof infoMsg.level === "string" ? infoMsg.level : "info";
+          if (content.length > 0 && (level !== "info" || infoMsg.prevent_continuation === true)) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: level === "warning" ? "warning" : "info",
+              severity: level === "warning" ? "warning" : "info",
+              status: level,
+              message: content,
+              turnId,
+            });
+          }
+          continue;
+        }
+
+        // system:notification — Claude Code loop-side notification queue.
+        if (msg.type === "system" && (msg as any).subtype === "notification") {
+          const noticeMsg = msg as any;
+          const text = typeof noticeMsg.text === "string" ? noticeMsg.text.trim() : "";
+          if (text.length > 0) {
+            const priority = typeof noticeMsg.priority === "string" ? noticeMsg.priority : "medium";
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: priority === "high" || priority === "immediate" ? "warning" : "info",
+              severity: priority === "high" || priority === "immediate" ? "warning" : "info",
+              status: "notification",
+              message: text,
+              detail: [
+                typeof noticeMsg.key === "string" && noticeMsg.key.trim().length ? `key: ${noticeMsg.key.trim()}` : null,
+                `priority: ${priority}`,
+              ].filter((entry): entry is string => Boolean(entry)).join(" | "),
+              turnId,
+            });
+          }
+          continue;
+        }
+
+        // system:memory_recall — memories surfaced into this turn.
+        if (msg.type === "system" && (msg as any).subtype === "memory_recall") {
+          const memoryMsg = msg as any;
+          const memories = Array.isArray(memoryMsg.memories) ? memoryMsg.memories : [];
+          const items = memories.flatMap((entry: unknown) => {
+            if (!entry || typeof entry !== "object") return [];
+            const record = entry as Record<string, unknown>;
+            const path = typeof record.path === "string" ? record.path.trim() : "";
+            const scope = typeof record.scope === "string" ? record.scope.trim() : "";
+            const content = typeof record.content === "string" ? record.content.trim() : "";
+            const label = [scope, path].filter(Boolean).join(" · ");
+            const preview = content.length > 160 ? `${content.slice(0, 157)}...` : content;
+            return [preview ? `${label || "memory"} — ${preview}` : (label || "memory")];
+          });
+          const memoryCount = items.length || memories.length || 1;
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            severity: "info",
+            status: "memory_recall",
+            message: `Claude recalled ${memoryCount} memor${memoryCount === 1 ? "y" : "ies"}.`,
+            detail: items.length ? {
+              title: "Recalled memory",
+              sections: [{ title: "Sources", items }],
+            } : undefined,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:mirror_error — SessionStore transcript mirror failed after retries.
+        if (msg.type === "system" && (msg as any).subtype === "mirror_error") {
+          const mirrorMsg = msg as any;
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "error",
+            severity: "error",
+            status: "mirror_error",
+            message: "Claude transcript mirror failed.",
+            detail: typeof mirrorMsg.error === "string" && mirrorMsg.error.trim().length
+              ? mirrorMsg.error.trim()
+              : undefined,
+            turnId,
+          });
+          continue;
+        }
+
+        // system:permission_denied — immediate denial signal with typed reason metadata.
+        if (msg.type === "system" && (msg as any).subtype === "permission_denied") {
+          const deniedMsg = msg as any;
+          const toolUseId = typeof deniedMsg.tool_use_id === "string" ? deniedMsg.tool_use_id : "";
+          const toolName = typeof deniedMsg.tool_name === "string" && deniedMsg.tool_name.trim().length
+            ? deniedMsg.tool_name.trim()
+            : "tool";
+          if (toolUseId) emittedPermissionDeniedToolUseIds.add(toolUseId);
+          if (!toolUseId || !runtime.resolvedToolUseIds.has(toolUseId)) {
+            const reason = typeof deniedMsg.decision_reason === "string" && deniedMsg.decision_reason.trim().length
+              ? deniedMsg.decision_reason.trim()
+              : typeof deniedMsg.message === "string" && deniedMsg.message.trim().length
+                ? deniedMsg.message.trim()
+                : "";
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "info",
+              message: `Claude denied ${toolName}${reason ? `: ${reason}` : "."}`,
+              detail: typeof deniedMsg.decision_reason_type === "string" ? deniedMsg.decision_reason_type : undefined,
+              turnId,
+            });
+          }
+          if (toolUseId && !runtime.resolvedToolUseIds.has(toolUseId) && openClaudeToolUses.has(toolUseId)) {
+            emitClaudeToolCompletion(toolUseId, {
+              synthetic: true,
+              source: "permission_denied",
+              tool: toolName,
+            }, "failed");
+          }
+          continue;
+        }
+
+        // system:worker_shutting_down — graceful worker/session-host shutdown.
+        // This event is durable and can replay on resume, so only surface it
+        // at turn completion if it stayed at the live tail of the stream.
+        if (msg.type === "system" && (msg as any).subtype === "worker_shutting_down") {
+          const shutdownMsg = msg as any;
+          pendingWorkerShutdownReason = typeof shutdownMsg.reason === "string" && shutdownMsg.reason.trim().length
+            ? shutdownMsg.reason.trim().replace(/_/g, " ")
+            : "worker shutdown";
           continue;
         }
 
@@ -12538,9 +12873,13 @@ export function createAgentChatService(args: {
             // Those tools have a synthetic tool_result emitted by the approval flow that
             // already conveys the outcome — surfacing a "denied this turn" notice on top
             // of that makes the chat look like the approval was rejected.
-            const surfacedDenials = denials.filter((d) =>
-              !d.tool_use_id || !runtime.resolvedToolUseIds.has(String(d.tool_use_id))
-            );
+            const surfacedDenials = denials.filter((d) => {
+              const toolUseId = typeof d.tool_use_id === "string" ? d.tool_use_id : "";
+              return !toolUseId || (
+                !runtime.resolvedToolUseIds.has(toolUseId)
+                && !emittedPermissionDeniedToolUseIds.has(toolUseId)
+              );
+            });
             if (surfacedDenials.length > 0) {
               const denialSummary = surfacedDenials.map((d) => d.tool_name).join(", ");
               emitChatEvent(managed, {
@@ -12560,7 +12899,8 @@ export function createAgentChatService(args: {
               }
             }
           }
-          break;
+          resultSeen = true;
+          continue;
         }
 
         // tool_use_summary — summarizes groups of tool calls
@@ -12597,13 +12937,24 @@ export function createAgentChatService(args: {
             [suggestionMsg.suggestion, suggestionMsg.prompt, suggestionMsg.text]
               .find((v): v is string => typeof v === "string" && v.trim().length > 0)?.trim() ?? null;
           if (suggestionText) {
-            emitChatEvent(managed, {
+            emitLiveOnlyChatEvent(managed, {
               type: "prompt_suggestion",
               suggestion: suggestionText,
               turnId,
             });
           }
+          if (resultSeen) continue;
           continue;
+        }
+
+        if (resultSeen) {
+          logger.debug("agent_chat.claude_unexpected_post_result_message", {
+            sessionId: managed.session.id,
+            turnId,
+            type: (msg as any).type,
+            subtype: msgSubtype,
+          });
+          break;
         }
       }
       if (timeoutError) {
@@ -12611,6 +12962,16 @@ export function createAgentChatService(args: {
       }
 
       // ── Turn completion ──
+      if (pendingWorkerShutdownReason && !runtime.interrupted) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "warning",
+          status: "worker_shutting_down",
+          message: `Claude worker is shutting down: ${pendingWorkerShutdownReason}`,
+          turnId,
+        });
+      }
       clearClaudeTurnTimers();
       runtime.pauseIdleWatchdog = null;
       runtime.resumeIdleWatchdog = null;
@@ -17461,8 +17822,9 @@ export function createAgentChatService(args: {
       permissionMode: claudePermissionMode as any,
       ...(claudePermissionMode === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } as any : {}),
       includePartialMessages: true,
+      includeHookEvents: true,
       agentProgressSummaries: true,
-      promptSuggestions: false,
+      promptSuggestions: true,
       forwardSubagentText: true,
       enableFileCheckpointing: true,
       skills: "all",
@@ -17555,8 +17917,8 @@ export function createAgentChatService(args: {
         append: [
           "## Runtime Environment",
           "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API. The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
-          "**Wake-up semantics:** The session advances when ADE streams a fresh user message into the SDK query. There is no autonomous wake. `ScheduleWakeup` is **not honored** in this harness — the host accepts the call but never re-invokes you. `Bash run_in_background: true` task notifications are queued in the SDK message stream and only flushed on the next user turn; they do not start an autonomous turn either.",
-          "**To wait:** Either poll synchronously inside the active turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop the turn cleanly and ask the user to re-ping when ready. Do not run a background poller and claim it will wake you — it will not.",
+          "**Wake-up semantics:** Work confidently inside the active turn. ADE keeps the SDK query alive for streamed user and steer messages, but this chat does not currently expose Claude Code CLI's scheduled self-resume. Treat `ScheduleWakeup` as unavailable in this ADE chat: it will not start a later turn by itself. `Bash run_in_background: true` notifications may appear in the SDK stream when ADE is reading a turn, but do not rely on them to begin a new turn.",
+          "**To wait:** For bounded waits, keep the turn active with a foreground command such as `sleep ... && <one-shot command>` or one bounded `until ... ; do sleep N; done` loop. For longer external waits, save state and tell the user exactly what to re-ping when ready.",
           "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
@@ -17640,6 +18002,8 @@ export function createAgentChatService(args: {
     runtime.inputPump?.close();
     runtime.query = null;
     runtime.inputPump = null;
+    runtime.pendingPostResultNext = null;
+    runtime.pendingPostResultNextSettledAt = null;
     runtime.warmupDone = null;
     if (options.clearSdkSessionId && runtime.sdkSessionId) {
       logger.info("agent_chat.claude_sdk_session_cleared", {
@@ -18173,6 +18537,8 @@ export function createAgentChatService(args: {
       forkFromSdkSessionId,
       query: null,
       inputPump: null,
+      pendingPostResultNext: null,
+      pendingPostResultNextSettledAt: null,
       warmQuery: null,
       warmupDone: null,
       warmupCancel: null,
@@ -26991,6 +27357,10 @@ export function createAgentChatService(args: {
       displayText: kickoffDisplayText ?? kickoffText,
       contextAttachments: contextAttachments ?? [],
       reasoningEffort: createArgs.reasoningEffort,
+      // Background chat launches are fire-and-forget. Let the provider turn
+      // run until it completes or is explicitly interrupted instead of applying
+      // runSessionTurn's bounded RPC timeout.
+      timeoutMs: null,
     }).catch((err) => {
       logger.warn("agentChat.launchHeadless turn failed", {
         sessionId: session.id,

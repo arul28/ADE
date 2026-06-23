@@ -92,7 +92,7 @@ render them, but neither one *runs* them.
 ## Key concepts
 
 - **Claude Agent SDK pipeline.** The Claude adapter is built on the
-  stable `query()` API (SDK 0.2.139): every chat owns a `ClaudeQuery`,
+  stable `query()` API (SDK 0.3.186): every chat owns a `ClaudeQuery`,
   fed by a `ClaudeInputPump` (`claudeInputPump.ts`) async iterable that
   hands live user turns to `query.streamInput`. Warmup goes through the
   SDK `startup()` hook, output styles and plugins are discovered by
@@ -106,6 +106,20 @@ render them, but neither one *runs* them.
   path is passed through `pathToClaudeCodeExecutable`. Context usage,
   rewindFiles, forkSession, and output-style selection all run through the SDK control channel surfaced on the active
   `Query` handle.
+- **Claude SDK 0.3.186 event surfaces.** ADE enables SDK hook events,
+  agent progress summaries, prompt suggestions, forwarded subagent text,
+  file checkpointing, and all skills for full Claude chats. The adapter
+  translates SDK retry/refusal/notification/memory/mirror/permission events
+  into `system_notice` rows, drains the SDK-documented post-`result`
+  `prompt_suggestion` message, maps Claude `TaskCreate`/`TaskUpdate` tool calls
+  into `todo_update` snapshots for the actions-pane task board, preserves
+  refusal-fallback retraction UUIDs on the fallback notice, and gives new built-in
+  Claude tools readable badges in the transcript. Deliberately not wired yet:
+  SDK `SessionStore` as ADE's transcript backend, channels/external message
+  origins, transcript tombstones for SDK `supersedes`/`retracted_message_uuids`,
+  and true scheduled wake/autonomous post-result turns. Those need the service to
+  move from per-turn iterator ownership to one long-lived Claude stream owner
+  that can safely adopt SDK-origin messages after a result.
 - **Provider-agnostic sessions.** `AgentChatProvider` is one of `claude`,
   `codex`, `opencode`, `cursor`, `droid`, or a free-form string reserved for
   local providers. The service owns a pluggable adapter per provider (Claude
@@ -325,8 +339,11 @@ See the detail docs for the specifics:
    does not complete within that window the stale runtime is discarded and
    recreated on the next turn.
 3. `sendMessage({ sessionId, text, attachments? })` via
-   `ade.agentChat.send` dispatches a turn. Each turn has a 5 min
-   turn-level timeout enforced by the abort machinery.
+   `ade.agentChat.send` dispatches a turn. Interactive chat sends are not
+   wall-clock bounded by the service; the turn runs until the provider
+   completes or the user/app interrupts it. The blocking `runSessionTurn`
+   helper used by automation has a 5 min default RPC timeout unless the
+   caller passes `timeoutMs: null`; background/headless chat launches opt out.
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).

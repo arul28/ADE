@@ -202,7 +202,10 @@ describe("AgentChatComposer", () => {
       onDraftChange,
     });
 
-    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Tab" });
+    const textbox = screen.getByRole("textbox");
+    expect(textbox.getAttribute("placeholder")).toBe("Audit the Work tab");
+
+    fireEvent.keyDown(textbox, { key: "Tab" });
 
     expect(onDraftChange).toHaveBeenCalledWith("Audit the Work tab");
   });

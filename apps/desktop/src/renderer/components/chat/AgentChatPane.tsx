@@ -198,8 +198,8 @@ const COMPOSER_DRAFT_STORAGE_KEY_PREFIX = "ade.chat.composerDraft.v1";
 const WORK_START_DRAFT_COMPANION_STATE_KEY = "draft:work-start";
 const WORK_START_DRAFT_LAUNCH_SCOPE_ID = "work-start";
 const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
-const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
-const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
+const CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
 const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
@@ -221,17 +221,17 @@ const LEGACY_MODEL_KEY_PREFIX = "ade.chat.lastModel";
 
 const COMPUTER_USE_SNAPSHOT_COOLDOWN_MS = 750;
 
-type SubagentAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
+type ChatActionsAutoOpenStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 
-export function getSubagentAutoOpenStorageKey(sessionId: string): string {
-  return `${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`;
+export function getChatActionsAutoOpenStorageKey(sessionId: string): string {
+  return `${CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX}:${sessionId}`;
 }
 
-function encodeSubagentAutoOpenRecord(nowMs: number): string {
+function encodeChatActionsAutoOpenRecord(nowMs: number): string {
   return JSON.stringify({ firedAt: nowMs });
 }
 
-function parseSubagentAutoOpenFiredAt(raw: string | null): number | "legacy" | null {
+function parseChatActionsAutoOpenFiredAt(raw: string | null): number | "legacy" | null {
   if (!raw) return null;
   if (raw === "1") return "legacy";
   try {
@@ -244,34 +244,34 @@ function parseSubagentAutoOpenFiredAt(raw: string | null): number | "legacy" | n
   }
 }
 
-export function cleanupSubagentAutoOpenStorage(storage: SubagentAutoOpenStorage, nowMs = Date.now()): void {
+export function cleanupChatActionsAutoOpenStorage(storage: ChatActionsAutoOpenStorage, nowMs = Date.now()): void {
   const keys: string[] = [];
   for (let index = 0; index < storage.length; index += 1) {
     const key = storage.key(index);
-    if (key?.startsWith(`${SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX}:`)) keys.push(key);
+    if (key?.startsWith(`${CHAT_ACTIONS_AUTOOPEN_FIRED_KEY_PREFIX}:`)) keys.push(key);
   }
   for (const key of keys) {
-    const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+    const firedAt = parseChatActionsAutoOpenFiredAt(storage.getItem(key));
     if (firedAt === "legacy") {
-      storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
-    } else if (firedAt === null || nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+      storage.setItem(key, encodeChatActionsAutoOpenRecord(nowMs));
+    } else if (firedAt === null || nowMs - firedAt > CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS) {
       storage.removeItem(key);
     }
   }
 }
 
-function hasSubagentAutoOpenFired(storage: SubagentAutoOpenStorage, sessionId: string, nowMs = Date.now()): boolean {
-  const key = getSubagentAutoOpenStorageKey(sessionId);
-  const firedAt = parseSubagentAutoOpenFiredAt(storage.getItem(key));
+function hasChatActionsAutoOpenFired(storage: ChatActionsAutoOpenStorage, sessionId: string, nowMs = Date.now()): boolean {
+  const key = getChatActionsAutoOpenStorageKey(sessionId);
+  const firedAt = parseChatActionsAutoOpenFiredAt(storage.getItem(key));
   if (firedAt === "legacy") {
-    storage.setItem(key, encodeSubagentAutoOpenRecord(nowMs));
+    storage.setItem(key, encodeChatActionsAutoOpenRecord(nowMs));
     return true;
   }
   if (firedAt === null) {
     storage.removeItem(key);
     return false;
   }
-  if (nowMs - firedAt > SUBAGENT_AUTOOPEN_FIRED_TTL_MS) {
+  if (nowMs - firedAt > CHAT_ACTIONS_AUTOOPEN_FIRED_TTL_MS) {
     storage.removeItem(key);
     return false;
   }
@@ -3186,7 +3186,7 @@ export function AgentChatPane({
   const composerDraftHydratingTextRef = useRef<string | null>(null);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
-  const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+  const [promptSuggestionsBySession, setPromptSuggestionsBySession] = useState<Record<string, string>>({});
   const [optimisticOutgoingMessage, setOptimisticOutgoingMessage] = useState<{
     sessionId: string;
     envelope: AgentChatEventEnvelope;
@@ -3286,6 +3286,16 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
+  const clearPromptSuggestionForSession = useCallback((sessionId: string | null) => {
+    if (!sessionId) return;
+    setPromptSuggestionsBySession((prev) => {
+      if (!(sessionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
   const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
   const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
   const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
@@ -3409,16 +3419,16 @@ export function AgentChatPane({
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
-    if (value.length > 0) setPromptSuggestion(null);
-  }, [companionStateKey]);
+    if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
+  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
   const insertComposerDraft = useCallback((value: string) => {
     setDraft((current) => {
       const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
       draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
-    setPromptSuggestion(null);
-  }, [companionStateKey]);
+    clearPromptSuggestionForSession(selectedSessionId);
+  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
@@ -3778,15 +3788,16 @@ export function AgentChatPane({
     }
   }, []);
   // Per-session memo of which sessions have already triggered the auto-open
-  // affordance, so the panel doesn't keep re-opening every time a new subagent
-  // appears or the user navigates back to the chat. We only slide it in on the
-  // *first* spawn within a session — after that, opening is up to the user.
+  // affordance, so the panel doesn't keep re-opening every time a new task or
+  // subagent appears or the user navigates back to the chat. We only slide it in
+  // on the first tracked action within a session — after that, opening is up to
+  // the user.
   // Persisted to localStorage so the suppression survives remounts.
-  const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
+  const chatActionsAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     try {
-      cleanupSubagentAutoOpenStorage(window.localStorage);
+      cleanupChatActionsAutoOpenStorage(window.localStorage);
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
@@ -3797,44 +3808,51 @@ export function AgentChatPane({
       if (chatActionsOpen) setChatActionsOpen(false);
       return;
     }
-    if (selectedSubagentSnapshots.length === 0) {
+    const trackedActionCount = selectedSubagentSnapshots.length + selectedTodoItems.length;
+    if (trackedActionCount === 0) {
       return;
     }
-    if (subagentAutoOpenedSessionsRef.current.has(selectedSessionId)) {
+    if (chatActionsAutoOpenedSessionsRef.current.has(selectedSessionId)) {
       return;
     }
     try {
-      if (hasSubagentAutoOpenFired(window.localStorage, selectedSessionId)) {
-        subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
+      if (hasChatActionsAutoOpenFired(window.localStorage, selectedSessionId)) {
+        chatActionsAutoOpenedSessionsRef.current.add(selectedSessionId);
         return;
       }
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
+    const markChatActionsAutoOpened = () => {
+      chatActionsAutoOpenedSessionsRef.current.add(selectedSessionId);
+      try {
+        window.localStorage.setItem(
+          getChatActionsAutoOpenStorageKey(selectedSessionId),
+          encodeChatActionsAutoOpenRecord(Date.now()),
+        );
+      } catch {
+        /* best-effort persistence */
+      }
+    };
     // Don't consume the once-per-session auto-open until we can actually surface
-    // the agents panel. If the chat-actions pane is already open (possibly on a
+    // the actions panel. If the chat-actions pane is already open (possibly on a
     // different tab), leave the user where they are and retry when it next closes
     // — otherwise the flag gets burned without the agents panel ever opening,
     // which is exactly why subagents sometimes didn't auto-open (it was runtime-
     // independent; it depended on whether the pane happened to be open already).
     if (chatActionsOpen) {
+      if (chatActionsTab === "agents") {
+        markChatActionsAutoOpened();
+      }
       return;
     }
-    subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
-    try {
-      window.localStorage.setItem(
-        getSubagentAutoOpenStorageKey(selectedSessionId),
-        encodeSubagentAutoOpenRecord(Date.now()),
-      );
-    } catch {
-      /* best-effort persistence */
-    }
+    markChatActionsAutoOpened();
     setChatActionsTab("agents");
     setIosSimulatorOpen(false);
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length]);
+  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots.length, selectedTodoItems.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -5602,7 +5620,6 @@ export function AgentChatPane({
   ]);
 
   useEffect(() => {
-    setPromptSuggestion(null);
     setChatActionsOpen(false);
     setHandoffBusy(false);
     optimisticOutgoingMessageRef.current = null;
@@ -5811,6 +5828,26 @@ export function AgentChatPane({
         return;
       }
 
+      // Keep prompt suggestions keyed by session so suggestions never leak
+      // across chat tabs before the composer renders the new selection. These
+      // are composer UI hints, not transcript content.
+      if (envelope.event.type === "prompt_suggestion" && "suggestion" in envelope.event) {
+        const suggestion = typeof (envelope.event as any).suggestion === "string"
+          ? (envelope.event as any).suggestion.trim()
+          : "";
+        setPromptSuggestionsBySession((prev) => (
+          suggestion.length > 0
+            ? { ...prev, [envelope.sessionId]: suggestion }
+            : (() => {
+                if (!(envelope.sessionId in prev)) return prev;
+                const next = { ...prev };
+                delete next[envelope.sessionId];
+                return next;
+              })()
+        ));
+        return;
+      }
+
       pendingEventQueueRef.current.push(envelope);
       const touchTimestamp = getChatSessionLocalTouchTimestampForEvent(envelope);
       if (touchTimestamp) {
@@ -5854,18 +5891,9 @@ export function AgentChatPane({
         setSelectedSessionId(lockSessionId);
       }
 
-      // Wire prompt_suggestion events to state
-      if (envelope.event.type === "prompt_suggestion" && "suggestion" in envelope.event) {
-        if (envelope.sessionId === selectedSessionIdRef.current) {
-          setPromptSuggestion((envelope.event as any).suggestion);
-        }
-      }
-
       // Clear prompt suggestion when a new turn starts
       if (envelope.event.type === "status" && envelope.event.turnStatus === "started") {
-        if (envelope.sessionId === selectedSessionIdRef.current) {
-          setPromptSuggestion(null);
-        }
+        clearPromptSuggestionForSession(envelope.sessionId);
       }
 
       if (shouldRefreshSessionListForChatEvent(envelope)) {
@@ -5930,7 +5958,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -7307,7 +7335,7 @@ export function AgentChatPane({
       createdAtMs: Date.now(),
       snapshot,
     };
-    setPromptSuggestion(null);
+    clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       job,
@@ -7407,6 +7435,7 @@ export function AgentChatPane({
     }
   }, [
     buildDraftLaunchSnapshotForCurrentState,
+    clearPromptSuggestionForSession,
     clearDraftLaunchComposer,
     draftLaunchJobExists,
     draftLaunchTargetIsAutoCreate,
@@ -7636,7 +7665,7 @@ export function AgentChatPane({
           setError("Plan revisions from the ready gate are text-only. Remove attachments or click Keep planning first.");
           return;
         }
-        setPromptSuggestion(null);
+        clearPromptSuggestionForSession(selectedSessionId);
         void copyPromptForLaunch(draftText);
         const resolved = await handleApproval(planReadyGate.itemId, "decline", draftText);
         if (resolved) setDraft("");
@@ -7648,7 +7677,7 @@ export function AgentChatPane({
         return;
       }
     }
-    setPromptSuggestion(null);
+    clearPromptSuggestionForSession(selectedSessionId);
 
     const isParallelLaunch =
       !lockSessionId
@@ -8235,6 +8264,7 @@ export function AgentChatPane({
     attachments,
     buildNativeControlPayload,
     busy,
+    clearPromptSuggestionForSession,
     fastMode,
     constrainedModelSelectionError,
     copyPromptForLaunch,
@@ -9148,6 +9178,9 @@ export function AgentChatPane({
                   selectedSubagentSnapshots.length > 0
                     ? `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"}`
                     : null,
+                  selectedTodoItems.length > 0
+                    ? `${selectedTodoItems.length} task${selectedTodoItems.length === 1 ? "" : "s"}`
+                    : null,
                 ].filter(Boolean).join(" · ") || undefined,
               }}
             >
@@ -9184,6 +9217,10 @@ export function AgentChatPane({
                 ) : selectedSubagentSnapshots.length > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
                     {selectedSubagentSnapshots.length}
+                  </span>
+                ) : selectedTodoItems.length > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-violet-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+                    {selectedTodoItems.length}
                   </span>
                 ) : null}
                 {!chatActionsOpen && hasRunningBackgroundSubagent ? (

@@ -4074,20 +4074,6 @@ export function AgentChatComposer({
             registerAsDictationTarget();
           }}
         >
-          {/* Ghost suggestion overlay */}
-          {promptSuggestion && !draft.length && !turnActive ? (
-            <div
-              className="pointer-events-none absolute inset-0 flex items-start px-4 py-2.5"
-              aria-hidden="true"
-            >
-              <span className="text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/18 italic">
-                {promptSuggestion}
-                <span className="ml-2 inline-flex items-center rounded border border-white/[0.06] bg-white/[0.03] px-1 py-px font-mono text-[length:calc(var(--chat-font-size)*9/14)] not-italic text-fg/20">
-                  Tab
-                </span>
-              </span>
-            </div>
-          ) : null}
           <ChatCommandMenu
             ref={commandMenuRef}
             trigger={commandMenuTrigger}
@@ -4106,7 +4092,7 @@ export function AgentChatComposer({
             <div className="relative">
               {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
                 <div className="pointer-events-none absolute left-4 top-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-muted-fg/30">
-                  {composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (messagePlaceholder ?? "Type to vibecode..."))}
+                  {composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
                 </div>
               ) : null}
               <div
@@ -4230,7 +4216,7 @@ export function AgentChatComposer({
                 parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
               )}
               data-chat-layout-variant={layoutVariant}
-              placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion ? "" : (messagePlaceholder ?? "Type to vibecode...")))}
+              placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
             />

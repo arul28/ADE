@@ -2072,6 +2072,7 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        includeHookEvents?: boolean;
         promptSuggestions?: boolean;
         settingSources?: string[];
         settings?: {
@@ -2083,7 +2084,8 @@ describe("createAgentChatService", () => {
       } | undefined;
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
       expect(opts?.skills).toBe("all");
-      expect(opts?.promptSuggestions).toBe(false);
+      expect(opts?.includeHookEvents).toBe(true);
+      expect(opts?.promptSuggestions).toBe(true);
       expect(opts?.settings).toEqual(expect.objectContaining({
         outputStyle: "Default",
         fastMode: false,
@@ -2920,32 +2922,48 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("returns the session even when the kickoff turn never settles", async () => {
-      // A turn that hangs forever would block the launch if it were awaited.
-      const send = vi.fn(() => new Promise<void>(() => {}));
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send,
-        stream: vi.fn(() => (async function* () {
-          await new Promise<void>(() => {});
-        })()),
-        close: vi.fn(),
-        sessionId: "sdk-headless-pending",
-        query: {
-          setPermissionMode: vi.fn(async () => undefined),
-          supportedCommands: vi.fn(async () => []),
-        },
-      } as any);
+    it("returns the session and lets a pending kickoff turn outlive the default runSessionTurn timeout", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        // A turn that hangs forever would block the launch if it were awaited.
+        const send = vi.fn(() => new Promise<void>(() => {}));
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream: vi.fn(() => (async function* () {
+            await new Promise<void>(() => {});
+          })()),
+          close: vi.fn(),
+          sessionId: "sdk-headless-pending",
+          query: {
+            setPermissionMode: vi.fn(async () => undefined),
+            supportedCommands: vi.fn(async () => []),
+          },
+        } as any);
 
-      const { service } = createService();
-      // Resolves promptly despite the hanging turn -> fire-and-forget.
-      const session = await service.launchHeadless({
-        laneId: "lane-1",
-        provider: "claude",
-        model: "sonnet",
-        kickoffText: "Start the work.",
-      });
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        // Resolves promptly despite the hanging turn -> fire-and-forget.
+        const session = await service.launchHeadless({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+          kickoffText: "Start the work.",
+        });
 
-      expect(session).toBeDefined();
+        expect(session).toBeDefined();
+
+        await vi.advanceTimersByTimeAsync(300_001);
+        expect(events.find((event) =>
+          event.event.type === "status" && event.event.turnStatus === "interrupted",
+        )).toBeUndefined();
+        expect(events.find((event) =>
+          event.event.type === "error" && event.event.message.includes("Timed out waiting for session"),
+        )).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("defaults the session to autonomous full-auto when no permission controls are supplied", async () => {
@@ -4724,6 +4742,798 @@ describe("createAgentChatService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("surfaces Claude SDK retry, refusal fallback, informational, memory, notification, mirror, and denial events", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const close = vi.fn();
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        if (streamCall === 2) {
+          yield {
+            type: "system",
+            subtype: "api_retry",
+            session_id: "sdk-session-events",
+            attempt: 1,
+            max_retries: 3,
+            retry_delay_ms: 2_000,
+            error_status: 529,
+            error: "overloaded",
+          };
+          yield {
+            type: "system",
+            subtype: "informational",
+            session_id: "sdk-session-events",
+            content: "Prompt blocked by hook",
+            level: "warning",
+            prevent_continuation: true,
+          };
+          yield {
+            type: "system",
+            subtype: "permission_denied",
+            session_id: "sdk-session-events",
+            tool_name: "Bash",
+            tool_use_id: "tool-denied-direct",
+            decision_reason_type: "classifier",
+            decision_reason: "blocked by safety policy",
+            message: "Denied",
+          };
+          yield {
+            type: "system",
+            subtype: "model_refusal_fallback",
+            session_id: "sdk-session-events",
+            original_model: "claude-opus-4-8",
+            fallback_model: "claude-sonnet-4-6",
+            api_refusal_category: "cyber",
+            api_refusal_explanation: "The original model refused.",
+            content: "Retrying on fallback model.",
+            retracted_message_uuids: ["refused-message-1", "refused-tool-result-1"],
+          };
+          yield {
+            type: "system",
+            subtype: "notification",
+            session_id: "sdk-session-events",
+            key: "heads-up",
+            text: "Background monitor finished",
+            priority: "high",
+          };
+          yield {
+            type: "system",
+            subtype: "memory_recall",
+            session_id: "sdk-session-events",
+            mode: "select",
+            memories: [{
+              path: "/tmp/memory.md",
+              scope: "personal",
+              content: "Prefer small focused patches.",
+            }],
+          };
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-events",
+            error: "store unavailable",
+          };
+          // This replayed/historical shutdown should be ignored because a
+          // result follows it in the same stream.
+          yield {
+            type: "system",
+            subtype: "worker_shutting_down",
+            session_id: "sdk-session-events",
+            reason: "host_exit",
+          };
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            permission_denials: [
+              { tool_name: "Bash", tool_use_id: "tool-denied-direct" },
+            ],
+          };
+          return;
+        }
+
+        return;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-events",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        sessionId: "sdk-session-events",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "show new sdk event handling",
+        timeoutMs: 15_000,
+      });
+
+      const notices = events
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+          event.type === "system_notice",
+        );
+      expect(notices.some((event) => {
+        const detail = typeof event.detail === "string" ? event.detail : "";
+        return event.noticeKind === "rate_limit"
+          && event.message === "Claude API retry 1/3: overloaded"
+          && detail.includes("HTTP 529")
+          && detail.includes("retrying in 2s");
+      })).toBe(true);
+      expect(notices.some((event) =>
+        event.noticeKind === "warning"
+        && event.message === "Prompt blocked by hook",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.message === "Claude denied Bash: blocked by safety policy"
+        && event.detail === "classifier",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.status === "model_refusal_fallback"
+        && event.message === "Claude retried with claude-sonnet-4-6 after claude-opus-4-8 refused the request.",
+      )).toBe(true);
+      const refusalFallbackNotice = notices.find((event) => event.status === "model_refusal_fallback");
+      expect(refusalFallbackNotice?.detail).toContain("retracted 2 SDK messages: refused-message-1, refused-tool-result-1");
+      expect(notices.some((event) =>
+        event.status === "notification"
+        && event.noticeKind === "warning"
+        && event.message === "Background monitor finished",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.status === "memory_recall"
+        && event.message === "Claude recalled 1 memory.",
+      )).toBe(true);
+      expect(notices.some((event) =>
+        event.status === "mirror_error"
+        && event.noticeKind === "error"
+        && event.detail === "store unavailable",
+      )).toBe(true);
+      expect(notices.filter((event) => event.message.includes("denied this turn"))).toHaveLength(0);
+      expect(notices.filter((event) => event.status === "worker_shutting_down")).toHaveLength(0);
+    });
+
+    it("surfaces Claude prompt suggestions emitted after the result message", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "result",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        yield {
+          type: "prompt_suggestion",
+          session_id: "sdk-session-prompt-suggestion",
+          uuid: "suggestion-1",
+          suggestion: "Audit the Work tab",
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-prompt-suggestion",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-prompt-suggestion",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "suggest the next prompt",
+        timeoutMs: 15_000,
+      });
+
+      const eventTypes = events.map((envelope) => envelope.event.type);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "prompt_suggestion",
+            suggestion: "Audit the Work tab",
+          }),
+        }),
+      ]));
+      expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
+      expect(service.getChatEventHistory(session.id, { maxEvents: 50 }).events
+        .some((event) => event.event.type === "prompt_suggestion")).toBe(false);
+    });
+
+    it("continues draining stale post-result tail messages after a prompt suggestion", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let releaseFollowUpStream!: () => void;
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after the drained suggestion")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-drain-after-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          yield {
+            type: "prompt_suggestion",
+            session_id: "sdk-session-drain-after-suggestion",
+            uuid: "suggestion-tail-1",
+            suggestion: "Audit the next action",
+          };
+          yield {
+            type: "tool_use_summary",
+            session_id: "sdk-session-drain-after-suggestion",
+            summary: "This stale summary should stay out of the next turn",
+            preceding_tool_use_ids: ["stale-tool-use-1"],
+          };
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-drain-after-suggestion",
+            error: "stale mirror error after suggestion",
+          };
+          await followUpStreamReady;
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-drain-after-suggestion",
+            message: {
+              content: [{ type: "text", text: "Still on the same Claude query after draining." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-drain-after-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-drain-after-suggestion",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-drain-after-suggestion",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "suggest the next prompt and drain stale tail",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        expect(events.filter((event) => event.event.type === "prompt_suggestion")).toHaveLength(1);
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after the drained suggestion",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("same Claude query after draining");
+        expect(events.filter((event) => event.event.type === "tool_use_summary")).toHaveLength(0);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "mirror_error"
+          && event.event.detail === "stale mirror error after suggestion",
+        )).toBe(false);
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps completed Claude turns successful when the post-result drain rejects", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "assistant",
+          session_id: "sdk-session-drain-rejects",
+          message: {
+            content: [{ type: "text", text: "Finished before the drain failed." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          session_id: "sdk-session-drain-rejects",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        throw new Error("SDK worker closed after result");
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-drain-rejects",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-drain-rejects",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "finish even if the post-result drain rejects",
+        timeoutMs: 15_000,
+      });
+
+      expect(result.outputText).toContain("Finished before the drain failed");
+      expect(events.some((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "failed",
+      )).toBe(false);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "done",
+            status: "completed",
+          }),
+        }),
+      ]));
+    });
+
+    it("does not discard first next-turn system events from a carried post-result read", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let releaseFollowUpStream!: () => void;
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after an empty post-result drain")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-next-turn-system",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          await followUpStreamReady;
+          yield {
+            type: "system",
+            subtype: "memory_recall",
+            session_id: "sdk-session-next-turn-system",
+            mode: "select",
+            memories: [{
+              path: "/tmp/preference.md",
+              scope: "project",
+              content: "Prefer preserving next-turn system events.",
+            }],
+          };
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-next-turn-system",
+            message: {
+              content: [{ type: "text", text: "Memory recall reached the next turn." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-next-turn-system",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-next-turn-system",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-next-turn-system",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "complete without a post-result tail",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after an empty post-result drain",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("Memory recall reached the next turn");
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "memory_recall"
+          && event.event.message === "Claude recalled 1 memory.",
+        )).toBe(true);
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("drops stale system tails that settle before the next Claude turn starts", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let streamCall = 0;
+        let releaseStaleTail!: () => void;
+        let releaseFollowUpStream!: () => void;
+        const staleTailReady = new Promise<void>((resolve) => {
+          releaseStaleTail = resolve;
+        });
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after a stale settled tail")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-settled-stale-tail",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+          await staleTailReady;
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-settled-stale-tail",
+            error: "stale mirror error before the follow-up",
+          };
+          await followUpStreamReady;
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-settled-stale-tail",
+            message: {
+              content: [{ type: "text", text: "Follow-up started after dropping the stale tail." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-settled-stale-tail",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-settled-stale-tail",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close: vi.fn(),
+          sessionId: "sdk-session-settled-stale-tail",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "complete before a stale system tail",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        releaseStaleTail();
+        await vi.advanceTimersByTimeAsync(0);
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after a stale settled tail",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("Follow-up started after dropping the stale tail");
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "mirror_error"
+          && event.event.detail === "stale mirror error before the follow-up",
+        )).toBe(false);
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the live Claude query without replaying late post-result tail messages into the next turn", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const close = vi.fn();
+        let streamCall = 0;
+        let releaseFollowUpStream!: () => void;
+        const followUpStreamReady = new Promise<void>((resolve) => {
+          releaseFollowUpStream = resolve;
+        });
+        const send = vi.fn(async (message: unknown) => {
+          const text = String(legacyClaudeSendPayload(message));
+          if (text.includes("follow up after the suppressed suggestion")) {
+            releaseFollowUpStream();
+          }
+        });
+        const stream = vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "result",
+              usage: { input_tokens: 1, output_tokens: 1 },
+            };
+            return;
+          }
+
+          yield {
+            type: "result",
+            session_id: "sdk-session-no-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+
+          await followUpStreamReady;
+          yield {
+            type: "prompt_suggestion",
+            session_id: "sdk-session-no-suggestion",
+            uuid: "late-suggestion-1",
+            suggestion: "This suggestion belongs to the previous turn",
+          };
+          yield {
+            type: "tool_use_summary",
+            session_id: "sdk-session-no-suggestion",
+            summary: "This summary belongs to the previous turn",
+            preceding_tool_use_ids: ["late-tool-use-1"],
+          };
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-no-suggestion",
+            error: "late mirror error from the previous turn",
+          };
+          yield {
+            type: "assistant",
+            session_id: "sdk-session-no-suggestion",
+            message: {
+              content: [{ type: "text", text: "Still on the same Claude query." }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            session_id: "sdk-session-no-suggestion",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          };
+        })());
+        vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close,
+          sessionId: "sdk-session-no-suggestion",
+        } as any);
+        vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+          send,
+          stream,
+          close,
+          sessionId: "sdk-session-no-suggestion",
+        } as any);
+
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "claude",
+          model: "sonnet",
+        });
+
+        const firstTurn = service.runSessionTurn({
+          sessionId: session.id,
+          text: "wait for a suppressed prompt suggestion",
+          timeoutMs: 15_000,
+        });
+        await vi.advanceTimersByTimeAsync(1_000);
+        await firstTurn;
+
+        expect(close).not.toHaveBeenCalled();
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+
+        const followUp = await service.runSessionTurn({
+          sessionId: session.id,
+          text: "follow up after the suppressed suggestion",
+          timeoutMs: 15_000,
+        });
+
+        expect(followUp.outputText).toContain("same Claude query");
+        expect(events.filter((event) => event.event.type === "prompt_suggestion")).toHaveLength(0);
+        expect(events.filter((event) => event.event.type === "tool_use_summary")).toHaveLength(0);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "mirror_error"
+          && event.event.detail === "late mirror error from the previous turn",
+        )).toBe(false);
+        expect(close).not.toHaveBeenCalled();
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
+        expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();
+        expect(send).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("surfaces Claude worker shutdown when it is the live stream tail", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "worker_shutting_down",
+          session_id: "sdk-session-worker-shutdown",
+          reason: "remote_control_disabled",
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-worker-shutdown",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "show live-tail shutdown",
+        timeoutMs: 15_000,
+      });
+
+      const notices = events
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "system_notice" }> =>
+          event.type === "system_notice",
+        );
+      expect(notices.some((event) =>
+        event.status === "worker_shutting_down"
+        && event.message === "Claude worker is shutting down: remote control disabled",
+      )).toBe(true);
     });
 
     it("trims oversized PostToolUse outputs before they return to Claude", async () => {
@@ -18542,6 +19352,27 @@ describe("createAgentChatService", () => {
       await exitPromise;
 
       yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-exit-plan-suppress",
+            name: "ExitPlanMode",
+            input: { planDescription: "Ship the approved plan." },
+          },
+        },
+      };
+      yield {
+        type: "system",
+        subtype: "permission_denied",
+        session_id: "sdk-session-denial-suppression",
+        tool_name: "ExitPlanMode",
+        tool_use_id: "tool-exit-plan-suppress",
+        decision_reason: "echoed denial from the SDK",
+      };
+      yield {
         type: "result",
         usage: { input_tokens: 1, output_tokens: 1 },
         permission_denials: [
@@ -18588,6 +19419,11 @@ describe("createAgentChatService", () => {
     expect(denialNotices[0]!.message).toContain("Bash");
     expect(denialNotices[0]!.message).not.toContain("ExitPlanMode");
     expect(denialNotices[0]!.message).toMatch(/^1 tool call was denied this turn/);
+    expect(events.filter((envelope) =>
+      envelope.event.type === "tool_result"
+      && envelope.event.itemId === "tool-exit-plan-suppress"
+      && envelope.event.status === "failed"
+    )).toHaveLength(0);
   });
 
   it("bridges Claude AskUserQuestion through ADE's question UI", async () => {

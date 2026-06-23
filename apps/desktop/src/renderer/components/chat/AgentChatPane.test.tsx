@@ -29,10 +29,10 @@ import {
 import {
   AgentChatPane,
   buildParallelLaunchPrompt,
-  cleanupSubagentAutoOpenStorage,
+  cleanupChatActionsAutoOpenStorage,
   cleanupTransientParallelLaunchLanes,
   formatParallelLaunchFailureMessage,
-  getSubagentAutoOpenStorageKey,
+  getChatActionsAutoOpenStorageKey,
   advanceOlderHistoryCursor,
   isMatchingOptimisticUserMessage,
   mergeChatHistorySnapshot,
@@ -1262,6 +1262,41 @@ describe("AgentChatPane companion drawers", () => {
     await waitFor(() => {
       expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
     });
+  });
+
+  it("does not reopen chat actions after tasks arrive while the Agents tab is already open", async () => {
+    const session = buildSession("session-1");
+    const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Agents" }));
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T06:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "todo_update",
+          items: [
+            { id: "task-1", description: "Inspect Claude task events", status: "in_progress" },
+          ],
+        },
+      } as AgentChatEventEnvelope);
+    });
+
+    expect((await screen.findAllByText("Inspect Claude task events")).length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(window.localStorage.getItem(getChatActionsAutoOpenStorageKey(session.sessionId))).toContain("firedAt");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
+    });
+    expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
   });
 
   it("persists split resize from the real divider on a working panel", async () => {
@@ -5352,6 +5387,63 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Background output kept streaming")).toBeTruthy();
   });
 
+  it("keeps Claude prompt suggestions scoped to the selected chat", async () => {
+    const primarySession = buildSession("session-1", {
+      title: "Primary chat",
+      lastActivityAt: "2026-03-24T05:57:45.700Z",
+    });
+    const backgroundSession = buildSession("session-2", {
+      title: "Background chat",
+      lastActivityAt: "2026-03-24T05:57:45.600Z",
+    });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [primarySession, backgroundSession],
+    });
+
+    renderTabbedPane(primarySession);
+
+    const primaryTab = await screen.findByRole("button", { name: /Primary chat/i });
+    const backgroundTab = await screen.findByRole("button", { name: /Background chat/i });
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
+
+    act(() => {
+      emitChatEvent({
+        sessionId: "session-1",
+        timestamp: "2026-03-24T06:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "prompt_suggestion",
+          suggestion: "Continue primary work",
+        },
+      } as AgentChatEventEnvelope);
+      emitChatEvent({
+        sessionId: "session-2",
+        timestamp: "2026-03-24T06:00:01.000Z",
+        sequence: 1,
+        event: {
+          type: "prompt_suggestion",
+          suggestion: "Continue background work",
+        },
+      } as AgentChatEventEnvelope);
+    });
+    expect(setTimeoutSpy.mock.calls.some(([, delay]) => delay === 16)).toBe(false);
+    setTimeoutSpy.mockRestore();
+
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");
+    });
+
+    fireEvent.click(backgroundTab);
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue background work");
+    });
+
+    fireEvent.click(primaryTab);
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");
+    });
+  });
+
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
     const session = buildSession("session-1", { title: "Possibly foreign chat" });
     installAdeMocks({
@@ -6337,9 +6429,9 @@ describe("subagent auto-open storage", () => {
 
   it("expires timestamped auto-open markers and migrates legacy markers", () => {
     const now = Date.parse("2026-05-14T12:00:00.000Z");
-    const freshKey = getSubagentAutoOpenStorageKey("fresh-session");
-    const staleKey = getSubagentAutoOpenStorageKey("stale-session");
-    const legacyKey = getSubagentAutoOpenStorageKey("legacy-session");
+    const freshKey = getChatActionsAutoOpenStorageKey("fresh-session");
+    const staleKey = getChatActionsAutoOpenStorageKey("stale-session");
+    const legacyKey = getChatActionsAutoOpenStorageKey("legacy-session");
     const storage = createStorageShim();
 
     storage.setItem(freshKey, JSON.stringify({ firedAt: now - 60_000 }));
@@ -6347,7 +6439,7 @@ describe("subagent auto-open storage", () => {
     storage.setItem(legacyKey, "1");
     storage.setItem("ade.chat.other", "keep");
 
-    cleanupSubagentAutoOpenStorage(storage, now);
+    cleanupChatActionsAutoOpenStorage(storage, now);
 
     expect(storage.getItem(freshKey)).toBe(JSON.stringify({ firedAt: now - 60_000 }));
     expect(storage.getItem(staleKey)).toBeNull();
