@@ -4983,7 +4983,7 @@ describe("createAgentChatService", () => {
         .some((event) => event.event.type === "prompt_suggestion")).toBe(false);
     });
 
-    it("keeps the live Claude query without replaying late prompt suggestions into the next turn", async () => {
+    it("keeps the live Claude query without replaying late post-result tail messages into the next turn", async () => {
       vi.useFakeTimers();
       try {
         const events: AgentChatEventEnvelope[] = [];
@@ -5021,6 +5021,18 @@ describe("createAgentChatService", () => {
             session_id: "sdk-session-no-suggestion",
             uuid: "late-suggestion-1",
             suggestion: "This suggestion belongs to the previous turn",
+          };
+          yield {
+            type: "tool_use_summary",
+            session_id: "sdk-session-no-suggestion",
+            summary: "This summary belongs to the previous turn",
+            preceding_tool_use_ids: ["late-tool-use-1"],
+          };
+          yield {
+            type: "system",
+            subtype: "mirror_error",
+            session_id: "sdk-session-no-suggestion",
+            error: "late mirror error from the previous turn",
           };
           yield {
             type: "assistant",
@@ -5078,6 +5090,12 @@ describe("createAgentChatService", () => {
 
         expect(followUp.outputText).toContain("same Claude query");
         expect(events.filter((event) => event.event.type === "prompt_suggestion")).toHaveLength(0);
+        expect(events.filter((event) => event.event.type === "tool_use_summary")).toHaveLength(0);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.status === "mirror_error"
+          && event.event.detail === "late mirror error from the previous turn",
+        )).toBe(false);
         expect(close).not.toHaveBeenCalled();
         expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
         expect(claudeSdkResumeSessionCompat).not.toHaveBeenCalled();

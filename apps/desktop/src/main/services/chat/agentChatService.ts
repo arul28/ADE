@@ -11591,20 +11591,51 @@ export function createAgentChatService(args: {
       // The renderer will show the turn as "started" (from the status event above) which is sufficient.
 
       let resultSeen = false;
+      const isStalePostResultTailMessage = (message: SDKMessage): boolean => {
+        const messageType = (message as any).type;
+        if (messageType === "prompt_suggestion" || messageType === "tool_use_summary") {
+          return true;
+        }
+        if (messageType !== "system") {
+          return false;
+        }
+        const subtype = (message as any).subtype;
+        return subtype === "memory_recall"
+          || subtype === "mirror_error"
+          || subtype === "model_refusal_fallback"
+          || subtype === "notification"
+          || subtype === "permission_denied"
+          || subtype === "worker_shutting_down";
+      };
+      const logStalePostResultTailDiscard = (message: SDKMessage): void => {
+        logger.debug("agent_chat.claude_stale_post_result_tail_discarded", {
+          sessionId: managed.session.id,
+          turnId,
+          type: (message as any).type,
+          subtype: typeof (message as any).subtype === "string" ? (message as any).subtype : undefined,
+        });
+      };
       const readNextClaudeTurnMessage = async (): Promise<IteratorResult<SDKMessage, void> | null> => {
         if (!resultSeen) {
+          let discardedPostResultTail = false;
           while (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
             const pending = runtime.pendingPostResultNext;
             runtime.pendingPostResultNext = null;
             const replayed = await pending;
-            if (!replayed.done && (replayed.value as any).type === "prompt_suggestion") {
-              logger.debug("agent_chat.claude_late_prompt_suggestion_discarded", {
-                sessionId: managed.session.id,
-                turnId,
-              });
+            if (!replayed.done && isStalePostResultTailMessage(replayed.value)) {
+              discardedPostResultTail = true;
+              logStalePostResultTailDiscard(replayed.value);
               continue;
             }
             return replayed;
+          }
+          while (discardedPostResultTail) {
+            const next = await sessionQuery.next();
+            if (!next.done && isStalePostResultTailMessage(next.value)) {
+              logStalePostResultTailDiscard(next.value);
+              continue;
+            }
+            return next;
           }
           return await sessionQuery.next();
         }
