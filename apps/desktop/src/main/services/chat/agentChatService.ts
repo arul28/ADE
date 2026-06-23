@@ -11615,13 +11615,26 @@ export function createAgentChatService(args: {
           subtype: typeof (message as any).subtype === "string" ? (message as any).subtype : undefined,
         });
       };
+      const logPostResultDrainRejected = (error: unknown): void => {
+        logger.debug("agent_chat.claude_post_result_drain_rejected", {
+          sessionId: managed.session.id,
+          turnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      };
       const readNextClaudeTurnMessage = async (): Promise<IteratorResult<SDKMessage, void> | null> => {
         if (!resultSeen) {
           let discardedPostResultTail = false;
           while (runtime.pendingPostResultNext && runtime.query === sessionQuery) {
             const pending = runtime.pendingPostResultNext;
             runtime.pendingPostResultNext = null;
-            const replayed = await pending;
+            let replayed: IteratorResult<SDKMessage, void>;
+            try {
+              replayed = await pending;
+            } catch (error) {
+              logPostResultDrainRejected(error);
+              continue;
+            }
             if (!replayed.done && isStalePostResultTailMessage(replayed.value)) {
               discardedPostResultTail = true;
               logStalePostResultTailDiscard(replayed.value);
@@ -11653,6 +11666,12 @@ export function createAgentChatService(args: {
             runtime.pendingPostResultNext = null;
           }
           return drained;
+        } catch (error) {
+          if (runtime.pendingPostResultNext === nextMessage) {
+            runtime.pendingPostResultNext = null;
+          }
+          logPostResultDrainRejected(error);
+          return null;
         } finally {
           if (timeoutHandle) clearTimeout(timeoutHandle);
         }

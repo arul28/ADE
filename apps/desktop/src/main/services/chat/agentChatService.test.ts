@@ -5098,6 +5098,67 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("keeps completed Claude turns successful when the post-result drain rejects", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "assistant",
+          session_id: "sdk-session-drain-rejects",
+          message: {
+            content: [{ type: "text", text: "Finished before the drain failed." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          session_id: "sdk-session-drain-rejects",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        throw new Error("SDK worker closed after result");
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-drain-rejects",
+      } as any);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-drain-rejects",
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      const result = await service.runSessionTurn({
+        sessionId: session.id,
+        text: "finish even if the post-result drain rejects",
+        timeoutMs: 15_000,
+      });
+
+      expect(result.outputText).toContain("Finished before the drain failed");
+      expect(events.some((event) =>
+        event.event.type === "status"
+        && event.event.turnStatus === "failed",
+      )).toBe(false);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "done",
+            status: "completed",
+          }),
+        }),
+      ]));
+    });
+
     it("keeps the live Claude query without replaying late post-result tail messages into the next turn", async () => {
       vi.useFakeTimers();
       try {
