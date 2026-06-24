@@ -303,6 +303,14 @@ describe("buildTrackedCliStartupCommand", () => {
       }
     });
 
+    it("keeps empty Codex CLI launches waiting for the next user task", () => {
+      const launch = buildTrackedCliLaunchCommand({ provider: "codex", permissionMode: "default" });
+
+      expect(launch.initialInput).toContain("ADE session guidance");
+      expect(launch.initialInput).toContain("wait for the user's next instruction before taking action");
+      expect(launch.initialInput).not.toContain("User prompt:");
+    });
+
     it("passes no extra flags for config-toml", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "config-toml" });
       expect(command).toContain("codex --no-alt-screen");
@@ -356,6 +364,8 @@ describe("buildTrackedCliStartupCommand", () => {
       ]));
       expect(launch.args.join("\n")).not.toContain("ADE session guidance");
       expect(launch.initialInput).toContain("ADE session guidance");
+      expect(launch.initialInput).toContain("Start working on that user prompt immediately.");
+      expect(launch.initialInput).not.toContain("wait for the user's next instruction before taking action");
       expect(launch.initialInput).toContain("User prompt:");
       expect(launch.initialInput).toContain("Fix the failing Work tests.");
       expect(launch.startupCommand).toContain("model_reasoning_effort");
