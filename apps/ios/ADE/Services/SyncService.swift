@@ -9423,9 +9423,7 @@ extension SyncService {
 
     activeSessions = allAgents
     awaitingInputSessionsCount = awaitingInputCount
-    runningChatSessionCount = sessions.filter { session in
-      session.status == "running" && (session.toolType?.contains("chat") == true)
-    }.count
+    runningChatSessionCount = runningAgents.count
     idleSessionsCount = idleCount
 
     scheduleWorkspaceSnapshotWrite()
@@ -9568,6 +9566,7 @@ private final class SyncTailnetProbe {
       let complete: (ProbeResult) -> Void = { result in
         guard !completed else { return }
         completed = true
+        connection.stateUpdateHandler = nil
         connection.cancel()
         continuation.resume(returning: result)
       }
@@ -9575,7 +9574,9 @@ private final class SyncTailnetProbe {
         switch state {
         case .ready:
           complete(.reachable)
-        case .waiting(let error), .failed(let error):
+        case .waiting:
+          break
+        case .failed(let error):
           complete(Self.probeResult(for: error))
         case .cancelled:
           complete(.unreachable)

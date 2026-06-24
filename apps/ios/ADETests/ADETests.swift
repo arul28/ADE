@@ -4653,9 +4653,7 @@ final class ADETests: XCTestCase {
     defer { database.close() }
 
     try insertHydrationProjectGraph(into: database)
-    let setupNotificationsDrained = expectation(description: "setup lane snapshot notifications drained")
-    DispatchQueue.main.async { setupNotificationsDrained.fulfill() }
-    wait(for: [setupNotificationsDrained], timeout: 1)
+    drainMainQueueForTesting()
 
     let firstNotification = expectation(description: "first lane snapshot notification")
     let firstToken = NotificationCenter.default.addObserver(
@@ -4684,27 +4682,22 @@ final class ADETests: XCTestCase {
 
     try database.replaceLaneSnapshots([snapshot.lane], snapshots: [snapshot])
     wait(for: [firstNotification], timeout: 2)
-    let firstWriteNotificationsDrained = expectation(description: "first lane snapshot write notifications drained")
-    DispatchQueue.main.async { firstWriteNotificationsDrained.fulfill() }
-    wait(for: [firstWriteNotificationsDrained], timeout: 1)
+    drainMainQueueForTesting()
 
-    let noExtraNotification = expectation(description: "no extra lane snapshot notification")
-    noExtraNotification.isInverted = true
-    let noExtraFulfilled = ManagedAtomicFlag()
+    let noExtraNotificationObserved = ManagedAtomicFlag()
     let noExtraToken = NotificationCenter.default.addObserver(
       forName: .adeDatabaseDidChange,
       object: nil,
       queue: nil
     ) { notification in
       guard notificationTouches(notification, anyOf: ["lanes", "lane_state_snapshots", "lane_list_snapshots", "lane_detail_snapshots"]) else { return }
-      if noExtraFulfilled.setIfUnset() {
-        noExtraNotification.fulfill()
-      }
+      _ = noExtraNotificationObserved.setIfUnset()
     }
     defer { NotificationCenter.default.removeObserver(noExtraToken) }
 
     try database.replaceLaneSnapshots([snapshot.lane], snapshots: [snapshot])
-    wait(for: [noExtraNotification], timeout: 0.2)
+    drainMainQueueForTesting()
+    XCTAssertFalse(noExtraNotificationObserved.isSet)
   }
 
   func testDatabaseReplaceLaneDetailCachesRichLanePayload() throws {
@@ -4832,9 +4825,7 @@ final class ADETests: XCTestCase {
     defer { database.close() }
 
     try insertHydrationProjectGraph(into: database)
-    let setupNotificationsDrained = expectation(description: "setup lane detail notifications drained")
-    DispatchQueue.main.async { setupNotificationsDrained.fulfill() }
-    wait(for: [setupNotificationsDrained], timeout: 1)
+    drainMainQueueForTesting()
 
     let firstNotification = expectation(description: "first lane detail notification")
     let firstToken = NotificationCenter.default.addObserver(
@@ -4882,27 +4873,22 @@ final class ADETests: XCTestCase {
 
     try database.replaceLaneDetail(detail)
     wait(for: [firstNotification], timeout: 2)
-    let firstWriteNotificationsDrained = expectation(description: "first lane detail write notifications drained")
-    DispatchQueue.main.async { firstWriteNotificationsDrained.fulfill() }
-    wait(for: [firstWriteNotificationsDrained], timeout: 1)
+    drainMainQueueForTesting()
 
-    let noExtraNotification = expectation(description: "no extra lane detail notification")
-    noExtraNotification.isInverted = true
-    let noExtraFulfilled = ManagedAtomicFlag()
+    let noExtraNotificationObserved = ManagedAtomicFlag()
     let noExtraToken = NotificationCenter.default.addObserver(
       forName: .adeDatabaseDidChange,
       object: nil,
       queue: nil
     ) { notification in
       guard notificationTouches(notification, anyOf: ["lane_detail_snapshots"]) else { return }
-      if noExtraFulfilled.setIfUnset() {
-        noExtraNotification.fulfill()
-      }
+      _ = noExtraNotificationObserved.setIfUnset()
     }
     defer { NotificationCenter.default.removeObserver(noExtraToken) }
 
     try database.replaceLaneDetail(detail)
-    wait(for: [noExtraNotification], timeout: 0.2)
+    drainMainQueueForTesting()
+    XCTAssertFalse(noExtraNotificationObserved.isSet)
   }
 
   func testDatabaseReplaceTerminalSessionsHydratesHostSessionProjection() throws {
@@ -8204,6 +8190,17 @@ final class ADETests: XCTestCase {
 
     try database.replaceTerminalSessions([
       makeTerminalSessionSummary(
+        id: "running-chat",
+        laneId: "lane-1",
+        laneName: "Primary",
+        toolType: "codex-chat",
+        runtimeState: "running",
+        status: "running",
+        title: "Mobile running chat",
+        lastOutputPreview: "Still streaming",
+        startedAt: recentIso8601Fixture()
+      ),
+      makeTerminalSessionSummary(
         id: "failed-chat",
         laneId: "lane-1",
         laneName: "Primary",
@@ -8223,6 +8220,16 @@ final class ADETests: XCTestCase {
         status: "completed",
         title: "Completed chat",
         startedAt: "2026-04-20T00:02:00.000Z"
+      ),
+      makeTerminalSessionSummary(
+        id: "stale-running-chat",
+        laneId: "lane-1",
+        laneName: "Primary",
+        toolType: "codex-chat",
+        runtimeState: "stopped",
+        status: "running",
+        title: "Stale running chat",
+        startedAt: "2026-04-20T00:02:15.000Z"
       ),
       makeTerminalSessionSummary(
         id: "awaiting-chat",
@@ -8250,6 +8257,8 @@ final class ADETests: XCTestCase {
     let service = SyncService(database: database)
     service.refreshActiveSessionsAndSnapshot()
 
+    let running = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "running-chat" }))
+    XCTAssertEqual(running.status, "running")
     let failed = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "failed-chat" }))
     XCTAssertEqual(failed.status, "failed")
     XCTAssertEqual(failed.title, "Mobile failed chat")
@@ -8260,6 +8269,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(awaiting.title, "Mobile awaiting chat")
     XCTAssertTrue(awaiting.awaitingInput)
     XCTAssertEqual(service.awaitingInputSessionsCount, 1)
+    XCTAssertEqual(service.runningChatSessionCount, 1)
+    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "stale-running-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
     database.close()
@@ -13029,6 +13040,23 @@ private final class ManagedAtomicFlag {
     stored = true
     return true
   }
+
+  var isSet: Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    return stored
+  }
+}
+
+private func drainMainQueueForTesting(
+  timeout: TimeInterval = 1,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) {
+  let expectation = XCTestExpectation(description: "main queue drained")
+  DispatchQueue.main.async { expectation.fulfill() }
+  let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
+  XCTAssertEqual(result, .completed, file: file, line: line)
 }
 
 private func notificationTouches(_ notification: Notification, anyOf tables: Set<String>) -> Bool {
