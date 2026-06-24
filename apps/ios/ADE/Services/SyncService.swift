@@ -9336,6 +9336,7 @@ extension SyncService {
     // Completed / ended sessions are dropped since they're terminal.
     var allAgents: [AgentSnapshot] = []
     var runningAgents: [AgentSnapshot] = []
+    var runningChatCount = 0
     var awaitingInputCount = 0
     var idleCount = 0
 
@@ -9363,6 +9364,7 @@ extension SyncService {
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
+      if isRunningRuntime && !isFailedStatus { runningChatCount += 1 }
 
       let started = Self.parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -9423,7 +9425,7 @@ extension SyncService {
 
     activeSessions = allAgents
     awaitingInputSessionsCount = awaitingInputCount
-    runningChatSessionCount = runningAgents.count
+    runningChatSessionCount = runningChatCount
     idleSessionsCount = idleCount
 
     scheduleWorkspaceSnapshotWrite()

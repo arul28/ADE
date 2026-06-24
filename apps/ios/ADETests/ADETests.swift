@@ -8255,6 +8255,12 @@ final class ADETests: XCTestCase {
     ])
 
     let service = SyncService(database: database)
+    service.cacheChatSummary(makeAgentChatSessionSummary(
+      sessionId: "running-chat",
+      laneId: "lane-1",
+      status: "active",
+      lastActivityAt: "2026-04-20T00:00:00.000Z"
+    ))
     service.refreshActiveSessionsAndSnapshot()
 
     let running = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "running-chat" }))
