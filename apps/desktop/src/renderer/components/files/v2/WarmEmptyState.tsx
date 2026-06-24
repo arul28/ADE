@@ -20,8 +20,8 @@ function Shortcut({ keys }: { keys: string[] }) {
 }
 
 /**
- * Editor-area state when no file is open. VSCode-style: a faded monochrome ADE
- * mark over a soft purple wash, with the content sitting naturally on the
+ * Editor-area state when no file is open. VSCode-style: an accent ADE mark over
+ * a soft workspace wash, with the content sitting naturally on the
  * background (no card / no rail), a primary search action, and recents.
  */
 export function WarmEmptyState({
@@ -45,18 +45,17 @@ export function WarmEmptyState({
       className="relative flex h-full min-h-0 flex-col items-center justify-center overflow-auto p-8"
       style={{ background: "color-mix(in srgb, var(--color-card) 80%, var(--color-accent) 16%)" }}
     >
-      {/* Faded monochrome brand mark */}
       <img
         src="./logo.png"
         alt=""
         aria-hidden
         className="pointer-events-none mb-6 select-none"
-        style={{ width: 200, filter: "grayscale(1) brightness(1.4)", opacity: 0.07 }}
+        style={{ width: 200, filter: "drop-shadow(0 18px 42px color-mix(in srgb, var(--color-accent) 28%, transparent))", opacity: 0.16 }}
       />
 
       <div className="w-full max-w-md">
         <div className="flex items-baseline gap-2">
-          <span className="text-sm font-semibold" style={{ color: COLORS.textSecondary }}>
+          <span className="text-sm font-semibold" style={{ color: COLORS.textPrimary }}>
             {workspaceName ?? "Files"}
           </span>
           {branch ? (
@@ -65,8 +64,8 @@ export function WarmEmptyState({
             </span>
           ) : null}
         </div>
-        <div className="mt-0.5 text-xs" style={{ color: COLORS.textDim }}>
-          Open a file from the explorer, or search the workspace.
+        <div className="mt-0.5 text-xs" style={{ color: COLORS.textMuted }}>
+          Pick a file from the explorer, or search this workspace.
         </div>
 
         {/* Primary action */}

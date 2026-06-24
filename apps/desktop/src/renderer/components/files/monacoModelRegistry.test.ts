@@ -17,6 +17,10 @@ function createFakeMonaco() {
       isDisposed: () => disposed,
       getValue: () => content,
       getAlternativeVersionId: () => version,
+      setValue: vi.fn((next: string) => {
+        content = next;
+        version += 1;
+      }),
       // Test helper: simulate an edit bumping the version id.
       __edit: () => {
         version += 1;
@@ -132,6 +136,33 @@ describe("monacoModelRegistry", () => {
     model.__edit();
     expect(registry.isDirty("a")).toBe(true);
     expect(registry.getValue("a")).toBe("hello");
+  });
+
+  it("refreshes a clean open model from disk without marking it dirty", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    const model = registry.getOrCreate(monaco, "a", "first", "plaintext") as any;
+    const refreshed = registry.refreshClean(monaco, "a", "second", "markdown");
+
+    expect(refreshed).toBe(true);
+    expect(model.setValue).toHaveBeenCalledWith("second");
+    expect(model.getValue()).toBe("second");
+    expect(registry.isDirty("a")).toBe(false);
+  });
+
+  it("does not refresh a dirty open model from disk", () => {
+    const { monaco } = createFakeMonaco();
+    const registry = createMonacoModelRegistry();
+
+    const model = registry.getOrCreate(monaco, "a", "mine", "plaintext") as any;
+    model.__edit();
+    const refreshed = registry.refreshClean(monaco, "a", "theirs", "plaintext");
+
+    expect(refreshed).toBe(false);
+    expect(model.setValue).not.toHaveBeenCalled();
+    expect(model.getValue()).toBe("mine");
+    expect(registry.isDirty("a")).toBe(true);
   });
 
   it("recreates a model whose underlying instance was disposed externally", () => {

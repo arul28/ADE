@@ -67,6 +67,39 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("next/send");
   });
 
+  it("renders every legacy request-level option", () => {
+    const approval: PendingApproval = {
+      itemId: "legacy-question",
+      description: "Choose one option.",
+      highStakes: false,
+      mode: "question",
+      request: {
+        requestId: "legacy-question",
+        source: "codex",
+        kind: "question",
+        title: "Choose one option",
+        description: "Choose one option.",
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        questions: [],
+        options: Array.from({ length: 8 }, (_, index) => ({
+          label: `Option ${index + 1}`,
+          value: `option-${index + 1}`,
+        })),
+      },
+    };
+
+    const frame = stripAnsi(render(
+      <ApprovalPrompt approval={approval} width={100} />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("1 Option 1");
+    expect(frame).toContain("6 Option 6");
+    expect(frame).toContain("7 Option 7");
+    expect(frame).toContain("8 Option 8");
+  });
+
   it("renders orchestration model-selection briefing metadata", () => {
     const approval: PendingApproval = {
       itemId: "model-1",

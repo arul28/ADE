@@ -21,6 +21,7 @@ export function CodeViewer({
   onDirtyChange,
   onEdit,
   onRegisterEditorApi,
+  onError,
 }: ViewerProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -28,8 +29,8 @@ export function CodeViewer({
   const changeSubRef = useRef<Monaco.IDisposable | null>(null);
   const dirtyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Latest props for use inside long-lived Monaco callbacks.
-  const ctxRef = useRef({ workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, readOnly });
-  ctxRef.current = { workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, readOnly };
+  const ctxRef = useRef({ workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly });
+  ctxRef.current = { workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly };
 
   const apiRef = useRef<EditorApi | null>(null);
   const registeredPathRef = useRef<string | null>(null);
@@ -90,7 +91,9 @@ export function CodeViewer({
 
       // Cmd/Ctrl+S → format + save on the focused editor.
       editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-        void save();
+        void save().catch((err) => {
+          ctxRef.current.onError?.(err instanceof Error ? err.message : String(err));
+        });
       });
 
       const api: EditorApi = {
@@ -142,7 +145,7 @@ export function CodeViewer({
     attachModel(monaco, editor);
     registerApiForActivePath();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.path, content.content]);
+  }, [tab.path, content.content, content.languageId]);
 
   // React to readOnly / theme without recreating the editor.
   useEffect(() => {
@@ -154,6 +157,7 @@ export function CodeViewer({
 
   function attachModel(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCodeEditor) {
     const language = resolveLanguageId(tab.path, content.languageId);
+    registry.refreshClean(monaco, tab.path, content.content, language);
     const model = registry.getOrCreate(monaco, tab.path, content.content, language);
     if (editor.getModel() !== model) {
       editor.setModel(model);

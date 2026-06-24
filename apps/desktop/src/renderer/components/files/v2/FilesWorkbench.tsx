@@ -5,6 +5,7 @@ import { useAppStore } from "../../../state/appStore";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
 import { resolveLanguageId } from "../filePresentation";
 import { FilesExplorer, type FilesExplorerContextMenuEvent } from "../FilesExplorer";
+import { clearDirtyBuffersForWorkspace, replaceDirtyBufferValuesForWorkspace } from "../../../lib/dirtyWorkspaceBuffers";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
   applyGitStatusToTree,
@@ -37,7 +38,7 @@ import {
 } from "./editorGroupsStore";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
-import { forgetRecentFile, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
+import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
@@ -74,6 +75,10 @@ function pathAncestors(path: string): string[] {
     out.push(segments.slice(0, i).join("/"));
   }
   return out;
+}
+
+function pathIsAtOrUnder(path: string, target: string): boolean {
+  return path === target || path.startsWith(`${target}/`) || path.startsWith(`${target}\\`);
 }
 
 /**
@@ -142,6 +147,8 @@ export function FilesWorkbench({
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
+  const [dirtyBufferRevision, setDirtyBufferRevision] = useState(0);
+  const [reloadTokensByPath, setReloadTokensByPath] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<
     | null
@@ -168,6 +175,10 @@ export function FilesWorkbench({
   workspaceIdRef.current = workspaceId;
   const treeRef = useRef(tree);
   treeRef.current = tree;
+  const rootPathRef = useRef(rootPath);
+  rootPathRef.current = rootPath;
+  const dirtyPathsRef = useRef(dirtyPaths);
+  dirtyPathsRef.current = dirtyPaths;
 
   const store = useEditorGroupsStore();
   const groupsState = store.sessions[sessionKey] ?? createInitialGroupsState();
@@ -195,6 +206,12 @@ export function FilesWorkbench({
     () => new Set(Object.values(groupsState.groups).flatMap((g) => g.tabs.map((t) => t.path))).size,
     [groupsState.groups],
   );
+  const openTabPaths = useMemo(
+    () => new Set(Object.values(groupsState.groups).flatMap((g) => g.tabs.map((t) => t.path))),
+    [groupsState.groups],
+  );
+  const openTabPathsRef = useRef(openTabPaths);
+  openTabPathsRef.current = openTabPaths;
   const knownRootPaths = useMemo(() => new Set(tree.map((node) => node.path)), [tree]);
   const recentFiles = getRecentFiles(sessionKey);
   const visibleRecentFiles = useMemo(
@@ -210,6 +227,80 @@ export function FilesWorkbench({
     if (tree.length === 0) return;
     pruneMissingRootRecentFiles(sessionKey, knownRootPaths);
   }, [knownRootPaths, sessionKey, tree.length]);
+
+  const dirtyPathsUnder = useCallback(
+    (target: string): string[] => [...dirtyPaths].filter((path) => pathIsAtOrUnder(path, target)),
+    [dirtyPaths],
+  );
+
+  const confirmDiscardDirtyPaths = useCallback((paths: readonly string[], action: string): boolean => {
+    if (paths.length === 0) return true;
+    const label = paths.length === 1 ? `"${paths[0]}" has` : `${paths.length} files have`;
+    return window.confirm(`${label} unsaved changes. ${action} anyway?`);
+  }, []);
+
+  const pruneClosedPathState = useCallback((shouldPrune: (path: string) => boolean) => {
+    setDirtyPaths((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const path of prev) {
+        if (shouldPrune(path)) {
+          changed = true;
+        } else {
+          next.add(path);
+        }
+      }
+      return changed ? next : prev;
+    });
+    setReloadTokensByPath((prev) => {
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [path, token] of Object.entries(prev)) {
+        if (shouldPrune(path)) {
+          changed = true;
+        } else {
+          next[path] = token;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setDirtyBufferRevision((revision) => revision + 1);
+  }, []);
+
+  const selectWorkspace = useCallback(
+    (nextWorkspaceId: string) => {
+      if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
+      if (!confirmDiscardDirtyPaths([...dirtyPaths], "Switch workspaces")) return;
+      clearDirtyBuffersForWorkspace(rootPath);
+      setDirtyPaths(new Set());
+      setDirtyBufferRevision((revision) => revision + 1);
+      setReloadTokensByPath({});
+      setWorkspaceId(nextWorkspaceId);
+    },
+    [confirmDiscardDirtyPaths, dirtyPaths, rootPath, workspaceId],
+  );
+
+  useEffect(() => {
+    if (!active || dirtyPaths.size === 0) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [active, dirtyPaths.size]);
+
+  useEffect(() => {
+    if (!rootPath) return;
+    const buffers = [...dirtyPaths].flatMap((path) => {
+      const content = registryRef.current.getValue(path);
+      return content == null ? [] : [{ path, content }];
+    });
+    replaceDirtyBufferValuesForWorkspace(rootPath, buffers);
+    return () => {
+      clearDirtyBuffersForWorkspace(rootPath);
+    };
+  }, [dirtyBufferRevision, dirtyPaths, rootPath]);
 
   /* ---- Workspace resolution ---- */
   useEffect(() => {
@@ -247,13 +338,19 @@ export function FilesWorkbench({
     if (!workspaces.length) return;
     const laneChanged = lastGlobalLaneIdRef.current !== globalLaneId;
     lastGlobalLaneIdRef.current = globalLaneId;
-    setWorkspaceId((current) => {
-      if (!laneChanged && current && workspaces.some((candidate) => candidate.id === current)) {
-        return current;
-      }
-      return defaultFilesWorkspaceId(workspaces, globalLaneId) || current;
-    });
-  }, [workspaces, globalLaneId]);
+    const current = workspaceIdRef.current;
+    if (!laneChanged && current && workspaces.some((candidate) => candidate.id === current)) return;
+    const next = defaultFilesWorkspaceId(workspaces, globalLaneId) || current;
+    if (next && next !== current) {
+      const dirty = [...dirtyPathsRef.current];
+      if (dirty.length > 0 && !confirmDiscardDirtyPaths(dirty, "Switch workspaces")) return;
+      clearDirtyBuffersForWorkspace(rootPathRef.current);
+      setDirtyPaths(new Set());
+      setDirtyBufferRevision((revision) => revision + 1);
+      setReloadTokensByPath({});
+      setWorkspaceId(next);
+    }
+  }, [workspaces, globalLaneId, confirmDiscardDirtyPaths]);
 
   /* ---- Tree loading ---- */
   const refreshTreeGitDecorations = useCallback(
@@ -303,6 +400,9 @@ export function FilesWorkbench({
     setExpanded(new Set());
     setLoadingDirs(new Set());
     setError(null);
+    setDirtyPaths(new Set());
+    setDirtyBufferRevision((revision) => revision + 1);
+    setReloadTokensByPath({});
     void refreshRoot();
     const registry = registryRef.current;
     return () => {
@@ -507,6 +607,9 @@ export function FilesWorkbench({
       // Drop the cached content for the changed path so a reopen re-reads disk.
       invalidateFileContent(ev.workspaceId, ev.path);
       if (ev.oldPath) invalidateFileContent(ev.workspaceId, ev.oldPath);
+      if (openTabPathsRef.current.has(ev.path) && !dirtyPathsRef.current.has(ev.path)) {
+        setReloadTokensByPath((prev) => ({ ...prev, [ev.path]: (prev[ev.path] ?? 0) + 1 }));
+      }
       enqueuePathRefresh(ev.path);
       enqueuePathRefresh(ev.oldPath);
       if (timer) clearTimeout(timer);
@@ -617,18 +720,14 @@ export function FilesWorkbench({
         if (!ok) return;
       }
       registryRef.current.dispose(path);
-      setDirtyPaths((prev) => {
-        if (!prev.has(path)) return prev;
-        const next = new Set(prev);
-        next.delete(path);
-        return next;
-      });
+      pruneClosedPathState((candidate) => candidate === path);
       applyGroups((s) => closeTab(s, groupId, path));
     },
-    [applyGroups, dirtyPaths],
+    [applyGroups, dirtyPaths, pruneClosedPathState],
   );
 
   const handleDirtyChange = useCallback((path: string, dirty: boolean) => {
+    setDirtyBufferRevision((revision) => revision + 1);
     setDirtyPaths((prev) => {
       const has = prev.has(path);
       if (has === dirty) return prev;
@@ -679,18 +778,37 @@ export function FilesWorkbench({
   // applying, so dispose isn't run inside a reducer.
   const closeOpenTabsUnder = useCallback(
     (target: string) => {
-      const matches = (p: string) => p === target || p.startsWith(`${target}/`);
       const toClose: Array<{ gid: string; path: string }> = [];
       for (const gid of groupsState.groupOrder) {
         const g = groupsState.groups[gid];
         if (!g) continue;
-        for (const t of g.tabs) if (matches(t.path)) toClose.push({ gid, path: t.path });
+        for (const t of g.tabs) if (pathIsAtOrUnder(t.path, target)) toClose.push({ gid, path: t.path });
       }
       if (toClose.length === 0) return;
       for (const { path } of toClose) registryRef.current.dispose(path);
+      pruneClosedPathState((path) => pathIsAtOrUnder(path, target));
       applyGroups((s) => toClose.reduce((acc, { gid, path }) => closeTab(acc, gid, path), s));
     },
-    [groupsState, applyGroups],
+    [groupsState, pruneClosedPathState, applyGroups],
+  );
+
+  const handleCloseOthers = useCallback(
+    (groupId: string, keepPath: string) => {
+      const group = groupsState.groups[groupId];
+      if (!group) return;
+      const closing = group.tabs
+        .filter((tab) => tab.path !== keepPath && !tab.pinned)
+        .map((tab) => tab.path);
+      const dirtyClosing = closing.filter((path) => dirtyPaths.has(path));
+      if (!confirmDiscardDirtyPaths(dirtyClosing, "Close them")) return;
+      for (const path of closing) registryRef.current.dispose(path);
+      if (closing.length > 0) {
+        const closingSet = new Set(closing);
+        pruneClosedPathState((path) => closingSet.has(path));
+      }
+      applyGroups((s) => closeOtherTabs(s, groupId, keepPath));
+    },
+    [applyGroups, confirmDiscardDirtyPaths, dirtyPaths, groupsState.groups, pruneClosedPathState],
   );
 
   const renamePath = useCallback(
@@ -700,17 +818,18 @@ export function FilesWorkbench({
         setError("This workspace is read-only.");
         return;
       }
+      if (!confirmDiscardDirtyPaths(dirtyPathsUnder(sourcePath), "Rename it")) return;
       try {
         await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
         return;
       }
-      forgetRecentFile(sessionKey, sourcePath);
+      forgetRecentFilesUnder(sessionKey, sourcePath);
       closeOpenTabsUnder(sourcePath); // old path/tabs are stale after rename
       await refreshRoot();
     },
-    [workspaceId, canEdit, sessionKey, refreshRoot, closeOpenTabsUnder],
+    [workspaceId, canEdit, confirmDiscardDirtyPaths, dirtyPathsUnder, sessionKey, closeOpenTabsUnder, refreshRoot],
   );
 
   const deletePath = useCallback(
@@ -722,16 +841,17 @@ export function FilesWorkbench({
       }
       const ok = window.confirm(`Delete "${path}"? This cannot be undone.`);
       if (!ok) return;
+      if (!confirmDiscardDirtyPaths(dirtyPathsUnder(path), "Delete it")) return;
       try {
         await window.ade.files.delete({ workspaceId, path });
-        forgetRecentFile(sessionKey, path);
+        forgetRecentFilesUnder(sessionKey, path);
         closeOpenTabsUnder(path);
         await refreshRoot();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, canEdit, sessionKey, refreshRoot, closeOpenTabsUnder],
+    [workspaceId, canEdit, confirmDiscardDirtyPaths, dirtyPathsUnder, sessionKey, closeOpenTabsUnder, refreshRoot],
   );
 
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
@@ -834,9 +954,9 @@ export function FilesWorkbench({
     return (
       <div
         className="flex h-full items-center justify-center text-sm"
-        style={{ color: COLORS.textDim, background: "color-mix(in srgb, var(--color-card) 80%, var(--color-accent) 16%)" }}
+        style={{ color: COLORS.textMuted, background: "color-mix(in srgb, var(--color-card) 76%, var(--color-accent) 18%)" }}
       >
-        {settledEmpty ? "No files workspace for this project." : "Loading files…"}
+        {settledEmpty ? "No files workspace for this project." : "Loading files workspace…"}
       </div>
     );
   }
@@ -860,7 +980,7 @@ export function FilesWorkbench({
           style={{ borderColor: COLORS.border, background: "color-mix(in srgb, var(--color-card) 80%, var(--color-bg) 20%)" }}
         >
           {!embedded ? (
-            <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={setWorkspaceId} />
+            <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
           ) : null}
           {showEnableEditing ? (
             <button
@@ -926,15 +1046,17 @@ export function FilesWorkbench({
             theme={theme}
             registry={registryRef.current}
             dirtyPaths={dirtyPaths}
+            reloadTokensByPath={reloadTokensByPath}
             onActivateTab={(groupId, path) => applyGroups((s) => activateTab(s, groupId, path))}
             onCloseTab={handleCloseTab}
-            onCloseOthers={(groupId, path) => applyGroups((s) => closeOtherTabs(s, groupId, path))}
+            onCloseOthers={handleCloseOthers}
             onPinTab={(groupId, path) => applyGroups((s) => pinTab(s, groupId, path))}
             onSplitTab={(groupId, path) => applyGroups((s) => splitTabToNewGroup(s, groupId, path, groupId, "right"))}
             onPromoteTab={(groupId, path) => applyGroups((s) => promoteFromPreview(s, groupId, path))}
             onFocusGroup={(groupId) => applyGroups((s) => ({ ...s, activeGroupId: groupId }))}
             onSplit={(groupId) => applyGroups((s) => splitGroup(s, groupId))}
             onDirtyChange={handleDirtyChange}
+            onError={setError}
             onTabDragStart={handleTabDragStart}
             onTabDragEnd={handleTabDragEnd}
             onTabDrop={handleTabDrop}

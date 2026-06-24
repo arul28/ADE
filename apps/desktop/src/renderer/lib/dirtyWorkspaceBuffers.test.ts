@@ -3,6 +3,7 @@ import {
   clearDirtyBuffersForWorkspace,
   getDirtyFileTextForWindow,
   replaceDirtyBuffersForWorkspace,
+  replaceDirtyBufferValuesForWorkspace,
 } from "./dirtyWorkspaceBuffers";
 
 describe("dirtyWorkspaceBuffers", () => {
@@ -46,5 +47,22 @@ describe("dirtyWorkspaceBuffers", () => {
     ]);
 
     expect(getDirtyFileTextForWindow("/repo/src/App.tsx")).toBeUndefined();
+  });
+
+  it("replaces dirty buffers from explicit current values", () => {
+    replaceDirtyBufferValuesForWorkspace("/repo", [
+      { path: "src/App.tsx", content: "dirty app" },
+      { path: "/repo/README.md", content: "dirty readme" },
+    ]);
+
+    expect(getDirtyFileTextForWindow("/repo/src/App.tsx")).toBe("dirty app");
+    expect(getDirtyFileTextForWindow("/repo/README.md")).toBe("dirty readme");
+
+    replaceDirtyBufferValuesForWorkspace("/repo", [
+      { path: "src/App.tsx", content: "new dirty app" },
+    ]);
+
+    expect(getDirtyFileTextForWindow("/repo/src/App.tsx")).toBe("new dirty app");
+    expect(getDirtyFileTextForWindow("/repo/README.md")).toBeUndefined();
   });
 });

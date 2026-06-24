@@ -25,6 +25,7 @@ export type ViewerHostProps = {
   onDirtyChange?: (path: string, dirty: boolean) => void;
   onEdit?: (path: string) => void;
   onRegisterEditorApi?: (path: string, api: EditorApi | null) => void;
+  onError?: (message: string) => void;
 };
 
 /**
@@ -53,6 +54,7 @@ export function ViewerHost(props: ViewerHostProps) {
     onDirtyChange: props.onDirtyChange,
     onEdit: props.onEdit,
     onRegisterEditorApi: props.onRegisterEditorApi,
+    onError: props.onError,
   };
 
   // Non-code viewers carry per-file view state (zoom, page, scroll), so key them

@@ -2272,6 +2272,24 @@ function activeMention(value: string): { start: number; query: string } | null {
   };
 }
 
+export const MENTION_REMOTE_DEBOUNCE_MS = 160;
+const STARTUP_RECONNECT_DELAY_MS = 3_000;
+
+type MentionRemoteCacheEntry = {
+  filesByQuery: Map<string, Array<{ path: string }>>;
+  commits: Array<Record<string, unknown>> | null;
+  prs: Array<Record<string, unknown>> | null;
+};
+
+function mentionRemoteCacheEntry(cache: Map<string, MentionRemoteCacheEntry>, laneId: string): MentionRemoteCacheEntry {
+  let entry = cache.get(laneId);
+  if (!entry) {
+    entry = { filesByQuery: new Map(), commits: null, prs: null };
+    cache.set(laneId, entry);
+  }
+  return entry;
+}
+
 function useTerminalDimensions(): [number, number] {
   const read = (): [number, number] => [
     process.stdout.columns ?? 120,
@@ -2298,9 +2316,9 @@ export function stableInkViewportRows(terminalRows: number): number {
 function useTerminalAlternateScroll(): void {
   useEffect(() => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return;
-    process.stdout.write("\x1b[?1007h");
+    process.stdout.write(terminalAlternateScrollEnableSequence());
     return () => {
-      process.stdout.write("\x1b[?1007l");
+      process.stdout.write(terminalAlternateScrollDisableSequence());
     };
   }, []);
 }
@@ -2308,9 +2326,9 @@ function useTerminalAlternateScroll(): void {
 function useTerminalAlternateScreen(): void {
   useEffect(() => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return;
-    process.stdout.write("\x1b[?1049h");
+    process.stdout.write(terminalAlternateScreenEnableSequence());
     return () => {
-      process.stdout.write("\x1b[?1049l");
+      process.stdout.write(terminalAlternateScreenDisableSequence());
     };
   }, []);
 }
@@ -2537,8 +2555,49 @@ export function terminalMouseTrackingDisableSequence(): string {
   return "\x1b[?1015l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 }
 
+export function terminalAlternateScrollEnableSequence(): string {
+  return "\x1b[?1007h";
+}
+
+export function terminalAlternateScrollDisableSequence(): string {
+  return "\x1b[?1007l";
+}
+
+export function terminalAlternateScreenEnableSequence(): string {
+  return "\x1b[?1049h";
+}
+
+export function terminalAlternateScreenDisableSequence(): string {
+  return "\x1b[?1049l";
+}
+
+export function terminalInteractiveRestoreSequence(): string {
+  return `${terminalMouseTrackingDisableSequence()}${terminalAlternateScrollDisableSequence()}${terminalAlternateScreenDisableSequence()}`;
+}
+
 function disableTerminalMouseTracking(): void {
   process.stdout.write(terminalMouseTrackingDisableSequence());
+}
+
+function restoreTerminalInteractiveModes(): void {
+  if (!process.stdout.isTTY) return;
+  process.stdout.write(terminalInteractiveRestoreSequence());
+}
+
+let terminalRestoreHookRefCount = 0;
+
+function registerTerminalProcessRestore(): () => void {
+  if (!process.stdout.isTTY) return () => {};
+  terminalRestoreHookRefCount += 1;
+  if (terminalRestoreHookRefCount === 1) {
+    process.on("exit", restoreTerminalInteractiveModes);
+  }
+  return () => {
+    terminalRestoreHookRefCount = Math.max(0, terminalRestoreHookRefCount - 1);
+    if (terminalRestoreHookRefCount === 0) {
+      process.removeListener("exit", restoreTerminalInteractiveModes);
+    }
+  };
 }
 
 function enableTerminalMouseTracking(): void {
@@ -2557,6 +2616,10 @@ function useTerminalMouseTracking(): void {
       disableTerminalMouseTracking();
     };
   }, []);
+}
+
+function useTerminalProcessRestore(): void {
+  useEffect(() => registerTerminalProcessRestore(), []);
 }
 
 const DRAWER_PANE_MIN_WIDTH = 32;
@@ -2837,8 +2900,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useTerminalAlternateScreen();
   useTerminalAlternateScroll();
   useTerminalMouseTracking();
+  useTerminalProcessRestore();
   const [connection, setConnection] = useState<AdeCodeConnection | null>(null);
   const [mode, setMode] = useState<RuntimeMode | "connecting">("connecting");
+  const [connectionRetrySeq, setConnectionRetrySeq] = useState(0);
   // True after an attached socket drops unexpectedly, until we re-attach. Drives
   // the reconnect probe below and a one-shot "reconnecting…" notice.
   const [connectionLost, setConnectionLost] = useState(false);
@@ -3056,6 +3121,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const lastSeenAtBottomEventCountRef = useRef(0);
   const newChatPreviewLaneIdRef = useRef<string | null>(null);
   const heartbeatRef = useRef<TuiHeartbeat | null>(null);
+  const connectionRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mentionRemoteCacheRef = useRef<Map<string, MentionRemoteCacheEntry>>(new Map());
   const draftSeededFromHistoryRef = useRef(false);
   const initialNewChatPreviewRef = useRef(true);
   const attachProbeInFlightRef = useRef(false);
@@ -6185,7 +6252,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     const range = activeMentionRange;
     const conn = connectionRef.current;
-    const laneId = activeLaneIdRef.current;
+    const laneId = activeLaneId;
     if (!range) {
       setMentionSuggestions([]);
       setMentionIndex(0);
@@ -6193,7 +6260,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     let cancelled = false;
     const query = range.query.toLowerCase();
-    const localSuggestions: MentionSuggestion[] = [
+    const localSuggestions = (): MentionSuggestion[] => [
       ...lanes.map((lane) => ({
         kind: "lane" as const,
         label: lane.name,
@@ -6212,7 +6279,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       || suggestion.insertText.toLowerCase().includes(query)
       || suggestion.detail?.toLowerCase().includes(query)
     ));
-    const attachedSuggestions = selectedMentions
+    const attachedSuggestions = (): MentionSuggestion[] => selectedMentions
       .filter((suggestion) => suggestion.attachment && suggestion.filePath)
       .filter((suggestion) => (
         !query
@@ -6221,23 +6288,55 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         || suggestion.detail?.toLowerCase().includes(query)
       ));
 
+    const publishSuggestions = (remote: MentionSuggestion[] = []) => {
+      if (cancelled) return;
+      const next = [...localSuggestions(), ...remote, ...attachedSuggestions()].slice(0, 10);
+      setMentionSuggestions(next);
+      setMentionIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
+    };
+    publishSuggestions();
+
     const loadRemoteSuggestions = async () => {
       const remote: MentionSuggestion[] = [];
       if (conn && laneId) {
-        const [files, commits, prs] = await Promise.all([
-          query
-            ? conn.action<Array<{ path: string }>>("file", "quickOpen", {
-                workspaceId: laneId,
-                query,
-                limit: 5,
-              }).catch(() => [])
-            : Promise.resolve([]),
-          conn.action<Array<Record<string, unknown>>>("git", "listRecentCommits", {
+        const cache = mentionRemoteCacheEntry(mentionRemoteCacheRef.current, laneId);
+        const filesPromise = query
+          ? cache.filesByQuery.get(query)
+            ? Promise.resolve(cache.filesByQuery.get(query)!)
+            : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
+              workspaceId: laneId,
+              query,
+              limit: 5,
+            }))
+              .then((files) => {
+                const safeFiles = Array.isArray(files) ? files : [];
+                cache.filesByQuery.set(query, safeFiles);
+                return safeFiles;
+              })
+              .catch(() => [])
+          : Promise.resolve([] as Array<{ path: string }>);
+        const commitsPromise = cache.commits
+          ? Promise.resolve(cache.commits)
+          : Promise.resolve(conn.action<Array<Record<string, unknown>>>("git", "listRecentCommits", {
             laneId,
             limit: 8,
-          }).catch(() => []),
-          conn.action<Array<Record<string, unknown>>>("pr", "listAll", { laneId }).catch(() => []),
-        ]);
+          }))
+            .then((commits) => {
+              const safeCommits = Array.isArray(commits) ? commits : [];
+              cache.commits = safeCommits;
+              return safeCommits;
+            })
+            .catch(() => []);
+        const prsPromise = cache.prs
+          ? Promise.resolve(cache.prs)
+          : Promise.resolve(conn.action<Array<Record<string, unknown>>>("pr", "listAll", { laneId }))
+            .then((prs) => {
+              const safePrs = Array.isArray(prs) ? prs : [];
+              cache.prs = safePrs;
+              return safePrs;
+            })
+            .catch(() => []);
+        const [files, commits, prs] = await Promise.all([filesPromise, commitsPromise, prsPromise]);
         remote.push(...files.map((file) => ({
           kind: "file" as const,
           label: file.path,
@@ -6278,16 +6377,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             };
           }));
       }
-      if (cancelled) return;
-      const next = [...localSuggestions, ...remote, ...attachedSuggestions].slice(0, 10);
-      setMentionSuggestions(next);
-      setMentionIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
+      publishSuggestions(remote);
     };
-    void loadRemoteSuggestions();
+    const timer = setTimeout(() => {
+      void loadRemoteSuggestions();
+    }, MENTION_REMOTE_DEBOUNCE_MS);
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
-  }, [activeMentionRange, displaySessions, lanes, selectedMentions]);
+  }, [activeLaneId, activeMentionRange, connection, displaySessions, lanes, selectedMentions]);
 
   const refreshState = useCallback(async (options: RefreshStateOptions = {}) => {
     const conn = connectionRef.current;
@@ -6751,8 +6850,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     await signalTerminal(conn, terminal.terminalId, "SIGKILL").catch(() => undefined);
   }, [resolveActiveTerminalForExit]);
 
+  const retryStartupConnection = useCallback(() => {
+    if (connectionRetryTimerRef.current) {
+      clearTimeout(connectionRetryTimerRef.current);
+      connectionRetryTimerRef.current = null;
+    }
+    setError(null);
+    setMode("connecting");
+    setConnectionRetrySeq((seq) => seq + 1);
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
+    if (connectionRetryTimerRef.current) {
+      clearTimeout(connectionRetryTimerRef.current);
+      connectionRetryTimerRef.current = null;
+    }
+    setMode("connecting");
+    setError(null);
     void (async () => {
       try {
         const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote: remoteLaunch });
@@ -6764,6 +6879,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ? null
           : startTuiHeartbeat(project.projectRoot, {
             beforeSignalExit: () => {
+              restoreTerminalInteractiveModes();
               signalActiveTerminalForExitSync();
               return signalActiveTerminalForExit();
             },
@@ -6781,13 +6897,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setEvents([]);
         await refreshState();
       } catch (err) {
+        if (cancelled) return;
         heartbeatRef.current?.stop();
         heartbeatRef.current = null;
-        setError(err instanceof Error ? err.message : String(err));
+        const message = err instanceof Error ? err.message : String(err);
+        setError(`${message} · Retrying automatically. Press r to retry now, Ctrl+C to quit.`);
+        setMode("connecting");
+        connectionRetryTimerRef.current = setTimeout(() => {
+          connectionRetryTimerRef.current = null;
+          setConnectionRetrySeq((seq) => seq + 1);
+        }, STARTUP_RECONNECT_DELAY_MS);
+        connectionRetryTimerRef.current.unref?.();
       }
     })();
     return () => {
       cancelled = true;
+      if (connectionRetryTimerRef.current) {
+        clearTimeout(connectionRetryTimerRef.current);
+        connectionRetryTimerRef.current = null;
+      }
       heartbeatRef.current?.stop();
       heartbeatRef.current = null;
       if (lastChatByLaneWriteTimerRef.current) {
@@ -6814,7 +6942,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       connectionRef.current = null;
       void conn?.close().catch(() => {});
     };
-  }, [forceEmbedded, preferServiceRepair, project, remoteLaunch, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
+  }, [connectionRetrySeq, forceEmbedded, preferServiceRepair, project, remoteLaunch, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
   // Stable handle to the latest refreshState so the chat-event subscription can
   // call it without listing refreshState as a dependency (its identity churns on
@@ -7665,6 +7793,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const requestAppExit = useCallback(() => {
     if (exitRequestedRef.current) return;
     exitRequestedRef.current = true;
+    restoreTerminalInteractiveModes();
     signalActiveTerminalForExitSync();
     void signalActiveTerminalForExit()
       .finally(() => exit());
@@ -9628,7 +9757,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setStreaming(false);
-      setError(message);
       if (submittedValue.trim() || promptAttachments.length) {
         setPrompt(submittedValue);
         promptRef.current = submittedValue;
@@ -10644,6 +10772,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addModeRows, chatRowBudget, goalBannerRows]);
 
   useInput((input, key) => {
+    if (!connectionRef.current && error) {
+      if (isCtrlInput(input, key, "c")) {
+        requestAppExit();
+        return;
+      }
+      if (!key.ctrl && !key.meta && (input === "r" || input === "R")) {
+        retryStartupConnection();
+        return;
+      }
+      if (printableInput(input) || key.return || key.upArrow || key.downArrow) return;
+    }
     if (attachedTerminalIdRef.current) {
       if (input === "\x1d" || isTerminalControlToggle(input, key)) {
         setAttachedTerminalId(null);
@@ -11299,7 +11438,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // When the slash-command suggester or @-mention list is open, ↑/↓ belong
       // exclusively to that palette (handled just below) — don't let cursor /
       // history movement swallow them.
-      const slashOrMentionOpen = slashRows.length > 0 || (activeMentionRange != null && mentionSuggestions.length > 0);
+      const slashOrMentionOpen = prompt.startsWith("/") || activeMentionRange != null;
       if (key.upArrow && !slashOrMentionOpen) {
         if (prompt.length === 0 && attachedImageChips.length === 0) {
           recallPromptHistory("previous");
@@ -11338,7 +11477,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const pageDown = Boolean((key as { pageDown?: boolean }).pageDown);
       const home = Boolean((key as { home?: boolean }).home);
       const end = Boolean((key as { end?: boolean }).end);
-      const paletteOpen = (activeMentionRange != null && mentionSuggestions.length > 0) || slashRows.length > 0;
+      const paletteOpen = activeMentionRange != null || prompt.startsWith("/");
       const pageRows = Math.max(1, chatRowBudget - 2);
       if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0 && !pendingQuestionKeyActive) {
         setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
@@ -12757,13 +12896,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const agentsFooterSelected = footerControl === "agents";
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
   const showCommandPalette = commandPaletteOpen;
-  const showMentionPalette = activeMentionRange != null && mentionSuggestions.length > 0;
-  const showSlashPalette = prompt.startsWith("/") && slashRows.length > 0;
+  const showMentionPalette = activeMentionRange != null;
+  const showSlashPalette = prompt.startsWith("/");
+  const errorRows = error ? (!connection ? 2 : 1) : 0;
   const paletteBottomRows = 5
     + (promptRows.length - 1)
     + modelStatusOverlayRows
     + (attachedImageChips.length ? 1 : 0)
-    + (error ? 1 : 0);
+    + errorRows;
   // Slash palette grows with available terminal height (clamped) so it's bigger
   // on large screens. Reserve exactly what it will render so it lines up.
   const slashPaletteHeightBudget = Math.max(8, Math.min(17, rows - paletteBottomRows - 4));
@@ -13792,7 +13932,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     chatRowBudget
       + 2
       - (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) ? 1 : 0)
-      - (error ? 1 : 0)
+      - errorRows
       - (attachedImageChips.length ? 1 : 0)
       - (modeChangeNotice ? 3 : 0),
   );
@@ -13830,6 +13970,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       <Box flexDirection="column">
         <Text color="red">ade-code failed to start</Text>
         <Text>{error}</Text>
+        <Text color={theme.color.mutedFg} dimColor>r retry now · Ctrl+C quit</Text>
       </Box>
     );
   }
@@ -14019,14 +14160,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             />
           </Box>
         ) : null}
-        {error ? <Text color="red">{error}</Text> : null}
+        {error ? (
+          <Box paddingX={1} flexShrink={0} flexDirection="column">
+            <Text color="red">{error}</Text>
+            {!connection ? <Text color={theme.color.mutedFg} dimColor>{"r retry now · Ctrl+C quit"}</Text> : null}
+          </Box>
+        ) : null}
         {attachedImageChips.length ? (
           <Box paddingX={1} flexShrink={0} flexDirection="row" flexWrap="wrap">
             {attachedImageChips.map((chip, index) => {
               const selected = attachmentFocusIndex === index;
               return (
               <Box key={chip.key} marginRight={1}>
-                <Text color={selected ? theme.color.violet : theme.color.accent}>{selected ? "▣ " : "▣ "}</Text>
+                <Text color={selected ? theme.color.violet : theme.color.accent}>{selected ? "▣ " : "▢ "}</Text>
                 <Text inverse={selected}>{chip.label}</Text>
                 {chip.dimensions ? <Text color={theme.color.mutedFg} dimColor={!selected}>{` ${chip.dimensions}`}</Text> : null}
               </Box>

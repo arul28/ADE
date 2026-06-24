@@ -22,6 +22,7 @@ export type EditorGroupsProps = {
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   dirtyPaths: ReadonlySet<string>;
+  reloadTokensByPath: Readonly<Record<string, number>>;
   onActivateTab: (groupId: string, path: string) => void;
   onCloseTab: (groupId: string, path: string) => void;
   onCloseOthers: (groupId: string, path: string) => void;
@@ -31,6 +32,7 @@ export type EditorGroupsProps = {
   onFocusGroup: (groupId: string) => void;
   onSplit: (groupId: string) => void;
   onDirtyChange: (path: string, dirty: boolean) => void;
+  onError: (message: string) => void;
   onTabDragStart: (groupId: string, path: string) => void;
   onTabDragEnd: () => void;
   onTabDrop: (groupId: string) => void;
@@ -83,6 +85,7 @@ export function EditorGroups(props: EditorGroupsProps) {
               theme={props.theme}
               registry={props.registry}
               dirtyPaths={props.dirtyPaths}
+              reloadTokensByPath={props.reloadTokensByPath}
               onActivateTab={props.onActivateTab}
               onCloseTab={props.onCloseTab}
               onCloseOthers={props.onCloseOthers}
@@ -92,6 +95,7 @@ export function EditorGroups(props: EditorGroupsProps) {
               onFocusGroup={props.onFocusGroup}
               onSplit={props.onSplit}
               onDirtyChange={props.onDirtyChange}
+              onError={props.onError}
               onTabDragStart={props.onTabDragStart}
               onTabDragEnd={props.onTabDragEnd}
               onTabDrop={props.onTabDrop}

@@ -103,8 +103,10 @@ and unmount. Do not dispose models on tab switch, theme change, read-only
 toggle, or group move.
 
 Dirty tracking is based on Monaco alternative version ids. A save writes
-through `files.writeTextAtomic`, updates the model baseline, invalidates the
-content cache, and refreshes git decorations.
+through the files write bridge, updates the model baseline, invalidates the
+content cache, and refreshes git decorations. The group-level save handler
+also catches `Cmd+S` / `Ctrl+S` while a code tab is in diff mode, saving the
+hidden Monaco model without forcing the user back to edit mode.
 
 ## Viewers
 
@@ -180,9 +182,10 @@ Registered through the global keybinding service
   force large files through the editable Monaco viewer. Media playback has a
   fixed byte cap so large videos are handed off instead of loaded into
   renderer memory.
-- **Tab ordering.** Editor group order lives in renderer memory for the
-  session key. Persisting it across full reloads belongs to future
-  editor-state work.
+- **Session warmth.** Editor group order lives in renderer memory for the
+  session key. Recent files are persisted in local storage per session key,
+  bounded to the warm empty-state list, and pruned on rename/delete/tree
+  refresh so stale root-level paths do not linger.
 
 ## Cross-Links
 

@@ -234,7 +234,7 @@ export function SearchOverlay({
                               style={{ background: idx === active ? COLORS.accentSubtle : "transparent" }}
                             >
                               <span className="shrink-0 tabular-nums" style={{ color: COLORS.textDim, minWidth: 28 }}>{m.line}</span>
-                              <span className="truncate font-mono" style={{ color: COLORS.textMuted }}>{m.preview}</span>
+                              <span className="truncate font-sans" style={{ color: COLORS.textMuted }}>{m.preview}</span>
                             </button>
                           );
                         })}

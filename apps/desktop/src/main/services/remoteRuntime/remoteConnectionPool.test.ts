@@ -368,21 +368,14 @@ describe("RemoteConnectionPool", () => {
         expect.any(Function),
       );
 
-      pool.disconnect(target.id);
-      await Promise.resolve();
-      await expect(new Promise<void>((resolve, reject) => {
-        const socket = net.createConnection({
-          host: firstForward.localHost,
-          port: firstForward.localPort,
-        });
-        socket.once("connect", () => {
-          socket.destroy();
-          resolve();
-        });
-        socket.once("error", reject);
-      })).rejects.toBeTruthy();
+      await pool.disconnect(target.id);
+      await expect(pool.ensureLocalPortForward(target.id, {
+        remotePort: upstreamPort,
+        label: "preview",
+      })).rejects.toThrow(/not connected/i);
+      expect(ssh.forwardOut).toHaveBeenCalledTimes(1);
     } finally {
-      pool.dispose();
+      await pool.dispose();
       await closeServer(upstream);
     }
   });

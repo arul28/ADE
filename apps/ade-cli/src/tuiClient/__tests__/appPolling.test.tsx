@@ -52,7 +52,7 @@ vi.mock("../adeApi", async () => {
   };
 });
 
-import { AdeCodeApp, isLaneWorktreeAvailable, shouldHydrateRefreshHistory } from "../app";
+import { AdeCodeApp, isLaneWorktreeAvailable, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
 
 const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousReactActEnvironment: boolean | undefined;
@@ -257,6 +257,67 @@ describe("AdeCodeApp polling", () => {
     expect(mocks.startTuiHeartbeat).not.toHaveBeenCalled();
 
     await unmountApp(instance);
+  });
+
+  it("shows startup retry guidance and automatically reconnects", async () => {
+    mocks.connectToAde
+      .mockRejectedValueOnce(new Error("socket down"))
+      .mockResolvedValueOnce(connection);
+
+    const instance = render(<AdeCodeApp project={project} />);
+    await flushAsyncEffects();
+
+    expect(instance.lastFrame()).toContain("r retry now");
+    expect(mocks.connectToAde).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000);
+    });
+    await flushAsyncEffects();
+
+    expect(mocks.connectToAde).toHaveBeenCalledTimes(2);
+
+    instance.unmount();
+  });
+
+  it("debounces mention RPCs and caches lane git/pr suggestions", async () => {
+    mocks.listChatSessions.mockResolvedValue([chat({ status: "idle" })]);
+    const actionMock = vi.fn(async (domain: string, action: string, args?: Record<string, unknown>) => {
+      if (domain === "file" && action === "quickOpen") return [{ path: `src/${String(args?.query ?? "query")}.ts` }];
+      if (domain === "git" && action === "listRecentCommits") return [{ shortSha: "abc1234", subject: "Mention cache" }];
+      if (domain === "pr" && action === "listAll") return [{ id: "42", number: 42, title: "Mention PR" }];
+      return [];
+    });
+    connection.action = actionMock as unknown as AdeCodeConnection["action"];
+
+    const instance = render(<AdeCodeApp project={project} />);
+    await flushAsyncEffects();
+
+    await act(async () => {
+      instance.stdin.write("@a");
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS - 1);
+    });
+    await flushAsyncEffects();
+
+    expect(connection.action).not.toHaveBeenCalledWith("git", "listRecentCommits", expect.anything());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    await flushAsyncEffects();
+
+    await act(async () => {
+      instance.stdin.write("b");
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
+    });
+    await flushAsyncEffects();
+
+    const calls = actionMock.mock.calls;
+    expect(calls.filter(([domain, action]) => domain === "file" && action === "quickOpen")).toHaveLength(2);
+    expect(calls.filter(([domain, action]) => domain === "git" && action === "listRecentCommits")).toHaveLength(1);
+    expect(calls.filter(([domain, action]) => domain === "pr" && action === "listAll")).toHaveLength(1);
+
+    instance.unmount();
   });
 });
 
