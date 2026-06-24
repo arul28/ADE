@@ -1,6 +1,6 @@
 # ADE Code (terminal Work chat)
 
-`ade code` is a terminal-native client for the same **Work** agent chat surface the Electron app exposes in `AgentChatPane`. It targets agents and operators who prefer a shell-first workflow: Ink + React render the TUI, while chat transcripts, slash commands, lane navigation, model picks, and ADE actions all flow through the same JSON-RPC contracts the desktop uses.
+`ade code` is a terminal-native client for the same **Work** agent chat surface the Electron app exposes in `AgentChatPane`. It targets agents and operators who prefer a shell-first workflow: Ink + React render the TUI, while chat transcripts, slash commands, lane navigation, model picks, and ADE actions all flow through the same JSON-RPC contracts the desktop uses. The TUI owns its own runtime UI stack in `apps/ade-cli` (`ink@7` + React 19); the Electron renderer stays on its separate React dependency graph.
 
 It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proof artifacts live in the per-machine ADE runtime (`ade serve`). `ade code` attaches to that runtime, drives a single project scope, and renders incoming events.
 

@@ -8,6 +8,7 @@ import {
   clampChatScrollOffsetRows,
   cycleLaneDeleteScope,
   deletePromptBackward,
+  deletePromptForKey,
   deletePromptForward,
   deletePreviousPromptLine,
   deletePreviousPromptWord,
@@ -1433,6 +1434,8 @@ describe("prompt editing helpers", () => {
     expect(deletePromptBackward("hello world", 5)).toEqual({ value: "hell world", cursor: 4 });
     expect(deletePromptBackward("hello world", 5, "word")).toEqual({ value: " world", cursor: 0 });
     expect(deletePromptForward("hello world", 5)).toEqual({ value: "helloworld", cursor: 5 });
+    expect(deletePromptForKey("hello world", 5, { backspace: true })).toEqual({ value: "hell world", cursor: 4 });
+    expect(deletePromptForKey("hello world", 5, { delete: true })).toEqual({ value: "helloworld", cursor: 5 });
   });
 
   it("does not split multi-byte characters when editing or wrapping", () => {

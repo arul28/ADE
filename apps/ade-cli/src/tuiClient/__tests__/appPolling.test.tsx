@@ -1,6 +1,6 @@
 import React from "react";
 import { act } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "ink-testing-library";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
@@ -53,6 +53,22 @@ vi.mock("../adeApi", async () => {
 });
 
 import { AdeCodeApp, isLaneWorktreeAvailable, shouldHydrateRefreshHistory } from "../app";
+
+const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+let previousReactActEnvironment: boolean | undefined;
+
+beforeAll(() => {
+  previousReactActEnvironment = reactActGlobal.IS_REACT_ACT_ENVIRONMENT;
+  reactActGlobal.IS_REACT_ACT_ENVIRONMENT = true;
+});
+
+afterAll(() => {
+  if (previousReactActEnvironment === undefined) {
+    delete reactActGlobal.IS_REACT_ACT_ENVIRONMENT;
+  } else {
+    reactActGlobal.IS_REACT_ACT_ENVIRONMENT = previousReactActEnvironment;
+  }
+});
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
@@ -110,6 +126,22 @@ async function flushAsyncEffects() {
   });
 }
 
+async function renderApp(element: React.ReactElement): Promise<ReturnType<typeof render>> {
+  let instance: ReturnType<typeof render> | null = null;
+  await act(async () => {
+    instance = render(element);
+  });
+  await flushAsyncEffects();
+  return instance!;
+}
+
+async function unmountApp(instance: ReturnType<typeof render>) {
+  await act(async () => {
+    instance.unmount();
+  });
+  await flushAsyncEffects();
+}
+
 describe("AdeCodeApp polling", () => {
   let chatListeners: Set<(event: AgentChatEventEnvelope) => void>;
   let connection: AdeCodeConnection;
@@ -164,8 +196,7 @@ describe("AdeCodeApp polling", () => {
   });
 
   it("polls summary refreshes without hydrating chat history", async () => {
-    const instance = render(<AdeCodeApp project={project} />);
-    await flushAsyncEffects();
+    const instance = await renderApp(<AdeCodeApp project={project} />);
 
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
@@ -177,12 +208,11 @@ describe("AdeCodeApp polling", () => {
     expect(mocks.listChatSessions).toHaveBeenCalledTimes(2);
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
-    instance.unmount();
+    await unmountApp(instance);
   });
 
   it("refreshes summaries for background chat events without hydrating active history", async () => {
-    const instance = render(<AdeCodeApp project={project} />);
-    await flushAsyncEffects();
+    const instance = await renderApp(<AdeCodeApp project={project} />);
 
     expect(chatListeners.size).toBe(1);
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
@@ -196,7 +226,7 @@ describe("AdeCodeApp polling", () => {
     expect(mocks.listChatSessions).toHaveBeenCalledTimes(2);
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
-    instance.unmount();
+    await unmountApp(instance);
   });
 
   it("starts remote project launches from remote context instead of local saved lane state", async () => {
@@ -218,8 +248,7 @@ describe("AdeCodeApp polling", () => {
     ]);
     mocks.listChatSessions.mockResolvedValue([]);
 
-    const instance = render(<AdeCodeApp project={{ ...project, remote: true }} remote />);
-    await flushAsyncEffects();
+    const instance = await renderApp(<AdeCodeApp project={{ ...project, remote: true }} remote />);
 
     const frame = instance.lastFrame() ?? "";
     expect(frame).toContain("branch");
@@ -227,7 +256,7 @@ describe("AdeCodeApp polling", () => {
     expect(frame).not.toContain("saved/client-lane");
     expect(mocks.startTuiHeartbeat).not.toHaveBeenCalled();
 
-    instance.unmount();
+    await unmountApp(instance);
   });
 });
 

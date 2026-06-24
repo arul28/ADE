@@ -2044,6 +2044,16 @@ export function deletePromptForward(value: string, cursor: number): PromptEditRe
   };
 }
 
+export function deletePromptForKey(
+  value: string,
+  cursor: number,
+  key: { backspace?: boolean; delete?: boolean },
+): PromptEditResult {
+  return key.delete && !key.backspace
+    ? deletePromptForward(value, cursor)
+    : deletePromptBackward(value, cursor);
+}
+
 // Apply a possibly-coalesced input chunk to the prompt, character by character.
 // Ink emits multiple fast keystrokes as ONE chunk and only recognizes a *lone*
 // DEL/BS byte as backspace — so a burst like "x\x7f" (type then delete) arrives
@@ -11589,9 +11599,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (key.backspace || key.delete) {
         selectFooterControl(null);
-        // See the prompt handler below: Ink can't distinguish ⌫ from forward-
-        // delete, so always delete backward.
-        const next = deletePromptBackward(prompt, promptCursorRef.current);
+        const next = deletePromptForKey(prompt, promptCursorRef.current, key);
         handlePromptChange(next.value, next.cursor);
         return;
       }
@@ -12637,12 +12645,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (textInputActive && (key.backspace || key.delete)) {
-      // Ink 5.x reports the macOS Backspace key (\x7f) as key.delete — and it
-      // can't tell it apart from forward-delete (\x1b[3~): both arrive as
-      // key.delete with empty input. So always delete backward, which is what
-      // pressing ⌫ should do. (Forward-delete is unrecoverable here and rare in
-      // a chat prompt.) This is THE fix for "backspace does nothing".
-      const next = deletePromptBackward(prompt, promptCursorRef.current);
+      const next = deletePromptForKey(prompt, promptCursorRef.current, key);
       handlePromptChange(next.value, next.cursor);
       return;
     }

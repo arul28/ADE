@@ -186,7 +186,7 @@ Build outputs (configured in `apps/desktop/tsup.config.ts`):
 
 ### 2.3 ADE Code terminal client (`ade code`)
 
-Terminal-native **Work** chat client (Ink + React) for agents and power users who live in a shell, built into `apps/ade-cli/src/tuiClient/`. It is a peer of the desktop client, not a wrapper around it: it speaks the same multi-project JSON-RPC surface and binds to an ADE runtime the same way.
+Terminal-native **Work** chat client (Ink 7 + React 19) for agents and power users who live in a shell, built into `apps/ade-cli/src/tuiClient/`. Its UI dependencies live under `apps/ade-cli` and are intentionally independent of the desktop renderer's React stack. It is a peer of the desktop client, not a wrapper around it: it speaks the same multi-project JSON-RPC surface and binds to an ADE runtime the same way.
 
 - **Attached mode** (default): connects to `$ADE_HOME/sock/ade.sock`, or to an explicit endpoint passed on the parent `ade` invocation. Starts the brain if the endpoint is missing.
 - **Embedded mode**: `--embedded` / `--headless` runs the shared `apps/ade-cli` services in-process without going through a machine brain. Used when no brain endpoint or manual runtime endpoint is reachable.
