@@ -410,6 +410,27 @@ func syncConnectPortCandidates(primaryPort: Int, addresses: [String]) -> [Int] {
     .filter { seen.insert($0).inserted }
 }
 
+struct SyncConnectionEndpointAttempt: Equatable {
+  var address: String
+  var port: Int
+}
+
+func syncConnectionEndpointAttempts(
+  addresses: [String],
+  ports: [Int]
+) -> [SyncConnectionEndpointAttempt] {
+  guard let primaryPort = ports.first else { return [] }
+  let primaryAttempts = addresses.map { address in
+    SyncConnectionEndpointAttempt(address: address, port: primaryPort)
+  }
+  let fallbackAttempts = ports.dropFirst().flatMap { port in
+    addresses.map { address in
+      SyncConnectionEndpointAttempt(address: address, port: port)
+    }
+  }
+  return primaryAttempts + fallbackAttempts
+}
+
 func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> String? {
   guard let endpoint = syncParseRouteEndpoint(rawHost) else { return nil }
   let port = endpoint.port ?? defaultPort
@@ -1404,6 +1425,10 @@ final class SyncService: ObservableObject {
   /// Chat sessions currently waiting on user input. Surfaced as a count chip
   /// instead of a roster row so old "awaiting" zombies don't pile up visually.
   @Published private(set) var awaitingInputSessionsCount: Int = 0
+
+  /// Chat sessions currently reported as running. Kept as published state so
+  /// SwiftUI tab rendering never synchronously enters SQLite from `body`.
+  @Published private(set) var runningChatSessionCount: Int = 0
 
   /// Chat sessions paused / idle (connected but not producing output). Counted
   /// for context but never listed.
@@ -3289,32 +3314,27 @@ final class SyncService: ObservableObject {
       guard !addressCandidates.isEmpty else {
         throw noConnectableAddressError()
       }
-      for candidate in addressCandidates {
+      for attempt in syncConnectionEndpointAttempts(addresses: addressCandidates, ports: portCandidates) {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
-        let kind = addressCandidateKind(candidate, profile: nil, explicitTailscaleAddress: normalizedTailscaleAddress)
-        for candidatePort in portCandidates {
-          syncConnectLog.info("ADE_SYNC_TRACE pair attempt host=\(candidate, privacy: .public) port=\(candidatePort) kind=\(kind, privacy: .public)")
-          do {
-            try await openSocket(
-              host: candidate,
-              port: candidatePort,
-              connectAttemptGeneration: connectAttemptGeneration
-            )
-            syncConnectLog.info("ADE_SYNC_TRACE pair success host=\(candidate, privacy: .public) port=\(candidatePort)")
-            openedAddress = candidate
-            openedPort = candidatePort
-            break
-          } catch {
-            syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(candidate, privacy: .public) port=\(candidatePort) error=\(syncLogErrorSummary(error), privacy: .public)")
-            lastOpenError = error
-            teardownSocket()
-            continue
-          }
-        }
-        if openedAddress != nil {
+        let kind = addressCandidateKind(attempt.address, profile: nil, explicitTailscaleAddress: normalizedTailscaleAddress)
+        syncConnectLog.info("ADE_SYNC_TRACE pair attempt host=\(attempt.address, privacy: .public) port=\(attempt.port) kind=\(kind, privacy: .public)")
+        do {
+          try await openSocket(
+            host: attempt.address,
+            port: attempt.port,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
+          syncConnectLog.info("ADE_SYNC_TRACE pair success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
+          openedAddress = attempt.address
+          openedPort = attempt.port
           break
+        } catch {
+          syncConnectLog.info("ADE_SYNC_TRACE pair failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(error), privacy: .public)")
+          lastOpenError = error
+          teardownSocket()
+          continue
         }
       }
       guard let preferredAddress = openedAddress, let preferredPort = openedPort else {
@@ -3873,12 +3893,6 @@ final class SyncService: ObservableObject {
 
   func stopProcess(laneId: String, processId: String) async throws {
     _ = try await sendCommand(action: "processes.stop", args: ["laneId": laneId, "processId": processId])
-  }
-
-  var runningChatSessionCount: Int {
-    database.fetchSessions().filter { session in
-      session.status == "running" && (session.toolType?.contains("chat") == true)
-    }.count
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) async throws -> [ComputerUseArtifactSummary] {
@@ -6809,48 +6823,46 @@ final class SyncService: ObservableObject {
       )
     }
 
-    for address in racedAddresses {
+    for attempt in syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates) {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }
-      let kind = addressCandidateKind(address, profile: profile, explicitTailscaleAddress: nil)
-      for candidatePort in portCandidates {
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(address, privacy: .public) port=\(candidatePort) kind=\(kind, privacy: .public)")
-        do {
-          try await openSocket(
-            host: address,
-            port: candidatePort,
-            connectAttemptGeneration: connectAttemptGeneration,
-            publishConnecting: publishConnecting
-          )
-          try await hello(
-            host: address,
-            port: candidatePort,
-            token: token,
-            authKind: profile.authKind,
-            pairedDeviceId: profile.pairedDeviceId,
-            expectedHostIdentity: profile.hostIdentity,
-            connectAttemptGeneration: connectAttemptGeneration
-          )
-          guard isCurrentConnectAttempt(connectAttemptGeneration) else {
-            throw CancellationError()
-          }
-          syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(address, privacy: .public) port=\(candidatePort)")
-          return (host: address, port: candidatePort)
-        } catch {
-          let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: address)
-          syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(address, privacy: .public) port=\(candidatePort) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
-          lastFailure = reconnectError
-          if shouldInvalidateSavedPairing(for: reconnectError) {
-            forgetHost()
-            throw reconnectError
-          }
-          // Tear down this attempt's socket and keep iterating through the
-          // remaining ports and addresses. Only surface an error if every
-          // candidate fails.
-          teardownSocket()
-          continue
+      let kind = addressCandidateKind(attempt.address, profile: profile, explicitTailscaleAddress: nil)
+      syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(attempt.address, privacy: .public) port=\(attempt.port) kind=\(kind, privacy: .public)")
+      do {
+        try await openSocket(
+          host: attempt.address,
+          port: attempt.port,
+          connectAttemptGeneration: connectAttemptGeneration,
+          publishConnecting: publishConnecting
+        )
+        try await hello(
+          host: attempt.address,
+          port: attempt.port,
+          token: token,
+          authKind: profile.authKind,
+          pairedDeviceId: profile.pairedDeviceId,
+          expectedHostIdentity: profile.hostIdentity,
+          connectAttemptGeneration: connectAttemptGeneration
+        )
+        guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+          throw CancellationError()
         }
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
+        return (host: attempt.address, port: attempt.port)
+      } catch {
+        let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: attempt.address)
+        syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
+        lastFailure = reconnectError
+        if shouldInvalidateSavedPairing(for: reconnectError) {
+          forgetHost()
+          throw reconnectError
+        }
+        // Tear down this attempt's socket and keep iterating through the
+        // remaining ports and addresses. Only surface an error if every
+        // candidate fails.
+        teardownSocket()
+        continue
       }
     }
 
@@ -9411,6 +9423,9 @@ extension SyncService {
 
     activeSessions = allAgents
     awaitingInputSessionsCount = awaitingInputCount
+    runningChatSessionCount = sessions.filter { session in
+      session.status == "running" && (session.toolType?.contains("chat") == true)
+    }.count
     idleSessionsCount = idleCount
 
     scheduleWorkspaceSnapshotWrite()
@@ -9508,8 +9523,9 @@ private final class SyncTailnetProbe {
     for host in SyncTailnetDiscovery.hostCandidates {
       for port in SyncTailnetDiscovery.portCandidates {
         guard !Task.isCancelled else { return }
-        let canConnect = await probe(host: host, port: port)
-        guard canConnect else { continue }
+        let result = await probe(host: host, port: port)
+        guard result != .unresolvedHost else { break }
+        guard result == .reachable else { continue }
         let key = "\(host):\(port)"
         let routeHost = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let isTailnetRoute = syncIsTailnetDiscoveryHost(routeHost)
@@ -9534,8 +9550,14 @@ private final class SyncTailnetProbe {
     onHostsChanged?(Array(nextHosts.values))
   }
 
-  private func probe(host: String, port: Int) async -> Bool {
-    guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return false }
+  private enum ProbeResult: Equatable {
+    case reachable
+    case unreachable
+    case unresolvedHost
+  }
+
+  private func probe(host: String, port: Int) async -> ProbeResult {
+    guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return .unreachable }
     return await withCheckedContinuation { continuation in
       let connection = NWConnection(
         host: NWEndpoint.Host(host),
@@ -9543,7 +9565,7 @@ private final class SyncTailnetProbe {
         using: .tcp
       )
       var completed = false
-      let complete: (Bool) -> Void = { result in
+      let complete: (ProbeResult) -> Void = { result in
         guard !completed else { return }
         completed = true
         connection.cancel()
@@ -9552,9 +9574,11 @@ private final class SyncTailnetProbe {
       connection.stateUpdateHandler = { state in
         switch state {
         case .ready:
-          complete(true)
-        case .failed, .cancelled:
-          complete(false)
+          complete(.reachable)
+        case .waiting(let error), .failed(let error):
+          complete(Self.probeResult(for: error))
+        case .cancelled:
+          complete(.unreachable)
         default:
           break
         }
@@ -9563,8 +9587,17 @@ private final class SyncTailnetProbe {
       connectionQueue.asyncAfter(
         deadline: .now() + .nanoseconds(Int(SyncTailnetDiscoveryTiming.probeTimeoutNanoseconds))
       ) {
-        complete(false)
+        complete(.unreachable)
       }
+    }
+  }
+
+  private static func probeResult(for error: NWError) -> ProbeResult {
+    switch error {
+    case .dns:
+      return .unresolvedHost
+    default:
+      return .unreachable
     }
   }
 }

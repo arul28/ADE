@@ -1325,6 +1325,25 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(SyncTailnetDiscovery.portCandidates, SyncDirectHostPorts.portCandidates)
   }
 
+  func testSyncConnectionEndpointAttemptsTryPrimaryPortForEveryAddressFirst() {
+    let addresses = [
+      "aruls-mac-studio.tail7497a6.ts.net",
+      "100.75.20.63",
+      "192.168.1.240",
+    ]
+    let ports = syncConnectPortCandidates(primaryPort: 8876, addresses: addresses)
+
+    XCTAssertEqual(
+      Array(syncConnectionEndpointAttempts(addresses: addresses, ports: ports).prefix(4)),
+      [
+        SyncConnectionEndpointAttempt(address: "aruls-mac-studio.tail7497a6.ts.net", port: 8876),
+        SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8876),
+        SyncConnectionEndpointAttempt(address: "192.168.1.240", port: 8876),
+        SyncConnectionEndpointAttempt(address: "aruls-mac-studio.tail7497a6.ts.net", port: 8787),
+      ]
+    )
+  }
+
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
     XCTAssertTrue(
       syncShouldRoamToTailnet(
@@ -3655,6 +3674,64 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
+  func testDatabaseChangeNotificationDoesNotDeadlockMainObserverReadingDatabase() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory(), bootstrapSQL: """
+      create table if not exists notify_deadlock_rows (
+        id text primary key,
+        value text
+      );
+    """)
+    XCTAssertNil(database.initializationError)
+
+    let tableName = "notify_deadlock_rows"
+    let applyReturned = expectation(description: "applyChanges returned")
+    let notificationDelivered = expectation(description: "database change notification delivered")
+    let applyFailure = ManagedAtomicErrorBox()
+    let initialVersion = database.currentDbVersion()
+
+    let observer = NotificationCenter.default.addObserver(
+      forName: .adeDatabaseDidChange,
+      object: nil,
+      queue: .main
+    ) { notification in
+      let touchedTables = Set(
+        (notification.userInfo?[ADEDatabaseChangeNotification.touchedTablesUserInfoKey] as? [String] ?? [])
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+      )
+      guard touchedTables.contains(tableName) else { return }
+      _ = database.currentDbVersion()
+      notificationDelivered.fulfill()
+    }
+    defer {
+      NotificationCenter.default.removeObserver(observer)
+      database.close()
+    }
+
+    DispatchQueue.global(qos: .userInitiated).async {
+      do {
+        _ = try database.applyChanges([
+          CrsqlChangeRow(
+            table: tableName,
+            pk: .string("row-1"),
+            cid: "value",
+            val: .string("synced"),
+            colVersion: 1,
+            dbVersion: initialVersion + 1,
+            siteId: "b00e9b92c864a27958669c1595fcb2c3",
+            cl: 1,
+            seq: 0
+          )
+        ])
+      } catch {
+        applyFailure.store(error)
+      }
+      applyReturned.fulfill()
+    }
+
+    wait(for: [applyReturned, notificationDelivered], timeout: 5)
+    XCTAssertNil(applyFailure.value)
+  }
+
   func testDatabaseAppliesPackedTextPrimaryKeysFromDesktopChanges() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
@@ -4576,15 +4653,20 @@ final class ADETests: XCTestCase {
     defer { database.close() }
 
     try insertHydrationProjectGraph(into: database)
-    var notificationCount = 0
-    let token = NotificationCenter.default.addObserver(
+    let setupNotificationsDrained = expectation(description: "setup lane snapshot notifications drained")
+    DispatchQueue.main.async { setupNotificationsDrained.fulfill() }
+    wait(for: [setupNotificationsDrained], timeout: 1)
+
+    let firstNotification = expectation(description: "first lane snapshot notification")
+    let firstToken = NotificationCenter.default.addObserver(
       forName: .adeDatabaseDidChange,
       object: nil,
       queue: nil
-    ) { _ in
-      notificationCount += 1
+    ) { notification in
+      guard notificationTouches(notification, anyOf: ["lanes", "lane_state_snapshots", "lane_list_snapshots", "lane_detail_snapshots"]) else { return }
+      firstNotification.fulfill()
     }
-    defer { NotificationCenter.default.removeObserver(token) }
+    defer { NotificationCenter.default.removeObserver(firstToken) }
 
     let snapshot = makeLaneListSnapshot(
       id: "lane-primary",
@@ -4601,9 +4683,28 @@ final class ADETests: XCTestCase {
     )
 
     try database.replaceLaneSnapshots([snapshot.lane], snapshots: [snapshot])
-    XCTAssertEqual(notificationCount, 1)
+    wait(for: [firstNotification], timeout: 2)
+    let firstWriteNotificationsDrained = expectation(description: "first lane snapshot write notifications drained")
+    DispatchQueue.main.async { firstWriteNotificationsDrained.fulfill() }
+    wait(for: [firstWriteNotificationsDrained], timeout: 1)
+
+    let noExtraNotification = expectation(description: "no extra lane snapshot notification")
+    noExtraNotification.isInverted = true
+    let noExtraFulfilled = ManagedAtomicFlag()
+    let noExtraToken = NotificationCenter.default.addObserver(
+      forName: .adeDatabaseDidChange,
+      object: nil,
+      queue: nil
+    ) { notification in
+      guard notificationTouches(notification, anyOf: ["lanes", "lane_state_snapshots", "lane_list_snapshots", "lane_detail_snapshots"]) else { return }
+      if noExtraFulfilled.setIfUnset() {
+        noExtraNotification.fulfill()
+      }
+    }
+    defer { NotificationCenter.default.removeObserver(noExtraToken) }
+
     try database.replaceLaneSnapshots([snapshot.lane], snapshots: [snapshot])
-    XCTAssertEqual(notificationCount, 1)
+    wait(for: [noExtraNotification], timeout: 0.2)
   }
 
   func testDatabaseReplaceLaneDetailCachesRichLanePayload() throws {
@@ -4731,15 +4832,20 @@ final class ADETests: XCTestCase {
     defer { database.close() }
 
     try insertHydrationProjectGraph(into: database)
-    var notificationCount = 0
-    let token = NotificationCenter.default.addObserver(
+    let setupNotificationsDrained = expectation(description: "setup lane detail notifications drained")
+    DispatchQueue.main.async { setupNotificationsDrained.fulfill() }
+    wait(for: [setupNotificationsDrained], timeout: 1)
+
+    let firstNotification = expectation(description: "first lane detail notification")
+    let firstToken = NotificationCenter.default.addObserver(
       forName: .adeDatabaseDidChange,
       object: nil,
       queue: nil
-    ) { _ in
-      notificationCount += 1
+    ) { notification in
+      guard notificationTouches(notification, anyOf: ["lane_detail_snapshots"]) else { return }
+      firstNotification.fulfill()
     }
-    defer { NotificationCenter.default.removeObserver(token) }
+    defer { NotificationCenter.default.removeObserver(firstToken) }
 
     let snapshot = makeLaneListSnapshot(
       id: "lane-primary",
@@ -4775,9 +4881,28 @@ final class ADETests: XCTestCase {
     )
 
     try database.replaceLaneDetail(detail)
-    XCTAssertEqual(notificationCount, 1)
+    wait(for: [firstNotification], timeout: 2)
+    let firstWriteNotificationsDrained = expectation(description: "first lane detail write notifications drained")
+    DispatchQueue.main.async { firstWriteNotificationsDrained.fulfill() }
+    wait(for: [firstWriteNotificationsDrained], timeout: 1)
+
+    let noExtraNotification = expectation(description: "no extra lane detail notification")
+    noExtraNotification.isInverted = true
+    let noExtraFulfilled = ManagedAtomicFlag()
+    let noExtraToken = NotificationCenter.default.addObserver(
+      forName: .adeDatabaseDidChange,
+      object: nil,
+      queue: nil
+    ) { notification in
+      guard notificationTouches(notification, anyOf: ["lane_detail_snapshots"]) else { return }
+      if noExtraFulfilled.setIfUnset() {
+        noExtraNotification.fulfill()
+      }
+    }
+    defer { NotificationCenter.default.removeObserver(noExtraToken) }
+
     try database.replaceLaneDetail(detail)
-    XCTAssertEqual(notificationCount, 1)
+    wait(for: [noExtraNotification], timeout: 0.2)
   }
 
   func testDatabaseReplaceTerminalSessionsHydratesHostSessionProjection() throws {
@@ -12891,6 +13016,28 @@ private final class ManagedAtomicErrorBox {
     defer { lock.unlock() }
     return stored
   }
+}
+
+private final class ManagedAtomicFlag {
+  private let lock = NSLock()
+  private var stored = false
+
+  func setIfUnset() -> Bool {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !stored else { return false }
+    stored = true
+    return true
+  }
+}
+
+private func notificationTouches(_ notification: Notification, anyOf tables: Set<String>) -> Bool {
+  let touchedTables = Set(
+    (notification.userInfo?[ADEDatabaseChangeNotification.touchedTablesUserInfoKey] as? [String] ?? [])
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+      .filter { !$0.isEmpty }
+  )
+  return !touchedTables.isDisjoint(with: tables)
 }
 
 private func XCTAssertThrowsErrorAsync<T>(

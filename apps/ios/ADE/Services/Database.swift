@@ -3335,7 +3335,9 @@ final class DatabaseService {
     let userInfo: [AnyHashable: Any]? = normalizedTables.isEmpty
       ? nil
       : [ADEDatabaseChangeNotification.touchedTablesUserInfoKey: normalizedTables]
-    NotificationCenter.default.post(name: .adeDatabaseDidChange, object: nil, userInfo: userInfo)
+    DispatchQueue.main.async {
+      NotificationCenter.default.post(name: .adeDatabaseDidChange, object: nil, userInfo: userInfo)
+    }
   }
 
   private func decodeJson<T: Decodable>(_ raw: String?, as type: T.Type) -> T? {
