@@ -104,10 +104,31 @@ export function MentionPalette({
   query?: string;
   width?: number;
 }) {
-  if (!suggestions.length) return null;
   const paletteWidth = clampPaletteWidth(width);
   const nameWidth = Math.min(NAME_COLUMN_WIDTH, Math.max(20, Math.floor(paletteWidth * 0.4)));
   const detailWidth = Math.max(12, paletteWidth - TYPE_COLUMN_WIDTH - nameWidth - 9);
+  const queryText = query?.trim() ?? "";
+  const queryLabel = queryText ? `@${queryText}` : "@";
+  if (!suggestions.length) {
+    const header = topLine(`References · ${queryLabel} · 0 matches`, paletteWidth);
+    const rowLines = [
+      bodyLine(" No references found", paletteWidth),
+      ...Array.from({ length: Math.max(0, VISIBLE_ROWS - 1) }, () => bodyLine("", paletteWidth)),
+    ];
+    const footer = bottomLine("Type to filter · Esc close", paletteWidth);
+    return (
+      <Box width={paletteWidth} flexDirection="column">
+        {paletteLine(header, theme.color.violet)}
+        {rowLines.map((line, index) => (
+          <React.Fragment key={index}>
+            {paletteLine(line, index === 0 ? theme.color.t3 : theme.color.t2)}
+          </React.Fragment>
+        ))}
+        {paletteLine(bodyLine("No reference matches this query.", paletteWidth), theme.color.t3)}
+        {paletteLine(footer, theme.color.t4)}
+      </Box>
+    );
+  }
   const total = suggestions.length;
   const safeIndex = Math.max(0, Math.min(selectedIndex, total - 1));
   const half = Math.floor(VISIBLE_ROWS / 2);
@@ -116,7 +137,6 @@ export function MentionPalette({
   start = Math.max(0, end - VISIBLE_ROWS);
   const window = suggestions.slice(start, end);
   const selected = suggestions[safeIndex];
-  const queryLabel = query.trim() ? `@${query.trim()}` : "@";
   const selectedTitle =
     selected.kind === "file"
       ? basename(selected.filePath ?? selected.label)

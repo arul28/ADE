@@ -135,9 +135,30 @@ export function SlashPalette({
   maxRows?: number;
 }) {
   const rows = paletteCommands(query, userCommands, { provider });
-  if (!query.startsWith("/") || !rows.length) return null;
+  if (!query.startsWith("/")) return null;
   const paletteWidth = clampPaletteWidth(width);
   const visibleRows = slashPaletteVisibleRows(maxRows);
+  const queryLabel = query.trim() || "/";
+  if (!rows.length) {
+    const header = topLine(`Commands · ${providerLabel(provider)} · ${queryLabel} · 0 matches`, paletteWidth);
+    const rowLines = [
+      bodyLine(" No matching commands", paletteWidth),
+      ...Array.from({ length: Math.max(0, visibleRows - 1) }, () => bodyLine("", paletteWidth)),
+    ];
+    const footer = bottomLine("Type to filter · Esc close", paletteWidth);
+    return (
+      <Box width={paletteWidth} flexDirection="column">
+        {paletteLine(header, theme.color.violet)}
+        {rowLines.map((line, index) => (
+          <React.Fragment key={index}>
+            {paletteLine(line, index === 0 ? theme.color.t3 : theme.color.t2)}
+          </React.Fragment>
+        ))}
+        {paletteLine(bodyLine("No command matches this query.", paletteWidth), theme.color.t3)}
+        {paletteLine(footer, theme.color.t4)}
+      </Box>
+    );
+  }
   const total = rows.length;
   const safeIndex = Math.max(0, Math.min(selectedIndex, total - 1));
   const half = Math.floor(visibleRows / 2);
@@ -148,7 +169,6 @@ export function SlashPalette({
   const aboveCount = start;
   const belowCount = total - end;
   const selected = rows[safeIndex] ?? rows[0];
-  const queryLabel = query.trim() || "/";
   const nameWidth = Math.max(20, Math.min(36, Math.floor(paletteWidth * 0.42)));
   const descriptionWidth = Math.max(12, paletteWidth - nameWidth - 8);
   const selectedSummary = endTruncate(

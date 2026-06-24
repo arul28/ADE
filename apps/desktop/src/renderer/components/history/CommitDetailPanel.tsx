@@ -163,6 +163,12 @@ export function CommitDetailPanel({
         : [],
     [headSha, laneHasWorktree, resolvedCommit, laneId, commitOnLaneHistory],
   );
+  const actionDisabledReason = useMemo(() => {
+    const reasons = actions
+      .filter((action) => action.disabled && action.disabledReason)
+      .map((action) => action.disabledReason!);
+    return reasons.find((reason) => reason.includes("lane")) ?? reasons[0] ?? null;
+  }, [actions]);
 
   const runAction = (actionId: ReturnType<typeof buildCommitContextActions>[number]["id"]) => {
     if (!laneId || !resolvedCommit) return;
@@ -255,6 +261,11 @@ export function CommitDetailPanel({
               <span className="font-sans text-[10px] font-bold uppercase tracking-wider text-muted-fg">
                 Git actions
               </span>
+              {actionDisabledReason ? (
+                <div className="rounded border border-amber-300/20 bg-amber-400/10 px-2 py-1 font-sans text-[11px] text-amber-100/85">
+                  {actionDisabledReason}
+                </div>
+              ) : null}
               <div className="flex flex-wrap gap-1">
                 {actions
                   .filter((a) => !["copy_sha", "copy_subject"].includes(a.id))

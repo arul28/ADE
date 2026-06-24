@@ -38,15 +38,25 @@ export function replaceDirtyBuffersForWorkspace(
   rootPath: string,
   tabs: ReadonlyArray<{ path: string; content: string; savedContent: string }>,
 ): void {
+  replaceDirtyBufferValuesForWorkspace(
+    rootPath,
+    tabs.flatMap((tab) => (
+      tab.content !== tab.savedContent ? [{ path: tab.path, content: tab.content }] : []
+    )),
+  );
+}
+
+export function replaceDirtyBufferValuesForWorkspace(
+  rootPath: string,
+  buffers: ReadonlyArray<{ path: string; content: string }>,
+): void {
   const rootNorm = normalizeDirtyPath(rootPath);
   clearWorkspaceEntries(rootNorm);
-  for (const tab of tabs) {
-    const abs = isAbsolutePath(tab.path)
-      ? normalizeDirtyPath(tab.path)
-      : joinDirtyPath(rootNorm, tab.path);
-    if (tab.content !== tab.savedContent) {
-      dirtyByAbsPath.set(abs, tab.content);
-    }
+  for (const buffer of buffers) {
+    const abs = isAbsolutePath(buffer.path)
+      ? normalizeDirtyPath(buffer.path)
+      : joinDirtyPath(rootNorm, buffer.path);
+    dirtyByAbsPath.set(abs, buffer.content);
   }
 }
 

@@ -76,6 +76,24 @@ describe("MentionPalette", () => {
     expect(frame).toContain("Tab insert");
     expect(frame).not.toContain("Type");
   });
+
+  it("keeps mention chrome visible when there are no matches", () => {
+    const frame = stripAnsi(
+      render(
+        <MentionPalette
+          suggestions={[]}
+          selectedIndex={0}
+          query="missing"
+          width={100}
+        />,
+      ).lastFrame() ?? "",
+    );
+
+    expect(frame).toContain("References");
+    expect(frame).toContain("@missing");
+    expect(frame).toContain("0 matches");
+    expect(frame).toContain("No references found");
+  });
 });
 
 describe("SlashPalette", () => {
@@ -126,5 +144,22 @@ describe("SlashPalette", () => {
     expect(frame).toContain("/feedback");
     expect(frame).toContain("Submit ADE feedback to GitHub issues");
     expect(frame).not.toContain("Runtime feedback command");
+  });
+
+  it("keeps slash chrome visible when there are no matches", () => {
+    const frame = stripAnsi(render(
+      <SlashPalette
+        query="/missing"
+        userCommands={[]}
+        selectedIndex={0}
+        provider="claude"
+        width={80}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("Commands");
+    expect(frame).toContain("/missing");
+    expect(frame).toContain("0 matches");
+    expect(frame).toContain("No matching commands");
   });
 });

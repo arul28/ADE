@@ -25,7 +25,7 @@ type PoolEntry = {
   client: RuntimeRpcClient;
   ssh: Client;
   result: RemoteRuntimeConnectResult;
-  dispose?: (closeClient: boolean, notify?: boolean) => void;
+  dispose?: (closeClient: boolean, notify?: boolean) => void | Promise<void>;
 };
 
 type LocalPortForwardEntry = RemoteRuntimePortForward & {
@@ -769,11 +769,14 @@ export class RemoteConnectionPool {
     );
   }
 
-  disconnect(targetId: string): void {
+  async disconnect(targetId: string): Promise<void> {
     this.bumpDisconnectGeneration(targetId);
-    this.closeLocalPortForwardsForTarget(targetId);
+    const forwardsClosed = this.closeLocalPortForwardsForTarget(targetId);
     const existing = this.entries.get(targetId);
-    if (!existing) return;
+    if (!existing) {
+      await forwardsClosed;
+      return;
+    }
     if (this.resolvedEntryPromises.has(existing)) {
       this.entries.delete(targetId);
       this.resolvedEntryPromises.delete(existing);
@@ -786,6 +789,7 @@ export class RemoteConnectionPool {
           closePoolEntryResources(entry, true, true);
         })
         .catch(() => {});
+      await forwardsClosed;
       return;
     }
     this.pendingDisconnects.add(targetId);
@@ -809,26 +813,34 @@ export class RemoteConnectionPool {
           this.entries.delete(targetId);
         }
       });
+    await forwardsClosed;
   }
 
-  dispose(): void {
-    for (const targetId of [...this.entries.keys()]) {
-      this.disconnect(targetId);
-    }
+  async dispose(): Promise<void> {
+    await Promise.all([...this.entries.keys()].map((targetId) => this.disconnect(targetId)));
   }
 
-  private closeLocalPortForwardsForTarget(targetId: string): void {
+  private async closeLocalPortForwardsForTarget(targetId: string): Promise<void> {
+    const closes: Promise<void>[] = [];
     for (const [key, pending] of [...this.localPortForwards.entries()]) {
       if (!key.startsWith(`${targetId}\0`)) continue;
       this.localPortForwards.delete(key);
-      void pending
-        .then((entry) => {
+      closes.push(pending
+        .then((entry) => new Promise<void>((resolve) => {
           try {
-            entry.server.close();
-          } catch {}
-        })
-        .catch(() => {});
+            if (!entry.server.listening) {
+              resolve();
+              return;
+            }
+            entry.server.close(() => resolve());
+            (entry.server as net.Server & { closeAllConnections?: () => void }).closeAllConnections?.();
+          } catch {
+            resolve();
+          }
+        }))
+        .catch(() => undefined));
     }
+    await Promise.all(closes);
   }
 
   private clearUnsupportedOptionalActionsForTarget(targetId: string): void {
@@ -902,7 +914,7 @@ export class RemoteConnectionPool {
       this.resolvedEntryPromises.delete(entryPromise);
       if (cleanedUp) return;
       cleanedUp = true;
-      this.closeLocalPortForwardsForTarget(targetId);
+      void this.closeLocalPortForwardsForTarget(targetId);
       closePoolEntryResources(entry, closeClient, true);
       if (notify) notifyEvicted(error);
     };

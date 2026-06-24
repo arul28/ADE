@@ -73,6 +73,9 @@ import {
   splitTerminalControlInput,
   stableInkViewportRows,
   subagentSnapshotsFromEvents,
+  terminalAlternateScreenDisableSequence,
+  terminalAlternateScrollDisableSequence,
+  terminalInteractiveRestoreSequence,
   terminalMouseTrackingDisableSequence,
   terminalMouseTrackingEnableSequence,
   isClaudePlaceholderTitle,
@@ -1509,6 +1512,12 @@ describe("terminal mouse tracking", () => {
 
     expect(terminalMouseTrackingDisableSequence()).toContain("\x1b[?1003l");
     expect(terminalMouseTrackingDisableSequence()).toContain("\x1b[?1015l");
+  });
+
+  it("restores mouse tracking, alternate scroll, and the alt screen together", () => {
+    expect(terminalInteractiveRestoreSequence()).toBe(
+      `${terminalMouseTrackingDisableSequence()}${terminalAlternateScrollDisableSequence()}${terminalAlternateScreenDisableSequence()}`,
+    );
   });
 });
 

@@ -22,6 +22,13 @@ type Entry = {
 export function createMonacoModelRegistry() {
   const models = new Map<string, Entry>();
 
+  const setLanguage = (monaco: typeof Monaco, entry: Entry, languageId: string): void => {
+    if (entry.languageId !== languageId) {
+      monaco.editor.setModelLanguage(entry.model, languageId);
+      entry.languageId = languageId;
+    }
+  };
+
   const safeDispose = (model: Monaco.editor.ITextModel): void => {
     try {
       if (!model.isDisposed()) model.dispose();
@@ -44,15 +51,33 @@ export function createMonacoModelRegistry() {
     ): Monaco.editor.ITextModel {
       const existing = models.get(path);
       if (existing && !existing.model.isDisposed()) {
-        if (existing.languageId !== languageId) {
-          monaco.editor.setModelLanguage(existing.model, languageId);
-          existing.languageId = languageId;
-        }
+        setLanguage(monaco, existing, languageId);
         return existing.model;
       }
       const model = monaco.editor.createModel(content, languageId);
       models.set(path, { model, languageId, baseVersionId: model.getAlternativeVersionId() });
       return model;
+    },
+
+    /**
+     * Refresh an already-open clean model from disk. Dirty models are left alone
+     * so external file events cannot clobber unsaved editor text.
+     */
+    refreshClean(
+      monaco: typeof Monaco,
+      path: string,
+      content: string,
+      languageId: string,
+    ): boolean {
+      const entry = models.get(path);
+      if (!entry || entry.model.isDisposed()) return false;
+      setLanguage(monaco, entry, languageId);
+      if (entry.model.getAlternativeVersionId() !== entry.baseVersionId) return false;
+      if (entry.model.getValue() !== content) {
+        entry.model.setValue(content);
+        entry.baseVersionId = entry.model.getAlternativeVersionId();
+      }
+      return true;
     },
 
     /** Mark the current buffer as the clean baseline (after load or save). */

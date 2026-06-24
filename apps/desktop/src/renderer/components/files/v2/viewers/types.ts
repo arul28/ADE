@@ -33,4 +33,6 @@ export type ViewerProps = {
   onEdit?: (path: string) => void;
   /** Register/unregister the editor's imperative API for toolbar actions. */
   onRegisterEditorApi?: (path: string, api: EditorApi | null) => void;
+  /** Surface viewer-owned async failures in the workbench shell. */
+  onError?: (message: string) => void;
 };

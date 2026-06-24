@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, CaretRight, Copy, FloppyDisk, PushPin, SplitHorizontal, X, XCircle } from "@phosphor-icons/react";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { getFileIcon } from "../filePresentation";
@@ -22,6 +22,7 @@ export type EditorGroupProps = {
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   dirtyPaths: ReadonlySet<string>;
+  reloadTokensByPath: Readonly<Record<string, number>>;
   onActivateTab: (groupId: string, path: string) => void;
   onCloseTab: (groupId: string, path: string) => void;
   onCloseOthers: (groupId: string, path: string) => void;
@@ -31,6 +32,7 @@ export type EditorGroupProps = {
   onFocusGroup: (groupId: string) => void;
   onSplit: (groupId: string) => void;
   onDirtyChange: (path: string, dirty: boolean) => void;
+  onError: (message: string) => void;
   onTabDragStart: (groupId: string, path: string) => void;
   onTabDragEnd: () => void;
   onTabDrop: (groupId: string) => void;
@@ -41,8 +43,15 @@ export type EditorGroupProps = {
 
 type DropZone = "left" | "right" | "center";
 
+function isTextInputTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true'], [role='textbox']"));
+}
+
 export function EditorGroup(props: EditorGroupProps) {
   const { group, dirtyPaths } = props;
+  const { canEdit, onDirtyChange, onError, registry, workspaceId } = props;
+  const groupRef = useRef<HTMLDivElement | null>(null);
   const editorApis = useRef<Map<string, EditorApi>>(new Map());
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string } | null>(null);
@@ -86,13 +95,48 @@ export function EditorGroup(props: EditorGroupProps) {
     else editorApis.current.delete(path);
   };
 
-  const saveActive = () => {
+  const saveActive = useCallback(() => {
     if (!activeTab) return;
-    void editorApis.current.get(activeTab.path)?.save();
-  };
+    const api = editorApis.current.get(activeTab.path);
+    if (api) {
+      void api.save().catch((err) => {
+        onError(err instanceof Error ? err.message : String(err));
+      });
+      return;
+    }
+    if (!canEdit || activeTab.viewerKind !== "code") return;
+    const text = registry.getValue(activeTab.path);
+    if (text == null) return;
+    void window.ade.files
+      .writeText({ workspaceId, path: activeTab.path, text })
+      .then(() => {
+        registry.markSaved(activeTab.path);
+        onDirtyChange(activeTab.path, false);
+      })
+      .catch((err) => {
+        onError(err instanceof Error ? err.message : String(err));
+      });
+  }, [activeTab, canEdit, onDirtyChange, onError, registry, workspaceId]);
+
+  useEffect(() => {
+    if (!props.isActiveGroup || !activeTab || !canEdit || activeTab.viewerKind !== "code") return;
+    const onKey = (event: KeyboardEvent) => {
+      const mod = event.metaKey || event.ctrlKey;
+      if (!mod || event.shiftKey || event.altKey || (event.key !== "s" && event.key !== "S")) return;
+      const target = event.target;
+      if (!(target instanceof Node) || !groupRef.current?.contains(target)) return;
+      if (isTextInputTarget(target)) return;
+      if (target instanceof Element && target.closest("[data-testid='files-v2-code-editor']")) return;
+      event.preventDefault();
+      saveActive();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeTab, canEdit, props.isActiveGroup, saveActive]);
 
   return (
     <div
+      ref={groupRef}
       className="flex h-full min-h-0 min-w-0 flex-col"
       onMouseDown={() => props.onFocusGroup(group.id)}
       style={{ outline: props.isActiveGroup ? `1px solid ${COLORS.accentBorder}` : "none", outlineOffset: -1 }}
@@ -147,7 +191,7 @@ export function EditorGroup(props: EditorGroupProps) {
                 })}
               </div>
             ) : null}
-            {activeTab.viewerKind === "code" && props.canEdit && !activeInDiff ? (
+            {activeTab.viewerKind === "code" && props.canEdit ? (
               <button type="button" onClick={saveActive} title="Save (⌘S)" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
                 <FloppyDisk size={14} />
               </button>
@@ -171,9 +215,11 @@ export function EditorGroup(props: EditorGroupProps) {
             canEdit={props.canEdit}
             theme={props.theme}
             registry={props.registry}
+            reloadToken={props.reloadTokensByPath[activeTab.path] ?? 0}
             onDirtyChange={props.onDirtyChange}
             onEdit={(path) => props.onPromoteTab(group.id, path)}
             onRegisterEditorApi={registerApi}
+            onError={props.onError}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm" style={{ color: COLORS.textDim }}>

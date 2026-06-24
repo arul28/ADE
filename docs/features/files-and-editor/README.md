@@ -104,8 +104,9 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
   Files tab shell: workspace chrome, activity bar, explorer, editor
   groups, Monaco edit host, diff/conflict surfaces, quick open, text
-  search, trust warnings, read-only workspace gating, recent-file pruning,
-  optional Git-decoration fallback, and file-type viewers. Accepts optional
+  search, trust warnings, read-only workspace gating, persisted recent-file
+  pruning, dirty-buffer publishing for agent reads, optional Git-decoration
+  fallback, and file-type viewers. Accepts optional
   `preferredLaneId` and `embedded` props so the same component can mount inside
   the Work right-edge sidebar.
 - `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
@@ -246,7 +247,9 @@ list.
 The renderer listens on `ade.files.change` for `created`, `modified`,
 `deleted`, `renamed` events. Open tabs that are clean (no unsaved
 edits) reload automatically; dirty tabs do not, so external changes do
-not silently clobber work.
+not silently clobber work. Dirty Monaco buffers are also published into
+the renderer dirty-buffer map for the active workspace so agent file
+reads can see unsaved editor-only text.
 
 ## Quick open and cross-file search
 

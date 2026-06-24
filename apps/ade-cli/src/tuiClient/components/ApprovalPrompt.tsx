@@ -349,7 +349,7 @@ export function ApprovalPrompt({
         </Box>
       ) : options.length ? (
         <Box flexDirection="column" marginTop={1}>
-          {options.slice(0, 6).map((option, index) => {
+          {options.map((option, index) => {
             const optionId = `approval:question-option:0:${option.value}:${index}`;
             const active = hoveredId === optionId;
             const detail = option.description ? ` - ${option.description}` : "";
