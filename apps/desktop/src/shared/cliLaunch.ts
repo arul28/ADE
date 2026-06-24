@@ -256,9 +256,20 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   return "claude";
 }
 
-function workTabCliPreamblePrompt(skillRoots: readonly string[]): string {
+function workTabCliPreamblePrompt(skillRoots: readonly string[], hasInitialPrompt = false): string {
+  const launchInstruction = hasInitialPrompt
+    ? [
+        "ADE session guidance. Treat this as operating guidance for the CLI session",
+        "and keep it in mind while handling the user prompt below.",
+        "Start working on that user prompt immediately.",
+      ].join(" ")
+    : [
+        "ADE session guidance. Treat this as operating guidance for the CLI session,",
+        "keep it in mind for future user messages, and wait for the user's next",
+        "instruction before taking action.",
+      ].join(" ");
   return [
-    "ADE session guidance. Treat this as operating guidance for the CLI session, keep it in mind for future user messages, and wait for the user's next instruction before taking action.",
+    launchInstruction,
     "",
     buildAdeCliInlineGuidance(skillRoots),
   ].join("\n");
@@ -524,7 +535,7 @@ function claudeSessionSettingsFlags(
 }
 
 function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly string[]): string {
-  const preamble = workTabCliPreamblePrompt(skillRoots);
+  const preamble = workTabCliPreamblePrompt(skillRoots, Boolean(initialPrompt));
   if (!initialPrompt) return preamble;
   return [
     preamble,
