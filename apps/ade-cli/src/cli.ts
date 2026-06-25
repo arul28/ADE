@@ -164,6 +164,7 @@ type FormatterId =
   | "browser-sessions"
   | "browser-observation"
   | "browser-trace"
+  | "pty-create"
   | "terminal-list"
   | "terminal-read"
   | "history-list"
@@ -519,6 +520,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <id> --text
+    $ ade terminal read --pty <pty-id> --text
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -1293,6 +1295,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
     $ ade shell close <pty-id>                      Dispose a PTY
+
+  After start, use the returned session id with:
+    $ ade terminal read --terminal <session-id> --text
 `,
   terminal: `${ADE_BANNER}
   Chat terminal
@@ -1302,10 +1307,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade terminal list --chat-session <id> --text  List terminals for a chat
     $ ade terminal active --chat-session <id> --text Show the active chat terminal
-    $ ade terminal read --terminal <id> --text      Read terminal scrollback
+    $ ade terminal read --terminal <session-id> --text Read terminal scrollback
+    $ ade terminal read --pty <pty-id> --text       Read by PTY id
     $ ade app-control logs --text                   Read the active App Control launch terminal
-    $ ade terminal write --terminal <id> --data "y\\n"
-    $ ade terminal signal --terminal <id> --signal SIGINT
+    $ ade terminal write --terminal <session-id> --data "y\\n"
+    $ ade terminal signal --terminal <session-id> --signal SIGINT
 `,
   files: `${ADE_BANNER}
   Files
@@ -1558,7 +1564,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control minimize --text              Minimize the controlled app window
     $ ade app-control stop --text                  Signal the App Control terminal session
     $ ade app-control actions --text               List every callable app_control action
-    $ ade terminal read --terminal <id> --text     Read a specific chat terminal
+    $ ade terminal read --terminal <session-id> --text Read a specific chat terminal
+    $ ade terminal read --pty <pty-id> --text      Read by PTY id
     $ ade terminal write --chat-session <id> --data "y\\n" Answer a prompt
 
   Capture and context:
@@ -5241,6 +5248,7 @@ function buildShellPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "shell start",
+      formatter: "pty-create",
       steps: [actionStep("result", "pty", "create", input)],
     };
   }
@@ -5524,6 +5532,7 @@ function buildTerminalPlan(args: string[]): CliPlan {
   }
   if (sub === "read" || sub === "tail" || sub === "scrollback") {
     const terminal = readValue(args, ["--terminal", "--terminal-id"]);
+    const ptyId = readValue(args, ["--pty", "--pty-id"]);
     const chat = chatSessionId();
     const maxBytes = readIntOption(args, ["--max-bytes"], undefined);
     const since = readIntOption(args, ["--since"], undefined);
@@ -5537,6 +5546,7 @@ function buildTerminalPlan(args: string[]): CliPlan {
           "read",
           collectGenericObjectArgs(args, {
             terminalId: terminal ?? firstPositional(args),
+            ptyId,
             chatSessionId: chat,
             maxBytes,
             since,
@@ -14589,6 +14599,19 @@ function formatTerminalList(value: unknown): string {
   );
 }
 
+function formatPtyCreate(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const sessionId = typeof result.sessionId === "string" ? result.sessionId : null;
+  const ptyId = typeof result.ptyId === "string" ? result.ptyId : null;
+  const readCommand = sessionId ? `ade terminal read --terminal ${sessionId} --text` : null;
+  return renderKeyValues("ADE shell session", [
+    ["session", sessionId],
+    ["pty", ptyId],
+    ["pid", result.pid],
+    ["read with", readCommand],
+  ]);
+}
+
 function formatTerminalRead(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const data = typeof result.data === "string" ? result.data : "";
@@ -14868,6 +14891,8 @@ function formatTextOutput(
       return formatBrowserObservation(value);
     case "browser-trace":
       return formatBrowserTrace(value);
+    case "pty-create":
+      return formatPtyCreate(value);
     case "terminal-list":
       return formatTerminalList(value);
     case "terminal-read":
@@ -14994,6 +15019,7 @@ function inferFormatter(
   )
     return "browser-observation";
   if (label === "browser trace") return "browser-trace";
+  if (label === "shell start") return "pty-create";
   if (label === "terminal list" || label === "terminal active")
     return "terminal-list";
   if (label === "terminal read") return "terminal-read";

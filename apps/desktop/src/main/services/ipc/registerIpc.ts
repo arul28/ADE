@@ -2775,6 +2775,7 @@ export function registerIpc({
     const record = terminalRecord(value);
     return {
       terminalId: optionalTerminalString(record, "terminalId", 128),
+      ptyId: optionalTerminalString(record, "ptyId", 128),
       chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
       maxBytes: optionalTerminalNumber(record, "maxBytes", 1, 8 * 1024 * 1024),
       since: optionalTerminalNumber(record, "since", 0, 8 * 1024 * 1024),

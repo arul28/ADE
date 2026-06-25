@@ -129,7 +129,7 @@ const mocks = vi.hoisted(() => {
     parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
     resolveOpenCodeBinaryPath: vi.fn<[], string | null>(() => null),
-    execFileSync: vi.fn(() => ""),
+    execFileSync: vi.fn((_file?: unknown, _args?: unknown) => ""),
     spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
 });
@@ -647,6 +647,63 @@ describe("ptyService", () => {
       }
     });
 
+    it("starts command-backed shell sessions without reading user startup files", async () => {
+      const previousShell = process.env.SHELL;
+      const previousPath = process.env.PATH;
+      process.env.SHELL = "/bin/zsh";
+      process.env.PATH = "/usr/bin";
+      mocks.execFileSync.mockImplementation((_file, args) => {
+        const shellFlag = Array.isArray(args) ? args[0] : null;
+        if (shellFlag === "-lc") return "__ADE_PATH_START__/login/bin:/usr/bin__ADE_PATH_END__";
+        if (shellFlag === "-ic") return "__ADE_PATH_START__/custom/nvm/bin:/usr/bin__ADE_PATH_END__";
+        return "";
+      });
+      try {
+        const { service, loadPty, mockPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Shell command",
+          cols: 80,
+          rows: 24,
+          toolType: "shell",
+          startupCommand: "npm test",
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        expect(ptyLib.spawn).toHaveBeenCalledWith(
+          "/bin/zsh",
+          ["-f"],
+          expect.objectContaining({
+            env: expect.objectContaining({
+              ZDOTDIR: "/var/empty",
+            }),
+          }),
+        );
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
+        expect(pathEntries).toEqual(expect.arrayContaining([
+          "/usr/bin",
+          "/login/bin",
+          "/custom/nvm/bin",
+          "/opt/homebrew/bin",
+          path.join(os.homedir(), ".asdf", "shims"),
+          path.join(os.homedir(), ".mise", "shims"),
+        ]));
+        expect(mocks.execFileSync).toHaveBeenCalledWith(
+          "/bin/zsh",
+          ["-ic", expect.stringContaining("__ADE_PATH_START__")],
+          expect.objectContaining({ env: expect.objectContaining({ SHELL: "/bin/zsh" }) }),
+        );
+        expect(mockPty.write).toHaveBeenCalledWith("npm test\r");
+      } finally {
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+        mocks.execFileSync.mockImplementation(() => "");
+      }
+    });
+
     it("uses a caller-provided sessionId when creating a new tracked session", async () => {
       const { service, sessionService } = createHarness();
       const result = await service.create({
@@ -1110,12 +1167,16 @@ describe("ptyService", () => {
         const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
         const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
         const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-        expect(opts?.env?.PATH?.split(path.delimiter)).toEqual([
-          "/opt/homebrew/bin",
-          "/usr/bin",
+        const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
+        const yarnGlobalBin = path.join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin");
+        expect(pathEntries.slice(0, 2)).toEqual(["/opt/homebrew/bin", "/usr/bin"]);
+        expect(pathEntries.slice(-2)).toEqual([
           "/repo/apps/desktop/node_modules/.bin",
           "/tmp/project/node_modules/.bin",
         ]);
+        expect(pathEntries).toContain(path.join(os.homedir(), ".asdf", "shims"));
+        expect(pathEntries.indexOf(yarnGlobalBin)).toBeGreaterThanOrEqual(0);
+        expect(pathEntries.indexOf(yarnGlobalBin)).toBeLessThan(pathEntries.indexOf("/repo/apps/desktop/node_modules/.bin"));
       } finally {
         if (previousPath == null) delete process.env.PATH;
         else process.env.PATH = previousPath;
@@ -5240,6 +5301,30 @@ describe("ptyService", () => {
       expect(read.terminalId).toBe(created.sessionId);
       expect(read.data).toBe("456789");
       expect(read.nextSince).toBe(4 + "456789".length);
+    });
+
+    it("readTerminal accepts a live PTY handle as an alias for the terminal session id", async () => {
+      const { service, sessionService } = createChatHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Reader",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-7",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("pty transcript");
+
+      const read = await service.readTerminal({ ptyId: created.ptyId, maxBytes: 1024 });
+
+      expect(read.terminalId).toBe(created.sessionId);
+      expect(read.data).toBe("pty transcript");
+      expect(sessionService.get).toHaveBeenCalledWith(created.sessionId);
+
+      sessionService.readTranscriptTail.mockResolvedValueOnce("terminal flag pty transcript");
+      const terminalFlagRead = await service.readTerminal({ terminalId: created.ptyId, maxBytes: 1024 });
+
+      expect(terminalFlagRead.terminalId).toBe(created.sessionId);
+      expect(terminalFlagRead.data).toBe("terminal flag pty transcript");
     });
 
     it("readTerminal merges recent live output before the transcript stream flushes", async () => {

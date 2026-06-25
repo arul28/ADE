@@ -18,7 +18,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
-import { getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
+import { augmentProcessPathWithShellAndKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -966,7 +966,11 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
 
 function isNodeModulesBinPath(value: string): boolean {
   const normalized = value.replace(/\\/g, "/").toLowerCase();
-  return normalized.endsWith("/node_modules/.bin");
+  const userYarnGlobalBin = path
+    .join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin")
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  return normalized.endsWith("/node_modules/.bin") && normalized !== userYarnGlobalBin;
 }
 
 function looksLikeCodexCommand(command: string | null | undefined): boolean {
@@ -999,6 +1003,18 @@ function withUserCodexCliPathPriority(
   // Codex CLI and send every Work launch into Codex's update-and-restart flow.
   // Keep node_modules bins as a last-resort fallback, but never let them win.
   setPathEnvValue(next, [...nonNodeModulesEntries, ...nodeModulesEntries].join(path.delimiter));
+  return next;
+}
+
+function withResolvedCliLaunchPath(
+  env: NodeJS.ProcessEnv,
+  options: { includeInteractiveShell?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const next = { ...env };
+  setPathEnvValue(next, augmentProcessPathWithShellAndKnownCliDirs({
+    env: next,
+    includeInteractiveShell: options.includeInteractiveShell,
+  }));
   return next;
 }
 
@@ -3292,10 +3308,19 @@ export function createPtyService({
 
   const resolveTerminalId = (args: {
     terminalId?: string | null;
+    ptyId?: string | null;
     chatSessionId?: string | null;
   }): string | null => {
     const terminalId = cleanOptionalId(args.terminalId);
-    if (terminalId) return terminalId;
+    if (terminalId) {
+      if (!sessionService.get(terminalId)) {
+        const liveByPtyId = ptys.get(terminalId);
+        if (liveByPtyId && !liveByPtyId.disposed) return liveByPtyId.sessionId;
+      }
+      return terminalId;
+    }
+    const ptyId = cleanOptionalId(args.ptyId);
+    if (ptyId) return ptys.get(ptyId)?.sessionId ?? null;
     const chatSessionId = cleanOptionalId(args.chatSessionId);
     if (!chatSessionId) return null;
     // Auxiliary terminals (shell, App Control, etc.) — never route chat-CLI rows.
@@ -3693,6 +3718,9 @@ export function createPtyService({
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
+      launchEnv = withResolvedCliLaunchPath(launchEnv, {
+        includeInteractiveShell: Boolean(directCommand || startupCommand),
+      });
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)
@@ -3715,7 +3743,10 @@ export function createPtyService({
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
       const useLoginInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
-      const shellCandidates = resolveShellCandidates({ login: useLoginInteractiveShell });
+      const shellCandidates = resolveShellCandidates({
+        clean: Boolean(directCommand || startupCommand),
+        login: useLoginInteractiveShell,
+      });
       let launchedDirectCommand = false;
       try {
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
@@ -4484,7 +4515,7 @@ export function createPtyService({
 
     async readTerminal(args: ChatTerminalReadArgs = {}): Promise<ChatTerminalReadResult> {
       const terminalId = resolveTerminalId(args);
-      if (!terminalId) throw new Error("terminal.read requires terminalId or an active chat terminal.");
+      if (!terminalId) throw new Error("terminal.read requires terminalId, ptyId, or an active chat terminal.");
       const session = sessionService.get(terminalId);
       if (!session) throw new Error(`Terminal session '${terminalId}' was not found.`);
       if (isPersistedChatToolType(session.toolType)) {

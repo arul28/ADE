@@ -54,7 +54,7 @@ Channels live under `ade.appControl.*`:
 The companion **chat terminal** surface lives at `ade.terminal.*` and shares the same backend as PTY:
 
 - `ade.terminal.list` — list chat-attached terminals (filterable by `chatSessionId` / `laneId`).
-- `ade.terminal.read` — read scrollback by `terminalId` *or* by `chatSessionId` (resolves to the chat's active terminal).
+- `ade.terminal.read` — read scrollback by `terminalId`, live `ptyId`, or `chatSessionId` (resolves to the chat's active terminal).
 - `ade.terminal.write` / `ade.terminal.signal` — send input or `SIGINT` / `SIGTERM` / `SIGKILL`.
 - `ade.terminal.activeForChat` — fetch the currently active terminal for a chat.
 

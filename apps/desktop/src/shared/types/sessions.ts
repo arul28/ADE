@@ -245,6 +245,7 @@ export type ChatTerminalListArgs = {
 
 export type ChatTerminalReadArgs = {
   terminalId?: string | null;
+  ptyId?: string | null;
   chatSessionId?: string | null;
   maxBytes?: number | null;
   since?: number | null;
