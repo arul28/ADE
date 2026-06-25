@@ -7,14 +7,27 @@ export const LANE_FALLBACK_STOPWORDS = new Set([
   "are",
   "as",
   "at",
+  "be",
+  "been",
+  "being",
+  "but",
   "can",
+  "chat",
+  "context",
   "could",
+  "did",
+  "do",
+  "does",
   "for",
   "from",
+  "had",
+  "has",
   "have",
   "help",
   "how",
   "i",
+  "if",
+  "im",
   "in",
   "into",
   "is",
@@ -28,12 +41,16 @@ export const LANE_FALLBACK_STOPWORDS = new Set([
   "on",
   "please",
   "pls",
+  "prompt",
   "the",
   "this",
+  "though",
+  "thought",
   "to",
   "use",
   "we",
   "with",
+  "wrong",
   "you",
 ]);
 
@@ -46,7 +63,7 @@ const NAMING_TLDS = new Set([
 // Filler phrases that add no signal to a name. Politeness lead-ins plus the
 // "take a look at …" family that produced names like "take-look-at-https-github".
 const NAMING_FILLER_RE =
-  /\b(?:please|pls|kindly|can you|could you|would you|will you|help me|i need(?: you)? to|i want(?: you)? to|i'?d like(?: you)? to|let'?s|lets|we need to|take a look at|have a look at|take a look|look at|look into|check out|go over|show me|give me|tell me about)\b/giu;
+  /\b(?:ok so|okay so|correct me if i'?m wrong|correct me if im wrong|correct if i'?m wrong|correct if im wrong|if i'?m wrong|if im wrong|please|pls|kindly|can you|could you|would you|will you|help me|i need(?: you)? to|i want(?: you)? to|i'?d like(?: you)? to|let'?s|lets|we need to|take a look at|have a look at|take a look|look at|look into|check out|go over|show me|give me|tell me about|use context skill|use the context skill)\b/giu;
 
 // A bare domain like "github.com" (no scheme) — keep the significant label, drop the
 // TLD. Built from NAMING_TLDS so the two never drift.
@@ -109,6 +126,8 @@ export function deriveDeterministicLaneNameFromPrompt(
 ): string {
   const collapsed = cleanPromptForNaming(prompt);
   if (!collapsed.length) return genericLaneFallbackName(options.genericSuffix);
+  const priorityWords = priorityNamingWords(collapsed);
+  if (priorityWords.length) return priorityWords.join("-");
   const tokens = collapsed.toLowerCase().match(/[a-z0-9]+/g) ?? [];
   const meaningfulWords = tokens
     .filter((token) => token.length > 1 && !LANE_FALLBACK_STOPWORDS.has(token))
@@ -123,6 +142,27 @@ export function deriveDeterministicLaneNameFromPrompt(
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
   return slug.length ? slug.slice(0, 48) : genericLaneFallbackName(options.genericSuffix);
+}
+
+function priorityNamingWords(cleanedPrompt: string): string[] {
+  const normalized = cleanedPrompt.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (!normalized) return [];
+  const provider = [
+    "claude",
+    "codex",
+    "cursor",
+    "droid",
+    "opencode",
+  ].find((candidate) => new RegExp(`\\b${candidate}\\b`, "u").test(normalized))
+    ?? (/\bopen code\b/u.test(normalized) ? "opencode" : null);
+  if (!provider) return [];
+  const mentionsAuth = /\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b/u.test(normalized);
+  const mentionsLogin = /\b(log\s*in|login|signin|sign\s*in)\b/u.test(normalized);
+  if (!mentionsAuth && !mentionsLogin) return [];
+  const words = [provider, "auth"];
+  if (mentionsLogin) words.push("login");
+  if (/\b(button|cta|call to action|chip|banner)\b/u.test(normalized)) words.push("button");
+  return [...new Set(words)].slice(0, 5);
 }
 
 export function genericSuffixFromLaneFallbackName(fallbackName: string | null | undefined): string | null {

@@ -1,4 +1,5 @@
 import { IPC } from "../shared/ipc";
+import type { OpenProjectBinding } from "../shared/types/core";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 
 type IpcRendererLike = {
@@ -16,7 +17,12 @@ export type OrchestrationBridgeDeps = {
    * back to the desktop-main IPC handler when no runtime is bound (in-process /
    * test mode). `ipcChannel` is the legacy fallback handler.
    */
-  callAction: (action: string, args: unknown, ipcChannel: string) => Promise<unknown>;
+  callAction: (
+    action: string,
+    args: unknown,
+    ipcChannel: string,
+    pin?: OpenProjectBinding | null,
+  ) => Promise<unknown>;
   /**
    * Register a callback fed by the daemon runtime event stream (category
    * "orchestrator"). Returns an unregister function.
@@ -36,8 +42,8 @@ export type OrchestrationBridgeDeps = {
 export function createOrchestrationBridge(deps: OrchestrationBridgeDeps) {
   const { callAction, subscribeRuntimeOrchestrationEvents, parseLegacyEvent, ipcRenderer } = deps;
   return {
-    runCreate: (args: unknown) =>
-      callAction("runCreate", args, IPC.orchestrationRunCreate),
+    runCreate: (args: unknown, pin?: OpenProjectBinding | null) =>
+      callAction("runCreate", args, IPC.orchestrationRunCreate, pin),
     bundleRead: (args: unknown) =>
       callAction("bundleRead", args, IPC.orchestrationBundleRead),
     manifestReadSection: (args: unknown) =>

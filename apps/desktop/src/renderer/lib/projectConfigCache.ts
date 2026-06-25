@@ -1,4 +1,5 @@
 type ProjectConfigSnapshot = Awaited<ReturnType<typeof window.ade.projectConfig.get>>;
+type OpenProjectBinding = import("../../shared/types/core").OpenProjectBinding;
 
 type CacheEntry = {
   value?: ProjectConfigSnapshot;
@@ -15,6 +16,7 @@ function getCacheKey(projectRoot: string | null | undefined): string {
 
 export async function getProjectConfigCached(args?: {
   projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
   force?: boolean;
   ttlMs?: number;
 }): Promise<ProjectConfigSnapshot> {
@@ -32,7 +34,7 @@ export async function getProjectConfigCached(args?: {
     }
   }
 
-  const promise = window.ade.projectConfig.get().then((value) => {
+  const promise = window.ade.projectConfig.get(args?.pin ?? undefined).then((value) => {
     configCache.set(key, {
       value,
       expiresAt: Date.now() + ttlMs,

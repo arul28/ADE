@@ -1057,7 +1057,7 @@ declare global {
           leadSessionId: string;
           title?: string;
           goalSummary?: string;
-        }) => Promise<{
+        }, pin?: OpenProjectBinding | null) => Promise<{
           runId: string;
           manifest: import("../shared/types/orchestration").OrchestrationManifest;
           etag: string;
@@ -1148,7 +1148,7 @@ declare global {
       lanes: {
         list: (args?: ListLanesArgs) => Promise<LaneSummary[]>;
         listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
-        create: (args: CreateLaneArgs) => Promise<LaneSummary>;
+        create: (args: CreateLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         createChild: (args: CreateChildLaneArgs) => Promise<LaneSummary>;
         createFromUnstaged: (
           args: CreateLaneFromUnstagedArgs,
@@ -1163,7 +1163,7 @@ declare global {
         attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
         listUnregisteredWorktrees: () => Promise<UnregisteredLaneCandidate[]>;
         adoptAttached: (args: AdoptAttachedLaneArgs) => Promise<LaneSummary>;
-        rename: (args: RenameLaneArgs) => Promise<void>;
+        rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
         updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
@@ -1293,13 +1293,14 @@ declare global {
         getSummary: (
           args: AgentChatGetSummaryArgs,
         ) => Promise<AgentChatSessionSummary | null>;
-        create: (args: AgentChatCreateArgs) => Promise<AgentChatSession>;
+        create: (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSession>;
         launch: (args: AgentChatLaunchArgs) => Promise<AgentChatSession>;
         launchCli: (
           args: AgentChatLaunchCliArgs,
         ) => Promise<AgentChatLaunchCliResult>;
         suggestLaneName: (
           args: AgentChatSuggestLaneNameArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<string>;
         parallelLaunchState: {
           get: (
@@ -1310,7 +1311,7 @@ declare global {
         handoff: (
           args: AgentChatHandoffArgs,
         ) => Promise<AgentChatHandoffResult>;
-        send: (args: AgentChatSendArgs) => Promise<void>;
+        send: (args: AgentChatSendArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         steer: (args: AgentChatSteerArgs) => Promise<void>;
         cancelSteer: (args: AgentChatCancelSteerArgs) => Promise<void>;
         editSteer: (args: AgentChatEditSteerArgs) => Promise<void>;
@@ -1607,7 +1608,7 @@ declare global {
         probePort: (port: number) => Promise<boolean>;
       };
       pty: {
-        create: (args: PtyCreateArgs) => Promise<PtyCreateResult>;
+        create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
         resumeSession: (
           args: PtyResumeSessionArgs,
         ) => Promise<PtyResumeSessionResult>;
@@ -1700,7 +1701,7 @@ declare global {
         stashPop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashDrop: (args: GitStashRefArgs) => Promise<GitActionResult>;
         stashClear: (args: { laneId: string }) => Promise<GitActionResult>;
-        fetch: (args: { laneId: string }) => Promise<GitActionResult>;
+        fetch: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<GitActionResult>;
         pull: (args: GitPullArgs) => Promise<GitActionResult>;
         undoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
         redoLastHeadChange: (args: GitHeadChangeActionArgs) => Promise<GitActionResult>;
@@ -1728,6 +1729,7 @@ declare global {
         mergeAbort: (args: string | { laneId: string }) => Promise<GitActionResult>;
         listBranches: (
           args: GitListBranchesArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<GitBranchSummary[]>;
         getUserIdentity: (
           args: GitGetUserIdentityArgs,
@@ -2064,7 +2066,7 @@ declare global {
         onEvent: (cb: (ev: TestEvent) => void) => () => void;
       };
       projectConfig: {
-        get: () => Promise<ProjectConfigSnapshot>;
+        get: (pin?: OpenProjectBinding | null) => Promise<ProjectConfigSnapshot>;
         validate: (
           candidate: ProjectConfigCandidate,
         ) => Promise<ProjectConfigValidationResult>;

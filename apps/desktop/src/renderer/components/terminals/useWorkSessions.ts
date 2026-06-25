@@ -1432,7 +1432,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ...(args.initialInput !== undefined ? { initialInput: args.initialInput } : {}),
         ...(args.initialInputDelayMs !== undefined ? { initialInputDelayMs: args.initialInputDelayMs } : {}),
       });
-      const result = await window.ade.pty.create({
+      const createArgs = {
         laneId: args.laneId,
         cols: 100,
         rows: 30,
@@ -1444,7 +1444,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...(args.linearIssues?.length ? { linearIssues: args.linearIssues } : {}),
         ...launchFields,
-      });
+      };
+      const result = args.pin
+        ? await window.ade.pty.create(createArgs, args.pin)
+        : await window.ade.pty.create(createArgs);
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,
