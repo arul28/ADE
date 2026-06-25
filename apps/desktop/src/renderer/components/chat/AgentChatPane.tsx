@@ -7204,10 +7204,12 @@ export function AgentChatPane({
       // If the launch timed out while the prompt was in flight, tear the
       // session down rather than leaving a started-but-orphaned chat.
       assertActive?.();
-      notifySessionCreated(createdSession, {
-        activate: false,
-        source: "draft-launch",
-      });
+      if (canRefreshPinnedProject(pin)) {
+        notifySessionCreated(createdSession, {
+          activate: false,
+          source: "draft-launch",
+        });
+      }
       return {
         sessionId: createdSession.id,
         draftKind: "chat",
@@ -7220,6 +7222,7 @@ export function AgentChatPane({
     }
   }, [
     cleanupDraftChatSession,
+    canRefreshPinnedProject,
     createSessionForLane,
     notifySessionCreated,
     touchSession,

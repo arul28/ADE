@@ -3965,6 +3965,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("keeps an auto-create launch pinned to its originating project after a mid-launch project switch", async () => {
+    const onSessionCreated = vi.fn();
     const { send, create, createLane, deleteLane } = installAdeMocks({ sessions: [] });
     // Naming no longer blocks lane creation; branch discovery (git.fetch) is now
     // the async step before the irreversible create, so gate the project switch
@@ -3982,7 +3983,7 @@ describe("AgentChatPane submit recovery", () => {
     // The originating project's binding is captured when the launch starts.
     useAppStore.setState({ projectBinding: binding as any });
 
-    renderAutoCreateDraftPane();
+    renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
@@ -4032,6 +4033,7 @@ describe("AgentChatPane submit recovery", () => {
       const readyJob = jobs.find((job) => job.sessionId === "created-session");
       expect(readyJob?.status).toBe("ready");
       expect(readyJob?.autoOpen).toBe(false);
+      expect(onSessionCreated).not.toHaveBeenCalled();
     });
     expect(screen.getByTestId("location").textContent).toBe("/work");
     expect(deleteLane).not.toHaveBeenCalled();
