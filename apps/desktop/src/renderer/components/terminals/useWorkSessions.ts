@@ -383,6 +383,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
+  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
+    !pin || appStore.getState().projectBinding?.key === pin.key
+  ), [appStore]);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);
@@ -1458,6 +1461,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ? await window.ade.pty.create(createArgs, args.pin)
         : await window.ade.pty.create(createArgs);
       rememberWorkPtyLaunchPin(result, args.pin);
+      if (!canMutatePinnedProjectUi(args.pin)) {
+        return result;
+      }
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,
@@ -1506,7 +1512,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [focusSession, lanes, openSessionTab, refresh, selectLane],
+    [canMutatePinnedProjectUi, focusSession, lanes, openSessionTab, refresh, selectLane],
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {

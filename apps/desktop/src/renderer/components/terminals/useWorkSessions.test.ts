@@ -686,6 +686,62 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     }, pin);
   });
 
+  it("launchPtySession skips Work UI mutations when a pinned launch resolves after project switch", async () => {
+    const pin = {
+      kind: "local",
+      key: "local:/origin/project",
+      rootPath: "/origin/project",
+      displayName: "Origin",
+    } as const;
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/other/project",
+        rootPath: "/other/project",
+        displayName: "Other",
+      },
+    };
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "stale-pinned-session",
+      ptyId: "stale-pinned-pty",
+      pid: 1234,
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+    focusSessionSpy.mockClear();
+    selectLaneSpy.mockClear();
+    setWorkViewStateSpy.mockClear();
+    listSessionsCachedMock.mockClear();
+
+    await act(async () => {
+      await expect(result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Stale pinned prompt",
+        pin,
+      })).resolves.toEqual(expect.objectContaining({
+        sessionId: "stale-pinned-session",
+        ptyId: "stale-pinned-pty",
+      }));
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      title: "Stale pinned prompt",
+    }), pin);
+    expect(result.current.sessions.find((session) => session.id === "stale-pinned-session")).toBeUndefined();
+    expect(selectLaneSpy).not.toHaveBeenCalledWith("lane-1");
+    expect(focusSessionSpy).not.toHaveBeenCalledWith("stale-pinned-session");
+    expect(setWorkViewStateSpy).not.toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
+  });
+
   it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {
     const workState = {
       openItemIds: [] as string[],

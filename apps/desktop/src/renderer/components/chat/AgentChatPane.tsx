@@ -7454,7 +7454,9 @@ export function AgentChatPane({
         sessionId: launched.sessionId,
         draftKind: launched.draftKind,
       };
-      const shouldAutoOpen = mode === "foreground" && latestForegroundDraftLaunchJobIdRef.current === jobId;
+      const canMutateLaunchUi = canRefreshPinnedProject(launchBinding);
+      const shouldAutoOpen =
+        canMutateLaunchUi && mode === "foreground" && latestForegroundDraftLaunchJobIdRef.current === jobId;
       const jobStillVisible = draftLaunchJobExists(jobId);
       patchDraftLaunchJob(jobId, {
         status: "ready",
@@ -7465,14 +7467,14 @@ export function AgentChatPane({
         // Keep autoOpen set for foreground sends so the effect below can open the
         // chat even if this pane instance remounted during the launch (otherwise
         // the inline open is skipped and the job sits at "ready").
-        autoOpen: mode === "foreground",
+        autoOpen: mode === "foreground" && canMutateLaunchUi,
       });
       if (!jobStillVisible) {
         return;
       }
       if (shouldAutoOpen && paneMountedRef.current) {
         openLaunchedDraftSession({ ...launch, jobId });
-      } else if (mode === "background" && paneMountedRef.current) {
+      } else if (canMutateLaunchUi && mode === "background" && paneMountedRef.current) {
         setSelectedSessionId(null);
       }
     } catch (launchError) {

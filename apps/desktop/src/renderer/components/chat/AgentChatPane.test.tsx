@@ -4029,7 +4029,11 @@ describe("AgentChatPane submit recovery", () => {
       }), binding);
       const jobs = Object.values(useAppStore.getState().draftLaunchJobsByScope).flat();
       expect(jobs.find((job) => job.status === "failed")).toBeFalsy();
+      const readyJob = jobs.find((job) => job.sessionId === "created-session");
+      expect(readyJob?.status).toBe("ready");
+      expect(readyJob?.autoOpen).toBe(false);
     });
+    expect(screen.getByTestId("location").textContent).toBe("/work");
     expect(deleteLane).not.toHaveBeenCalled();
   });
 
