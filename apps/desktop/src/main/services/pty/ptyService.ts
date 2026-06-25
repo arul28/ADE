@@ -18,7 +18,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
-import { augmentPathWithKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
+import { augmentProcessPathWithShellAndKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -1006,9 +1006,15 @@ function withUserCodexCliPathPriority(
   return next;
 }
 
-function withKnownCliLaunchPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+function withResolvedCliLaunchPath(
+  env: NodeJS.ProcessEnv,
+  options: { includeInteractiveShell?: boolean } = {},
+): NodeJS.ProcessEnv {
   const next = { ...env };
-  setPathEnvValue(next, augmentPathWithKnownCliDirs(getPathEnvValue(next), next));
+  setPathEnvValue(next, augmentProcessPathWithShellAndKnownCliDirs({
+    env: next,
+    includeInteractiveShell: options.includeInteractiveShell,
+  }));
   return next;
 }
 
@@ -3712,7 +3718,9 @@ export function createPtyService({
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
-      launchEnv = withKnownCliLaunchPath(launchEnv);
+      launchEnv = withResolvedCliLaunchPath(launchEnv, {
+        includeInteractiveShell: Boolean(directCommand || startupCommand),
+      });
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)

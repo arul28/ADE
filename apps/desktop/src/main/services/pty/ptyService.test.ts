@@ -129,7 +129,7 @@ const mocks = vi.hoisted(() => {
     parseTrackedCliLaunchConfig: vi.fn(() => null),
     runtimeStateFromOsc133Chunk: vi.fn(() => "running"),
     resolveOpenCodeBinaryPath: vi.fn<[], string | null>(() => null),
-    execFileSync: vi.fn(() => ""),
+    execFileSync: vi.fn((_file?: unknown, _args?: unknown) => ""),
     spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
 });
@@ -652,6 +652,12 @@ describe("ptyService", () => {
       const previousPath = process.env.PATH;
       process.env.SHELL = "/bin/zsh";
       process.env.PATH = "/usr/bin";
+      mocks.execFileSync.mockImplementation((_file, args) => {
+        const shellFlag = Array.isArray(args) ? args[0] : null;
+        if (shellFlag === "-lc") return "__ADE_PATH_START__/login/bin:/usr/bin__ADE_PATH_END__";
+        if (shellFlag === "-ic") return "__ADE_PATH_START__/custom/nvm/bin:/usr/bin__ADE_PATH_END__";
+        return "";
+      });
       try {
         const { service, loadPty, mockPty } = createHarness();
         await service.create({
@@ -677,16 +683,24 @@ describe("ptyService", () => {
         const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
         expect(pathEntries).toEqual(expect.arrayContaining([
           "/usr/bin",
+          "/login/bin",
+          "/custom/nvm/bin",
           "/opt/homebrew/bin",
           path.join(os.homedir(), ".asdf", "shims"),
           path.join(os.homedir(), ".mise", "shims"),
         ]));
+        expect(mocks.execFileSync).toHaveBeenCalledWith(
+          "/bin/zsh",
+          ["-ic", expect.stringContaining("__ADE_PATH_START__")],
+          expect.objectContaining({ env: expect.objectContaining({ SHELL: "/bin/zsh" }) }),
+        );
         expect(mockPty.write).toHaveBeenCalledWith("npm test\r");
       } finally {
         if (previousShell == null) delete process.env.SHELL;
         else process.env.SHELL = previousShell;
         if (previousPath == null) delete process.env.PATH;
         else process.env.PATH = previousPath;
+        mocks.execFileSync.mockImplementation(() => "");
       }
     });
 
