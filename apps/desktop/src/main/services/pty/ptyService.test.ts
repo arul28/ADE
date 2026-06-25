@@ -647,6 +647,37 @@ describe("ptyService", () => {
       }
     });
 
+    it("starts command-backed shell sessions without reading user startup files", async () => {
+      const previousShell = process.env.SHELL;
+      process.env.SHELL = "/bin/zsh";
+      try {
+        const { service, loadPty, mockPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Shell command",
+          cols: 80,
+          rows: 24,
+          toolType: "shell",
+          startupCommand: "npm test",
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        expect(ptyLib.spawn).toHaveBeenCalledWith(
+          "/bin/zsh",
+          ["-f"],
+          expect.objectContaining({
+            env: expect.objectContaining({
+              ZDOTDIR: "/var/empty",
+            }),
+          }),
+        );
+        expect(mockPty.write).toHaveBeenCalledWith("npm test\r");
+      } finally {
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+      }
+    });
+
     it("uses a caller-provided sessionId when creating a new tracked session", async () => {
       const { service, sessionService } = createHarness();
       const result = await service.create({
@@ -5240,6 +5271,30 @@ describe("ptyService", () => {
       expect(read.terminalId).toBe(created.sessionId);
       expect(read.data).toBe("456789");
       expect(read.nextSince).toBe(4 + "456789".length);
+    });
+
+    it("readTerminal accepts a live PTY handle as an alias for the terminal session id", async () => {
+      const { service, sessionService } = createChatHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "Reader",
+        cols: 80,
+        rows: 24,
+        chatSessionId: "chat-7",
+      });
+      sessionService.readTranscriptTail.mockResolvedValueOnce("pty transcript");
+
+      const read = await service.readTerminal({ ptyId: created.ptyId, maxBytes: 1024 });
+
+      expect(read.terminalId).toBe(created.sessionId);
+      expect(read.data).toBe("pty transcript");
+      expect(sessionService.get).toHaveBeenCalledWith(created.sessionId);
+
+      sessionService.readTranscriptTail.mockResolvedValueOnce("terminal flag pty transcript");
+      const terminalFlagRead = await service.readTerminal({ terminalId: created.ptyId, maxBytes: 1024 });
+
+      expect(terminalFlagRead.terminalId).toBe(created.sessionId);
+      expect(terminalFlagRead.data).toBe("terminal flag pty transcript");
     });
 
     it("readTerminal merges recent live output before the transcript stream flushes", async () => {

@@ -4775,6 +4775,24 @@ describe("ADE CLI", () => {
       },
     });
 
+    const readByPty = buildCliPlan([
+      "terminal",
+      "read",
+      "--pty",
+      "pty-1",
+      "--since",
+      "12",
+    ]);
+    expect(readByPty.kind).toBe("execute");
+    if (readByPty.kind !== "execute") return;
+    expect(readByPty.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "terminal",
+        action: "read",
+        args: { ptyId: "pty-1", since: 12 },
+      },
+    });
+
     const write = buildCliPlan([
       "terminal",
       "write",
@@ -4792,6 +4810,19 @@ describe("ADE CLI", () => {
         args: { terminalId: "term-1", data: "y\n" },
       },
     });
+  });
+
+  it("formats shell start text with the terminal read command", () => {
+    const text = formatOutput(
+      { sessionId: "session-1", ptyId: "pty-1", pid: 1234 },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "pty-create",
+    );
+
+    expect(text).toContain("ADE shell session");
+    expect(text).toContain("session-1");
+    expect(text).toContain("pty-1");
+    expect(text).toContain("ade terminal read --terminal session-1 --text");
   });
 
   it("app-control logs and terminal write use the active App Control terminal", () => {

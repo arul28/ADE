@@ -149,6 +149,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const previousOpenRef = useRef(open);
   const pendingAutoCreateRef = useRef(false);
   const tabsRef = useRef<TabEntry[]>([]);
+  const createTabFlightRef = useRef<Promise<void> | null>(null);
   const restoringUiStateRef = useRef(false);
   const lastHandledCreateRequestRef = useRef(0);
   const createRequestHandledThisOpenRef = useRef(false);
@@ -212,12 +213,14 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, [drawerHeight]);
 
   const createTab = useCallback(async () => {
-    if (creatingTab) return;
+    if (createTabFlightRef.current) {
+      await createTabFlightRef.current.catch(() => {});
+      return;
+    }
     setCreatingTab(true);
-    try {
+    const flight = (async () => {
       const tabIndex = nextTabIndex++;
       const label = `Terminal ${tabIndex}`;
-      const tabId = `chat-term-${Date.now()}-${tabIndex}`;
       const created = await window.ade.pty.create({
         laneId,
         chatSessionId,
@@ -228,6 +231,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         toolType: "shell",
       });
 
+      const tabId = `chat-term-${created.sessionId}`;
       const nextEntry: TabEntry = {
         id: tabId,
         ptyId: created.ptyId,
@@ -236,17 +240,32 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         exited: false,
       };
 
-      const existing = tabs.find(
+      const existing = tabsRef.current.find(
         (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
       );
-      setActiveTabId(existing?.id ?? tabId);
-      if (!existing) setTabs((prev) => [...prev, nextEntry]);
+      if (existing) {
+        setActiveTabId(existing.id);
+      } else {
+        setTabs((prev) => {
+          const prevExisting = prev.find(
+            (tab) => tab.sessionId === created.sessionId || tab.ptyId === created.ptyId,
+          );
+          if (prevExisting) return prev;
+          return [...prev, nextEntry];
+        });
+        setActiveTabId(tabId);
+      }
+    })();
+    createTabFlightRef.current = flight;
+    try {
+      await flight;
     } catch (error) {
       reportCreateError(error);
     } finally {
+      if (createTabFlightRef.current === flight) createTabFlightRef.current = null;
       setCreatingTab(false);
     }
-  }, [chatSessionId, creatingTab, laneId, reportCreateError, tabs]);
+  }, [chatSessionId, laneId, reportCreateError]);
 
   useEffect(() => {
     if (!chatSessionId) return;
@@ -263,10 +282,16 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         if (!restored.length) return;
         setTabs((prev) => {
           const restoredBySessionId = new Map(restored.map((tab) => [tab.sessionId, tab]));
-          const next = prev.map((tab) => restoredBySessionId.get(tab.sessionId) ?? tab);
+          const restoredByPtyId = new Map(restored.map((tab) => [tab.ptyId, tab]));
+          const next = prev.map((tab) => restoredBySessionId.get(tab.sessionId) ?? restoredByPtyId.get(tab.ptyId) ?? tab);
           const existingSessionIds = new Set(next.map((tab) => tab.sessionId));
+          const existingPtyIds = new Set(next.map((tab) => tab.ptyId));
           for (const tab of restored) {
-            if (!existingSessionIds.has(tab.sessionId)) next.push(tab);
+            if (!existingSessionIds.has(tab.sessionId) && !existingPtyIds.has(tab.ptyId)) {
+              next.push(tab);
+              existingSessionIds.add(tab.sessionId);
+              existingPtyIds.add(tab.ptyId);
+            }
           }
           return next;
         });
@@ -313,7 +338,13 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       label: revealRequest.label || "App Control",
       exited: false,
     };
-    setTabs((prev) => [...prev, nextEntry]);
+    setTabs((prev) => {
+      const existingInUpdate = prev.find(
+        (tab) => tab.sessionId === revealRequest.terminalId || tab.ptyId === revealRequest.ptyId,
+      );
+      if (existingInUpdate) return prev;
+      return [...prev, nextEntry];
+    });
     setActiveTabId(tabId);
     revealHandledThisOpenRef.current = true;
   }, [revealRequest, uiStateKey]);

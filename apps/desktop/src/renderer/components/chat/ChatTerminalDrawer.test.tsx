@@ -86,6 +86,37 @@ describe("ChatTerminalDrawer", () => {
     expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-race-1:pty-race-1");
   });
 
+  it("keeps rapid new-terminal clicks to one in-flight PTY create", async () => {
+    type CreateResolver = (value: { sessionId: string; ptyId: string; pid: number }) => void;
+    const resolveCreate: { current?: CreateResolver } = {};
+    vi.mocked(window.ade.pty.create).mockReturnValueOnce(new Promise((resolve) => {
+      resolveCreate.current = resolve;
+    }) as any);
+
+    render(
+      <ChatTerminalDrawer
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    const createButton = screen.getByTitle("New terminal");
+    fireEvent.click(createButton);
+    fireEvent.click(createButton);
+
+    expect(window.ade.pty.create).toHaveBeenCalledTimes(1);
+    expect(resolveCreate.current).toBeTruthy();
+    resolveCreate.current!({ sessionId: "terminal-once", ptyId: "pty-once", pid: 1234 });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("terminal-view").textContent).toBe("terminal-once:pty-once");
+    });
+    expect(screen.getAllByText(/^Terminal \d+$/)).toHaveLength(1);
+  });
+
   it("toggles the terminal drawer open and closed", () => {
     const onToggle = vi.fn();
     const view = render(<ChatTerminalToggle open={false} onToggle={onToggle} />);
