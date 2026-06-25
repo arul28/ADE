@@ -1988,7 +1988,10 @@ const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `You name git worktree lanes for a s
 Return only the base name text (no model suffixes).
 - Use 2 to 5 words, lowercase except proper nouns if needed.
 - Slug-friendly: letters, numbers, spaces, and hyphens only (no slashes).
-- Describe the task or feature from the user's message.
+- Describe the concrete task, feature, bug, UI control, or command from the user's message.
+- Prefer the thing being built or fixed over meta words like prompt, question, request, chat, or task.
+- Ignore conversational lead-ins like "correct me if I'm wrong" or "look into this".
+- If the user names a command and a UI control, include both (for example "claude auth login button", not "claude auth login prompt").
 - No quotes, no emoji, no trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "none", description: "No extra reasoning when supported by the runtime." },

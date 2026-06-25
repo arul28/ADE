@@ -4367,14 +4367,16 @@ contextBridge.exposeInMainWorld("ade", {
       if (runtime.handled) return runtime.result;
       return lanesListSnapshotsCache.get(serializeIpcCacheArgs(args));
     },
-    create: async (args: CreateLaneArgs): Promise<LaneSummary> => {
+    create: async (args: CreateLaneArgs, pin?: OpenProjectBinding | null): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
-        "lane",
-        "create",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesCreate, args),
-      );
+      const lane = pin
+        ? await callPinnedRuntimeAction<LaneSummary>(pin, "lane", "create", { args })
+        : await callProjectRuntimeActionOr<LaneSummary>(
+            "lane",
+            "create",
+            { args },
+            () => ipcRenderer.invoke(IPC.lanesCreate, args),
+          );
       clearGitReadCaches();
       return lane as LaneSummary;
     },
@@ -4460,11 +4462,15 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
-    rename: async (args: RenameLaneArgs): Promise<void> => {
+    rename: async (args: RenameLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
-      await callProjectRuntimeActionOr("lane", "rename", { args }, () =>
-        ipcRenderer.invoke(IPC.lanesRename, args),
-      );
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "lane", "rename", { args });
+      } else {
+        await callProjectRuntimeActionOr("lane", "rename", { args }, () =>
+          ipcRenderer.invoke(IPC.lanesRename, args),
+        );
+      }
       clearGitReadCaches();
     },
     reparent: async (args: ReparentLaneArgs): Promise<ReparentLaneResult> => {
@@ -5074,16 +5080,20 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : agentChatSummaryCache.get(sessionId);
     },
-    create: async (args: AgentChatCreateArgs): Promise<AgentChatSession> => {
+    create: async (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null): Promise<AgentChatSession> => {
       agentChatSummaryCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
-        "chat",
-        "createSession",
-        { args },
-      );
-      const session = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.agentChatCreate, args);
+      const session = pin
+        ? await callPinnedRuntimeAction<AgentChatSession>(pin, "chat", "createSession", { args })
+        : await (async () => {
+            const runtime = await callProjectRuntimeActionIfBound<AgentChatSession>(
+              "chat",
+              "createSession",
+              { args },
+            );
+            return runtime.handled
+              ? runtime.result
+              : await ipcRenderer.invoke(IPC.agentChatCreate, args);
+          })();
       agentChatSummaryCache.clear();
       return session as AgentChatSession;
     },
@@ -5118,13 +5128,16 @@ contextBridge.exposeInMainWorld("ade", {
     },
     suggestLaneName: async (
       args: AgentChatSuggestLaneNameArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<string> =>
-      callProjectRuntimeActionOr(
-        "chat",
-        "suggestLaneNameFromPrompt",
-        { args },
-        () => ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
-      ),
+      pin
+        ? callPinnedRuntimeAction<string>(pin, "chat", "suggestLaneNameFromPrompt", { args })
+        : callProjectRuntimeActionOr(
+            "chat",
+            "suggestLaneNameFromPrompt",
+            { args },
+            () => ipcRenderer.invoke(IPC.agentChatSuggestLaneName, args),
+          ),
     parallelLaunchState: {
       get: async (
         args: AgentChatParallelLaunchStateArgs,
@@ -5149,14 +5162,18 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("chat", "handoffSession", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatHandoff, args),
       ),
-    send: async (args: AgentChatSendArgs): Promise<void> => {
+    send: async (args: AgentChatSendArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "chat",
-        "sendMessage",
-        { args },
-      );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatSend, args);
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "sendMessage", { args });
+      } else {
+        const runtime = await callProjectRuntimeActionIfBound<void>(
+          "chat",
+          "sendMessage",
+          { args },
+        );
+        if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatSend, args);
+      }
       agentChatSummaryCache.clear();
     },
     steer: async (args: AgentChatSteerArgs): Promise<void> => {
@@ -5507,13 +5524,17 @@ contextBridge.exposeInMainWorld("ade", {
     }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
   },
   orchestration: createOrchestrationBridge({
-    callAction: (action, args, ipcChannel) =>
-      callProjectRuntimeActionOr(
-        "orchestration",
-        action,
-        { args: args as Record<string, unknown> | undefined },
-        () => ipcRenderer.invoke(ipcChannel, args),
-      ),
+    callAction: (action, args, ipcChannel, pin) => {
+      const request = { args: args as Record<string, unknown> | undefined };
+      return pin
+        ? callPinnedRuntimeAction(pin, "orchestration", action, request)
+        : callProjectRuntimeActionOr(
+            "orchestration",
+            action,
+            request,
+            () => ipcRenderer.invoke(ipcChannel, args),
+          );
+    },
     subscribeRuntimeOrchestrationEvents: registerRemoteOrchestrationEventCallback,
     parseLegacyEvent: toOrchestrationRuntimeEvent,
     ipcRenderer,
@@ -6133,7 +6154,10 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.localhostProbePort, { port }),
   },
   pty: {
-    create: async (args: PtyCreateArgs): Promise<PtyCreateResult> => {
+    create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<PtyCreateResult>(pin, "pty", "create", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<PtyCreateResult>(
         "pty",
         "create",
@@ -6158,7 +6182,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     sendToSession: async (
       args: PtySendToSessionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<PtySendToSessionResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<PtySendToSessionResult>(pin, "pty", "sendToSession", { args });
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<PtySendToSessionResult>(
           "pty",
@@ -6719,16 +6747,20 @@ contextBridge.exposeInMainWorld("ade", {
       clearGitReadCaches();
       return result as GitActionResult;
     },
-    fetch: async (args: { laneId: string }): Promise<GitActionResult> => {
+    fetch: async (args: { laneId: string }, pin?: OpenProjectBinding | null): Promise<GitActionResult> => {
       clearGitReadCaches();
-      const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
-        "git",
-        "fetch",
-        { args },
-      );
-      const result = runtime.handled
-        ? runtime.result
-        : await ipcRenderer.invoke(IPC.gitFetch, args);
+      const result = pin
+        ? await callPinnedRuntimeAction<GitActionResult>(pin, "git", "fetch", { args })
+        : await (async () => {
+            const runtime = await callProjectRuntimeActionIfBound<GitActionResult>(
+              "git",
+              "fetch",
+              { args },
+            );
+            return runtime.handled
+              ? runtime.result
+              : await ipcRenderer.invoke(IPC.gitFetch, args);
+          })();
       clearGitReadCaches();
       return result as GitActionResult;
     },
@@ -6896,7 +6928,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     listBranches: async (
       args: GitListBranchesArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<GitBranchSummary[]> => {
+      if (pin) {
+        return callPinnedRuntimeAction<GitBranchSummary[]>(pin, "git", "listBranches", { args });
+      }
       const runtime = await callProjectRuntimeActionIfBound<GitBranchSummary[]>(
         "git",
         "listBranches",
@@ -8101,7 +8137,10 @@ contextBridge.exposeInMainWorld("ade", {
     },
   },
   projectConfig: {
-    get: async (): Promise<ProjectConfigSnapshot> => {
+    get: async (pin?: OpenProjectBinding | null): Promise<ProjectConfigSnapshot> => {
+      if (pin) {
+        return callPinnedRuntimeAction<ProjectConfigSnapshot>(pin, "project_config", "get");
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<ProjectConfigSnapshot>(
           "project_config",

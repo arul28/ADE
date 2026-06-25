@@ -25,11 +25,9 @@ export const DRAFT_LAUNCH_JOB_STALE_AFTER_MS = 2 * 60 * 1000;
 // forever, blocking re-submission of the same draft.
 export const DRAFT_LAUNCH_TIMEOUT_MS = 90 * 1000;
 
-// Thrown when the active project changes out from under an in-flight draft
-// launch. The launch captures the originating project's binding when it starts
-// and aborts before any mutating runtime call (lane create / session start) if
-// the active project has drifted, so it can never create a lane or session in
-// the wrong project. The job surfaces as a Restorable failure.
+// Thrown by the legacy/unpinned fallback when an in-flight draft launch has no
+// originating project binding to route through and the active project root
+// changes. Bound launches pass a pin to mutating runtime calls instead.
 export const LAUNCH_PROJECT_CHANGED_MESSAGE =
   "Project changed before the launch finished — it was not started. Use Restore to run it in the current project.";
 

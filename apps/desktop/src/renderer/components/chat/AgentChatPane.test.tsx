@@ -3552,7 +3552,7 @@ describe("AgentChatPane submit recovery", () => {
 
       await waitFor(() => {
         expect(createLane).toHaveBeenCalledWith({
-          name: "keep-going-even-if-naming",
+          name: "keep-going-even-naming-fails",
           baseBranch: "origin/main",
         });
         expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
@@ -3711,6 +3711,45 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         interactionMode: "orchestrator-lead",
       }));
+    });
+  });
+
+  it("pins orchestrator bundle allocation to the originating project binding", async () => {
+    const binding = {
+      kind: "local" as const,
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+    };
+    const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
+    useAppStore.setState({ projectBinding: binding as any });
+
+    renderAutoCreateDraftPane({ orchestratorEnabled: true });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Coordinate the release checklist." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        interactionMode: "orchestrator-lead",
+        provider: "claude",
+      }), binding);
+      expect(window.ade.orchestration.runCreate).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        leadSessionId: "created-session",
+      }, binding);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        interactionMode: "orchestrator-lead",
+      }), binding);
     });
   });
 
@@ -3879,7 +3918,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "New draft stays." } });
-    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Restore" })[0]);
 
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("New draft stays.\n\nFailed launch draft.");
     expect(screen.queryByRole("button", { name: "Restore" })).toBeNull();
@@ -3925,26 +3964,26 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("aborts an auto-create launch before creating a lane when the project changes mid-launch", async () => {
-    const { createLane, deleteLane } = installAdeMocks({ sessions: [] });
+  it("keeps an auto-create launch pinned to its originating project after a mid-launch project switch", async () => {
+    const onSessionCreated = vi.fn();
+    const { send, create, createLane, deleteLane } = installAdeMocks({ sessions: [] });
     // Naming no longer blocks lane creation; branch discovery (git.fetch) is now
     // the async step before the irreversible create, so gate the project switch
-    // on it to exercise the same "abort before creating in the wrong project" guard.
+    // on it to exercise the pinned background launch path.
     let resolveFetch!: () => void;
     ((window as any).ade.git.fetch as ReturnType<typeof vi.fn>).mockImplementation(
       () => new Promise<void>((resolve) => { resolveFetch = () => resolve(undefined); }),
     );
+    const binding = {
+      kind: "local" as const,
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+    };
     // The originating project's binding is captured when the launch starts.
-    useAppStore.setState({
-      projectBinding: {
-        kind: "local",
-        key: "local:/tmp/project-under-test",
-        rootPath: "/tmp/project-under-test",
-        displayName: "project-under-test",
-      } as any,
-    });
+    useAppStore.setState({ projectBinding: binding as any });
 
-    renderAutoCreateDraftPane();
+    renderAutoCreateDraftPane({ onSessionCreated });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
@@ -3960,12 +3999,12 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "Switch projects mid-launch." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
-    await waitFor(() => expect((window as any).ade.git.fetch).toHaveBeenCalled());
+    await waitFor(() => {
+      expect((window as any).ade.git.fetch).toHaveBeenCalledWith({ laneId: "lane-primary" }, binding);
+    });
 
     // Switch the active project to a different one, then let branch discovery
-    // resolve. selectActiveProjectRoot reads project.rootPath for local bindings,
-    // so the scope key (and thus the status banner) stays addressable while only
-    // the binding key drifts.
+    // resolve. The launch should keep routing through the captured binding.
     await act(async () => {
       useAppStore.setState({
         projectBinding: {
@@ -3979,16 +4018,24 @@ describe("AgentChatPane submit recovery", () => {
       await Promise.resolve();
     });
 
-    // After the switch the pane renders the new project's scope, so assert the
-    // failed job directly in the (root) store, under the originating scope.
     await waitFor(() => {
+      expect(createLane).toHaveBeenCalledWith({
+        name: "switch-projects-mid-launch",
+        baseBranch: "origin/main",
+      }, binding);
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }), binding);
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "created-session",
+        text: "Switch projects mid-launch.",
+      }), binding);
       const jobs = Object.values(useAppStore.getState().draftLaunchJobsByScope).flat();
-      const failed = jobs.find((job) => job.status === "failed");
-      expect(failed?.error).toMatch(/Project changed/i);
+      expect(jobs.find((job) => job.status === "failed")).toBeFalsy();
+      const readyJob = jobs.find((job) => job.sessionId === "created-session");
+      expect(readyJob?.status).toBe("ready");
+      expect(readyJob?.autoOpen).toBe(false);
+      expect(onSessionCreated).not.toHaveBeenCalled();
     });
-    // The guard fired before the irreversible mutation: no lane was created in
-    // the now-active project, and there was nothing to roll back.
-    expect(createLane).not.toHaveBeenCalled();
+    expect(screen.getByTestId("location").textContent).toBe("/work");
     expect(deleteLane).not.toHaveBeenCalled();
   });
 
@@ -4443,7 +4490,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Launch failed: send failed after remount/i)).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Restore" })).toBeTruthy();
+      expect(screen.getAllByRole("button", { name: "Restore" }).length).toBeGreaterThan(0);
       expect(screen.getByRole("button", { name: "Dismiss failed launch" })).toBeTruthy();
     });
   });

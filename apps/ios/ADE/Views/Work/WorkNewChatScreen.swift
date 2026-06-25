@@ -102,14 +102,197 @@ private actor AutoLaneNameResolver {
   }
 }
 
-/// `yyyyMMdd-HHmmss` stamp for the auto-created lane fallback name, mirroring
-/// the desktop `chat-YYYYMMDD-HHMMSS` convention.
+/// `yyyyMMdd-HHmmss` stamp for generic auto-created lane fallback names.
 private let workAutoLaneNameFormatter: DateFormatter = {
   let formatter = DateFormatter()
   formatter.locale = Locale(identifier: "en_US_POSIX")
   formatter.dateFormat = "yyyyMMdd-HHmmss"
   return formatter
 }()
+
+private let workGenericLaneFallbackName = "parallel-task"
+
+private let workLaneFallbackStopwords: Set<String> = [
+  "a", "an", "and", "are", "as", "at", "be", "been", "being", "but",
+  "can", "chat", "context", "could", "did", "do", "does", "for", "from",
+  "had", "has", "have", "help", "how", "i", "if", "im", "in", "into",
+  "is", "it", "just", "let", "make", "me", "my", "of", "on", "please",
+  "pls", "prompt", "the", "this", "though", "thought", "to", "use", "we",
+  "with", "wrong", "you",
+]
+
+private let workNamingTlds: Set<String> = [
+  "com", "org", "io", "net", "dev", "app", "co", "ai", "gov", "edu", "sh", "xyz", "me",
+]
+
+private let workBareDomainPattern = "\\b([a-z0-9][a-z0-9-]*)\\.(?:" +
+  workNamingTlds.sorted().map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|") +
+  ")\\b"
+
+func workAutoLaneGenericSuffix(date: Date = Date()) -> String {
+  workAutoLaneNameFormatter.string(from: date)
+}
+
+func workDeterministicAutoLaneName(from prompt: String, genericSuffix: String? = nil) -> String {
+  let collapsed = workCleanPromptForNaming(prompt)
+  guard !collapsed.isEmpty else {
+    return workGenericLaneFallback(genericSuffix: genericSuffix)
+  }
+  let priorityWords = workPriorityLaneNamingWords(cleanedPrompt: collapsed)
+  if !priorityWords.isEmpty {
+    return priorityWords.joined(separator: "-")
+  }
+  let tokens = workRegexMatches(
+    in: collapsed.lowercased(),
+    pattern: #"[a-z0-9]+"#
+  )
+  let meaningfulWords = Array(tokens
+    .filter { $0.count > 1 && !workLaneFallbackStopwords.contains($0) }
+    .prefix(5))
+  let fallbackWords = Array(tokens
+    .filter { $0.count > 1 }
+    .prefix(4))
+  let words = meaningfulWords.isEmpty ? fallbackWords : meaningfulWords
+  let slug = workSlugify(words.joined(separator: "-"))
+  if !slug.isEmpty {
+    return String(slug.prefix(48))
+  }
+  return workGenericLaneFallback(genericSuffix: genericSuffix)
+}
+
+private func workCleanPromptForNaming(_ prompt: String) -> String {
+  var value = prompt
+  value = value.replacingOccurrences(of: #"```[\s\S]*?```"#, with: " ", options: .regularExpression)
+  value = value.replacingOccurrences(of: #"`([^`]+)`"#, with: "$1", options: .regularExpression)
+  value = workReplacingRegexMatches(in: value, pattern: #"\b[a-z][a-z0-9+.-]*://\S+"#) { match in
+    " \(workNamingTokens(fromURLText: match)) "
+  }
+  value = value.replacingOccurrences(
+    of: workBareDomainPattern,
+    with: " $1 ",
+    options: [.regularExpression, .caseInsensitive]
+  )
+  value = value.replacingOccurrences(
+    of: #"\b(?:ok so|okay so|correct me if i'?m wrong|correct me if im wrong|correct if i'?m wrong|correct if im wrong|if i'?m wrong|if im wrong|please|pls|kindly|can you|could you|would you|will you|help me|i need(?: you)? to|i want(?: you)? to|i'?d like(?: you)? to|let'?s|lets|we need to|take a look at|have a look at|take a look|look at|look into|check out|go over|show me|give me|tell me about|use context skill|use the context skill)\b"#,
+    with: " ",
+    options: [.regularExpression, .caseInsensitive]
+  )
+  value = value.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+  return value.trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+private func workNamingTokens(fromURLText urlText: String) -> String {
+  let withoutScheme = urlText.replacingOccurrences(
+    of: #"^[a-z][a-z0-9+.-]*://"#,
+    with: "",
+    options: [.regularExpression, .caseInsensitive]
+  )
+  let segments = withoutScheme
+    .components(separatedBy: CharacterSet(charactersIn: "/?#&="))
+    .filter { !$0.isEmpty }
+  guard let host = segments.first else { return "" }
+  let hostLabels = host
+    .split(separator: ".")
+    .map(String.init)
+    .filter { label in
+      let normalized = label.lowercased()
+      return !normalized.isEmpty && normalized != "www" && !workNamingTlds.contains(normalized)
+    }
+  let pathLabels = segments.dropFirst().filter { !$0.isEmpty && $0.count <= 24 }
+  return (hostLabels + pathLabels).joined(separator: " ")
+}
+
+private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
+  let normalized = cleanedPrompt
+    .lowercased()
+    .replacingOccurrences(of: #"[^a-z0-9]+"#, with: " ", options: .regularExpression)
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !normalized.isEmpty else { return [] }
+  let provider = ["claude", "codex", "cursor", "droid", "opencode"].first {
+    workRegexContains(normalized, pattern: #"\b\#($0)\b"#)
+  } ?? (workRegexContains(normalized, pattern: #"\bopen code\b"#) ? "opencode" : nil)
+  guard let provider else { return [] }
+  let mentionsAuth = workRegexContains(
+    normalized,
+    pattern: #"\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b"#
+  )
+  let mentionsLogin = workRegexContains(normalized, pattern: #"\b(log\s*in|login|signin|sign\s*in)\b"#)
+  let mentionsUiControl = workRegexContains(normalized, pattern: #"\b(button|cta|call to action|chip|banner)\b"#)
+  guard mentionsAuth || mentionsLogin else { return [] }
+  guard mentionsLogin || mentionsUiControl else { return [] }
+  var words = [provider, "auth"]
+  if mentionsLogin {
+    words.append("login")
+  }
+  if mentionsUiControl {
+    words.append("button")
+  }
+  var seen: Set<String> = []
+  return words.filter { seen.insert($0).inserted }.prefix(5).map { $0 }
+}
+
+private func workGenericLaneFallback(genericSuffix: String?) -> String {
+  guard let suffix = workNormalizeGenericLaneSuffix(genericSuffix) else {
+    return workGenericLaneFallbackName
+  }
+  return "\(workGenericLaneFallbackName)-\(suffix)"
+}
+
+private func workNormalizeGenericLaneSuffix(_ raw: String?) -> String? {
+  let normalized = workSlugify((raw ?? "").lowercased())
+  let clipped = String(normalized.prefix(24))
+    .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+  return clipped.isEmpty ? nil : clipped
+}
+
+private func workSlugify(_ value: String) -> String {
+  value
+    .replacingOccurrences(of: #"[^a-z0-9-]+"#, with: "-", options: .regularExpression)
+    .replacingOccurrences(of: #"-+"#, with: "-", options: .regularExpression)
+    .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+}
+
+private func workRegexContains(_ value: String, pattern: String) -> Bool {
+  guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+  let range = NSRange(value.startIndex..<value.endIndex, in: value)
+  return regex.firstMatch(in: value, range: range) != nil
+}
+
+private func workRegexMatches(in value: String, pattern: String) -> [String] {
+  guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+  let range = NSRange(value.startIndex..<value.endIndex, in: value)
+  return regex.matches(in: value, range: range).compactMap { match in
+    guard let tokenRange = Range(match.range, in: value) else { return nil }
+    return String(value[tokenRange])
+  }
+}
+
+private func workReplacingRegexMatches(
+  in value: String,
+  pattern: String,
+  transform: (String) -> String
+) -> String {
+  guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+    return value
+  }
+  let nsValue = value as NSString
+  let matches = regex.matches(in: value, range: NSRange(location: 0, length: nsValue.length))
+  guard !matches.isEmpty else { return value }
+  var result = ""
+  var cursor = 0
+  for match in matches {
+    let range = match.range
+    if range.location > cursor {
+      result += nsValue.substring(with: NSRange(location: cursor, length: range.location - cursor))
+    }
+    result += transform(nsValue.substring(with: range))
+    cursor = range.location + range.length
+  }
+  if cursor < nsValue.length {
+    result += nsValue.substring(from: cursor)
+  }
+  return result
+}
 
 /// Full-screen "Start a new conversation" composer that replaces the modal
 /// WorkNewChatSheet. Mirrors the desktop welcome screen: big ADE word-mark,
@@ -596,25 +779,10 @@ struct WorkNewChatScreen: View {
     }
   }
 
-  /// Builds a reasonable lane name for an auto-created lane: derived from the
-  /// prompt's leading words when present, otherwise a timestamped default that
-  /// mirrors desktop's `chat-YYYYMMDD-HHMMSS` fallback.
+  /// Builds the desktop-parity deterministic fallback name for an auto-created
+  /// lane. The host can still replace this through the best-effort naming call.
   private func autoCreatedLaneName(opener: String) -> String {
-    let seed = opener
-      .replacingOccurrences(of: "\n", with: " ")
-      .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    if !seed.isEmpty {
-      let words = seed.split(separator: " ").prefix(6).joined(separator: " ")
-      let clipped = words.count > 48 ? String(words.prefix(48)) : words
-      let trimmed = clipped.trimmingCharacters(in: CharacterSet(charactersIn: ".?!,:; ").union(.whitespacesAndNewlines))
-      if !trimmed.isEmpty {
-        return trimmed
-      }
-    }
-    let now = Date()
-    let stamp = workAutoLaneNameFormatter.string(from: now)
-    return "chat-\(stamp)"
+    workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix())
   }
 
   private func normalizeSelection(for mode: WorkNewSessionMode) {

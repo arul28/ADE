@@ -12,6 +12,20 @@ describe("lane name fallback", () => {
     expect(deriveDeterministicLaneNameFromPrompt("Can you please fix the login bug?")).toBe("fix-login-bug");
   });
 
+  it("prefers concrete auth/login UI nouns over conversational lead-ins", () => {
+    expect(
+      deriveDeterministicLaneNameFromPrompt(
+        "correct me if im wrong, but i though ade had a way to detect failed claude creds and present a button ro usmthin in the chat to run claude auth login in ade chat temrinal, use context skill, and look into this",
+      ),
+    ).toBe("claude-auth-login-button");
+  });
+
+  it("keeps prompt-specific context for broad provider auth prompts", () => {
+    expect(deriveDeterministicLaneNameFromPrompt("Debug the Claude OAuth token expiry bug")).toBe(
+      "debug-claude-oauth-token-expiry",
+    );
+  });
+
   it("turns a URL-heavy 'take a look at' prompt into clean tokens, not url noise", () => {
     // Regression for "take-look-at-https-github".
     expect(

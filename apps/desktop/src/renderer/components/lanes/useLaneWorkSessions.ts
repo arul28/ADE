@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
-import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
+  forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
+  rememberWorkPtyLaunchPin,
   resolveLaunchFields,
+  workPtyLaunchPinFor,
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
@@ -122,6 +125,7 @@ function isActiveSession(session: TerminalSessionSummary): boolean {
 }
 
 export function useLaneWorkSessions(laneId: string | null) {
+  const appStore = useAppStoreApi();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const lanes = useAppStore((state) => state.lanes);
   const focusSession = useAppStore((state) => state.focusSession);
@@ -149,6 +153,9 @@ export function useLaneWorkSessions(laneId: string | null) {
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const sessionsRef = useRef<TerminalSessionSummary[]>([]);
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
+  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
+    !pin || appStore.getState().projectBinding?.key === pin.key
+  ), [appStore]);
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -682,7 +689,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...(args.initialInput !== undefined ? { initialInput: args.initialInput } : {}),
         ...(args.initialInputDelayMs !== undefined ? { initialInputDelayMs: args.initialInputDelayMs } : {}),
       });
-      const result = await window.ade.pty.create({
+      const createArgs = {
         laneId: args.laneId,
         cols: 100,
         rows: 30,
@@ -694,7 +701,14 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...(args.linearIssues?.length ? { linearIssues: args.linearIssues } : {}),
         ...launchFields,
-      });
+      };
+      const result = args.pin
+        ? await window.ade.pty.create(createArgs, args.pin)
+        : await window.ade.pty.create(createArgs);
+      rememberWorkPtyLaunchPin(result, args.pin);
+      if (!canMutatePinnedProjectUi(args.pin)) {
+        return result;
+      }
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,
@@ -739,7 +753,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [currentLane?.name, focusSession, lanes, openSessionTab, refresh, selectLane, upsertSessionSnapshot],
+    [canMutatePinnedProjectUi, currentLane?.name, focusSession, lanes, openSessionTab, refresh, selectLane, upsertSessionSnapshot],
   );
 
   const handleOpenChatSession = useCallback((session: AgentChatSession) => {
@@ -758,12 +772,17 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [focusSession, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
   const continueCliSession = useCallback(async (session: TerminalSessionSummary, text: string) => {
-    const result = await window.ade.pty.sendToSession({
+    const sendArgs = {
       sessionId: session.id,
       text,
       cols: 100,
       rows: 30,
-    });
+    };
+    const pin = workPtyLaunchPinFor(session);
+    const result = pin
+      ? await window.ade.pty.sendToSession(sendArgs, pin)
+      : await window.ade.pty.sendToSession(sendArgs);
+    rememberWorkPtyLaunchPin(result, pin);
     invalidateSessionListCache();
     if (result.session) {
       upsertSessionSnapshot(result.session);
@@ -777,6 +796,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const closePtySession = useCallback(async (ptyId: string) => {
     const matchedSession = sessionsRef.current.find((session) => session.ptyId === ptyId) ?? null;
     const sessionId = matchedSession?.id ?? null;
+    const pin = workPtyLaunchPinFor(matchedSession ?? { ptyId, sessionId });
     const previousSessions = sessionsRef.current.filter((session) =>
       session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
     );
@@ -816,16 +836,21 @@ export function useLaneWorkSessions(laneId: string | null) {
     };
     let disposeError: unknown = null;
     try {
-      const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+      const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
+      const result = pin
+        ? await window.ade.pty.dispose(disposeArgs, pin)
+        : await window.ade.pty.dispose(disposeArgs);
       if (result?.disposed === false) {
         if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
           if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
           restorePreviousSessions();
         } else {
           rememberStoppedRuntime();
+          forgetWorkPtyLaunchPin({ ptyId, sessionId });
         }
       } else {
         rememberStoppedRuntime();
+        forgetWorkPtyLaunchPin({ ptyId, sessionId });
       }
     } catch (error) {
       disposeError = error;

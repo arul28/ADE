@@ -1,4 +1,5 @@
 type ProjectConfigSnapshot = Awaited<ReturnType<typeof window.ade.projectConfig.get>>;
+type OpenProjectBinding = import("../../shared/types/core").OpenProjectBinding;
 
 type CacheEntry = {
   value?: ProjectConfigSnapshot;
@@ -9,17 +10,23 @@ type CacheEntry = {
 const DEFAULT_TTL_MS = 10_000;
 const configCache = new Map<string, CacheEntry>();
 
-function getCacheKey(projectRoot: string | null | undefined): string {
-  return projectRoot?.trim() || "__no_project__";
+function getProjectRootKey(projectRoot: string | null | undefined, pin?: OpenProjectBinding | null): string {
+  return projectRoot?.trim() || pin?.rootPath?.trim() || "__no_project__";
+}
+
+function getCacheKey(projectRoot: string | null | undefined, pin?: OpenProjectBinding | null): string {
+  const rootKey = getProjectRootKey(projectRoot, pin);
+  return pin?.key ? `${rootKey}::pin:${pin.key}` : rootKey;
 }
 
 export async function getProjectConfigCached(args?: {
   projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
   force?: boolean;
   ttlMs?: number;
 }): Promise<ProjectConfigSnapshot> {
   const ttlMs = args?.ttlMs ?? DEFAULT_TTL_MS;
-  const key = getCacheKey(args?.projectRoot);
+  const key = getCacheKey(args?.projectRoot, args?.pin);
   const now = Date.now();
 
   if (!args?.force) {
@@ -32,7 +39,7 @@ export async function getProjectConfigCached(args?: {
     }
   }
 
-  const promise = window.ade.projectConfig.get().then((value) => {
+  const promise = window.ade.projectConfig.get(args?.pin ?? undefined).then((value) => {
     configCache.set(key, {
       value,
       expiresAt: Date.now() + ttlMs,
@@ -59,5 +66,11 @@ export function invalidateProjectConfigCache(projectRoot?: string | null): void 
     configCache.clear();
     return;
   }
-  configCache.delete(getCacheKey(projectRoot));
+  const rootKey = getProjectRootKey(projectRoot);
+  const pinnedPrefix = `${rootKey}::pin:`;
+  for (const key of configCache.keys()) {
+    if (key === rootKey || key.startsWith(pinnedPrefix)) {
+      configCache.delete(key);
+    }
+  }
 }

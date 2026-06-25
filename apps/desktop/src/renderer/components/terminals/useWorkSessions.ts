@@ -17,9 +17,12 @@ import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import {
-  resolveLaunchFields,
+  forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
+  rememberWorkPtyLaunchPin,
+  resolveLaunchFields,
+  workPtyLaunchPinFor,
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "./cliLaunch";
@@ -380,6 +383,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
+  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
+    !pin || appStore.getState().projectBinding?.key === pin.key
+  ), [appStore]);
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);
@@ -1373,19 +1379,25 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       });
       invalidateSessionListCache();
       const endedAt = markPtyClosed(ptyId, sessionId);
+      const pin = workPtyLaunchPinFor({ ptyId, sessionId });
 
       let disposeError: unknown = null;
       try {
-        const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+        const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
+        const result = pin
+          ? await window.ade.pty.dispose(disposeArgs, pin)
+          : await window.ade.pty.dispose(disposeArgs);
         if (result?.disposed === false) {
           if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
             forgetStoppedRuntime(sessionId);
             restorePtyClosed(previousSessions);
           } else {
             rememberStoppedRuntime(ptyId, sessionId, endedAt);
+            forgetWorkPtyLaunchPin({ ptyId, sessionId });
           }
         } else {
           rememberStoppedRuntime(ptyId, sessionId, endedAt);
+          forgetWorkPtyLaunchPin({ ptyId, sessionId });
         }
       } catch (error) {
         disposeError = error;
@@ -1432,7 +1444,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ...(args.initialInput !== undefined ? { initialInput: args.initialInput } : {}),
         ...(args.initialInputDelayMs !== undefined ? { initialInputDelayMs: args.initialInputDelayMs } : {}),
       });
-      const result = await window.ade.pty.create({
+      const createArgs = {
         laneId: args.laneId,
         cols: 100,
         rows: 30,
@@ -1444,7 +1456,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...(args.linearIssues?.length ? { linearIssues: args.linearIssues } : {}),
         ...launchFields,
-      });
+      };
+      const result = args.pin
+        ? await window.ade.pty.create(createArgs, args.pin)
+        : await window.ade.pty.create(createArgs);
+      rememberWorkPtyLaunchPin(result, args.pin);
+      if (!canMutatePinnedProjectUi(args.pin)) {
+        return result;
+      }
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,
@@ -1493,7 +1512,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [focusSession, lanes, openSessionTab, refresh, selectLane],
+    [canMutatePinnedProjectUi, focusSession, lanes, openSessionTab, refresh, selectLane],
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {

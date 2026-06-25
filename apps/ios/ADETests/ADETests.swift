@@ -6665,6 +6665,31 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workComposerRuntimeProvider(forModelId: "gpt-5-codex", currentProvider: "codex"), "codex")
   }
 
+  func testWorkAutoLaneFallbackMatchesDesktopNamingRules() {
+    XCTAssertEqual(
+      workDeterministicAutoLaneName(from: "Can you please fix the login bug?"),
+      "fix-login-bug"
+    )
+    XCTAssertEqual(
+      workDeterministicAutoLaneName(
+        from: "correct me if im wrong, but i though ade had a way to detect failed claude creds and present a button ro usmthin in the chat to run claude auth login in ade chat temrinal, use context skill, and look into this"
+      ),
+      "claude-auth-login-button"
+    )
+    XCTAssertEqual(
+      workDeterministicAutoLaneName(from: "Debug the Claude OAuth token expiry bug"),
+      "debug-claude-oauth-token-expiry"
+    )
+    XCTAssertEqual(
+      workDeterministicAutoLaneName(from: "Take a look at https://github.com/org/repo/pull/5"),
+      "github-org-repo-pull"
+    )
+    XCTAssertEqual(
+      workDeterministicAutoLaneName(from: "!!!", genericSuffix: "20260610-142233"),
+      "parallel-task-20260610-142233"
+    )
+  }
+
   func testLaneStackCardAccessibilityLabelIncludesRebaseWarningSummary() {
     var snapshot = makeLaneListSnapshot(
       id: "lane-warning",
