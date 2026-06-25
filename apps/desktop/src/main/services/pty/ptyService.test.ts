@@ -649,7 +649,9 @@ describe("ptyService", () => {
 
     it("starts command-backed shell sessions without reading user startup files", async () => {
       const previousShell = process.env.SHELL;
+      const previousPath = process.env.PATH;
       process.env.SHELL = "/bin/zsh";
+      process.env.PATH = "/usr/bin";
       try {
         const { service, loadPty, mockPty } = createHarness();
         await service.create({
@@ -671,10 +673,20 @@ describe("ptyService", () => {
             }),
           }),
         );
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
+        expect(pathEntries).toEqual(expect.arrayContaining([
+          "/usr/bin",
+          "/opt/homebrew/bin",
+          path.join(os.homedir(), ".asdf", "shims"),
+          path.join(os.homedir(), ".mise", "shims"),
+        ]));
         expect(mockPty.write).toHaveBeenCalledWith("npm test\r");
       } finally {
         if (previousShell == null) delete process.env.SHELL;
         else process.env.SHELL = previousShell;
+        if (previousPath == null) delete process.env.PATH;
+        else process.env.PATH = previousPath;
       }
     });
 
@@ -1141,12 +1153,16 @@ describe("ptyService", () => {
         const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
         const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
         const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
-        expect(opts?.env?.PATH?.split(path.delimiter)).toEqual([
-          "/opt/homebrew/bin",
-          "/usr/bin",
+        const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
+        const yarnGlobalBin = path.join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin");
+        expect(pathEntries.slice(0, 2)).toEqual(["/opt/homebrew/bin", "/usr/bin"]);
+        expect(pathEntries.slice(-2)).toEqual([
           "/repo/apps/desktop/node_modules/.bin",
           "/tmp/project/node_modules/.bin",
         ]);
+        expect(pathEntries).toContain(path.join(os.homedir(), ".asdf", "shims"));
+        expect(pathEntries.indexOf(yarnGlobalBin)).toBeGreaterThanOrEqual(0);
+        expect(pathEntries.indexOf(yarnGlobalBin)).toBeLessThan(pathEntries.indexOf("/repo/apps/desktop/node_modules/.bin"));
       } finally {
         if (previousPath == null) delete process.env.PATH;
         else process.env.PATH = previousPath;

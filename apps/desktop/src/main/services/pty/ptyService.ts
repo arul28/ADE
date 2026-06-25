@@ -18,7 +18,7 @@ import type { createProjectConfigService } from "../config/projectConfigService"
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
-import { getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
+import { augmentPathWithKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -966,7 +966,11 @@ function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undef
 
 function isNodeModulesBinPath(value: string): boolean {
   const normalized = value.replace(/\\/g, "/").toLowerCase();
-  return normalized.endsWith("/node_modules/.bin");
+  const userYarnGlobalBin = path
+    .join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin")
+    .replace(/\\/g, "/")
+    .toLowerCase();
+  return normalized.endsWith("/node_modules/.bin") && normalized !== userYarnGlobalBin;
 }
 
 function looksLikeCodexCommand(command: string | null | undefined): boolean {
@@ -999,6 +1003,12 @@ function withUserCodexCliPathPriority(
   // Codex CLI and send every Work launch into Codex's update-and-restart flow.
   // Keep node_modules bins as a last-resort fallback, but never let them win.
   setPathEnvValue(next, [...nonNodeModulesEntries, ...nodeModulesEntries].join(path.delimiter));
+  return next;
+}
+
+function withKnownCliLaunchPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  setPathEnvValue(next, augmentPathWithKnownCliDirs(getPathEnvValue(next), next));
   return next;
 }
 
@@ -3702,6 +3712,7 @@ export function createPtyService({
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
+      launchEnv = withKnownCliLaunchPath(launchEnv);
       const shouldBackfillResumeTarget =
         existingSession
         && isTrackedCliToolType(toolTypeHint)
