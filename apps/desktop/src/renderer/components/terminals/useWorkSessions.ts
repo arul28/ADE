@@ -17,9 +17,12 @@ import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import {
-  resolveLaunchFields,
+  forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
+  rememberWorkPtyLaunchPin,
+  resolveLaunchFields,
+  workPtyLaunchPinFor,
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "./cliLaunch";
@@ -1373,19 +1376,25 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       });
       invalidateSessionListCache();
       const endedAt = markPtyClosed(ptyId, sessionId);
+      const pin = workPtyLaunchPinFor({ ptyId, sessionId });
 
       let disposeError: unknown = null;
       try {
-        const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+        const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
+        const result = pin
+          ? await window.ade.pty.dispose(disposeArgs, pin)
+          : await window.ade.pty.dispose(disposeArgs);
         if (result?.disposed === false) {
           if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
             forgetStoppedRuntime(sessionId);
             restorePtyClosed(previousSessions);
           } else {
             rememberStoppedRuntime(ptyId, sessionId, endedAt);
+            forgetWorkPtyLaunchPin({ ptyId, sessionId });
           }
         } else {
           rememberStoppedRuntime(ptyId, sessionId, endedAt);
+          forgetWorkPtyLaunchPin({ ptyId, sessionId });
         }
       } catch (error) {
         disposeError = error;
@@ -1448,6 +1457,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const result = args.pin
         ? await window.ade.pty.create(createArgs, args.pin)
         : await window.ade.pty.create(createArgs);
+      rememberWorkPtyLaunchPin(result, args.pin);
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,

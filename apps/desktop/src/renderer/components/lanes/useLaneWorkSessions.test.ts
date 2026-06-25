@@ -506,6 +506,74 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     });
   });
 
+  it("launchPtySession carries its project pin into continue and close calls", async () => {
+    const pin = {
+      kind: "local",
+      key: "local:/origin/project",
+      rootPath: "/origin/project",
+      displayName: "Origin",
+    } as const;
+    const resumedSession = {
+      ...makeSession("new-pty-session", "lane-1", "Pinned Codex"),
+      ptyId: "pty-resumed",
+      toolType: "codex",
+      runtimeState: "running",
+    } as any;
+    (window as any).ade.pty.sendToSession.mockResolvedValueOnce({
+      sessionId: "new-pty-session",
+      ptyId: "pty-resumed",
+      pid: 123,
+      session: resumedSession,
+      resumed: true,
+      reusedExistingRuntime: false,
+    });
+    listSessionsCachedMock.mockResolvedValue([resumedSession]);
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Pinned Codex",
+        pin,
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      title: "Pinned Codex",
+    }), pin);
+
+    await act(async () => {
+      await result.current.continueCliSession({
+        ...resumedSession,
+        ptyId: null,
+        status: "ended",
+        runtimeState: "exited",
+      }, "keep going");
+    });
+
+    expect((window as any).ade.pty.sendToSession).toHaveBeenLastCalledWith({
+      sessionId: "new-pty-session",
+      text: "keep going",
+      cols: 100,
+      rows: 30,
+    }, pin);
+
+    await act(async () => {
+      await result.current.closePtySession("pty-resumed");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
+      ptyId: "pty-resumed",
+    }, pin);
+  });
+
   it("restores a lane runtime row when dispose reports that a peer still owns it", async () => {
     const runningSession = {
       ...makeSession("session-peer", "lane-1", "Running Codex"),

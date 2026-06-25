@@ -6677,6 +6677,10 @@ final class ADETests: XCTestCase {
       "claude-auth-login-button"
     )
     XCTAssertEqual(
+      workDeterministicAutoLaneName(from: "Debug the Claude OAuth token expiry bug"),
+      "debug-claude-oauth-token-expiry"
+    )
+    XCTAssertEqual(
       workDeterministicAutoLaneName(from: "Take a look at https://github.com/org/repo/pull/5"),
       "github-org-repo-pull"
     )

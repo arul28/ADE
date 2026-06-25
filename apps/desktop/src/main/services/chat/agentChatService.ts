@@ -1991,7 +1991,7 @@ Return only the base name text (no model suffixes).
 - Describe the concrete task, feature, bug, UI control, or command from the user's message.
 - Prefer the thing being built or fixed over meta words like prompt, question, request, chat, or task.
 - Ignore conversational lead-ins like "correct me if I'm wrong" or "look into this".
-- If the user names a command and a UI control, include both (for example "Claude Auth Login Button", not "Claude Auth Login Prompt").
+- If the user names a command and a UI control, include both (for example "claude auth login button", not "claude auth login prompt").
 - No quotes, no emoji, no trailing punctuation.`;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "none", description: "No extra reasoning when supported by the runtime." },

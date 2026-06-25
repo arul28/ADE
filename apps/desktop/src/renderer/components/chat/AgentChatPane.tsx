@@ -7366,6 +7366,9 @@ export function AgentChatPane({
       if (launchTimedOut) {
         throw new Error("Draft launch aborted after timeout.");
       }
+      // Bound launches are intentionally routed by `launchBinding`; this abort
+      // is only for legacy/unpinned launches where the active project is the
+      // only routing signal left.
       if (!launchBinding && launchProjectRoot) {
         const activeProjectRoot = selectActiveProjectRoot(rootAppStoreApi.getState());
         if (activeProjectRoot && activeProjectRoot !== launchProjectRoot) {

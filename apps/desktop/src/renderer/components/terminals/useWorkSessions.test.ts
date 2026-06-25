@@ -642,6 +642,50 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(focusSessionSpy).not.toHaveBeenCalledWith("background-pty-session");
   });
 
+  it("launchPtySession carries its project pin into stopRuntime", async () => {
+    const pin = {
+      kind: "local",
+      key: "local:/origin/project",
+      rootPath: "/origin/project",
+      displayName: "Origin",
+    } as const;
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "pinned-pty-session",
+      ptyId: "pinned-pty",
+      pid: 1234,
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Pinned prompt",
+        pin,
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      title: "Pinned prompt",
+    }), pin);
+
+    await act(async () => {
+      await result.current.stopRuntime("pinned-pty", "pinned-pty-session");
+    });
+
+    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
+      ptyId: "pinned-pty",
+      sessionId: "pinned-pty-session",
+    }, pin);
+  });
+
   it("launchPtySession preserves the live optimistic pty id when a stale row has the same session id", async () => {
     const workState = {
       openItemIds: [] as string[],

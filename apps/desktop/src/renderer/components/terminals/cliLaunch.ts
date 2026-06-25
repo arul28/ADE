@@ -34,3 +34,35 @@ export type WorkPtyLaunchArgs = {
 };
 
 export type WorkPtyLaunchResult = PtyCreateResult;
+
+type WorkPtyPinLookup = {
+  id?: string | null;
+  sessionId?: string | null;
+  ptyId?: string | null;
+};
+
+const workPtyLaunchPinsById = new Map<string, OpenProjectBinding>();
+
+export function rememberWorkPtyLaunchPin(
+  lookup: WorkPtyPinLookup,
+  pin?: OpenProjectBinding | null,
+): void {
+  if (!pin) return;
+  const sessionId = lookup.sessionId ?? lookup.id ?? null;
+  if (sessionId) workPtyLaunchPinsById.set(sessionId, pin);
+  if (lookup.ptyId) workPtyLaunchPinsById.set(lookup.ptyId, pin);
+}
+
+export function workPtyLaunchPinFor(lookup: WorkPtyPinLookup | null | undefined): OpenProjectBinding | null {
+  if (!lookup) return null;
+  const sessionId = lookup.sessionId ?? lookup.id ?? null;
+  return (sessionId ? workPtyLaunchPinsById.get(sessionId) : undefined)
+    ?? (lookup.ptyId ? workPtyLaunchPinsById.get(lookup.ptyId) : undefined)
+    ?? null;
+}
+
+export function forgetWorkPtyLaunchPin(lookup: WorkPtyPinLookup): void {
+  const sessionId = lookup.sessionId ?? lookup.id ?? null;
+  if (sessionId) workPtyLaunchPinsById.delete(sessionId);
+  if (lookup.ptyId) workPtyLaunchPinsById.delete(lookup.ptyId);
+}

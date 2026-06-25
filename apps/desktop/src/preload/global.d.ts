@@ -1614,6 +1614,7 @@ declare global {
         ) => Promise<PtyResumeSessionResult>;
         sendToSession: (
           args: PtySendToSessionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<PtySendToSessionResult>;
         write: (args: { ptyId: string; data: string }) => Promise<void>;
         resize: (args: {

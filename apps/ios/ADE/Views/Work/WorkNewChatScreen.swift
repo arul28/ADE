@@ -125,6 +125,10 @@ private let workNamingTlds: Set<String> = [
   "com", "org", "io", "net", "dev", "app", "co", "ai", "gov", "edu", "sh", "xyz", "me",
 ]
 
+private let workBareDomainPattern = "\\b([a-z0-9][a-z0-9-]*)\\.(?:" +
+  workNamingTlds.sorted().map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|") +
+  ")\\b"
+
 func workAutoLaneGenericSuffix(date: Date = Date()) -> String {
   workAutoLaneNameFormatter.string(from: date)
 }
@@ -164,7 +168,7 @@ private func workCleanPromptForNaming(_ prompt: String) -> String {
     " \(workNamingTokens(fromURLText: match)) "
   }
   value = value.replacingOccurrences(
-    of: #"\b([a-z0-9][a-z0-9-]*)\.(?:com|org|io|net|dev|app|co|ai|gov|edu|sh|xyz|me)\b"#,
+    of: workBareDomainPattern,
     with: " $1 ",
     options: [.regularExpression, .caseInsensitive]
   )
@@ -213,12 +217,14 @@ private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
     pattern: #"\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b"#
   )
   let mentionsLogin = workRegexContains(normalized, pattern: #"\b(log\s*in|login|signin|sign\s*in)\b"#)
+  let mentionsUiControl = workRegexContains(normalized, pattern: #"\b(button|cta|call to action|chip|banner)\b"#)
   guard mentionsAuth || mentionsLogin else { return [] }
+  guard mentionsLogin || mentionsUiControl else { return [] }
   var words = [provider, "auth"]
   if mentionsLogin {
     words.append("login")
   }
-  if workRegexContains(normalized, pattern: #"\b(button|cta|call to action|chip|banner)\b"#) {
+  if mentionsUiControl {
     words.append("button")
   }
   var seen: Set<String> = []

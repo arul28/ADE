@@ -6182,7 +6182,11 @@ contextBridge.exposeInMainWorld("ade", {
     },
     sendToSession: async (
       args: PtySendToSessionArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<PtySendToSessionResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<PtySendToSessionResult>(pin, "pty", "sendToSession", { args });
+      }
       const runtime =
         await callProjectRuntimeActionIfBound<PtySendToSessionResult>(
           "pty",

@@ -6,9 +6,12 @@ import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
+  forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
+  rememberWorkPtyLaunchPin,
   resolveLaunchFields,
+  workPtyLaunchPinFor,
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
@@ -698,6 +701,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       const result = args.pin
         ? await window.ade.pty.create(createArgs, args.pin)
         : await window.ade.pty.create(createArgs);
+      rememberWorkPtyLaunchPin(result, args.pin);
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,
@@ -761,12 +765,17 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [focusSession, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
   const continueCliSession = useCallback(async (session: TerminalSessionSummary, text: string) => {
-    const result = await window.ade.pty.sendToSession({
+    const sendArgs = {
       sessionId: session.id,
       text,
       cols: 100,
       rows: 30,
-    });
+    };
+    const pin = workPtyLaunchPinFor(session);
+    const result = pin
+      ? await window.ade.pty.sendToSession(sendArgs, pin)
+      : await window.ade.pty.sendToSession(sendArgs);
+    rememberWorkPtyLaunchPin(result, pin);
     invalidateSessionListCache();
     if (result.session) {
       upsertSessionSnapshot(result.session);
@@ -780,6 +789,7 @@ export function useLaneWorkSessions(laneId: string | null) {
   const closePtySession = useCallback(async (ptyId: string) => {
     const matchedSession = sessionsRef.current.find((session) => session.ptyId === ptyId) ?? null;
     const sessionId = matchedSession?.id ?? null;
+    const pin = workPtyLaunchPinFor(matchedSession ?? { ptyId, sessionId });
     const previousSessions = sessionsRef.current.filter((session) =>
       session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
     );
@@ -819,16 +829,21 @@ export function useLaneWorkSessions(laneId: string | null) {
     };
     let disposeError: unknown = null;
     try {
-      const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+      const disposeArgs = { ptyId, ...(sessionId ? { sessionId } : {}) };
+      const result = pin
+        ? await window.ade.pty.dispose(disposeArgs, pin)
+        : await window.ade.pty.dispose(disposeArgs);
       if (result?.disposed === false) {
         if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
           if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
           restorePreviousSessions();
         } else {
           rememberStoppedRuntime();
+          forgetWorkPtyLaunchPin({ ptyId, sessionId });
         }
       } else {
         rememberStoppedRuntime();
+        forgetWorkPtyLaunchPin({ ptyId, sessionId });
       }
     } catch (error) {
       disposeError = error;

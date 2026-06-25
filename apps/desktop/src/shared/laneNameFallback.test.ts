@@ -20,6 +20,12 @@ describe("lane name fallback", () => {
     ).toBe("claude-auth-login-button");
   });
 
+  it("keeps prompt-specific context for broad provider auth prompts", () => {
+    expect(deriveDeterministicLaneNameFromPrompt("Debug the Claude OAuth token expiry bug")).toBe(
+      "debug-claude-oauth-token-expiry",
+    );
+  });
+
   it("turns a URL-heavy 'take a look at' prompt into clean tokens, not url noise", () => {
     // Regression for "take-look-at-https-github".
     expect(

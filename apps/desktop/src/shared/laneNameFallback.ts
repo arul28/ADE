@@ -158,10 +158,12 @@ function priorityNamingWords(cleanedPrompt: string): string[] {
   if (!provider) return [];
   const mentionsAuth = /\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b/u.test(normalized);
   const mentionsLogin = /\b(log\s*in|login|signin|sign\s*in)\b/u.test(normalized);
+  const mentionsUiControl = /\b(button|cta|call to action|chip|banner)\b/u.test(normalized);
   if (!mentionsAuth && !mentionsLogin) return [];
+  if (!mentionsLogin && !mentionsUiControl) return [];
   const words = [provider, "auth"];
   if (mentionsLogin) words.push("login");
-  if (/\b(button|cta|call to action|chip|banner)\b/u.test(normalized)) words.push("button");
+  if (mentionsUiControl) words.push("button");
   return [...new Set(words)].slice(0, 5);
 }
 
