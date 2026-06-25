@@ -11,6 +11,7 @@ const selectLaneSpy = vi.fn();
 const setWorkViewStateSpy = vi.fn();
 const setLaneWorkViewStateSpy = vi.fn();
 let fakeProjectRoot = "/fake/project";
+let fakeProjectBinding: Record<string, unknown> | null = null;
 
 // ---------------------------------------------------------------------------
 // Module-level mocks (hoisted by vitest)
@@ -67,6 +68,7 @@ vi.mock("../../state/appStore", () => ({
   useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
     const fakeState: Record<string, unknown> = {
       project: { rootPath: fakeProjectRoot },
+      projectBinding: fakeProjectBinding,
       lanes: [{ id: "lane-1", name: "Lane 1" }],
       focusSession: focusSessionSpy,
       focusedSessionId: null,
@@ -78,6 +80,14 @@ vi.mock("../../state/appStore", () => ({
     };
     return selector(fakeState);
   }),
+  useAppStoreApi: vi.fn(() => ({
+    getState: () => ({
+      project: { rootPath: fakeProjectRoot },
+      projectBinding: fakeProjectBinding,
+    }),
+    setState: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+  })),
 }));
 
 // ---------------------------------------------------------------------------
@@ -152,6 +162,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     listSessionsCachedMock.mockResolvedValue([]);
     vi.mocked(shouldRefreshSessionListForChatEvent).mockReturnValue(false);
     fakeProjectRoot = "/fake/project";
+    fakeProjectBinding = null;
     setDocumentVisibility("visible");
   });
 
@@ -571,7 +582,62 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
 
     expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
       ptyId: "pty-resumed",
+      sessionId: "new-pty-session",
     }, pin);
+  });
+
+  it("launchPtySession skips lane UI mutations when a pinned launch resolves after project switch", async () => {
+    const pin = {
+      kind: "local",
+      key: "local:/origin/project",
+      rootPath: "/origin/project",
+      displayName: "Origin",
+    } as const;
+    fakeProjectBinding = {
+      kind: "local",
+      key: "local:/other/project",
+      rootPath: "/other/project",
+      displayName: "Other",
+    };
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "stale-pinned-session",
+      ptyId: "stale-pinned-pty",
+      pid: 1234,
+    });
+    listSessionsCachedMock.mockResolvedValue([]);
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+    focusSessionSpy.mockClear();
+    selectLaneSpy.mockClear();
+    setWorkViewStateSpy.mockClear();
+    setLaneWorkViewStateSpy.mockClear();
+    listSessionsCachedMock.mockClear();
+
+    await act(async () => {
+      await expect(result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        title: "Stale pinned prompt",
+        pin,
+      })).resolves.toEqual(expect.objectContaining({
+        sessionId: "stale-pinned-session",
+        ptyId: "stale-pinned-pty",
+      }));
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenLastCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      title: "Stale pinned prompt",
+    }), pin);
+    expect(result.current.sessions.find((session) => session.id === "stale-pinned-session")).toBeUndefined();
+    expect(selectLaneSpy).not.toHaveBeenCalledWith("lane-1");
+    expect(focusSessionSpy).not.toHaveBeenCalledWith("stale-pinned-session");
+    expect(setWorkViewStateSpy).not.toHaveBeenCalled();
+    expect(setLaneWorkViewStateSpy).not.toHaveBeenCalled();
+    expect(listSessionsCachedMock).not.toHaveBeenCalled();
   });
 
   it("restores a lane runtime row when dispose reports that a peer still owns it", async () => {

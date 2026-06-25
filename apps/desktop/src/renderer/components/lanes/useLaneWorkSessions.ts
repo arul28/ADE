@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
-import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -125,6 +125,7 @@ function isActiveSession(session: TerminalSessionSummary): boolean {
 }
 
 export function useLaneWorkSessions(laneId: string | null) {
+  const appStore = useAppStoreApi();
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const lanes = useAppStore((state) => state.lanes);
   const focusSession = useAppStore((state) => state.focusSession);
@@ -152,6 +153,9 @@ export function useLaneWorkSessions(laneId: string | null) {
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
   const sessionsRef = useRef<TerminalSessionSummary[]>([]);
   const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
+  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
+    !pin || appStore.getState().projectBinding?.key === pin.key
+  ), [appStore]);
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -702,6 +706,9 @@ export function useLaneWorkSessions(laneId: string | null) {
         ? await window.ade.pty.create(createArgs, args.pin)
         : await window.ade.pty.create(createArgs);
       rememberWorkPtyLaunchPin(result, args.pin);
+      if (!canMutatePinnedProjectUi(args.pin)) {
+        return result;
+      }
       const startedAt = new Date().toISOString();
       const optimisticSession: TerminalSessionSummary = {
         id: result.sessionId,
@@ -746,7 +753,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [currentLane?.name, focusSession, lanes, openSessionTab, refresh, selectLane, upsertSessionSnapshot],
+    [canMutatePinnedProjectUi, currentLane?.name, focusSession, lanes, openSessionTab, refresh, selectLane, upsertSessionSnapshot],
   );
 
   const handleOpenChatSession = useCallback((session: AgentChatSession) => {
