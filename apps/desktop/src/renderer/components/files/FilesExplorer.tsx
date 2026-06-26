@@ -29,6 +29,10 @@ type ExplorerNodeRow = {
   kind: "node";
   node: FileTreeNode;
   level: number;
+  expansion?: {
+    mode: "tree" | "search";
+    expanded: boolean;
+  };
 };
 
 type ExplorerLoadMoreRow = {
@@ -103,6 +107,7 @@ function matchesQuery(node: FileTreeNode, query: string): boolean {
 function flattenVisibleRows(args: {
   nodes: FileTreeNode[];
   expanded: Set<string>;
+  searchCollapsed: Set<string>;
   query: string;
   includeLoadMore?: boolean;
   level?: number;
@@ -114,11 +119,15 @@ function flattenVisibleRows(args: {
   for (const node of args.nodes) {
     const children = node.children ?? [];
     if (!query) {
-      rows.push({ kind: "node", node, level });
-      if (node.type === "directory" && args.expanded.has(node.path) && children.length) {
+      const expansion = node.type === "directory"
+        ? { mode: "tree" as const, expanded: args.expanded.has(node.path) }
+        : undefined;
+      rows.push({ kind: "node", node, level, expansion });
+      if (expansion?.expanded && children.length) {
         rows.push(...flattenVisibleRows({
           nodes: children,
           expanded: args.expanded,
+          searchCollapsed: args.searchCollapsed,
           query,
           includeLoadMore: args.includeLoadMore,
           level: level + 1,
@@ -134,14 +143,20 @@ function flattenVisibleRows(args: {
       ? flattenVisibleRows({
         nodes: children,
         expanded: args.expanded,
+        searchCollapsed: args.searchCollapsed,
         query,
         includeLoadMore: false,
         level: level + 1,
       })
       : [];
     if (matchesQuery(node, query) || childRows.length > 0) {
-      rows.push({ kind: "node", node, level });
-      rows.push(...childRows);
+      const expansion = node.type === "directory"
+        ? childRows.length > 0
+          ? { mode: "search" as const, expanded: !args.searchCollapsed.has(node.path) }
+          : { mode: "tree" as const, expanded: args.expanded.has(node.path) }
+        : undefined;
+      rows.push({ kind: "node", node, level, expansion });
+      if (expansion?.mode !== "search" || expansion.expanded) rows.push(...childRows);
     }
   }
 
@@ -182,14 +197,17 @@ export function FilesExplorer({
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [renameError, setRenameError] = useState<string | null>(null);
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const [searchCollapsed, setSearchCollapsed] = useState<Set<string>>(new Set());
   const rows = useMemo(
     () => flattenVisibleRows({
       nodes: tree,
       expanded,
+      searchCollapsed,
       query: searchQuery,
       includeLoadMore: Boolean(onLoadMoreChildren),
     }),
-    [tree, expanded, searchQuery, onLoadMoreChildren],
+    [tree, expanded, searchCollapsed, searchQuery, onLoadMoreChildren],
   );
 
   const virtualizer = useVirtualizer({
@@ -198,6 +216,10 @@ export function FilesExplorer({
     estimateSize: () => ROW_HEIGHT,
     overscan: 14,
   });
+
+  useEffect(() => {
+    setSearchCollapsed(new Set());
+  }, [normalizedSearchQuery]);
 
   useEffect(() => {
     if (!inlineRenameRequest?.path) return;
@@ -551,7 +573,7 @@ export function FilesExplorer({
                 );
               }
               const { node, level } = row;
-              const isExpanded = expanded.has(node.path);
+              const isExpanded = row.expansion?.expanded ?? false;
               const isLoading = node.type === "directory" && loadingDirectories.has(node.path);
               const isActive = (activeTabPath != null && arePathsEqual(activeTabPath, node.path, workspaceComparisonRoot))
                 || (selectedNodePath != null && arePathsEqual(selectedNodePath, node.path, workspaceComparisonRoot));
@@ -576,6 +598,15 @@ export function FilesExplorer({
               const handleRowActivate = () => {
                 onSelectNode(node.path);
                 if (node.type === "directory") {
+                  if (row.expansion?.mode === "search") {
+                    setSearchCollapsed((prev) => {
+                      const next = new Set(prev);
+                      if (isExpanded) next.add(node.path);
+                      else next.delete(node.path);
+                      return next;
+                    });
+                    return;
+                  }
                   onToggleDirectory(node.path, isExpanded, Array.isArray(node.children));
                   return;
                 }

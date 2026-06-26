@@ -2,7 +2,24 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { FileTreeNode } from "../../../shared/types";
 import { FilesExplorer, type FilesExplorerProps } from "./FilesExplorer";
+
+vi.mock("@tanstack/react-virtual", () => ({
+  useVirtualizer: ({ count, estimateSize }: { count: number; estimateSize: () => number }) => {
+    const size = estimateSize();
+    return {
+      getTotalSize: () => count * size,
+      getVirtualItems: () =>
+        Array.from({ length: count }, (_, index) => ({
+          index,
+          key: index,
+          size,
+          start: index * size,
+        })),
+    };
+  },
+}));
 
 afterEach(cleanup);
 
@@ -60,5 +77,36 @@ describe("FilesExplorer mutating controls", () => {
     fireEvent.click(newFolder);
     expect(props.onCreateFile).toHaveBeenCalledWith("");
     expect(props.onCreateDirectory).toHaveBeenCalledWith("");
+  });
+});
+
+describe("FilesExplorer search filtering", () => {
+  it("lets users collapse and re-expand folders in filtered results", () => {
+    const tree: FileTreeNode[] = [
+      {
+        name: "src",
+        path: "src",
+        type: "directory",
+        children: [
+          {
+            name: "Button.tsx",
+            path: "src/Button.tsx",
+            type: "file",
+          },
+        ],
+      },
+    ];
+    renderExplorer({
+      tree,
+      searchQuery: "button",
+    });
+
+    expect(screen.getByText("Button.tsx")).toBeTruthy();
+
+    fireEvent.click(screen.getByText("src"));
+    expect(screen.queryByText("Button.tsx")).toBeNull();
+
+    fireEvent.click(screen.getByText("src"));
+    expect(screen.getByText("Button.tsx")).toBeTruthy();
   });
 });
