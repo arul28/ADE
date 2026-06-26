@@ -588,6 +588,7 @@ describe("multi-project RPC server", () => {
     }) as { subscriptionId: string; hasMore: boolean; nextCursor: number };
 
     expect(subscribed.hasMore).toBe(false);
+    expect(subscribed.nextCursor).toBe(1);
     expect(notify).not.toHaveBeenCalled();
 
     eventBuffer.push({

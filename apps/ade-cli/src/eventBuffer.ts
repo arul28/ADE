@@ -19,6 +19,7 @@ export type EventBuffer = {
   drain(cursor: number, limit?: number): EventBufferDrainResult;
   subscribe(listener: (event: BufferedEvent) => void): () => void;
   epoch(): string;
+  latestCursor(): number;
   size(): number;
 };
 
@@ -66,6 +67,9 @@ export function createEventBuffer(capacity = 10_000): EventBuffer {
     },
     epoch() {
       return eventEpoch;
+    },
+    latestCursor() {
+      return nextId - 1;
     },
     size() {
       return events.length;

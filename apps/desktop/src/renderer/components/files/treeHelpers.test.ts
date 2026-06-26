@@ -4,6 +4,7 @@ import {
   hasLoadedDirectoryChildren,
   isUnavailableGitDecorationsError,
   loadedDirectoryChildrenCount,
+  nearestLoadedAncestorDirectoryPath,
   parentPathForFileChange,
   replaceTreeNodeChildren,
 } from "./treeHelpers";
@@ -74,6 +75,33 @@ describe("file tree change refresh helpers", () => {
     expect(loadedDirectoryChildrenCount(tree, "marketing")).toBe(1);
     expect(loadedDirectoryChildrenCount(tree, "src")).toBe(0);
     expect(loadedDirectoryChildrenCount(tree, "missing")).toBe(0);
+  });
+
+  it("falls back to the nearest loaded ancestor for external create events", () => {
+    const tree = [
+      {
+        name: "marketing",
+        path: "marketing",
+        type: "directory" as const,
+        children: [
+          {
+            name: "assets",
+            path: "marketing/assets",
+            type: "directory" as const,
+          },
+        ],
+      },
+      {
+        name: "src",
+        path: "src",
+        type: "directory" as const,
+      },
+    ];
+
+    expect(nearestLoadedAncestorDirectoryPath(tree, "marketing/assets/screens")).toBe("marketing");
+    expect(nearestLoadedAncestorDirectoryPath(tree, "marketing")).toBe("marketing");
+    expect(nearestLoadedAncestorDirectoryPath(tree, "src/routes")).toBe("");
+    expect(nearestLoadedAncestorDirectoryPath(tree, "missing/path")).toBe("");
   });
 
   it("preserves loaded descendant folders during a scoped directory refresh", () => {

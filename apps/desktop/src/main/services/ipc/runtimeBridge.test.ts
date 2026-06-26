@@ -443,6 +443,7 @@ describe("registerRuntimeBridge", () => {
       expect.objectContaining({ cursor: 3, limit: 10 }),
       expect.any(Function),
       expect.any(Function),
+      expect.any(Function),
     );
   });
 
@@ -525,6 +526,7 @@ describe("registerRuntimeBridge", () => {
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).toHaveBeenCalledWith(
       "/other-repo",
       { cursor: 2, limit: 10, category: undefined, replay: undefined },
+      expect.any(Function),
       expect.any(Function),
       expect.any(Function),
     );
@@ -664,6 +666,17 @@ describe("registerRuntimeBridge", () => {
       nextCursor: 1,
       hasMore: false,
     });
+    remoteSubscribeEventsForTargetMock.mockImplementation(
+      async (_target, _projectId, _request, _onEvent, _onEnded, onSubscribed) => {
+        onSubscribed?.({
+          events: [],
+          nextCursor: 7,
+          hasMore: false,
+          eventEpoch: "epoch-remote-1",
+        });
+        return vi.fn();
+      },
+    );
     registerRuntimeBridge({
       appVersion: "1.0.0",
       globalStatePath: "/tmp/ade-state.json",
@@ -678,13 +691,19 @@ describe("registerRuntimeBridge", () => {
           request: { cursor: 0, limit: 100, replay: false },
         },
       ),
-    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+    ).resolves.toEqual({
+      events: [],
+      nextCursor: 7,
+      hasMore: false,
+      eventEpoch: "epoch-remote-1",
+    });
 
     expect(remoteStreamEventsForTargetMock).not.toHaveBeenCalled();
     expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
       target,
       "project-1",
       { cursor: 0, limit: 100, category: undefined, replay: false },
+      expect.any(Function),
       expect.any(Function),
       expect.any(Function),
     );
@@ -727,6 +746,7 @@ describe("registerRuntimeBridge", () => {
         category: undefined,
         replay: undefined,
       },
+      expect.any(Function),
       expect.any(Function),
       expect.any(Function),
     );

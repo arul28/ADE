@@ -1803,6 +1803,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
         ? { replay: false }
         : {}),
     } satisfies RemoteRuntimeStreamEventsRequest;
+    const suppressingInitialRemoteReplay =
+      binding.kind === "remote" && request.replay === false;
     const batch =
       binding.kind === "remote"
         ? ((await ipcRenderer.invoke(IPC.remoteRuntimeStreamEvents, {
@@ -1845,6 +1847,9 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)
       ? Math.max(0, Math.floor(batch.nextCursor))
       : remoteRuntimeEventCursor;
+    if (suppressingInitialRemoteReplay) {
+      remoteRuntimeEventReplaySuppressed = false;
+    }
 
     for (const event of batch.events) {
       const eventTime = Date.parse(event.timestamp);

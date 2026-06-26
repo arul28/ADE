@@ -4092,7 +4092,7 @@ describe("preload OAuth bridge", () => {
           streamRequests.push(arg);
           return {
             events: [],
-            nextCursor: 0,
+            nextCursor: 12,
             hasMore: false,
             eventEpoch: "epoch-a",
           };
@@ -4123,11 +4123,18 @@ describe("preload OAuth bridge", () => {
 
       await vi.advanceTimersByTimeAsync(0);
       expect(streamRequests).toHaveLength(1);
+      expect(streamRequests[0]).toMatchObject({
+        request: { cursor: 0, limit: 100, replay: false },
+      });
 
       await vi.advanceTimersByTimeAsync(2_499);
       expect(streamRequests).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1);
       expect(streamRequests).toHaveLength(2);
+      expect(streamRequests[1]).toMatchObject({
+        request: { cursor: 12, limit: 100 },
+      });
+      expect((streamRequests[1] as { request?: { replay?: boolean } }).request?.replay).toBeUndefined();
 
       await vi.advanceTimersByTimeAsync(4_999);
       expect(streamRequests).toHaveLength(2);
