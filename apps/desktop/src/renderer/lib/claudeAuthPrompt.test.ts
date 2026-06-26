@@ -110,6 +110,21 @@ describe("claude auth prompt helpers", () => {
     })).toBe(false);
   });
 
+  it("does not treat non-Claude auth system notices as Claude login failures", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "system_notice",
+          noticeKind: "warning",
+          status: "authentication_failed",
+          message: "MCP tool failed to authenticate to GitHub",
+          detail: "HTTP 401",
+        }),
+      ],
+    })).toBe(false);
+  });
+
   it("detects the final plaintext Claude invalid-credentials failure", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",

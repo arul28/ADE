@@ -10,8 +10,8 @@ const CLAUDE_INVALID_CREDENTIALS_PATTERNS: RegExp[] = [
 const CLAUDE_AUTH_ERROR_PATTERNS: RegExp[] = [
   /\bplease\s+run\s+\/login\b/i,
   ...CLAUDE_INVALID_CREDENTIALS_PATTERNS,
-  /\bauthentication[_\s-]*failed\b/i,
-  /\bfailed\s+to\s+authenticate\b/i,
+  /\bclaude\b.*\bauthentication[_\s-]*failed\b/i,
+  /\bclaude\b.*\bfailed\s+to\s+authenticate\b/i,
   /\bclaude\b.*\b(not\s+logged\s+in|not\s+authenticated|unauthorized|authentication\s+failed|login\s+required)\b/i,
   /\brun\s+[`'"]?claude\s+auth\s+login[`'"]?/i,
   /\brun\s+[`'"]?claude\s+\/login[`'"]?/i,
