@@ -79,6 +79,117 @@ describe("claude auth prompt helpers", () => {
     })).toBe(true);
   });
 
+  it("detects Claude auth failures emitted as system notices", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({ type: "user_message", text: "hello" }),
+        envelope({
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "info",
+          status: "authentication_failed",
+          message: "Claude API retry 2/10: authentication failed",
+          detail: "HTTP 401",
+        }),
+        envelope({ type: "done", turnId: "turn-1", status: "failed" }),
+      ],
+    })).toBe(true);
+  });
+
+  it("does not treat Claude auth progress notices as failures", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "system_notice",
+          noticeKind: "auth",
+          message: "Authenticating...",
+        }),
+      ],
+    })).toBe(false);
+  });
+
+  it("does not treat non-Claude auth system notices as Claude login failures", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "system_notice",
+          noticeKind: "warning",
+          status: "authentication_failed",
+          message: "MCP tool failed to authenticate to GitHub",
+          detail: "HTTP 401",
+        }),
+      ],
+    })).toBe(false);
+  });
+
+  it("does not treat generic invalid-credentials notice details as Claude login failures", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook response",
+          detail: "GitHub request failed: Invalid authentication credentials",
+        }),
+      ],
+    })).toBe(false);
+  });
+
+  it("detects the final plaintext Claude invalid-credentials failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({ type: "user_message", text: "hello" }),
+        envelope({
+          type: "text",
+          text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        }),
+        envelope({ type: "done", turnId: "turn-1", status: "failed" }),
+      ],
+    })).toBe(true);
+  });
+
+  it("does not treat generic Claude text about auth failures as a login failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "text",
+          text: "A GitHub request failed to authenticate because the remote server rejected it.",
+        }),
+      ],
+    })).toBe(false);
+  });
+
+  it("does not treat third-party invalid-credentials text as a Claude login failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "text",
+          text: "GitHub request failed: Invalid authentication credentials",
+        }),
+      ],
+    })).toBe(false);
+  });
+
+  it("does not treat successful text that quotes an API auth error as a Claude login failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "text",
+          text: "The GitHub API Error: 401 Invalid authentication credentials means the repo token is stale.",
+        }),
+        envelope({ type: "done", turnId: "turn-1", status: "completed" }),
+      ],
+    })).toBe(false);
+  });
+
   it("suppresses the chat prompt once Claude has produced a later successful reply", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",

@@ -2,10 +2,17 @@ import type { AgentChatEvent, AgentChatEventEnvelope, TerminalSessionSummary } f
 
 export const CLAUDE_AUTH_LOGIN_COMMAND = "claude auth login";
 
-const CLAUDE_AUTH_ERROR_PATTERNS: RegExp[] = [
-  /\bplease\s+run\s+\/login\b/i,
+const CLAUDE_INVALID_CREDENTIALS_PATTERNS: RegExp[] = [
   /\bapi\s+error:\s*401\b.*\binvalid\s+authentication\s+credentials\b/i,
   /\binvalid\s+authentication\s+credentials\b/i,
+];
+const CLAUDE_TEXT_AUTH_ERROR_PATTERN = /\bapi\s+error:\s*401\b.*\binvalid\s+authentication\s+credentials\b/i;
+
+const CLAUDE_AUTH_ERROR_PATTERNS: RegExp[] = [
+  /\bplease\s+run\s+\/login\b/i,
+  ...CLAUDE_INVALID_CREDENTIALS_PATTERNS,
+  /\bclaude\b.*\bauthentication[_\s-]*failed\b/i,
+  /\bclaude\b.*\bfailed\s+to\s+authenticate\b/i,
   /\bclaude\b.*\b(not\s+logged\s+in|not\s+authenticated|unauthorized|authentication\s+failed|login\s+required)\b/i,
   /\brun\s+[`'"]?claude\s+auth\s+login[`'"]?/i,
   /\brun\s+[`'"]?claude\s+\/login[`'"]?/i,
@@ -16,9 +23,27 @@ const CLAUDE_CLI_TOOL_TYPES = new Set<TerminalSessionSummary["toolType"]>([
   "claude-orchestrated",
 ]);
 
+function noticeDetailText(detail: Extract<AgentChatEvent, { type: "system_notice" }>["detail"]): string {
+  if (typeof detail === "string") return detail;
+  if (!detail || typeof detail !== "object") return "";
+  return [
+    typeof detail.title === "string" ? detail.title : "",
+    typeof detail.summary === "string" ? detail.summary : "",
+    ...(Array.isArray(detail.metrics) ? detail.metrics.map((metric) => `${metric.label}: ${metric.value}`) : []),
+    ...(Array.isArray(detail.sections)
+      ? detail.sections.flatMap((section) => [
+          section.title,
+          ...section.items.map((item) => typeof item === "string" ? item : `${item.label}: ${item.value}`),
+        ])
+      : []),
+  ].filter(Boolean).join("\n");
+}
+
 function eventText(event: AgentChatEvent): string {
-  if (event.type !== "error") return "";
-  return `${event.message ?? ""}\n${event.detail ?? ""}`;
+  if (event.type === "error") return `${event.message ?? ""}\n${event.detail ?? ""}`;
+  if (event.type === "system_notice") return `${event.message ?? ""}\n${event.status ?? ""}\n${noticeDetailText(event.detail)}`;
+  if (event.type === "text") return event.text ?? "";
+  return "";
 }
 
 export function textHasClaudeAuthError(value: string | null | undefined): boolean {
@@ -27,11 +52,21 @@ export function textHasClaudeAuthError(value: string | null | undefined): boolea
   return CLAUDE_AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function isClaudeAuthErrorEvent(event: AgentChatEvent): boolean {
-  if (event.type !== "error") return false;
-  const info = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
-  if (info?.agentCli?.agent === "claude" && info.agentCli.category === "unauthenticated") return true;
-  return textHasClaudeAuthError(eventText(event));
+function isClaudeAuthErrorEvent(event: AgentChatEvent, options?: { allowTextAuthError?: boolean }): boolean {
+  if (event.type === "error") {
+    const info = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
+    if (info?.agentCli?.agent === "claude" && info.agentCli.category === "unauthenticated") return true;
+    return textHasClaudeAuthError(eventText(event));
+  }
+  if (event.type === "system_notice") {
+    const text = eventText(event);
+    if (event.noticeKind !== "auth" && !/\bclaude\b/i.test(text)) return false;
+    return textHasClaudeAuthError(text);
+  }
+  if (event.type === "text") {
+    return options?.allowTextAuthError === true && CLAUDE_TEXT_AUTH_ERROR_PATTERN.test(eventText(event));
+  }
+  return false;
 }
 
 function isSuccessfulConversationBoundary(event: AgentChatEvent): boolean {
@@ -54,10 +89,19 @@ export function shouldShowClaudeChatLoginPrompt({
 }): boolean {
   if (provider !== "claude" || turnActive) return false;
 
+  let sawFailedTurnBoundary = false;
   for (let index = events.length - 1; index >= 0 && index >= events.length - 80; index -= 1) {
     const event = events[index]?.event;
     if (!event) continue;
-    if (isClaudeAuthErrorEvent(event)) return true;
+    if (event.type === "done" && event.status === "failed") {
+      sawFailedTurnBoundary = true;
+      continue;
+    }
+    if (event.type === "status" && event.turnStatus === "failed") {
+      sawFailedTurnBoundary = true;
+      continue;
+    }
+    if (isClaudeAuthErrorEvent(event, { allowTextAuthError: sawFailedTurnBoundary })) return true;
     if (isSuccessfulConversationBoundary(event)) return false;
     if (event.type === "status" && event.turnStatus === "started") return false;
   }
