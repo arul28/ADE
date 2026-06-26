@@ -125,6 +125,20 @@ describe("claude auth prompt helpers", () => {
     })).toBe(false);
   });
 
+  it("does not treat generic invalid-credentials notice details as Claude login failures", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook response",
+          detail: "GitHub request failed: Invalid authentication credentials",
+        }),
+      ],
+    })).toBe(false);
+  });
+
   it("detects the final plaintext Claude invalid-credentials failure", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",

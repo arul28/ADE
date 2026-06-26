@@ -58,7 +58,9 @@ function isClaudeAuthErrorEvent(event: AgentChatEvent): boolean {
     return textHasClaudeAuthError(eventText(event));
   }
   if (event.type === "system_notice") {
-    return textHasClaudeAuthError(eventText(event));
+    const text = eventText(event);
+    if (event.noticeKind !== "auth" && !/\bclaude\b/i.test(text)) return false;
+    return textHasClaudeAuthError(text);
   }
   if (event.type === "text") {
     const text = eventText(event);
