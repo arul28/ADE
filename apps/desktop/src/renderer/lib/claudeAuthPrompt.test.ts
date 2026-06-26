@@ -79,6 +79,63 @@ describe("claude auth prompt helpers", () => {
     })).toBe(true);
   });
 
+  it("detects Claude auth failures emitted as system notices", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({ type: "user_message", text: "hello" }),
+        envelope({
+          type: "system_notice",
+          noticeKind: "warning",
+          severity: "info",
+          status: "authentication_failed",
+          message: "Claude API retry 2/10: authentication failed",
+          detail: "HTTP 401",
+        }),
+        envelope({ type: "done", turnId: "turn-1", status: "failed" }),
+      ],
+    })).toBe(true);
+  });
+
+  it("does not treat Claude auth progress notices as failures", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "system_notice",
+          noticeKind: "auth",
+          message: "Authenticating...",
+        }),
+      ],
+    })).toBe(false);
+  });
+
+  it("detects the final plaintext Claude invalid-credentials failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({ type: "user_message", text: "hello" }),
+        envelope({
+          type: "text",
+          text: "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        }),
+        envelope({ type: "done", turnId: "turn-1", status: "failed" }),
+      ],
+    })).toBe(true);
+  });
+
+  it("does not treat generic Claude text about auth failures as a login failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "text",
+          text: "A GitHub request failed to authenticate because the remote server rejected it.",
+        }),
+      ],
+    })).toBe(false);
+  });
+
   it("suppresses the chat prompt once Claude has produced a later successful reply", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",

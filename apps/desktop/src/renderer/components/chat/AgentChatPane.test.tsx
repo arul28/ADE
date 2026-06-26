@@ -2819,6 +2819,55 @@ describe("AgentChatPane submit recovery", () => {
     expect(cursorCloudListAgents).not.toHaveBeenCalled();
   });
 
+  it("shows the Claude login prompt when the loaded chat history contains auth notices", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    installAdeMocks({
+      sessions: [session],
+      includeClaudeModel: true,
+      eventHistory: {
+        sessionId: session.sessionId,
+        sessionFound: true,
+        truncated: false,
+        events: [
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-06-22T12:00:00.000Z",
+            sequence: 1,
+            event: { type: "user_message", text: "hello" },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-06-22T12:00:01.000Z",
+            sequence: 2,
+            event: {
+              type: "system_notice",
+              noticeKind: "warning",
+              severity: "info",
+              status: "authentication_failed",
+              message: "Claude API retry 2/10: authentication failed",
+              detail: "HTTP 401",
+            },
+          },
+          {
+            sessionId: session.sessionId,
+            timestamp: "2026-06-22T12:00:03.000Z",
+            sequence: 3,
+            event: { type: "done", turnId: "turn-1", status: "failed" },
+          },
+        ],
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
+  });
+
   it("keeps the committed model visible until the backend confirms the switch", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const sessions = [session];
