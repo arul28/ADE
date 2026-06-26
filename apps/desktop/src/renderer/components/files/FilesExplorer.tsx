@@ -149,9 +149,13 @@ function flattenVisibleRows(args: {
         level: level + 1,
       })
       : [];
-    if (matchesQuery(node, query) || childRows.length > 0) {
+    const nodeMatchesQuery = matchesQuery(node, query);
+    if (nodeMatchesQuery || childRows.length > 0) {
+      const hasLoadedChildren = Array.isArray(node.children);
+      const useSearchExpansion = node.type === "directory"
+        && (childRows.length > 0 || (nodeMatchesQuery && hasLoadedChildren));
       const expansion = node.type === "directory"
-        ? childRows.length > 0
+        ? useSearchExpansion
           ? { mode: "search" as const, expanded: !args.searchCollapsed.has(node.path) }
           : { mode: "tree" as const, expanded: args.expanded.has(node.path) }
         : undefined;

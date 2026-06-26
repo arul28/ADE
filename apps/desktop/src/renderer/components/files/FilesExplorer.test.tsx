@@ -96,7 +96,7 @@ describe("FilesExplorer search filtering", () => {
         ],
       },
     ];
-    renderExplorer({
+    const props = renderExplorer({
       tree,
       searchQuery: "button",
     });
@@ -104,9 +104,31 @@ describe("FilesExplorer search filtering", () => {
     expect(screen.getByText("Button.tsx")).toBeTruthy();
 
     fireEvent.click(screen.getByText("src"));
+    expect(props.onToggleDirectory).not.toHaveBeenCalled();
     expect(screen.queryByText("Button.tsx")).toBeNull();
 
     fireEvent.click(screen.getByText("src"));
+    expect(props.onToggleDirectory).not.toHaveBeenCalled();
     expect(screen.getByText("Button.tsx")).toBeTruthy();
+  });
+
+  it("keeps loaded folder matches under search-local expansion", () => {
+    const tree: FileTreeNode[] = [
+      {
+        name: "docs",
+        path: "docs",
+        type: "directory",
+        children: [],
+      },
+    ];
+    const props = renderExplorer({
+      tree,
+      searchQuery: "docs",
+    });
+
+    fireEvent.click(screen.getByText("docs"));
+
+    expect(props.onToggleDirectory).not.toHaveBeenCalled();
+    expect(screen.getByText("docs")).toBeTruthy();
   });
 });
