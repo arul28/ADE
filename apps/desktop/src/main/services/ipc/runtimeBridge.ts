@@ -94,9 +94,15 @@ type RuntimeEventWindowSubscription = {
   cleanup: (() => void) | null;
 };
 
+type RuntimeEventSubscriptionInit = Pick<
+  RemoteRuntimeStreamEventsResult,
+  "nextCursor" | "hasMore" | "eventEpoch"
+>;
+
 type RuntimeEventSubscribe = (
   onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded: () => void,
+  onSubscribed?: (result: RuntimeEventSubscriptionInit) => void,
 ) => Promise<() => void>;
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -408,14 +414,14 @@ export function registerRuntimeBridge({
     }
   };
 
-  const ensureRuntimeEventSubscription = (
+  const ensureRuntimeEventSubscription = async (
     sender: WebContents,
     bindingKey: string,
     requestKey: string,
     subscribe: RuntimeEventSubscribe,
-  ): void => {
+  ): Promise<RuntimeEventSubscriptionInit | null> => {
     const existing = runtimeEventSubscriptions.get(sender.id);
-    if (existing?.requestKey === requestKey) return;
+    if (existing?.requestKey === requestKey) return null;
     cleanupRuntimeEventSubscription(sender.id);
     watchRuntimeEventSender(sender);
     runtimeEventSubscriptions.set(sender.id, { bindingKey, requestKey, cleanup: null });
@@ -425,31 +431,36 @@ export function registerRuntimeBridge({
         runtimeEventSubscriptions.delete(sender.id);
       }
     };
-    void subscribe(
-      (event, eventEpoch) =>
-        sendRuntimeEvent(sender, bindingKey, requestKey, event, eventEpoch),
-      onEnded,
-    )
-      .then((cleanup) => {
-        const current = runtimeEventSubscriptions.get(sender.id);
-        if (
-          !current ||
-          current.requestKey !== requestKey ||
-          current.bindingKey !== bindingKey ||
-          sender.isDestroyed()
-        ) {
-          cleanup();
-          return;
-        }
-        current.cleanup = cleanup;
-      })
-      .catch((error) => {
-        const current = runtimeEventSubscriptions.get(sender.id);
-        if (current?.requestKey === requestKey && current.bindingKey === bindingKey && !current.cleanup) {
-          runtimeEventSubscriptions.delete(sender.id);
-        }
-        console.warn("Runtime event subscription failed", error);
-      });
+    let subscriptionInit: RuntimeEventSubscriptionInit | null = null;
+    try {
+      const cleanup = await subscribe(
+        (event, eventEpoch) =>
+          sendRuntimeEvent(sender, bindingKey, requestKey, event, eventEpoch),
+        onEnded,
+        (result) => {
+          subscriptionInit = result;
+        },
+      );
+      const current = runtimeEventSubscriptions.get(sender.id);
+      if (
+        !current ||
+        current.requestKey !== requestKey ||
+        current.bindingKey !== bindingKey ||
+        sender.isDestroyed()
+      ) {
+        cleanup();
+        return subscriptionInit;
+      }
+      current.cleanup = cleanup;
+      return subscriptionInit;
+    } catch (error) {
+      const current = runtimeEventSubscriptions.get(sender.id);
+      if (current?.requestKey === requestKey && current.bindingKey === bindingKey && !current.cleanup) {
+        runtimeEventSubscriptions.delete(sender.id);
+      }
+      console.warn("Runtime event subscription failed", error);
+      throw error;
+    }
   };
 
   ipcMain.handle(
@@ -976,27 +987,35 @@ export function registerRuntimeBridge({
           localRuntimeRootKey(binding.rootPath) === localRuntimeRootKey(rootPath)
             ? binding.key
             : `local:${rootPath}`;
-        ensureRuntimeEventSubscription(
+        const subscribe = (
+          onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
+          onEnded: () => void,
+          onSubscribed?: (result: RuntimeEventSubscriptionInit) => void,
+        ) =>
+          localRuntimeConnectionPool.subscribeEventsForRoot(
+            rootPath,
+            {
+              cursor: request.cursor,
+              limit: request.limit,
+              category: request.category,
+              replay: request.replay,
+            },
+            onEvent,
+            onEnded,
+            onSubscribed,
+          );
+        const requestKey = `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`;
+        const subscriptionInit = await ensureRuntimeEventSubscription(
           event.sender,
           bindingKey,
-          `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
-          (onEvent, onEnded) =>
-            localRuntimeConnectionPool.subscribeEventsForRoot(
-              rootPath,
-              {
-                cursor: request.cursor,
-                limit: request.limit,
-                category: request.category,
-                replay: request.replay,
-              },
-              onEvent,
-              onEnded,
-            ),
+          requestKey,
+          subscribe,
         );
         return {
           events: [],
-          nextCursor: request.cursor ?? 0,
-          hasMore: false,
+          nextCursor: subscriptionInit?.nextCursor ?? request.cursor ?? 0,
+          hasMore: subscriptionInit?.hasMore === true,
+          ...(subscriptionInit?.eventEpoch ? { eventEpoch: subscriptionInit.eventEpoch } : {}),
         };
       }
       return await localRuntimeConnectionPool.streamEventsForRoot(
@@ -1024,35 +1043,51 @@ export function registerRuntimeBridge({
       const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
-      const result = request.replay === false
-        ? {
-            events: [],
-            nextCursor: request.cursor ?? 0,
-            hasMore: false,
-          }
-        : await remoteConnectionService.streamEvents(
-            target.id,
-            projectId,
-            request,
-          );
-      ensureRuntimeEventSubscription(
-        event.sender,
-        `remote:${target.id}:${projectId}`,
-        `remote:${target.id}:${projectId}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
-        (onEvent, onEnded) =>
-          remoteConnectionService.subscribeEvents(
-            target.id,
-            projectId,
-            {
-              cursor: request.cursor,
-              limit: request.limit,
-              category: request.category,
-              replay: request.replay,
-            },
-            onEvent,
-            onEnded,
-          ),
+      const bindingKey = `remote:${target.id}:${projectId}`;
+      const requestKey = `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`;
+      const subscribe = (
+        onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
+        onEnded: () => void,
+        onSubscribed?: (result: RuntimeEventSubscriptionInit) => void,
+      ) =>
+        remoteConnectionService.subscribeEvents(
+          target.id,
+          projectId,
+          {
+            cursor: request.cursor,
+            limit: request.limit,
+            category: request.category,
+            replay: request.replay,
+          },
+          onEvent,
+          onEnded,
+          onSubscribed,
+        );
+      if (request.replay === false) {
+        const subscriptionInit = await ensureRuntimeEventSubscription(
+          event.sender,
+          bindingKey,
+          requestKey,
+          subscribe,
+        );
+        return {
+          events: [],
+          nextCursor: subscriptionInit?.nextCursor ?? request.cursor ?? 0,
+          hasMore: subscriptionInit?.hasMore === true,
+          ...(subscriptionInit?.eventEpoch ? { eventEpoch: subscriptionInit.eventEpoch } : {}),
+        };
+      }
+      const result = await remoteConnectionService.streamEvents(
+        target.id,
+        projectId,
+        request,
       );
+      void ensureRuntimeEventSubscription(
+        event.sender,
+        bindingKey,
+        requestKey,
+        subscribe,
+      ).catch(() => {});
       return result;
     },
   );

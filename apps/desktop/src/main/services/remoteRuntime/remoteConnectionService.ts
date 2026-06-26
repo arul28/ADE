@@ -504,8 +504,9 @@ export class RemoteConnectionService {
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
-    onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+    onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
+    onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
   ): Promise<() => void> {
     const target = this.requireTargetForImplicitUse(targetId);
     try {
@@ -515,6 +516,7 @@ export class RemoteConnectionService {
         request,
         onEvent,
         onEnded,
+        onSubscribed,
       );
       this.mergeStatus(targetId, {
         state: "connected",

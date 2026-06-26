@@ -19,6 +19,7 @@ import {
   isUnavailableGitDecorationsError,
   loadedDirectoryChildrenCount,
   mergeTreePreservingLoadedChildren,
+  nearestLoadedAncestorDirectoryPath,
   parentPathForFileChange,
   replaceTreeNodeChildren,
 } from "../treeHelpers";
@@ -555,12 +556,17 @@ export function FilesWorkbench({
         rootRefreshQueued = true;
         return;
       }
-      if (hasLoadedDirectoryChildren(treeRef.current, parentPath)) {
-        queuedParentPaths.add(parentPath);
-        if (queuedParentPaths.size > MAX_QUEUED_TREE_PARENT_REFRESHES) {
-          fullRootRefreshQueued = true;
-          queuedParentPaths.clear();
-        }
+      const refreshPath = hasLoadedDirectoryChildren(treeRef.current, parentPath)
+        ? parentPath
+        : nearestLoadedAncestorDirectoryPath(treeRef.current, parentPath);
+      if (!refreshPath) {
+        rootRefreshQueued = true;
+        return;
+      }
+      queuedParentPaths.add(refreshPath);
+      if (queuedParentPaths.size > MAX_QUEUED_TREE_PARENT_REFRESHES) {
+        fullRootRefreshQueued = true;
+        queuedParentPaths.clear();
       }
     };
 

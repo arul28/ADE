@@ -1151,10 +1151,11 @@ export class LocalRuntimeConnectionPool {
     request: RemoteRuntimeStreamEventsRequest = {},
     onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
+    onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
   ): Promise<() => void> {
     const project = await this.ensureProject(rootPath);
     const entry = await this.connect();
-    return await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded);
+    return await subscribeToRuntimeEvents(entry.client, project.projectId, request, onEvent, onEnded, onSubscribed);
   }
 
   async callSyncForRoot<T>(
@@ -1768,6 +1769,7 @@ async function subscribeToRuntimeEvents(
   request: RemoteRuntimeStreamEventsRequest,
   onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded?: () => void,
+  onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
 ): Promise<() => void> {
   const pendingNotifications: RuntimeEventNotification[] = [];
   let closed = false;
@@ -1801,6 +1803,7 @@ async function subscribeToRuntimeEvents(
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
     });
     subscriptionId = readSubscriptionId(value);
+    onSubscribed?.(normalizeRuntimeEventsSubscribeResult(value, request.cursor));
     for (const notification of pendingNotifications) {
       if (closed) break;
       if (notification.subscriptionId === subscriptionId) {
@@ -1823,6 +1826,31 @@ async function subscribeToRuntimeEvents(
     if (id != null) {
       void client.call("runtimeEvents.unsubscribe", { subscriptionId: id }).catch(() => {});
     }
+  };
+}
+
+function normalizeRuntimeEventsSubscribeResult(
+  value: unknown,
+  fallbackCursor: number | undefined,
+): RemoteRuntimeStreamEventsResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      events: [],
+      nextCursor: clampCursor(fallbackCursor),
+      hasMore: false,
+    };
+  }
+  const record = value as Record<string, unknown>;
+  const eventEpoch = typeof record.eventEpoch === "string" && record.eventEpoch.trim()
+    ? record.eventEpoch.trim()
+    : null;
+  return {
+    events: [],
+    nextCursor: typeof record.nextCursor === "number" && Number.isFinite(record.nextCursor)
+      ? Math.max(0, Math.floor(record.nextCursor))
+      : clampCursor(fallbackCursor),
+    hasMore: record.hasMore === true,
+    ...(eventEpoch ? { eventEpoch } : {}),
   };
 }
 

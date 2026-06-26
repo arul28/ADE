@@ -41,6 +41,13 @@ targets for the legacy IPC path.
   — local runtime project registration, file action dispatch, and event
   polling; file actions use a bounded per-call timeout before the
   desktop IPC handler timeout can fire.
+- `apps/desktop/src/main/services/ipc/runtimeBridge.ts`,
+  `apps/desktop/src/main/services/remoteRuntime/remoteConnectionPool.ts`,
+  `apps/desktop/src/main/services/remoteRuntime/remoteConnectionService.ts`,
+  and `apps/ade-cli/src/multiProjectRpcServer.ts` — bridge the runtime
+  event stream to bound desktop windows. A `replay: false` subscription
+  returns the runtime's current cursor, so a remote Files tab can begin
+  watching live changes without replaying stale runtime events.
 - `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts` —
   JSON-RPC client used by both local and remote runtime transports,
   including per-call timeout overrides for file actions and event

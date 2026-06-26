@@ -397,7 +397,12 @@ export function createMultiProjectRpcRequestHandler(
 
     const replayResult = replay
       ? scope.runtime.eventBuffer.drain(cursor, limit)
-      : { events: [], nextCursor: cursor, hasMore: false, eventEpoch };
+      : {
+          events: [],
+          nextCursor: scope.runtime.eventBuffer.latestCursor(),
+          hasMore: false,
+          eventEpoch,
+        };
     for (const event of replayResult.events) {
       if (shouldForward(event))
         emitRuntimeEvent(subscriptionId, projectId, event, replayResult.eventEpoch);

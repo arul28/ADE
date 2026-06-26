@@ -95,6 +95,16 @@ export function hasLoadedDirectoryChildren(nodes: FileTreeNode[], directoryPath:
   return node?.type === "directory" && Array.isArray(node.children);
 }
 
+export function nearestLoadedAncestorDirectoryPath(nodes: FileTreeNode[], directoryPath: string): string {
+  let current = directoryPath.replace(/\\/g, "/").split("/").filter(Boolean).join("/");
+  for (;;) {
+    if (hasLoadedDirectoryChildren(nodes, current)) return current;
+    if (!current) return "";
+    const index = current.lastIndexOf("/");
+    current = index > 0 ? current.slice(0, index) : "";
+  }
+}
+
 export function loadedDirectoryChildrenCount(nodes: FileTreeNode[], directoryPath: string): number {
   if (!directoryPath) return nodes.length;
   const node = findFileTreeNodeByPath(nodes, directoryPath);

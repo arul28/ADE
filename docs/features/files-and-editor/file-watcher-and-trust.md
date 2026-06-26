@@ -219,6 +219,14 @@ handles events like this:
    24`) forces a full tree refresh when bulk operations exceed the
    cap (e.g. `git checkout` touches hundreds of files at once).
 
+Remote-bound windows start their runtime event pump with
+`replay: false`. The runtime acknowledges that subscription with its
+current cursor, and `preload.ts` uses that cursor for the next poll
+before it resumes ordinary replay. This keeps a newly opened Files tab
+on the live edge of a remote worktree, so a file created by an ADE CLI
+session on the remote machine refreshes the loaded tree instead of
+waiting behind older runtime events.
+
 Rename detection on the renderer side: because watcher events come as
 `unlink` + `add`, renames surface as a tab close + a new tab path. The
 renderer inspects the modified timestamp and file size to correlate
