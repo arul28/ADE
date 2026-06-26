@@ -52,7 +52,7 @@ export function textHasClaudeAuthError(value: string | null | undefined): boolea
   return CLAUDE_AUTH_ERROR_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-function isClaudeAuthErrorEvent(event: AgentChatEvent): boolean {
+function isClaudeAuthErrorEvent(event: AgentChatEvent, options?: { allowTextAuthError?: boolean }): boolean {
   if (event.type === "error") {
     const info = typeof event.errorInfo === "object" && event.errorInfo ? event.errorInfo : null;
     if (info?.agentCli?.agent === "claude" && info.agentCli.category === "unauthenticated") return true;
@@ -64,7 +64,7 @@ function isClaudeAuthErrorEvent(event: AgentChatEvent): boolean {
     return textHasClaudeAuthError(text);
   }
   if (event.type === "text") {
-    return CLAUDE_TEXT_AUTH_ERROR_PATTERN.test(eventText(event));
+    return options?.allowTextAuthError === true && CLAUDE_TEXT_AUTH_ERROR_PATTERN.test(eventText(event));
   }
   return false;
 }
@@ -89,10 +89,19 @@ export function shouldShowClaudeChatLoginPrompt({
 }): boolean {
   if (provider !== "claude" || turnActive) return false;
 
+  let sawFailedTurnBoundary = false;
   for (let index = events.length - 1; index >= 0 && index >= events.length - 80; index -= 1) {
     const event = events[index]?.event;
     if (!event) continue;
-    if (isClaudeAuthErrorEvent(event)) return true;
+    if (event.type === "done" && event.status === "failed") {
+      sawFailedTurnBoundary = true;
+      continue;
+    }
+    if (event.type === "status" && event.turnStatus === "failed") {
+      sawFailedTurnBoundary = true;
+      continue;
+    }
+    if (isClaudeAuthErrorEvent(event, { allowTextAuthError: sawFailedTurnBoundary })) return true;
     if (isSuccessfulConversationBoundary(event)) return false;
     if (event.type === "status" && event.turnStatus === "started") return false;
   }

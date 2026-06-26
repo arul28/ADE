@@ -177,6 +177,19 @@ describe("claude auth prompt helpers", () => {
     })).toBe(false);
   });
 
+  it("does not treat successful text that quotes an API auth error as a Claude login failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "text",
+          text: "The GitHub API Error: 401 Invalid authentication credentials means the repo token is stale.",
+        }),
+        envelope({ type: "done", turnId: "turn-1", status: "completed" }),
+      ],
+    })).toBe(false);
+  });
+
   it("suppresses the chat prompt once Claude has produced a later successful reply", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",
