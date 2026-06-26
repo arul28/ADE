@@ -165,6 +165,18 @@ describe("claude auth prompt helpers", () => {
     })).toBe(false);
   });
 
+  it("does not treat third-party invalid-credentials text as a Claude login failure", () => {
+    expect(shouldShowClaudeChatLoginPrompt({
+      provider: "claude",
+      events: [
+        envelope({
+          type: "text",
+          text: "GitHub request failed: Invalid authentication credentials",
+        }),
+      ],
+    })).toBe(false);
+  });
+
   it("suppresses the chat prompt once Claude has produced a later successful reply", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",

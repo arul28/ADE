@@ -6,6 +6,7 @@ const CLAUDE_INVALID_CREDENTIALS_PATTERNS: RegExp[] = [
   /\bapi\s+error:\s*401\b.*\binvalid\s+authentication\s+credentials\b/i,
   /\binvalid\s+authentication\s+credentials\b/i,
 ];
+const CLAUDE_TEXT_AUTH_ERROR_PATTERN = /\bapi\s+error:\s*401\b.*\binvalid\s+authentication\s+credentials\b/i;
 
 const CLAUDE_AUTH_ERROR_PATTERNS: RegExp[] = [
   /\bplease\s+run\s+\/login\b/i,
@@ -63,8 +64,7 @@ function isClaudeAuthErrorEvent(event: AgentChatEvent): boolean {
     return textHasClaudeAuthError(text);
   }
   if (event.type === "text") {
-    const text = eventText(event);
-    return CLAUDE_INVALID_CREDENTIALS_PATTERNS.some((pattern) => pattern.test(text));
+    return CLAUDE_TEXT_AUTH_ERROR_PATTERN.test(eventText(event));
   }
   return false;
 }
