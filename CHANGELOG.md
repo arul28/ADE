@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed iOS sync freezes during mobile actions and preserved running chat badge counts in the mobile Work flow.
+- Fixed release-doc validation so the next changelog page can pass CI before its tag exists.
 
 ## [1.2.9] - 2026-06-23
 

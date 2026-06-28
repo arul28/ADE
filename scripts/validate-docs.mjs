@@ -223,10 +223,16 @@ async function validateReleaseDocs() {
 
   const changelog = await fs.readFile(path.join(repoRoot, "CHANGELOG.md"), "utf8");
   const topVersion = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1];
+  let docsLatestTag = latestTag;
   if (!topVersion) {
     errors.push("CHANGELOG.md: missing a released ## [x.y.z] heading after Unreleased");
   } else if (topVersion !== latestTag.version) {
-    errors.push(`CHANGELOG.md: top release ${topVersion} does not match latest git tag ${latestTag.raw}`);
+    const topTag = parseSemverTag(`v${topVersion}`);
+    if (!topTag || compareSemver(topTag, latestTag) <= 0) {
+      errors.push(`CHANGELOG.md: top release ${topVersion} does not match latest git tag ${latestTag.raw}`);
+    } else {
+      docsLatestTag = topTag;
+    }
   }
 
   const linkRefs = new Set([...changelog.matchAll(/^\[([^\]]+)\]:\s+\S+/gm)].map((match) => match[1]));
@@ -244,8 +250,8 @@ async function validateReleaseDocs() {
     }
   }
 
-  if (!(await targetExists({ absolute: `/changelog/${latestTag.raw}`, source: latestTag.raw, fromFile: "CHANGELOG.md" }))) {
-    errors.push(`changelog/${latestTag.raw}.mdx: missing docs page for latest git tag ${latestTag.raw}`);
+  if (!(await targetExists({ absolute: `/changelog/${docsLatestTag.raw}`, source: docsLatestTag.raw, fromFile: "CHANGELOG.md" }))) {
+    errors.push(`changelog/${docsLatestTag.raw}.mdx: missing docs page for latest release ${docsLatestTag.raw}`);
   }
 
   let changelogIndex;
@@ -255,11 +261,11 @@ async function validateReleaseDocs() {
     errors.push("changelog/index.mdx: file is missing; create it with a latest-release Card");
     return;
   }
-  if (!changelogIndex.includes(`/changelog/${latestTag.raw}`)) {
-    errors.push(`changelog/index.mdx: latest release card must link to /changelog/${latestTag.raw}`);
+  if (!changelogIndex.includes(`/changelog/${docsLatestTag.raw}`)) {
+    errors.push(`changelog/index.mdx: latest release card must link to /changelog/${docsLatestTag.raw}`);
   }
-  if (!changelogIndex.includes(latestTag.raw)) {
-    errors.push(`changelog/index.mdx: latest release copy must mention ${latestTag.raw}`);
+  if (!changelogIndex.includes(docsLatestTag.raw)) {
+    errors.push(`changelog/index.mdx: latest release copy must mention ${docsLatestTag.raw}`);
   }
 
   let readme;
