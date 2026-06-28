@@ -1,0 +1,25 @@
+---
+title: "v1.2.10"
+description: "Release notes for ADE v1.2.10 - June 28, 2026"
+---
+
+v1.2.10 replaces the guided onboarding tour with a one-time welcome video and passive help, tightens ADE Code and chat launch behavior, and fixes Files reliability around search, remote events, and editor state. iOS stays on its current marketing version and gets a build-number-only TestFlight update for sync and chat stability fixes.
+
+---
+
+## Desktop
+
+- **Onboarding, simplified.** The old guided tour and wizard stack is replaced with a one-time "Welcome to ADE" video, Help menu replay, richer Did you know hints, and tab hover tooltips that point to the right docs without blocking the app.
+- **ADE Code and terminal polish.** The ADE Code terminal renderer is upgraded, with tighter TUI input, approval prompt, palette, polling, Codex initial prompt, PTY read, and shell-session startup behavior.
+- **Chat launch recovery.** Auto-lane and pinned chat launches now recover more reliably, guard stale UI updates, fix project-config cache keys, and keep notifications tied to the right running work.
+- **Claude auth recovery.** Claude auth notices now show a focused login prompt only for real Claude failures, reducing false positives while giving expired sessions a clear recovery path.
+- **Files reliability.** Search-result folders collapse correctly, remote file events preserve cursor state, editor groups track dirty buffers more safely, and recent-file and warm-empty states behave more predictably.
+- **Release validation.** Changelog validation now accepts the next release page before its tag exists, so release-doc PRs can pass CI before tagging.
+
+---
+
+## iOS
+
+- **Build-number-only TestFlight update.** The mobile app keeps its existing marketing version for this train; this release only bumps the iOS build number for TestFlight.
+- **Sync crash fixes.** Mobile actions no longer freeze the sync path, with stronger database and sync-service regression coverage.
+- **Work chat continuity.** The new-chat flow handles pinned auto-lane launches more reliably, and running chat badge counts stay accurate.

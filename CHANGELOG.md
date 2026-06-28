@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-06-28
+
+### Added
+
+- One-time "Welcome to ADE" video gate with Help menu replay, tab tooltips, expanded Did you know hints, and updated first-run docs.
+
+### Changed
+
+- Upgraded ADE Code terminal rendering and tightened TUI input, approval prompts, palettes, polling, Codex initial prompt handling, PTY reads, and shell-session startup behavior.
+- Improved auto-lane chat recovery, pinned project-config cache keys, stale launch UI guards, running-work notifications, and Claude auth recovery prompts.
+- Improved Files workbench/editor state, search-result collapse behavior, dirty-buffer handling, recent-file tracking, and remote file event cursor updates.
+
+### Removed
+
+- Removed guided tour, wizard, tutorial UI, and the old tour IPC/preload/service contract in favor of passive help surfaces.
+
+### Fixed
+
+- Fixed iOS sync freezes during mobile actions and preserved running chat badge counts in the mobile Work flow.
+- Fixed release-doc validation so the next changelog page can pass CI before its tag exists.
+
 ## [1.2.9] - 2026-06-23
 
 ### Added
@@ -467,7 +488,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.9...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.10...HEAD
+[1.2.10]: https://github.com/arul28/ADE/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/arul28/ADE/compare/v1.2.8...v1.2.9
 [1.2.8]: https://github.com/arul28/ADE/compare/v1.2.7...v1.2.8
 [1.2.7]: https://github.com/arul28/ADE/compare/v1.2.6...v1.2.7
