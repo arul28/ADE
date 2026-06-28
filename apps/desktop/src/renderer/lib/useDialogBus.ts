@@ -6,7 +6,7 @@ export type UseDialogBusHandlers = {
   onClose?: () => void;
 };
 
-// Subscribe a dialog-hosting page to the tour dialogBus. Tour steps dispatch
+// Subscribe a dialog-hosting page to the dialog bus. Shared actions dispatch
 // `dialogBus.open("lanes.create")` etc; the page that owns the dialog state
 // listens with this hook and flips its local open flag.
 export function useDialogBus(id: string, handlers: UseDialogBusHandlers): void {

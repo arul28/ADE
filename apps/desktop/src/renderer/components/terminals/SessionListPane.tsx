@@ -499,9 +499,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     workCollapsedSectionIds,
   ]);
 
-  // First-rendered card carries `data-tour="work.sessionItem"` so the Work
-  // tab tour can anchor at a real session. We track whether we've already
-  // emitted the anchor across the whole list (not per-section).
+  // First-rendered card carries a stable automation anchor at a real session.
+  // We track whether we've already emitted it across the whole list (not per-section).
   let sessionItemAnchorEmitted = false;
   // The "active" grid is the set containing the focused session; its members'
   // badges are highlighted, members of other grids are greyed.

@@ -2,7 +2,6 @@ import React, { useCallback, useRef, useState } from "react";
 import { useAppStore } from "../../state/appStore";
 import { findTerm } from "../../onboarding/glossary";
 import { GlossaryPopover } from "./GlossaryPopover";
-import { useOnboardingStore } from "../../state/onboardingStore";
 
 type HelpChipProps = {
   termId: string;
@@ -23,12 +22,10 @@ export function HelpChip({ termId, side = "bottom" }: HelpChipProps) {
       | undefined;
     const onboarding = ade?.onboarding ?? null;
     if (onboarding && term) {
-      // Fire-and-forget. The store will pick up the fresh progress via subsequent refreshes.
+      // Fire-and-forget: glossary progress is informational only.
       onboarding
         .markGlossaryTermSeen(termId)
-        .then((progress) => {
-          useOnboardingStore.setState({ progress });
-        })
+        .then(() => {})
         .catch(() => {
           /* ignore */
         });

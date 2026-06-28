@@ -12,6 +12,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
@@ -267,9 +268,8 @@ import type {
   KeybindingsSnapshot,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
+  OnboardingHelpState,
   OnboardingStatus,
-  OnboardingTourProgress,
-  OnboardingTourVariant,
   GitActionResult,
   GitBranchSummary,
   GitCheckoutBranchArgs,
@@ -646,6 +646,10 @@ declare global {
           binding: OpenProjectBinding | null;
           openProjectTabs: ProjectInfo[];
         }>;
+        getWelcomeVideoState: () => Promise<AppWelcomeVideoState>;
+        markWelcomeVideoSeen: (
+          reason?: "completed" | "dismissed",
+        ) => Promise<AppWelcomeVideoState>;
         setWindowProjectTabs: (
           rootPaths: string[],
         ) => Promise<{ openProjectTabs: ProjectInfo[] }>;
@@ -932,44 +936,9 @@ declare global {
         detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
-        getTourProgress: () => Promise<OnboardingTourProgress>;
-        markWizardCompleted: () => Promise<OnboardingTourProgress>;
-        markWizardDismissed: () => Promise<OnboardingTourProgress>;
-        markTourCompleted: (tourId: string) => Promise<OnboardingTourProgress>;
-        markTourDismissed: (tourId: string) => Promise<OnboardingTourProgress>;
-        updateTourStep: (
-          tourId: string,
-          index: number,
-        ) => Promise<OnboardingTourProgress>;
         markGlossaryTermSeen: (
           termId: string,
-        ) => Promise<OnboardingTourProgress>;
-        resetTourProgress: (tourId?: string) => Promise<OnboardingTourProgress>;
-        markTourCompletedVariant: (
-          tourId: string,
-          variant: OnboardingTourVariant,
-        ) => Promise<OnboardingTourProgress>;
-        markTourDismissedVariant: (
-          tourId: string,
-          variant: OnboardingTourVariant,
-        ) => Promise<OnboardingTourProgress>;
-        updateTourStepVariant: (
-          tourId: string,
-          variant: OnboardingTourVariant,
-          index: number,
-        ) => Promise<OnboardingTourProgress>;
-        tutorial: {
-          start: () => Promise<OnboardingTourProgress>;
-          dismiss: (permanent: boolean) => Promise<OnboardingTourProgress>;
-          complete: () => Promise<OnboardingTourProgress>;
-          updateAct: (
-            actIndex: number,
-            ctxSnapshot?: Record<string, unknown>,
-          ) => Promise<OnboardingTourProgress>;
-          setSilenced: (silenced: boolean) => Promise<OnboardingTourProgress>;
-          clearSessionDismissal: () => Promise<OnboardingTourProgress>;
-          shouldPrompt: () => Promise<boolean>;
-        };
+        ) => Promise<OnboardingHelpState>;
       };
       automations: {
         list: () => Promise<AutomationRuleSummary[]>;

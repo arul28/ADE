@@ -40,17 +40,9 @@ desktops see live lanes, agent chats, work sessions, and processes.
 Main process:
 
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
-  status, stack detection, existing lane detection,
-  and tour progress tracking. `OnboardingTourProgress` carries the
-  legacy flat per-tour map (`tours: Record<string, OnboardingTourEntry>`)
-  plus a new variant-aware `tourVariants: Record<string,
-  OnboardingTourEntryV2>` keyed by base tour id with a `full` +
-  `highlights` pair. A separate `tutorial: OnboardingTutorialState`
-  slab tracks the 13-act first-session tutorial
-  (`completedAt`/`dismissedAt`/`silenced`/`inProgress`/`lastActIndex`/
-  `ctxSnapshot`). Glossary terms seen are tracked in
-  `glossaryTermsSeen[]`. Persisted to `kvDb` under
-  `onboarding:tourProgress`.
+  status, stack detection, existing lane detection, suggested config
+  application, plus passive glossary help state. The active renderer
+  no longer mounts guided tours.
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested process/test/stack
   config generation for `.ade/ade.yaml`.
@@ -108,71 +100,20 @@ Renderer — onboarding:
   — legacy full-size dev tool detection surface retained for existing routes
   that still mount it.
 - `apps/desktop/src/renderer/components/onboarding/OnboardingBootstrap.tsx`
-  — top-level orchestrator: mounts the `TourHost`, auto-fires per-tab
-  tours on route change, renders `DidYouKnow`, and pops the
-  `TutorialPromptCard` when the first-session tutorial is available.
-  `DidYouKnow` suppresses itself whenever `activeTourId` is set in the
-  onboarding store, so a live tour never competes with a "did you know"
-  tooltip. `SmartTooltip` applies the same gate — tooltips silently
-  return a null wrapper while a tour is active so the tour's own
-  spotlight is the only floating UI.
-- `apps/desktop/src/renderer/components/onboarding/TutorialPromptCard.tsx`
-  — Start / Not now / Don't show again gate for the 13-act tutorial.
+  — top-level passive help mount. It renders the one-time ADE welcome
+  video gate plus `DidYouKnow`; guided per-tab tours and the old
+  welcome wizard are no longer mounted.
+- `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
+  — one-time app-level welcome screen backed by global app state. It
+  links to GitHub and the docs site and embeds the current welcome
+  YouTube video. The Help menu can replay it without resetting setup.
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
-  — persistent help menu in the top bar: tour replay, glossary, docs
-  links, restart tutorial.
-- `apps/desktop/src/renderer/components/onboarding/tour/TourHost.tsx`,
-  `TourOverlay.tsx`, `TourStep.tsx` — rendered overlay and per-step card.
-  `TourHost` intentionally does not gate on the `onboardingEnabled`
-  preference: the preference hides passive onboarding surfaces
-  (`DidYouKnow`, tour auto-start hooks), but a tour the user explicitly
-  starts from the Help menu must still render even when ambient
-  onboarding is off — otherwise the menu would silently change routes
-  without showing any guidance. `TourOverlay` applies a short
-  (350 ms) grace period after a step mounts before
-  `exitOnOutsideInteraction` takes effect, so the click that launched
-  the current step cannot also dismiss it.
-- `apps/desktop/src/renderer/components/onboarding/fx/*` — motion-FX
-  primitives (`ActIntro`, `AnimatedField`, `Confetti`, `GhostCursor`,
-  `MorphingTree`, `Spotlight`, `StaggeredText`, `TourIllustration`)
-  plus a `useReducedMotion` hook. Used by the tutorial and per-tab tours.
-- `apps/desktop/src/renderer/onboarding/TourController.ts` — imperative
-  driver (advance/skip/complete/dismiss); source of truth for the
-  Zustand `onboardingStore`.
-- `apps/desktop/src/renderer/onboarding/waitForTarget.ts` — polls for a
-  DOM target (ref or `data-onboarding-target`) with a visibility check
-  so tour steps anchor reliably to async-mounted elements.
+  — persistent help menu in the top bar: glossary, docs links, welcome
+  video replay, and help preferences. Tour replay entries were removed
+  with the guided-tour renderer.
 - `apps/desktop/src/renderer/onboarding/docsLinks.ts` — typed registry
-  of internal/public doc URLs that tour steps and `HelpMenu` link to.
-- `apps/desktop/src/renderer/onboarding/registry.ts` — tour registry.
-- `apps/desktop/src/renderer/onboarding/tourGuards.ts` — per-step guard
-  predicates (route, selection, and element-presence checks) that decide
-  whether a step can advance, skip, or must pause for the user.
-- `apps/desktop/src/renderer/onboarding/stepBuilders/*.ts` — factories
-  for per-dialog tour steps (`createLaneDialog`, `manageLaneDialog`,
-  `prCreateModal`); kept separate from the per-surface tour files so
-  dialog-scoped steps can be composed from multiple tours.
-- `apps/desktop/src/renderer/onboarding/tours/*.ts` — per-surface tours:
-  `lanesTour`, `laneWorkPaneTour`, `workTour`, `filesTour`,
-  `runTour`, `prsTour`, `graphTour`, `historyTour`,
-  `automationsTour`, `ctoTour`, `settingsTour`, plus the first-session
-  `firstJourneyTour`. The first-session tour reuses individual steps
-  from the per-surface tours via a small `tutorialSection(sectionId,
-  steps, requires)` wrapper that namespaces step ids
-  (`<sectionId>.<index>`), forces a `requires` gate, derives
-  `waitForSelector` from `target`, and — for any step that has a
-  `requires` gate without its own `fallbackAfterMs` — injects a
-  default 30 s `Skip` fallback so the tutorial can never get
-  permanently stuck waiting on state that doesn't appear. Wrapped
-  steps keep their original hooks; for example `ctoTour` still
-  dispatches `ade:tour-cto-tab` before the Team and Workflows steps
-  after `firstJourneyTour` wraps them. The acts
-  themselves are intentionally streamlined: act 1 only borrows the
-  base-branch / status-chip / lane-work-pane bits (since the user has
-  just created a lane interactively); acts 2 + 3 inline ctx-aware
-  graph/files steps directly rather than spreading the full sub-tour;
-  the per-act "tab handoff" reminder steps were collapsed into the
-  single act 12 finale.
+  of internal/public doc URLs that `DidYouKnow`, `HelpMenu`, and
+  glossary surfaces link to.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
   separate lightweight wizard covering minimal identity/personality
   setup only. Model selection, Linear, and worker hiring are deferred
@@ -185,9 +126,9 @@ Renderer — settings:
   AI Connections, Background Jobs, Lane Templates, and Stats. Legacy
   `workspace`, `project`, `context`, `integrations`, `github`, and
   `linear` deep links land in General; `providers` lands in AI
-  Connections; `automations` lands in Background Jobs. Tutorial replay
-  and tour entry points live under the Help menu in the top bar, not
-  as a Settings tab.
+  Connections; `automations` lands in Background Jobs. Welcome video
+  replay and help preferences live under the Help menu in the top bar,
+  not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — consolidated general preferences: GitHub and Linear connections,
   voice input, launch-prompt clipboard, agent completion sound, PR
@@ -343,8 +284,8 @@ Auto-update (top-bar control, not a settings tab):
 - [configuration-schema.md](./configuration-schema.md) — shape of
   `.ade/ade.yaml` and `.ade/local.yaml` as consumed by
   `projectConfigService`; types in `shared/types/config.ts`.
-- [first-run.md](./first-run.md) — the onboarding wizard, stack
-  detection, existing-lane import, and the UX contract that lets
+- [first-run.md](./first-run.md) — the first-run setup dashboard,
+  stack detection, existing-lane import, and the UX contract that lets
   users skip optional integrations.
 
 ## Onboarding responsibilities

@@ -33,6 +33,10 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+import {
+  ADE_WELCOME_VIDEO_ID,
+  ADE_WELCOME_VIDEO_VERSION,
+} from "../shared/welcomeVideo";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 
 const noop = () => () => {};
@@ -107,6 +111,43 @@ const MOCK_PROJECT =
 
 // ── Timestamps ────────────────────────────────────────────────
 const now = new Date().toISOString();
+
+const WELCOME_VIDEO_STORAGE_KEY = "ade.browserMock.welcomeVideoState";
+
+function readBrowserMockWelcomeVideoState() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(WELCOME_VIDEO_STORAGE_KEY) ?? "null") as {
+      videoId?: unknown;
+      version?: unknown;
+      completedAt?: unknown;
+      dismissedAt?: unknown;
+    } | null;
+    if (parsed?.videoId === ADE_WELCOME_VIDEO_ID && parsed.version === ADE_WELCOME_VIDEO_VERSION) {
+      return {
+        videoId: ADE_WELCOME_VIDEO_ID,
+        version: ADE_WELCOME_VIDEO_VERSION,
+        completedAt: typeof parsed.completedAt === "string" ? parsed.completedAt : null,
+        dismissedAt: typeof parsed.dismissedAt === "string" ? parsed.dismissedAt : null,
+      };
+    }
+  } catch {
+    // Ignore malformed preview-only state.
+  }
+  return {
+    videoId: ADE_WELCOME_VIDEO_ID,
+    version: ADE_WELCOME_VIDEO_VERSION,
+    completedAt: null,
+    dismissedAt: null,
+  };
+}
+
+function writeBrowserMockWelcomeVideoState(state: ReturnType<typeof readBrowserMockWelcomeVideoState>) {
+  try {
+    window.localStorage.setItem(WELCOME_VIDEO_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Browser preview storage can be unavailable.
+  }
+}
 
 const MOCK_LINEAR_CONNECTION = {
   tokenStored: true,
@@ -2832,20 +2873,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
   };
 
-  const BROWSER_MOCK_TOUR_PROGRESS: any = {
-    wizardCompletedAt: now,
-    wizardDismissedAt: null,
-    tours: {},
-    tourVariants: {},
+  const BROWSER_MOCK_HELP_STATE: any = {
     glossaryTermsSeen: [],
-    tutorial: {
-      completedAt: null,
-      dismissedAt: null,
-      silenced: false,
-      inProgress: false,
-      lastActIndex: 0,
-      ctxSnapshot: {},
-    },
   };
 
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
@@ -3161,6 +3190,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
         openProjectTabs: [MOCK_PROJECT],
       }),
+      getWelcomeVideoState: async () => readBrowserMockWelcomeVideoState(),
+      markWelcomeVideoSeen: async (reason: "completed" | "dismissed" = "dismissed") => {
+        const current = readBrowserMockWelcomeVideoState();
+        const next = {
+          ...current,
+          completedAt: reason === "completed" ? new Date().toISOString() : current.completedAt,
+          dismissedAt: reason === "completed" ? current.dismissedAt : new Date().toISOString(),
+        };
+        writeBrowserMockWelcomeVideoState(next);
+        return next;
+      },
       setWindowProjectTabs: resolved({ openProjectTabs: [MOCK_PROJECT] }),
       newWindow: resolved({ windowId: 2 }),
       openProjectInNewWindow: resolvedArg({
@@ -3527,27 +3567,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         completedAt: new Date().toISOString(),
         dismissedAt: null,
       }),
-      getTourProgress: resolved(BROWSER_MOCK_TOUR_PROGRESS),
-      markWizardCompleted: resolved(BROWSER_MOCK_TOUR_PROGRESS),
-      markWizardDismissed: resolved(BROWSER_MOCK_TOUR_PROGRESS),
-      markTourCompleted: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
-      markTourDismissed: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
-      updateTourStep: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
-      markGlossaryTermSeen: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
-      resetTourProgress: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
-      markTourCompletedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
-      markTourDismissedVariant: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
-      updateTourStepVariant: async (_a: any, _b: any, _c: any) =>
-        BROWSER_MOCK_TOUR_PROGRESS,
-      tutorial: {
-        start: resolved(BROWSER_MOCK_TOUR_PROGRESS),
-        dismiss: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
-        complete: resolved(BROWSER_MOCK_TOUR_PROGRESS),
-        updateAct: resolvedArg2(BROWSER_MOCK_TOUR_PROGRESS),
-        setSilenced: resolvedArg(BROWSER_MOCK_TOUR_PROGRESS),
-        clearSessionDismissal: resolved(BROWSER_MOCK_TOUR_PROGRESS),
-        shouldPrompt: resolved(false),
-      },
+      markGlossaryTermSeen: resolvedArg(BROWSER_MOCK_HELP_STATE),
     },
     automations: {
       list: resolved(

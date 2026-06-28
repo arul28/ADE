@@ -455,5 +455,5 @@ name handled inside `registerIpc.ts`).
   [../terminals-and-sessions/pty-and-processes.md](../terminals-and-sessions/pty-and-processes.md)
 - Run tab UI and config editor:
   [../project-home/README.md](../project-home/README.md)
-- Onboarding wizard (where suggested config gets seeded):
+- First-run setup dashboard (where suggested config gets seeded):
   [first-run.md](./first-run.md)

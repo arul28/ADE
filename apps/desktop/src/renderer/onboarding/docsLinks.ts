@@ -1,4 +1,4 @@
-// Centralised docs URLs referenced from tours and the Help menu.
+// Centralised docs URLs referenced from passive help surfaces and the Help menu.
 //
 // Public docs live under the Mintlify `/docs` prefix. Keep these paths in sync
 // with the public site so onboarding links never send users to dead pages.
@@ -33,11 +33,18 @@ export const docs = {
   // Higher-level product areas
   projectHome: `${DOCS_BASE}/tools/project-home`,
   ctoOverview: `${DOCS_BASE}/cto/overview`,
+  ctoWorkers: `${DOCS_BASE}/cto/workers`,
   automationsOverview: `${DOCS_BASE}/automations/overview`,
+  automationsGuardrails: `${DOCS_BASE}/automations/guardrails`,
   workspaceGraph: `${DOCS_BASE}/tools/workspace-graph`,
   computerUseOverview: `${DOCS_BASE}/computer-use/overview`,
+  proof: `${DOCS_BASE}/proof`,
+  deeplinks: `${DOCS_BASE}/deeplinks`,
+  iosSimulator: `${DOCS_BASE}/tools/ios-simulator`,
+  syncMultiDevice: `${DOCS_BASE}/sync-and-multi-device`,
   settingsGeneral: `${DOCS_BASE}/configuration/settings`,
   prsOverview: `${DOCS_BASE}/tools/pull-requests`,
+  prsQueues: `${DOCS_BASE}/tools/pull-requests/queues`,
   historyOverview: `${DOCS_BASE}/tools/history`,
 
   // Guides

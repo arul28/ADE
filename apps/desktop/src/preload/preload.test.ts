@@ -83,12 +83,24 @@ describe("preload OAuth bridge", () => {
       project,
       { rootPath: "/repo/b", displayName: "B", baseRef: "main" },
     ];
+    const welcomeVideoState = {
+      videoId: "64E0pViEiB8",
+      version: 1,
+      completedAt: null,
+      dismissedAt: null,
+    };
     const invoke = vi.fn(async (channel: string, _payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
         return { windowId: 7, project, binding: null, openProjectTabs };
       }
       if (channel === IPC.appSetWindowProjectTabs) {
         return { openProjectTabs: [openProjectTabs[1]] };
+      }
+      if (channel === IPC.appGetWelcomeVideoState) {
+        return welcomeVideoState;
+      }
+      if (channel === IPC.appMarkWelcomeVideoSeen) {
+        return { ...welcomeVideoState, completedAt: "2026-06-28T12:00:00.000Z" };
       }
       return undefined;
     });
@@ -121,7 +133,13 @@ describe("preload OAuth bridge", () => {
     await expect(bridge.app.setWindowProjectTabs(["/repo/b"])).resolves.toEqual({
       openProjectTabs: [openProjectTabs[1]],
     });
+    await expect(bridge.app.getWelcomeVideoState()).resolves.toEqual(welcomeVideoState);
+    await expect(bridge.app.markWelcomeVideoSeen("completed")).resolves.toMatchObject({
+      completedAt: "2026-06-28T12:00:00.000Z",
+    });
     expect(invoke).toHaveBeenCalledWith(IPC.appSetWindowProjectTabs, { rootPaths: ["/repo/b"] });
+    expect(invoke).toHaveBeenCalledWith(IPC.appGetWelcomeVideoState);
+    expect(invoke).toHaveBeenCalledWith(IPC.appMarkWelcomeVideoSeen, { reason: "completed" });
   });
 
   it("exposes review IPC methods and cleans up listeners", async () => {

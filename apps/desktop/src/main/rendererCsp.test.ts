@@ -35,6 +35,16 @@ describe("buildRendererCspPolicy", () => {
     expect(policy).toContain("frame-src 'self' file: app: http://localhost:* http://127.0.0.1:* about:");
   });
 
+  it("allows only the welcome video YouTube embed hosts for external frames", () => {
+    const policy = buildRendererCspPolicy(false);
+    const frameSrc = policy.split("; ").find((directive) => directive.startsWith("frame-src "));
+    const frameTokens = frameSrc?.split(/\s+/) ?? [];
+
+    expect(frameTokens).toContain("https://www.youtube-nocookie.com");
+    expect(frameTokens).toContain("https://www.youtube.com");
+    expect(frameTokens).not.toContain("https:");
+  });
+
   it("does not allow arbitrary public Google Cloud Storage image beacons", () => {
     const policy = buildRendererCspPolicy(false);
 

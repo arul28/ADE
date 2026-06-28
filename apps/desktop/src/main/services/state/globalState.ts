@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { OpenProjectBinding, RecentlyInstalledUpdate } from "../../../shared/types";
+import type { AppWelcomeVideoState, OpenProjectBinding, RecentlyInstalledUpdate } from "../../../shared/types";
 
 export type RecentProjectRemote = {
   targetId: string;
@@ -48,6 +48,7 @@ export type GlobalState = {
   recentProjects?: RecentProject[];
   pendingInstallUpdate?: PendingInstallUpdate;
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
+  welcomeVideo?: AppWelcomeVideoState;
 };
 
 export function readGlobalState(filePath: string): GlobalState {

@@ -1,42 +1,48 @@
-# First-Run Onboarding
+# First-Run Setup
 
-The wizard that turns a freshly-opened project into something usable.
-Covers stack detection, AI provider setup, optional integrations, and
-project setup.
+The first-run setup page turns a freshly opened project into something usable
+without forcing a step-by-step flow. It is a status-card dashboard for checking
+local tooling, AI runtimes, optional GitHub / Linear connections, suggested
+project config, and existing branch import.
 
 The canonical backend is
-`apps/desktop/src/main/services/onboarding/onboardingService.ts`. The
-wizard UI is
-`apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
-(~610 lines).
+`apps/desktop/src/main/services/onboarding/onboardingService.ts`. The setup UI is
+`apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`.
 
-## Wizard steps
+## Setup surfaces
 
-`STEP_ORDER = ["tools", "ai", "helpers", "github", "linear"]`.
+| Surface | Component | Purpose |
+|---|---|---|
+| Project header | `ProjectSetupPage.tsx` | Shows project identity, setup state, Finish / Skip actions, and repair affordances. |
+| Developer tools | `DevToolsRow.tsx` | Checks `git`, the user-facing `ade` CLI install, and terminal readiness. |
+| AI runtimes | `AiRuntimesBand.tsx` | Detects Claude, Codex, Cursor, Factory Droid, and OpenCode readiness; surfaces install/sign-in helpers and model picker entry points. |
+| GitHub | `GitHubCard.tsx` | Guides repository auth and PR capability setup. |
+| Linear | `LinearCard.tsx` | Guides Linear OAuth / API-key auth and optional workflow sync. |
+| Existing worktrees | `WorktreesCard.tsx` | Imports existing local branches/worktrees as ADE lanes. |
 
-| Step | Heading | Subtitle | Purpose |
-|---|---|---|---|
-| `tools` | Developer Tools | "ADE needs git for version control. GitHub CLI unlocks PR creation, review requests, and CI checks." | Detects `git` and `gh` availability. |
-| `ai` | Runtime providers | "Set up the four ADE runtime providers: Claude, Codex, Cursor use their native CLIs. OpenCode powers API-backed and local model chats (LM Studio, Ollama)." | Provider CLI detection, model listing. |
-| `helpers` | Background helpers | "Lightweight helpers that run in the background while you work. Optional and changeable later." | Non-blocking helper opt-ins. |
-| `github` | GitHub Integration | "A personal access token lets ADE create PRs, request reviews, and monitor CI on your behalf." | GitHub PAT setup. |
-| `linear` | Linear Integration | "Connect your Linear workspace to route issues, sync statuses, and enable CTO workflows." | Optional Linear connection. |
-
-All steps are visited in order but none *block* completion — the user
-can Skip on any step and come back via Settings.
+The dashboard can be finished even when optional integrations are incomplete.
+Users can return to the same setup surface later, and long-lived preferences
+live in Settings.
 
 ## Onboarding service API
 
 `onboardingService.ts` exposes:
 
 ```ts
-getStatus(): OnboardingStatus                    // completedAt, dismissedAt, freshProject
-complete(): OnboardingStatus                     // stamps completedAt
+getStatus(): OnboardingStatus
+complete(): OnboardingStatus
 setDismissed(dismissed: boolean): OnboardingStatus
 detectDefaults(): Promise<OnboardingDetectionResult>
 detectExistingLanes(): Promise<OnboardingExistingLaneCandidate[]>
 applySuggestedConfig(suggestedConfig: ProjectConfigFile): Promise<void>
+getHelpState(): OnboardingHelpState
+markGlossaryTermSeen(termId: string): OnboardingHelpState
 ```
+
+The first six methods power project setup. `getHelpState` and
+`markGlossaryTermSeen` support passive glossary/help chips; guided tours,
+per-tab walkthroughs, and the old welcome wizard are no longer part of the
+renderer contract.
 
 ### Detection
 
@@ -52,111 +58,92 @@ applySuggestedConfig(suggestedConfig: ProjectConfigFile): Promise<void>
 | `docker-compose.yml` / `.yaml` | `docker` | 0.80 |
 | `.github/workflows/` | `github-actions` | 0.70 |
 
-It then parses up to 32 workflow YAML files under
-`.github/workflows/`, extracting single-line `run:` commands from each
-step's `steps`. Multi-line scripts are skipped to avoid noise.
+It then parses up to 32 workflow YAML files under `.github/workflows/`,
+extracting single-line `run:` commands from each step. Multi-line scripts are
+skipped to avoid noisy imports.
 
 ### Suggested config
 
-`buildSuggestedConfig` turns indicators into a partial
-`ProjectConfigFile`:
+`buildSuggestedConfig` turns indicators into a partial `ProjectConfigFile`:
 
-- Node: `install`, `build` processes; `unit` test suite. Package
-  manager detection via `pnpm-lock.yaml` / `yarn.lock` (defaults to
-  npm).
+- Node: `install`, `build` processes; `unit` test suite. Package manager
+  detection via `pnpm-lock.yaml` / `yarn.lock` defaults to npm.
 - Make: `make` process, `make-test` test.
 - Docker: `docker-up` process plus a `dev` stack.
 - Rust: `cargo-build` process, `cargo-test` test.
 - Go: `go-build` process, `go-test` test.
 - Python: `py-install` process, `pytest` test.
 
-CI candidates are filtered down to obvious test/lint commands using a
-regex (e.g. `npm run test`, `cargo test`, `pytest`, `make test`). Up
-to six are appended as `ci-N` test suites.
+CI candidates are filtered down to obvious test/lint commands using a regex
+such as `npm run test`, `cargo test`, `pytest`, or `make test`. Up to six are
+appended as `ci-N` test suites.
 
 It also seeds:
 
-- a `session-end-local` automation that runs `predict-conflicts` after
-  every session end
-- provider config for `codex`/`claude` context tools and conflict
-  resolvers (CLI commands)
+- a `session-end-local` automation that runs `predict-conflicts` after every
+  session end
+- provider config for `codex` / `claude` context tools and conflict resolvers
 
-`applySuggestedConfig(suggestedConfig)` merges this partial config
-into the shared YAML via `projectConfigService.save`.
+`applySuggestedConfig(suggestedConfig)` merges this partial config into the
+shared YAML via `projectConfigService.save`.
 
 ### Existing lane import
 
-`detectExistingLanes()` scans all local branches (up to 200), excludes
-those already mapped to ADE lanes, and returns each with:
+`detectExistingLanes()` scans all local branches, capped at 200, excludes
+branches already mapped to ADE lanes, and returns each with:
 
 - `branchRef` (short ref)
 - `isCurrent` (matches `git rev-parse --abbrev-ref HEAD`)
 - `hasRemote` (exists as `origin/<branch>`)
 - `ahead`, `behind` counts relative to the project's base ref
 
-Used by the lanes pane of the onboarding wizard to let the user
-import recent branches as lanes in one click.
+`WorktreesCard` uses this list to import recent branches as lanes in one click.
 
 ## ProjectSetupPage wiring
 
 The page is stateful and reacts to:
 
 - `window.ade.onboarding.getStatus()` on mount
-- `window.ade.ai.getStatus()` for `availableModelIds`
+- provider/tool readiness reads for the AI runtimes and developer-tool rows
+- `detectDefaults()` and `detectExistingLanes()` when the user scans/imports
 
-Step-to-section mapping:
+Clicking Finish calls `window.ade.onboarding.complete()` and publishes an
+`onboardingStatusUpdated` renderer event via `publishOnboardingStatusUpdated` so
+other surfaces refresh.
 
-| Step | Embedded section |
-|---|---|
-| `tools` | `DevToolsSection` |
-| `ai` | `ProvidersSection` + `AiFeaturesSection` |
-| `helpers` | inline helper cards |
-| `github` | `GitHubSection` |
-| `linear` | `LinearSection` |
-### Completion
-
-Clicking "Finish" calls `window.ade.onboarding.complete()` and
-publishes an `onboardingStatusUpdated` renderer event via
-`publishOnboardingStatusUpdated` so other surfaces (App shell banner,
-Settings > Workspace) refresh.
-
-"Dismiss" calls `setDismissed(true)` without stamping `completedAt`,
-leaving the onboarding banner available via a re-entry from Settings.
+Dismiss calls `setDismissed(true)` without stamping `completedAt`, leaving setup
+available through explicit re-entry.
 
 ## UX contract
 
-Onboarding follows a small rule set:
-
 - Do not block on optional integrations. GitHub and Linear are skippable.
-- Keep setup responsive. Model detection, CLI probes, and lane
-  detection run concurrently where possible.
-- Show the fastest path first. For Linear that means personal API
-  keys rather than OAuth, with OAuth available but secondary.
+- Keep setup responsive. Model detection, CLI probes, and lane detection run
+  concurrently where possible.
+- Show the fastest path first. For Linear that means personal API keys, with
+  OAuth available but secondary.
 - Defer heavy work to the feature surface that owns it.
 
 ## Gotchas
 
-- `freshProject` is computed at `createOnboardingService` construction
-  and is the system's signal for "this project has never been set up"
-  — passing the wrong value re-triggers first-run on a mature repo.
-- The existing-lane import runs `git rev-list --left-right --count`
-  per candidate (capped at 200). Very large repos can see noticeable
-  latency here; the wizard shows a loading indicator.
-- Workflow command parsing keeps only single-line steps; multi-line
-  `run: |` blocks are skipped. Teams that rely on complex CI flows
-  will need to curate the imported commands manually in `ade.yaml`.
-- `applySuggestedConfig` does a shallow merge at the top level —
-  existing shared config fields take priority. Calling it twice on
-  the same project will not duplicate entries but may leave stale
-  fields in place.
-- The CTO first-run wizard is separate and lives under
-  `apps/desktop/src/renderer/components/cto/`. It covers identity,
-  project context, and optional Linear, and finishing does not
-  require Linear.
+- `freshProject` is computed at `createOnboardingService` construction and is
+  the signal for "this project has never been set up." Passing the wrong value
+  reopens first-run setup on a mature repo.
+- Existing-lane import runs `git rev-list --left-right --count` per candidate
+  branch, capped at 200. Large repos can still see noticeable latency, so the UI
+  shows an explicit loading state.
+- Workflow command parsing keeps only single-line steps; multi-line `run: |`
+  blocks are skipped. Teams with complex CI flows should curate imported
+  commands manually in `ade.yaml`.
+- `applySuggestedConfig` does a shallow merge at the top level. Calling it twice
+  on the same project will not duplicate entries but can leave stale fields in
+  place.
+- The CTO first-run setup is separate and lives under
+  `apps/desktop/src/renderer/components/cto/`. It covers identity, project
+  context, and optional Linear, and finishing it does not require Linear.
 
 ## Cross-links
 
-- Configuration schema (where suggested configs land):
+- Configuration schema:
   [configuration-schema.md](./configuration-schema.md)
-- Project home (the screen users arrive at after onboarding):
+- Project home:
   [../project-home/README.md](../project-home/README.md)

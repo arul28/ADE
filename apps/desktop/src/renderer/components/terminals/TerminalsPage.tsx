@@ -1001,8 +1001,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       sessions: {
         title: "",
         minimizable: false,
-        // tour anchor: wraps the sessions panel so the Work tour anchors
-        // at the whole pane, not just an inner element.
+        // Stable automation anchor for the whole sessions pane.
         children: (
           <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
           <SessionListPane
@@ -1047,7 +1046,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       view: {
         title: "",
         bodyClassName: "overflow-hidden",
-        // tour anchor: wraps the view area so the Work tour can target it.
+        // Stable automation anchor for the whole view area.
         children: (
           <div className="h-full min-h-0" data-tour="work.viewArea">
             {workViewWithSidebar}

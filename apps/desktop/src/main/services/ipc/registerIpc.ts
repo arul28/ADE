@@ -42,6 +42,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   PtyProcessResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -309,9 +310,8 @@ import type {
   ImportBranchLaneArgs,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
+  OnboardingHelpState,
   OnboardingStatus,
-  OnboardingTourProgress,
-  OnboardingTourVariant,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
@@ -571,6 +571,7 @@ import type { createAutomationIngressService } from "../automations/automationIn
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import { ADE_WELCOME_VIDEO_ID, ADE_WELCOME_VIDEO_VERSION } from "../../../shared/welcomeVideo";
 
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
@@ -1640,6 +1641,34 @@ export function registerIpc({
       throw new Error("Sync service is not available.");
     }
     return service;
+  };
+
+  const normalizeWelcomeVideoState = (
+    value: AppWelcomeVideoState | null | undefined,
+  ): AppWelcomeVideoState => {
+    if (
+      value?.videoId === ADE_WELCOME_VIDEO_ID &&
+      value.version === ADE_WELCOME_VIDEO_VERSION
+    ) {
+      return {
+        videoId: ADE_WELCOME_VIDEO_ID,
+        version: ADE_WELCOME_VIDEO_VERSION,
+        completedAt:
+          typeof value.completedAt === "string" && value.completedAt.trim()
+            ? value.completedAt
+            : null,
+        dismissedAt:
+          typeof value.dismissedAt === "string" && value.dismissedAt.trim()
+            ? value.dismissedAt
+            : null,
+      };
+    }
+    return {
+      videoId: ADE_WELCOME_VIDEO_ID,
+      version: ADE_WELCOME_VIDEO_VERSION,
+      completedAt: null,
+      dismissedAt: null,
+    };
   };
 
   const getLocalRuntimeRootForEvent = (event: { sender: Electron.WebContents }): string | null => {
@@ -2997,6 +3026,30 @@ export function registerIpc({
       openProjectTabs: ctx.hasUserSelectedProject ? [ctx.project] : [],
     };
   });
+
+  ipcMain.handle(IPC.appGetWelcomeVideoState, async (): Promise<AppWelcomeVideoState> => {
+    const state = readGlobalState(globalStatePath);
+    return normalizeWelcomeVideoState(state.welcomeVideo);
+  });
+
+  ipcMain.handle(
+    IPC.appMarkWelcomeVideoSeen,
+    async (_event, arg: { reason?: "completed" | "dismissed" } = {}): Promise<AppWelcomeVideoState> => {
+      const state = readGlobalState(globalStatePath);
+      const current = normalizeWelcomeVideoState(state.welcomeVideo);
+      const timestamp = new Date().toISOString();
+      const next: AppWelcomeVideoState = {
+        ...current,
+        completedAt: arg.reason === "completed" ? timestamp : current.completedAt,
+        dismissedAt: arg.reason === "completed" ? current.dismissedAt : timestamp,
+      };
+      writeGlobalState(globalStatePath, {
+        ...state,
+        welcomeVideo: next,
+      });
+      return next;
+    },
+  );
 
   ipcMain.handle(IPC.appSetWindowProjectTabs, async (event, arg: { rootPaths?: string[] } = {}) => {
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
@@ -4489,201 +4542,16 @@ export function registerIpc({
     return ctx.onboardingService.complete();
   });
 
-  const emptyTourProgress = (): OnboardingTourProgress => ({
-    wizardCompletedAt: null,
-    wizardDismissedAt: null,
-    tours: {},
-    tourVariants: {},
-    tutorial: {
-      completedAt: null,
-      dismissedAt: null,
-      silenced: false,
-      inProgress: false,
-      lastActIndex: 0,
-      ctxSnapshot: {},
-    },
-    glossaryTermsSeen: [],
-  });
-
-  const coerceVariant = (raw: unknown): OnboardingTourVariant =>
-    raw === "highlights" ? "highlights" : "full";
-
-  ipcMain.handle(IPC.onboardingGetTourProgress, async (): Promise<OnboardingTourProgress> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return emptyTourProgress();
-    return ctx.onboardingService.getTourProgress();
-  });
-
-  ipcMain.handle(IPC.onboardingMarkWizardCompleted, async (): Promise<OnboardingTourProgress> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return emptyTourProgress();
-    return ctx.onboardingService.markWizardCompleted();
-  });
-
-  ipcMain.handle(IPC.onboardingMarkWizardDismissed, async (): Promise<OnboardingTourProgress> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return emptyTourProgress();
-    return ctx.onboardingService.markWizardDismissed();
-  });
-
-  ipcMain.handle(
-    IPC.onboardingMarkTourCompleted,
-    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.markTourCompleted(arg?.tourId ?? "");
-    },
-  );
-
-  ipcMain.handle(
-    IPC.onboardingMarkTourDismissed,
-    async (_event, arg: { tourId: string }): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.markTourDismissed(arg?.tourId ?? "");
-    },
-  );
-
-  ipcMain.handle(
-    IPC.onboardingUpdateTourStep,
-    async (_event, arg: { tourId: string; index: number }): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      const index = typeof arg?.index === "number" ? arg.index : 0;
-      return ctx.onboardingService.updateTourStep(arg?.tourId ?? "", index);
-    },
-  );
+  const emptyHelpState = (): OnboardingHelpState => ({ glossaryTermsSeen: [] });
 
   ipcMain.handle(
     IPC.onboardingMarkGlossaryTermSeen,
-    async (_event, arg: { termId: string }): Promise<OnboardingTourProgress> => {
+    async (_event, arg: { termId: string }): Promise<OnboardingHelpState> => {
       const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
+      if (!ctx.onboardingService) return emptyHelpState();
       return ctx.onboardingService.markGlossaryTermSeen(arg?.termId ?? "");
     },
   );
-
-  ipcMain.handle(
-    IPC.onboardingResetTourProgress,
-    async (_event, arg?: { tourId?: string }): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.resetTourProgress(arg?.tourId);
-    },
-  );
-
-  // Variant-aware tour progress (Round 2) ---------------------------------
-
-  ipcMain.handle(
-    IPC.onboardingMarkTourCompletedVariant,
-    async (
-      _event,
-      arg: { tourId: string; variant: OnboardingTourVariant },
-    ): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.markTourCompleted(
-        arg?.tourId ?? "",
-        coerceVariant(arg?.variant),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC.onboardingMarkTourDismissedVariant,
-    async (
-      _event,
-      arg: { tourId: string; variant: OnboardingTourVariant },
-    ): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.markTourDismissed(
-        arg?.tourId ?? "",
-        coerceVariant(arg?.variant),
-      );
-    },
-  );
-
-  ipcMain.handle(
-    IPC.onboardingUpdateTourStepVariant,
-    async (
-      _event,
-      arg: { tourId: string; variant: OnboardingTourVariant; index: number },
-    ): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      const index = typeof arg?.index === "number" ? arg.index : 0;
-      return ctx.onboardingService.updateTourStep(
-        arg?.tourId ?? "",
-        coerceVariant(arg?.variant),
-        index,
-      );
-    },
-  );
-
-  // Tutorial (Round 2) ----------------------------------------------------
-
-  ipcMain.handle(IPC.onboardingTutorialStart, async (): Promise<OnboardingTourProgress> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return emptyTourProgress();
-    return ctx.onboardingService.markTutorialStarted();
-  });
-
-  ipcMain.handle(
-    IPC.onboardingTutorialDismiss,
-    async (_event, arg?: { permanent?: boolean }): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.markTutorialDismissed(Boolean(arg?.permanent));
-    },
-  );
-
-  ipcMain.handle(IPC.onboardingTutorialComplete, async (): Promise<OnboardingTourProgress> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return emptyTourProgress();
-    return ctx.onboardingService.markTutorialCompleted();
-  });
-
-  ipcMain.handle(
-    IPC.onboardingTutorialUpdateAct,
-    async (
-      _event,
-      arg: { actIndex: number; ctxSnapshot?: Record<string, unknown> },
-    ): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      const actIndex = typeof arg?.actIndex === "number" ? arg.actIndex : 0;
-      const snapshot =
-        arg?.ctxSnapshot && typeof arg.ctxSnapshot === "object" && !Array.isArray(arg.ctxSnapshot)
-          ? arg.ctxSnapshot
-          : undefined;
-      return ctx.onboardingService.updateTutorialAct(actIndex, snapshot);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.onboardingTutorialSetSilenced,
-    async (_event, arg: { silenced: boolean }): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.setTutorialSilenced(Boolean(arg?.silenced));
-    },
-  );
-
-  ipcMain.handle(
-    IPC.onboardingTutorialClearSessionDismissal,
-    async (): Promise<OnboardingTourProgress> => {
-      const ctx = getCtx();
-      if (!ctx.onboardingService) return emptyTourProgress();
-      return ctx.onboardingService.clearTutorialSessionDismissal();
-    },
-  );
-
-  ipcMain.handle(IPC.onboardingTutorialShouldPrompt, async (): Promise<boolean> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return false;
-    return ctx.onboardingService.shouldPromptTutorial();
-  });
 
   const ensureAutomationContext = (): AppContextWith<"automationService"> => {
     const ctx = getCtx();

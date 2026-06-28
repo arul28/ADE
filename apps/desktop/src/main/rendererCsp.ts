@@ -14,13 +14,14 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // the allowlist host-scoped (no blanket `https:`) to preserve the existing
   // posture of not allowing arbitrary public image beacons.
   const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev`;
+  const cspFrameSources = `${cspSources}${cspLocalSources} about: https://www.youtube-nocookie.com https://www.youtube.com`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
     `form-action 'self'`,
     `object-src 'none'`,
-    `frame-src ${cspSources}${cspLocalSources} about:`,
+    `frame-src ${cspFrameSources}`,
     `script-src ${cspScriptSources}`,
     `style-src ${cspSources} 'unsafe-inline'`,
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
