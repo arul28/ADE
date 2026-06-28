@@ -1520,6 +1520,7 @@ describe("scanCodexLogs", () => {
 describe("scanOpenClawLogs", () => {
   it("parses assistant usage from OpenClaw session logs", async () => {
     const tmpDir = makeTmpDir();
+    const timestamp = new Date(Date.now() - 60_000).toISOString();
     try {
       const sessionDir = path.join(tmpDir, ".openclaw", "agents", "director", "sessions");
       fs.mkdirSync(sessionDir, { recursive: true });
@@ -1529,17 +1530,17 @@ describe("scanOpenClawLogs", () => {
           JSON.stringify({
             type: "session",
             id: "session-1",
-            timestamp: "2026-05-29T12:00:00.000Z",
+            timestamp,
           }),
           JSON.stringify({
             type: "model_change",
             modelId: "gpt-5.4",
-            timestamp: "2026-05-29T12:00:01.000Z",
+            timestamp,
           }),
           JSON.stringify({
             type: "message",
             id: "message-1",
-            timestamp: "2026-05-29T12:00:02.000Z",
+            timestamp,
             message: {
               role: "assistant",
               model: "gpt-5.4",
@@ -1787,6 +1788,7 @@ describe("scanGeminiLogs", () => {
 describe("scanOpenCodeLogs", () => {
   it("parses assistant token rows from OpenCode SQLite databases", async () => {
     const tmpDir = makeTmpDir();
+    const timestamp = Date.now() - 60_000;
     const { DatabaseSync } = requireForTest("node:sqlite") as { DatabaseSync: new (dbPath: string, options?: Record<string, unknown>) => any };
     try {
       const dbPath = path.join(tmpDir, "opencode.db");
@@ -1802,7 +1804,7 @@ describe("scanOpenCodeLogs", () => {
       db.prepare("insert into message values (?, ?, ?, ?)").run(
         "msg-1",
         "session-1",
-        Date.parse("2026-05-29T12:00:00.000Z"),
+        timestamp,
         JSON.stringify({
           role: "assistant",
           modelID: "openai/gpt-5.4",

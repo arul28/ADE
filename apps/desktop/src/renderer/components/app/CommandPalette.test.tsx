@@ -219,7 +219,7 @@ describe("CommandPalette", () => {
     });
   });
 
-  it("closes the project browser when the tutorial steps back", async () => {
+  it("closes the project browser when requested", async () => {
     const onOpenChange = vi.fn();
     browseDirectories.mockResolvedValue({
       inputPath: "../",

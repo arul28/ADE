@@ -19,6 +19,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
@@ -357,9 +358,8 @@ import type {
   KeybindingsSnapshot,
   OnboardingDetectionResult,
   OnboardingExistingLaneCandidate,
+  OnboardingHelpState,
   OnboardingStatus,
-  OnboardingTourProgress,
-  OnboardingTourVariant,
   LaneLinearIssue,
   LaneListSnapshot,
   LaneSummary,
@@ -3131,6 +3131,12 @@ contextBridge.exposeInMainWorld("ade", {
       rememberProjectBinding(session.binding);
       return { ...session, openProjectTabs: session.openProjectTabs ?? [] };
     },
+    getWelcomeVideoState: async (): Promise<AppWelcomeVideoState> =>
+      ipcRenderer.invoke(IPC.appGetWelcomeVideoState),
+    markWelcomeVideoSeen: async (
+      reason: "completed" | "dismissed",
+    ): Promise<AppWelcomeVideoState> =>
+      ipcRenderer.invoke(IPC.appMarkWelcomeVideoSeen, { reason }),
     setWindowProjectTabs: async (
       rootPaths: string[],
     ): Promise<{ openProjectTabs: ProjectInfo[] }> =>
@@ -3944,50 +3950,9 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("onboarding", "complete", {}, () =>
         ipcRenderer.invoke(IPC.onboardingComplete),
       ),
-    getTourProgress: async (): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr("onboarding", "getTourProgress", {}, () =>
-        ipcRenderer.invoke(IPC.onboardingGetTourProgress),
-      ),
-    markWizardCompleted: async (): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr("onboarding", "markWizardCompleted", {}, () =>
-        ipcRenderer.invoke(IPC.onboardingMarkWizardCompleted),
-      ),
-    markWizardDismissed: async (): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr("onboarding", "markWizardDismissed", {}, () =>
-        ipcRenderer.invoke(IPC.onboardingMarkWizardDismissed),
-      ),
-    markTourCompleted: async (
-      tourId: string,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "markTourCompleted",
-        { arg: tourId },
-        () => ipcRenderer.invoke(IPC.onboardingMarkTourCompleted, { tourId }),
-      ),
-    markTourDismissed: async (
-      tourId: string,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "markTourDismissed",
-        { arg: tourId },
-        () => ipcRenderer.invoke(IPC.onboardingMarkTourDismissed, { tourId }),
-      ),
-    updateTourStep: async (
-      tourId: string,
-      index: number,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "updateTourStep",
-        { argsList: [tourId, index] },
-        () =>
-          ipcRenderer.invoke(IPC.onboardingUpdateTourStep, { tourId, index }),
-      ),
     markGlossaryTermSeen: async (
       termId: string,
-    ): Promise<OnboardingTourProgress> =>
+    ): Promise<OnboardingHelpState> =>
       callProjectRuntimeActionOr(
         "onboarding",
         "markGlossaryTermSeen",
@@ -3995,119 +3960,6 @@ contextBridge.exposeInMainWorld("ade", {
         () =>
           ipcRenderer.invoke(IPC.onboardingMarkGlossaryTermSeen, { termId }),
       ),
-    resetTourProgress: async (
-      tourId?: string,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "resetTourProgress",
-        { arg: tourId },
-        () => ipcRenderer.invoke(IPC.onboardingResetTourProgress, { tourId }),
-      ),
-    markTourCompletedVariant: async (
-      tourId: string,
-      variant: OnboardingTourVariant,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "markTourCompleted",
-        { argsList: [tourId, variant] },
-        () =>
-          ipcRenderer.invoke(IPC.onboardingMarkTourCompletedVariant, {
-            tourId,
-            variant,
-          }),
-      ),
-    markTourDismissedVariant: async (
-      tourId: string,
-      variant: OnboardingTourVariant,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "markTourDismissed",
-        { argsList: [tourId, variant] },
-        () =>
-          ipcRenderer.invoke(IPC.onboardingMarkTourDismissedVariant, {
-            tourId,
-            variant,
-          }),
-      ),
-    updateTourStepVariant: async (
-      tourId: string,
-      variant: OnboardingTourVariant,
-      index: number,
-    ): Promise<OnboardingTourProgress> =>
-      callProjectRuntimeActionOr(
-        "onboarding",
-        "updateTourStep",
-        { argsList: [tourId, index, variant] },
-        () =>
-          ipcRenderer.invoke(IPC.onboardingUpdateTourStepVariant, {
-            tourId,
-            variant,
-            index,
-          }),
-      ),
-    tutorial: {
-      start: async (): Promise<OnboardingTourProgress> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "markTutorialStarted",
-          {},
-          () => ipcRenderer.invoke(IPC.onboardingTutorialStart),
-        ),
-      dismiss: async (permanent: boolean): Promise<OnboardingTourProgress> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "markTutorialDismissed",
-          { arg: permanent },
-          () =>
-            ipcRenderer.invoke(IPC.onboardingTutorialDismiss, { permanent }),
-        ),
-      complete: async (): Promise<OnboardingTourProgress> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "markTutorialCompleted",
-          {},
-          () => ipcRenderer.invoke(IPC.onboardingTutorialComplete),
-        ),
-      updateAct: async (
-        actIndex: number,
-        ctxSnapshot?: Record<string, unknown>,
-      ): Promise<OnboardingTourProgress> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "updateTutorialAct",
-          { argsList: [actIndex, ctxSnapshot] },
-          () =>
-            ipcRenderer.invoke(IPC.onboardingTutorialUpdateAct, {
-              actIndex,
-              ctxSnapshot,
-            }),
-        ),
-      setSilenced: async (silenced: boolean): Promise<OnboardingTourProgress> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "setTutorialSilenced",
-          { arg: silenced },
-          () =>
-            ipcRenderer.invoke(IPC.onboardingTutorialSetSilenced, { silenced }),
-        ),
-      clearSessionDismissal: async (): Promise<OnboardingTourProgress> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "clearTutorialSessionDismissal",
-          {},
-          () => ipcRenderer.invoke(IPC.onboardingTutorialClearSessionDismissal),
-        ),
-      shouldPrompt: async (): Promise<boolean> =>
-        callProjectRuntimeActionOr(
-          "onboarding",
-          "shouldPromptTutorial",
-          {},
-          () => ipcRenderer.invoke(IPC.onboardingTutorialShouldPrompt),
-        ),
-    },
   },
   automations: {
     list: async (): Promise<AutomationRuleSummary[]> =>

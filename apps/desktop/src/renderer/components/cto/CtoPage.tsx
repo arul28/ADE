@@ -85,18 +85,6 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
 
-  useEffect(() => {
-    if (!active) return;
-    const onTourTab = (event: Event) => {
-      const tab = (event as CustomEvent<TabId>).detail;
-      if (tab === "chat" || tab === "team" || tab === "workflows" || tab === "settings") {
-        setActiveTab(tab);
-      }
-    };
-    window.addEventListener("ade:tour-cto-tab", onTourTab);
-    return () => window.removeEventListener("ade:tour-cto-tab", onTourTab);
-  }, [active]);
-
   // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -596,7 +584,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       )}
 
       {/* Agent sidebar */}
-      {/* tour anchor — wraps AgentSidebar so data-tour attaches to a stable container */}
+      {/* Stable automation anchor — wraps AgentSidebar so data-tour attaches to a stable container */}
       <div data-tour="cto.sidebar" style={{ display: "contents" }}>
       <AgentSidebar
         agents={agents}

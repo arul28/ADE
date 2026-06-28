@@ -1,4 +1,4 @@
-// Tiny pub/sub used by the tour engine to drive dialogs by stable id. Dialog
+// Tiny pub/sub used by shared UI to drive dialogs by stable id. Dialog
 // components subscribe by id (e.g. "lanes.create") and react to open/close
 // events; a separate `subscribeAll` channel lets devtools or debug surfaces
 // observe every event.

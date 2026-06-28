@@ -1,21 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Question, ArrowSquareOut, Check } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
-import { useOnboardingStore } from "../../state/onboardingStore";
-import {
-  getTour,
-  listTours,
-  type TourVariant,
-} from "../../onboarding/registry";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
-
-const TOUR_TARGET_WAIT_TIMEOUT_MS = 10_000;
-const TOUR_TARGET_POLL_MS = 50;
-const FULL_TUTORIAL_ID = "first-journey";
+import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 
 type MenuPosition = { top: number; right: number } | null;
 
@@ -27,19 +18,11 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
   const setOnboardingEnabled = useAppStore((s) => s.setOnboardingEnabled);
   const didYouKnowEnabled = useAppStore((s) => s.didYouKnowEnabled);
   const setDidYouKnowEnabled = useAppStore((s) => s.setDidYouKnowEnabled);
-  const openWizard = useOnboardingStore((s) => s.openWizard);
-  const startTour = useOnboardingStore((s) => s.startTour);
-  const progress = useOnboardingStore((s) => s.progress);
 
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<MenuPosition>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
-  const pendingTourAbortRef = useRef<AbortController | null>(null);
-
-  const tours = useMemo(() => listTours("full"), []);
-  const fullTutorial = tours.find((tour) => tour.id === FULL_TUTORIAL_ID && tour.steps.length > 0);
-  const menuTours = tours.filter((tour) => tour.id !== FULL_TUTORIAL_ID);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -77,35 +60,6 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
     };
   }, [open, close]);
 
-  useEffect(() => {
-    return () => {
-      pendingTourAbortRef.current?.abort();
-    };
-  }, []);
-
-  const handleReplayWizard = useCallback(() => {
-    close();
-    openWizard();
-  }, [close, openWizard]);
-
-  const handleStartTour = useCallback(
-    (tourId: string, variant: TourVariant | undefined, route: string) => {
-      close();
-      pendingTourAbortRef.current?.abort();
-      const controller = new AbortController();
-      pendingTourAbortRef.current = controller;
-      navigate(route);
-      void waitForTourFirstTarget(tourId, variant, controller.signal).then((ready) => {
-        if (!ready || controller.signal.aborted) return;
-        if (pendingTourAbortRef.current === controller) {
-          pendingTourAbortRef.current = null;
-        }
-        void startTour(tourId, variant);
-      });
-    },
-    [close, navigate, startTour],
-  );
-
   const handleOpenGlossary = useCallback(() => {
     close();
     navigate("/glossary");
@@ -116,16 +70,20 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
     openExternalUrl(docs.home);
   }, [close]);
 
+  const handleReplayWelcomeVideo = useCallback(() => {
+    close();
+    window.dispatchEvent(new Event(ADE_WELCOME_VIDEO_REPLAY_EVENT));
+  }, [close]);
+
   return (
     <>
       <button
         ref={buttonRef}
         type="button"
-        data-tour="app.helpMenu"
         aria-label="Help menu"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Help · tours, glossary, and preferences"
+        title="Help · welcome video, glossary, docs, and preferences"
         className={cn(
           "ade-shell-control inline-flex items-center justify-center",
           compact
@@ -164,66 +122,12 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
                 fontSize: 12.5,
               }}
             >
-              <MenuItem
-                onClick={
-                  fullTutorial
-                    ? () => handleStartTour(fullTutorial.id, fullTutorial.variant, fullTutorial.route)
-                    : undefined
-                }
-                disabled={!fullTutorial}
-                weight="strong"
-              >
-                Start Full Tutorial
-              </MenuItem>
-              <MenuItem onClick={handleReplayWizard}>Replay Welcome Wizard</MenuItem>
-
-              <MenuDivider />
-
-              <SectionLabel>Tours</SectionLabel>
-              {menuTours.length === 0 ? (
-                <div style={{ padding: "6px 10px", opacity: 0.6 }}>No tours registered yet.</div>
-              ) : (
-                menuTours.map((tour) => {
-                  const isStub = tour.steps.length === 0;
-                  const completed = progress?.tours[tour.id]?.completedAt != null;
-                  return (
-                    <MenuItem
-                      key={`${tour.id}:${tour.variant ?? "full"}`}
-                      onClick={
-                        isStub
-                          ? undefined
-                          : () => handleStartTour(tour.id, tour.variant, tour.route)
-                      }
-                      disabled={isStub}
-                    >
-                      <span style={{ flex: 1, textAlign: "left" }}>{tour.title}</span>
-                      {isStub ? (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            padding: "1px 6px",
-                            borderRadius: 6,
-                            background: "rgba(255,255,255,0.06)",
-                            color: "var(--color-muted-fg, #908FA0)",
-                          }}
-                        >
-                          Coming soon
-                        </span>
-                      ) : completed ? (
-                        <Check size={12} weight="bold" aria-label="Completed" />
-                      ) : null}
-                    </MenuItem>
-                  );
-                })
-              )}
-
-              <MenuDivider />
-
               <MenuItem onClick={handleOpenGlossary}>Open Glossary</MenuItem>
               <MenuItem onClick={handleOpenDocs}>
                 <span style={{ flex: 1, textAlign: "left" }}>ADE Docs</span>
                 <ArrowSquareOut size={11} weight="regular" />
               </MenuItem>
+              <MenuItem onClick={handleReplayWelcomeVideo}>Replay Welcome Video</MenuItem>
 
               <MenuDivider />
 
@@ -231,8 +135,8 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
               <CheckboxItem
                 checked={onboardingEnabled}
                 onToggle={() => setOnboardingEnabled(!onboardingEnabled)}
-                label="Show tours and help chips"
-                hint="Welcome wizard, guided tours, and the ‘?’ icons on confusing controls."
+                label="Show help chips"
+                hint="Show the small ‘?’ icons that open quick plain-English definitions."
               />
               <CheckboxItem
                 checked={smartTooltipsEnabled}
@@ -252,58 +156,6 @@ export function HelpMenu({ compact = false }: { compact?: boolean }) {
         : null}
     </>
   );
-}
-
-function waitForTourFirstTarget(
-  tourId: string,
-  variant: TourVariant | undefined,
-  signal: AbortSignal,
-): Promise<boolean> {
-  const tour = getTour(tourId, variant);
-  const firstStep = tour?.steps[0];
-  const selector = firstStep?.waitForSelector?.trim() || firstStep?.target?.trim();
-  if (!selector) return Promise.resolve(Boolean(firstStep));
-
-  const hasTarget = () => {
-    if (signal.aborted) return false;
-    try {
-      return document.querySelector(selector) != null;
-    } catch {
-      return false;
-    }
-  };
-
-  if (hasTarget()) return Promise.resolve(true);
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let interval: number | undefined;
-    let timeout: number | undefined;
-    const observer =
-      typeof MutationObserver !== "undefined"
-        ? new MutationObserver(() => {
-            if (hasTarget()) settle(true);
-          })
-        : null;
-
-    const settle = (ready: boolean) => {
-      if (settled) return;
-      settled = true;
-      if (interval != null) window.clearInterval(interval);
-      if (timeout != null) window.clearTimeout(timeout);
-      observer?.disconnect();
-      signal.removeEventListener("abort", onAbort);
-      resolve(ready);
-    };
-
-    const onAbort = () => settle(false);
-    signal.addEventListener("abort", onAbort, { once: true });
-    observer?.observe(document.body, { childList: true, subtree: true });
-    interval = window.setInterval(() => {
-      if (hasTarget()) settle(true);
-    }, TOUR_TARGET_POLL_MS);
-    timeout = window.setTimeout(() => settle(hasTarget()), TOUR_TARGET_WAIT_TIMEOUT_MS);
-  });
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {

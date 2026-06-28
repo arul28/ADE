@@ -236,10 +236,6 @@ function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
   }
 }
 
-function isTourStepTarget(target: EventTarget | null): boolean {
-  return target instanceof Element && target.closest(".ade-tour-step") !== null;
-}
-
 function pathLabel(input: string | null | undefined): string {
   if (!input) return "";
   const segments = input.split(/[\\/]/).filter(Boolean);
@@ -1446,16 +1442,6 @@ export function CommandPalette({
             <Dialog.Content
               asChild
               onOpenAutoFocus={(event) => event.preventDefault()}
-              onPointerDownOutside={(event) => {
-                if (isTourStepTarget(event.target)) {
-                  event.preventDefault();
-                }
-              }}
-              onInteractOutside={(event) => {
-                if (isTourStepTarget(event.target)) {
-                  event.preventDefault();
-                }
-              }}
             >
               <motion.div
                 data-tour={isBrowsing ? "project.browser" : undefined}

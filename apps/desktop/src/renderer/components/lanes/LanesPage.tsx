@@ -43,7 +43,6 @@ import {
   selectDefaultNewLaneBaseRef,
 } from "./newLaneBaseSource";
 import { HelpChip } from "../onboarding/HelpChip";
-import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   buildLaneActionClearedSearch,
@@ -429,9 +428,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
-  const activeTourId = useOnboardingStore((s) => s.activeTourId);
-  const suppressTourDistractions = activeTourId === "first-journey";
-
   const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
   const [pinnedLaneIds, setPinnedLaneIds] = useState<Set<string>>(new Set());
   const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
@@ -729,7 +725,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   );
   const selectableFilteredSet = useMemo(() => new Set(selectableFilteredLaneIds), [selectableFilteredLaneIds]);
   const visibleRebaseSuggestions = useMemo(() => {
-    if (suppressTourDistractions) return [];
     const laneIdSet = new Set(selectableFilteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.rebaseSuggestion)
@@ -739,9 +734,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           return laneIdSet.has(suggestion.laneId);
         },
       );
-  }, [laneSnapshots, selectableFilteredLaneIds, suppressTourDistractions]);
+  }, [laneSnapshots, selectableFilteredLaneIds]);
   const visibleAutoRebaseNeedsAttention = useMemo(() => {
-    if (suppressTourDistractions) return [];
     const laneIdSet = new Set(selectableFilteredLaneIds);
     return laneSnapshots
       .map((snapshot) => snapshot.autoRebaseStatus)
@@ -751,7 +745,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           return laneIdSet.has(status.laneId) && status.state !== "autoRebased";
         },
       );
-  }, [laneSnapshots, selectableFilteredLaneIds, suppressTourDistractions]);
+  }, [laneSnapshots, selectableFilteredLaneIds]);
 
   const activeWithPins = useMemo(
     () => mergeUnique(
@@ -1950,42 +1944,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     /* Force full remount so default sizes/trees take effect */
     setGridResetKey((k) => k + 1);
   }, [activeLaneIds, selectableFilteredLaneIds, lanesById, deletingLaneIds, selectLane, selectedLaneId, sortedSelectableLaneIds, visibleLaneIds]);
-
-  useEffect(() => {
-    const onTourEnded = (event: Event) => {
-      const detail = (event as CustomEvent<{ tourId?: unknown }>).detail;
-      if (detail?.tourId !== "first-journey") return;
-      void resetGridLayout(selectedLaneId);
-    };
-    window.addEventListener("ade:tour-ended", onTourEnded);
-    return () => window.removeEventListener("ade:tour-ended", onTourEnded);
-  }, [resetGridLayout, selectedLaneId]);
-
-  useEffect(() => {
-    const onTourFocusLane = (event: Event) => {
-      const detail = (event as CustomEvent<{ laneId?: unknown }>).detail;
-      const requestedLaneId = typeof detail?.laneId === "string" ? detail.laneId : null;
-      const requestedLane = requestedLaneId ? lanesById.get(requestedLaneId) ?? null : null;
-      const selectedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
-      const fallbackLane =
-        selectedLane && selectedLane.laneType !== "primary"
-          ? selectedLane
-          : sortedLanes.find((lane) => lane.laneType !== "primary") ?? null;
-      const targetLane = requestedLane && requestedLane.laneType !== "primary" ? requestedLane : fallbackLane;
-      if (!targetLane) return;
-      setActiveLaneIds([targetLane.id]);
-      selectLane(targetLane.id);
-      void Promise.all([
-        ...laneTilingLayoutIds(targetLane.id).flatMap((layoutKey) => [
-          window.ade.layout.set(layoutKey, {}).catch(() => {}),
-          window.ade.tilingTree.set(layoutKey, {}).catch(() => {}),
-        ]),
-        window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}),
-      ]).finally(() => setGridResetKey((k) => k + 1));
-    };
-    window.addEventListener("ade:tour-focus-lane", onTourFocusLane);
-    return () => window.removeEventListener("ade:tour-focus-lane", onTourFocusLane);
-  }, [lanesById, selectLane, selectedLaneId, sortedLanes]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -3678,7 +3636,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             sessionCount: 0,
           };
           const pendingInputCount = laneRuntime.pendingInputCount ?? 0;
-          const rebaseSuggestion = suppressTourDistractions ? null : laneSnapshot?.rebaseSuggestion ?? null;
+          const rebaseSuggestion = laneSnapshot?.rebaseSuggestion ?? null;
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
           const devicesOpen = lane.devicesOpen ?? [];
           const tabNumber = String(index + 1).padStart(2, "0");
@@ -4118,15 +4076,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                     }}
                   >
                     Create Lane
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => {
-                      void useOnboardingStore.getState().startTour("lanes");
-                    }}
-                  >
-                    Take the Lanes tour
                   </Button>
                 </div>
               </EmptyState>

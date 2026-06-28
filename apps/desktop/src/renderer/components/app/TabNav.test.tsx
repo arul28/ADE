@@ -63,7 +63,8 @@ describe("TabNav", () => {
 
     const run = screen.getByRole("link", { name: "Run" });
     const review = screen.getByRole("link", { name: "Review" });
-    expect(run.nextElementSibling).toBe(review);
+    const links = screen.getAllByRole("link");
+    expect(links[links.indexOf(run) + 1]).toBe(review);
   });
 
   it("opens the connected GitHub profile from the sidebar avatar", () => {
