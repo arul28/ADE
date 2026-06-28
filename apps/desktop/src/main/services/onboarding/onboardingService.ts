@@ -33,7 +33,10 @@ function normalizeHelpState(raw: unknown): OnboardingHelpState {
   const seen = Array.isArray(r.glossaryTermsSeen)
     ? Array.from(
         new Set(
-          r.glossaryTermsSeen.filter((v): v is string => typeof v === "string" && v.length > 0),
+          r.glossaryTermsSeen
+            .filter((v): v is string => typeof v === "string")
+            .map((v) => v.trim())
+            .filter((v) => v.length > 0),
         ),
       )
     : [];

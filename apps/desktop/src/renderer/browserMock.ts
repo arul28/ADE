@@ -2877,6 +2877,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     glossaryTermsSeen: [],
   };
 
+  const markBrowserMockGlossaryTermSeen = (termId: unknown) => {
+    const id = typeof termId === "string" ? termId.trim() : "";
+    if (!id) return BROWSER_MOCK_HELP_STATE;
+    if (!BROWSER_MOCK_HELP_STATE.glossaryTermsSeen.includes(id)) {
+      BROWSER_MOCK_HELP_STATE.glossaryTermsSeen = [
+        ...BROWSER_MOCK_HELP_STATE.glossaryTermsSeen,
+        id,
+      ];
+    }
+    return BROWSER_MOCK_HELP_STATE;
+  };
+
   const BROWSER_MOCK_USAGE_SNAPSHOT: any = {
     windows: [],
     pacing: {
@@ -3567,7 +3579,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         completedAt: new Date().toISOString(),
         dismissedAt: null,
       }),
-      markGlossaryTermSeen: resolvedArg(BROWSER_MOCK_HELP_STATE),
+      markGlossaryTermSeen: (termId: string) =>
+        Promise.resolve(markBrowserMockGlossaryTermSeen(termId)),
     },
     automations: {
       list: resolved(

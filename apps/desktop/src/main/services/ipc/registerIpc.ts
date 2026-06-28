@@ -1643,6 +1643,13 @@ export function registerIpc({
     return service;
   };
 
+  const normalizeWelcomeVideoTimestamp = (value: unknown): string | null => {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed || Number.isNaN(Date.parse(trimmed))) return null;
+    return trimmed;
+  };
+
   const normalizeWelcomeVideoState = (
     value: AppWelcomeVideoState | null | undefined,
   ): AppWelcomeVideoState => {
@@ -1653,14 +1660,8 @@ export function registerIpc({
       return {
         videoId: ADE_WELCOME_VIDEO_ID,
         version: ADE_WELCOME_VIDEO_VERSION,
-        completedAt:
-          typeof value.completedAt === "string" && value.completedAt.trim()
-            ? value.completedAt
-            : null,
-        dismissedAt:
-          typeof value.dismissedAt === "string" && value.dismissedAt.trim()
-            ? value.dismissedAt
-            : null,
+        completedAt: normalizeWelcomeVideoTimestamp(value.completedAt),
+        dismissedAt: normalizeWelcomeVideoTimestamp(value.dismissedAt),
       };
     }
     return {

@@ -648,7 +648,7 @@ declare global {
         }>;
         getWelcomeVideoState: () => Promise<AppWelcomeVideoState>;
         markWelcomeVideoSeen: (
-          reason?: "completed" | "dismissed",
+          reason: "completed" | "dismissed",
         ) => Promise<AppWelcomeVideoState>;
         setWindowProjectTabs: (
           rootPaths: string[],

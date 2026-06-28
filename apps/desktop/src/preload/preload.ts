@@ -3134,7 +3134,7 @@ contextBridge.exposeInMainWorld("ade", {
     getWelcomeVideoState: async (): Promise<AppWelcomeVideoState> =>
       ipcRenderer.invoke(IPC.appGetWelcomeVideoState),
     markWelcomeVideoSeen: async (
-      reason: "completed" | "dismissed" = "dismissed",
+      reason: "completed" | "dismissed",
     ): Promise<AppWelcomeVideoState> =>
       ipcRenderer.invoke(IPC.appMarkWelcomeVideoSeen, { reason }),
     setWindowProjectTabs: async (

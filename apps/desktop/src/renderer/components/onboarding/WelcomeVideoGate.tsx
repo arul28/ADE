@@ -235,7 +235,8 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
             <iframe
               title="Welcome to ADE video"
               src={ADE_WELCOME_VIDEO_EMBED_URL}
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+              sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+              allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
               referrerPolicy="strict-origin-when-cross-origin"
               style={{

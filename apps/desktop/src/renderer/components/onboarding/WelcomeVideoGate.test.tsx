@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WelcomeVideoGate } from "./WelcomeVideoGate";
 import {
+  ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../../../shared/welcomeVideo";
@@ -18,7 +19,7 @@ describe("WelcomeVideoGate", () => {
     getWelcomeVideoState.mockReset();
     markWelcomeVideoSeen.mockReset();
     markWelcomeVideoSeen.mockResolvedValue({
-      videoId: "64E0pViEiB8",
+      videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
       completedAt: "2026-06-28T12:00:00.000Z",
       dismissedAt: null,
@@ -39,7 +40,7 @@ describe("WelcomeVideoGate", () => {
 
   it("opens for an unseen video and marks it completed from Continue", async () => {
     getWelcomeVideoState.mockResolvedValue({
-      videoId: "64E0pViEiB8",
+      videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
       completedAt: null,
       dismissedAt: null,
@@ -48,7 +49,12 @@ describe("WelcomeVideoGate", () => {
     render(<WelcomeVideoGate />);
 
     expect(await screen.findByRole("dialog", { name: /welcome to ade/i })).toBeTruthy();
-    expect(screen.getByTitle("Welcome to ADE video")).toBeTruthy();
+    const video = screen.getByTitle("Welcome to ADE video");
+    expect(video).toBeTruthy();
+    expect(video.getAttribute("sandbox")).toBe(
+      "allow-scripts allow-same-origin allow-presentation allow-popups",
+    );
+    expect(video.getAttribute("allow")).toBe("autoplay; encrypted-media; picture-in-picture");
 
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
@@ -60,7 +66,7 @@ describe("WelcomeVideoGate", () => {
 
   it("stays hidden after a seen video until the replay event opens it", async () => {
     getWelcomeVideoState.mockResolvedValue({
-      videoId: "64E0pViEiB8",
+      videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
       completedAt: "2026-06-28T12:00:00.000Z",
       dismissedAt: null,

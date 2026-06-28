@@ -135,7 +135,7 @@ describe("onboardingService help state", () => {
     const { service } = buildService();
     service.markGlossaryTermSeen("Lane");
     service.markGlossaryTermSeen("Worktree");
-    service.markGlossaryTermSeen("Lane");
+    service.markGlossaryTermSeen(" Lane ");
     expect(service.getHelpState().glossaryTermsSeen).toEqual(["Lane", "Worktree"]);
   });
 
@@ -151,7 +151,7 @@ describe("onboardingService help state", () => {
           lastStepIndex: 3,
         },
       },
-      glossaryTermsSeen: ["Lane"],
+      glossaryTermsSeen: [" Lane ", "", "Lane"],
     });
 
     const service = createOnboardingService({

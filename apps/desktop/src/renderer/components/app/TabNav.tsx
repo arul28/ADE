@@ -172,6 +172,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           wrapperStyle={{ display: "flex" }}
         >
           <div
+            role="link"
+            aria-disabled="true"
+            tabIndex={0}
             className={cn(
               "ade-shell-sidebar-item group relative flex w-full cursor-not-allowed items-center transition-colors duration-100 opacity-40",
             )}
