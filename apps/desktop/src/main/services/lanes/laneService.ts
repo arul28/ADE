@@ -4788,7 +4788,29 @@ export function createLaneService({
     },
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
-      db.run("update lanes set name = ? where id = ? and project_id = ?", [name, laneId, projectId]);
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("Lane name is required");
+      const lane = getLaneRow(laneId);
+      if (!lane) throw new Error(`Lane not found: ${laneId}`);
+      if (lane.lane_type === "primary") throw new Error("Primary lane cannot be renamed");
+      if (trimmed === lane.name) return;
+
+      const duplicate = db.get<{ name: string }>(
+        `
+          select name from lanes
+          where project_id = ?
+            and id != ?
+            and archived_at is null
+            and lower(name) = lower(?)
+          limit 1
+        `,
+        [projectId, laneId, trimmed],
+      );
+      if (duplicate) {
+        throw new Error(`A lane named "${duplicate.name}" already exists`);
+      }
+
+      db.run("update lanes set name = ? where id = ? and project_id = ?", [trimmed, laneId, projectId]);
       invalidateLaneListCache();
     },
 

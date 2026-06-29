@@ -6959,16 +6959,40 @@ export function AgentChatPane({
     if (!args.flagLaneIds.length) return;
     for (const id of args.flagLaneIds) setLaneNaming(id, true);
     void (async () => {
+      const suggestArgs = {
+        laneId: args.laneId,
+        prompt: args.prompt,
+        modelId: args.modelId,
+        fallbackName: args.fallbackName,
+      };
+      const suggestLaneName = () => (args.pin
+        ? window.ade.agentChat.suggestLaneName(suggestArgs, args.pin)
+        : window.ade.agentChat.suggestLaneName(suggestArgs));
+      const sleep = (ms: number) => new Promise<void>((resolve) => {
+        window.setTimeout(resolve, ms);
+      });
+      const BACKGROUND_LANE_NAMING_ATTEMPTS = 2;
+      const BACKGROUND_LANE_NAMING_RETRY_DELAY_MS = 750;
       try {
-        const suggestArgs = {
-          laneId: args.laneId,
-          prompt: args.prompt,
-          modelId: args.modelId,
-          fallbackName: args.fallbackName,
-        };
-        const suggested = (args.pin
-          ? await window.ade.agentChat.suggestLaneName(suggestArgs, args.pin)
-          : await window.ade.agentChat.suggestLaneName(suggestArgs)).trim();
+        let suggested = "";
+        for (let attempt = 1; attempt <= BACKGROUND_LANE_NAMING_ATTEMPTS; attempt += 1) {
+          try {
+            suggested = (await suggestLaneName()).trim();
+          } catch (error) {
+            if (attempt >= BACKGROUND_LANE_NAMING_ATTEMPTS) {
+              throw error;
+            }
+            console.warn(`background lane naming attempt ${attempt} failed; retrying`, error);
+            await sleep(BACKGROUND_LANE_NAMING_RETRY_DELAY_MS);
+            continue;
+          }
+          if (suggested && suggested !== args.fallbackName) {
+            break;
+          }
+          if (attempt < BACKGROUND_LANE_NAMING_ATTEMPTS) {
+            await sleep(BACKGROUND_LANE_NAMING_RETRY_DELAY_MS);
+          }
+        }
         if (suggested && suggested !== args.fallbackName) {
           await args.apply(suggested);
           if (canRefreshPinnedProject(args.pin)) {

@@ -96,6 +96,7 @@ describe("ManageLaneDialog tabs", () => {
         onDeleteEvent: vi.fn(() => vi.fn()),
         updateAppearance: vi.fn().mockResolvedValue(undefined),
         reparent: vi.fn().mockResolvedValue(undefined),
+        rename: vi.fn().mockResolvedValue(undefined),
       },
     };
   });
@@ -171,5 +172,53 @@ describe("ManageLaneDialog tabs", () => {
     fireEvent.click(deleteButton);
 
     expect(onDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("renames a lane from the header pencil control", async () => {
+    const onAppearanceChanged = vi.fn().mockResolvedValue(undefined);
+    const lane = makeLane({ name: "Old lane name" });
+    const otherLane = makeLane({ id: "lane-2", name: "Other lane" });
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          managedLane: lane,
+          allLanes: [lane, otherLane],
+          onAppearanceChanged,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename lane" }));
+    const input = screen.getByRole("textbox", { name: "Lane name" });
+    fireEvent.change(input, { target: { value: "Renamed lane" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect((globalThis.window as any).ade.lanes.rename).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        name: "Renamed lane",
+      });
+      expect(onAppearanceChanged).toHaveBeenCalled();
+    });
+  });
+
+  it("blocks rename when another lane already uses the name", async () => {
+    const lane = makeLane({ name: "Old lane name" });
+    const otherLane = makeLane({ id: "lane-2", name: "Taken name" });
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          managedLane: lane,
+          allLanes: [lane, otherLane],
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Rename lane" }));
+    const input = screen.getByRole("textbox", { name: "Lane name" });
+    fireEvent.change(input, { target: { value: "Taken name" } });
+
+    expect(screen.getByText('A lane named "Taken name" already exists.')).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
