@@ -1105,10 +1105,25 @@ app.whenReady().then(async () => {
       displayName: readString(record, "displayName") ?? path.basename(rootPath),
       // Restore the cached project logo so the tab shows it immediately on a
       // cold start, before the remote reconnects and refreshes the icon.
-      iconDataUrl: persistableRemoteProjectIconDataUrl(
+      iconDataUrl: remoteProjectIconDataUrlForPersistence(
         readString(record, "iconDataUrl"),
       ),
     };
+  };
+  const remoteProjectIconDataUrlForPersistence = (
+    value: string | null | undefined,
+  ): string | null => {
+    const direct = persistableRemoteProjectIconDataUrl(value);
+    if (direct || !value) return direct;
+    try {
+      const image = nativeImage.createFromDataURL(value);
+      if (image.isEmpty()) return null;
+      return persistableRemoteProjectIconDataUrl(
+        image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
+      );
+    } catch {
+      return null;
+    }
   };
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(
     saved.lastRemoteProjectBinding,
@@ -1607,8 +1622,11 @@ app.whenReady().then(async () => {
     binding: RemoteOpenProjectBinding,
   ): void => {
     const state = readGlobalState(globalStatePath);
-    const iconDataUrl = persistableRemoteProjectIconDataUrl(binding.iconDataUrl);
-    const persistedBinding = withPersistableRemoteProjectIcon(binding);
+    const iconDataUrl = remoteProjectIconDataUrlForPersistence(binding.iconDataUrl);
+    const persistedBinding = withPersistableRemoteProjectIcon({
+      ...binding,
+      iconDataUrl,
+    });
     // Record the remote project in recents so it appears in the unified recents
     // list on the welcome screen (alongside local projects) — no need to re-add
     // it from the remote panel next time.

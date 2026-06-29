@@ -105,6 +105,8 @@ const RECENT_PROJECT_CAP = 24;
 const REMOTE_PROJECT_ICON_DATA_URL_MAX_BYTES = 128 * 1024;
 const REMOTE_PROJECT_ICON_DATA_URL_RE = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
+// Global state should only store small, already-bounded project icon payloads.
+// Callers with full-size remote icons should thumbnail before this boundary.
 export function persistableRemoteProjectIconDataUrl(
   value: string | null | undefined,
 ): string | null {
