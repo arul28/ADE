@@ -43,6 +43,10 @@ type TerminalRenderPreferences = Pick<TerminalPreferences, "fontFamily" | "fontS
 
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void;
 
+type DeferredInputDuringPasteWrite =
+  | { kind: "input"; data: string }
+  | { kind: "paste"; text: string };
+
 type CachedRuntime = {
   key: string;
   ptyId: string;
@@ -88,7 +92,7 @@ type CachedRuntime = {
   inputWriteBytes: number;
   inputFlushTimer: ReturnType<typeof setTimeout> | null;
   pasteWriteInFlight: boolean;
-  deferredInputDuringPasteWrite: string[];
+  deferredInputDuringPasteWrite: DeferredInputDuringPasteWrite[];
   liveStreamPaused: boolean;
   flushRafId: number | null;
   flushTimer: ReturnType<typeof setTimeout> | null;
@@ -798,7 +802,7 @@ function flushPendingPtyInput(runtime: CachedRuntime): void {
 function writePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
   if (runtime.pasteWriteInFlight) {
-    runtime.deferredInputDuringPasteWrite.push(data);
+    runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
   }
   writePtyInputNow(runtime, `${consumePendingPtyInput(runtime)}${data}`);
@@ -822,19 +826,30 @@ async function refreshTerminalInputModesForPaste(runtime: CachedRuntime): Promis
   syncTerminalInputModesFromXterm(runtime);
   if (runtime.hydrationCompleted && !runtime.liveStreamPaused) return;
   try {
-    const data = await readInitialHydrationData(runtime);
-    if (!runtime.disposed && data.text) {
-      updateTerminalInputModes(runtime, data.text);
+    const data = await readTerminalInputModeRefreshData(runtime);
+    if (!runtime.disposed && data) {
+      updateTerminalInputModes(runtime, data);
     }
   } catch {
     // Best effort only; a stale cache should not block paste entirely.
   }
 }
 
+function consumeDeferredInputDuringPasteWrite(runtime: CachedRuntime): string {
+  if (!runtime.deferredInputDuringPasteWrite.length) return "";
+  const data = runtime.deferredInputDuringPasteWrite
+    .map((entry) => (
+      entry.kind === "paste" ? formatTextPasteForTerminal(runtime, entry.text) : entry.data
+    ))
+    .join("");
+  runtime.deferredInputDuringPasteWrite.length = 0;
+  return data;
+}
+
 async function writeTextPasteForTerminal(runtime: CachedRuntime, text: string): Promise<void> {
   if (!text || runtime.disposed) return;
   if (runtime.pasteWriteInFlight) {
-    runtime.deferredInputDuringPasteWrite.push(formatTextPasteForTerminal(runtime, text));
+    runtime.deferredInputDuringPasteWrite.push({ kind: "paste", text });
     return;
   }
 
@@ -843,15 +858,13 @@ async function writeTextPasteForTerminal(runtime: CachedRuntime, text: string): 
   try {
     await refreshTerminalInputModesForPaste(runtime);
     if (runtime.disposed) return;
-    const deferredInput = runtime.deferredInputDuringPasteWrite.join("");
-    runtime.deferredInputDuringPasteWrite.length = 0;
+    const deferredInput = consumeDeferredInputDuringPasteWrite(runtime);
     runtime.pasteWriteInFlight = false;
     committed = true;
     writePtyInput(runtime, `${formatTextPasteForTerminal(runtime, text)}${deferredInput}`);
   } finally {
     if (!committed) {
-      const deferredInput = runtime.deferredInputDuringPasteWrite.join("");
-      runtime.deferredInputDuringPasteWrite.length = 0;
+      const deferredInput = consumeDeferredInputDuringPasteWrite(runtime);
       runtime.pasteWriteInFlight = false;
       if (!runtime.disposed && deferredInput) {
         writePtyInput(runtime, deferredInput);
@@ -875,7 +888,7 @@ function schedulePtyInputFlush(runtime: CachedRuntime): void {
 function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
   if (runtime.pasteWriteInFlight) {
-    runtime.deferredInputDuringPasteWrite.push(data);
+    runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
     return;
   }
   runtime.inputWriteChunks.push(data);
@@ -1420,6 +1433,29 @@ async function readPreviewHydrationData(
   if (options.snapshotOnly) return { source: "empty", text: "" };
   if (preview?.transcript) return { source: "transcript", text: preview.transcript };
   return { source: "empty", text: "" };
+}
+
+async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise<string> {
+  try {
+    const transcript = await window.ade.sessions.readTranscriptTail({
+      sessionId: runtime.sessionId,
+      maxBytes: HYDRATE_TAIL_BYTES,
+      raw: true,
+    });
+    if (transcript) return transcript;
+  } catch {
+    // Fall back to preview below.
+  }
+
+  try {
+    const preview = await window.ade.terminal.preview({
+      terminalId: runtime.sessionId,
+      maxBytes: HYDRATE_TAIL_BYTES,
+    });
+    return preview?.transcript ?? "";
+  } catch {
+    return "";
+  }
 }
 
 async function readReplayHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {

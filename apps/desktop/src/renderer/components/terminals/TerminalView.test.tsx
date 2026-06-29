@@ -1061,6 +1061,33 @@ describe("TerminalView", () => {
     });
   });
 
+  it("refreshes paste modes from the raw transcript tail instead of snapshot rows", async () => {
+    const firstView = render(<TerminalView ptyId="pty-transcript-mode-paste" sessionId="session-transcript-mode-paste" isActive />);
+    await flushAllTimers();
+    firstView.unmount();
+
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    readTranscriptTailMock.mockResolvedValue("\x1b[?2004hCodex ready\n");
+
+    render(<TerminalView ptyId="pty-transcript-mode-paste" sessionId="session-transcript-mode-paste" isActive />);
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("line one\nline two"));
+    await flushPasteWrite();
+
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-transcript-mode-paste",
+      data: "\x1b[200~line one\rline two\x1b[201~",
+    });
+  });
+
   it("keeps input typed during paste refresh behind the pasted text", async () => {
     const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
     let resolvePreview: ((value: unknown) => void) | null = null;
@@ -1084,6 +1111,7 @@ describe("TerminalView", () => {
     ptyWrite.mockClear();
 
     terminal!.element!.dispatchEvent(createPasteEvent("run build"));
+    terminal!.element!.dispatchEvent(createPasteEvent("deploy\nnow"));
     onData!("\r");
     await flushPasteWrite();
     expect(ptyWrite).not.toHaveBeenCalled();
@@ -1100,7 +1128,7 @@ describe("TerminalView", () => {
 
     expect(ptyWrite).toHaveBeenCalledWith({
       ptyId: "pty-paste-order",
-      data: "\x1b[200~run build\x1b[201~\r",
+      data: "\x1b[200~run build\x1b[201~\x1b[200~deploy\rnow\x1b[201~\r",
     });
   });
 
