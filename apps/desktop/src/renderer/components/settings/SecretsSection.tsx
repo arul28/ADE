@@ -134,6 +134,7 @@ export function SecretsSection() {
       await window.ade.projectSecrets.set({ name: nextName, value });
       setValue("");
       setName("");
+      setConfirmDeleteName(null);
       setVisibleNames((current) => ({ ...current, [nextName]: false }));
       setRevealedValues((current) => {
         const next = { ...current };
@@ -253,6 +254,7 @@ export function SecretsSection() {
             placeholder="Secret value"
             aria-label="Secret value"
             type="password"
+            autoComplete="new-password"
             autoCapitalize="off"
             autoCorrect="off"
             spellCheck={false}
