@@ -28,7 +28,7 @@ ade --socket app-control elements --text
 ade --socket app-control select --x <x> --y <y> --text
 ```
 
-Use Inspect mode or `select` to return screenshot-backed DOM, selector, and source context. When the session is chat-owned, ADE can attach the selection to the drawer chat.
+Use Inspect mode or `select` to return screenshot-backed DOM, selector, and source context. When the session is owned by a chat or tracked CLI session, ADE can attach the selection to that active Work surface.
 
 ## Act
 

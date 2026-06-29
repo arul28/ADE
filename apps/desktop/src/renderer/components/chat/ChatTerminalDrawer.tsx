@@ -49,7 +49,12 @@ type ChatTerminalDrawerProps = {
   open: boolean;
   onToggle: () => void;
   laneId: string;
+  /**
+   * Owner session for attached terminals. Historically this was always an ADE
+   * chat id; Work CLI sessions now use their terminal session id here too.
+   */
   chatSessionId?: string | null;
+  variant?: "drawer" | "panel";
   autoCreateOnOpen?: boolean;
   createRequestNonce?: number;
   disposeTabsOnUnmount?: boolean;
@@ -130,6 +135,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   onToggle,
   laneId,
   chatSessionId,
+  variant = "drawer",
   autoCreateOnOpen = true,
   createRequestNonce = 0,
   disposeTabsOnUnmount = false,
@@ -145,6 +151,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const [restoringTabs, setRestoringTabs] = useState(false);
   const [appControlTabState, setAppControlTabState] = useState<AppControlTabState | null>(null);
   const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const isPanel = variant === "panel";
   const hadTabsRef = useRef(false);
   const previousOpenRef = useRef(open);
   const pendingAutoCreateRef = useRef(false);
@@ -188,6 +195,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, [activeTabId, drawerHeight, tabs, uiStateKey]);
 
   const handleDragStart = useCallback((e: React.MouseEvent) => {
+    if (isPanel) return;
     e.preventDefault();
     dragRef.current = { startY: e.clientY, startHeight: drawerHeight };
 
@@ -210,7 +218,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
     document.addEventListener("mousemove", handleDragMove);
     document.addEventListener("mouseup", handleDragEnd);
-  }, [drawerHeight]);
+  }, [drawerHeight, isPanel]);
 
   const createTab = useCallback(async () => {
     if (createTabFlightRef.current) {
@@ -494,17 +502,29 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   return (
     <div
-      className="flex flex-col border-t border-white/[0.06] bg-[var(--color-surface-recessed)] shadow-[inset_0_2px_8px_rgba(0,0,0,0.3)]"
-      style={{ height: drawerHeight }}
+      className={cn(
+        "flex flex-col bg-[var(--color-surface-recessed)]",
+        isPanel
+          ? "h-full min-h-0"
+          : "border-t border-white/[0.06] shadow-[inset_0_2px_8px_rgba(0,0,0,0.3)]",
+      )}
+      style={isPanel ? undefined : { height: drawerHeight }}
     >
-      <div
-        className="flex h-2 cursor-row-resize items-center justify-center transition-colors hover:bg-white/[0.04]"
-        onMouseDown={handleDragStart}
-      >
-        <div className="h-0.5 w-8 rounded-full bg-white/[0.12]" />
-      </div>
+      {!isPanel ? (
+        <div
+          className="flex h-2 cursor-row-resize items-center justify-center transition-colors hover:bg-white/[0.04]"
+          onMouseDown={handleDragStart}
+        >
+          <div className="h-0.5 w-8 rounded-full bg-white/[0.12]" />
+        </div>
+      ) : null}
 
-      <div className="flex h-6 shrink-0 items-center overflow-x-auto border-b border-white/[0.06] bg-black/10">
+      <div
+        className={cn(
+          "flex shrink-0 items-center overflow-x-auto border-b border-white/[0.06] bg-black/10",
+          isPanel ? "h-8" : "h-6",
+        )}
+      >
         <div className="flex min-w-0 items-center gap-0 overflow-x-auto scrollbar-none">
           {tabs.map((tab) => {
             const appControlTone = appControlTabState && appControlTabState.terminalSessionId === tab.sessionId
@@ -512,68 +532,69 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
               : null;
             const isActive = activeTab?.id === tab.id;
             return (
-            <div
-              key={tab.id}
-              className={cn(
-                "group relative flex h-6 shrink-0 items-center gap-1 border-r border-white/[0.04] px-2 font-mono text-[10px] transition-colors",
-                isActive
-                  ? "bg-white/[0.06] text-fg/85"
-                  : "bg-transparent text-fg/35 hover:bg-white/[0.03] hover:text-fg/60",
-                appControlTone ? "pl-4" : null,
-              )}
-              title={appControlTone ? appControlTabState?.title : undefined}
-            >
-              {appControlTone ? (
-                <span
-                  aria-hidden
-                  className={cn(
-                    "pointer-events-none absolute left-1.5 top-1.5 h-1.5 w-1.5 rounded-full",
-                    appControlTone === "active" && "bg-emerald-300/85 shadow-[0_0_4px_rgba(16,185,129,0.6)]",
-                    appControlTone === "warn" && "bg-amber-300/80",
-                    appControlTone === "error" && "bg-rose-400/85",
-                  )}
-                />
-              ) : null}
-              {isActive ? (
-                <span
-                  aria-hidden
-                  className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-[var(--color-accent)]"
-                />
-              ) : null}
-              <button
-                type="button"
-                onClick={() => setActiveTabId(tab.id)}
-                className="flex h-full min-w-0 items-center gap-1 bg-transparent p-0 text-inherit"
+              <div
+                key={tab.id}
+                className={cn(
+                  "group relative flex shrink-0 items-center gap-1 border-r border-white/[0.04] px-2 font-mono text-[10px] transition-colors",
+                  isPanel ? "h-8" : "h-6",
+                  isActive
+                    ? "bg-white/[0.06] text-fg/85"
+                    : "bg-transparent text-fg/35 hover:bg-white/[0.03] hover:text-fg/60",
+                  appControlTone ? "pl-4" : null,
+                )}
+                title={appControlTone ? appControlTabState?.title : undefined}
               >
-                <TerminalIcon
-                  size={10}
-                  weight="bold"
-                  className={cn("shrink-0", tabIconColorClass(tab.exited, appControlTone))}
-                />
-                <span className="max-w-[80px] truncate">{tab.label}</span>
-              </button>
-              <button
-                type="button"
-                aria-label={`Close ${tab.label}`}
-                onMouseDown={(event) => {
-                  event.stopPropagation();
-                }}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  closeTab(tab.id);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
+                {appControlTone ? (
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "pointer-events-none absolute left-1.5 top-1.5 h-1.5 w-1.5 rounded-full",
+                      appControlTone === "active" && "bg-emerald-300/85 shadow-[0_0_4px_rgba(16,185,129,0.6)]",
+                      appControlTone === "warn" && "bg-amber-300/80",
+                      appControlTone === "error" && "bg-rose-400/85",
+                    )}
+                  />
+                ) : null}
+                {isActive ? (
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] bg-[var(--color-accent)]"
+                  />
+                ) : null}
+                <button
+                  type="button"
+                  onClick={() => setActiveTabId(tab.id)}
+                  className="flex h-full min-w-0 items-center gap-1 bg-transparent p-0 text-inherit"
+                >
+                  <TerminalIcon
+                    size={10}
+                    weight="bold"
+                    className={cn("shrink-0", tabIconColorClass(tab.exited, appControlTone))}
+                  />
+                  <span className="max-w-[80px] truncate">{tab.label}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Close ${tab.label}`}
+                  onMouseDown={(event) => {
+                    event.stopPropagation();
+                  }}
+                  onClick={(event) => {
                     event.stopPropagation();
                     closeTab(tab.id);
-                  }
-                }}
-                className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-white/35 opacity-60 transition-colors hover:bg-white/[0.06] hover:text-white/70 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
-              >
-                <X size={10} weight="bold" />
-              </button>
-            </div>
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      closeTab(tab.id);
+                    }
+                  }}
+                  className="ml-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-white/35 opacity-60 transition-colors hover:bg-white/[0.06] hover:text-white/70 group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
+                >
+                  <X size={10} weight="bold" />
+                </button>
+              </div>
             );
           })}
         </div>
@@ -581,7 +602,10 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
         <button
           type="button"
           onClick={() => { void createTab(); }}
-          className="mx-1 flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-white/[0.06] text-white/30 transition-colors hover:bg-white/[0.04] hover:text-white/60"
+          className={cn(
+            "mx-1 flex shrink-0 items-center justify-center rounded-md border border-white/[0.06] text-white/30 transition-colors hover:bg-white/[0.04] hover:text-white/60",
+            isPanel ? "h-7 w-7" : "h-6 w-6",
+          )}
           title="New terminal"
           disabled={creatingTab}
         >

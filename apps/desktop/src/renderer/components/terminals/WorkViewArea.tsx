@@ -611,6 +611,9 @@ function SessionSurface({
   sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
+  onToggleTerminalPane,
+  onOpenTerminalPane,
+  terminalPaneOpen,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -633,6 +636,9 @@ function SessionSurface({
   /** Far-right Tools-pane toggle (per-surface header now owns it). */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
+  onToggleTerminalPane?: () => void;
+  onOpenTerminalPane?: () => void;
+  terminalPaneOpen?: boolean;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -655,6 +661,9 @@ function SessionSurface({
         sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
+        onToggleTerminalPane={onToggleTerminalPane}
+        onOpenTerminalPane={onOpenTerminalPane}
+        terminalPaneOpen={terminalPaneOpen}
       />
     );
   }
@@ -675,6 +684,8 @@ function SessionSurface({
               sessionsPaneCount={sessionsPaneCount}
               onToggleToolsPane={onToggleToolsPane}
               toolsPaneOpen={toolsPaneOpen}
+              onToggleTerminalPane={onToggleTerminalPane}
+              terminalPaneOpen={terminalPaneOpen}
             />
           ) : null}
           <TerminalView
@@ -852,6 +863,9 @@ export function WorkViewArea({
   sessionsPaneListCount = 0,
   workSidebarOpen = false,
   onToggleWorkSidebar,
+  terminalPaneOpen = false,
+  onToggleTerminalPane,
+  onOpenTerminalPane,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
@@ -892,6 +906,9 @@ export function WorkViewArea({
   sessionsPaneListCount?: number;
   workSidebarOpen?: boolean;
   onToggleWorkSidebar?: () => void;
+  terminalPaneOpen?: boolean;
+  onToggleTerminalPane?: () => void;
+  onOpenTerminalPane?: () => void;
   initialLinearIssueContext?: LaneLinearIssue | null;
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
@@ -944,6 +961,9 @@ export function WorkViewArea({
       sessionsPaneCount={sessionsPaneListCount}
       onToggleToolsPane={onToggleWorkSidebar}
       toolsPaneOpen={workSidebarOpen}
+      onToggleTerminalPane={onToggleTerminalPane}
+      onOpenTerminalPane={onOpenTerminalPane}
+      terminalPaneOpen={terminalPaneOpen}
     />
   );
 
@@ -991,6 +1011,9 @@ export function WorkViewArea({
           sessionsPaneCount={sessionsPaneListCount}
           onToggleToolsPane={onToggleWorkSidebar}
           toolsPaneOpen={workSidebarOpen}
+          onToggleTerminalPane={onToggleTerminalPane}
+          onOpenTerminalPane={onOpenTerminalPane}
+          terminalPaneOpen={terminalPaneOpen}
         />
       </SingleSessionGridDropZone>
     ) : (

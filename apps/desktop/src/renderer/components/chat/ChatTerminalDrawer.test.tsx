@@ -145,6 +145,32 @@ describe("ChatTerminalDrawer", () => {
     expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
   });
 
+  it("uses the panel variant for CLI-owned attached terminals without a horizontal resize handle", async () => {
+    const view = render(
+      <ChatTerminalDrawer
+        variant="panel"
+        open
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="cli-session-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    await waitFor(() => expect(window.ade.terminal.list).toHaveBeenCalled());
+    expect(view.container.querySelector(".cursor-row-resize")).toBeNull();
+    expect((view.container.firstElementChild as HTMLElement).style.height).toBe("");
+
+    fireEvent.click(screen.getByTitle("New terminal"));
+
+    await waitFor(() => expect(window.ade.pty.create).toHaveBeenCalledTimes(1));
+    expect(window.ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      chatSessionId: "cli-session-1",
+      toolType: "shell",
+    }));
+  });
+
   it("switches restored terminal tabs", async () => {
     vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
       {

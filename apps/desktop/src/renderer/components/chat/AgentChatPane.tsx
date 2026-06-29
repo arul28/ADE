@@ -2765,6 +2765,9 @@ export function AgentChatPane({
   sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
+  onToggleTerminalPane,
+  onOpenTerminalPane,
+  terminalPaneOpen,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -2819,6 +2822,11 @@ export function AgentChatPane({
   /** Work tab: far-right Tools-pane toggle rendered in this chat's header. */
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
+  /** Work tab: terminal pane toggle rendered in this chat's header. */
+  onToggleTerminalPane?: () => void;
+  /** Work tab: open-only terminal pane action used when a tool reveals a terminal. */
+  onOpenTerminalPane?: () => void;
+  terminalPaneOpen?: boolean;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -3133,10 +3141,32 @@ export function AgentChatPane({
     nonce: number;
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
-  const revealChatTerminal = useCallback((terminal: { terminalId: string; ptyId: string; label: string }) => {
+  const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
+  const effectiveTerminalPaneOpen = hasExternalTerminalPane ? terminalPaneOpen === true : terminalDrawerOpen;
+  const toggleTerminalPanel = useCallback(() => {
+    if (onToggleTerminalPane) {
+      onToggleTerminalPane();
+      return;
+    }
+    setTerminalDrawerOpen((current) => !current);
+  }, [onToggleTerminalPane]);
+  const openTerminalPanel = useCallback(() => {
+    if (onOpenTerminalPane) {
+      onOpenTerminalPane();
+      return;
+    }
+    if (onToggleTerminalPane) {
+      if (!terminalPaneOpen) onToggleTerminalPane();
+      return;
+    }
     setTerminalDrawerOpen(true);
-    setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
-  }, []);
+  }, [onOpenTerminalPane, onToggleTerminalPane, terminalPaneOpen]);
+  const revealChatTerminal = useCallback((terminal: { terminalId: string; ptyId: string; label: string }) => {
+    openTerminalPanel();
+    if (!hasExternalTerminalPane) {
+      setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
+    }
+  }, [hasExternalTerminalPane, openTerminalPanel]);
   const [rightPaneSplit, setRightPaneSplit] = useState<number>(() => {
     try {
       const raw = window.sessionStorage.getItem("ade.chat.rightPaneSplit");
@@ -5446,13 +5476,15 @@ export function AgentChatPane({
       const ptyId = typeof session.ptyId === "string" ? session.ptyId.trim() : "";
       if (!ptyId) return;
 
-      setTerminalDrawerOpen(true);
-      setTerminalRevealRequest({
-        terminalId: session.id,
-        ptyId,
-        label: session.title?.trim() || "Terminal",
-        nonce: ++terminalRevealNonceRef.current,
-      });
+      openTerminalPanel();
+      if (!hasExternalTerminalPane) {
+        setTerminalRevealRequest({
+          terminalId: session.id,
+          ptyId,
+          label: session.title?.trim() || "Terminal",
+          nonce: ++terminalRevealNonceRef.current,
+        });
+      }
     };
 
     const unsubscribe = sessionsApi.onChanged((event) => {
@@ -5463,7 +5495,7 @@ export function AgentChatPane({
       disposed = true;
       unsubscribe();
     };
-  }, [chatTerminalVisible, laneId]);
+  }, [chatTerminalVisible, hasExternalTerminalPane, laneId, openTerminalPanel]);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -9158,6 +9190,16 @@ export function AgentChatPane({
       onMissingFields={(message) => setError(message)}
     />
   );
+  const terminalPanelContent = chatTerminalVisible ? (
+    <ChatTerminalDrawer
+      variant="panel"
+      open={terminalDrawerOpen}
+      onToggle={() => setTerminalDrawerOpen((current) => !current)}
+      laneId={laneId}
+      chatSessionId={selectedSessionId}
+      revealRequest={terminalRevealRequest}
+    />
+  ) : null;
   const iosSimulatorPanelContent = (
     <>
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2.5">
@@ -9376,7 +9418,7 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
+          {chatTerminalVisible ? <ChatTerminalToggle open={effectiveTerminalPaneOpen} onToggle={toggleTerminalPanel} /> : null}
           {headerChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -10076,13 +10118,14 @@ export function AgentChatPane({
   // shrinks the hero and moves the composer below.
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
   const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudAvailable;
+  const terminalRightPaneOpen = chatTerminalVisible && !hasExternalTerminalPane && terminalDrawerOpen && Boolean(selectedSessionId);
   // Orchestration: derive runId / role from the active session. When set, mount
   // the right plan panel and (for "orchestrator-lead") wrap the chat surface in
   // the conic-gradient frame.
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
   const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  const heavyRightPaneOpen = appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
+  const heavyRightPaneOpen = appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen || terminalRightPaneOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const chatActionsFloating = chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
   const chatActionsRightPaneOpen = chatActionsOpen && !chatActionsFloating;
@@ -10411,15 +10454,6 @@ export function AgentChatPane({
                         sessionId={selectedSessionId}
                       />
                     ) : null}
-                    {chatTerminalVisible ? (
-                      <ChatTerminalDrawer
-                        open={terminalDrawerOpen}
-                        onToggle={() => setTerminalDrawerOpen((v) => !v)}
-                        laneId={laneId}
-                        chatSessionId={selectedSessionId}
-                        revealRequest={terminalRevealRequest}
-                      />
-                    ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
                         {composerElement}
@@ -10451,6 +10485,7 @@ export function AgentChatPane({
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
+                  {terminalRightPaneOpen && terminalPanelContent ? renderRightPane(terminalPanelContent) : null}
                   {orchestrationPanelOpen && orchestrationPanelContent ? renderRightPane(orchestrationPanelContent) : null}
                 </motion.div>
               ) : (

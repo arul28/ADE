@@ -473,7 +473,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
-    $ ade terminal list | read | write | signal     Control the active in-chat terminal
+    $ ade terminal list | read | write | signal     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
@@ -519,7 +519,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
-    $ ade terminal read --chat-session <id> --text
+    $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
 
   Generic ADE action JSON contract:
@@ -1285,13 +1285,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Shell sessions
 
   Shell commands create tracked PTY sessions that ADE can display and audit.
-  Inside an ADE chat, shell starts attach to the active chat automatically.
+  Inside an ADE chat or tracked agent CLI session, shell starts attach to the
+  active owner session automatically.
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
     $ ade shell start-cli codex --lane <lane> --permission-mode edit
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
-    $ ade shell start --lane <lane> --chat-session <id> -c "npm test"
+    $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
     $ ade shell resize <pty-id> --cols 120 --rows 36
     $ ade shell close <pty-id>                      Dispose a PTY
@@ -1300,13 +1301,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade terminal read --terminal <session-id> --text
 `,
   terminal: `${ADE_BANNER}
-  Chat terminal
+  Attached terminal
 
-  Terminal commands control the active in-chat terminal for an ADE chat. Use
-  attached runtime mode when you want the same terminal the app is viewing.
+  Terminal commands control the active terminal attached to an ADE chat or
+  tracked agent CLI session. Use attached runtime mode when you want the same
+  terminal the app is viewing.
 
-    $ ade terminal list --chat-session <id> --text  List terminals for a chat
-    $ ade terminal active --chat-session <id> --text Show the active chat terminal
+    $ ade terminal list --chat-session <owner-session-id> --text  List terminals for a session
+    $ ade terminal active --chat-session <owner-session-id> --text Show the active terminal
     $ ade terminal read --terminal <session-id> --text Read terminal scrollback
     $ ade terminal read --pty <pty-id> --text       Read by PTY id
     $ ade app-control logs --text                   Read the active App Control launch terminal
@@ -1537,7 +1539,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   agent-browser, Computer Use, and other tools may also attach to the same app;
   ADE keeps the launch/session state and turns snapshots into chat context.
 
-  Launching runs the command in the chat terminal instead of a hidden child
+  Launching runs the command in the attached terminal instead of a hidden child
   process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
   the environment and auto-forwards debug flags for common npm/pnpm/yarn/bun
   script launches and direct electron commands. Custom launchers should forward
@@ -1552,7 +1554,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control status --text                Show active session and provider readiness
     $ ade app-control claim --lane <lane-id>       Attribute the active renderer to a lane
     $ ade app-control launch --command "npm run dev" --text
-    $ ade app-control launch pnpm dev --text       Launch via the visible chat terminal
+    $ ade app-control launch pnpm dev --text       Launch via the visible attached terminal
     $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
     $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
     $ ade app-control connect --cdp-port 9222      Attach to an already-running app
@@ -1564,15 +1566,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control minimize --text              Minimize the controlled app window
     $ ade app-control stop --text                  Signal the App Control terminal session
     $ ade app-control actions --text               List every callable app_control action
-    $ ade terminal read --terminal <session-id> --text Read a specific chat terminal
+    $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
     $ ade terminal read --pty <pty-id> --text      Read by PTY id
-    $ ade terminal write --chat-session <id> --data "y\\n" Answer a prompt
+    $ ade terminal write --chat-session <owner-session-id> --data "y\\n" Answer a prompt
 
   Capture and context:
     $ ade app-control screenshot --text            Capture the active renderer screenshot
     $ ade app-control snapshot --text              Screenshot + DOM element refs
     $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
-    $ ade app-control select --x 120 --y 420       Return/select app context (chat-owned sessions auto-attach)
+    $ ade app-control select --x 120 --y 420       Return/select app context (owned sessions auto-attach)
 
   Input:
     $ ade app-control click 120 420                Click screenshot coordinates
@@ -14595,7 +14597,7 @@ function formatTerminalList(value: unknown): string {
       terminal.runtimeState,
       terminal.title,
     ]),
-    "ADE chat terminals\n(no terminals found)",
+    "ADE attached terminals\n(no terminals found)",
   );
 }
 

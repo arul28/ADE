@@ -10,10 +10,13 @@ Top-level page for the Work tab. Wraps two panes with `PaneTilingLayout`:
 
 - `sessions` pane (default 24%, min 15%) → `SessionListPane`
 - `view` pane (default 76%, min 40%) → `WorkViewArea` plus the right-edge
-  `WorkSidebar` when `workSidebarOpen` is true and `viewMode !== "grid"`.
+  `WorkSidebar` when `workSidebarOpen` is true.
   The view + sidebar share the row via a flex container with a draggable
   column separator; the sidebar width is persisted as
   `workSidebarWidthPct` (clamped 26–55%).
+  The sidebar includes the Terminal tab, which renders the same
+  attached-terminal surface for chat sessions and running tracked agent CLI
+  sessions.
 
 Pulls all session state through `useWorkSessions()` and renders two
 globally-positioned overlays:
@@ -35,6 +38,9 @@ disabled message no longer appears when a draft is active. The page
 also determines PTY context insertability through
 `isPtyContextInsertableToolType`, which covers all tracked agent CLI
 tool types: `claude`, `codex`, `cursor-cli`, `droid`, and `opencode`.
+The Terminal tab uses the same active `contextTarget` owner id, so `chat`
+targets attach to the chat session and `pty` targets attach to the running
+CLI session id.
 
 The same page is the subscriber for `ade:work:select-session`, the
 renderer event dispatched by orchestration "Open chat" buttons. The
@@ -203,6 +209,9 @@ Branches on `session.toolType`:
 
 - chat tool types → `AgentChatPane` for the matching chat session
 - PTY sessions → `TerminalView` wired to the session's `ptyId`
+- running tracked agent CLI sessions add the Terminal button in their work
+  header, opening the Work sidebar's Terminal tab with that CLI session as
+  the owner
 
 When a tile is suspended (grid layout where the tile is not visible),
 it renders a static preview card instead of mounting the terminal.

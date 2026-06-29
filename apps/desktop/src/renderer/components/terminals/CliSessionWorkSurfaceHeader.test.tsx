@@ -64,6 +64,8 @@ const lanes: LaneSummary[] = [
 function renderHeader(overrides: Partial<TerminalSessionSummary> = {}, callbacks: {
   onInfoClick?: () => void;
   onContextMenu?: () => void;
+  onToggleTerminalPane?: () => void;
+  terminalPaneOpen?: boolean;
 } = {}) {
   const session = makeSession(overrides);
   return render(
@@ -73,6 +75,8 @@ function renderHeader(overrides: Partial<TerminalSessionSummary> = {}, callbacks
         lanes={lanes}
         onInfoClick={callbacks.onInfoClick}
         onContextMenu={callbacks.onContextMenu}
+        onToggleTerminalPane={callbacks.onToggleTerminalPane}
+        terminalPaneOpen={callbacks.terminalPaneOpen}
       />
     </MemoryRouter>,
   );
@@ -128,6 +132,18 @@ describe("CliSessionWorkSurfaceHeader", () => {
     renderHeader({}, { onInfoClick });
     fireEvent.click(screen.getByLabelText("Session info"));
     expect(onInfoClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the attached terminal panel from running CLI sessions", () => {
+    const onToggleTerminalPane = vi.fn();
+    renderHeader({}, { onToggleTerminalPane });
+    fireEvent.click(screen.getByLabelText("Open terminal panel"));
+    expect(onToggleTerminalPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the terminal button active while the panel is open", () => {
+    renderHeader({}, { onToggleTerminalPane: vi.fn(), terminalPaneOpen: true });
+    expect(screen.getByLabelText("Close terminal panel").getAttribute("aria-pressed")).toBe("true");
   });
 
   it("fires onContextMenu when the kebab is pressed", () => {

@@ -725,6 +725,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const toggleWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(!work.workSidebarOpen);
   }, [work]);
+  const terminalPaneOpen = work.workSidebarOpen && work.workSidebarTab === "terminal";
+  const toggleTerminalPane = useCallback(() => {
+    if (work.workSidebarOpen && work.workSidebarTab === "terminal") {
+      work.setWorkSidebarOpen(false);
+    } else {
+      work.setWorkSidebarTab("terminal");
+    }
+  }, [work]);
+  const openTerminalPane = useCallback(() => {
+    if (!work.workSidebarOpen || work.workSidebarTab !== "terminal") {
+      work.setWorkSidebarTab("terminal");
+    }
+  }, [work]);
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
   }, [work]);
@@ -886,6 +899,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessionsPaneListCount={work.filtered.length}
         workSidebarOpen={work.workSidebarOpen}
         onToggleWorkSidebar={toggleWorkSidebar}
+        terminalPaneOpen={terminalPaneOpen}
+        onToggleTerminalPane={toggleTerminalPane}
+        onOpenTerminalPane={openTerminalPane}
         onInfoClick={handleInfoClick}
         onStopRunningSession={handleStopRunningSession}
         onGoToLane={handleGoToLaneById}
@@ -918,8 +934,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.filtered.length,
       work.workFocusSessionsHidden,
       work.workSidebarOpen,
+      work.workSidebarTab,
+      terminalPaneOpen,
       toggleSessionsPane,
       toggleWorkSidebar,
+      toggleTerminalPane,
+      openTerminalPane,
       handleOpenChatSession,
       handleContinueCliSession,
       handleResumeCliSession,
