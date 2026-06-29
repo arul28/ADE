@@ -17066,6 +17066,10 @@ export function createAgentChatService(args: {
         }
       }
 
+      if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+        return;
+      }
+
       if (activeFlags.includes("waitingOnApproval")) {
         emitCodexTurnStalled(managed, runtime, {
           turnId,

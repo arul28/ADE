@@ -13885,7 +13885,7 @@ describe("createAgentChatService", () => {
             itemId: "cmd-1",
             turnId: "turn-1",
             command: "npm test",
-            cwd: "/tmp/outside-ade",
+            cwd: ".",
             reason: "Run tests",
           },
         });
@@ -14157,6 +14157,72 @@ describe("createAgentChatService", () => {
           && event.event.text.includes("Recovered after the normal completion.")
         )).toBe(false);
         expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not emit a stale stall when a normal Codex completion wins after turns-list fails", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.delayedCodexMethods.add("thread/turns/list");
+        mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+          error: { code: -32000, message: "thread state unavailable" },
+        }));
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(mockState.pendingCodexResponses).toHaveLength(1);
+        });
+
+        mockState.emitCodexPayload({
+          method: "turn/completed",
+          params: {
+            turn: {
+              id: "turn-1",
+              status: "completed",
+              usage: { inputTokens: 11, outputTokens: 5 },
+            },
+          },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "done"
+            && event.event.turnId === "turn-1"
+            && event.event.status === "completed",
+        );
+
+        mockState.flushCodexResponses();
+        await Promise.resolve();
+
+        expect(events.filter((event) =>
+          event.event.type === "done"
+          && event.event.turnId === "turn-1"
+          && event.event.status === "completed"
+        )).toHaveLength(1);
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && (
+            event.event.message.includes("has not streamed model or tool output yet")
+            || event.event.message.includes("could not confirm its app-server state")
+          )
+        )).toBe(false);
       } finally {
         vi.useRealTimers();
       }
