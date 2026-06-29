@@ -816,9 +816,8 @@ function formatTextPasteForTerminal(runtime: CachedRuntime, text: string): strin
 }
 
 function syncTerminalInputModesFromXterm(runtime: CachedRuntime): void {
-  const bracketedPasteMode = runtime.term.modes?.bracketedPasteMode;
-  if (typeof bracketedPasteMode === "boolean" && runtime.hydrationCompleted) {
-    runtime.bracketedPasteMode = bracketedPasteMode;
+  if (runtime.term.modes?.bracketedPasteMode === true) {
+    runtime.bracketedPasteMode = true;
   }
 }
 

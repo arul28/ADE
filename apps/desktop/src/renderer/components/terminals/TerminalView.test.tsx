@@ -101,6 +101,10 @@ vi.mock("@xterm/xterm", () => ({
         viewportY: 0,
       },
     };
+    modes = {
+      bracketedPasteMode: false,
+      mouseTrackingMode: "none",
+    };
     dispose = vi.fn();
     clearTextureAtlas = vi.fn();
     getSelection = vi.fn(() => "");
