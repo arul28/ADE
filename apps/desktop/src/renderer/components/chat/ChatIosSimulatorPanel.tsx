@@ -2354,7 +2354,7 @@ export function ChatIosSimulatorPanel({
       ? `Snapshot ready with ${snapshotElementCount} selectable item${snapshotElementCount === 1 ? "" : "s"}.`
       : "Snapshot ready with no selectable elements. Click a point or use Screenshot to attach visual context."
     : null;
-  const activeInspectElement = selectedElement ?? hoveredElement;
+  const activeInspectElement = hoveredElement ?? selectedElement;
   const activeInspectSource = activeInspectElement?.source ?? null;
   let previewModeHint: string | null = null;
   if (mode === "preview") {
