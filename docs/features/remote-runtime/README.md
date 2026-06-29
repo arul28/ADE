@@ -162,7 +162,7 @@ Local project bindings use the local ADE runtime for the same surfaces — agent
 
 iOS does not SSH into a machine. The phone pairs with an ADE machine and connects to that runtime's sync WebSocket advertised on the LAN or over a Tailscale tailnet. Install Tailscale on the phone and the ADE machine when they are not on the same local network.
 
-On desktop, phone pairing and sync status are managed by the local ADE runtime's sync service. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
+On desktop, the top-bar Mobile control is a runtime control, not a project control. It remains visible while a window is bound to a remote project: `window.ade.sync.*` routes to the active runtime binding, so a local/no-project window manages the local machine brain while a remote-bound window manages the remote machine's sync service. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 ## Troubleshooting
 

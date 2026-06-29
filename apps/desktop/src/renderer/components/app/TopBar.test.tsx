@@ -403,7 +403,7 @@ describe("TopBar", () => {
     expect(screen.getByTitle(rootPath)).toBeTruthy();
   });
 
-  it("renders a remote project tab without local sync polling", async () => {
+  it("renders a remote project tab with mobile sync control without immediate polling", async () => {
     (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
       .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
     useAppStore.setState({
@@ -427,8 +427,49 @@ describe("TopBar", () => {
     expect(screen.getByText("Remote App")).toBeTruthy();
     expect(screen.getByLabelText("Remote: Mac Studio")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remote, connected" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
-    expect(screen.queryByTitle("Connect a phone to this machine")).toBeNull();
+  });
+
+  it("opens mobile sync from a remote-bound project and reads the routed runtime status", async () => {
+    vi.useFakeTimers();
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
+    const getStatus = vi.fn(async () => makeSyncSnapshot());
+    globalThis.window.ade.sync.getStatus = getStatus as any;
+    useAppStore.setState({
+      project: { rootPath: "/srv/ade/remote-app", displayName: "Remote App", baseRef: "main" },
+      projectBinding: {
+        kind: "remote",
+        key: "remote:studio:project-1",
+        targetId: "studio",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/srv/ade/remote-app",
+        displayName: "Remote App",
+      },
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    try {
+      render(<TopBar />);
+
+      expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+      expect(getStatus).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByTitle("Connect a phone to this machine"));
+      await act(async () => {
+        vi.advanceTimersByTime(0);
+        await flushMicrotasks(2);
+      });
+
+      expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
+      expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
+      expect(getStatus).toHaveBeenCalledWith({ includeTransferReadiness: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("marks a remote project tab disconnected when the target snapshot is errored", async () => {
