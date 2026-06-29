@@ -9970,7 +9970,10 @@ export function AgentChatPane({
             data-testid="draft-launch-job"
             aria-live={isActiveJob ? "polite" : undefined}
             className={cn(
-              "mx-auto flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)]",
+              "flex items-center justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)]",
+              layoutVariant === "grid-tile"
+                ? "mx-auto w-full max-w-[var(--chat-column,52rem)]"
+                : "mx-3 max-w-[var(--chat-column,52rem)]",
               isFailed && "border-rose-300/20 bg-rose-500/[0.07] text-rose-100/90",
               isReady && "border-emerald-300/18 bg-emerald-500/[0.06] text-emerald-100/85",
               isActiveJob && "border-white/10 bg-white/[0.04] text-fg/70",
@@ -9987,7 +9990,7 @@ export function AgentChatPane({
                     ? (isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job))
                     : (
                       <>
-                        Message sent: <span className="text-fg/85">&ldquo;{draftLaunchPromptSnippet(job)}&rdquo;</span>
+                        New Chat Started: <span className="text-fg/85">&ldquo;{draftLaunchPromptSnippet(job)}&rdquo;</span>
                       </>
                     )}
               </span>
