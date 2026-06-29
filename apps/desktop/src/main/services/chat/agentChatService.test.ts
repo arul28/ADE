@@ -14032,15 +14032,13 @@ describe("createAgentChatService", () => {
               {
                 id: "turn-1",
                 status: "inProgress",
-                items: turnsListCalls === 1
-                  ? [
-                      {
-                        id: "reasoning-1",
-                        type: "reasoning",
-                        summary: ["Recovered partial reasoning."],
-                      },
-                    ]
-                  : [],
+                items: [
+                  {
+                    id: "reasoning-1",
+                    type: "reasoning",
+                    summary: ["Recovered partial reasoning."],
+                  },
+                ],
               },
             ],
             nextCursor: null,
@@ -14076,6 +14074,10 @@ describe("createAgentChatService", () => {
             && event.event.reason === "no_output"
           )).toBe(true);
         });
+        expect(events.filter((event) =>
+          event.event.type === "reasoning"
+          && event.event.text.includes("Recovered partial reasoning.")
+        )).toHaveLength(1);
         expect(turnsListCalls).toBeGreaterThanOrEqual(2);
       } finally {
         vi.useRealTimers();

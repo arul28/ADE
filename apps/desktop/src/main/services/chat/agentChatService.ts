@@ -613,6 +613,7 @@ type CodexRuntime = {
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
+  reconciledItemSignaturesByTurn: Map<string, Set<string>>;
   noFirstEventWatchdog: {
     turnId: string;
     timer: NodeJS.Timeout;
@@ -15468,6 +15469,7 @@ export function createAgentChatService(args: {
     runtime.agentMessageScopeByTurn.clear();
     runtime.agentMessageTextByTurn.clear();
     runtime.recentNotificationKeys.clear();
+    runtime.reconciledItemSignaturesByTurn.clear();
     for (const followup of runtime.pendingPlanFollowups.splice(0)) {
       emitPendingInputResolved(managed, {
         itemId: followup.itemId,
@@ -16691,6 +16693,40 @@ export function createAgentChatService(args: {
     return status === "inprogress" || status === "in_progress" || status === "running";
   }
 
+  function codexReconciledItemSignature(item: Record<string, unknown>, itemId: string): string {
+    return stableStringify({
+      itemId,
+      type: stringOrNull(item.type),
+      status: stringOrNull(item.status),
+      text: stringOrNull(item.text ?? item.content ?? item.message ?? item.markdown ?? item.description ?? item.planText),
+      summary: Array.isArray(item.summary) ? item.summary : null,
+      result: item.result ?? null,
+      error: item.error ?? null,
+      arguments: item.arguments ?? null,
+    });
+  }
+
+  function hasReconciledItemSignature(runtime: CodexRuntime, turnId: string, signature: string): boolean {
+    return runtime.reconciledItemSignaturesByTurn.get(turnId)?.has(signature) === true;
+  }
+
+  function rememberReconciledItemSignature(runtime: CodexRuntime, turnId: string, signature: string): void {
+    let signatures = runtime.reconciledItemSignaturesByTurn.get(turnId);
+    if (!signatures) {
+      signatures = new Set<string>();
+      runtime.reconciledItemSignaturesByTurn.set(turnId, signatures);
+    }
+    signatures.add(signature);
+    if (signatures.size > 512) {
+      signatures.clear();
+      signatures.add(signature);
+    }
+    if (runtime.reconciledItemSignaturesByTurn.size > 64) {
+      const [firstTurnId] = runtime.reconciledItemSignaturesByTurn.keys();
+      if (firstTurnId) runtime.reconciledItemSignaturesByTurn.delete(firstTurnId);
+    }
+  }
+
   function emitCodexReconciledItem(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -16700,6 +16736,8 @@ export function createAgentChatService(args: {
   ): boolean {
     if (!isCodexReconciledItemUseful(item)) return false;
     const itemId = stringOrNull(item.id) ?? `reconciled:${turnId}:${itemIndex}`;
+    const signature = codexReconciledItemSignature(item, itemId);
+    if (hasReconciledItemSignature(runtime, turnId, signature)) return false;
     const itemType = stringOrNull(item.type) ?? "";
     if (itemType === "agentMessage") {
       const text = stringOrNull(item.text ?? item.content ?? item.message);
@@ -16716,6 +16754,7 @@ export function createAgentChatService(args: {
         itemId,
         turnId,
       });
+      rememberReconciledItemSignature(runtime, turnId, signature);
       return true;
     }
     if (itemType === "reasoning") {
@@ -16733,6 +16772,7 @@ export function createAgentChatService(args: {
         itemId,
         turnId,
       });
+      rememberReconciledItemSignature(runtime, turnId, signature);
       return true;
     }
     if (itemType === "mcpToolCall") {
@@ -16756,12 +16796,14 @@ export function createAgentChatService(args: {
           status: item.error ? "failed" : "completed",
         });
       }
+      rememberReconciledItemSignature(runtime, turnId, signature);
       return true;
     }
     const eventKind = isCodexReconciledItemInProgress(item.status)
       ? "started"
       : "completed";
     handleCodexItemEvent(managed, runtime, { ...item, id: itemId }, eventKind, turnId);
+    rememberReconciledItemSignature(runtime, turnId, signature);
     return true;
   }
 
@@ -16880,6 +16922,7 @@ export function createAgentChatService(args: {
     runtime.codexAgentIndexByTurn.delete(turnId);
     runtime.agentMessageTextByTurn.clear();
     runtime.recentNotificationKeys.clear();
+    runtime.reconciledItemSignaturesByTurn.delete(turnId);
     const usage = normalizeUsagePayload(turn.usage ?? turn.totalUsage);
     markSessionIdleWithFreshCache(managed);
     drainPendingPlanFollowups(managed, runtime);
@@ -17194,6 +17237,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.reconciledItemSignaturesByTurn.clear();
       setSessionActive(managed);
       scheduleCodexNoFirstEventWatchdog(managed, runtime, turnId);
       if (!turnId || runtime.startedTurnId !== turnId) {
@@ -17263,6 +17307,7 @@ export function createAgentChatService(args: {
       runtime.codexAgentIndexByTurn.delete(turnId);
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.reconciledItemSignaturesByTurn.delete(turnId);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
       drainPendingPlanFollowups(managed, runtime);
@@ -17552,6 +17597,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.reconciledItemSignaturesByTurn.clear();
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
@@ -17875,6 +17921,7 @@ export function createAgentChatService(args: {
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
+      reconciledItemSignaturesByTurn: new Map<string, Set<string>>(),
       noFirstEventWatchdog: null,
       stalledTurnIds: new Set<string>(),
       stallReconcileInFlight: new Set<string>(),
@@ -20193,6 +20240,7 @@ export function createAgentChatService(args: {
       managed.runtime.agentMessageScopeByTurn.clear();
       managed.runtime.agentMessageTextByTurn.clear();
       managed.runtime.recentNotificationKeys.clear();
+      managed.runtime.reconciledItemSignaturesByTurn.clear();
       if (isCodexRequestTimeoutError(error)) {
         teardownRuntime(managed, "handle_close");
       }
