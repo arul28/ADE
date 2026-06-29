@@ -937,7 +937,9 @@ export function TopBar() {
   const remoteStatusCount = Math.max(connectedRemoteCount, openRemoteProjectTabs.length);
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
-  const showSyncControl = projectHydrated === true && !remoteBinding;
+  const showSyncControl = projectHydrated === true;
+  const syncStatusTargetKey =
+    remoteBinding?.key ?? project?.rootPath ?? "machine";
 
   useEffect(() => {
     openProjectTabRootsRef.current = openProjectTabRoots;
@@ -1220,11 +1222,12 @@ export function TopBar() {
       disposeSyncEvents?.();
     };
     // Background projects don't broadcast sync-status events (main.ts filters
-    // them to the active project), so we re-run this effect on rootPath change
-    // and let the delayed startup check pick up the current state. With no
-    // project open, sync calls fall back to the machine-level brain service.
-    // Focus and explicit drawer opens still refresh immediately.
-  }, [phoneSyncOpen, project?.rootPath, showSyncControl]);
+    // them to the active project), so we re-run this effect when the routed
+    // runtime target changes and let the delayed startup check pick up the
+    // current state. With no project open, sync calls fall back to the
+    // machine-level brain service. Focus and explicit drawer opens still
+    // refresh immediately.
+  }, [phoneSyncOpen, showSyncControl, syncStatusTargetKey]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
