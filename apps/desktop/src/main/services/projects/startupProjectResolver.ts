@@ -67,6 +67,7 @@ export function normalizeStartupProjectState(args: {
       if (acc.some((item) => recentProjectKey(item) === key)) return acc;
       const remoteRoot = typeof entry.rootPath === "string" ? entry.rootPath : "";
       const remote = { ...entry.remote };
+      // Legacy remote recents can only borrow the last opened binding's icon.
       if (
         remote.iconDataUrl == null &&
         lastRemoteProjectBinding?.targetId === remote.targetId &&
