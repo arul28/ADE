@@ -86,6 +86,16 @@ function expectExecutePlan(
   return plan;
 }
 
+function expectStaticPlan(
+  plan: ReturnType<typeof buildCliPlan>,
+): Extract<ReturnType<typeof buildCliPlan>, { kind: "static" }> {
+  expect(plan.kind).toBe("static");
+  if (plan.kind !== "static") {
+    throw new Error(`Expected static plan, got ${plan.kind}`);
+  }
+  return plan;
+}
+
 function writeSyncHostSingletonLock(args: {
   lockPath: string;
   pid: number;
@@ -718,10 +728,9 @@ describe("ADE CLI", () => {
     ]);
 
     const plan = buildCliPlan(parsed.command);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
+    const executePlan = expectExecutePlan(plan);
 
-    expect(plan.steps[0]?.params).toEqual({
+    expect(executePlan.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
         domain: "file",
@@ -927,10 +936,9 @@ describe("ADE CLI", () => {
       "--arg-json",
       'metadata.tags=["review"]',
     ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
+    const executePlan = expectExecutePlan(plan);
 
-    expect(plan.steps[0]?.params).toEqual({
+    expect(executePlan.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
         domain: "git",
@@ -1065,10 +1073,9 @@ describe("ADE CLI", () => {
       "openInUi=true",
     ]);
 
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
+    const executePlan = expectExecutePlan(plan);
 
-    expect(plan.steps[0]?.params).toEqual({
+    expect(executePlan.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
         domain: "chat",
@@ -1086,6 +1093,40 @@ describe("ADE CLI", () => {
           codexFastMode: false,
           reasoningEffort: "xhigh",
           openInUi: true,
+        },
+      },
+    });
+  });
+
+  it("chains chat create --prompt into a first chat send", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--model",
+      "anthropic/claude-opus-4-8",
+      "--prompt",
+      "Fix the tests",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    expect(executePlan.steps).toHaveLength(2);
+    expect(executePlan.steps[0]?.key).toBe("session");
+
+    const sendStep = executePlan.steps[1]!;
+    const sendParams = (sendStep.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
+    });
+    expect(sendParams).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "sendMessage",
+        args: {
+          sessionId: "chat-new",
+          text: "Fix the tests",
         },
       },
     });
@@ -1109,10 +1150,9 @@ describe("ADE CLI", () => {
       "--print-config",
     ]);
 
-    expect(plan.kind).toBe("static");
-    if (plan.kind !== "static") return;
-    const value = plan.value as { input: Record<string, unknown> };
-    expect(plan.value).toMatchObject({
+    const staticPlan = expectStaticPlan(plan);
+    const value = staticPlan.value as { input: Record<string, unknown> };
+    expect(staticPlan.value).toMatchObject({
       ok: true,
       dryRun: true,
       action: "chat.createSession",
@@ -1142,6 +1182,41 @@ describe("ADE CLI", () => {
     expect(value.input).not.toHaveProperty("title");
   });
 
+  it("prints chat create --prompt dry-run with the follow-up send", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--model",
+      "anthropic/claude-opus-4-8",
+      "--prompt",
+      "Fix the tests",
+      "--print-config",
+    ]);
+
+    const staticPlan = expectStaticPlan(plan);
+    expect(staticPlan.value).toMatchObject({
+      action: "chat.createSession",
+      input: {
+        laneId: "lane-1",
+        provider: "claude",
+        model: "anthropic/claude-opus-4-8",
+      },
+      afterCreate: [
+        {
+          action: "chat.sendMessage",
+          input: {
+            sessionId: "<created-session-id>",
+            text: "Fix the tests",
+          },
+        },
+      ],
+    });
+  });
+
   it("omits unset optional fields from chat create config previews", () => {
     const plan = buildCliPlan([
       "chat",
@@ -1155,10 +1230,9 @@ describe("ADE CLI", () => {
       "--print-config",
     ]);
 
-    expect(plan.kind).toBe("static");
-    if (plan.kind !== "static") return;
-    const value = plan.value as { input: Record<string, unknown> };
-    expect(plan.value).toMatchObject({
+    const staticPlan = expectStaticPlan(plan);
+    const value = staticPlan.value as { input: Record<string, unknown> };
+    expect(staticPlan.value).toMatchObject({
       input: {
         laneId: "lane-1",
         provider: "codex",
@@ -1182,6 +1256,32 @@ describe("ADE CLI", () => {
     expect(value.input).not.toHaveProperty("codexFastMode");
   });
 
+  it("builds chat read as a transcript action", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "read",
+      "chat-1",
+      "--limit",
+      "25",
+      "--since",
+      "2026-06-29T00:00:00.000Z",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    expect(executePlan.formatter).toBe("chat-read");
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "readTranscript",
+        args: {
+          sessionId: "chat-1",
+          limit: 25,
+          since: "2026-06-29T00:00:00.000Z",
+        },
+      },
+    });
+  });
+
   it("rejects reasoning effort on legacy agent spawn", () => {
     expect(() =>
       buildCliPlan([
@@ -1197,6 +1297,20 @@ describe("ADE CLI", () => {
     ).toThrow(/agent spawn does not support reasoning effort/);
   });
 
+  it("rejects conflicting plain chat create prompt and no-kickoff flags", () => {
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--prompt",
+        "Fix the tests",
+        "--no-kickoff",
+      ]),
+    ).toThrow(/--no-kickoff cannot be used with --prompt/);
+  });
+
   it("rejects --print=value on chat send", () => {
     expect(() => buildCliPlan([
       "chat",
@@ -1206,6 +1320,22 @@ describe("ADE CLI", () => {
       "--text",
       "Hello",
     ])).toThrow(/--print must be set at session creation time/);
+  });
+
+  it("formats chat transcript reads as role-separated text", () => {
+    const text = formatOutput(
+      [
+        { role: "user", text: "hello", timestamp: "2026-06-29T12:00:00.000Z" },
+        { role: "assistant", text: "hi", timestamp: "2026-06-29T12:00:01.000Z" },
+      ],
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "chat-read",
+    );
+
+    expect(text).toContain("ADE chat transcript");
+    expect(text).toContain("user 2026-06-29T12:00:00.000Z");
+    expect(text).toContain("hello");
+    expect(text).toContain("assistant 2026-06-29T12:00:01.000Z");
   });
 
   it("builds chat show/status as positional session summary calls", () => {
@@ -1379,6 +1509,28 @@ describe("ADE CLI", () => {
       domain: "git",
       action: "getStatus",
       result: { clean: true },
+    });
+
+    const chatCreateWithKickoff = summarizeExecution({
+      plan: { kind: "execute", label: "chat create", steps: [] },
+      connection,
+      values: {
+        session: {
+          domain: "chat",
+          action: "createSession",
+          result: { sessionId: "chat-new" },
+        },
+        result: {
+          domain: "chat",
+          action: "sendMessage",
+          result: { ok: true, accepted: true, sessionId: "chat-new" },
+        },
+      },
+    } as any);
+    expect(chatCreateWithKickoff).toEqual({
+      ok: true,
+      session: { sessionId: "chat-new" },
+      kickoff: { ok: true, accepted: true, sessionId: "chat-new" },
     });
   });
 
@@ -2440,7 +2592,15 @@ describe("ADE CLI", () => {
     expect(chatCreateHelp.kind).toBe("help");
     if (chatCreateHelp.kind !== "help") return;
     expect(chatCreateHelp.text).toContain("--reasoning-effort");
+    expect(chatCreateHelp.text).toContain("ultracode");
+    expect(chatCreateHelp.text).toContain("--prompt <text>");
+    expect(chatCreateHelp.text).toContain("ade shell start-cli claude");
     expect(chatCreateHelp.text).toContain("codexSandbox=danger-full-access");
+
+    const chatHelp = buildCliPlan(["help", "chat"]);
+    expect(chatHelp.kind).toBe("help");
+    if (chatHelp.kind !== "help") return;
+    expect(chatHelp.text).toContain("ade chat read <session>");
 
     const agentSpawnHelp = buildCliPlan(["agent", "spawn", "--help"]);
     expect(agentSpawnHelp.kind).toBe("help");

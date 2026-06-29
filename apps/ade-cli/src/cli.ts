@@ -148,6 +148,7 @@ type FormatterId =
   | "run-defs"
   | "run-runtime"
   | "chat-list"
+  | "chat-read"
   | "tests-runs"
   | "proof-list"
   | "ios-sim-status"
@@ -1293,6 +1294,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
     $ ade shell start-cli codex --lane <lane> --permission-mode edit
+    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
@@ -1301,6 +1303,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
+
+  Use start-cli for tracked provider CLI sessions. It supports --reasoning-effort
+  for reasoning-aware providers; ade agent spawn is the legacy CLI-session path.
 `,
   terminal: `${ADE_BANNER}
   Attached terminal
@@ -1341,8 +1346,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
+    $ ade chat read <session> --limit 20 --text     Read recent chat messages
+    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix"
+                                                    Start a tracked Claude Code CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
     $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
@@ -1356,7 +1365,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --provider <name>       claude | codex | cursor | droid | opencode.
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when the selected model supports it.
-                            Common tiers: minimal, low, medium, high, xhigh, max.
+                            Common tiers: minimal, low, medium, high, xhigh, max, ultracode.
+    --prompt <text>         Create the chat, then send this as the first message.
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
     --fast                  Request fast service tier when the model advertises it.
@@ -1377,6 +1387,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort high --permissions plan
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort ultracode --prompt "fix"
     $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
     $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.5 --prompt "Work this issue"
 
@@ -1386,6 +1397,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --model <id>            Model id, also sent as modelId for runtime parity.
     --reasoning-effort <v>  Reasoning tier when supported by the model.
     --effort <v>            Alias for --reasoning-effort.
+                            Common tiers: minimal, low, medium, high, xhigh, max, ultracode.
+    --prompt <text>         Create the chat, then send this as the first message.
+    --kickoff <text>        Alias for --prompt.
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
     --fast                  Request fast service tier when supported.
@@ -1407,6 +1421,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Discovery:
     $ ade actions run chat.modelCatalog --input-json '{"mode":"cached"}' --json
     $ ade actions run chat.getAvailableModels --input-json '{"provider":"codex"}' --json
+
+  CLI sessions:
+    Use ade shell start-cli claude ... --reasoning-effort <tier> when you want
+    a tracked Claude Code terminal session instead of a persistent Work chat.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -3616,14 +3634,41 @@ function compactPreviewObject(input: JsonObject): JsonObject {
   return output;
 }
 
-function buildChatCreateConfigPreview(args: JsonObject): JsonObject {
+function buildChatCreateConfigPreview(
+  args: JsonObject,
+  options: {
+    linearIssue?: JsonObject | null;
+    kickoffText?: string | null;
+    noKickoff?: boolean;
+  } = {},
+): JsonObject {
   const input = compactPreviewObject(args);
   const permissionMode = asString(input.permissionMode) ?? "default";
+  const afterCreate: JsonObject[] = [];
+  if (options.linearIssue) {
+    afterCreate.push({
+      action: "lane.attachLinearIssueToSession",
+      input: compactPreviewObject({
+        chatSessionId: "<created-session-id>",
+        issues: [options.linearIssue],
+      }),
+    });
+  }
+  if (!options.noKickoff && options.kickoffText) {
+    afterCreate.push({
+      action: "chat.sendMessage",
+      input: {
+        sessionId: "<created-session-id>",
+        text: options.kickoffText,
+      },
+    });
+  }
   return {
     ok: true,
     dryRun: true,
     action: "chat.createSession",
     input,
+    ...(afterCreate.length ? { afterCreate } : {}),
     resolved: {
       provider: asString(input.provider) ?? null,
       model: asString(input.model) ?? asString(input.modelId) ?? null,
@@ -5726,6 +5771,28 @@ function buildChatPlan(args: string[]): CliPlan {
         ]),
       ],
     };
+  if (sub === "read" || sub === "messages" || sub === "transcript") {
+    const targetSession = requireValue(sessionId, "sessionId");
+    const limit = readIntOption(args, ["--limit"], 50);
+    const since = readValue(args, ["--since"]);
+    return {
+      kind: "execute",
+      label: "chat read",
+      formatter: "chat-read",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "readTranscript",
+          collectGenericObjectArgs(args, {
+            sessionId: targetSession,
+            ...(limit !== undefined ? { limit } : {}),
+            ...(since ? { since } : {}),
+          }),
+        ),
+      ],
+    };
+  }
   if (
     sub === "attach-linear-issue" ||
     sub === "attach-linear" ||
@@ -5852,6 +5919,9 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const noKickoff = readFlag(args, ["--no-kickoff"]);
     const explicitKickoff = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+    if (!linearIssue && noKickoff && explicitKickoff) {
+      throw new CliUsageError("--no-kickoff cannot be used with --prompt on plain chat create.");
+    }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
     const createStep = actionStep(
       "result",
@@ -5880,14 +5950,52 @@ function buildChatPlan(args: string[]): CliPlan {
     );
     const createArgs = (createStep.params as JsonObject).arguments as JsonObject;
     const actionArgs = createArgs.args as JsonObject;
+    const kickoffText =
+      explicitKickoff ??
+      (linearIssue && !noKickoff ? deriveLinearKickoffPrompt(linearIssue) : null);
     if (printConfig) {
       return {
         kind: "static",
-        value: buildChatCreateConfigPreview(actionArgs),
+        value: buildChatCreateConfigPreview(actionArgs, {
+          linearIssue,
+          kickoffText,
+          noKickoff,
+        }),
         formatter: "action-result",
       };
     }
     if (!linearIssue) {
+      if (explicitKickoff) {
+        return {
+          kind: "execute",
+          label: "chat create",
+          steps: [
+            { ...createStep, key: "session" },
+            {
+              key: "result",
+              method: "ade/actions/call",
+              params: (values) => {
+                const targetSession = sessionIdFromCreateChatValue(values.session);
+                if (!targetSession) {
+                  throw new CliUsageError("chat create could not resolve the new session id to send the prompt.");
+                }
+                return {
+                  name: "run_ade_action",
+                  arguments: {
+                    domain: "chat",
+                    action: "sendMessage",
+                    args: {
+                      sessionId: targetSession,
+                      text: explicitKickoff,
+                    },
+                  },
+                };
+              },
+              unwrapToolResult: true,
+            },
+          ],
+        };
+      }
       return { kind: "execute", label: "chat create", steps: [createStep] };
     }
     const issueForKickoff = linearIssue;
@@ -14017,6 +14125,23 @@ function formatChatList(value: unknown): string {
   );
 }
 
+function formatChatRead(value: unknown): string {
+  const entries = Array.isArray(value)
+    ? value.filter(isRecord)
+    : firstArray(value, ["entries", "messages", "items"]);
+  if (!entries.length) return "ADE chat transcript\n(no messages)";
+  const lines = ["ADE chat transcript"];
+  for (const entry of entries) {
+    const role = asString(entry.role) ?? "message";
+    const timestamp = asString(entry.timestamp);
+    const text = asString(entry.displayText) ?? asString(entry.text) ?? "";
+    lines.push("");
+    lines.push(timestamp ? `${role} ${timestamp}` : role);
+    lines.push(text.length ? text : "(empty)");
+  }
+  return lines.join("\n");
+}
+
 function formatTestsRuns(value: unknown): string {
   const runs = firstArray(value, ["runs", "items"]);
   return renderTable(
@@ -14984,6 +15109,8 @@ function formatTextOutput(
       return formatRunTable(value, "ADE process runtime");
     case "chat-list":
       return formatChatList(value);
+    case "chat-read":
+      return formatChatRead(value);
     case "tests-runs":
       return formatTestsRuns(value);
     case "proof-list":
@@ -15215,6 +15342,29 @@ function summarizeExecution(args: {
 
   if (plan.label === "PR create") {
     return summarizePrCreateResult(values.result ?? values);
+  }
+
+  if (
+    (plan.label === "chat create" ||
+      plan.label === "chat create from Linear issue") &&
+    values.session !== undefined
+  ) {
+    return {
+      ok: true,
+      session: unwrapActionEnvelope(values.session),
+      ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
+      ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
+    };
+  }
+
+  if (plan.label === "chat send") {
+    const raw = unwrapActionEnvelope(values.result);
+    if (isRecord(raw)) return raw;
+    return {
+      ok: true,
+      accepted: true,
+      note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
+    };
   }
 
   if (

@@ -80,7 +80,9 @@ describe("isAllowedAdeAction", () => {
 
   it("exposes subagent transcript reads through the chat runtime action surface", () => {
     expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
+    expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
     expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
   });
 
   it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
@@ -350,17 +352,29 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(getAdeActionInputContract("chat", "getSessionSummary")).toMatchObject({
       input: expect.stringContaining("scalar sessionId"),
     });
+    expect(getAdeActionInputContract("chat", "readTranscript")).toMatchObject({
+      input: expect.stringContaining("limit"),
+    });
+    expect(getAdeActionInputContract("chat", "sendMessage")).toMatchObject({
+      description: expect.stringContaining("asynchronously"),
+    });
   });
 
-  it("normalizes chat action argument shapes for model discovery and session summaries", async () => {
+  it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {
     const createSession = vi.fn(async (args?: unknown) => ({ sessionId: "chat-new", args }));
     const getAvailableModels = vi.fn(async (args: { provider?: string }) => [{ id: args.provider ?? "any" }]);
     const getSessionSummary = vi.fn(async (sessionId: string) => ({ sessionId }));
+    const readTranscript = vi.fn(async (sessionId: string, limit?: number, since?: string) => ([
+      { role: "user", text: sessionId, timestamp: since ?? "now", limit },
+    ]));
+    const sendMessage = vi.fn(async () => undefined);
     const runtime = {
       agentChatService: {
         createSession,
         getAvailableModels,
         getSessionSummary,
+        readTranscript,
+        sendMessage,
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
 
@@ -368,6 +382,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       createSession?: (args?: unknown) => Promise<unknown>;
       getAvailableModels?: (args?: unknown) => Promise<unknown>;
       getSessionSummary?: (args?: unknown) => Promise<unknown>;
+      readTranscript?: (args?: unknown) => Promise<unknown>;
+      sendMessage?: (args?: unknown) => Promise<unknown>;
     };
 
     await expect(chat.getAvailableModels?.({})).resolves.toEqual([{ id: "any" }]);
@@ -395,6 +411,30 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       provider: "codex",
       reasoningEffort: "xhigh",
     });
+
+    await expect(chat.readTranscript?.({
+      sessionId: " chat-1 ",
+      limit: "25",
+      since: "2026-06-29T00:00:00.000Z",
+    })).resolves.toEqual([
+      {
+        role: "user",
+        text: "chat-1",
+        timestamp: "2026-06-29T00:00:00.000Z",
+        limit: 25,
+      },
+    ]);
+    expect(readTranscript).toHaveBeenCalledWith("chat-1", 25, "2026-06-29T00:00:00.000Z");
+
+    await expect(chat.sendMessage?.({
+      sessionId: " chat-1 ",
+      text: "next",
+    })).resolves.toMatchObject({
+      ok: true,
+      accepted: true,
+      sessionId: "chat-1",
+    });
+    expect(sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "next" });
   });
 
   it("unwraps chat.listSessions action args before calling the positional chat service API", async () => {

@@ -465,6 +465,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "rewindFiles",
     "saveTempAttachment",
     "sendMessage",
+    "readTranscript",
     "setClaudeOutputStyle",
     "setParallelLaunchState",
     "steer",
@@ -746,6 +747,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Read one chat session summary.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
+    },
+    readTranscript: {
+      description: "Read recent user/assistant messages for a chat session.",
+      input: "object { sessionId: string, limit?: number, since?: ISO timestamp }",
+      example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20}'",
+    },
+    sendMessage: {
+      description: "Send a user message to a chat session; provider dispatch continues asynchronously.",
+      input: "object { sessionId: string, text: string, attachments? }",
+      example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
     },
     modelCatalog: {
       description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
@@ -1098,6 +1109,34 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         laneId,
         Object.keys(options).length ? options : undefined,
       );
+    },
+    readTranscript: (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.readTranscript");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const limitValue = record.limit;
+      const parsedLimit = typeof limitValue === "number"
+        ? limitValue
+        : typeof limitValue === "string" && limitValue.trim()
+          ? Number.parseInt(limitValue, 10)
+          : undefined;
+      const limit = typeof parsedLimit === "number" && Number.isFinite(parsedLimit)
+        ? Math.max(1, Math.min(500, Math.floor(parsedLimit)))
+        : undefined;
+      const since = typeof record.since === "string" && record.since.trim()
+        ? record.since.trim()
+        : undefined;
+      return agentChatService.readTranscript(sessionId, limit, since);
+    },
+    sendMessage: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.sendMessage");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      await agentChatService.sendMessage({ ...record, sessionId } as never);
+      return {
+        ok: true,
+        accepted: true,
+        sessionId,
+        note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
+      };
     },
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");

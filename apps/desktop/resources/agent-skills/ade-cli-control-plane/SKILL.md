@@ -81,6 +81,27 @@ ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --
 ade chat create --from-linear-issue ENG-431            # chat with the issue attached + kickoff
 ```
 
+## Chat vs. CLI sessions
+
+Use `ade chat create` for persistent ADE Work chats. `--prompt` creates the
+chat and then sends that text as the first message; use `--print-config` /
+`--dry-run` to verify both the create payload and the follow-up send before
+launching. Use `ade chat send <session> --text ...` for later messages and
+`ade chat read <session> --text` to confirm recent transcript messages.
+
+Use `ade shell start-cli <provider>` for tracked provider CLI sessions in a
+terminal. This is the reasoning-aware CLI path, for example:
+
+```
+ade shell start-cli claude --lane <lane> --model anthropic/claude-opus-4-8 --reasoning-effort ultracode --permissions full-auto --prompt "Fix the issue"
+```
+
+`ade agent spawn` is the older CLI-session launcher and rejects
+`--reasoning-effort`; choose it only when you do not need to pin a reasoning
+tier. Common reasoning tiers include `minimal`, `low`, `medium`, `high`,
+`xhigh`, `max`, and `ultracode`; confirm model-specific support with
+`ade actions run chat.modelCatalog --json`.
+
 Report what you actually did back to the issue with `ade linear comment` as you progress — that comment is how reviewers and the issue's watchers see status. Use `ade help linear` for the full flag set.
 
 ## Fallback path
