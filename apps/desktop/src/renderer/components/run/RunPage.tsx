@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   CaretDown,
@@ -336,38 +336,25 @@ function runPageLaneStateEqual(
   );
 }
 
-function RecentProjectIcon({
-  rootPath,
+function ProjectIconArtwork({
+  dataUrl,
+  fallback,
   onAccentColor,
 }: {
-  rootPath: string;
+  dataUrl: string | null | undefined;
+  fallback: ReactNode;
   // Reports the icon's sampled accent color (or null) so the row can tint its
   // tile to match the logo. Fires null until an icon resolves.
   onAccentColor?: (color: string | null) => void;
 }) {
-  const [icon, setIcon] = useState<ProjectIcon | null>(null);
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
-    setIcon(null);
     setFailed(false);
-    window.ade.project
-      .resolveIcon(rootPath)
-      .then((nextIcon) => {
-        if (!cancelled) setIcon(nextIcon);
-      })
-      .catch(() => {
-        if (!cancelled) setIcon(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rootPath]);
+  }, [dataUrl]);
 
   useEffect(() => {
     let cancelled = false;
-    const dataUrl = icon?.dataUrl;
     if (!dataUrl || failed) {
       onAccentColor?.(null);
       return () => {
@@ -384,12 +371,12 @@ function RecentProjectIcon({
     return () => {
       cancelled = true;
     };
-  }, [failed, icon?.dataUrl, onAccentColor]);
+  }, [dataUrl, failed, onAccentColor]);
 
-  if (icon?.dataUrl && !failed) {
+  if (dataUrl && !failed) {
     return (
       <img
-        src={icon.dataUrl}
+        src={dataUrl}
         alt=""
         draggable={false}
         onError={() => setFailed(true)}
@@ -403,7 +390,41 @@ function RecentProjectIcon({
     );
   }
 
-  return <Folder size={16} weight="regular" />;
+  return <>{fallback}</>;
+}
+
+function RecentProjectIcon({
+  rootPath,
+  onAccentColor,
+}: {
+  rootPath: string;
+  onAccentColor?: (color: string | null) => void;
+}) {
+  const [icon, setIcon] = useState<ProjectIcon | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setIcon(null);
+    window.ade.project
+      .resolveIcon(rootPath)
+      .then((nextIcon) => {
+        if (!cancelled) setIcon(nextIcon);
+      })
+      .catch(() => {
+        if (!cancelled) setIcon(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [rootPath]);
+
+  return (
+    <ProjectIconArtwork
+      dataUrl={icon?.dataUrl}
+      fallback={<Folder size={16} weight="regular" />}
+      onAccentColor={onAccentColor}
+    />
+  );
 }
 
 const REMOTE_ACCENT = "#F59E0B";
@@ -425,8 +446,9 @@ function abbreviateHome(path: string): string {
 }
 
 // A single recents row. Local rows resolve a project icon (and tint their tile
-// with the sampled accent); remote rows use the amber DesktopTower glyph and a
-// connection dot. Offline remote rows are dimmed with a Reconnect affordance.
+// with the sampled accent); remote rows use a host-resolved icon when present,
+// plus the amber machine badge and connection dot. Offline remote rows are
+// dimmed with a Reconnect affordance.
 function RecentProjectRow({
   rp,
   connectionState,
@@ -450,12 +472,18 @@ function RecentProjectRow({
   const connecting = connectionState === "connecting";
   // Remote rows are "offline" until their target reports a live connection.
   const offline = isRemote && !connected;
-  const tileAccent = isRemote ? REMOTE_ACCENT : accentColor;
+  const remoteIconDataUrl = isRemote ? rp.remote?.iconDataUrl : null;
+  const hasRemoteIcon = Boolean(remoteIconDataUrl);
+  let tileAccent = accentColor;
+  if (isRemote) {
+    tileAccent = hasRemoteIcon ? (accentColor ?? REMOTE_ACCENT) : REMOTE_ACCENT;
+  }
   const tileBg = tileAccent
     ? `color-mix(in srgb, ${tileAccent} 18%, transparent)`
     : "color-mix(in srgb, var(--color-accent) 15%, transparent)";
   const tileColor = tileAccent ?? COLORS.accent;
-  const edgeColor = tileAccent ?? COLORS.accent;
+  const edgeColor = isRemote ? REMOTE_ACCENT : (tileAccent ?? COLORS.accent);
+  const showRowActions = !connecting;
 
   const dotColor = connected
     ? "#34D399"
@@ -474,6 +502,7 @@ function RecentProjectRow({
           alignItems: "center",
           gap: 12,
           padding: "12px 16px",
+          paddingRight: showRowActions ? 64 : 16,
           width: "100%",
           background: "rgba(255,255,255,0.02)",
           border: `1px solid ${COLORS.border}`,
@@ -500,10 +529,39 @@ function RecentProjectRow({
             background: tileBg,
             color: tileColor,
             flexShrink: 0,
+            position: "relative",
           }}
         >
           {isRemote ? (
-            <DesktopTower size={18} weight="duotone" />
+            <>
+              <ProjectIconArtwork
+                dataUrl={remoteIconDataUrl}
+                fallback={<DesktopTower size={18} weight="duotone" />}
+                onAccentColor={setAccentColor}
+              />
+              {hasRemoteIcon ? (
+                <span
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    right: -3,
+                    bottom: -3,
+                    width: 14,
+                    height: 14,
+                    borderRadius: 5,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "rgba(18,13,6,0.94)",
+                    border: "1px solid color-mix(in srgb, #F59E0B 62%, transparent)",
+                    color: "#FBBF24",
+                    boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
+                  }}
+                >
+                  <DesktopTower size={9} weight="duotone" />
+                </span>
+              ) : null}
+            </>
           ) : (
             <RecentProjectIcon
               rootPath={rp.rootPath}
@@ -584,6 +642,8 @@ function RecentProjectRow({
             alignItems: "flex-end",
             gap: 4,
             flexShrink: 0,
+            minWidth: connecting ? 96 : 68,
+            maxWidth: connecting ? 116 : 96,
           }}
         >
           {offline ? (
@@ -608,7 +668,7 @@ function RecentProjectRow({
                     : undefined
                 }
               />
-              {connecting ? "Connecting" : "Reconnect"}
+              {connecting ? "Reconnecting" : "Reconnect"}
             </span>
           ) : rp.laneCount !== undefined ? (
             <span
@@ -625,96 +685,98 @@ function RecentProjectRow({
               {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
             </span>
           ) : null}
-          {rp.lastOpenedAt ? (
+          {rp.lastOpenedAt && !connecting ? (
             <span style={{ fontSize: 9, color: COLORS.textDim }}>
               {toRelativeTime(rp.lastOpenedAt)}
             </span>
           ) : null}
         </div>
       </button>
-      <div
-        className={
-          rp.pinned ? undefined : "opacity-0 group-hover:opacity-100"
-        }
-        style={{
-          position: "absolute",
-          top: 6,
-          right: 6,
-          display: "flex",
-          gap: 4,
-          transition: "opacity 0.15s ease",
-          zIndex: 2,
-        }}
-      >
-        <button
-          type="button"
-          aria-label={
-            rp.pinned
-              ? `Unpin ${rp.displayName}`
-              : `Pin ${rp.displayName} to top`
+      {showRowActions ? (
+        <div
+          className={
+            rp.pinned ? undefined : "opacity-0 group-hover:opacity-100"
           }
-          aria-pressed={rp.pinned ? true : false}
-          onClick={(e) => {
-            e.stopPropagation();
-            onTogglePin();
-          }}
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
+            position: "absolute",
+            top: 6,
+            right: 6,
             display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: rp.pinned
-              ? "color-mix(in srgb, var(--color-accent) 26%, transparent)"
-              : "rgba(255,255,255,0.06)",
-            border: rp.pinned
-              ? "1px solid color-mix(in srgb, var(--color-accent) 45%, transparent)"
-              : "1px solid rgba(255,255,255,0.08)",
-            color: rp.pinned ? COLORS.accent : COLORS.textDim,
-            cursor: "pointer",
-            transition: "background 0.15s ease, color 0.15s ease",
-            padding: 0,
+            gap: 4,
+            transition: "opacity 0.15s ease",
+            zIndex: 2,
           }}
-          title={rp.pinned ? "Unpin" : "Pin to top"}
         >
-          <PushPin size={12} weight={rp.pinned ? "fill" : "regular"} />
-        </button>
-        <button
-          type="button"
-          aria-label={`Remove ${rp.displayName} from recents`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onForget();
-          }}
-          disabled={isForgetting}
-          style={{
-            width: 22,
-            height: 22,
-            borderRadius: 6,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "rgba(255,255,255,0.06)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            color: COLORS.textDim,
-            cursor: "pointer",
-            transition: "background 0.15s ease, color 0.15s ease",
-            padding: 0,
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = "rgba(239,68,68,0.18)";
-            e.currentTarget.style.color = "#EF4444";
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-            e.currentTarget.style.color = COLORS.textDim;
-          }}
-          title="Remove from recents"
-        >
-          <X size={12} weight="bold" />
-        </button>
-      </div>
+          <button
+            type="button"
+            aria-label={
+              rp.pinned
+                ? `Unpin ${rp.displayName}`
+                : `Pin ${rp.displayName} to top`
+            }
+            aria-pressed={rp.pinned ? true : false}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: rp.pinned
+                ? "color-mix(in srgb, var(--color-accent) 26%, transparent)"
+                : "rgba(255,255,255,0.06)",
+              border: rp.pinned
+                ? "1px solid color-mix(in srgb, var(--color-accent) 45%, transparent)"
+                : "1px solid rgba(255,255,255,0.08)",
+              color: rp.pinned ? COLORS.accent : COLORS.textDim,
+              cursor: "pointer",
+              transition: "background 0.15s ease, color 0.15s ease",
+              padding: 0,
+            }}
+            title={rp.pinned ? "Unpin" : "Pin to top"}
+          >
+            <PushPin size={12} weight={rp.pinned ? "fill" : "regular"} />
+          </button>
+          <button
+            type="button"
+            aria-label={`Remove ${rp.displayName} from recents`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onForget();
+            }}
+            disabled={isForgetting}
+            style={{
+              width: 22,
+              height: 22,
+              borderRadius: 6,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "rgba(255,255,255,0.06)",
+              border: "1px solid rgba(255,255,255,0.08)",
+              color: COLORS.textDim,
+              cursor: "pointer",
+              transition: "background 0.15s ease, color 0.15s ease",
+              padding: 0,
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "rgba(239,68,68,0.18)";
+              e.currentTarget.style.color = "#EF4444";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+              e.currentTarget.style.color = COLORS.textDim;
+            }}
+            title="Remove from recents"
+          >
+            <X size={12} weight="bold" />
+          </button>
+        </div>
+      ) : null}
       {isOpen ? (
         <span
           aria-hidden

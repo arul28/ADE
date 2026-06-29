@@ -78,6 +78,7 @@ describe("upsertRecentProject", () => {
       projectId: "p1",
       runtimeName: "mac-mini",
       hostname: "mac-mini.local",
+      iconDataUrl: "data:image/png;base64,remote-icon",
     };
     const next = upsertRecentProject(
       {},

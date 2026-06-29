@@ -1616,6 +1616,7 @@ app.whenReady().then(async () => {
           projectId: binding.projectId,
           runtimeName: binding.runtimeName,
           hostname: binding.hostname || binding.runtimeName,
+          iconDataUrl: binding.iconDataUrl ?? null,
         },
       },
       { recordLastProject: false, recordRecent: true },

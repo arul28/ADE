@@ -1,14 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { AppWelcomeVideoState, OpenProjectBinding, RecentlyInstalledUpdate } from "../../../shared/types";
+import type { AppWelcomeVideoState, OpenProjectBinding, RecentProjectRemoteRef, RecentlyInstalledUpdate } from "../../../shared/types";
 
-export type RecentProjectRemote = {
-  targetId: string;
-  projectId: string;
-  runtimeName: string;
-  hostname: string;
-};
+export type RecentProjectRemote = RecentProjectRemoteRef;
 
 export type RecentProject = {
   rootPath: string;

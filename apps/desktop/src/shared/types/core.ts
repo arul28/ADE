@@ -308,6 +308,8 @@ export type RecentProjectRemoteRef = {
   /** Human-friendly machine name shown on the recents row chip. */
   runtimeName: string;
   hostname: string;
+  /** Host-resolved project logo for remote recents, when available. */
+  iconDataUrl?: string | null;
 };
 
 export type RecentProjectSummary = {

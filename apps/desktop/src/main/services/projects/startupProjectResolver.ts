@@ -34,7 +34,8 @@ function recentProjectEntryChanged(
     (savedRemote?.targetId ?? null) !== (projectRemote?.targetId ?? null) ||
     (savedRemote?.projectId ?? null) !== (projectRemote?.projectId ?? null) ||
     (savedRemote?.runtimeName ?? null) !== (projectRemote?.runtimeName ?? null) ||
-    (savedRemote?.hostname ?? null) !== (projectRemote?.hostname ?? null);
+    (savedRemote?.hostname ?? null) !== (projectRemote?.hostname ?? null) ||
+    (savedRemote?.iconDataUrl ?? null) !== (projectRemote?.iconDataUrl ?? null);
 }
 
 export function normalizeStartupProjectState(args: {
@@ -45,6 +46,10 @@ export function normalizeStartupProjectState(args: {
   nowIso?: string;
 }): StartupProjectStateNormalization {
   const savedRecentProjects = args.saved.recentProjects ?? [];
+  const lastRemoteProjectBinding =
+    args.saved.lastRemoteProjectBinding?.kind === "remote"
+      ? args.saved.lastRemoteProjectBinding
+      : null;
   const candidateRecentProjects = [
     ...savedRecentProjects,
     ...(args.additionalRecentProjects ?? []),
@@ -61,14 +66,23 @@ export function normalizeStartupProjectState(args: {
       const key = recentProjectKey(entry);
       if (acc.some((item) => recentProjectKey(item) === key)) return acc;
       const remoteRoot = typeof entry.rootPath === "string" ? entry.rootPath : "";
+      const remote = { ...entry.remote };
+      if (
+        remote.iconDataUrl == null &&
+        lastRemoteProjectBinding?.targetId === remote.targetId &&
+        lastRemoteProjectBinding.projectId === remote.projectId &&
+        lastRemoteProjectBinding.iconDataUrl
+      ) {
+        remote.iconDataUrl = lastRemoteProjectBinding.iconDataUrl;
+      }
       acc.push({
         rootPath: remoteRoot,
         displayName:
           typeof entry.displayName === "string" && entry.displayName.trim().length > 0
             ? entry.displayName
-            : path.basename(remoteRoot) || entry.remote.runtimeName,
+            : path.basename(remoteRoot) || remote.runtimeName,
         lastOpenedAt: fallbackOpenedAt,
-        remote: entry.remote,
+        remote,
         ...(entry.pinned ? { pinned: true } : {}),
       });
       return acc;

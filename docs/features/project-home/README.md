@@ -266,8 +266,9 @@ a prior session. Shows:
 - unified recent projects list from `window.ade.project.listRecent()`,
   with local and remote rows. Local rows show display name, path, lane
   count, last-opened timestamp, and availability. Remote rows show the
-  remote machine/project metadata and use live remote connection state
-  for their connected / reconnecting affordance.
+  host-resolved project icon when available, keep the amber remote
+  machine badge, and use live remote connection state for their
+  connected / reconnecting affordance.
 - per-row pin / unpin; pinned rows float above unpinned rows while
   preserving recency order inside each group.
 - deferred remove with an Undo toast. The renderer hides the row
@@ -493,10 +494,10 @@ detection or override). The override is committed to `.ade/ade.yaml`
 the `.ade/project-icons/` directory is part of the tracked shared
 scaffold so the actual bytes travel with the override.
 
-Remote project tabs cannot run the local resolver — the project files
-live on another machine. Instead the host brain resolves the icon and
-inlines it: the ade-cli `projects.list` RPC stamps each record with an
-`icon: { dataUrl, sourcePath, mimeType }` produced by
+Remote project tabs and remote recent-project rows cannot run the local
+resolver — the project files live on another machine. Instead the host
+brain resolves the icon and inlines it: the ade-cli `projects.list` RPC
+stamps each record with an `icon: { dataUrl, sourcePath, mimeType }` produced by
 `resolveRemoteProjectIcon` (`apps/ade-cli/src/services/projects/projectIconResolver.ts`),
 a compact electron-free port of the desktop resolver that covers the
 `.ade/ade.yaml` override, the conventional icon/logo files, and an
@@ -504,14 +505,15 @@ a compact electron-free port of the desktop resolver that covers the
 capped at 2 MB so it stays inline-safe on the wire; a failure for one
 project degrades to a null icon rather than breaking the list). That
 icon rides through `RemoteRuntimeProjectRecord.icon` →
-`OpenProjectBinding.iconDataUrl` → the remote project tab. `TopBar`'s
-`ProjectTabIcon` takes an `iconDataUrlOverride`: when the caller owns
-the icon (remote tabs), it renders the data URL directly and skips the
-local `resolveIcon` path entirely (falling back to the folder glyph
-when the host returned no icon). The binding's `iconDataUrl` is
-persisted to `globalState.lastRemoteProjectBinding` and restored on a
-cold start so the real logo shows immediately, before the remote
-reconnects and refreshes it.
+`OpenProjectBinding.iconDataUrl`. The desktop persists that data URL on
+both `globalState.lastRemoteProjectBinding` and the matching remote recent
+metadata, so the TopBar tab and welcome row can render the real logo before
+the remote reconnects. `TopBar`'s `ProjectTabIcon` takes an
+`iconDataUrlOverride`: when the caller owns the icon (remote tabs), it
+renders the data URL directly and skips the local `resolveIcon` path
+entirely (falling back to the folder glyph when the host returned no
+icon). The welcome row uses the same saved data URL for its primary tile and
+overlays the amber remote-machine badge so remote identity stays visible.
 
 The mobile companion gets the icon through a dedicated path: the host's
 `mobileProjectSummaryForContext` / `mobileProjectSummaryForRecent` in
