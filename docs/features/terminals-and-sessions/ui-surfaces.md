@@ -238,7 +238,10 @@ when the snapshot contains TUI frame characters (`╭`, `─`, etc.) or
 enough styled cells to be obviously a TUI redraw, the snapshot wins so
 the user sees the Claude/Codex final screen instead of a flattened
 transcript with the alt-screen escape codes visible. Ended tracked CLI
-surfaces expose two relaunch paths: **Resume** calls
+surfaces keep the same `WorkSurfaceHeader` controls as live CLI and chat
+surfaces, including the far-left sessions-pane toggle and the far-right
+Tools toggle, so a collapsed session sidebar is always recoverable. They
+also expose two relaunch paths: **Resume** calls
 `ade.pty.resumeSession` and opens the provider TUI without sending a
 prompt, while the continuation composer calls `ade.pty.sendToSession`
 and sends the follow-up as part of the first resume launch when
