@@ -170,7 +170,7 @@ import { createWorkerAdapterRuntimeService } from "./services/cto/workerAdapterR
 import { createWorkerTaskSessionService } from "./services/cto/workerTaskSessionService";
 import { createWorkerHeartbeatService } from "./services/cto/workerHeartbeatService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
-import { buildRendererCspPolicy } from "./rendererCsp";
+import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
@@ -578,6 +578,16 @@ async function createWindow(args: {
   const cspPolicy = buildRendererCspPolicy(isDevMode);
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    if (
+      !shouldApplyRendererCsp(details, {
+        isDevMode,
+        devServerUrl: process.env.VITE_DEV_SERVER_URL,
+      })
+    ) {
+      callback({ responseHeaders: details.responseHeaders });
+      return;
+    }
+
     callback({
       responseHeaders: {
         ...details.responseHeaders,

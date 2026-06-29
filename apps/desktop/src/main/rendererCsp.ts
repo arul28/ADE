@@ -1,3 +1,47 @@
+type RendererCspResponseDetails = {
+  url: string;
+  resourceType?: string;
+};
+
+type RendererCspMatchOptions = {
+  isDevMode: boolean;
+  devServerUrl?: string | null;
+};
+
+export function shouldApplyRendererCsp(
+  details: RendererCspResponseDetails,
+  options: RendererCspMatchOptions,
+): boolean {
+  if (details.resourceType !== "mainFrame") return false;
+
+  let url: URL;
+  try {
+    url = new URL(details.url);
+  } catch {
+    return false;
+  }
+
+  if (!options.isDevMode) {
+    return url.protocol === "file:" || url.protocol === "app:";
+  }
+
+  if (options.devServerUrl) {
+    try {
+      const devUrl = new URL(options.devServerUrl);
+      return url.origin === devUrl.origin;
+    } catch {
+      // Fall through to the local renderer host check below.
+    }
+  }
+
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    (url.hostname === "localhost" ||
+      url.hostname === "127.0.0.1" ||
+      url.hostname === "::1")
+  );
+}
+
 export function buildRendererCspPolicy(isDevMode: boolean): string {
   const cspSources = isDevMode
     ? "'self' http://localhost:* http://127.0.0.1:*"
