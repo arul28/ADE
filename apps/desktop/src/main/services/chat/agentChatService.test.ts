@@ -13860,6 +13860,55 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("clears the Codex no-output watchdog when an approval request is surfaced", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        mockState.emitCodexPayload({
+          id: "approval-1",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            itemId: "cmd-1",
+            turnId: "turn-1",
+            command: "npm test",
+            cwd: "/tmp/outside-ade",
+            reason: "Run tests",
+          },
+        });
+
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "approval_request"
+            && event.event.itemId === "cmd-1"
+          )).toBe(true);
+        });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.message.includes("has not streamed model or tool output yet")
+        )).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("reconciles a completed silent Codex turn from app-server state before reporting a stall", async () => {
       vi.useFakeTimers();
       try {

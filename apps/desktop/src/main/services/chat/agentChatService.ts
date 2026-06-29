@@ -14866,6 +14866,7 @@ export function createAgentChatService(args: {
         turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "command",
         description,
@@ -14914,6 +14915,7 @@ export function createAgentChatService(args: {
         turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "file_change",
         description,
@@ -15003,6 +15005,7 @@ export function createAgentChatService(args: {
         permissions: params.permissions ?? null,
         request,
       });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description,
@@ -15083,6 +15086,7 @@ export function createAgentChatService(args: {
         request,
         questionResponseKind: "native_request_user_input",
       });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: request.description ?? "Codex requested input",
@@ -15235,6 +15239,7 @@ export function createAgentChatService(args: {
       kind: "plan_approval",
       request,
     });
+    markCodexTurnProgress(runtime, request.turnId);
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
       description: "Plan ready for approval",
@@ -15323,6 +15328,7 @@ export function createAgentChatService(args: {
       kind: "plan_approval",
       request,
     });
+    markCodexTurnProgress(runtime, request.turnId);
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
       description: "Plan ready for approval",

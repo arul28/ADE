@@ -69,6 +69,7 @@ describe("sessionService resume metadata", () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
     insertProjectGraph(db);
     const service = createSessionService({ db });
 
@@ -85,8 +86,6 @@ describe("sessionService resume metadata", () => {
     });
 
     expect(service.get("session-goal")?.goal).toBe("Run quality, tests, ship, merge, and release.");
-
-    activeDisposers.push(async () => db.close());
   });
 
   it("derives permission-aware resume commands from stored metadata", async () => {
