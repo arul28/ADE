@@ -13916,6 +13916,84 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("does not double-finalize when a normal Codex completion wins the silent-turn reconciliation race", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.delayedCodexMethods.add("thread/turns/list");
+        mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+          data: [
+            {
+              id: "turn-1",
+              status: "completed",
+              usage: { inputTokens: 7, outputTokens: 3 },
+              items: [
+                {
+                  id: "msg-after-complete",
+                  type: "agentMessage",
+                  text: "Recovered after the normal completion.",
+                },
+              ],
+            },
+          ],
+          nextCursor: null,
+        }));
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(mockState.pendingCodexResponses).toHaveLength(1);
+        });
+
+        mockState.emitCodexPayload({
+          method: "turn/completed",
+          params: {
+            turn: {
+              id: "turn-1",
+              status: "completed",
+              usage: { inputTokens: 11, outputTokens: 5 },
+            },
+          },
+        });
+        await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope =>
+            event.event.type === "done"
+            && event.event.turnId === "turn-1"
+            && event.event.status === "completed",
+        );
+
+        mockState.flushCodexResponses();
+        await Promise.resolve();
+
+        const doneEvents = events.filter((event) =>
+          event.event.type === "done"
+          && event.event.turnId === "turn-1"
+          && event.event.status === "completed"
+        );
+        expect(doneEvents).toHaveLength(1);
+        expect(events.some((event) =>
+          event.event.type === "text"
+          && event.event.text.includes("Recovered after the normal completion.")
+        )).toBe(false);
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("routes structured Codex stall notices to an orchestration parent without auto-handoff", async () => {
       vi.useFakeTimers();
       try {

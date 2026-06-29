@@ -16698,7 +16698,7 @@ export function createAgentChatService(args: {
         itemId,
         delta: text,
       });
-      if (!normalizedText) return true;
+      if (!normalizedText) return false;
       emitChatEvent(managed, {
         type: "text",
         text: normalizedText,
@@ -16921,6 +16921,18 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   }
 
+  function isCodexSilentTurnStillCurrent(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string,
+  ): boolean {
+    return !managed.deleted
+      && !managed.closed
+      && managed.runtime === runtime
+      && !isTerminalCodexTurn(runtime, turnId, managed)
+      && (runtime.activeTurnId ?? runtime.startedTurnId) === turnId;
+  }
+
   async function reconcileCodexSilentTurn(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -16929,12 +16941,7 @@ export function createAgentChatService(args: {
     if (runtime.stallReconcileInFlight.has(turnId)) return;
     runtime.stallReconcileInFlight.add(turnId);
     try {
-      if (
-        managed.deleted
-        || managed.closed
-        || managed.runtime !== runtime
-        || (runtime.activeTurnId ?? runtime.startedTurnId) !== turnId
-      ) {
+      if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
         return;
       }
       const threadId = managed.session.threadId?.trim();
@@ -16981,6 +16988,9 @@ export function createAgentChatService(args: {
         : [];
       const currentTurn = turns.find((turn) => stringOrNull(turn.id) === turnId) ?? null;
       if (currentTurn) {
+        if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+          return;
+        }
         const items = codexTurnItems(currentTurn);
         let recoveredUsefulItem = false;
         items.forEach((item, index) => {
