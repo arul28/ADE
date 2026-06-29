@@ -613,6 +613,14 @@ type CodexRuntime = {
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
   recentNotificationKeys: Set<string>;
+  reconciledItemSignaturesByTurn: Map<string, Set<string>>;
+  noFirstEventWatchdog: {
+    turnId: string;
+    timer: NodeJS.Timeout;
+  } | null;
+  stalledTurnIds: Set<string>;
+  stallReconcileInFlight: Set<string>;
+  mcpStartupNoticeKeys: Set<string>;
   /**
    * Plan-approval follow-ups deferred until the planning turn idles. Calling
    * sendMessage while a planning turn is still active would race the busy
@@ -1897,8 +1905,10 @@ const DEFAULT_RUN_SESSION_TURN_TIMEOUT_MS = 300_000;
 const DEFAULT_COLLABORATION_MODES_LIST_TIMEOUT_MS = 1_500;
 const CODEX_REQUEST_TIMEOUT_MS = 30_000;
 const CODEX_INLINE_COMMAND_TIMEOUT_MS = 10_000;
+const CODEX_STALL_RECONCILE_TIMEOUT_MS = 10_000;
 const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
+const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
 const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
@@ -9699,6 +9709,225 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  const clearCodexNoFirstEventWatchdog = (runtime: CodexRuntime): void => {
+    if (!runtime.noFirstEventWatchdog) return;
+    clearTimeout(runtime.noFirstEventWatchdog.timer);
+    runtime.noFirstEventWatchdog = null;
+  };
+
+  const scheduleCodexNoFirstEventWatchdog = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+  ): void => {
+    const normalizedTurnId = turnId?.trim() || null;
+    if (!normalizedTurnId) return;
+    if (runtime.noFirstEventWatchdog?.turnId === normalizedTurnId) return;
+    clearCodexNoFirstEventWatchdog(runtime);
+    const timer = setTimeout(() => {
+      if (
+        managed.deleted
+        || managed.closed
+        || managed.runtime !== runtime
+        || (runtime.activeTurnId ?? runtime.startedTurnId) !== normalizedTurnId
+      ) {
+        if (runtime.noFirstEventWatchdog?.turnId === normalizedTurnId) {
+          runtime.noFirstEventWatchdog = null;
+        }
+        return;
+      }
+      runtime.noFirstEventWatchdog = null;
+      void reconcileCodexSilentTurn(managed, runtime, normalizedTurnId).catch((error) => {
+        logger.warn("agent_chat.codex_stall_reconcile_failed", {
+          sessionId: managed.session.id,
+          turnId: normalizedTurnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        emitCodexTurnStalled(managed, runtime, {
+          turnId: normalizedTurnId,
+          reason: "app_server_state_unknown",
+          message: "Codex accepted this turn but ADE could not confirm its app-server state. You can keep waiting, send a status nudge, or interrupt and retry this thread if it stays stalled.",
+        });
+      });
+    }, CODEX_NO_FIRST_EVENT_WATCHDOG_MS);
+    timer.unref?.();
+    runtime.noFirstEventWatchdog = {
+      turnId: normalizedTurnId,
+      timer,
+    };
+  };
+
+  const markCodexTurnProgress = (
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+  ): void => {
+    const normalizedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || null;
+    if (!runtime.noFirstEventWatchdog) return;
+    if (!normalizedTurnId || runtime.noFirstEventWatchdog.turnId === normalizedTurnId) {
+      clearCodexNoFirstEventWatchdog(runtime);
+    }
+  };
+
+  const isCodexUsefulProgressNotification = (
+    method: string,
+    params: Record<string, unknown>,
+  ): boolean => {
+    if (method === "item/agentMessage/delta") {
+      return typeof params.delta === "string" && params.delta.length > 0;
+    }
+    if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+      return typeof params.delta === "string" && params.delta.length > 0;
+    }
+    if (method === "item/commandExecution/outputDelta" || method === "item/fileChange/outputDelta") {
+      return typeof params.delta === "string" && params.delta.length > 0;
+    }
+    return method === "item/started"
+      || method === "item/completed"
+      || method === "codex/event/item_started"
+      || method === "codex/event/item_completed"
+      || method === "turn/completed"
+      || method === "turn/aborted"
+      || method === "codex/event/turn_aborted"
+      || method === "turn/plan/updated"
+      || method === "item/plan/delta"
+      || method === "codex/event/web_search_begin"
+      || method === "thread/tokenUsage/updated"
+      || method === "error";
+  };
+
+  const normalizeCodexMcpStartupStatus = (
+    params: Record<string, unknown>,
+  ): { serverName: string; status: string | null; message: string | null; failed: boolean } => {
+    const serverRecord = asRecord(params.server)
+      ?? asRecord(params.mcpServer)
+      ?? asRecord(params.status)
+      ?? {};
+    const errorRecord = asRecord(params.error) ?? asRecord(serverRecord.error);
+    const serverName = stringOrNull(
+      params.serverName
+      ?? params.server_name
+      ?? params.name
+      ?? serverRecord.serverName
+      ?? serverRecord.server_name
+      ?? serverRecord.name
+      ?? serverRecord.id,
+    ) ?? "MCP server";
+    const status = stringOrNull(
+      params.status
+      ?? params.state
+      ?? params.phase
+      ?? serverRecord.status
+      ?? serverRecord.state
+      ?? serverRecord.phase,
+    )?.toLowerCase() ?? null;
+    const message = stringOrNull(
+      params.message
+      ?? params.reason
+      ?? params.detail
+      ?? params.error
+      ?? serverRecord.message
+      ?? serverRecord.reason
+      ?? serverRecord.detail
+      ?? serverRecord.error
+      ?? errorRecord?.message,
+    );
+    const failed = Boolean(message && /(?:fail|error|closed|refused|timeout|unavailable)/i.test(message))
+      || Boolean(status && /(?:fail|error|closed|refused|timeout|unavailable)/i.test(status));
+    return { serverName, status, message, failed };
+  };
+
+  const handleCodexMcpStartupStatus = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    params: Record<string, unknown>,
+  ): void => {
+    const status = normalizeCodexMcpStartupStatus(params);
+    if (!status.failed) {
+      logger.debug("agent_chat.codex_mcp_startup_status", {
+        sessionId: managed.session.id,
+        serverName: status.serverName,
+        status: status.status,
+      });
+      return;
+    }
+    const key = `${status.serverName}:${status.status ?? ""}:${status.message ?? ""}`;
+    if (runtime.mcpStartupNoticeKeys.has(key)) return;
+    runtime.mcpStartupNoticeKeys.add(key);
+    if (runtime.mcpStartupNoticeKeys.size > 128) {
+      const [first] = runtime.mcpStartupNoticeKeys;
+      if (first) runtime.mcpStartupNoticeKeys.delete(first);
+    }
+    const suffix = status.message ? `: ${status.message}` : status.status ? ` (${status.status})` : "";
+    logger.warn("agent_chat.codex_mcp_startup_failed", {
+      sessionId: managed.session.id,
+      serverName: status.serverName,
+      status: status.status,
+      message: status.message,
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: `Codex MCP server '${status.serverName}' is unavailable${suffix}.`,
+      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
+    });
+    persistChatState(managed);
+  };
+
+  const seedCodexThreadGoalFromSessionGoal = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    const threadId = managed.session.threadId?.trim();
+    if (!threadId || managed.session.codexGoal?.objective?.trim()) return;
+    const objective = normalizeCodexGoalObjectiveText(managed.session.goal);
+    if (!objective) return;
+    let normalizedObjective: string;
+    try {
+      normalizedObjective = validateCodexGoalObjectiveText(objective);
+    } catch (error) {
+      logger.warn("agent_chat.codex_goal_seed_invalid", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "warning",
+        severity: "warning",
+        message: `Codex goal sync skipped: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      return;
+    }
+    try {
+      const response = await runtime.request<{ goal?: unknown }>("thread/goal/set", codexGoalSetParams({
+        threadId,
+        objective: normalizedObjective,
+        status: "active",
+      }), { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      const goal = normalizeCodexGoalPayload(response)
+        ?? {
+          objective: normalizedObjective,
+          status: "active" as const,
+          tokenBudget: null,
+        };
+      setCodexGoalAndMaybeEmitUpdate(managed, runtime, goal, "set");
+      persistChatState(managed);
+    } catch (error) {
+      logger.warn("agent_chat.codex_goal_seed_failed", {
+        sessionId: managed.session.id,
+        threadId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "warning",
+        severity: "warning",
+        message: `Codex goal sync failed: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      persistChatState(managed);
+    }
+  };
+
   const emitPendingInputRequest = (
     managed: ManagedChatSession,
     request: PendingInputRequest,
@@ -10210,6 +10439,7 @@ export function createAgentChatService(args: {
         && managed.session.status === "active"
         && !managed.deleted;
       runtime.suppressExitError = true;
+      clearCodexNoFirstEventWatchdog(runtime);
       try { runtime.reader.close(); } catch { /* ignore */ }
       runtime.killTimer = terminateChildProcessTree(
         runtime.process,
@@ -10575,6 +10805,9 @@ export function createAgentChatService(args: {
           : undefined);
     const model = provider === "opencode" ? (hydratedModelId ?? fallbackModel) : fallbackModel;
     const lane = laneService.getLaneBaseAndBranch(row.laneId);
+    const rowGoal = typeof row.goal === "string" && row.goal.trim().length
+      ? row.goal.trim()
+      : null;
 
     const managed: ManagedChatSession = {
       session: {
@@ -10584,6 +10817,7 @@ export function createAgentChatService(args: {
         model,
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
+        ...(rowGoal ? { goal: rowGoal } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
         fastMode: persisted?.fastMode === true,
         executionMode: persisted?.executionMode ?? null,
@@ -11147,6 +11381,7 @@ export function createAgentChatService(args: {
           return;
         }
         runtime.activeTurnId = reviewTurnId;
+        scheduleCodexNoFirstEventWatchdog(managed, runtime, reviewTurnId);
       }
       return;
     }
@@ -11353,6 +11588,7 @@ export function createAgentChatService(args: {
         return;
       }
       managed.runtime.activeTurnId = turnId;
+      scheduleCodexNoFirstEventWatchdog(managed, managed.runtime, turnId);
       if (managed.runtime.startedTurnId !== turnId) {
         managed.runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
@@ -14631,6 +14867,7 @@ export function createAgentChatService(args: {
         turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "command",
         description,
@@ -14679,6 +14916,7 @@ export function createAgentChatService(args: {
         turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "file_change",
         description,
@@ -14768,6 +15006,7 @@ export function createAgentChatService(args: {
         permissions: params.permissions ?? null,
         request,
       });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description,
@@ -14848,6 +15087,7 @@ export function createAgentChatService(args: {
         request,
         questionResponseKind: "native_request_user_input",
       });
+      markCodexTurnProgress(runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: request.description ?? "Codex requested input",
@@ -15000,6 +15240,7 @@ export function createAgentChatService(args: {
       kind: "plan_approval",
       request,
     });
+    markCodexTurnProgress(runtime, request.turnId);
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
       description: "Plan ready for approval",
@@ -15088,6 +15329,7 @@ export function createAgentChatService(args: {
       kind: "plan_approval",
       request,
     });
+    markCodexTurnProgress(runtime, request.turnId);
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
       description: "Plan ready for approval",
@@ -15207,6 +15449,7 @@ export function createAgentChatService(args: {
     summary: string,
   ): void => {
     const interruptedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || randomUUID();
+    clearCodexNoFirstEventWatchdog(runtime);
     rememberInterruptedCodexTurn(runtime, interruptedTurnId);
     rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
     runtime.awaitingTurnStart = false;
@@ -15226,6 +15469,7 @@ export function createAgentChatService(args: {
     runtime.agentMessageScopeByTurn.clear();
     runtime.agentMessageTextByTurn.clear();
     runtime.recentNotificationKeys.clear();
+    runtime.reconciledItemSignaturesByTurn.clear();
     for (const followup of runtime.pendingPlanFollowups.splice(0)) {
       emitPendingInputResolved(managed, {
         itemId: followup.itemId,
@@ -16408,6 +16652,451 @@ export function createAgentChatService(args: {
     logger.debug("agent_chat.codex_unhandled_item", { sessionId: managed.session.id, itemType, itemId });
   };
 
+  function codexTurnStatusString(value: unknown): string | null {
+    return typeof value === "string" && value.trim().length ? value.trim() : null;
+  }
+
+  function isTerminalCodexTurnStatusValue(value: unknown): boolean {
+    const status = codexTurnStatusString(value);
+    return status === "completed" || status === "interrupted" || status === "failed";
+  }
+
+  function codexTurnItems(turn: Record<string, unknown> | null | undefined): Record<string, unknown>[] {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    return items.filter((item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object" && !Array.isArray(item))
+    );
+  }
+
+  function isCodexReconciledItemUseful(item: Record<string, unknown>): boolean {
+    const itemType = stringOrNull(item.type);
+    return itemType === "agentMessage"
+      || itemType === "reasoning"
+      || itemType === "plan"
+      || itemType === "planning"
+      || itemType === "planningItem"
+      || itemType === "commandExecution"
+      || itemType === "fileChange"
+      || itemType === "toolCall"
+      || itemType === "dynamicToolCall"
+      || itemType === "mcpToolCall"
+      || itemType === "webSearch"
+      || itemType === "imageGeneration"
+      || itemType === "imageView"
+      || itemType === "delegation"
+      || itemType === "collabAgentToolCall"
+      || itemType === "collabToolCall";
+  }
+
+  function isCodexReconciledItemInProgress(value: unknown): boolean {
+    const status = String(value ?? "").toLowerCase();
+    return status === "inprogress" || status === "in_progress" || status === "running";
+  }
+
+  function codexReconciledItemSignature(item: Record<string, unknown>, itemId: string): string {
+    return stableStringify({
+      itemId,
+      type: stringOrNull(item.type),
+      status: stringOrNull(item.status),
+      text: stringOrNull(item.text ?? item.content ?? item.message ?? item.markdown ?? item.description ?? item.planText),
+      summary: Array.isArray(item.summary) ? item.summary : null,
+      result: item.result ?? null,
+      error: item.error ?? null,
+      arguments: item.arguments ?? null,
+    });
+  }
+
+  function hasReconciledItemSignature(runtime: CodexRuntime, turnId: string, signature: string): boolean {
+    return runtime.reconciledItemSignaturesByTurn.get(turnId)?.has(signature) === true;
+  }
+
+  function rememberReconciledItemSignature(runtime: CodexRuntime, turnId: string, signature: string): void {
+    let signatures = runtime.reconciledItemSignaturesByTurn.get(turnId);
+    if (!signatures) {
+      signatures = new Set<string>();
+      runtime.reconciledItemSignaturesByTurn.set(turnId, signatures);
+    }
+    signatures.add(signature);
+    if (signatures.size > 512) {
+      signatures.clear();
+      signatures.add(signature);
+    }
+    if (runtime.reconciledItemSignaturesByTurn.size > 64) {
+      const [firstTurnId] = runtime.reconciledItemSignaturesByTurn.keys();
+      if (firstTurnId) runtime.reconciledItemSignaturesByTurn.delete(firstTurnId);
+    }
+  }
+
+  function emitCodexReconciledItem(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    item: Record<string, unknown>,
+    itemIndex: number,
+    turnId: string,
+  ): boolean {
+    if (!isCodexReconciledItemUseful(item)) return false;
+    const itemId = stringOrNull(item.id) ?? `reconciled:${turnId}:${itemIndex}`;
+    const signature = codexReconciledItemSignature(item, itemId);
+    if (hasReconciledItemSignature(runtime, turnId, signature)) return false;
+    const itemType = stringOrNull(item.type) ?? "";
+    if (itemType === "agentMessage") {
+      const text = stringOrNull(item.text ?? item.content ?? item.message);
+      if (!text) return false;
+      const normalizedText = normalizeCodexAssistantDelta(runtime, {
+        turnId,
+        itemId,
+        delta: text,
+      });
+      if (!normalizedText) return false;
+      emitChatEvent(managed, {
+        type: "text",
+        text: normalizedText,
+        itemId,
+        turnId,
+      });
+      rememberReconciledItemSignature(runtime, turnId, signature);
+      return true;
+    }
+    if (itemType === "reasoning") {
+      const summary = Array.isArray(item.summary)
+        ? item.summary.filter((entry): entry is string => typeof entry === "string")
+        : [];
+      const content = Array.isArray(item.content)
+        ? item.content.filter((entry): entry is string => typeof entry === "string")
+        : [];
+      const text = [...summary, ...content].join("\n").trim();
+      if (!text) return false;
+      emitChatEvent(managed, {
+        type: "reasoning",
+        text,
+        itemId,
+        turnId,
+      });
+      rememberReconciledItemSignature(runtime, turnId, signature);
+      return true;
+    }
+    if (itemType === "mcpToolCall") {
+      const tool = stringOrNull(item.tool) ?? "mcp_tool";
+      const server = stringOrNull(item.server);
+      const label = server ? `${server}:${tool}` : tool;
+      emitChatEvent(managed, {
+        type: "tool_call",
+        tool: label,
+        args: item.arguments ?? null,
+        itemId,
+        turnId,
+      });
+      if (!isCodexReconciledItemInProgress(item.status)) {
+        emitChatEvent(managed, {
+          type: "tool_result",
+          tool: label,
+          result: item.result ?? item.error ?? "",
+          itemId,
+          turnId,
+          status: item.error ? "failed" : "completed",
+        });
+      }
+      rememberReconciledItemSignature(runtime, turnId, signature);
+      return true;
+    }
+    const eventKind = isCodexReconciledItemInProgress(item.status)
+      ? "started"
+      : "completed";
+    handleCodexItemEvent(managed, runtime, { ...item, id: itemId }, eventKind, turnId);
+    rememberReconciledItemSignature(runtime, turnId, signature);
+    return true;
+  }
+
+  function activeFlagsFromThreadReadResponse(value: unknown): string[] {
+    const root = asRecord(value);
+    const thread = asRecord(root?.thread) ?? root;
+    const status = asRecord(thread?.status);
+    const flags = Array.isArray(status?.activeFlags) ? status.activeFlags : [];
+    return flags.filter((flag): flag is string => typeof flag === "string");
+  }
+
+  function emitCodexTurnStalled(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    args: {
+      turnId: string;
+      reason: Extract<AgentChatEvent, { type: "codex_turn_stalled" }>["reason"];
+      message: string;
+    },
+  ): void {
+    if (runtime.stalledTurnIds.has(args.turnId)) return;
+    rememberBoundedId(runtime.stalledTurnIds, args.turnId);
+    const recoveryOptions: Extract<AgentChatEvent, { type: "codex_turn_stalled" }>["recoveryOptions"] = [
+      "wait",
+      "steer",
+      "interrupt_retry_same_thread",
+      "restart_resume_thread",
+    ];
+    logger.warn("agent_chat.codex_turn_stalled", {
+      sessionId: managed.session.id,
+      threadId: managed.session.threadId ?? null,
+      turnId: args.turnId,
+      reason: args.reason,
+      timeoutMs: CODEX_NO_FIRST_EVENT_WATCHDOG_MS,
+    });
+    emitChatEvent(managed, {
+      type: "codex_turn_stalled",
+      turnId: args.turnId,
+      ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      reason: args.reason,
+      message: args.message,
+      recoveryOptions,
+      sourceSessionId: managed.session.id,
+      ...(managed.session.orchestrationParentSessionId ? { parentSessionId: managed.session.orchestrationParentSessionId } : {}),
+    });
+    emitChatEvent(managed, {
+      type: "system_notice",
+      noticeKind: "warning",
+      severity: "warning",
+      message: args.message,
+      turnId: args.turnId,
+    });
+    const parentSessionId = managed.session.orchestrationParentSessionId;
+    if (parentSessionId && parentSessionId !== managed.session.id) {
+      try {
+        const parent = managedSessions.get(parentSessionId) ?? (sessionService.get(parentSessionId) ? ensureManagedSession(parentSessionId) : null);
+        if (parent) {
+          const childLabel = managed.preview?.trim() || managed.session.id;
+          emitChatEvent(parent, {
+            type: "codex_turn_stalled",
+            turnId: args.turnId,
+            ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+            reason: args.reason,
+            message: args.message,
+            recoveryOptions,
+            sourceSessionId: managed.session.id,
+            parentSessionId,
+          });
+          emitChatEvent(parent, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: `Child Codex session '${childLabel}' stalled: ${args.message}`,
+            turnId: args.turnId,
+          });
+          persistChatState(parent);
+        }
+      } catch (error) {
+        logger.warn("agent_chat.codex_stall_parent_notice_failed", {
+          sessionId: managed.session.id,
+          parentSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    persistChatState(managed);
+  }
+
+  async function finishCodexTurnFromReconciledState(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turn: Record<string, unknown>,
+    fallbackTurnId: string,
+  ): Promise<void> {
+    const turnId = stringOrNull(turn.id) ?? fallbackTurnId;
+    rememberTerminalCodexTurn(runtime, turnId, managed);
+    runtime.awaitingTurnStart = false;
+    runtime.canAttachResumedTurnStart = false;
+    runtime.activeTurnId = null;
+    runtime.startedTurnId = null;
+    runtime.pendingTurnPlanningApprovalGuarded = null;
+    runtime.ignoredTurnIds.delete(turnId);
+    resetAssistantMessageStream(managed);
+    const status = mapCodexTurnStatus(turn.status);
+    if (status === "completed") {
+      for (const [planItemId, planText] of runtime.planTextByItemId) {
+        const planTurnId = runtime.itemTurnIdByItemId.get(planItemId) ?? turnId;
+        emitCodexPlanComplete(managed, planText, planTurnId, planItemId);
+        emitCodexPlanTextApproval(managed, runtime, planText, planTurnId);
+      }
+    }
+    runtime.planTextByItemId.clear();
+    runtime.webSearchActionsByItemId.clear();
+    runtime.itemTurnIdByItemId.clear();
+    runtime.agentMessageScopeByTurn.clear();
+    runtime.codexAgentIndexByTurn.delete(turnId);
+    runtime.agentMessageTextByTurn.clear();
+    runtime.recentNotificationKeys.clear();
+    runtime.reconciledItemSignaturesByTurn.delete(turnId);
+    const usage = normalizeUsagePayload(turn.usage ?? turn.totalUsage);
+    markSessionIdleWithFreshCache(managed);
+    drainPendingPlanFollowups(managed, runtime);
+    for (const [approvalId, pending] of runtime.approvals) {
+      if (pending.kind !== "plan_approval") {
+        runtime.approvals.delete(approvalId);
+      }
+    }
+
+    const error = asRecord(turn.error);
+    const errorMessage = stringOrNull(error?.message);
+    if (status === "failed" && errorMessage) {
+      emitChatEvent(managed, {
+        type: "error",
+        message: errorMessage,
+        turnId,
+        errorInfo: formatCodexErrorInfo(error?.codexErrorInfo),
+      });
+    }
+
+    emitChatEvent(managed, {
+      type: "status",
+      turnStatus: status,
+      turnId,
+      ...(status === "failed" && errorMessage ? { message: errorMessage } : {}),
+    });
+    stopActiveCodexSubagents(
+      managed,
+      runtime,
+      turnId,
+      status === "failed"
+        ? "Parent turn failed before ADE received a final subagent status"
+        : "Parent turn completed before ADE received a final subagent status",
+      { includeBackground: false },
+    );
+    void emitTurnDiffSummaryIfChanged(managed, turnId);
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status,
+      model: managed.session.model,
+      ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      ...(usage ? { usage } : {}),
+    });
+    const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
+    if (endSha) {
+      sessionService.setHeadShaEnd(managed.session.id, endSha);
+    }
+    persistChatState(managed);
+  }
+
+  function isCodexSilentTurnStillCurrent(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string,
+  ): boolean {
+    return !managed.deleted
+      && !managed.closed
+      && managed.runtime === runtime
+      && !isTerminalCodexTurn(runtime, turnId, managed)
+      && (runtime.activeTurnId ?? runtime.startedTurnId) === turnId;
+  }
+
+  async function reconcileCodexSilentTurn(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string,
+  ): Promise<void> {
+    if (runtime.stallReconcileInFlight.has(turnId)) return;
+    runtime.stallReconcileInFlight.add(turnId);
+    try {
+      if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+        return;
+      }
+      const threadId = managed.session.threadId?.trim();
+      let activeFlags: string[] = [];
+      let stateProbeFailed = false;
+      if (threadId) {
+        try {
+          const threadRead = await runtime.request("thread/read", {
+            threadId,
+            includeTurns: false,
+          }, { timeoutMs: CODEX_STALL_RECONCILE_TIMEOUT_MS });
+          activeFlags = activeFlagsFromThreadReadResponse(threadRead);
+        } catch (error) {
+          stateProbeFailed = true;
+          logger.warn("agent_chat.codex_stall_thread_read_failed", {
+            sessionId: managed.session.id,
+            threadId,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const turnsResponse = threadId
+        ? await runtime.request<{ data?: unknown }>("thread/turns/list", {
+            threadId,
+            itemsView: "full",
+            limit: 5,
+          }, { timeoutMs: CODEX_STALL_RECONCILE_TIMEOUT_MS }).catch((error) => {
+            stateProbeFailed = true;
+            logger.warn("agent_chat.codex_stall_turns_list_failed", {
+              sessionId: managed.session.id,
+              threadId,
+              turnId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return null;
+          })
+        : null;
+      const turns = Array.isArray(turnsResponse?.data)
+        ? turnsResponse.data.filter((entry): entry is Record<string, unknown> =>
+            Boolean(entry && typeof entry === "object" && !Array.isArray(entry))
+          )
+        : [];
+      const currentTurn = turns.find((turn) => stringOrNull(turn.id) === turnId) ?? null;
+      if (currentTurn) {
+        if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+          return;
+        }
+        const items = codexTurnItems(currentTurn);
+        let recoveredUsefulItem = false;
+        items.forEach((item, index) => {
+          recoveredUsefulItem = emitCodexReconciledItem(managed, runtime, item, index, turnId) || recoveredUsefulItem;
+        });
+        if (isTerminalCodexTurnStatusValue(currentTurn.status)) {
+          await finishCodexTurnFromReconciledState(managed, runtime, currentTurn, turnId);
+          return;
+        }
+        if (recoveredUsefulItem) {
+          logger.info("agent_chat.codex_stall_recovered_from_turns_list", {
+            sessionId: managed.session.id,
+            threadId,
+            turnId,
+            itemCount: items.length,
+          });
+          persistChatState(managed);
+          scheduleCodexNoFirstEventWatchdog(managed, runtime, turnId);
+          return;
+        }
+      }
+
+      if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+        return;
+      }
+
+      if (activeFlags.includes("waitingOnApproval")) {
+        emitCodexTurnStalled(managed, runtime, {
+          turnId,
+          reason: "waiting_on_approval",
+          message: "Codex is waiting for an approval decision, but ADE did not receive a visible approval item yet. You can keep waiting, send a status nudge, or interrupt and retry this thread.",
+        });
+        return;
+      }
+      if (activeFlags.includes("waitingOnUserInput")) {
+        emitCodexTurnStalled(managed, runtime, {
+          turnId,
+          reason: "waiting_on_input",
+          message: "Codex is waiting for user input, but ADE did not receive a visible input request yet. You can answer with a status nudge, keep waiting, or interrupt and retry this thread.",
+        });
+        return;
+      }
+
+      emitCodexTurnStalled(managed, runtime, {
+        turnId,
+        reason: threadId && !stateProbeFailed ? "no_output" : "app_server_state_unknown",
+        message: "Codex accepted this turn but has not streamed model or tool output yet. You can keep waiting, send a status nudge, or interrupt and retry this thread if it stays stalled.",
+      });
+    } finally {
+      runtime.stallReconcileInFlight.delete(turnId);
+    }
+  }
+
   const handleCodexNotification = async (managed: ManagedChatSession, runtime: CodexRuntime, payload: JsonRpcEnvelope): Promise<void> => {
     const method = typeof payload.method === "string" ? payload.method : "";
     const params = (payload.params as Record<string, unknown> | null) ?? {};
@@ -16519,6 +17208,10 @@ export function createAgentChatService(args: {
       return;
     }
 
+    if (isCodexUsefulProgressNotification(method, params)) {
+      markCodexTurnProgress(runtime, turnIdFromParams);
+    }
+
     if (method === "turn/started") {
       const turn = startedTurn;
       const turnId = typeof turn?.id === "string" ? turn.id : null;
@@ -16548,7 +17241,9 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.reconciledItemSignaturesByTurn.clear();
       setSessionActive(managed);
+      scheduleCodexNoFirstEventWatchdog(managed, runtime, turnId);
       if (!turnId || runtime.startedTurnId !== turnId) {
         runtime.startedTurnId = turnId;
         emitChatEvent(managed, {
@@ -16616,6 +17311,7 @@ export function createAgentChatService(args: {
       runtime.codexAgentIndexByTurn.delete(turnId);
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.reconciledItemSignaturesByTurn.delete(turnId);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
       markSessionIdleWithFreshCache(managed);
       drainPendingPlanFollowups(managed, runtime);
@@ -16905,6 +17601,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
       runtime.recentNotificationKeys.clear();
+      runtime.reconciledItemSignaturesByTurn.clear();
       for (const followup of runtime.pendingPlanFollowups.splice(0)) {
         emitPendingInputResolved(managed, {
           itemId: followup.itemId,
@@ -16985,6 +17682,11 @@ export function createAgentChatService(args: {
     if (method === "thread/goal/cleared") {
       clearKnownCodexGoal(managed, runtime, turnIdFromParams ?? runtime.activeTurnId ?? undefined);
       persistChatState(managed);
+      return;
+    }
+
+    if (method === "mcpServer/startupStatus/updated") {
+      handleCodexMcpStartupStatus(managed, runtime, params);
       return;
     }
 
@@ -17223,6 +17925,11 @@ export function createAgentChatService(args: {
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
       recentNotificationKeys: new Set<string>(),
+      reconciledItemSignaturesByTurn: new Map<string, Set<string>>(),
+      noFirstEventWatchdog: null,
+      stalledTurnIds: new Set<string>(),
+      stallReconcileInFlight: new Set<string>(),
+      mcpStartupNoticeKeys: new Set<string>(),
       pendingPlanFollowups: [],
       slashCommands: [],
       rateLimits: null,
@@ -17556,6 +18263,7 @@ export function createAgentChatService(args: {
     runtime.threadResumed = true;
     runtime.canAttachResumedTurnStart = false;
     persistChatState(managed);
+    await seedCodexThreadGoalFromSessionGoal(managed, runtime);
 
     // Fetch available skills and populate slash commands.
     runtime.request<{ skills?: Array<{ name?: string; description?: string }> }>("skills/list", {})
@@ -18810,6 +19518,7 @@ export function createAgentChatService(args: {
     automationRunId,
     requestedCwd,
     runtimeMode,
+    goal: requestedGoal,
     orchestrationRunId: requestedOrchestrationRunId,
     orchestrationRole: requestedOrchestrationRole,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
@@ -19011,7 +19720,10 @@ export function createAgentChatService(args: {
         ? normalizePersistedOutputStyle(requestedClaudeOutputStyle) ?? readClaudeOutputStyleSelection(launchContext.laneWorktreePath)
         : null;
 
-      const normalizedTitle = typeof title === "string" ? title.trim() : "";
+    const normalizedGoal = typeof requestedGoal === "string" && requestedGoal.trim().length
+      ? requestedGoal.trim()
+      : null;
+    const normalizedTitle = typeof title === "string" ? title.trim() : "";
     const initialTitle = normalizedTitle || defaultChatSessionTitle(effectiveProvider);
 
     sessionService.create({
@@ -19030,6 +19742,7 @@ export function createAgentChatService(args: {
       chatSessionId: sessionId,
       ownerPid: processRegistry?.pid ?? null,
       ownerProcessStartedAt: processRegistry?.startedAt ?? null,
+      goal: normalizedGoal,
     });
     if (normalizedTitle.length > 0) {
       sessionService.updateMeta({ sessionId, title: initialTitle, manuallyNamed: true });
@@ -19057,6 +19770,7 @@ export function createAgentChatService(args: {
         automationRunId: automationRunId?.trim() ? automationRunId.trim() : null,
         capabilityMode,
         completion: null,
+        ...(normalizedGoal ? { goal: normalizedGoal } : {}),
         status: "idle",
         idleSinceAt: null,
         createdAt: startedAt,
@@ -19257,6 +19971,7 @@ export function createAgentChatService(args: {
       ?? trimLine(sourceSession.summary)
       ?? trimLine(sourceSession.title);
     if (inheritedGoal) {
+      createdManaged.session.goal = inheritedGoal;
       sessionService.updateMeta({
         sessionId: created.id,
         goal: inheritedGoal,
@@ -19529,6 +20244,7 @@ export function createAgentChatService(args: {
       managed.runtime.agentMessageScopeByTurn.clear();
       managed.runtime.agentMessageTextByTurn.clear();
       managed.runtime.recentNotificationKeys.clear();
+      managed.runtime.reconciledItemSignaturesByTurn.clear();
       if (isCodexRequestTimeoutError(error)) {
         teardownRuntime(managed, "handle_close");
       }

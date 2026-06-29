@@ -65,6 +65,29 @@ afterEach(async () => {
 });
 
 describe("sessionService resume metadata", () => {
+  it("stores a create-time goal on the terminal session row", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-goal",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Codex chat",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-goal.log",
+      toolType: "codex-chat",
+      goal: "Run quality, tests, ship, merge, and release.",
+    });
+
+    expect(service.get("session-goal")?.goal).toBe("Run quality, tests, ship, merge, and release.");
+  });
+
   it("derives permission-aware resume commands from stored metadata", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
