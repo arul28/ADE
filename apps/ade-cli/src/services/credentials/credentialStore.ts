@@ -495,6 +495,16 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     });
   }
 
+  updateSync(updater: (values: Record<string, string>) => boolean | void): void {
+    this.withLock(() => {
+      const values = this.readAll({ allowRewrite: true });
+      const shouldWrite = updater(values);
+      if (shouldWrite !== false) {
+        this.writeAll(values);
+      }
+    });
+  }
+
   readAllForMigration(): Record<string, string> {
     return this.readAll({ allowRewrite: false });
   }

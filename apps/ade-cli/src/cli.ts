@@ -167,6 +167,7 @@ type FormatterId =
   | "pty-create"
   | "terminal-list"
   | "terminal-read"
+  | "project-secrets"
   | "history-list"
   | "history-commits"
   | "history-show"
@@ -487,6 +488,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -1725,6 +1727,21 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Cursor uses the Admin API (https://api.cursor.com/teams/spend) — set
   CURSOR_ADMIN_API_KEY (or CURSOR_API_KEY) so the poll can authenticate.
 `,
+  secrets: `${ADE_BANNER}
+  ADE project secrets
+
+  Secrets are encrypted under the active project's .ade/secrets directory and
+  are shared by every ADE lane/agent for that project. List output never reveals
+  values; use get only for the specific secret you need.
+
+    $ ade secrets list --text                       List secret names and metadata
+    $ ade secrets get STRIPE_API_KEY                Print one secret value as JSON
+    $ ade secrets get STRIPE_API_KEY --text         Print only the secret value
+    $ ade secrets set STRIPE_API_KEY --value sk_... Save or replace a secret
+    $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
+    $ ade secrets set TOKEN --value-file token.txt
+    $ ade secrets delete STRIPE_API_KEY             Delete a secret
+`,
   cto: `${ADE_BANNER}
   CTO and Work state
 
@@ -2442,6 +2459,22 @@ function readTextFileOption(args: string[], names: string[], label: string): str
     const message = error instanceof Error ? error.message : String(error);
     throw new CliUsageError(`Could not read ${label} file '${filePath}': ${message}`);
   }
+}
+
+function readSecretValueInput(args: string[]): string {
+  const inline = readValue(args, ["--value", "--secret"]);
+  const fromFile = readTextFileOption(args, ["--value-file", "--secret-file"], "--value-file");
+  const fromStdin = readFlag(args, ["--stdin"]);
+  const providedCount = [inline != null, fromFile != null, fromStdin].filter(Boolean).length;
+  if (providedCount > 1) {
+    throw new CliUsageError("Use only one of --value, --value-file, or --stdin.");
+  }
+  if (inline != null) return inline;
+  if (fromFile != null) return fromFile;
+  if (fromStdin) return fs.readFileSync(0, "utf8");
+  const positionalValue = firstPositional(args);
+  if (positionalValue != null) return positionalValue;
+  throw new CliUsageError("Secret value is required. Pass --value, --value-file, --stdin, or a positional value.");
 }
 
 function readJsonPayloadOption(
@@ -8476,6 +8509,61 @@ function buildUsagePlan(args: string[]): CliPlan {
   };
 }
 
+function buildSecretsPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "list" || sub === "ls") {
+    return {
+      kind: "execute",
+      label: "secrets list",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "list", {})],
+    };
+  }
+  if (sub === "get" || sub === "show" || sub === "view" || sub === "read") {
+    const name = readValue(args, ["--name"]) ?? firstPositional(args);
+    if (!name) throw new CliUsageError("Secret name is required.");
+    return {
+      kind: "execute",
+      label: "secrets get",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "get", { name })],
+    };
+  }
+  if (sub === "set" || sub === "put" || sub === "add") {
+    const name = readValue(args, ["--name"]) ?? firstPositional(args);
+    if (!name) throw new CliUsageError("Secret name is required.");
+    const value = readSecretValueInput(args);
+    return {
+      kind: "execute",
+      label: "secrets set",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "set", { name, value })],
+    };
+  }
+  if (sub === "delete" || sub === "remove" || sub === "rm") {
+    const name = readValue(args, ["--name"]) ?? firstPositional(args);
+    if (!name) throw new CliUsageError("Secret name is required.");
+    return {
+      kind: "execute",
+      label: "secrets delete",
+      formatter: "project-secrets",
+      steps: [actionStep("result", "project_secret", "delete", { name, confirmName: name })],
+    };
+  }
+  if (sub === "actions") {
+    return {
+      kind: "execute",
+      label: "secrets actions",
+      formatter: "actions-list",
+      steps: [listActionsStep("result", "project_secret")],
+    };
+  }
+  throw new CliUsageError("secrets supports list, get, set, delete, or actions.");
+}
+
 function buildActionsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls")
@@ -10075,6 +10163,8 @@ function buildCliPlan(
     return buildBrowserPlan(args);
   if (primary === "usage" || primary === "quota" || primary === "quotas")
     return buildUsagePlan(args);
+  if (primary === "secrets" || primary === "secret")
+    return buildSecretsPlan(args);
   if (primary === "settings" || primary === "config" || primary === "setting")
     return buildSettingsPlan(args);
   if (primary === "operation" || primary === "operations")
@@ -14625,6 +14715,39 @@ function formatTerminalRead(value: unknown): string {
   return data.length ? `${header}\n\n${data}` : `${header}\n\n(no output)`;
 }
 
+function formatProjectSecrets(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (typeof record.value === "string") {
+    return record.value;
+  }
+  if (typeof record.name === "string" && typeof record.deleted === "boolean") {
+    return record.deleted
+      ? `Deleted ADE secret ${record.name}.`
+      : `No ADE secret named ${record.name} was found.`;
+  }
+  if (typeof record.name === "string") {
+    return `Saved ADE secret ${record.name} (${cell(record.valueLength)} chars).`;
+  }
+  const secrets = Array.isArray(record.secrets)
+    ? record.secrets.filter(isRecord)
+    : Array.isArray(value)
+      ? value.filter(isRecord)
+      : [];
+  const rows = secrets.map((secret) => [
+    secret.name,
+    secret.valueLength,
+    secret.updatedAt,
+  ]);
+  const storage = isRecord(record.storage) ? record.storage : {};
+  const header = renderTable(
+    ["name", "chars", "updated"],
+    rows,
+    "ADE project secrets\n(no secrets found)",
+  );
+  const pathLine = typeof storage.path === "string" ? `\n\nStore: ${storage.path}` : "";
+  return `${header}${pathLine}`;
+}
+
 function formatProjectsList(value: unknown): string {
   const projects = Array.isArray(value)
     ? value.filter(isRecord)
@@ -14899,6 +15022,8 @@ function formatTextOutput(
       return formatTerminalList(value);
     case "terminal-read":
       return formatTerminalRead(value);
+    case "project-secrets":
+      return formatProjectSecrets(value);
     case "history-list":
       return formatHistoryList(value);
     case "history-commits":

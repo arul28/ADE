@@ -28,6 +28,7 @@ export * from "./sync";
 export * from "./devTools";
 export * from "./adeCli";
 export * from "./remoteRuntime";
+export * from "./projectSecrets";
 
 export * from "./linearSync";
 export * from "./feedback";

@@ -124,7 +124,7 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  AI Connections, Background Jobs, Lane Templates, and Stats. Legacy
+  AI Connections, Secrets, Background Jobs, Lane Templates, and Stats. Legacy
   `workspace`, `project`, `context`, `integrations`, `github`, and
   `linear` deep links land in General; `providers` lands in AI
   Connections; `automations` lands in Background Jobs. Welcome video
@@ -186,6 +186,11 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
   — AI Connections settings for provider CLIs, authentication, API keys,
   and model availability.
+- `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
+  — Settings > Secrets. Lists project-scoped ADE secrets without values,
+  adds/replaces secrets, reveals values on demand, copies them to the
+  clipboard, and deletes with inline confirmation. Values are backed by
+  `projectSecretService` under `.ade/secrets/project-secrets.v1.enc`.
 - `apps/desktop/src/renderer/components/settings/LaneTemplatesSection.tsx`
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.

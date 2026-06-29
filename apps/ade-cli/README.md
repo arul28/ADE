@@ -29,7 +29,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
-Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`).
+Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`). Project-scoped ADE secrets live in `<project>/.ade/secrets/project-secrets.v1.enc` and are exposed through `ade secrets` / the `project_secret` action domain.
 
 Channel builds use parallel state roots and binary names so Stable, Beta, and Alpha can coexist:
 
@@ -315,6 +315,12 @@ ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
+ade secrets list --text
+ade secrets get STRIPE_API_KEY --text
+ade secrets set STRIPE_API_KEY --value sk_...
+printf %s "$TOKEN" | ade secrets set TOKEN --stdin
+ade secrets set TOKEN --value-file token.txt
+ade secrets delete STRIPE_API_KEY
 ade usage snapshot --text
 ade usage refresh --text
 ade usage budget get --text
@@ -337,7 +343,7 @@ ade skill list --text
 ade skill show ade-browser --text
 ```
 
-Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
+Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; `list` is metadata-only and `get --text` prints the secret value, so agents should read only the named secret the user asked for and avoid logging it.
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 

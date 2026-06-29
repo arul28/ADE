@@ -114,8 +114,9 @@ ADE ships its capabilities as Agent Skills. State them briefly in the summary;
 open the relevant one only when a task needs it.
 
 - **`ade` CLI** — the control plane for ADE state (lanes, chats, actions, PRs,
-  proof, runtime/socket). Ground truth is `ade help <command>` and
-  `ade actions list --text`, not memory. → `ade-cli-control-plane`.
+  proof, runtime/socket, project secrets via `ade secrets`). Ground truth is
+  `ade help <command>` and `ade actions list --text`, not memory.
+  → `ade-cli-control-plane`.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
 - **App / browser / iOS-sim control** → `ade-app-control`,
   `ade-browser`, `ade-ios-simulator`.

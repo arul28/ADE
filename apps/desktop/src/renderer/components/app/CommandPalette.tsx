@@ -623,6 +623,13 @@ export function CommandPalette({
         run: () => navigate("/settings?tab=ai"),
       },
       {
+        id: "go-settings-secrets",
+        title: "Go to Secrets",
+        hint: "Encrypted project secrets for agents",
+        group: "Settings",
+        run: () => navigate("/settings?tab=secrets"),
+      },
+      {
         id: "go-settings-background-jobs",
         title: "Go to Background Jobs",
         hint: "AI-powered automations: summaries, PR descriptions, commit messages",

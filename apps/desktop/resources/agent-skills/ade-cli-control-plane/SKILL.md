@@ -7,7 +7,7 @@ description: Use this skill when an agent needs to inspect or operate ADE itself
 
 ## Core rule
 
-Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, settings, usage, updates, or service actions.
+Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, settings, project secrets, usage, updates, or service actions.
 
 ## First checks
 
@@ -15,6 +15,26 @@ Use normal shell commands for local repo edits, tests, and Git inspection. Use `
 2. Run `ade help <command>` or `ade help <command> <subcommand>` before guessing flags.
 3. Prefer `--text` for human-readable output and JSON output when scripting.
 4. Use `ade actions list --text` or `ade actions list --domain <domain> --text` as the escape hatch for service methods without a typed command.
+
+## Project secrets
+
+ADE project secrets are encrypted, project-scoped, and shared by ADE Desktop,
+the CLI, runtime-backed actions, lanes, and agents on the same machine. They live
+under the active project root, not inside an individual lane worktree.
+
+Use them only when the user names a secret or clearly asks you to use a stored
+credential. List output is metadata-only; `get` prints the value, so avoid
+echoing it into logs or chat unless the user explicitly asks.
+
+```
+ade secrets list --text
+ade secrets get STRIPE_API_KEY --text
+ade secrets set STRIPE_API_KEY --value sk_...
+printf %s "$TOKEN" | ade secrets set TOKEN --stdin
+ade secrets set TOKEN --value-file token.txt
+ade secrets delete STRIPE_API_KEY
+ade actions list --domain project_secret --text
+```
 
 ## Socket mode
 

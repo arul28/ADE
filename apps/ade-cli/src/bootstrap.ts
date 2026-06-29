@@ -72,6 +72,7 @@ import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syn
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
+import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
@@ -191,6 +192,7 @@ export type AdeRuntime = {
   sessionService: ReturnType<typeof createSessionService>;
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
   conflictService: ReturnType<typeof createConflictService>;
   gitService: ReturnType<typeof createGitOperationsService>;
   diffService: ReturnType<typeof createDiffService>;
@@ -574,8 +576,9 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       projectId,
       db,
-      logger
+      logger,
     });
+    const projectSecretService = createProjectSecretService(projectRoot);
     const onboardingService = createOnboardingService({
       db,
       logger,
@@ -1243,6 +1246,7 @@ export async function createAdeRuntime(args: {
     onboardingService,
     operationService,
     projectConfigService,
+    projectSecretService,
     conflictService,
     gitService,
     diffService,

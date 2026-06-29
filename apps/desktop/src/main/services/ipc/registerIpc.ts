@@ -24,6 +24,7 @@ import {
   setProjectIconOverrideFromSelection,
 } from "../projects/projectIconResolver";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import type { createProjectSecretService } from "../secrets/projectSecretService";
 import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
@@ -33,6 +34,12 @@ import type {
   IosSimulatorStatus,
   IosSimulatorToolStatus,
   IosSimulatorWindowState,
+  ProjectSecretDeleteArgs,
+  ProjectSecretGetArgs,
+  ProjectSecretsListResult,
+  ProjectSecretSetArgs,
+  ProjectSecretSummary,
+  ProjectSecretValueResult,
 } from "../../../shared/types";
 import { toShallowRecentProjectSummary } from "../projects/recentProjectSummary";
 import type {
@@ -916,6 +923,7 @@ export type AppContext = {
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
+  projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
   processService: ReturnType<typeof createProcessService> | null;
   testService: ReturnType<typeof createTestService> | null;
   sessionDeltaService?: SessionDeltaService | null;
@@ -4089,6 +4097,30 @@ export function registerIpc({
       shared: { ...snapshot.shared, ai: merged },
       local: snapshot.local ?? {},
     });
+  });
+
+  ipcMain.handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.list();
+  });
+
+  ipcMain.handle(IPC.projectSecretsGet, async (_event, arg: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.get(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsSet, async (_event, arg: ProjectSecretSetArgs): Promise<ProjectSecretSummary> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.set(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsDelete, async (_event, arg: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.delete(arg);
   });
 
   ipcMain.handle(IPC.aiCursorCloudListRepositories, async (): Promise<CursorCloudRepository[]> => {

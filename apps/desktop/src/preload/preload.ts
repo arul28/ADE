@@ -11,6 +11,12 @@ import type {
   ProjectBrowseResult,
   ProjectDetail,
   ProjectIcon,
+  ProjectSecretDeleteArgs,
+  ProjectSecretGetArgs,
+  ProjectSecretsListResult,
+  ProjectSecretSetArgs,
+  ProjectSecretSummary,
+  ProjectSecretValueResult,
 } from "../shared/types";
 import type {
   BatchAssessmentResult,
@@ -3577,6 +3583,24 @@ contextBridge.exposeInMainWorld("ade", {
         "set",
         { args: { overrides } },
         () => ipcRenderer.invoke(IPC.keybindingsSet, { overrides }),
+      ),
+  },
+  projectSecrets: {
+    list: async (): Promise<ProjectSecretsListResult> =>
+      callProjectRuntimeActionOr("project_secret", "list", {}, () =>
+        ipcRenderer.invoke(IPC.projectSecretsList),
+      ),
+    get: async (args: ProjectSecretGetArgs): Promise<ProjectSecretValueResult> =>
+      callProjectRuntimeActionOr("project_secret", "get", { args }, () =>
+        ipcRenderer.invoke(IPC.projectSecretsGet, args),
+      ),
+    set: async (args: ProjectSecretSetArgs): Promise<ProjectSecretSummary> =>
+      callProjectRuntimeActionOr("project_secret", "set", { args }, () =>
+        ipcRenderer.invoke(IPC.projectSecretsSet, args),
+      ),
+    delete: async (args: ProjectSecretDeleteArgs): Promise<{ deleted: boolean; name: string }> =>
+      callProjectRuntimeActionOr("project_secret", "delete", { args }, () =>
+        ipcRenderer.invoke(IPC.projectSecretsDelete, args),
       ),
   },
   ai: {

@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation, useNavigate } from "react-router-dom";
-import { Brain, ChartLineUp, GearSix, Stack, Palette, Robot } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, GearSix, Key, Stack, Palette, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
@@ -8,6 +8,7 @@ import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
+import { SecretsSection } from "../settings/SecretsSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
@@ -15,6 +16,7 @@ const SECTIONS = [
   { id: "general", label: "General", icon: GearSix },
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "ai", label: "AI Connections", icon: Brain },
+  { id: "secrets", label: "Secrets", icon: Key },
   { id: "background-jobs", label: "Background Jobs", icon: Robot },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
   { id: "ade-usage", label: "Stats", icon: ChartLineUp },
@@ -42,10 +44,13 @@ const TAB_ALIASES: Record<string, SectionId> = {
   usage: "ade-usage",
   stats: "ade-usage",
   "ade-usage": "ade-usage",
+  secret: "secrets",
+  secrets: "secrets",
 };
 
 const HASH_TARGET_SECTIONS: Partial<Record<string, SectionId>> = {
   "ai-providers": "ai",
+  secrets: "secrets",
   "chat-launch-clipboard": "general",
   "agent-completion-sound": "general",
   "voice-input": "general",
@@ -214,6 +219,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {section === "general" && <GeneralSection />}
         {section === "appearance" && <AppearanceSection />}
         {section === "ai" && <ProvidersSection />}
+        {section === "secrets" && <SecretsSection />}
         {section === "background-jobs" && <AiFeaturesSection />}
         {section === "ade-usage" && <AdeUsageSection />}
         {section === "lane-templates" && (
