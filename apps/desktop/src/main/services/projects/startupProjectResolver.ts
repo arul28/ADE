@@ -1,6 +1,10 @@
 import path from "node:path";
 import type { GlobalState, RecentProject } from "../state/globalState";
-import { recentProjectKey } from "../state/globalState";
+import {
+  persistableRecentProjectRemote,
+  recentProjectKey,
+  withPersistableRemoteProjectIcon,
+} from "../state/globalState";
 
 // Keep more than the visible window so pinned-but-stale projects don't crowd
 // out fresh ones; pinned entries are retained beyond the cap entirely.
@@ -46,10 +50,13 @@ export function normalizeStartupProjectState(args: {
   nowIso?: string;
 }): StartupProjectStateNormalization {
   const savedRecentProjects = args.saved.recentProjects ?? [];
-  const lastRemoteProjectBinding =
+  const savedLastRemoteProjectBinding =
     args.saved.lastRemoteProjectBinding?.kind === "remote"
       ? args.saved.lastRemoteProjectBinding
       : null;
+  const lastRemoteProjectBinding = savedLastRemoteProjectBinding
+    ? withPersistableRemoteProjectIcon(savedLastRemoteProjectBinding)
+    : null;
   const candidateRecentProjects = [
     ...savedRecentProjects,
     ...(args.additionalRecentProjects ?? []),
@@ -66,7 +73,7 @@ export function normalizeStartupProjectState(args: {
       const key = recentProjectKey(entry);
       if (acc.some((item) => recentProjectKey(item) === key)) return acc;
       const remoteRoot = typeof entry.rootPath === "string" ? entry.rootPath : "";
-      const remote = { ...entry.remote };
+      const remote = persistableRecentProjectRemote(entry.remote);
       // Legacy remote recents can only borrow the last opened binding's icon.
       if (
         remote.iconDataUrl == null &&
@@ -132,9 +139,16 @@ export function normalizeStartupProjectState(args: {
     recentProjects.some((project, index) =>
       recentProjectEntryChanged(project, savedRecentProjects[index])
     );
+  const lastRemoteProjectBindingChanged =
+    savedLastRemoteProjectBinding !== null &&
+    (savedLastRemoteProjectBinding.iconDataUrl ?? null) !==
+      (lastRemoteProjectBinding?.iconDataUrl ?? null);
   const lastProjectRootChanged =
     args.saved.lastProjectRoot !== undefined;
-  const stateWithoutLastProject: GlobalState = { ...args.saved };
+  const stateWithoutLastProject: GlobalState = {
+    ...args.saved,
+    ...(lastRemoteProjectBinding ? { lastRemoteProjectBinding } : {}),
+  };
   delete stateWithoutLastProject.lastProjectRoot;
   return {
     state: {
@@ -142,7 +156,7 @@ export function normalizeStartupProjectState(args: {
       recentProjects,
     },
     recentProjects,
-    changed: recentProjectsChanged || lastProjectRootChanged,
+    changed: recentProjectsChanged || lastRemoteProjectBindingChanged || lastProjectRootChanged,
   };
 }
 

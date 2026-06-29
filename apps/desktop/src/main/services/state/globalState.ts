@@ -102,6 +102,44 @@ type UpsertRecentProjectOptions = {
 // pinned-but-stale projects don't crowd out fresh ones, and pinned entries are
 // retained beyond the cap entirely (they are never auto-evicted).
 const RECENT_PROJECT_CAP = 24;
+const REMOTE_PROJECT_ICON_DATA_URL_MAX_BYTES = 128 * 1024;
+const REMOTE_PROJECT_ICON_DATA_URL_RE = /^data:image\/[a-z0-9.+-]+;base64,/i;
+
+export function persistableRemoteProjectIconDataUrl(
+  value: string | null | undefined,
+): string | null {
+  const dataUrl = typeof value === "string" ? value.trim() : "";
+  if (!dataUrl || !REMOTE_PROJECT_ICON_DATA_URL_RE.test(dataUrl)) return null;
+  return Buffer.byteLength(dataUrl, "utf8") <= REMOTE_PROJECT_ICON_DATA_URL_MAX_BYTES
+    ? dataUrl
+    : null;
+}
+
+export function withPersistableRemoteProjectIcon<T extends { iconDataUrl?: string | null }>(
+  value: T,
+): T {
+  const next = { ...value };
+  const iconDataUrl = persistableRemoteProjectIconDataUrl(value.iconDataUrl);
+  if (iconDataUrl) {
+    next.iconDataUrl = iconDataUrl;
+  } else {
+    delete next.iconDataUrl;
+  }
+  return next;
+}
+
+export function persistableRecentProjectRemote(
+  remote: RecentProjectRemote,
+): RecentProjectRemote {
+  const iconDataUrl = persistableRemoteProjectIconDataUrl(remote.iconDataUrl);
+  return {
+    targetId: remote.targetId,
+    projectId: remote.projectId,
+    runtimeName: remote.runtimeName,
+    hostname: remote.hostname,
+    ...(iconDataUrl ? { iconDataUrl } : {}),
+  };
+}
 
 export function upsertRecentProject(
   state: GlobalState,
@@ -121,11 +159,12 @@ export function upsertRecentProject(
   const prev = next.recentProjects ?? [];
   const key = recentProjectKey(proj);
   const existing = prev.find((p) => recentProjectKey(p) === key);
+  const remote = proj.remote ? persistableRecentProjectRemote(proj.remote) : undefined;
   const nextEntry: RecentProject = {
     rootPath: proj.rootPath,
     displayName: proj.displayName,
     lastOpenedAt: now,
-    ...(proj.remote ? { remote: proj.remote } : {}),
+    ...(remote ? { remote } : {}),
     ...(existing?.pinned ? { pinned: true } : {}),
   };
   if (options.preserveRecentOrder === true) {
