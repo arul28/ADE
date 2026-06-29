@@ -928,6 +928,15 @@ function updateTerminalInputModes(runtime: CachedRuntime, data: string): void {
   }
 }
 
+function hasTerminalPrivateModeSequence(data: string, targetMode: number): boolean {
+  for (const match of data.matchAll(/\x1b\[\?([0-9;]+)([hl])/g)) {
+    for (const rawParam of match[1].split(";")) {
+      if (Number(rawParam) === targetMode) return true;
+    }
+  }
+  return false;
+}
+
 function isTerminalMouseTrackingActive(runtime: CachedRuntime): boolean {
   const xtermMode = runtime.term.modes?.mouseTrackingMode;
   return runtime.mouseTrackingModes.size > 0 || (xtermMode != null && xtermMode !== "none");
@@ -1445,15 +1454,18 @@ async function readPreviewHydrationData(
 }
 
 async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise<string> {
+  let transcript = "";
   try {
-    const transcript = await window.ade.sessions.readTranscriptTail({
+    transcript = await window.ade.sessions.readTranscriptTail({
       sessionId: runtime.sessionId,
       maxBytes: HYDRATE_TAIL_BYTES,
       raw: true,
-    });
-    if (transcript) return transcript;
+    }) || "";
+    if (hasTerminalPrivateModeSequence(transcript, TERMINAL_BRACKETED_PASTE_MODE)) {
+      return transcript;
+    }
   } catch {
-    // Fall back to preview below.
+    transcript = "";
   }
 
   try {
@@ -1461,9 +1473,11 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
       terminalId: runtime.sessionId,
       maxBytes: HYDRATE_TAIL_BYTES,
     });
-    return preview?.transcript ?? "";
+    const snapshot = preview?.snapshot?.serialized ?? "";
+    const previewTranscript = preview?.transcript ?? "";
+    return `${snapshot}${previewTranscript}${transcript}`;
   } catch {
-    return "";
+    return transcript;
   }
 }
 

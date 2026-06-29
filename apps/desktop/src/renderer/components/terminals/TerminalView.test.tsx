@@ -1092,6 +1092,64 @@ describe("TerminalView", () => {
     });
   });
 
+  it("refreshes paste modes from snapshot state when the transcript tail lacks mode escapes", async () => {
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    readTranscriptTailMock.mockResolvedValue("recent output without mode escapes\n");
+    previewMock.mockResolvedValue({
+      terminalId: "session-snapshot-mode-paste",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-snapshot-mode-paste",
+        cols: 120,
+        rows: 32,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "\x1b[?2004hCodex ready\n",
+        visibleRows: [
+          {
+            text: "Codex ready",
+            wrapped: false,
+            cells: [],
+          },
+        ],
+      },
+      transcript: "recent output without mode escapes\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-snapshot-mode-paste" sessionId="session-snapshot-mode-paste" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("line one\nline two"));
+    await flushPasteWrite();
+
+    expect(previewMock).toHaveBeenCalledWith({
+      terminalId: "session-snapshot-mode-paste",
+      maxBytes: 2_000_000,
+    });
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-snapshot-mode-paste",
+      data: "\x1b[200~line one\rline two\x1b[201~",
+    });
+  });
+
   it("keeps input typed during paste refresh behind the pasted text", async () => {
     const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
     let resolvePreview: ((value: unknown) => void) | null = null;
