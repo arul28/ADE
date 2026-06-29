@@ -231,6 +231,14 @@ async function flushPromises() {
   });
 }
 
+async function flushPasteWrite() {
+  await act(async () => {
+    for (let i = 0; i < 6; i += 1) {
+      await Promise.resolve();
+    }
+  });
+}
+
 function createPasteEvent(text: string): Event {
   const event = new Event("paste", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "clipboardData", {
@@ -975,6 +983,7 @@ describe("TerminalView", () => {
 
     const event = createPasteEvent("hello from clipboard");
     terminal!.element!.dispatchEvent(event);
+    await flushPasteWrite();
 
     expect(event.defaultPrevented).toBe(true);
     expect(ptyWrite).toHaveBeenCalledWith({
@@ -1007,11 +1016,48 @@ describe("TerminalView", () => {
 
     const event = createPasteEvent("line one\n\x1b[31mline two");
     terminal!.element!.dispatchEvent(event);
+    await flushPasteWrite();
 
     expect(event.defaultPrevented).toBe(true);
     expect(ptyWrite).toHaveBeenCalledWith({
       ptyId: "pty-bracketed-text-paste",
       data: "\x1b[200~line one\r\u241b[31mline two\x1b[201~",
+    });
+  });
+
+  it("refreshes bracketed paste mode from parked preview before text paste", async () => {
+    const firstView = render(<TerminalView ptyId="pty-parked-paste" sessionId="session-parked-paste" isActive />);
+    await flushAllTimers();
+    firstView.unmount();
+
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValue({
+      terminalId: "session-parked-paste",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "\x1b[?2004hCodex ready\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-parked-paste" sessionId="session-parked-paste" isActive />);
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const event = createPasteEvent("line one\nline two");
+    terminal!.element!.dispatchEvent(event);
+    await flushPasteWrite();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-parked-paste",
+      data: "\x1b[200~line one\rline two\x1b[201~",
     });
   });
 

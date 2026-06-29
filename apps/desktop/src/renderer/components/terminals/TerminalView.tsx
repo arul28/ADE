@@ -804,6 +804,33 @@ function formatTextPasteForTerminal(runtime: CachedRuntime, text: string): strin
   return `${TERMINAL_BRACKETED_PASTE_START}${sanitized}${TERMINAL_BRACKETED_PASTE_END}`;
 }
 
+function syncTerminalInputModesFromXterm(runtime: CachedRuntime): void {
+  const bracketedPasteMode = runtime.term.modes?.bracketedPasteMode;
+  if (typeof bracketedPasteMode === "boolean" && runtime.hydrationCompleted) {
+    runtime.bracketedPasteMode = bracketedPasteMode;
+  }
+}
+
+async function refreshTerminalInputModesForPaste(runtime: CachedRuntime): Promise<void> {
+  syncTerminalInputModesFromXterm(runtime);
+  if (runtime.hydrationCompleted && !runtime.liveStreamPaused) return;
+  try {
+    const data = await readInitialHydrationData(runtime);
+    if (!runtime.disposed && data.text) {
+      updateTerminalInputModes(runtime, data.text);
+    }
+  } catch {
+    // Best effort only; a stale cache should not block paste entirely.
+  }
+}
+
+async function writeTextPasteForTerminal(runtime: CachedRuntime, text: string): Promise<void> {
+  if (!text || runtime.disposed) return;
+  await refreshTerminalInputModesForPaste(runtime);
+  if (runtime.disposed) return;
+  writePtyInput(runtime, formatTextPasteForTerminal(runtime, text));
+}
+
 function shouldFlushPtyInputImmediately(data: string): boolean {
   return /[\x00-\x1f\x7f]|\x1b/.test(data);
 }
@@ -1200,11 +1227,11 @@ function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | und
 
 function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
+  updateTerminalInputModes(runtime, ev.data);
   if (!shouldRuntimeReceivePtyData(runtime)) {
     pauseRuntimePtyStream(runtime);
     return;
   }
-  updateTerminalInputModes(runtime, ev.data);
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
@@ -1809,7 +1836,7 @@ function createRuntime(args: {
     lastPasteEventAt = Date.now();
     const text = ev.clipboardData?.getData("text/plain") ?? ev.clipboardData?.getData("text");
     if (text && !runtime.disposed) {
-      writePtyInput(runtime, formatTextPasteForTerminal(runtime, text));
+      void writeTextPasteForTerminal(runtime, text);
       return;
     }
     void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
@@ -1839,7 +1866,7 @@ function createRuntime(args: {
         }
         readText.call(navigator.clipboard).then((text) => {
           if (text && !runtime.disposed) {
-            writePtyInput(runtime, formatTextPasteForTerminal(runtime, text));
+            void writeTextPasteForTerminal(runtime, text);
             return;
           }
           void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
