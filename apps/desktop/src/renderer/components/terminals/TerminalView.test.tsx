@@ -1136,6 +1136,49 @@ describe("TerminalView", () => {
     });
   });
 
+  it("falls back to cached paste mode when paste mode refresh is slow", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockImplementation(() => new Promise<unknown>(() => {}));
+
+    render(<TerminalView ptyId="pty-paste-timeout" sessionId="session-paste-timeout" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-paste-timeout",
+        sessionId: "session-paste-timeout",
+        projectRoot: "/project/a",
+        data: "\x1b[?2004h",
+      });
+    }
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("run build"));
+    onData!("\r");
+    await flushPasteWrite();
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    await flushPasteWrite();
+
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-paste-timeout",
+      data: "\x1b[200~run build\x1b[201~\r",
+    });
+  });
+
   it("maps macOS Cmd+V with an image-only clipboard to Ctrl+V terminal input", async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     const originalPlatform = window.navigator.platform;

@@ -133,6 +133,7 @@ const MAX_PENDING_HYDRATION_BYTES = 2_000_000;
 const MAX_FRAME_WRITE_BYTES = 1_000_000;
 const MAX_PTY_INPUT_BATCH_BYTES = 16_384;
 const PTY_INPUT_BATCH_MS = 16;
+const PASTE_MODE_REFRESH_TIMEOUT_MS = 500;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
 const MIN_VALID_COLS = 20;
 const MIN_VALID_ROWS = 6;
@@ -824,13 +825,22 @@ function syncTerminalInputModesFromXterm(runtime: CachedRuntime): void {
 async function refreshTerminalInputModesForPaste(runtime: CachedRuntime): Promise<void> {
   syncTerminalInputModesFromXterm(runtime);
   if (runtime.hydrationCompleted && !runtime.liveStreamPaused) return;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
   try {
-    const data = await readTerminalInputModeRefreshData(runtime);
+    const timeoutPromise = new Promise<string>((resolve) => {
+      timeout = setTimeout(() => resolve(""), PASTE_MODE_REFRESH_TIMEOUT_MS);
+    });
+    const data = await Promise.race([
+      readTerminalInputModeRefreshData(runtime),
+      timeoutPromise,
+    ]);
     if (!runtime.disposed && data) {
       updateTerminalInputModes(runtime, data);
     }
   } catch {
     // Best effort only; a stale cache should not block paste entirely.
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
 
