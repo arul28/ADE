@@ -9,15 +9,19 @@ import {
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
   ADE_WELCOME_VIDEO_VERSION,
 } from "../../../shared/welcomeVideo";
+import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 
 describe("WelcomeVideoGate", () => {
   const originalAde = window.ade;
   const getWelcomeVideoState = vi.fn();
   const markWelcomeVideoSeen = vi.fn();
+  const openExternal = vi.fn();
 
   beforeEach(() => {
     getWelcomeVideoState.mockReset();
     markWelcomeVideoSeen.mockReset();
+    openExternal.mockReset();
+    openExternal.mockResolvedValue(undefined);
     markWelcomeVideoSeen.mockResolvedValue({
       videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
@@ -29,6 +33,7 @@ describe("WelcomeVideoGate", () => {
         ...((originalAde as typeof window.ade | undefined)?.app ?? {}),
         getWelcomeVideoState,
         markWelcomeVideoSeen,
+        openExternal,
       },
     } as unknown) as typeof window.ade;
   });
@@ -90,5 +95,20 @@ describe("WelcomeVideoGate", () => {
       expect(markWelcomeVideoSeen).toHaveBeenCalledWith("dismissed");
     });
     expect(screen.queryByRole("dialog", { name: /welcome to ade/i })).toBeNull();
+  });
+
+  it("opens the mobile install link from the welcome actions", async () => {
+    getWelcomeVideoState.mockResolvedValue({
+      videoId: ADE_WELCOME_VIDEO_ID,
+      version: ADE_WELCOME_VIDEO_VERSION,
+      completedAt: null,
+      dismissedAt: null,
+    });
+
+    render(<WelcomeVideoGate />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /install mobile app/i }));
+
+    expect(openExternal).toHaveBeenCalledWith(ADE_MOBILE_TESTFLIGHT_URL);
   });
 });

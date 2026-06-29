@@ -109,14 +109,14 @@ export function SiteHeader() {
               GitHub
             </a>
 
-            <LinkButton to={LINKS.releases} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
-              Download
+            <LinkButton to={LINKS.releasesLatest} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
+              Download for Mac
             </LinkButton>
           </nav>
 
           <div className="flex items-center gap-2 md:hidden">
-            <LinkButton to={LINKS.releases} variant="primary" size="sm" target="_blank" rel="noreferrer">
-              Download
+            <LinkButton to={LINKS.releasesLatest} variant="primary" size="sm" target="_blank" rel="noreferrer">
+              Mac
             </LinkButton>
             <button
               type="button"

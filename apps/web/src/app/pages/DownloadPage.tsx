@@ -53,8 +53,8 @@ export function DownloadPage() {
         icon: <Apple className="h-5 w-5" />,
         note: "Current beta release target: DMG and ZIP from GitHub Releases.",
         hint: "ADE for computers bundles the app, ade CLI, ade code, and the background ADE brain.",
-        actionHref: LINKS.releases,
-        actionLabel: "Download from releases"
+        actionHref: LINKS.releasesLatest,
+        actionLabel: "Download for Mac"
       },
       {
         key: "windows" as const,
@@ -78,10 +78,10 @@ export function DownloadPage() {
         key: "ios" as const,
         title: "iOS",
         icon: <Smartphone className="h-5 w-5" />,
-        note: "ADE Mobile is available to current TestFlight testers while the App Store listing is prepared.",
+        note: "ADE Mobile is available through TestFlight while the App Store listing is prepared.",
         hint: "Pair once with an ADE machine, then review, approve, and follow push state from the phone.",
-        actionHref: LINKS.changelog,
-        actionLabel: "Read mobile release notes"
+        actionHref: LINKS.testflight,
+        actionLabel: "Download for iOS"
       }
     ],
     []
@@ -103,16 +103,18 @@ export function DownloadPage() {
         </Reveal>
         <Reveal delay={0.1}>
           <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-            Get ADE for your computer from GitHub Releases, or build from source. The computer install includes the app,
-            ade CLI, ade code, and the background ADE brain. ADE runs in Guest Mode without accounts, and can optionally
-            enable hosted or BYOK LLM providers.
+            Get ADE for Mac from GitHub Releases, install the iOS companion from TestFlight, or build from source. The
+            computer install includes the app, ade CLI, ade code, and the background ADE brain.
           </p>
         </Reveal>
 
         <Reveal delay={0.12}>
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-            <LinkButton to={LINKS.releases} size="lg" variant="primary" target="_blank" rel="noreferrer">
-              Latest release <ArrowUpRight className="h-4 w-4" />
+            <LinkButton to={LINKS.releasesLatest} size="lg" variant="primary" target="_blank" rel="noreferrer">
+              Download for Mac <ArrowUpRight className="h-4 w-4" />
+            </LinkButton>
+            <LinkButton to={LINKS.testflight} size="lg" variant="secondary" target="_blank" rel="noreferrer">
+              Download for iOS <Smartphone className="h-4 w-4" />
             </LinkButton>
             <LinkButton to={LINKS.github} size="lg" variant="secondary" target="_blank" rel="noreferrer">
               GitHub repo <Github className="h-4 w-4" />

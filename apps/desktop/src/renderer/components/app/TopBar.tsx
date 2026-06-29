@@ -27,6 +27,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
+import { openExternalUrl } from "../../lib/openExternal";
 import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
@@ -40,6 +41,7 @@ import {
 import { cn } from "../ui/cn";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import type {
   ProcessRuntime,
   ProjectIcon,
@@ -1786,6 +1788,10 @@ export function TopBar() {
   );
 
   const syncLabel = deriveSyncLabel(syncSnapshot) ?? "Phone sync";
+  const openMobileTestFlight = useCallback(
+    () => openExternalUrl(ADE_MOBILE_TESTFLIGHT_URL),
+    [],
+  );
 
   const renderHeaderStatusControls = useCallback(
     (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
@@ -2530,15 +2536,26 @@ export function TopBar() {
                   </div>
                 </div>
               </div>
-              <button
-                type="button"
-                className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                data-variant="ghost"
-                onClick={() => setPhoneSyncOpen(false)}
-                title="Close phone sync"
-              >
-                <X size={13} weight="regular" />
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  className="ade-shell-control inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-semibold"
+                  onClick={openMobileTestFlight}
+                  title="Download ADE Mobile from TestFlight"
+                >
+                  <ArrowSquareOut size={12} weight="regular" />
+                  Download
+                </button>
+                <button
+                  type="button"
+                  className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
+                  data-variant="ghost"
+                  onClick={() => setPhoneSyncOpen(false)}
+                  title="Close phone sync"
+                >
+                  <X size={13} weight="regular" />
+                </button>
+              </div>
             </div>
             <div className="p-4">
               <SyncDevicesSection />

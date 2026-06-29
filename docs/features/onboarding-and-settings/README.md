@@ -105,8 +105,9 @@ Renderer — onboarding:
   welcome wizard are no longer mounted.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome screen backed by global app state. It
-  links to GitHub and the docs site and embeds the current welcome
-  YouTube video. The Help menu can replay it without resetting setup.
+  links to GitHub, the docs site, the ADE Mobile TestFlight install,
+  and the current welcome YouTube video. The Help menu can replay it
+  without resetting setup.
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
   — persistent help menu in the top bar: glossary, docs links, welcome
   video replay, and help preferences. Tour replay entries were removed
@@ -194,7 +195,8 @@ Renderer — settings:
   loopback address candidates, the bootstrap token for desktop peers,
   the Tailscale MagicDNS discovery status (`svc:ade-sync` publication
   via `tailscale serve`), and the per-device connection panel used to
-  forget paired phones.
+  forget paired phones. The top-bar Mobile popover wraps this section
+  with a TestFlight download action for installing ADE Mobile.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget
