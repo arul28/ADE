@@ -49,6 +49,8 @@ describe("WelcomeVideoGate", () => {
     render(<WelcomeVideoGate />);
 
     expect(await screen.findByRole("dialog", { name: /welcome to ade/i })).toBeTruthy();
+    expect(screen.queryByText(/start here/i)).toBeNull();
+    expect(screen.queryByText(/quick orientation/i)).toBeNull();
     const video = screen.getByTitle("Welcome to ADE video");
     expect(video).toBeTruthy();
     expect(video.getAttribute("sandbox")).toBe(

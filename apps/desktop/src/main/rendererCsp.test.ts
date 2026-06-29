@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRendererCspPolicy } from "./rendererCsp";
+import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
 
 describe("buildRendererCspPolicy", () => {
   it("allows packaged renderer fetches to local simulator stream URLs without blanket HTTPS", () => {
@@ -53,5 +53,60 @@ describe("buildRendererCspPolicy", () => {
 
     expect(policy).toContain("img-src");
     expect(policy).not.toContain("https://storage.googleapis.com");
+  });
+});
+
+describe("shouldApplyRendererCsp", () => {
+  it("applies the renderer policy to packaged ADE documents", () => {
+    expect(
+      shouldApplyRendererCsp(
+        { url: "file:///Applications/ADE/index.html", resourceType: "mainFrame" },
+        { isDevMode: false },
+      ),
+    ).toBe(true);
+    expect(
+      shouldApplyRendererCsp(
+        { url: "app://ade/index.html", resourceType: "mainFrame" },
+        { isDevMode: false },
+      ),
+    ).toBe(true);
+  });
+
+  it("applies the renderer policy only to the active Vite origin in dev", () => {
+    const options = { isDevMode: true, devServerUrl: "http://localhost:5173" };
+
+    expect(
+      shouldApplyRendererCsp(
+        { url: "http://localhost:5173/work", resourceType: "mainFrame" },
+        options,
+      ),
+    ).toBe(true);
+    expect(
+      shouldApplyRendererCsp(
+        { url: "http://localhost:5174/work", resourceType: "mainFrame" },
+        options,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not overwrite external subframe CSP headers", () => {
+    expect(
+      shouldApplyRendererCsp(
+        {
+          url: "https://www.youtube-nocookie.com/embed/64E0pViEiB8",
+          resourceType: "subFrame",
+        },
+        { isDevMode: false },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not apply without an explicit main-frame resource type", () => {
+    expect(
+      shouldApplyRendererCsp(
+        { url: "file:///Applications/ADE/index.html" },
+        { isDevMode: false },
+      ),
+    ).toBe(false);
   });
 });

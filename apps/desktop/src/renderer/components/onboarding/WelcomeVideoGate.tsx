@@ -88,6 +88,7 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
           }}
         />
         <Dialog.Content
+          aria-describedby={undefined}
           style={{
             position: "fixed",
             left: "50%",
@@ -107,148 +108,124 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
             outline: "none",
           }}
         >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            justifyContent: "space-between",
-            gap: 16,
-            padding: "22px 24px 16px",
-            borderBottom: "1px solid color-mix(in srgb, var(--color-fg, #fff) 8%, transparent)",
-          }}
-        >
-          <div style={{ minWidth: 0 }}>
-            <div
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 8,
-                borderRadius: 999,
-                border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 32%, transparent)",
-                background:
-                  "color-mix(in srgb, var(--color-accent, #A78BFA) 14%, transparent)",
-                color: "var(--color-accent, #A78BFA)",
-                padding: "5px 9px",
-                fontSize: 11,
-                fontWeight: 700,
-                textTransform: "uppercase",
-              }}
-            >
-              <PlayCircle size={13} weight="fill" />
-              Start here
-            </div>
-            <Dialog.Title
-              style={{
-                margin: "12px 0 0",
-                fontSize: 30,
-                lineHeight: 1.08,
-                letterSpacing: 0,
-              }}
-            >
-              Welcome to ADE
-            </Dialog.Title>
-            <Dialog.Description
-              style={{
-                margin: "8px 0 0",
-                maxWidth: 640,
-                color: "var(--color-muted-fg, #A8A4B8)",
-                fontSize: 13.5,
-                lineHeight: 1.55,
-              }}
-            >
-              A quick orientation for lanes, Work sessions, PR flows, proof, and the local-first runtime.
-            </Dialog.Description>
-          </div>
-          <button
-            type="button"
-            aria-label="Close welcome video"
-            onClick={() => close("dismissed")}
-            className="ade-shell-control"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 28,
-              height: 28,
-              borderRadius: 7,
-              border: "1px solid rgba(255,255,255,0.08)",
-              background: "rgba(255,255,255,0.04)",
-              color: "var(--color-muted-fg, #A8A4B8)",
-              cursor: "pointer",
-              flex: "0 0 auto",
-            }}
-          >
-            <X size={14} weight="bold" />
-          </button>
-        </div>
-
-        <div style={{ padding: "18px 24px 24px" }}>
           <div
             style={{
               display: "flex",
-              flexWrap: "wrap",
-              alignItems: "center",
-              gap: 9,
-              marginBottom: 16,
+              alignItems: "flex-start",
+              justifyContent: "space-between",
+              gap: 16,
+              padding: "22px 24px 16px",
+              borderBottom: "1px solid color-mix(in srgb, var(--color-fg, #fff) 8%, transparent)",
             }}
           >
-            <WelcomeActionButton onClick={openGitHub} icon={<GithubLogo size={14} weight="fill" />}>
-              GitHub
-            </WelcomeActionButton>
-            <WelcomeActionButton onClick={openDocs} icon={<ArrowSquareOut size={13} />}>
-              Docs
-            </WelcomeActionButton>
-            <WelcomeActionButton onClick={openVideo} icon={<PlayCircle size={14} weight="fill" />}>
-              Open video
-            </WelcomeActionButton>
+            <div style={{ minWidth: 0 }}>
+              <Dialog.Title
+                style={{
+                  margin: 0,
+                  fontSize: 30,
+                  lineHeight: 1.08,
+                  letterSpacing: 0,
+                }}
+              >
+                Welcome to ADE
+              </Dialog.Title>
+            </div>
             <button
               type="button"
-              onClick={() => close("completed")}
+              aria-label="Close welcome video"
+              onClick={() => close("dismissed")}
+              className="ade-shell-control"
               style={{
-                marginLeft: "auto",
-                minHeight: 32,
-                border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 44%, transparent)",
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: 28,
+                height: 28,
                 borderRadius: 7,
-                background: "var(--color-accent, #A78BFA)",
-                color: "var(--color-accent-fg, #0B0A14)",
-                padding: "0 13px",
-                fontSize: 12,
-                fontWeight: 700,
+                border: "1px solid rgba(255,255,255,0.08)",
+                background: "rgba(255,255,255,0.04)",
+                color: "var(--color-muted-fg, #A8A4B8)",
                 cursor: "pointer",
+                flex: "0 0 auto",
               }}
             >
-              Continue
+              <X size={14} weight="bold" />
             </button>
           </div>
 
-          <div
-            style={{
-              position: "relative",
-              overflow: "hidden",
-              borderRadius: 10,
-              border: "1px solid color-mix(in srgb, var(--color-fg, #fff) 12%, transparent)",
-              background: "#050507",
-              aspectRatio: "16 / 9",
-              boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
-            }}
-          >
-            <iframe
-              title="Welcome to ADE video"
-              src={ADE_WELCOME_VIDEO_EMBED_URL}
-              sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
-              allow="autoplay; encrypted-media; picture-in-picture"
-              allowFullScreen
-              referrerPolicy="strict-origin-when-cross-origin"
+          <div style={{ padding: "18px 24px 24px" }}>
+            <div
               style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                border: 0,
+                display: "flex",
+                flexWrap: "wrap",
+                alignItems: "center",
+                gap: 9,
+                marginBottom: 16,
               }}
-            />
+            >
+              <WelcomeActionButton
+                onClick={openGitHub}
+                icon={<GithubLogo size={14} weight="fill" />}
+              >
+                GitHub
+              </WelcomeActionButton>
+              <WelcomeActionButton onClick={openDocs} icon={<ArrowSquareOut size={13} />}>
+                Docs
+              </WelcomeActionButton>
+              <WelcomeActionButton
+                onClick={openVideo}
+                icon={<PlayCircle size={14} weight="fill" />}
+              >
+                Open video
+              </WelcomeActionButton>
+              <button
+                type="button"
+                onClick={() => close("completed")}
+                style={{
+                  marginLeft: "auto",
+                  minHeight: 32,
+                  border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 44%, transparent)",
+                  borderRadius: 7,
+                  background: "var(--color-accent, #A78BFA)",
+                  color: "var(--color-accent-fg, #0B0A14)",
+                  padding: "0 13px",
+                  fontSize: 12,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                Continue
+              </button>
+            </div>
+
+            <div
+              style={{
+                position: "relative",
+                overflow: "hidden",
+                borderRadius: 10,
+                border: "1px solid color-mix(in srgb, var(--color-fg, #fff) 12%, transparent)",
+                background: "#050507",
+                aspectRatio: "16 / 9",
+                boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
+              }}
+            >
+              <iframe
+                title="Welcome to ADE video"
+                src={ADE_WELCOME_VIDEO_EMBED_URL}
+                sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+                referrerPolicy="strict-origin-when-cross-origin"
+                style={{
+                  position: "absolute",
+                  inset: 0,
+                  width: "100%",
+                  height: "100%",
+                  border: 0,
+                }}
+              />
+            </div>
           </div>
-        </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
