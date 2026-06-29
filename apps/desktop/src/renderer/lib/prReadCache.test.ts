@@ -3,6 +3,7 @@ import {
   clearPrReadInFlightForTest,
   getGitHubSnapshotCoalesced,
   listPrsCoalesced,
+  refreshLinkedPrCoalesced,
   refreshPrsCoalesced,
 } from "./prReadCache";
 
@@ -86,5 +87,26 @@ describe("prReadCache", () => {
 
     await expect(first).resolves.toEqual([{ id: "pr-1" }, { id: "pr-2" }]);
     await expect(second).resolves.toEqual([{ id: "pr-1" }, { id: "pr-2" }]);
+  });
+
+  it("throttles repeated linked PR refreshes after a fresh result", async () => {
+    const stalePr = { id: "pr-1", laneId: "lane-1", state: "open" };
+    const freshPr = { ...stalePr, state: "merged" };
+    refresh.mockResolvedValueOnce([freshPr]);
+
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(freshPr);
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(freshPr);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    refresh.mockResolvedValueOnce([{ ...freshPr, title: "forced" }]);
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", force: true }),
+    ).resolves.toMatchObject({ title: "forced" });
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 });

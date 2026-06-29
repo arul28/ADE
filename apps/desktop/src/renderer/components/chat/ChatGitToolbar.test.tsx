@@ -1,9 +1,11 @@
 /* @vitest-environment jsdom */
 
+import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
+import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 
 const originalAde = globalThis.window.ade;
@@ -28,6 +30,7 @@ function installAdeMocks() {
     prs: {
       getForLane: vi.fn().mockResolvedValue(null),
       onEvent: vi.fn().mockImplementation(() => () => undefined),
+      refresh: vi.fn().mockResolvedValue([]),
       getChecks: vi.fn().mockResolvedValue([]),
       openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
@@ -90,13 +93,16 @@ function LocationProbe() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
-function renderToolbar() {
+function renderToolbar(props: {
+  onTogglePrPane?: () => void;
+  prPaneOpen?: boolean;
+} = {}) {
   return render(
     <MemoryRouter initialEntries={["/work"]}>
       <Routes>
         <Route path="*" element={(
           <>
-            <ChatGitToolbar laneId="lane-1" />
+            <ChatGitToolbar laneId="lane-1" {...props} />
             <LocationProbe />
           </>
         )}
@@ -109,6 +115,7 @@ function renderToolbar() {
 describe("ChatGitToolbar", () => {
   beforeEach(() => {
     vi.stubGlobal("PointerEvent", MouseEvent);
+    clearPrReadInFlightForTest();
     installAdeMocks();
     resetStore();
   });
@@ -192,5 +199,59 @@ describe("ChatGitToolbar", () => {
       expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://github.com/acme/ade/pull/1");
     });
     expect(window.ade.prs.openInGitHub).not.toHaveBeenCalled();
+  });
+
+  it("target-refreshes the linked PR when the chat PR pane opens", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Stale linked PR",
+      state: "open",
+      checksStatus: "pending",
+      githubPrNumber: 333,
+      githubUrl: "https://github.com/acme/ade/pull/333",
+      additions: 2,
+      deletions: 1,
+      updatedAt: null,
+    } as any);
+    vi.mocked(window.ade.prs.refresh).mockResolvedValue([{
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Merged linked PR",
+      state: "merged",
+      checksStatus: "pending",
+      githubPrNumber: 333,
+      githubUrl: "https://github.com/acme/ade/pull/333",
+      additions: 2,
+      deletions: 1,
+      updatedAt: "2026-06-29T14:00:00.000Z",
+    } as any]);
+
+    function Harness() {
+      const [open, setOpen] = React.useState(false);
+      return (
+        <ChatGitToolbar
+          laneId="lane-1"
+          prPaneOpen={open}
+          onTogglePrPane={() => setOpen((value) => !value)}
+        />
+      );
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <Harness />
+      </MemoryRouter>,
+    );
+
+    const badge = await screen.findByText("PR #333");
+    expect(window.ade.prs.refresh).not.toHaveBeenCalled();
+
+    fireEvent.click(badge.closest("button")!);
+
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] });
+    });
+    expect(await screen.findByText("MERGED #333")).toBeTruthy();
   });
 });

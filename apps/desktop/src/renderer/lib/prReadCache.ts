@@ -8,6 +8,10 @@ const prListInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
 const githubSnapshotInFlight = new Map<string, InFlightEntry<GitHubPrSnapshot>>();
 const prRefreshInFlight = new Map<string, InFlightEntry<PrSummary[]>>();
 const prSurfaceWarmInFlight = new Map<string, InFlightEntry<void>>();
+const linkedPrRefreshInFlight = new Map<string, InFlightEntry<PrSummary | null>>();
+const linkedPrRecentRefresh = new Map<string, { refreshedAt: number; result: PrSummary | null }>();
+
+export const LINKED_PR_LIVE_REFRESH_COOLDOWN_MS = 5_000;
 
 function projectKey(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "active";
@@ -70,6 +74,44 @@ export function refreshPrsCoalesced(
   );
 }
 
+export function refreshLinkedPrCoalesced(
+  pr: PrSummary,
+  options?: {
+    projectRoot?: string | null;
+    force?: boolean;
+    cooldownMs?: number;
+  },
+): Promise<PrSummary | null> {
+  const prId = String(pr.id ?? "").trim();
+  if (!prId) return Promise.resolve(null);
+
+  const key = JSON.stringify({
+    projectRoot: projectKey(options?.projectRoot),
+    prId,
+  });
+  const cooldownMs = Math.max(0, options?.cooldownMs ?? LINKED_PR_LIVE_REFRESH_COOLDOWN_MS);
+  const recent = linkedPrRecentRefresh.get(key);
+  if (!options?.force && recent && Date.now() - recent.refreshedAt < cooldownMs) {
+    return Promise.resolve(recent.result ?? pr);
+  }
+
+  return coalesceInFlight(
+    linkedPrRefreshInFlight,
+    key,
+    async () => {
+      try {
+        const refreshed = await refreshPrsCoalesced({ prIds: [prId] }, { projectRoot: options?.projectRoot });
+        const result = refreshed.find((next) => next.id === prId) ?? null;
+        linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result: result ?? pr });
+        return result ?? pr;
+      } catch (error) {
+        linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result: pr });
+        throw error;
+      }
+    },
+  );
+}
+
 export function warmPrSurfaceCoalesced(options?: {
   projectRoot?: string | null;
   includeGithubSnapshot?: boolean;
@@ -105,4 +147,6 @@ export function clearPrReadInFlightForTest(): void {
   githubSnapshotInFlight.clear();
   prRefreshInFlight.clear();
   prSurfaceWarmInFlight.clear();
+  linkedPrRefreshInFlight.clear();
+  linkedPrRecentRefresh.clear();
 }

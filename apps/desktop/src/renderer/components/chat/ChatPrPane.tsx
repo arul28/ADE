@@ -14,6 +14,8 @@ import { cn } from "../ui/cn";
 import type { PrSummary } from "../../../shared/types";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
+import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
+import { useAppStore } from "../../state/appStore";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -36,8 +38,9 @@ function stateTone(state: PrSummary["state"]): { dot: string; label: string } {
   }
 }
 
-function ChecksLabel({ status }: { status: PrSummary["checksStatus"] }) {
-  switch (status) {
+function ChecksLabel({ pr }: { pr: PrSummary }) {
+  if (pr.state !== "open" && pr.state !== "draft") return null;
+  switch (pr.checksStatus) {
     case "passing":
       return <span className="inline-flex items-center gap-1 text-emerald-300/80"><CheckCircle size={11} weight="fill" />Checks passing</span>;
     case "failing":
@@ -72,7 +75,7 @@ function PrDetails({
       </div>
       <h3 className="text-[14px] font-semibold leading-snug text-fg/90">{pr.title}</h3>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg/50">
-        <ChecksLabel status={pr.checksStatus} />
+        <ChecksLabel pr={pr} />
         {pr.additions > 0 || pr.deletions > 0 ? (
           <span className="inline-flex items-center gap-1">
             <span className="text-emerald-400/60">+{pr.additions}</span>
@@ -112,19 +115,26 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   onClose?: () => void;
 }) {
   const navigate = useNavigate();
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: { live?: boolean } = {}) => {
+    let cached: PrSummary | null = null;
     try {
-      setPr(await window.ade.prs.getForLane(laneId));
+      cached = await window.ade.prs.getForLane(laneId);
+      setPr(cached);
+      if (options.live && cached) {
+        const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot });
+        setPr(refreshed ?? cached);
+      }
     } catch {
-      setPr(null);
+      if (!cached) setPr(null);
     } finally {
       setLoading(false);
     }
-  }, [laneId]);
+  }, [laneId, projectRoot]);
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
@@ -134,14 +144,25 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     setPr(created);
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh({ live: true }); }, [refresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event) => {
-      if (event.type === "prs-updated") void refresh();
+      if (event.type === "pr-notification") {
+        if (event.laneId === laneId || event.prId === pr?.id) void refresh();
+        return;
+      }
+      if (event.type !== "prs-updated") return;
+      const eventIncludesLanePr = event.prs.some((next) => next.laneId === laneId);
+      const eventIncludesCurrentPr = pr ? event.prs.some((next) => next.id === pr.id) : false;
+      if (eventIncludesLanePr || eventIncludesCurrentPr || !pr) {
+        void refresh();
+      } else {
+        setPr(null);
+      }
     });
     return unsubscribe;
-  }, [refresh]);
+  }, [laneId, pr, refresh]);
 
   useEffect(() => {
     if (!copied) return;
