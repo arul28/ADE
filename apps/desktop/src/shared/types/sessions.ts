@@ -103,7 +103,7 @@ export type TerminalSessionSummary = {
   resumeCommand: string | null;
   resumeMetadata?: TerminalResumeMetadata | null;
   chatIdleSinceAt?: string | null;
-  /** Parent chat session id when this terminal was launched from a chat (e.g. App Control, in-chat terminal drawer). */
+  /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */
   chatSessionId?: string | null;
   /**
    * Orchestration-mode fields. Populated only when the underlying chat session
@@ -136,7 +136,7 @@ export type PtyCreateArgs = {
   allowNewSessionId?: boolean;
   /** Allow an explicit absolute cwd outside the selected lane worktree. */
   allowExternalCwd?: boolean;
-  /** Chat session that owns this in-chat terminal, when launched from chat UI or App Control. */
+  /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
   laneId: string;
   cwd?: string;

@@ -150,7 +150,7 @@ Shared types and IPC:
   provider continuation internally — and `ade.pty.resumeSession`, which
   relaunches an ended tracked CLI session without sending a prompt),
   `ade.processes.*`, plus the
-  chat-scoped `ade.terminal.*` family (`list`, `read`, `preview` —
+  session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
   serialized xterm snapshot for the TUI / mobile renderers, `write`,
   `signal`, `activeForChat`), and the localhost-probe helper
   `ade.localhost.probePort`.
@@ -167,10 +167,10 @@ IPC registration:
   `sessionsReadTranscriptTail`, `sessionsGetDelta`, `ptyCreate`,
   `ptyResumeSession`, `ptySendToSession`, `ptyWrite`, `ptyResize`,
   `ptyDispose`, the `processes.*` handlers,
-  and the chat-scoped `terminalList` / `terminalRead` /
+  and the session-owned `terminalList` / `terminalRead` /
   `terminalWrite` / `terminalSignal` / `terminalActiveForChat`
   handlers. `terminalRead` delegates transcript-tail reads to
-  `ptyService` so chat-owned terminal drawers and `ade code` get the
+  `ptyService` so attached terminal panels and `ade code` get the
   same live-tail merge as the Work tab.
 
 Renderer surfaces:
@@ -542,9 +542,9 @@ process-local PTY is no longer reachable from the current ADE runtime.
 Fields that feed UI and downstream systems:
 
 - identity: `id`, `laneId`, `laneName`, `ptyId`, `tracked`, `pinned`,
-  `manuallyNamed`, `chatSessionId` (parent chat that owns this terminal,
-  set when launched from the chat terminal drawer or App Control —
-  stored as `chat_session_id` and indexed)
+  `manuallyNamed`, `chatSessionId` (owner session for attached terminals;
+  historically a parent chat id, and now also a tracked CLI session id
+  for CLI-owned attached terminals; stored as `chat_session_id` and indexed)
 - title and intent: `title`, `goal`, `toolType`
 - lifecycle: `status`, `startedAt`, `endedAt`, `exitCode`, `runtimeState`
   (derived), `chatIdleSinceAt`
@@ -679,7 +679,7 @@ PTY:
 
 | Channel | Purpose |
 |---|---|
-| `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as chat-owned. |
+| `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as attached to that owner session. |
 | `ade.pty.resumeSession` | prompt-free tracked CLI relaunch. Args: `{ sessionId, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Reuses a live PTY when attached; otherwise validates the row, backfills a missing resume target when possible, rebuilds the provider resume command, and spawns a continuation PTY in the same `terminal_sessions` row without writing a prompt. Returns `PtyResumeSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, backfills a missing resume target when possible, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and includes the user's text in the launch command when resume metadata is available. Later sends that land after a resume flight has started are serialized through the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then carriage return with a provider-specific submit delay. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
@@ -688,29 +688,29 @@ PTY:
 | `ade.pty.data` (event) | stream stdout/stderr to the renderer |
 | `ade.pty.exit` (event) | final exit code |
 
-Chat-owned terminals (`ade.terminal.*` — used by the chat terminal drawer, the App Control panel, the TUI `TerminalPane`, and the headless `ade terminal` / `ade app-control` CLI commands):
+Attached terminals (`ade.terminal.*` — used by the chat/CLI terminal panel, the App Control panel, the TUI `TerminalPane`, and the headless `ade terminal` / `ade app-control` CLI commands):
 
 | Channel | Purpose |
 |---|---|
-| `ade.terminal.list` | list `ChatTerminalSession[]` (filterable by `chatSessionId` and/or `laneId`). Rich rows: `toolType`, `goal`, `resumeCommand`, `resumeMetadata`, `lastOutputPreview`, `summary`, status / runtime state. Chat-toolType sessions are filtered out so the surface only lists shells and tracked agent CLI terminals. |
-| `ade.terminal.read` | tail scrollback by explicit `terminalId` *or* by `chatSessionId`. Returns `{ terminalId, data, nextSince }` for incremental polling. |
+| `ade.terminal.list` | list `ChatTerminalSession[]` (filterable by owner `chatSessionId` and/or `laneId`). Rich rows: `toolType`, `goal`, `resumeCommand`, `resumeMetadata`, `lastOutputPreview`, `summary`, status / runtime state. Chat-toolType sessions are filtered out so the surface only lists shells and tracked agent CLI terminals. |
+| `ade.terminal.read` | tail scrollback by explicit `terminalId` *or* by owner `chatSessionId`. Returns `{ terminalId, data, nextSince }` for incremental polling. |
 | `ade.terminal.preview` | serialized buffer snapshot for the TUI/mobile renderers. Each live PTY mirrors output into an `@xterm/headless` Terminal + `SerializeAddon` and debounce-writes a JSON file under `.ade/cache/terminal-snapshots/`. The preview call flushes the in-flight write, reads the snapshot (`TerminalSerializedSnapshot` with serialized scrollback, visible-row cells, cursor / viewport / buffer-type metadata), and falls back to a transcript tail when no snapshot exists yet. |
-| `ade.terminal.write` | write bytes to a terminal (by `terminalId`, `ptyId`, or `chatSessionId`). |
-| `ade.terminal.resize` | resize the live PTY (cols, rows) by `terminalId`, `ptyId`, or `chatSessionId`. Clamps dims and rebroadcasts the new size to the snapshot mirror. |
+| `ade.terminal.write` | write bytes to a terminal (by `terminalId`, `ptyId`, or owner `chatSessionId`). |
+| `ade.terminal.resize` | resize the live PTY (cols, rows) by `terminalId`, `ptyId`, or owner `chatSessionId`. Clamps dims and rebroadcasts the new size to the snapshot mirror. |
 | `ade.terminal.signal` | deliver `SIGINT` / `SIGTERM` / `SIGKILL` to the resolved terminal. |
 | `ade.terminal.activeForChat` | resolve the active `ChatTerminalSession` for a given `chatSessionId`. |
 
 `ptyService` keeps two in-memory maps to back this surface:
-`terminalChatSessions` (terminalId → chatSessionId) and
-`activeTerminalByChatSession` (chatSessionId → terminalId). Disposing
+`terminalChatSessions` (terminalId → owner session id) and
+`activeTerminalByChatSession` (owner session id → terminalId). Disposing
 the active terminal automatically promotes the most recently created
 sibling, so `ade terminal read --chat-session <id>` always resolves a
-sensible target for in-chat agents. Every PTY launched through
+sensible target for attached-session agents. Every PTY launched through
 `ptyService.create` runs through `withAdeTerminalContextEnv` which
 exports `ADE_PROJECT_ROOT`, `ADE_LANE_ID`, and (when the PTY is
-chat-owned) `ADE_CHAT_SESSION_ID` into the spawn env — that's how a
+session-owned) `ADE_CHAT_SESSION_ID` into the spawn env — that's how a
 plain shell that the user types `ade --socket terminal read --chat-session
-"$ADE_CHAT_SESSION_ID" --text` into will resolve to the parent chat's
+"$ADE_CHAT_SESSION_ID" --text` into will resolve to the owning session's
 terminal even though no agent runtime spawned it. The headless ADE
 runtime and agent chat runtime both layer the same identity envs
 (plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.

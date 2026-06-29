@@ -295,6 +295,9 @@ vi.mock("./WorkViewArea", () => ({
       session: AgentChatSession,
       options?: AgentChatSessionCreatedOptions,
     ) => void | Promise<void>;
+    onToggleTerminalPane?: () => void;
+    onOpenTerminalPane?: () => void;
+    terminalPaneOpen?: boolean;
   }) => (
     <div data-testid="work-view-area">
       <button
@@ -308,6 +311,19 @@ vi.mock("./WorkViewArea", () => ({
         onClick={() => props.onOpenChatSession(workMocks.foregroundSession, { activate: true, source: "draft-launch" })}
       >
         create foreground chat
+      </button>
+      <button
+        type="button"
+        data-terminal-open={props.terminalPaneOpen ? "true" : "false"}
+        onClick={() => props.onToggleTerminalPane?.()}
+      >
+        toggle terminal pane
+      </button>
+      <button
+        type="button"
+        onClick={() => props.onOpenTerminalPane?.()}
+      >
+        open terminal pane
       </button>
     </div>
   ),
@@ -447,6 +463,35 @@ describe("TerminalsPage chat session activation", () => {
     });
     // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
     // guard now just suppresses the browser-sidebar open.)
+    expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
+  });
+
+  it("opens and closes the Work Terminal sidebar from session headers", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    const { rerender } = render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "toggle terminal pane" }));
+    expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("terminal");
+
+    vi.clearAllMocks();
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      workSidebarOpen: true,
+      workSidebarTab: "terminal",
+      closingPtyIds: new Set<string>(),
+    };
+    rerender(<TerminalsPage />);
+
+    expect(screen.getByRole("button", { name: "toggle terminal pane" }).getAttribute("data-terminal-open")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "toggle terminal pane" }));
+    expect(workMocks.currentWork.setWorkSidebarOpen).toHaveBeenCalledWith(false);
+
+    vi.clearAllMocks();
+    fireEvent.click(screen.getByRole("button", { name: "open terminal pane" }));
     expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
   });
 

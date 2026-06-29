@@ -834,6 +834,28 @@ describe("ptyService", () => {
       }));
     });
 
+    it("exports tracked CLI session identity as the attached terminal owner", async () => {
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_CHAT_SESSION_ID: result.sessionId,
+        ADE_LANE_ID: "lane-1",
+        ADE_PROJECT_ROOT: "/tmp/test-project",
+      }));
+    });
+
     it("does not leak an inherited ADE chat session into unlinked terminals", async () => {
       const previous = process.env.ADE_CHAT_SESSION_ID;
       process.env.ADE_CHAT_SESSION_ID = "outer-chat";

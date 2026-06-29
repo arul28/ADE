@@ -5,6 +5,7 @@ import {
   FolderOpen,
   GitBranch,
   Globe,
+  Terminal,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -32,9 +33,11 @@ import {
   dispatchWorkPtyContextInserted,
   type WorkPtyContextInsertKind,
 } from "../../lib/workPtyContextEvents";
+import { formatToolTypeLabel } from "../../lib/sessions";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
+import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
@@ -42,6 +45,13 @@ import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 import { cn } from "../ui/cn";
 
 const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
+  {
+    id: "terminal",
+    label: "Terminal",
+    icon: Terminal,
+    gradient: "radial-gradient(circle, rgba(196,181,253,0.38) 0%, transparent 70%)",
+    color: "#c4b5fd",
+  },
   {
     id: "git",
     label: "Git",
@@ -79,7 +89,7 @@ const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
   },
 ];
 
-const REMOTE_WORK_SIDEBAR_TAB_IDS = new Set<WorkSidebarTab>(["git", "files"]);
+const REMOTE_WORK_SIDEBAR_TAB_IDS = new Set<WorkSidebarTab>(["terminal", "git", "files"]);
 
 function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
   return REMOTE_WORK_SIDEBAR_TAB_IDS.has(tab);
@@ -192,10 +202,19 @@ function WarningBanner({ message }: { message: string }) {
   );
 }
 
+function TerminalPanelEmpty({ message }: { message: string }) {
+  return (
+    <div className="flex h-full items-center justify-center px-4 text-center text-[12px] leading-5 text-muted-fg">
+      {message}
+    </div>
+  );
+}
+
 export function WorkSidebar({
   active = true,
   laneId,
   lanes,
+  activeSession,
   tab,
   onTabChange,
   onClose,
@@ -367,6 +386,10 @@ export function WorkSidebar({
   const warningReason = toolAttributionReason ?? contextDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
+  const terminalOwnerSessionId =
+    contextTarget?.kind === "chat" || contextTarget?.kind === "pty"
+      ? contextTarget.sessionId
+      : null;
 
   const dispatchTargetRef = useRef({ contextTarget, contextDisabledReason });
   dispatchTargetRef.current = { contextTarget, contextDisabledReason };
@@ -479,6 +502,28 @@ export function WorkSidebar({
 
   const content = useMemo(() => {
     if (!active) return null;
+    if (effectiveTab === "terminal") {
+      if (!laneId) {
+        return <TerminalPanelEmpty message="Select a lane or open a Work session to attach terminals." />;
+      }
+      if (!terminalOwnerSessionId) {
+        const message = activeSession?.status && activeSession.status !== "running"
+          ? `Continue this ${formatToolTypeLabel(activeSession.toolType)} session before opening an attached terminal.`
+          : "Open a chat or running agent CLI session to attach terminals.";
+        return <TerminalPanelEmpty message={message} />;
+      }
+      return (
+        <ChatTerminalDrawer
+          variant="panel"
+          open
+          onToggle={onClose}
+          laneId={laneId}
+          chatSessionId={terminalOwnerSessionId}
+          emptyMessage="Create a terminal to work alongside this session."
+        />
+      );
+    }
+
     if (effectiveTab === "browser") {
       return (
         <div className="flex h-full min-h-0 flex-col">
@@ -599,6 +644,9 @@ export function WorkSidebar({
     selectedPath,
     active,
     effectiveTab,
+    activeSession,
+    onClose,
+    terminalOwnerSessionId,
   ]);
 
   return (

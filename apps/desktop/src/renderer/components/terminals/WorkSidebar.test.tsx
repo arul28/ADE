@@ -115,6 +115,24 @@ vi.mock("../chat/ChatBuiltInBrowserPanel", async () => {
   };
 });
 
+vi.mock("../chat/ChatTerminalDrawer", async () => {
+  const React = await import("react");
+  return {
+    ChatTerminalDrawer: (props: {
+      variant?: string;
+      laneId: string;
+      chatSessionId?: string | null;
+      open: boolean;
+    }) => React.createElement("div", {
+      "data-testid": "chat-terminal-drawer",
+      "data-variant": props.variant ?? "",
+      "data-lane-id": props.laneId,
+      "data-chat-session-id": props.chatSessionId ?? "",
+      "data-open": props.open ? "true" : "false",
+    }),
+  };
+});
+
 vi.mock("../files/FilesTab", async () => {
   const React = await import("react");
   return { FilesTab: () => React.createElement("div", null, "Files") };
@@ -369,6 +387,38 @@ describe("WorkSidebar context targets", () => {
     expect(screen.getByTestId("app-control-panel").getAttribute("data-session-id")).toBe("chat-1");
   });
 
+  it("renders the attached terminal panel for running CLI session owners", () => {
+    renderSidebar({
+      tab: "terminal",
+      contextTarget: { kind: "pty", sessionId: "term-1", ptyId: "pty-1", toolType: "codex" },
+    });
+
+    const drawer = screen.getByTestId("chat-terminal-drawer");
+    expect(drawer.getAttribute("data-variant")).toBe("panel");
+    expect(drawer.getAttribute("data-lane-id")).toBe("lane-1");
+    expect(drawer.getAttribute("data-chat-session-id")).toBe("term-1");
+    expect(drawer.getAttribute("data-open")).toBe("true");
+  });
+
+  it("renders the attached terminal panel for chat owners", () => {
+    renderSidebar({
+      tab: "terminal",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+    });
+
+    expect(screen.getByTestId("chat-terminal-drawer").getAttribute("data-chat-session-id")).toBe("chat-1");
+  });
+
+  it("explains why ended CLI sessions cannot open attached terminals", () => {
+    renderSidebar({
+      tab: "terminal",
+      activeSession: { ...activeSession, status: "completed" },
+      contextTarget: null,
+    });
+
+    expect(screen.getByText(/Continue this .* session before opening an attached terminal\./)).toBeTruthy();
+  });
+
   it("writes formatted context to active PTY targets instead of dispatching chat events", async () => {
     const { terminalWrite } = installAdeMock();
     const dispatchSpy = vi.spyOn(window, "dispatchEvent");
@@ -591,6 +641,7 @@ describe("WorkSidebar context targets", () => {
 
     expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Terminal" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
     expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();

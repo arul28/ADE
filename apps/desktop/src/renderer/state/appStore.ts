@@ -121,7 +121,7 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
   return "default";
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
-export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
+export type WorkSidebarTab = "terminal" | "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
@@ -246,7 +246,13 @@ function normalizeOptionalString(value: unknown): string | null {
 }
 
 function normalizeWorkSidebarTab(value: unknown): WorkSidebarTab {
-  if (value === "files" || value === "ios" || value === "app-control" || value === "browser") return value;
+  if (
+    value === "terminal"
+    || value === "files"
+    || value === "ios"
+    || value === "app-control"
+    || value === "browser"
+  ) return value;
   return "git";
 }
 

@@ -476,14 +476,16 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   projectRoot: string;
   laneId: string;
   chatSessionId: string | null;
+  ownerSessionId?: string | null;
 }): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
     ADE_PROJECT_ROOT: args.projectRoot,
     ADE_LANE_ID: args.laneId,
   };
-  if (args.chatSessionId) {
-    next.ADE_CHAT_SESSION_ID = args.chatSessionId;
+  const terminalOwnerSessionId = args.chatSessionId ?? args.ownerSessionId ?? null;
+  if (terminalOwnerSessionId) {
+    next.ADE_CHAT_SESSION_ID = terminalOwnerSessionId;
   } else {
     delete next.ADE_CHAT_SESSION_ID;
   }
@@ -3713,6 +3715,7 @@ export function createPtyService({
         projectRoot,
         laneId,
         chatSessionId,
+        ownerSessionId: isTrackedCliToolType(toolTypeHint) ? sessionId : null,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
