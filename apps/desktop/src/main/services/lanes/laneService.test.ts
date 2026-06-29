@@ -5087,3 +5087,158 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
     }
   });
 });
+
+describe("laneService rename", () => {
+  const RENAME_NOW = "2026-06-29T12:00:00.000Z";
+
+  function seedRenameProject(db: any, args: { projectId: string; repoRoot: string }) {
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [args.projectId, args.repoRoot, "demo", "main", RENAME_NOW, RENAME_NOW],
+    );
+  }
+
+  function insertRenameLane(
+    db: any,
+    args: {
+      id: string;
+      projectId: string;
+      name: string;
+      laneType: "primary" | "worktree";
+      branchRef: string;
+      worktreePath: string;
+    },
+  ) {
+    db.run(
+      `insert into lanes(
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        args.id,
+        args.projectId,
+        args.name,
+        null,
+        args.laneType,
+        "main",
+        args.branchRef,
+        args.worktreePath,
+        null,
+        args.laneType === "primary" ? 1 : 0,
+        null,
+        null,
+        null,
+        null,
+        "active",
+        RENAME_NOW,
+        null,
+      ],
+    );
+  }
+
+  it("updates the lane display name", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-rename-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      seedRenameProject(db, { projectId: "proj-rename", repoRoot });
+      insertRenameLane(db, {
+        id: "lane-a",
+        projectId: "proj-rename",
+        name: "old-name",
+        laneType: "worktree",
+        branchRef: "ade/old-name",
+        worktreePath: path.join(repoRoot, "lane-a"),
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-rename",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        logger: createLogger(),
+      });
+
+      service.rename({ laneId: "lane-a", name: "new-name" });
+
+      const row = db.get<{ name: string }>(
+        "select name from lanes where id = ? and project_id = ?",
+        ["lane-a", "proj-rename"],
+      );
+      expect(row?.name).toBe("new-name");
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate lane names case-insensitively", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-rename-dup-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      seedRenameProject(db, { projectId: "proj-rename-dup", repoRoot });
+      insertRenameLane(db, {
+        id: "lane-a",
+        projectId: "proj-rename-dup",
+        name: "alpha-lane",
+        laneType: "worktree",
+        branchRef: "ade/alpha-lane",
+        worktreePath: path.join(repoRoot, "lane-a"),
+      });
+      insertRenameLane(db, {
+        id: "lane-b",
+        projectId: "proj-rename-dup",
+        name: "Beta-Lane",
+        laneType: "worktree",
+        branchRef: "ade/beta-lane",
+        worktreePath: path.join(repoRoot, "lane-b"),
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-rename-dup",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        logger: createLogger(),
+      });
+
+      expect(() => service.rename({ laneId: "lane-a", name: "beta-lane" }))
+        .toThrow(/already exists/i);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects renaming the primary lane", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-rename-primary-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      seedRenameProject(db, { projectId: "proj-rename-primary", repoRoot });
+      insertRenameLane(db, {
+        id: "lane-primary",
+        projectId: "proj-rename-primary",
+        name: "primary",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: repoRoot,
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-rename-primary",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        logger: createLogger(),
+      });
+
+      expect(() => service.rename({ laneId: "lane-primary", name: "renamed-primary" }))
+        .toThrow(/primary lane cannot be renamed/i);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});

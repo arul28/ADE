@@ -246,8 +246,9 @@ and a footer that contains the composer.
   background (the backend has its own timeout and returns the
   deterministic fallback on failure, so a no-op result is skipped) and,
   if the suggestion differs, applies it via `lanes.rename` and refreshes
-  the lane store. Branch uniqueness is handled by the lane id suffix
-  added by the lane service. Each launch creates a `DraftLaunchJob` that
+  the lane store. The renderer retries the background naming pass once
+  (750 ms apart) before keeping the deterministic slug. Branch uniqueness
+  is handled by the lane id suffix added by the lane service. Each launch creates a `DraftLaunchJob` that
   tracks progress through `creating-lane` / `starting-session` /
   `sending-prompt` / `ready` / `failed` states (auto-create no longer has
   a distinct `naming-lane` phase — it goes straight to `creating-lane`).

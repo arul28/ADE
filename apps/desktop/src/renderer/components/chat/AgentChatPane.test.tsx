@@ -3606,9 +3606,57 @@ describe("AgentChatPane submit recovery", () => {
         });
         expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
       });
+      await waitFor(() => {
+        expect(suggestLaneName).toHaveBeenCalledTimes(2);
+      });
     } finally {
       consoleWarn.mockRestore();
     }
+  });
+
+  it("auto-create retries background lane naming once before keeping the deterministic name", async () => {
+    let attempts = 0;
+    const { createLane, suggestLaneName, renameLane } = installAdeMocks({ sessions: [] });
+    suggestLaneName.mockImplementation(async () => {
+      attempts += 1;
+      return attempts === 1 ? "keep-going-even-naming-fails" : "auto-create-lane-fix";
+    });
+    createLane.mockImplementation(async ({ name }: { name: string }) => ({
+      id: "lane-created",
+      name,
+      laneType: "worktree",
+      branchRef: `refs/heads/${name}`,
+      worktreePath: `/tmp/project-under-test/${name}`,
+      parentLaneId: "lane-primary",
+    }));
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Keep going even if naming fails." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(createLane).toHaveBeenCalled();
+    }, { timeout: 5000 });
+
+    await waitFor(() => {
+      expect(suggestLaneName).toHaveBeenCalledTimes(2);
+      expect(renameLane).toHaveBeenCalledWith({
+        laneId: "lane-created",
+        name: "auto-create-lane-fix",
+      });
+    }, { timeout: 5000 });
   });
 
   it("can keep foreground draft launches inside an embedded Lanes work pane", async () => {

@@ -326,7 +326,11 @@ a lane parented to primary would always show zero behind.
 5. **Attach** — `attach` links an external worktree path (pre-existing
    outside ADE). `lane_type = 'attached'`.
 6. **Rename / update appearance / reparent** — `rename`, `updateAppearance`,
-   `reparent` edit the lane row. `reparent({ laneId, newParentLaneId,
+   `reparent` edit the lane row. `rename` trims the name, rejects empty
+   values, blocks primary-lane renames, and rejects duplicate display
+   names among active lanes (case-insensitive). The desktop **Manage Lane**
+   dialog exposes rename via a pencil control beside the lane name in the
+   header. `reparent({ laneId, newParentLaneId,
    stackBaseBranchRef? })` refuses to move a lane under one of its own
    descendants and refuses to reparent the primary lane. When
    `stackBaseBranchRef` is supplied the service resolves it in the project

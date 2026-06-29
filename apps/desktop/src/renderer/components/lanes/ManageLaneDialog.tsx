@@ -17,6 +17,7 @@ import {
   X,
   Minus,
   TreeStructure,
+  PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
@@ -68,7 +69,144 @@ const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   database_cleanup: "Updating database"
 };
 
-function ManageLaneHeaderDetails({ lanes, isBatch }: { lanes: LaneSummary[]; isBatch: boolean }) {
+function ManageLaneRenameControls({
+  lane,
+  allLanes,
+  onRenamed,
+}: {
+  lane: LaneSummary;
+  allLanes: LaneSummary[];
+  onRenamed?: () => void | Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState(lane.name);
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editing) {
+      setDraftName(lane.name);
+      setRenameError(null);
+    }
+  }, [editing, lane.name]);
+
+  const trimmedDraft = draftName.trim();
+  const unchanged = trimmedDraft === lane.name.trim();
+  const duplicateLane = allLanes.find(
+    (candidate) => candidate.id !== lane.id
+      && candidate.archivedAt == null
+      && candidate.name.trim().toLowerCase() === trimmedDraft.toLowerCase(),
+  );
+  const canSave = Boolean(trimmedDraft) && !unchanged && !duplicateLane && !renameBusy;
+  const canRename = lane.laneType !== "primary";
+
+  const cancelEdit = () => {
+    setEditing(false);
+    setDraftName(lane.name);
+    setRenameError(null);
+  };
+
+  const saveRename = async () => {
+    if (!canSave) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      await window.ade.lanes.rename({ laneId: lane.id, name: trimmedDraft });
+      setEditing(false);
+      await onRenamed?.();
+    } catch (error) {
+      setRenameError(error instanceof Error ? error.message : "Failed to rename lane");
+    } finally {
+      setRenameBusy(false);
+    }
+  };
+
+  if (!canRename) {
+    return (
+      <span className="text-base font-semibold tracking-tight text-accent">{lane.name}</span>
+    );
+  }
+
+  if (!editing) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-base font-semibold tracking-tight text-accent">{lane.name}</span>
+        <button
+          type="button"
+          aria-label="Rename lane"
+          title="Rename lane"
+          data-tour="lanes.manageDialog.rename"
+          className="inline-flex shrink-0 items-center justify-center rounded-md p-1 text-muted-fg/70 transition hover:bg-white/[0.06] hover:text-fg"
+          onClick={() => setEditing(true)}
+        >
+          <PencilSimple size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-w-0 space-y-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={draftName}
+          autoFocus
+          aria-label="Lane name"
+          className={`${INPUT_CLASS_NAME} min-w-[12rem] flex-1 text-sm`}
+          onChange={(event) => setDraftName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void saveRename();
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              cancelEdit();
+            }
+          }}
+        />
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            type="button"
+            size="sm"
+            disabled={!canSave}
+            onClick={() => { void saveRename(); }}
+          >
+            {renameBusy ? <CircleNotch size={14} className="animate-spin" /> : "Save"}
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={renameBusy}
+            onClick={cancelEdit}
+          >
+            Cancel
+          </Button>
+        </div>
+      </div>
+      {duplicateLane ? (
+        <div className="text-xs text-red-300">A lane named &quot;{duplicateLane.name}&quot; already exists.</div>
+      ) : null}
+      {renameError ? (
+        <div className="text-xs text-red-300">{renameError}</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ManageLaneHeaderDetails({
+  lanes,
+  isBatch,
+  allLanes,
+  onRenamed,
+}: {
+  lanes: LaneSummary[];
+  isBatch: boolean;
+  allLanes: LaneSummary[];
+  onRenamed?: () => void | Promise<void>;
+}) {
   if (isBatch) {
     return (
       <div data-tour="lanes.manageDialog.laneInfo" className="space-y-2">
@@ -102,7 +240,7 @@ function ManageLaneHeaderDetails({ lanes, isBatch }: { lanes: LaneSummary[]; isB
     <div data-tour="lanes.manageDialog.laneInfo" className="min-w-0">
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
         <LaneIcon size={14} weight="duotone" className="shrink-0 text-accent/80" />
-        <span className="text-base font-semibold tracking-tight text-accent">{lane.name}</span>
+        <ManageLaneRenameControls lane={lane} allLanes={allLanes} onRenamed={onRenamed} />
         {lane.status.dirty ? (
           <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400">
             dirty
@@ -365,7 +503,9 @@ export function ManageLaneDialog({
   }, [laneActionKind]);
 
   const headerExtra =
-    lanes.length > 0 && !allPrimary ? <ManageLaneHeaderDetails lanes={lanes} isBatch={isBatch} /> : undefined;
+    lanes.length > 0 && !allPrimary
+      ? <ManageLaneHeaderDetails lanes={lanes} isBatch={isBatch} allLanes={allLanes} onRenamed={onAppearanceChanged} />
+      : undefined;
 
   return (
     <LaneDialogShell
