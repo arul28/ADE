@@ -797,6 +797,13 @@ function writePtyInput(runtime: CachedRuntime, data: string) {
   writePtyInputNow(runtime, `${consumePendingPtyInput(runtime)}${data}`);
 }
 
+function formatTextPasteForTerminal(runtime: CachedRuntime, text: string): string {
+  const prepared = text.replace(/\r?\n/g, "\r");
+  if (!runtime.bracketedPasteMode) return prepared;
+  const sanitized = prepared.replace(/\x1b/g, "\u241b");
+  return `${TERMINAL_BRACKETED_PASTE_START}${sanitized}${TERMINAL_BRACKETED_PASTE_END}`;
+}
+
 function shouldFlushPtyInputImmediately(data: string): boolean {
   return /[\x00-\x1f\x7f]|\x1b/.test(data);
 }
@@ -1802,7 +1809,7 @@ function createRuntime(args: {
     lastPasteEventAt = Date.now();
     const text = ev.clipboardData?.getData("text/plain") ?? ev.clipboardData?.getData("text");
     if (text && !runtime.disposed) {
-      writePtyInput(runtime, text);
+      writePtyInput(runtime, formatTextPasteForTerminal(runtime, text));
       return;
     }
     void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
@@ -1832,7 +1839,7 @@ function createRuntime(args: {
         }
         readText.call(navigator.clipboard).then((text) => {
           if (text && !runtime.disposed) {
-            writePtyInput(runtime, text);
+            writePtyInput(runtime, formatTextPasteForTerminal(runtime, text));
             return;
           }
           void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);

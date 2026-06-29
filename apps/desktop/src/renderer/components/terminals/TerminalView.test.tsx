@@ -984,6 +984,37 @@ describe("TerminalView", () => {
     expect(hasClipboardImage).not.toHaveBeenCalled();
   });
 
+  it("wraps pasted text when the terminal requests bracketed paste mode", async () => {
+    render(<TerminalView ptyId="pty-bracketed-text-paste" sessionId="session-bracketed-text-paste" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-bracketed-text-paste",
+        sessionId: "session-bracketed-text-paste",
+        projectRoot: "/project/a",
+        data: "\x1b[?2004h",
+      });
+    }
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const event = createPasteEvent("line one\n\x1b[31mline two");
+    terminal!.element!.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-bracketed-text-paste",
+      data: "\x1b[200~line one\r\u241b[31mline two\x1b[201~",
+    });
+  });
+
   it("maps macOS Cmd+V with an image-only clipboard to Ctrl+V terminal input", async () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     const originalPlatform = window.navigator.platform;
