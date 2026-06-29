@@ -107,8 +107,20 @@ describe("normalizeStartupProjectState", () => {
       runtimeName: "mac-mini",
       hostname: "mac-mini.local",
     };
+    const lastRemoteProjectBinding = {
+      kind: "remote" as const,
+      key: "remote:t1:p1",
+      targetId: "t1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+      projectId: "p1",
+      rootPath: "/home/u/webapp",
+      displayName: "webapp",
+      iconDataUrl: "data:image/png;base64,remote-icon",
+    };
     const result = normalizeStartupProjectState({
       saved: {
+        lastRemoteProjectBinding,
         recentProjects: [
           // A remote path that does NOT exist on this machine — must survive.
           { rootPath: "/home/u/webapp", displayName: "webapp", lastOpenedAt: "2026-05-10T00:00:00.000Z", remote, pinned: true },
@@ -122,11 +134,60 @@ describe("normalizeStartupProjectState", () => {
 
     const remoteEntry = result.recentProjects.find((p) => p.remote);
     expect(remoteEntry).toBeDefined();
-    expect(remoteEntry?.remote).toEqual(remote);
+    expect(remoteEntry?.remote).toEqual({
+      ...remote,
+      iconDataUrl: "data:image/png;base64,remote-icon",
+    });
     expect(remoteEntry?.rootPath).toBe("/home/u/webapp"); // not normalized to a local path
     expect(remoteEntry?.pinned).toBe(true);
     // The local entry is still cleaned/normalized as before.
     expect(result.recentProjects.some((p) => !p.remote && p.rootPath === "/valid-project")).toBe(true);
+  });
+
+  it("strips oversized remote icons from saved startup state", () => {
+    const oversizedIcon = `data:image/png;base64,${"a".repeat(129 * 1024)}`;
+    const lastRemoteProjectBinding = {
+      kind: "remote" as const,
+      key: "remote:t1:p1",
+      targetId: "t1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+      projectId: "p1",
+      rootPath: "/home/u/webapp",
+      displayName: "webapp",
+      iconDataUrl: oversizedIcon,
+    };
+    const result = normalizeStartupProjectState({
+      saved: {
+        lastRemoteProjectBinding,
+        recentProjects: [
+          {
+            rootPath: "/home/u/webapp",
+            displayName: "webapp",
+            lastOpenedAt: "2026-05-10T00:00:00.000Z",
+            remote: {
+              targetId: "t1",
+              projectId: "p1",
+              runtimeName: "mac-mini",
+              hostname: "mac-mini.local",
+              iconDataUrl: oversizedIcon,
+            },
+          },
+        ],
+      },
+      isLikelyRepoRoot,
+      normalizeProjectPath,
+      nowIso,
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.recentProjects[0]?.remote).toEqual({
+      targetId: "t1",
+      projectId: "p1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+    });
+    expect(result.state.lastRemoteProjectBinding?.iconDataUrl).toBeUndefined();
   });
 
   it("reports changed when cleanup only normalizes pinned metadata", () => {

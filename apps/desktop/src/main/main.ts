@@ -23,9 +23,11 @@ import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import { openKvDb } from "./services/state/kvDb";
 import { ensureAdeDirs } from "./services/state/projectState";
 import {
+  persistableRemoteProjectIconDataUrl,
   readGlobalState,
   type RecentProject,
   upsertRecentProject,
+  withPersistableRemoteProjectIcon,
   writeGlobalState,
 } from "./services/state/globalState";
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
@@ -1113,8 +1115,25 @@ app.whenReady().then(async () => {
       displayName: readString(record, "displayName") ?? path.basename(rootPath),
       // Restore the cached project logo so the tab shows it immediately on a
       // cold start, before the remote reconnects and refreshes the icon.
-      iconDataUrl: readString(record, "iconDataUrl") ?? null,
+      iconDataUrl: remoteProjectIconDataUrlForPersistence(
+        readString(record, "iconDataUrl"),
+      ),
     };
+  };
+  const remoteProjectIconDataUrlForPersistence = (
+    value: string | null | undefined,
+  ): string | null => {
+    const direct = persistableRemoteProjectIconDataUrl(value);
+    if (direct || !value) return direct;
+    try {
+      const image = nativeImage.createFromDataURL(value);
+      if (image.isEmpty()) return null;
+      return persistableRemoteProjectIconDataUrl(
+        image.resize({ width: 64, height: 64, quality: "best" }).toDataURL(),
+      );
+    } catch {
+      return null;
+    }
   };
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(
     saved.lastRemoteProjectBinding,
@@ -1613,6 +1632,11 @@ app.whenReady().then(async () => {
     binding: RemoteOpenProjectBinding,
   ): void => {
     const state = readGlobalState(globalStatePath);
+    const iconDataUrl = remoteProjectIconDataUrlForPersistence(binding.iconDataUrl);
+    const persistedBinding = withPersistableRemoteProjectIcon({
+      ...binding,
+      iconDataUrl,
+    });
     // Record the remote project in recents so it appears in the unified recents
     // list on the welcome screen (alongside local projects) — no need to re-add
     // it from the remote panel next time.
@@ -1626,6 +1650,7 @@ app.whenReady().then(async () => {
           projectId: binding.projectId,
           runtimeName: binding.runtimeName,
           hostname: binding.hostname || binding.runtimeName,
+          ...(iconDataUrl ? { iconDataUrl } : {}),
         },
       },
       { recordLastProject: false, recordRecent: true },
@@ -1633,7 +1658,7 @@ app.whenReady().then(async () => {
     const next = {
       ...withRecent,
       lastRemoteProjectBinding: {
-        ...binding,
+        ...persistedBinding,
         updatedAt: new Date().toISOString(),
       },
     };

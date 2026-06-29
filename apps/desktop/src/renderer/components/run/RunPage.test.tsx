@@ -183,6 +183,17 @@ function installAdeStub() {
     project: {
       listRecent: vi.fn().mockResolvedValue([]),
       resolveIcon: vi.fn().mockResolvedValue({ dataUrl: null, sourcePath: null, mimeType: null }),
+      forgetRecent: vi.fn().mockResolvedValue([]),
+      setRecentPinned: vi.fn().mockResolvedValue([]),
+    },
+    remoteRuntime: {
+      getConnectionSnapshot: vi.fn().mockResolvedValue({
+        connections: [],
+        connectedCount: 0,
+        updatedAt: Date.now(),
+      }),
+      onConnectionSnapshotChanged: vi.fn(() => vi.fn()),
+      connect: vi.fn().mockResolvedValue(undefined),
     },
     app: {
       writeClipboardText: vi.fn(),
@@ -295,6 +306,110 @@ describe("RunPage Advanced lane runtime drawer", () => {
       expect(ade.project.resolveIcon).toHaveBeenCalledWith("/tmp/icon-project");
       expect(container.querySelector('img[src="data:image/png;base64,icon"]')).toBeTruthy();
     });
+  });
+
+  it("renders remote project icons in the recent projects list", async () => {
+    const ade = (window as unknown as {
+      ade: {
+        project: {
+          listRecent: ReturnType<typeof vi.fn>;
+          resolveIcon: ReturnType<typeof vi.fn>;
+        };
+        remoteRuntime: {
+          getConnectionSnapshot: ReturnType<typeof vi.fn>;
+        };
+      };
+    }).ade;
+    ade.project.listRecent.mockResolvedValueOnce([
+      {
+        rootPath: "/srv/ade/remote-app",
+        displayName: "Remote App",
+        exists: true,
+        lastOpenedAt: "2026-05-08T00:00:00.000Z",
+        kind: "remote",
+        remote: {
+          targetId: "studio",
+          projectId: "remote-app",
+          runtimeName: "Mac Studio",
+          hostname: "studio.local",
+          iconDataUrl: "data:image/png;base64,remote-icon",
+        },
+      },
+    ]);
+    ade.remoteRuntime.getConnectionSnapshot.mockResolvedValueOnce({
+      connections: [
+        {
+          target: { id: "studio", name: "Mac Studio" },
+          state: "connected",
+        },
+      ],
+      connectedCount: 1,
+      updatedAt: Date.now(),
+    });
+    useAppStore.setState({ showWelcome: true, project: null });
+
+    const { container } = render(
+      <MemoryRouter>
+        <RunPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Remote App")).toBeTruthy();
+    expect(
+      container.querySelector('img[src="data:image/png;base64,remote-icon"]'),
+    ).toBeTruthy();
+    expect(ade.project.resolveIcon).not.toHaveBeenCalled();
+  });
+
+  it("shows only reconnecting copy on the right side while a remote recent reconnects", async () => {
+    const ade = (window as unknown as {
+      ade: {
+        project: {
+          listRecent: ReturnType<typeof vi.fn>;
+        };
+        remoteRuntime: {
+          getConnectionSnapshot: ReturnType<typeof vi.fn>;
+        };
+      };
+    }).ade;
+    ade.project.listRecent.mockResolvedValueOnce([
+      {
+        rootPath: "/srv/ade/remote-app",
+        displayName: "Remote App",
+        exists: true,
+        lastOpenedAt: new Date().toISOString(),
+        kind: "remote",
+        pinned: true,
+        remote: {
+          targetId: "studio",
+          projectId: "remote-app",
+          runtimeName: "Mac Studio",
+          hostname: "studio.local",
+        },
+      },
+    ]);
+    ade.remoteRuntime.getConnectionSnapshot.mockResolvedValueOnce({
+      connections: [
+        {
+          target: { id: "studio", name: "Mac Studio" },
+          state: "connecting",
+        },
+      ],
+      connectedCount: 0,
+      updatedAt: Date.now(),
+    });
+    useAppStore.setState({ showWelcome: true, project: null });
+
+    render(
+      <MemoryRouter>
+        <RunPage />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Reconnecting")).toBeTruthy();
+    expect(screen.queryByLabelText("Unpin Remote App")).toBeNull();
+    expect(screen.queryByLabelText("Remove Remote App from recents")).toBeNull();
+    expect(screen.queryByText("active just now")).toBeNull();
   });
 
   it("keeps LaneRuntimeBar collapsed by default with aria-expanded on the toggle", async () => {

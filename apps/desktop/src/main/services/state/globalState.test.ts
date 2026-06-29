@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  persistableRemoteProjectIconDataUrl,
   readGlobalState,
   recentProjectKey,
   setRecentProjectPinned,
@@ -78,6 +79,7 @@ describe("upsertRecentProject", () => {
       projectId: "p1",
       runtimeName: "mac-mini",
       hostname: "mac-mini.local",
+      iconDataUrl: "data:image/png;base64,remote-icon",
     };
     const next = upsertRecentProject(
       {},
@@ -87,6 +89,31 @@ describe("upsertRecentProject", () => {
     expect(next.recentProjects).toHaveLength(1);
     expect(next.recentProjects?.[0]?.remote).toEqual(remote);
     expect(recentProjectKey(next.recentProjects![0]!)).toBe("remote:t1:p1");
+  });
+
+  it("drops oversized remote project icons before storing recents", () => {
+    const oversizedIcon = `data:image/png;base64,${"a".repeat(129 * 1024)}`;
+    const next = upsertRecentProject(
+      {},
+      {
+        rootPath: "/home/u/webapp",
+        displayName: "webapp",
+        remote: {
+          targetId: "t1",
+          projectId: "p1",
+          runtimeName: "mac-mini",
+          hostname: "mac-mini.local",
+          iconDataUrl: oversizedIcon,
+        },
+      },
+    );
+
+    expect(next.recentProjects?.[0]?.remote).toEqual({
+      targetId: "t1",
+      projectId: "p1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+    });
   });
 
   it("dedupes remote recents by remote key, not by root path", () => {
@@ -139,6 +166,21 @@ describe("upsertRecentProject", () => {
     const next = upsertRecentProject(state, { rootPath: "/projects/new", displayName: "New" });
 
     expect(next.recentProjects?.some((p) => p.rootPath === "/projects/p29" && p.pinned)).toBe(true);
+  });
+});
+
+describe("persistableRemoteProjectIconDataUrl", () => {
+  it("keeps small image data URLs", () => {
+    expect(persistableRemoteProjectIconDataUrl("data:image/png;base64,abc")).toBe(
+      "data:image/png;base64,abc",
+    );
+  });
+
+  it("rejects non-image or oversized data URLs", () => {
+    expect(persistableRemoteProjectIconDataUrl("data:text/plain;base64,abc")).toBeNull();
+    expect(
+      persistableRemoteProjectIconDataUrl(`data:image/png;base64,${"a".repeat(129 * 1024)}`),
+    ).toBeNull();
   });
 });
 
