@@ -233,7 +233,7 @@ async function flushPromises() {
 
 async function flushPasteWrite() {
   await act(async () => {
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < 10; i += 1) {
       await Promise.resolve();
     }
   });
@@ -1058,6 +1058,49 @@ describe("TerminalView", () => {
     expect(ptyWrite).toHaveBeenCalledWith({
       ptyId: "pty-parked-paste",
       data: "\x1b[200~line one\rline two\x1b[201~",
+    });
+  });
+
+  it("keeps input typed during paste refresh behind the pasted text", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    let resolvePreview: ((value: unknown) => void) | null = null;
+    const previewPromise = new Promise<unknown>((resolve) => {
+      resolvePreview = resolve;
+    });
+    previewMock.mockImplementation(() => previewPromise);
+
+    render(<TerminalView ptyId="pty-paste-order" sessionId="session-paste-order" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("run build"));
+    onData!("\r");
+    await flushPasteWrite();
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    resolvePreview!({
+      terminalId: "session-paste-order",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "\x1b[?2004hCodex ready\n",
+      capturedAt: new Date().toISOString(),
+    });
+    await flushPasteWrite();
+
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-paste-order",
+      data: "\x1b[200~run build\x1b[201~\r",
     });
   });
 

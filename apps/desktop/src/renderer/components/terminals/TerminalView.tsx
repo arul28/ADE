@@ -87,6 +87,8 @@ type CachedRuntime = {
   inputWriteChunks: string[];
   inputWriteBytes: number;
   inputFlushTimer: ReturnType<typeof setTimeout> | null;
+  pasteWriteInFlight: boolean;
+  deferredInputDuringPasteWrite: string[];
   liveStreamPaused: boolean;
   flushRafId: number | null;
   flushTimer: ReturnType<typeof setTimeout> | null;
@@ -787,6 +789,7 @@ function consumePendingPtyInput(runtime: CachedRuntime): string {
 }
 
 function flushPendingPtyInput(runtime: CachedRuntime): void {
+  if (runtime.pasteWriteInFlight) return;
   const data = consumePendingPtyInput(runtime);
   if (!data) return;
   writePtyInputNow(runtime, data);
@@ -794,6 +797,10 @@ function flushPendingPtyInput(runtime: CachedRuntime): void {
 
 function writePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  if (runtime.pasteWriteInFlight) {
+    runtime.deferredInputDuringPasteWrite.push(data);
+    return;
+  }
   writePtyInputNow(runtime, `${consumePendingPtyInput(runtime)}${data}`);
 }
 
@@ -826,9 +833,31 @@ async function refreshTerminalInputModesForPaste(runtime: CachedRuntime): Promis
 
 async function writeTextPasteForTerminal(runtime: CachedRuntime, text: string): Promise<void> {
   if (!text || runtime.disposed) return;
-  await refreshTerminalInputModesForPaste(runtime);
-  if (runtime.disposed) return;
-  writePtyInput(runtime, formatTextPasteForTerminal(runtime, text));
+  if (runtime.pasteWriteInFlight) {
+    runtime.deferredInputDuringPasteWrite.push(formatTextPasteForTerminal(runtime, text));
+    return;
+  }
+
+  runtime.pasteWriteInFlight = true;
+  let committed = false;
+  try {
+    await refreshTerminalInputModesForPaste(runtime);
+    if (runtime.disposed) return;
+    const deferredInput = runtime.deferredInputDuringPasteWrite.join("");
+    runtime.deferredInputDuringPasteWrite.length = 0;
+    runtime.pasteWriteInFlight = false;
+    committed = true;
+    writePtyInput(runtime, `${formatTextPasteForTerminal(runtime, text)}${deferredInput}`);
+  } finally {
+    if (!committed) {
+      const deferredInput = runtime.deferredInputDuringPasteWrite.join("");
+      runtime.deferredInputDuringPasteWrite.length = 0;
+      runtime.pasteWriteInFlight = false;
+      if (!runtime.disposed && deferredInput) {
+        writePtyInput(runtime, deferredInput);
+      }
+    }
+  }
 }
 
 function shouldFlushPtyInputImmediately(data: string): boolean {
@@ -845,6 +874,10 @@ function schedulePtyInputFlush(runtime: CachedRuntime): void {
 
 function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  if (runtime.pasteWriteInFlight) {
+    runtime.deferredInputDuringPasteWrite.push(data);
+    return;
+  }
   runtime.inputWriteChunks.push(data);
   runtime.inputWriteBytes += data.length;
   if (shouldFlushPtyInputImmediately(data) || runtime.inputWriteBytes >= MAX_PTY_INPUT_BATCH_BYTES) {
@@ -1804,6 +1837,8 @@ function createRuntime(args: {
     inputWriteChunks: [],
     inputWriteBytes: 0,
     inputFlushTimer: null,
+    pasteWriteInFlight: false,
+    deferredInputDuringPasteWrite: [],
     liveStreamPaused: false,
     flushRafId: null,
     flushTimer: null,
