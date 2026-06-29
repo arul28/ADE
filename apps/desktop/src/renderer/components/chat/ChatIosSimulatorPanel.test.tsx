@@ -837,6 +837,96 @@ describe("ChatIosSimulatorPanel", () => {
     expect(api.renderPreview).not.toHaveBeenCalled();
   });
 
+  it("keeps the inspect hover target live after attaching simulator context", async () => {
+    vi.stubGlobal("PointerEvent", MouseEvent);
+    vi.stubGlobal("Image", class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(_value: string) {
+        queueMicrotask(() => this.onerror?.());
+      }
+    });
+    const settingsElement: IosScreenElement = {
+      ...inspectElement,
+      id: "element-2",
+      label: "Settings",
+      identifier: "settingsButton",
+      componentId: "SettingsView/SettingsButton",
+      sourceFile: "SettingsView.swift",
+      sourceLine: 24,
+      frame: { x: 190, y: 190, width: 60, height: 40 },
+      pixelFrame: { x: 570, y: 570, width: 180, height: 120 },
+    };
+    const onAddContext = vi.fn();
+    const { api } = installIosSimulatorApi({
+      screenElements: [inspectElement, settingsElement],
+      previewTargets: [previewTarget],
+    });
+    api.selectPoint.mockImplementation(async (args: { x: number; y: number }) => {
+      const element = args.x >= settingsElement.pixelFrame.x
+        ? settingsElement
+        : inspectElement;
+      return {
+        item: {
+          kind: "ios_simulator_target",
+          id: `ios:${element.id}`,
+          deviceUdid: device.udid,
+          label: element.label,
+          source: element.source,
+          screenshotDataUrl: null,
+          metadata: {},
+        },
+        source: element.source,
+      };
+    });
+
+    render(
+      <ChatIosSimulatorPanel
+        sessionId="chat-1"
+        projectRoot="/tmp/project"
+        onAddContext={onAddContext}
+      />,
+    );
+
+    await waitFor(() => expect(document.querySelector("video")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    const image = await screen.findByAltText("iOS Simulator snapshot") as HTMLImageElement;
+    const imageRect = {
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 393,
+      bottom: 852,
+      width: 393,
+      height: 852,
+      toJSON: () => ({}),
+    } as DOMRect;
+    image.getBoundingClientRect = () => imageRect;
+    if (image.parentElement) {
+      image.parentElement.getBoundingClientRect = () => imageRect;
+    }
+
+    fireEvent.pointerDown(image, { clientX: 50, clientY: 40 });
+    await screen.findByText(/Added selected UI context/);
+    expect(onAddContext).toHaveBeenCalledWith(expect.objectContaining({ label: "Continue" }));
+
+    fireEvent.pointerMove(image, { clientX: 210, clientY: 210 });
+    expect(await screen.findByText("Settings")).toBeTruthy();
+
+    fireEvent.pointerDown(image, { clientX: 210, clientY: 210 });
+
+    await waitFor(() => {
+      expect(api.selectPoint).toHaveBeenLastCalledWith({
+        deviceUdid: device.udid,
+        projectRoot: "/tmp/project",
+        x: 660,
+        y: 630,
+      });
+      expect(onAddContext).toHaveBeenLastCalledWith(expect.objectContaining({ label: "Settings" }));
+    });
+  });
+
   it("treats Swift #fileID source paths as the same Preview Lab match", async () => {
     vi.stubGlobal("PointerEvent", MouseEvent);
     vi.stubGlobal("Image", class {
