@@ -757,6 +757,16 @@ export type AgentChatEvent =
       turnId?: string;
     }
   | {
+      type: "codex_turn_stalled";
+      turnId: string;
+      threadId?: string;
+      reason: "no_output" | "waiting_on_input" | "waiting_on_approval" | "app_server_state_unknown";
+      message: string;
+      recoveryOptions?: Array<"wait" | "steer" | "interrupt_retry_same_thread" | "restart_resume_thread">;
+      sourceSessionId?: string;
+      parentSessionId?: string;
+    }
+  | {
       type: "codex_goal_updated";
       goal: CodexThreadGoal | null;
       updateKind?: CodexThreadGoalUpdateKind;
@@ -937,6 +947,7 @@ export type AgentChatSession = {
   model: string;
   modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
+  goal?: string | null;
   reasoningEffort?: string | null;
   fastMode?: boolean;
   /** Effective service tier reported by the Codex app-server, when known. */

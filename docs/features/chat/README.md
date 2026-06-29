@@ -353,6 +353,13 @@ See the detail docs for the specifics:
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).
+   Codex turns also run a narrow no-first-output watchdog: if `turn/start`
+   succeeds but no useful model/tool event arrives, ADE reconciles the same
+   app-server thread with `thread/read` and `thread/turns/list` before
+   surfacing a `codex_turn_stalled` event plus one visible `system_notice`.
+   The watchdog never auto-handoffs or interrupts; parent/orchestrator
+   sessions receive the structured stall event and decide whether to wait,
+   steer, interrupt, or retry the same thread.
 5. On completion the service emits `status: "completed" | "failed" |
    "interrupted"`, optionally emits a `turn_diff_summary`, flushes
    buffered text, and pulls the next queued steer.
@@ -506,6 +513,11 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   guard: when `getRecentEntries` is called, the service flushes pending
   buffered text first so transcript reads always reflect the latest
   streamed content.
+- **Codex silent-turn recovery.** MCP startup status notifications are
+  warnings, not model progress. Do not let them clear the no-first-output
+  watchdog. If app-server state can be read, recovered turn items are
+  backfilled into the transcript and terminal turn state is finalized; only
+  a genuinely silent or unreadable turn emits `codex_turn_stalled`.
 - **Transcript read merges streaming text fragments.** The
   `MAX_TRANSCRIPT_READ_CHARS` budget is `120_000` (was `40_000`) and
   the transcript reader collapses consecutive assistant text events

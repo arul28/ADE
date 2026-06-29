@@ -565,7 +565,7 @@ export function appendCollapsedChatTranscriptEvent(
 ): void {
   const { event } = envelope;
 
-  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
+  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved" || event.type === "codex_turn_stalled") {
     return;
   }
 

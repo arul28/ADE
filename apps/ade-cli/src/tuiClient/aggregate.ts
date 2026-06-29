@@ -389,6 +389,7 @@ const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
   "error",
   "tokens",
   "codex_token_usage",
+  "codex_turn_stalled",
   "codex_goal_updated",
   "codex_goal_cleared",
   "pending_input_resolved",

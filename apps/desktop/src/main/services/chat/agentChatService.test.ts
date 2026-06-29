@@ -149,6 +149,16 @@ vi.mock("node:child_process", () => ({
           } else if (payload.method === "turn/start" || payload.method === "review/start") {
             mockState.codexTurnCounter += 1;
             result = { turn: { id: `turn-${mockState.codexTurnCounter}` } };
+          } else if (payload.method === "thread/read") {
+            const params = payload.params as { threadId?: unknown } | undefined;
+            result = {
+              thread: {
+                id: typeof params?.threadId === "string" ? params.threadId : "thread-1",
+                status: { type: "active", activeFlags: [] },
+              },
+            };
+          } else if (payload.method === "thread/turns/list") {
+            result = { data: [], nextCursor: null };
           } else if (payload.method === "collaborationMode/list") {
             result = {
               collaborationModes: mockState.codexCollaborationModes,
@@ -1159,7 +1169,7 @@ function createMockSessionService() {
         resumeCommand: args.resumeCommand ?? null,
         lastOutputPreview: null,
         summary: null,
-        goal: null,
+        goal: args.goal ?? null,
         manuallyNamed: false,
         headShaStart: null,
         headShaEnd: null,
@@ -1725,6 +1735,27 @@ describe("createAgentChatService", () => {
       expect(session.status).toBe("idle");
       expect(session.completion).toBeNull();
       expect(sessionService.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("persists create-time goals into the backing session row", async () => {
+      const { service, sessionService } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        goal: "Run quality, tests, ship, merge, and release.",
+      });
+
+      expect(session.goal).toBe("Run quality, tests, ship, merge, and release.");
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: session.id,
+          goal: "Run quality, tests, ship, merge, and release.",
+        }),
+      );
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        goal: "Run quality, tests, ship, merge, and release.",
+      });
     });
 
     it("creates a claude session with default model", async () => {
@@ -13727,6 +13758,251 @@ describe("createAgentChatService", () => {
         event.event.type === "done"
         && event.event.status === "completed"
       )).toBe(false);
+    });
+
+    it("seeds create-time ADE goals into the Codex app-server goal before the first turn", async () => {
+      mockState.codexResponseOverrides.set("thread/goal/set", (payload) => {
+        const params = payload.params as Record<string, unknown>;
+        return {
+          goal: {
+            objective: params.objective,
+            status: params.status ?? "active",
+            tokenBudget: params.tokenBudget,
+          },
+        };
+      });
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        goal: "Run quality, tests, ship, merge, and release.",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Continue the work.",
+      }, { awaitDispatch: true });
+
+      const goalRequestIndex = mockState.codexRequestPayloads.findIndex((payload) => payload.method === "thread/goal/set");
+      const turnRequestIndex = mockState.codexRequestPayloads.findIndex((payload) => payload.method === "turn/start");
+      expect(goalRequestIndex).toBeGreaterThan(-1);
+      expect(turnRequestIndex).toBeGreaterThan(-1);
+      expect(goalRequestIndex).toBeLessThan(turnRequestIndex);
+      expect(mockState.codexRequestPayloads[goalRequestIndex]?.params).toMatchObject({
+        threadId: "thread-1",
+        objective: "Run quality, tests, ship, merge, and release.",
+        status: "active",
+        tokenBudget: null,
+      });
+      expect((await service.getSessionSummary(session.id))?.codexGoal).toMatchObject({
+        objective: "Run quality, tests, ship, merge, and release.",
+        status: "active",
+        tokenBudget: null,
+      });
+    });
+
+    it("surfaces Codex MCP startup failures without treating them as turn progress", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        mockState.emitCodexPayload({
+          method: "mcpServer/startupStatus/updated",
+          params: {
+            serverName: "local-tools",
+            status: "failed",
+            message: "http/request failed: error sending request",
+          },
+        });
+        mockState.emitCodexPayload({
+          method: "mcpServer/startupStatus/updated",
+          params: {
+            serverName: "local-tools",
+            status: "failed",
+            message: "http/request failed: error sending request",
+          },
+        });
+
+        await Promise.resolve();
+        const mcpNotices = events.filter((event) =>
+          event.event.type === "system_notice"
+          && event.event.message.includes("Codex MCP server 'local-tools' is unavailable")
+        );
+        expect(mcpNotices).toHaveLength(1);
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "codex_turn_stalled"
+            && event.event.reason === "no_output"
+          )).toBe(true);
+        });
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.message.includes("has not streamed model or tool output yet")
+        )).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("reconciles a completed silent Codex turn from app-server state before reporting a stall", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+          data: [
+            {
+              id: "turn-1",
+              status: "completed",
+              usage: { inputTokens: 7, outputTokens: 3 },
+              items: [
+                {
+                  id: "msg-1",
+                  type: "agentMessage",
+                  text: "Recovered assistant output.",
+                },
+              ],
+            },
+          ],
+          nextCursor: null,
+        }));
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "done"
+            && event.event.turnId === "turn-1"
+            && event.event.status === "completed"
+          )).toBe(true);
+        });
+
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/read")).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/turns/list")).toBe(true);
+        expect(events.some((event) =>
+          event.event.type === "text"
+          && event.event.text.includes("Recovered assistant output.")
+        )).toBe(true);
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("routes structured Codex stall notices to an orchestration parent without auto-handoff", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const parent = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          orchestrationRole: "lead",
+        });
+        const child = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          orchestrationRole: "worker",
+          orchestrationParentSessionId: parent.id,
+        });
+
+        await service.sendMessage({
+          sessionId: child.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.sessionId === parent.id
+            && event.event.type === "codex_turn_stalled"
+            && event.event.sourceSessionId === child.id
+          )).toBe(true);
+        });
+
+        expect(events.some((event) =>
+          event.sessionId === child.id
+          && event.event.type === "codex_turn_stalled"
+          && event.event.reason === "no_output"
+        )).toBe(true);
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.message.includes("Child Codex session")
+        )).toBe(true);
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/interrupt")).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("clears the Codex no-output watchdog when useful turn events arrive", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        mockState.emitCodexPayload({
+          method: "item/started",
+          params: {
+            turnId: "turn-1",
+            item: { id: "item-1", type: "agentMessage" },
+          },
+        });
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(120_000);
+
+        expect(events.some((event) =>
+          event.event.type === "system_notice"
+          && event.event.message.includes("has not streamed model or tool output yet")
+        )).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("exposes typed Codex goal controls with unlimited budgets and persisted summaries", async () => {

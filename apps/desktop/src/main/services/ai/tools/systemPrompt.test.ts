@@ -295,6 +295,8 @@ describe("buildCodingAgentSystemPrompt", () => {
   it("always includes operating loop, editing rules, and verification rules", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("## Operating Loop");
+    expect(result).toContain("status checks, interruptions, and tool/subagent timeouts as checkpoints");
+    expect(result).toContain("unless the user explicitly says stop, pause, or only report status");
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
     expect(result).toContain("Your ADE capabilities ship as Agent Skills");

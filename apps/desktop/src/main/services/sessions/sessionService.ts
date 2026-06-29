@@ -864,6 +864,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       chatSessionId,
       ownerPid,
       ownerProcessStartedAt,
+      goal,
     }: {
       sessionId: string;
       laneId: string;
@@ -878,6 +879,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       chatSessionId?: string | null;
       ownerPid?: number | null;
       ownerProcessStartedAt?: string | null;
+      goal?: string | null;
     }): void {
       const normalizedToolType = normalizeToolType(toolType);
       const normalizedMetadata = normalizeResumeMetadata(resumeMetadata);
@@ -889,12 +891,15 @@ export function createSessionService({ db }: { db: AdeDb }) {
         : null;
       const normalizedOwnerPid = normalizeOwnerPid(ownerPid);
       const normalizedOwnerProcessStartedAt = normalizeOwnerProcessStartedAt(ownerProcessStartedAt);
+      const normalizedGoal = typeof goal === "string" && goal.trim().length
+        ? goal.trim()
+        : null;
       db.run(
         `
           insert into terminal_sessions(
             id, lane_id, pty_id, tracked, title, started_at, ended_at, exit_code, transcript_path,
-            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json, chat_session_id, owner_pid, owner_process_started_at
-          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?, ?, ?, ?)
+            head_sha_start, head_sha_end, status, last_output_preview, last_output_at, summary, tool_type, resume_command, resume_metadata_json, chat_session_id, owner_pid, owner_process_started_at, goal
+          ) values (?, ?, ?, ?, ?, ?, null, null, ?, null, null, 'running', null, null, null, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           sessionId,
@@ -910,6 +915,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
           normalizedChatSessionId,
           normalizedOwnerPid,
           normalizedOwnerProcessStartedAt,
+          normalizedGoal,
         ]
       );
       emitChanged({ sessionId, reason: "created" });
