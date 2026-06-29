@@ -485,6 +485,11 @@ function ClosedCliSessionSurface({
   onContextMenu,
   onContinue,
   onResume,
+  onToggleSessionsPane,
+  sessionsPaneCollapsed,
+  sessionsPaneCount,
+  onToggleToolsPane,
+  toolsPaneOpen,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -493,6 +498,11 @@ function ClosedCliSessionSurface({
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContinue?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
   onResume?: (session: TerminalSessionSummary) => Promise<void> | void;
+  onToggleSessionsPane?: () => void;
+  sessionsPaneCollapsed?: boolean;
+  sessionsPaneCount?: number;
+  onToggleToolsPane?: () => void;
+  toolsPaneOpen?: boolean;
 }) {
   const [preview, setPreview] = useState<ChatTerminalPreviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -553,6 +563,11 @@ function ClosedCliSessionSurface({
           lanes={lanes}
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}
+          onToggleSessionsPane={onToggleSessionsPane}
+          sessionsPaneCollapsed={sessionsPaneCollapsed}
+          sessionsPaneCount={sessionsPaneCount}
+          onToggleToolsPane={onToggleToolsPane}
+          toolsPaneOpen={toolsPaneOpen}
         />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
@@ -722,6 +737,11 @@ function SessionSurface({
         onContextMenu={onContextMenu}
         onContinue={onContinueCliSession}
         onResume={onResumeCliSession}
+        onToggleSessionsPane={onToggleSessionsPane}
+        sessionsPaneCollapsed={sessionsPaneCollapsed}
+        sessionsPaneCount={sessionsPaneCount}
+        onToggleToolsPane={onToggleToolsPane}
+        toolsPaneOpen={toolsPaneOpen}
       />
     );
   }

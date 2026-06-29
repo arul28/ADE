@@ -72,10 +72,45 @@ vi.mock("./useWorkLaneContextMenu", () => ({
 vi.mock("./CliSessionWorkSurfaceHeader", () => ({
   CliSessionWorkSurfaceHeader: ({
     session,
+    onToggleSessionsPane,
+    sessionsPaneCollapsed = false,
+    sessionsPaneCount,
+    onToggleToolsPane,
+    toolsPaneOpen = false,
   }: {
     session: TerminalSessionSummary;
+    onToggleSessionsPane?: () => void;
+    sessionsPaneCollapsed?: boolean;
+    sessionsPaneCount?: number;
+    onToggleToolsPane?: () => void;
+    toolsPaneOpen?: boolean;
   }) => (
-    <div data-testid="work-cli-session-header" data-session-id={session.id} />
+    <div
+      data-testid="work-cli-session-header"
+      data-session-id={session.id}
+      data-sessions-pane-collapsed={String(sessionsPaneCollapsed)}
+      data-sessions-pane-count={String(sessionsPaneCount ?? "")}
+      data-tools-pane-open={String(toolsPaneOpen)}
+    >
+      {onToggleSessionsPane ? (
+        <button
+          type="button"
+          aria-label="Toggle sessions pane"
+          onClick={onToggleSessionsPane}
+        >
+          Sessions
+        </button>
+      ) : null}
+      {onToggleToolsPane ? (
+        <button
+          type="button"
+          aria-label="Toggle tools pane"
+          onClick={onToggleToolsPane}
+        >
+          Tools
+        </button>
+      ) : null}
+    </div>
   ),
   CliSurfaceTrailingActions: () => null,
   GridTileSessionHeaderActions: ({ session }: { session: TerminalSessionSummary }) => (
@@ -528,6 +563,56 @@ describe("WorkViewArea", () => {
     expect(terminalPreviewMock).toHaveBeenCalledWith({ terminalId: "session-1", maxBytes: 160_000 });
     expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" });
     expect(modelsMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Work sidebar toggles available on closed agent CLI sessions", () => {
+    const onToggleSessionsPane = vi.fn();
+    const onToggleWorkSidebar = vi.fn();
+    const session = {
+      ...makeSession(),
+      toolType: "codex" as const,
+      resumeCommand: "codex resume thread-1",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "thread-1",
+        launch: { permissionMode: "plan" as const },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        sessionsPaneCollapsed
+        sessionsPaneListCount={6}
+        onToggleSessionsPane={onToggleSessionsPane}
+        workSidebarOpen
+        onToggleWorkSidebar={onToggleWorkSidebar}
+      />,
+    );
+    const local = within(view.container);
+    const header = local.getByTestId("work-cli-session-header");
+
+    expect(header.getAttribute("data-session-id")).toBe("session-1");
+    expect(header.getAttribute("data-sessions-pane-collapsed")).toBe("true");
+    expect(header.getAttribute("data-sessions-pane-count")).toBe("6");
+    expect(header.getAttribute("data-tools-pane-open")).toBe("true");
+
+    fireEvent.click(local.getByRole("button", { name: "Toggle sessions pane" }));
+    fireEvent.click(local.getByRole("button", { name: "Toggle tools pane" }));
+
+    expect(onToggleSessionsPane).toHaveBeenCalledTimes(1);
+    expect(onToggleWorkSidebar).toHaveBeenCalledTimes(1);
   });
 
   it("does not hydrate hidden tab session previews or continuation commands", async () => {
