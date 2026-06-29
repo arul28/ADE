@@ -35,12 +35,20 @@ export function Masthead() {
             GitHub
           </a>
           <a
-            href={LINKS.releases}
+            href={LINKS.releasesLatest}
             target="_blank"
             rel="noreferrer"
             className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
           >
-            Download <span aria-hidden>&darr;</span>
+            Mac <span aria-hidden>&darr;</span>
+          </a>
+          <a
+            href={LINKS.testflight}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
+          >
+            iOS <span aria-hidden>&darr;</span>
           </a>
         </nav>
       </div>

@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { Download, Github } from "lucide-react";
+import { Download, Github, Smartphone } from "lucide-react";
 import { Link } from "react-router-dom";
 import { LINKS } from "../../lib/links";
 import { IPhoneFrame } from "./IPhoneFrame";
@@ -74,14 +74,23 @@ export function BackCover() {
             className="mt-9 flex flex-wrap gap-3"
           >
             <a
-              href={LINKS.releases}
+              href={LINKS.releasesLatest}
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-bg)] transition-colors duration-200 hover:bg-white"
             >
-              <Download aria-hidden="true" className="h-4 w-4" /> Download DMG{" "}
+              <Download aria-hidden="true" className="h-4 w-4" /> Download for Mac{" "}
               <span aria-hidden="true" className="font-serif italic">→</span>
               <span className="sr-only">opens GitHub releases in a new tab</span>
+            </a>
+            <a
+              href={LINKS.testflight}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-[22px] py-[14px] text-[15px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
+            >
+              <Smartphone aria-hidden="true" className="h-4 w-4" /> Download for iOS
+              <span className="sr-only">opens TestFlight in a new tab</span>
             </a>
             <a
               href={LINKS.github}

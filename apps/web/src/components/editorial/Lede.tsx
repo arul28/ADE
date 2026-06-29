@@ -1,5 +1,5 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { ArrowUpRight, BookOpen, Download, Github } from "lucide-react";
+import { ArrowUpRight, BookOpen, Download, Github, Smartphone } from "lucide-react";
 import { CopyButton } from "../CopyButton";
 import { LINKS } from "../../lib/links";
 
@@ -80,12 +80,20 @@ export function Lede() {
         className="mt-4 flex flex-wrap items-center justify-center gap-3"
       >
         <a
-          href={LINKS.releases}
+          href={LINKS.releasesLatest}
           target="_blank"
           rel="noreferrer"
           className="inline-flex items-center gap-2 rounded-[2px] bg-[color:var(--color-cream)] px-[20px] py-3.5 text-[15px] font-medium text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
         >
-          <Download className="h-4 w-4" /> Download
+          <Download className="h-4 w-4" /> Download for Mac
+        </a>
+        <a
+          href={LINKS.testflight}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-[20px] py-3.5 text-[15px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
+        >
+          <Smartphone className="h-4 w-4" /> Download for iOS
         </a>
         <a
           href={LINKS.github}

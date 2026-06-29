@@ -12,6 +12,8 @@
 <p align="center">
   <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/badge/Download_for_macOS-7C3AED?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" /></a>
   &nbsp;
+  <a href="https://testflight.apple.com/join/ZSdJGKPy"><img src="https://img.shields.io/badge/Download_for_iOS-12101a?style=for-the-badge&logo=apple&logoColor=a78bfa" alt="Download for iOS" /></a>
+  &nbsp;
   <a href="https://ade-app.dev"><img src="https://img.shields.io/badge/Website-12101a?style=for-the-badge&logo=googlechrome&logoColor=a78bfa" alt="Website" /></a>
   &nbsp;
   <a href="https://ade-app.dev/docs"><img src="https://img.shields.io/badge/Docs-12101a?style=for-the-badge&logo=readthedocs&logoColor=a78bfa" alt="Docs" /></a>
@@ -122,7 +124,7 @@ Plus files, terminals, git history, the workspace graph, multi-tasking, Linear s
 
 ## Install
 
-Download ADE from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), open it on any git repo, and add a provider key (or subscription) in Settings. Runs in Guest Mode without an account.
+Download ADE for macOS from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), open it on any git repo, and add a provider key (or subscription) in Settings. Install the iOS companion from [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). Runs in Guest Mode without an account.
 
 ### macOS
 
@@ -135,6 +137,10 @@ brew install --cask arul28/ade/ade
 Or download the latest `.dmg`, drag **ADE.app** into `/Applications`, and open it. Both paths install the same signed + notarized universal app; ADE keeps itself current afterwards through its built-in auto-updater.
 
 Requirements: macOS 13+, git on `PATH`, Node 22+ for headless CLI workflows.
+
+### iOS
+
+Install ADE Mobile from [TestFlight](https://testflight.apple.com/join/ZSdJGKPy), then pair it with the Mac from the desktop **Mobile** control or with `ade brain pin generate`.
 
 ### Windows
 

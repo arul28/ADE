@@ -32,8 +32,11 @@ export function SiteFooter() {
             <div>
               <div className="text-sm font-semibold text-fg">Product</div>
               <div className="mt-3 flex flex-col gap-2 text-sm">
-                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.releases} target="_blank" rel="noreferrer">
-                  Download
+                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.releasesLatest} target="_blank" rel="noreferrer">
+                  Download for Mac
+                </a>
+                <a className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" href={LINKS.testflight} target="_blank" rel="noreferrer">
+                  Download for iOS
                 </a>
                 <Link className="focus-ring w-fit rounded-md text-muted-fg hover:text-fg" to="/#features">
                   Features

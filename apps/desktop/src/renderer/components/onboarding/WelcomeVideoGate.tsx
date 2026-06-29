@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowSquareOut,
+  DeviceMobile,
   GithubLogo,
   PlayCircle,
   X,
@@ -9,11 +10,14 @@ import {
 import { docs } from "../../onboarding/docsLinks";
 import { openExternalUrl } from "../../lib/openExternal";
 import {
-  ADE_GITHUB_URL,
   ADE_WELCOME_VIDEO_EMBED_URL,
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
   ADE_WELCOME_VIDEO_WATCH_URL,
 } from "../../../shared/welcomeVideo";
+import {
+  ADE_GITHUB_URL,
+  ADE_MOBILE_TESTFLIGHT_URL,
+} from "../../../shared/productLinks";
 
 type WelcomeVideoGateProps = {
   onVisibilityChange?: (visible: boolean, checking: boolean) => void;
@@ -60,6 +64,7 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
 
   const openGitHub = useCallback(() => openExternalUrl(ADE_GITHUB_URL), []);
   const openDocs = useCallback(() => openExternalUrl(docs.home), []);
+  const openMobileApp = useCallback(() => openExternalUrl(ADE_MOBILE_TESTFLIGHT_URL), []);
   const openVideo = useCallback(() => openExternalUrl(ADE_WELCOME_VIDEO_WATCH_URL), []);
 
   const handleOpenChange = useCallback(
@@ -171,6 +176,12 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
               </WelcomeActionButton>
               <WelcomeActionButton onClick={openDocs} icon={<ArrowSquareOut size={13} />}>
                 Docs
+              </WelcomeActionButton>
+              <WelcomeActionButton
+                onClick={openMobileApp}
+                icon={<DeviceMobile size={14} weight="regular" />}
+              >
+                Install mobile app
               </WelcomeActionButton>
               <WelcomeActionButton
                 onClick={openVideo}

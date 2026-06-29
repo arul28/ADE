@@ -6,6 +6,10 @@ icon: "mobile-screen"
 
 The ADE iOS app is a client for your Mac. It pairs over a live WebSocket and mirrors your lanes, chats, and PRs in real time. Start or continue a chat, review and merge a PR, or browse a lane's diff — from your phone. Your source code never leaves the Mac. The phone is a thin client; the agents run on the desktop runtime.
 
+<Card title="Download for iOS" icon="mobile-screen" href="https://testflight.apple.com/join/ZSdJGKPy" horizontal>
+  Install ADE Mobile from TestFlight, then pair it with your Mac.
+</Card>
+
 <CardGroup cols={2}>
   <Frame caption="Chat with agents from your phone">
     <img src="/media/features/mobile/agent-chat.webp" alt="Agent chat on the ADE iOS app" width="300" />
@@ -37,8 +41,11 @@ The ADE iOS app is a client for your Mac. It pairs over a live WebSocket and mir
 Pairing links the app to your Mac's runtime with a one-time PIN. Generate the PIN on the desktop (or from the CLI), enter it on the phone, and the app connects.
 
 <Steps>
+  <Step title="Install ADE Mobile">
+    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile.
+  </Step>
   <Step title="Generate a PIN on the Mac">
-    Open desktop **Settings -> Mobile** and generate a pairing PIN, or run `ade brain pin generate` from any shell.
+    Open the desktop **Mobile** control and generate a pairing PIN, or run `ade brain pin generate` from any shell.
   </Step>
   <Step title="Enter the PIN on iOS">
     Open the ADE app on your iPhone and type the PIN to pair with your machine.
@@ -80,7 +87,7 @@ A PR your agents opened shows up on the phone with its diff, CI status, and comm
 - Source and project data stay tied to the paired Mac. The phone holds no checkout.
 
 <Note>
-If the app looks connected but updates do not arrive, check desktop **Settings -> Mobile** first, then confirm both devices can reach each other on the network.
+If the app looks connected but updates do not arrive, check the desktop **Mobile** control first, then confirm both devices can reach each other on the network.
 </Note>
 
 <CardGroup cols={2}>

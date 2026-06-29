@@ -228,9 +228,14 @@
     "global": {
       "anchors": [
         {
-          "anchor": "Download",
+          "anchor": "Download for Mac",
           "href": "https://github.com/arul28/ADE/releases/latest",
           "icon": "apple"
+        },
+        {
+          "anchor": "Download for iOS",
+          "href": "https://testflight.apple.com/join/ZSdJGKPy",
+          "icon": "mobile-screen"
         },
         {
           "anchor": "GitHub",
@@ -244,7 +249,7 @@
     "links": [],
     "primary": {
       "type": "button",
-      "label": "Download ADE",
+      "label": "Download for Mac",
       "href": "https://github.com/arul28/ADE/releases/latest"
     }
   },
@@ -268,7 +273,8 @@
       {
         "header": "Product",
         "items": [
-          { "label": "Download", "href": "https://github.com/arul28/ADE/releases/latest" },
+          { "label": "Download for Mac", "href": "https://github.com/arul28/ADE/releases/latest" },
+          { "label": "Download for iOS", "href": "https://testflight.apple.com/join/ZSdJGKPy" },
           { "label": "Lanes", "href": "/lanes/overview" },
           { "label": "Changelog", "href": "/changelog" }
         ]
