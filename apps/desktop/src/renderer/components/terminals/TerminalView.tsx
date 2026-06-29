@@ -43,6 +43,10 @@ type TerminalRenderPreferences = Pick<TerminalPreferences, "fontFamily" | "fontS
 
 type RuntimeListener = (snapshot: RuntimeSnapshot) => void;
 
+type DeferredInputDuringPasteWrite =
+  | { kind: "input"; data: string }
+  | { kind: "paste"; text: string };
+
 type CachedRuntime = {
   key: string;
   ptyId: string;
@@ -87,6 +91,8 @@ type CachedRuntime = {
   inputWriteChunks: string[];
   inputWriteBytes: number;
   inputFlushTimer: ReturnType<typeof setTimeout> | null;
+  pasteWriteInFlight: boolean;
+  deferredInputDuringPasteWrite: DeferredInputDuringPasteWrite[];
   liveStreamPaused: boolean;
   flushRafId: number | null;
   flushTimer: ReturnType<typeof setTimeout> | null;
@@ -127,6 +133,7 @@ const MAX_PENDING_HYDRATION_BYTES = 2_000_000;
 const MAX_FRAME_WRITE_BYTES = 1_000_000;
 const MAX_PTY_INPUT_BATCH_BYTES = 16_384;
 const PTY_INPUT_BATCH_MS = 16;
+const PASTE_MODE_REFRESH_TIMEOUT_MS = 500;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
 const MIN_VALID_COLS = 20;
 const MIN_VALID_ROWS = 6;
@@ -787,6 +794,7 @@ function consumePendingPtyInput(runtime: CachedRuntime): string {
 }
 
 function flushPendingPtyInput(runtime: CachedRuntime): void {
+  if (runtime.pasteWriteInFlight) return;
   const data = consumePendingPtyInput(runtime);
   if (!data) return;
   writePtyInputNow(runtime, data);
@@ -794,7 +802,84 @@ function flushPendingPtyInput(runtime: CachedRuntime): void {
 
 function writePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  if (runtime.pasteWriteInFlight) {
+    runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
+    return;
+  }
   writePtyInputNow(runtime, `${consumePendingPtyInput(runtime)}${data}`);
+}
+
+function formatTextPasteForTerminal(runtime: CachedRuntime, text: string): string {
+  const prepared = text.replace(/\r?\n/g, "\r");
+  if (!runtime.bracketedPasteMode) return prepared;
+  const sanitized = prepared.replace(/\x1b/g, "\u241b");
+  return `${TERMINAL_BRACKETED_PASTE_START}${sanitized}${TERMINAL_BRACKETED_PASTE_END}`;
+}
+
+function syncTerminalInputModesFromXterm(runtime: CachedRuntime): void {
+  if (runtime.term.modes?.bracketedPasteMode === true) {
+    runtime.bracketedPasteMode = true;
+  }
+}
+
+async function refreshTerminalInputModesForPaste(runtime: CachedRuntime): Promise<void> {
+  syncTerminalInputModesFromXterm(runtime);
+  if (runtime.hydrationCompleted && !runtime.liveStreamPaused) return;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const timeoutPromise = new Promise<string>((resolve) => {
+      timeout = setTimeout(() => resolve(""), PASTE_MODE_REFRESH_TIMEOUT_MS);
+    });
+    const data = await Promise.race([
+      readTerminalInputModeRefreshData(runtime),
+      timeoutPromise,
+    ]);
+    if (!runtime.disposed && data) {
+      updateTerminalInputModes(runtime, data);
+    }
+  } catch {
+    // Best effort only; a stale cache should not block paste entirely.
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
+function consumeDeferredInputDuringPasteWrite(runtime: CachedRuntime): string {
+  if (!runtime.deferredInputDuringPasteWrite.length) return "";
+  const data = runtime.deferredInputDuringPasteWrite
+    .map((entry) => (
+      entry.kind === "paste" ? formatTextPasteForTerminal(runtime, entry.text) : entry.data
+    ))
+    .join("");
+  runtime.deferredInputDuringPasteWrite.length = 0;
+  return data;
+}
+
+async function writeTextPasteForTerminal(runtime: CachedRuntime, text: string): Promise<void> {
+  if (!text || runtime.disposed) return;
+  if (runtime.pasteWriteInFlight) {
+    runtime.deferredInputDuringPasteWrite.push({ kind: "paste", text });
+    return;
+  }
+
+  runtime.pasteWriteInFlight = true;
+  let committed = false;
+  try {
+    await refreshTerminalInputModesForPaste(runtime);
+    if (runtime.disposed) return;
+    const deferredInput = consumeDeferredInputDuringPasteWrite(runtime);
+    runtime.pasteWriteInFlight = false;
+    committed = true;
+    writePtyInput(runtime, `${formatTextPasteForTerminal(runtime, text)}${deferredInput}`);
+  } finally {
+    if (!committed) {
+      const deferredInput = consumeDeferredInputDuringPasteWrite(runtime);
+      runtime.pasteWriteInFlight = false;
+      if (!runtime.disposed && deferredInput) {
+        writePtyInput(runtime, deferredInput);
+      }
+    }
+  }
 }
 
 function shouldFlushPtyInputImmediately(data: string): boolean {
@@ -811,6 +896,10 @@ function schedulePtyInputFlush(runtime: CachedRuntime): void {
 
 function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  if (runtime.pasteWriteInFlight) {
+    runtime.deferredInputDuringPasteWrite.push({ kind: "input", data });
+    return;
+  }
   runtime.inputWriteChunks.push(data);
   runtime.inputWriteBytes += data.length;
   if (shouldFlushPtyInputImmediately(data) || runtime.inputWriteBytes >= MAX_PTY_INPUT_BATCH_BYTES) {
@@ -837,6 +926,15 @@ function updateTerminalInputModes(runtime: CachedRuntime, data: string): void {
       }
     }
   }
+}
+
+function hasTerminalPrivateModeSequence(data: string, targetMode: number): boolean {
+  for (const match of data.matchAll(/\x1b\[\?([0-9;]+)([hl])/g)) {
+    for (const rawParam of match[1].split(";")) {
+      if (Number(rawParam) === targetMode) return true;
+    }
+  }
+  return false;
 }
 
 function isTerminalMouseTrackingActive(runtime: CachedRuntime): boolean {
@@ -1193,11 +1291,11 @@ function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | und
 
 function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
+  updateTerminalInputModes(runtime, ev.data);
   if (!shouldRuntimeReceivePtyData(runtime)) {
     pauseRuntimePtyStream(runtime);
     return;
   }
-  updateTerminalInputModes(runtime, ev.data);
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
@@ -1353,6 +1451,34 @@ async function readPreviewHydrationData(
   if (options.snapshotOnly) return { source: "empty", text: "" };
   if (preview?.transcript) return { source: "transcript", text: preview.transcript };
   return { source: "empty", text: "" };
+}
+
+async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise<string> {
+  let transcript = "";
+  try {
+    transcript = await window.ade.sessions.readTranscriptTail({
+      sessionId: runtime.sessionId,
+      maxBytes: HYDRATE_TAIL_BYTES,
+      raw: true,
+    }) || "";
+    if (hasTerminalPrivateModeSequence(transcript, TERMINAL_BRACKETED_PASTE_MODE)) {
+      return transcript;
+    }
+  } catch {
+    transcript = "";
+  }
+
+  try {
+    const preview = await window.ade.terminal.preview({
+      terminalId: runtime.sessionId,
+      maxBytes: HYDRATE_TAIL_BYTES,
+    });
+    const snapshot = preview?.snapshot?.serialized ?? "";
+    const previewTranscript = preview?.transcript ?? "";
+    return `${snapshot}${previewTranscript}${transcript}`;
+  } catch {
+    return transcript;
+  }
 }
 
 async function readReplayHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
@@ -1770,6 +1896,8 @@ function createRuntime(args: {
     inputWriteChunks: [],
     inputWriteBytes: 0,
     inputFlushTimer: null,
+    pasteWriteInFlight: false,
+    deferredInputDuringPasteWrite: [],
     liveStreamPaused: false,
     flushRafId: null,
     flushTimer: null,
@@ -1802,7 +1930,7 @@ function createRuntime(args: {
     lastPasteEventAt = Date.now();
     const text = ev.clipboardData?.getData("text/plain") ?? ev.clipboardData?.getData("text");
     if (text && !runtime.disposed) {
-      writePtyInput(runtime, text);
+      void writeTextPasteForTerminal(runtime, text);
       return;
     }
     void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
@@ -1832,7 +1960,7 @@ function createRuntime(args: {
         }
         readText.call(navigator.clipboard).then((text) => {
           if (text && !runtime.disposed) {
-            writePtyInput(runtime, text);
+            void writeTextPasteForTerminal(runtime, text);
             return;
           }
           void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);

@@ -101,6 +101,10 @@ vi.mock("@xterm/xterm", () => ({
         viewportY: 0,
       },
     };
+    modes = {
+      bracketedPasteMode: false,
+      mouseTrackingMode: "none",
+    };
     dispose = vi.fn();
     clearTextureAtlas = vi.fn();
     getSelection = vi.fn(() => "");
@@ -228,6 +232,14 @@ async function flushAnimationFrame() {
 async function flushPromises() {
   await act(async () => {
     await Promise.resolve();
+  });
+}
+
+async function flushPasteWrite() {
+  await act(async () => {
+    for (let i = 0; i < 10; i += 1) {
+      await Promise.resolve();
+    }
   });
 }
 
@@ -975,6 +987,7 @@ describe("TerminalView", () => {
 
     const event = createPasteEvent("hello from clipboard");
     terminal!.element!.dispatchEvent(event);
+    await flushPasteWrite();
 
     expect(event.defaultPrevented).toBe(true);
     expect(ptyWrite).toHaveBeenCalledWith({
@@ -982,6 +995,246 @@ describe("TerminalView", () => {
       data: "hello from clipboard",
     });
     expect(hasClipboardImage).not.toHaveBeenCalled();
+  });
+
+  it("wraps pasted text when the terminal requests bracketed paste mode", async () => {
+    render(<TerminalView ptyId="pty-bracketed-text-paste" sessionId="session-bracketed-text-paste" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-bracketed-text-paste",
+        sessionId: "session-bracketed-text-paste",
+        projectRoot: "/project/a",
+        data: "\x1b[?2004h",
+      });
+    }
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const event = createPasteEvent("line one\n\x1b[31mline two");
+    terminal!.element!.dispatchEvent(event);
+    await flushPasteWrite();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-bracketed-text-paste",
+      data: "\x1b[200~line one\r\u241b[31mline two\x1b[201~",
+    });
+  });
+
+  it("refreshes bracketed paste mode from parked preview before text paste", async () => {
+    const firstView = render(<TerminalView ptyId="pty-parked-paste" sessionId="session-parked-paste" isActive />);
+    await flushAllTimers();
+    firstView.unmount();
+
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValue({
+      terminalId: "session-parked-paste",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "\x1b[?2004hCodex ready\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-parked-paste" sessionId="session-parked-paste" isActive />);
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const event = createPasteEvent("line one\nline two");
+    terminal!.element!.dispatchEvent(event);
+    await flushPasteWrite();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-parked-paste",
+      data: "\x1b[200~line one\rline two\x1b[201~",
+    });
+  });
+
+  it("refreshes paste modes from the raw transcript tail instead of snapshot rows", async () => {
+    const firstView = render(<TerminalView ptyId="pty-transcript-mode-paste" sessionId="session-transcript-mode-paste" isActive />);
+    await flushAllTimers();
+    firstView.unmount();
+
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    readTranscriptTailMock.mockResolvedValue("\x1b[?2004hCodex ready\n");
+
+    render(<TerminalView ptyId="pty-transcript-mode-paste" sessionId="session-transcript-mode-paste" isActive />);
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("line one\nline two"));
+    await flushPasteWrite();
+
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-transcript-mode-paste",
+      data: "\x1b[200~line one\rline two\x1b[201~",
+    });
+  });
+
+  it("refreshes paste modes from snapshot state when the transcript tail lacks mode escapes", async () => {
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    readTranscriptTailMock.mockResolvedValue("recent output without mode escapes\n");
+    previewMock.mockResolvedValue({
+      terminalId: "session-snapshot-mode-paste",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-snapshot-mode-paste",
+        cols: 120,
+        rows: 32,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "\x1b[?2004hCodex ready\n",
+        visibleRows: [
+          {
+            text: "Codex ready",
+            wrapped: false,
+            cells: [],
+          },
+        ],
+      },
+      transcript: "recent output without mode escapes\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-snapshot-mode-paste" sessionId="session-snapshot-mode-paste" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("line one\nline two"));
+    await flushPasteWrite();
+
+    expect(previewMock).toHaveBeenCalledWith({
+      terminalId: "session-snapshot-mode-paste",
+      maxBytes: 2_000_000,
+    });
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-snapshot-mode-paste",
+      data: "\x1b[200~line one\rline two\x1b[201~",
+    });
+  });
+
+  it("keeps input typed during paste refresh behind the pasted text", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    let resolvePreview: ((value: unknown) => void) | null = null;
+    const previewPromise = new Promise<unknown>((resolve) => {
+      resolvePreview = resolve;
+    });
+    previewMock.mockImplementation(() => previewPromise);
+
+    render(<TerminalView ptyId="pty-paste-order" sessionId="session-paste-order" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("run build"));
+    terminal!.element!.dispatchEvent(createPasteEvent("deploy\nnow"));
+    onData!("\r");
+    await flushPasteWrite();
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    resolvePreview!({
+      terminalId: "session-paste-order",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "\x1b[?2004hCodex ready\n",
+      capturedAt: new Date().toISOString(),
+    });
+    await flushPasteWrite();
+
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-paste-order",
+      data: "\x1b[200~run build\x1b[201~\x1b[200~deploy\rnow\x1b[201~\r",
+    });
+  });
+
+  it("falls back to cached paste mode when paste mode refresh is slow", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockImplementation(() => new Promise<unknown>(() => {}));
+
+    render(<TerminalView ptyId="pty-paste-timeout" sessionId="session-paste-timeout" isActive />);
+    await flushAnimationFrame();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-paste-timeout",
+        sessionId: "session-paste-timeout",
+        projectRoot: "/project/a",
+        data: "\x1b[?2004h",
+      });
+    }
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    terminal!.element!.dispatchEvent(createPasteEvent("run build"));
+    onData!("\r");
+    await flushPasteWrite();
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    await flushPasteWrite();
+
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-paste-timeout",
+      data: "\x1b[200~run build\x1b[201~\r",
+    });
   });
 
   it("maps macOS Cmd+V with an image-only clipboard to Ctrl+V terminal input", async () => {
