@@ -47,7 +47,7 @@ export function buildAdeBootstrapGuidance(
     "Your ADE capabilities ship as Agent Skills. When a task touches an ADE area (lanes/git, PRs, proof & screenshots, the built-in browser, iOS simulator, app control, Linear, deeplinks), read the matching `ade-*` skill before acting; otherwise ignore them.",
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
-    "Ground truth for any `ade` invocation is `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Track and clean up processes you start.",
+    "Ground truth for any `ade` invocation is `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Project secrets are available through `ade secrets`; read only the named secret the user asks you to use and avoid printing secret values. Track and clean up processes you start.",
   ].join("\n");
 }
 

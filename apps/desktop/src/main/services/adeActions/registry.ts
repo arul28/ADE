@@ -94,6 +94,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "operation",
   "ade_project",
   "project_config",
+  "project_secret",
   "flow_policy",
   "linear_credentials",
   "linear_oauth",
@@ -536,6 +537,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
+  project_secret: ["list", "get", "set", "delete"],
   flow_policy: [
     "diffPolicyPaths",
     "getPolicy",
@@ -707,6 +709,28 @@ export type AdeActionInputContract = {
 };
 
 const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record<string, AdeActionInputContract>>>> = {
+  project_secret: {
+    list: {
+      description: "List ADE project secret names and metadata without revealing values.",
+      input: "no input",
+      example: "ade secrets list --text",
+    },
+    get: {
+      description: "Read one ADE project secret value when the user explicitly asked for that secret.",
+      input: "object { name: string }",
+      example: "ade secrets get STRIPE_API_KEY --text",
+    },
+    set: {
+      description: "Create or replace one ADE project secret.",
+      input: "object { name: string, value: string }",
+      example: "ade secrets set STRIPE_API_KEY --value sk_test_...",
+    },
+    delete: {
+      description: "Delete one ADE project secret.",
+      input: "object { name: string, confirmName: string }",
+      example: "ade secrets delete STRIPE_API_KEY",
+    },
+  },
   chat: {
     createSession: {
       description: "Create a persistent ADE Work chat session.",
@@ -2787,6 +2811,7 @@ export function getAdeActionDomainServices(
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
+    project_secret: toService(runtime.projectSecretService),
     flow_policy: toService(runtime.flowPolicyService),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),

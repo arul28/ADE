@@ -6,6 +6,12 @@ import type {
   ProjectBrowseResult,
   ProjectDetail,
   ProjectIcon,
+  ProjectSecretDeleteArgs,
+  ProjectSecretGetArgs,
+  ProjectSecretsListResult,
+  ProjectSecretSetArgs,
+  ProjectSecretSummary,
+  ProjectSecretValueResult,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
   AttachLaneArgs,
@@ -804,6 +810,12 @@ declare global {
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
         set: (overrides: KeybindingOverride[]) => Promise<KeybindingsSnapshot>;
+      };
+      projectSecrets: {
+        list: () => Promise<ProjectSecretsListResult>;
+        get: (args: ProjectSecretGetArgs) => Promise<ProjectSecretValueResult>;
+        set: (args: ProjectSecretSetArgs) => Promise<ProjectSecretSummary>;
+        delete: (args: ProjectSecretDeleteArgs) => Promise<{ deleted: boolean; name: string }>;
       };
       ai: {
         getStatus: (args?: {

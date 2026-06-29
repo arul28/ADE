@@ -777,6 +777,56 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds typed ADE secret commands", () => {
+    const list = expectExecutePlan(buildCliPlan(["secrets", "list"]));
+    expect(list.formatter).toBe("project-secrets");
+    expect(list.steps).toEqual([
+      {
+        key: "result",
+        method: "ade/actions/call",
+        params: {
+          name: "run_ade_action",
+          arguments: {
+            domain: "project_secret",
+            action: "list",
+            args: {},
+          },
+        },
+        unwrapToolResult: true,
+      },
+    ]);
+
+    const get = expectExecutePlan(buildCliPlan(["secret", "get", "STRIPE_API_KEY"]));
+    expect(get.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "project_secret",
+        action: "get",
+        args: { name: "STRIPE_API_KEY" },
+      },
+    });
+
+    const set = expectExecutePlan(buildCliPlan(["secrets", "set", "TOKEN", "--value", "abc123"]));
+    expect(set.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "project_secret",
+        action: "set",
+        args: { name: "TOKEN", value: "abc123" },
+      },
+    });
+
+    const remove = expectExecutePlan(buildCliPlan(["secrets", "rm", "TOKEN"]));
+    expect(remove.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "project_secret",
+        action: "delete",
+        args: { name: "TOKEN", confirmName: "TOKEN" },
+      },
+    });
+  });
+
   it("builds PR transcript gist settings commands", () => {
     const enable = buildCliPlan(["settings", "pr-transcript-gists", "enable"]);
     expect(enable.kind).toBe("execute");

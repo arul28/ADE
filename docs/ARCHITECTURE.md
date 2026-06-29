@@ -277,6 +277,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
 │       ├── github/*.bin         # safeStorage-encrypted tokens
+│       ├── project-secrets.v1.enc # encrypted ADE project secrets for agents/CLI/UI
 │       ├── sync-site-id
 │       ├── sync-device-id
 │       └── sync-bootstrap-token
@@ -677,6 +678,7 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 |--------|----------|-----------|
 | GitHub PAT | `.ade/secrets/github/*.bin` | `safeStorage.encryptString` (OS-backed) |
 | API provider keys | `.ade/secrets/api-keys.json` | Plaintext `0600` |
+| ADE project secrets | `.ade/secrets/project-secrets.v1.enc` | AES-GCM encrypted file store, OS-bound on supported hosts |
 | Claude OAuth creds | Claude's own store | Inherited |
 | Codex auth tokens | Codex's own store | Inherited |
 | macOS Keychain entries | OS Keychain | OS-backed |

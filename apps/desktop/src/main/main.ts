@@ -145,6 +145,7 @@ import { createOnboardingService } from "./services/onboarding/onboardingService
 import { createAutomationService } from "./services/automations/automationService";
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
+import { createProjectSecretService } from "./services/secrets/projectSecretService";
 import { createAutomationIngressService } from "./services/automations/automationIngressService";
 import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
@@ -2363,6 +2364,7 @@ app.whenReady().then(async () => {
       db,
       logger,
     });
+    const projectSecretService = createProjectSecretService(projectRoot);
 
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,
@@ -3976,6 +3978,7 @@ app.whenReady().then(async () => {
       sessionService,
       operationService,
       projectConfigService,
+      projectSecretService,
       conflictService,
       gitService,
       diffService,
@@ -4192,6 +4195,7 @@ app.whenReady().then(async () => {
         sessionService,
         operationService,
         projectConfigService,
+        projectSecretService,
         flowPolicyService,
         linearDispatcherService,
         linearIssueTracker,
@@ -4275,6 +4279,7 @@ app.whenReady().then(async () => {
       orchestrationService,
       agentChatService,
       projectConfigService,
+      projectSecretService,
       processService,
       sessionDeltaService,
       testService,
@@ -4465,6 +4470,7 @@ app.whenReady().then(async () => {
       syncService: null,
       orchestrationService: null,
       projectConfigService: null,
+      projectSecretService: null,
       processService: null,
       sessionDeltaService: null,
       testService: null,
