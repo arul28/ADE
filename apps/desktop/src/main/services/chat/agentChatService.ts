@@ -16686,6 +16686,11 @@ export function createAgentChatService(args: {
       || itemType === "collabToolCall";
   }
 
+  function isCodexReconciledItemInProgress(value: unknown): boolean {
+    const status = String(value ?? "").toLowerCase();
+    return status === "inprogress" || status === "in_progress" || status === "running";
+  }
+
   function emitCodexReconciledItem(
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -16741,7 +16746,7 @@ export function createAgentChatService(args: {
         itemId,
         turnId,
       });
-      if (String(item.status ?? "completed") !== "inProgress") {
+      if (!isCodexReconciledItemInProgress(item.status)) {
         emitChatEvent(managed, {
           type: "tool_result",
           tool: label,
@@ -16753,8 +16758,7 @@ export function createAgentChatService(args: {
       }
       return true;
     }
-    const itemStatus = String(item.status ?? "").toLowerCase();
-    const eventKind = itemStatus === "inprogress" || itemStatus === "in_progress" || itemStatus === "running"
+    const eventKind = isCodexReconciledItemInProgress(item.status)
       ? "started"
       : "completed";
     handleCodexItemEvent(managed, runtime, { ...item, id: itemId }, eventKind, turnId);
@@ -17014,6 +17018,7 @@ export function createAgentChatService(args: {
             itemCount: items.length,
           });
           persistChatState(managed);
+          scheduleCodexNoFirstEventWatchdog(managed, runtime, turnId);
           return;
         }
       }

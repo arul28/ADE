@@ -13965,6 +13965,123 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("does not complete a reconciled MCP tool call while app-server still reports it running", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+          data: [
+            {
+              id: "turn-1",
+              status: "inProgress",
+              items: [
+                {
+                  id: "mcp-1",
+                  type: "mcpToolCall",
+                  server: "local-tools",
+                  tool: "probe",
+                  status: "running",
+                  arguments: { path: "README.md" },
+                },
+              ],
+            },
+          ],
+          nextCursor: null,
+        }));
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "tool_call"
+            && event.event.itemId === "mcp-1"
+          )).toBe(true);
+        });
+
+        expect(events.some((event) =>
+          event.event.type === "tool_result"
+          && event.event.itemId === "mcp-1"
+        )).toBe(false);
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("re-arms the Codex watchdog after partial same-thread recovery", async () => {
+      vi.useFakeTimers();
+      try {
+        const events: AgentChatEventEnvelope[] = [];
+        let turnsListCalls = 0;
+        mockState.codexResponseOverrides.set("thread/turns/list", () => {
+          turnsListCalls += 1;
+          return {
+            data: [
+              {
+                id: "turn-1",
+                status: "inProgress",
+                items: turnsListCalls === 1
+                  ? [
+                      {
+                        id: "reasoning-1",
+                        type: "reasoning",
+                        summary: ["Recovered partial reasoning."],
+                      },
+                    ]
+                  : [],
+              },
+            ],
+            nextCursor: null,
+          };
+        });
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Keep working.",
+        }, { awaitDispatch: true });
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "reasoning"
+            && event.event.text.includes("Recovered partial reasoning.")
+          )).toBe(true);
+        });
+        expect(events.some((event) => event.event.type === "codex_turn_stalled")).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(120_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "codex_turn_stalled"
+            && event.event.reason === "no_output"
+          )).toBe(true);
+        });
+        expect(turnsListCalls).toBeGreaterThanOrEqual(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("does not double-finalize when a normal Codex completion wins the silent-turn reconciliation race", async () => {
       vi.useFakeTimers();
       try {
