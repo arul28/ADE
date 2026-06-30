@@ -9,6 +9,12 @@ description: Use this skill when an agent needs to inspect or operate ADE itself
 
 Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, settings, project secrets, usage, updates, or service actions.
 
+Do not route ordinary repo commands through ADE chat-attached terminals. Those
+terminals exist so ADE Work chats can expose long-running process logs or let a
+user inspect/control a chat-owned shell. In a tracked CLI session, run normal
+shell commands through the CLI's own shell/tooling; use `ade terminal ...` only
+to inspect or control an existing ADE-owned terminal session.
+
 ## First checks
 
 1. Run `ade doctor --text` when the ADE environment is unclear.
