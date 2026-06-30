@@ -17,6 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -452,6 +453,8 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           </div>
         </div>
       </div>
+
+      <GitHubAppInstallPanel />
 
       {showPatSetup ? (
         <div style={cardStyle()}>

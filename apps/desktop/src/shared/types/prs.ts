@@ -200,6 +200,28 @@ export type GitHubPrSnapshot = {
   repoPullRequests: GitHubPrListItem[];
   externalPullRequests: GitHubPrListItem[];
   syncedAt: string;
+  history?: {
+    includeExternalClosed: boolean;
+    pageLimit: number;
+    repoPullRequestsLoaded: number;
+    repoPullRequestsMayHaveMore: boolean;
+  } | null;
+};
+
+export type GitHubWebhookIngestArgs = {
+  eventName: string;
+  deliveryId?: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type GitHubWebhookIngestResult = {
+  processed: boolean;
+  duplicate: boolean;
+  repoOwner: string | null;
+  repoName: string | null;
+  githubPrNumber: number | null;
+  linkedPrIds: string[];
+  reason: string | null;
 };
 
 export type PrSnapshotHydration = {

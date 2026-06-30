@@ -252,6 +252,7 @@ describe("GitHubTab", () => {
       ade: {
         prs: {
           getGitHubSnapshot: vi.fn().mockResolvedValue(snapshot),
+          onEvent: vi.fn(() => () => {}),
           linkToLane: vi.fn(),
           preflightCreateLaneFromPrBranch: vi.fn().mockResolvedValue({
             preflight: {
@@ -665,7 +666,7 @@ describe("GitHubTab", () => {
     vi.useFakeTimers();
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
 
-    fireEvent.click(screen.getByRole("button", { name: /^sync$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^sync now$/i }));
 
     await vi.advanceTimersByTimeAsync(0);
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
@@ -681,6 +682,66 @@ describe("GitHubTab", () => {
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledTimes(2);
   });
 
+  it("silently reloads the GitHub snapshot when PR events arrive", async () => {
+    let prEventCallback: ((event: { type: "prs-updated"; polledAt: string; prs: [] }) => void) | null = null;
+    (window.ade.prs.onEvent as ReturnType<typeof vi.fn>).mockImplementation((cb) => {
+      prEventCallback = cb;
+      return vi.fn();
+    });
+    renderTab();
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+
+    act(() => {
+      prEventCallback?.({ type: "prs-updated", polledAt: "2026-03-13T12:00:30.000Z", prs: [] });
+    });
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+  });
+
+  it("loads older closed history in bounded page increments", async () => {
+    const user = userEvent.setup();
+    const historySnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      history: {
+        includeExternalClosed: true,
+        pageLimit: 2,
+        repoPullRequestsLoaded: 200,
+        repoPullRequestsMayHaveMore: true,
+      },
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(historySnapshot);
+    renderTab();
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: false,
+        includeExternalClosed: true,
+        historyPageLimit: 2,
+      });
+    });
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+
+    await user.click(screen.getByRole("button", { name: /load older pull requests/i }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
+        force: true,
+        includeExternalClosed: true,
+        historyPageLimit: 4,
+      });
+    });
+  });
+
   it("keeps loaded closed history during manual sync after returning to the open filter", async () => {
     const user = userEvent.setup();
     renderTab();
@@ -694,17 +755,19 @@ describe("GitHubTab", () => {
       expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
         force: false,
         includeExternalClosed: true,
+        historyPageLimit: 2,
       });
     });
 
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
     await user.click(screen.getByRole("button", { name: /^open/i }));
-    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+    await user.click(screen.getByRole("button", { name: /^sync now$/i }));
 
     await waitFor(() => {
       expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({
         force: true,
         includeExternalClosed: true,
+        historyPageLimit: 2,
       });
     });
   });
@@ -752,7 +815,7 @@ describe("GitHubTab", () => {
     });
     await screen.findByText("Open PR");
 
-    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+    await user.click(screen.getByRole("button", { name: /^sync now$/i }));
     await waitFor(() => {
       expect(getGitHubSnapshot).toHaveBeenCalledWith({ force: true });
     });
@@ -761,6 +824,7 @@ describe("GitHubTab", () => {
       expect(getGitHubSnapshot).toHaveBeenCalledWith({
         force: false,
         includeExternalClosed: true,
+        historyPageLimit: 2,
       });
     });
 
@@ -776,12 +840,13 @@ describe("GitHubTab", () => {
     getGitHubSnapshot.mockClear();
     getGitHubSnapshot.mockResolvedValue(fullHistorySnapshot);
     await user.click(screen.getByRole("button", { name: /^open/i }));
-    await user.click(screen.getByRole("button", { name: /^sync$/i }));
+    await user.click(screen.getByRole("button", { name: /^sync now$/i }));
 
     await waitFor(() => {
       expect(getGitHubSnapshot).toHaveBeenCalledWith({
         force: true,
         includeExternalClosed: true,
+        historyPageLimit: 2,
       });
     });
   });

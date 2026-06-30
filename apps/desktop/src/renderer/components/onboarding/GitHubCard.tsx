@@ -3,6 +3,7 @@ import { GithubLogo } from "@phosphor-icons/react";
 import type { GitHubStatus } from "../../../shared/types";
 import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
+import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
 import { BRAND, CARD_BASE, SECTION_LABEL, logoTile, statusDot } from "./onboardingTheme";
@@ -84,6 +85,8 @@ export function GitHubCard() {
           Run <code style={codeStyle}>gh auth login</code> then Rescan, or paste a personal access token.
         </div>
       )}
+
+      <GitHubAppInstallPanel variant="onboarding" />
 
       <div style={actionRow}>
         {canDisconnect ? (

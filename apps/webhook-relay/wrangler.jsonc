@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ade-github-webhook-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30",
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ade-github-relay",
+      "database_id": "65e81b4d-2894-444f-9546-390815533b3b",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

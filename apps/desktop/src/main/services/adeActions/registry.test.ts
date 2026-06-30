@@ -1367,6 +1367,7 @@ describe("runtime GitHub actions", () => {
         clearToken: vi.fn(),
         getRepoOrThrow: vi.fn(),
         detectRepo: vi.fn(),
+        getAppInstallationStatus: vi.fn(),
         listRepoAutolinks: vi.fn(),
         createRepoAutolink: vi.fn(),
         listRepoLabels: vi.fn(),
@@ -1380,6 +1381,7 @@ describe("runtime GitHub actions", () => {
     expect(listAllowedAdeActionNames("github", githubService)).toContain("detectRepo");
     expect(listAllowedAdeActionNames("github", githubService)).toEqual(expect.arrayContaining([
       "listRepoCollaborators",
+      "getAppInstallationStatus",
       "listRepoAutolinks",
       "createRepoAutolink",
       "listRepoLabels",

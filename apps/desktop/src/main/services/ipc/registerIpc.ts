@@ -7921,6 +7921,11 @@ export function registerIpc({
     return await ctx.githubService.listRepoLabels(owner, name);
   });
 
+  ipcMain.handle(IPC.githubGetAppInstallationStatus, async (_event, arg: { owner?: string; name?: string } = {}) => {
+    const ctx = getCtx();
+    return await ctx.githubService.getAppInstallationStatus(arg);
+  });
+
   ipcMain.handle(IPC.githubListRepoAutolinks, async (_event, arg: { owner?: string; name?: string }): Promise<GitHubAutolink[]> => {
     const ctx = getCtx();
     const { owner, name } = await resolveGithubRepoRef(ctx.githubService, arg);
@@ -8241,11 +8246,12 @@ export function registerIpc({
     return ctx.prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined });
   });
 
-  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean }): Promise<GitHubPrSnapshot> => {
+  ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number }): Promise<GitHubPrSnapshot> => {
     const ctx = ensurePrReadContext();
     return await ctx.prService.getGithubSnapshot({
       force: arg?.force === true,
       includeExternalClosed: arg?.includeExternalClosed === true,
+      historyPageLimit: typeof arg?.historyPageLimit === "number" ? arg.historyPageLimit : undefined,
     });
   });
 

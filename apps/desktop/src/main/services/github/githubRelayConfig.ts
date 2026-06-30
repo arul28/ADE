@@ -1,0 +1,205 @@
+import { createHmac } from "node:crypto";
+import type { GitHubAppInstallationStatus, GitHubRepoRef } from "../../../shared/types";
+
+export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
+export const ADE_GITHUB_APP_SLUG = "ade-for-github";
+export const ADE_GITHUB_APP_INSTALL_URL = `https://github.com/apps/${ADE_GITHUB_APP_SLUG}/installations/new`;
+export const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
+
+export const GITHUB_RELAY_API_BASE_REF = "automations.githubRelay.apiBaseUrl";
+export const GITHUB_RELAY_PROJECT_REF = "automations.githubRelay.remoteProjectId";
+export const GITHUB_RELAY_TOKEN_REF = "automations.githubRelay.accessToken";
+export const GITHUB_RELAY_API_BASE_ENV_KEYS = ["ADE_GITHUB_RELAY_API_BASE_URL", "GITHUB_RELAY_API_BASE_URL"] as const;
+export const GITHUB_RELAY_PROJECT_ENV_KEYS = ["ADE_GITHUB_RELAY_REMOTE_PROJECT_ID", "GITHUB_RELAY_REMOTE_PROJECT_ID"] as const;
+export const GITHUB_RELAY_TOKEN_ENV_KEYS = ["ADE_GITHUB_RELAY_ACCESS_TOKEN", "GITHUB_RELAY_ACCESS_TOKEN"] as const;
+export const GITHUB_RELAY_PROJECT_TOKEN_PREFIX = "ade_proj_";
+const GITHUB_RELAY_PROJECT_TOKEN_CONTEXT = "ade-github-relay-project";
+
+export type GitHubRelaySecretReader = (ref: string) => string | null | undefined;
+
+export type GitHubRelayConfig = {
+  apiBaseUrl: string | null;
+  remoteProjectId: string | null;
+  accessToken: string | null;
+  configured: boolean;
+  repoStatusConfigured: boolean;
+};
+
+function firstEnvValue(keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = process.env[key]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+function readSecret(reader: GitHubRelaySecretReader | null | undefined, ref: string): string | null {
+  const value = reader?.(ref)?.trim();
+  return value || null;
+}
+
+export function readGitHubRelayConfig(secretReader?: GitHubRelaySecretReader | null): GitHubRelayConfig {
+  const apiBaseUrl =
+    readSecret(secretReader, GITHUB_RELAY_API_BASE_REF)
+    || firstEnvValue(GITHUB_RELAY_API_BASE_ENV_KEYS);
+  const remoteProjectId =
+    readSecret(secretReader, GITHUB_RELAY_PROJECT_REF)
+    || firstEnvValue(GITHUB_RELAY_PROJECT_ENV_KEYS);
+  const accessToken =
+    readSecret(secretReader, GITHUB_RELAY_TOKEN_REF)
+    || firstEnvValue(GITHUB_RELAY_TOKEN_ENV_KEYS);
+  return {
+    apiBaseUrl,
+    remoteProjectId,
+    accessToken,
+    configured: Boolean(apiBaseUrl && remoteProjectId && accessToken),
+    repoStatusConfigured: Boolean(apiBaseUrl && remoteProjectId && accessToken),
+  };
+}
+
+export function deriveGitHubRelayProjectToken(accessToken: string, projectId: string): string {
+  const trimmedToken = accessToken.trim();
+  if (trimmedToken.startsWith(GITHUB_RELAY_PROJECT_TOKEN_PREFIX)) return trimmedToken;
+  const digest = createHmac("sha256", trimmedToken)
+    .update(`${GITHUB_RELAY_PROJECT_TOKEN_CONTEXT}:${projectId.trim()}`)
+    .digest("hex");
+  return `${GITHUB_RELAY_PROJECT_TOKEN_PREFIX}${digest}`;
+}
+
+export function gitHubRelayAuthorizationToken(config: GitHubRelayConfig): string | null {
+  if (!config.accessToken || !config.remoteProjectId) return null;
+  return deriveGitHubRelayProjectToken(config.accessToken, config.remoteProjectId);
+}
+
+function baseStatus(repo: GitHubRepoRef | null, patch: Partial<GitHubAppInstallationStatus>): GitHubAppInstallationStatus {
+  return {
+    repo,
+    appName: ADE_GITHUB_APP_DISPLAY_NAME,
+    appSlug: ADE_GITHUB_APP_SLUG,
+    installUrl: ADE_GITHUB_APP_INSTALL_URL,
+    manageUrl: GITHUB_APP_INSTALLATIONS_URL,
+    relayConfigured: false,
+    installed: false,
+    state: "unknown",
+    installationId: null,
+    repositorySelection: null,
+    lastSeenAt: null,
+    webhookEvents: [],
+    missingWebhookEvents: [],
+    webhookState: "unknown",
+    webhookLastSeenAt: null,
+    checkedAt: new Date().toISOString(),
+    error: null,
+    ...patch,
+  };
+}
+
+function normalizeRelayStatusPayload(
+  repo: GitHubRepoRef,
+  payload: unknown,
+  relayConfigured: boolean,
+): GitHubAppInstallationStatus {
+  const record = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  const installationId = typeof record.installationId === "number" && Number.isFinite(record.installationId)
+    ? Math.trunc(record.installationId)
+    : null;
+  const repositorySelection =
+    record.repositorySelection === "all" || record.repositorySelection === "selected"
+      ? record.repositorySelection
+      : record.repositorySelection === "unknown"
+        ? "unknown"
+        : null;
+  const state = record.installed === true
+    ? "configured"
+    : record.state === "not_installed"
+      ? "not_installed"
+      : "unknown";
+  const webhookEvents = Array.isArray(record.webhookEvents)
+    ? record.webhookEvents.filter((event): event is string => typeof event === "string" && event.trim().length > 0)
+    : [];
+  const missingWebhookEvents = Array.isArray(record.missingWebhookEvents)
+    ? record.missingWebhookEvents.filter((event): event is string => typeof event === "string" && event.trim().length > 0)
+    : [];
+  const webhookState =
+    record.webhookState === "active" || record.webhookState === "deleted" || record.webhookState === "unknown"
+      ? record.webhookState
+      : "unknown";
+  return baseStatus(repo, {
+    relayConfigured,
+    installed: record.installed === true,
+    state,
+    installationId,
+    repositorySelection,
+    lastSeenAt: typeof record.lastSeenAt === "string" && record.lastSeenAt ? record.lastSeenAt : null,
+    webhookEvents,
+    missingWebhookEvents,
+    webhookState,
+    webhookLastSeenAt: typeof record.webhookLastSeenAt === "string" && record.webhookLastSeenAt ? record.webhookLastSeenAt : null,
+    checkedAt: typeof record.checkedAt === "string" && record.checkedAt ? record.checkedAt : new Date().toISOString(),
+    error: typeof record.error === "string" && record.error ? record.error : null,
+  });
+}
+
+export async function fetchGitHubAppInstallationStatus(args: {
+  repo: GitHubRepoRef | null;
+  secretReader?: GitHubRelaySecretReader | null;
+  fetchImpl?: typeof fetch;
+  forceRefresh?: boolean;
+}): Promise<GitHubAppInstallationStatus> {
+  const config = readGitHubRelayConfig(args.secretReader);
+  if (!args.repo) {
+    return baseStatus(null, {
+      relayConfigured: config.configured,
+      state: "unknown",
+      error: "No GitHub repository was detected for this project.",
+    });
+  }
+  if (!config.repoStatusConfigured) {
+    return baseStatus(args.repo, {
+      relayConfigured: false,
+      state: "unconfigured",
+      error: "GitHub App relay is not configured for this ADE runtime.",
+    });
+  }
+
+  try {
+    const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
+    const projectId = encodeURIComponent(config.remoteProjectId!);
+    const url = `${baseUrl}/projects/${projectId}/github/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/status${args.forceRefresh ? "?refresh=1" : ""}`;
+    const authToken = gitHubRelayAuthorizationToken(config);
+    if (!authToken) {
+      return baseStatus(args.repo, {
+        relayConfigured: true,
+        state: "error",
+        error: "GitHub App relay token is not configured for this ADE runtime.",
+      });
+    }
+    const response = await (args.fetchImpl ?? fetch)(url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${authToken}`,
+      },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error?: unknown }).error)
+        : `GitHub App relay status check failed (${response.status})`;
+      return baseStatus(args.repo, {
+        relayConfigured: true,
+        state: "error",
+        error: message,
+      });
+    }
+    return normalizeRelayStatusPayload(args.repo, payload, config.configured);
+  } catch (error) {
+    return baseStatus(args.repo, {
+      relayConfigured: config.configured,
+      state: "error",
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}

@@ -304,6 +304,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubAppInstallationStatus,
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
@@ -1794,6 +1795,11 @@ declare global {
           owner?: string;
           name?: string;
         }) => Promise<GitHubAutolink[]>;
+        getAppInstallationStatus: (args?: {
+          owner?: string;
+          name?: string;
+          forceRefresh?: boolean;
+        }) => Promise<GitHubAppInstallationStatus>;
         createRepoAutolink: (args: {
           owner?: string;
           name?: string;
@@ -1928,6 +1934,7 @@ declare global {
         getGitHubSnapshot: (args?: {
           force?: boolean;
           includeExternalClosed?: boolean;
+          historyPageLimit?: number;
         }) => Promise<GitHubPrSnapshot>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,

@@ -327,6 +327,26 @@ export type GitHubStatus = {
   connected: boolean;
 };
 
+export type GitHubAppInstallationStatus = {
+  repo: GitHubRepoRef | null;
+  appName: string;
+  appSlug: string;
+  installUrl: string;
+  manageUrl: string;
+  relayConfigured: boolean;
+  installed: boolean;
+  state: "configured" | "not_installed" | "unconfigured" | "unknown" | "error";
+  installationId: number | null;
+  repositorySelection: "all" | "selected" | "unknown" | null;
+  lastSeenAt: string | null;
+  webhookEvents: string[];
+  missingWebhookEvents: string[];
+  webhookState: "active" | "deleted" | "unknown";
+  webhookLastSeenAt: string | null;
+  checkedAt: string;
+  error: string | null;
+};
+
 export type ListOperationsArgs = {
   laneId?: string;
   kind?: string;

@@ -1,22 +1,22 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
-import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationRule, AutomationTriggerType } from "../../../shared/types";
+import type { AutomationIngressEventRecord, AutomationIngressStatus, AutomationRule, AutomationTriggerType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAutomationService } from "./automationService";
 import type { AutomationSecretService } from "./automationSecretService";
+import type { createPrService } from "../prs/prService";
+import { gitHubRelayAuthorizationToken, readGitHubRelayConfig } from "../github/githubRelayConfig";
 
 type AutomationIngressServiceArgs = {
   logger: Logger;
   automationService: ReturnType<typeof createAutomationService>;
+  prService?: ReturnType<typeof createPrService> | null;
   secretService: AutomationSecretService;
   listRules: () => AutomationRule[];
   pollIntervalMs?: number;
 };
 
-const GITHUB_RELAY_API_BASE_REF = "automations.githubRelay.apiBaseUrl";
-const GITHUB_RELAY_PROJECT_REF = "automations.githubRelay.remoteProjectId";
-const GITHUB_RELAY_TOKEN_REF = "automations.githubRelay.accessToken";
 const GITHUB_WEBHOOK_SECRET_REF = "automations.githubWebhook.secret";
 
 function safeCompareSignature(expected: string, actual: string): boolean {
@@ -229,23 +229,20 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let server: http.Server | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
 
-  const updateStatus = (source: AutomationIngressSource, patch: Record<string, unknown>) => {
+  const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
     args.automationService.updateIngressStatus({
-      githubRelay: source === "github-relay" ? patch as never : undefined,
-      localWebhook: source === "local-webhook" ? patch as never : undefined,
+      githubRelay: patch,
+    });
+  };
+
+  const updateLocalWebhookStatus = (patch: Partial<AutomationIngressStatus["localWebhook"]>) => {
+    args.automationService.updateIngressStatus({
+      localWebhook: patch,
     });
   };
 
   const buildGithubRelayConfig = () => {
-    const apiBaseUrl = args.secretService.getSecret(GITHUB_RELAY_API_BASE_REF);
-    const remoteProjectId = args.secretService.getSecret(GITHUB_RELAY_PROJECT_REF);
-    const accessToken = args.secretService.getSecret(GITHUB_RELAY_TOKEN_REF);
-    return {
-      apiBaseUrl: apiBaseUrl?.trim() || null,
-      remoteProjectId: remoteProjectId?.trim() || null,
-      accessToken: accessToken?.trim() || null,
-      configured: Boolean(apiBaseUrl && remoteProjectId && accessToken),
-    };
+    return readGitHubRelayConfig((ref) => args.secretService.getSecret(ref));
   };
 
   const findTrigger = (automationId: string, type: "webhook" | "github-webhook") =>
@@ -272,6 +269,18 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     deliveryId: string,
     payload: Record<string, unknown>,
   ): Promise<AutomationIngressEventRecord | null> => {
+    await args.prService?.ingestGithubWebhook({
+      eventName: githubEvent,
+      deliveryId,
+      payload,
+    }).catch((error) => {
+      args.logger.warn("automations.github_webhook_pr_ingest_failed", {
+        githubEvent,
+        deliveryId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+
     const mapped = mapGithubWebhookToTrigger(githubEvent, payload);
     if (!mapped) {
       return await args.automationService.dispatchIngressTrigger({
@@ -380,7 +389,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               payload.signatureHeader = request.headers["x-ade-signature"] ?? "";
               return await dispatchLocalWebhook(automationId, payload, body);
             })();
-        updateStatus("local-webhook", {
+        updateLocalWebhookStatus({
           healthy: true,
           status: "listening",
           lastDeliveryAt: record?.receivedAt ?? new Date().toISOString(),
@@ -390,7 +399,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         args.logger.warn("automations.local_webhook_failed", { automationId, path: url.pathname, error: message });
-        updateStatus("local-webhook", {
+        updateLocalWebhookStatus({
           healthy: false,
           status: "error",
           lastError: message,
@@ -402,7 +411,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
 
   const pollGithubRelay = async () => {
     const config = buildGithubRelayConfig();
-    updateStatus("github-relay", {
+    updateGithubRelayStatus({
       configured: config.configured,
       apiBaseUrl: config.apiBaseUrl,
       remoteProjectId: config.remoteProjectId,
@@ -410,55 +419,87 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
     if (!config.configured) return;
     try {
+      const cursor = args.automationService.getIngressCursor("github-relay");
+      const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
+      const eventsUrl = new URL(
+        `${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`,
+      );
+      if (cursor) eventsUrl.searchParams.set("after", cursor);
+      const authToken = gitHubRelayAuthorizationToken(config);
+      if (!authToken) {
+        throw new Error("GitHub relay access token is not configured.");
+      }
       const response = await fetch(
-        `${config.apiBaseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`,
+        eventsUrl.toString(),
         {
           headers: {
             accept: "application/json",
-            authorization: `Bearer ${config.accessToken}`,
+            authorization: `Bearer ${authToken}`,
           },
         }
       );
       if (!response.ok) {
         throw new Error(`GitHub relay poll failed (${response.status})`);
       }
-      const payload = await response.json() as { events?: Array<Record<string, unknown>> };
+      const payload = await response.json() as {
+        events?: Array<Record<string, unknown>>;
+        nextCursor?: unknown;
+        cursorExpired?: unknown;
+      };
       const events = Array.isArray(payload.events) ? [...payload.events].reverse() : [];
-      const cursor = args.automationService.getIngressCursor("github-relay");
       let lastSeenCursor = cursor;
+      let lastDeliveryAt: string | null = null;
       for (const event of events) {
         const eventId = typeof event.eventId === "string" ? event.eventId : "";
-        if (!eventId || eventId === cursor) continue;
+        const eventCursor = typeof event.cursor === "string" && event.cursor ? event.cursor : null;
+        if (!eventId || (eventCursor && eventCursor === cursor)) continue;
         const githubEvent = typeof event.githubEvent === "string" ? event.githubEvent : "pull_request";
         const summary = typeof event.summary === "string" ? event.summary : `GitHub ${githubEvent} event`;
+        const rawPayload = isRecord(event.payload) ? event.payload : event;
+        lastDeliveryAt = String(event.createdAt ?? new Date().toISOString());
+        await args.prService?.ingestGithubWebhook({
+          eventName: githubEvent,
+          deliveryId: eventId,
+          payload: rawPayload,
+        }).catch((error) => {
+          args.logger.warn("automations.github_relay_pr_ingest_failed", {
+            githubEvent,
+            eventId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         await args.automationService.dispatchIngressTrigger({
           source: "github-relay",
           eventKey: eventId,
           triggerType: "github-webhook",
           eventName: githubEvent,
           summary,
-          cursor: eventId,
+          cursor: eventCursor ?? eventId,
           keywords: summary.split(/\s+/g).filter(Boolean),
-          rawPayload: event,
+          rawPayload,
         });
-        lastSeenCursor = eventId;
+        lastSeenCursor = eventCursor ?? eventId;
       }
+      const responseCursor = typeof payload.nextCursor === "string" && payload.nextCursor
+        ? payload.nextCursor
+        : null;
+      if (responseCursor) lastSeenCursor = responseCursor;
       if (lastSeenCursor && lastSeenCursor !== cursor) {
         args.automationService.setIngressCursor({ source: "github-relay", cursor: lastSeenCursor });
       }
-      updateStatus("github-relay", {
+      updateGithubRelayStatus({
         healthy: true,
         status: "ready",
         lastPolledAt: new Date().toISOString(),
         lastCursor: lastSeenCursor,
-        lastDeliveryAt: events.length ? String(events[events.length - 1]?.createdAt ?? new Date().toISOString()) : null,
+        lastDeliveryAt,
         lastError: null,
       });
     } catch (error) {
       args.logger.warn("automations.github_relay_poll_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
-      updateStatus("github-relay", {
+      updateGithubRelayStatus({
         healthy: false,
         status: "error",
         lastPolledAt: new Date().toISOString(),
@@ -479,7 +520,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         });
         const address = server.address();
         const port = typeof address === "object" && address ? address.port : null;
-        updateStatus("local-webhook", {
+        updateLocalWebhookStatus({
           configured: true,
           healthy: true,
           listening: true,

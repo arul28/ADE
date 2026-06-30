@@ -109,6 +109,8 @@ import type {
   AiReviewSummary,
   GitHubPrListItem,
   GitHubPrSnapshot,
+  GitHubWebhookIngestArgs,
+  GitHubWebhookIngestResult,
   PrDetail,
   PrFile,
   PrGithubCoords,
@@ -159,7 +161,7 @@ import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
-import { asNumber, asString, getErrorMessage, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
+import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
 import {
@@ -216,6 +218,33 @@ type PrAutoLinkIgnoreRow = {
   lane_id: string;
   head_branch: string | null;
   created_at: string;
+};
+
+type GitHubPrProjectionRow = {
+  project_id: string;
+  repo_owner: string;
+  repo_name: string;
+  github_pr_number: number;
+  github_node_id: string | null;
+  github_url: string | null;
+  title: string;
+  state: string;
+  is_draft: number | null;
+  base_branch: string | null;
+  head_branch: string | null;
+  head_repo_owner: string | null;
+  head_repo_name: string | null;
+  head_sha: string | null;
+  base_sha: string | null;
+  author: string | null;
+  labels_json: string | null;
+  is_bot: number | null;
+  comment_count: number | null;
+  created_at: string;
+  updated_at: string;
+  synced_at: string;
+  last_event_name: string | null;
+  last_delivery_id: string | null;
 };
 
 type LanePrLookupRow = {
@@ -1831,6 +1860,7 @@ export function createPrService({
     cachedGithubSnapshot = null;
     cachedGithubSnapshotAt = 0;
     cachedGithubSnapshotIncludesClosed = false;
+    cachedGithubSnapshotHistoryPageLimit = 0;
     githubSnapshotCacheEpoch += 1;
   };
 
@@ -2355,6 +2385,23 @@ export function createPrService({
     || asString(rawPr?.head?.user?.login)
     || asString(rawPr?.head?.repo?.owner);
   const rawPullHeadRepoName = (rawPr: any): string => asString(rawPr?.head?.repo?.name);
+  const rawPullBaseRepo = (rawPr: any, fallbackRepo?: GitHubRepoRef | null): GitHubRepoRef | null => {
+    const rawRepo = rawPr?.base?.repo ?? rawPr?.repository ?? {};
+    const repositoryUrl = asString(rawPr?.repository_url);
+    const repositoryParts = repositoryUrl
+      ? repositoryUrl.split("/").filter(Boolean).slice(-2)
+      : [];
+    const owner = asString(rawRepo?.owner?.login)
+      || asString(rawRepo?.owner)
+      || repositoryParts[0]
+      || fallbackRepo?.owner
+      || "";
+    const name = asString(rawRepo?.name)
+      || repositoryParts[1]
+      || fallbackRepo?.name
+      || "";
+    return owner && name ? { owner, name } : null;
+  };
   const rawPullHasSameRepoHead = (rawPr: any, repo: GitHubRepoRef): boolean => {
     const owner = rawPullHeadOwner(rawPr);
     const name = rawPullHeadRepoName(rawPr);
@@ -2703,6 +2750,373 @@ export function createPrService({
       markHotRefresh(backfilledIds, { invalidateGithubSnapshot: false });
     }
     return backfilledIds.length;
+  };
+
+  const githubWebhookRepoFromPayload = (payload: Record<string, unknown>): GitHubRepoRef | null => {
+    const repository = isRecord(payload.repository) ? payload.repository : null;
+    const fullName = asString(repository?.full_name).trim();
+    if (fullName.includes("/")) {
+      const [owner, name] = fullName.split("/", 2);
+      if (owner && name) return { owner, name };
+    }
+    const owner = asString(isRecord(repository?.owner) ? repository.owner.login : repository?.owner).trim();
+    const name = asString(repository?.name).trim();
+    return owner && name ? { owner, name } : null;
+  };
+
+  const normalizeGithubLabels = (labels: unknown): PrLabel[] => {
+    if (!Array.isArray(labels)) return [];
+    return labels
+      .map((label): PrLabel | null => {
+        if (typeof label === "string") {
+          const name = label.trim();
+          return name ? { name, color: "cccccc", description: null } : null;
+        }
+        if (!isRecord(label)) return null;
+        const name = asString(label.name).trim();
+        if (!name) return null;
+        return {
+          name,
+          color: asString(label.color).trim() || "cccccc",
+          description: label.description == null ? null : asString(label.description),
+        };
+      })
+      .filter((label): label is PrLabel => label !== null);
+  };
+
+  const safeJsonStringify = (value: unknown): string => {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return JSON.stringify({ unserializable: true });
+    }
+  };
+
+  const parseProjectionLabels = (raw: string | null | undefined): PrLabel[] => {
+    if (!raw) return [];
+    try {
+      return normalizeGithubLabels(JSON.parse(raw));
+    } catch {
+      return [];
+    }
+  };
+
+  const toGitHubState = (rawPr: any): PrState => {
+    if (rawPr?.merged_at || rawPr?.merged === true) return "merged";
+    if (asString(rawPr?.state).toLowerCase() === "closed") return "closed";
+    if (Boolean(rawPr?.draft)) return "draft";
+    return "open";
+  };
+
+  const readWebhookPullPayload = (
+    eventName: string,
+    payload: Record<string, unknown>,
+  ): Record<string, unknown> | null => {
+    if (isRecord(payload.pull_request)) return payload.pull_request;
+    if (eventName === "issue_comment" && isRecord(payload.issue) && isRecord(payload.issue.pull_request)) {
+      const issue = payload.issue;
+      const repo = githubWebhookRepoFromPayload(payload);
+      return {
+        number: issue.number,
+        html_url: isRecord(issue.pull_request) ? issue.pull_request.html_url : issue.html_url,
+        title: issue.title,
+        state: issue.state,
+        draft: false,
+        repository: payload.repository,
+        base: repo ? { repo: { owner: { login: repo.owner }, name: repo.name } } : undefined,
+        user: issue.user,
+        created_at: issue.created_at,
+        updated_at: issue.updated_at,
+        labels: issue.labels,
+        comments: issue.comments,
+      };
+    }
+    return null;
+  };
+
+  const projectionFromRawPull = (
+    rawPr: Record<string, unknown>,
+    eventName: string,
+    deliveryId: string | null,
+    fallbackRepo?: GitHubRepoRef | null,
+  ): GitHubPrProjectionRow | null => {
+    const repo = rawPullBaseRepo(rawPr, fallbackRepo);
+    const githubPrNumber = asNumber(rawPr.number);
+    if (!repo || !githubPrNumber) return null;
+    const syncedAt = nowIso();
+    const createdAt = asString(rawPr.created_at).trim() || syncedAt;
+    const updatedAt = asString(rawPr.updated_at).trim() || createdAt;
+    const head = isRecord(rawPr.head) ? rawPr.head : {};
+    const base = isRecord(rawPr.base) ? rawPr.base : {};
+    const user = isRecord(rawPr.user) ? rawPr.user : {};
+    const labels = normalizeGithubLabels(rawPr.labels);
+    const state = toGitHubState(rawPr);
+
+    return {
+      project_id: projectId,
+      repo_owner: repo.owner,
+      repo_name: repo.name,
+      github_pr_number: githubPrNumber,
+      github_node_id: asString(rawPr.node_id).trim() || null,
+      github_url: asString(rawPr.html_url).trim() || `https://github.com/${repo.owner}/${repo.name}/pull/${githubPrNumber}`,
+      title: asString(rawPr.title).trim() || `PR #${githubPrNumber}`,
+      state,
+      is_draft: state === "draft" || rawPr.draft === true ? 1 : 0,
+      base_branch: asString(base.ref).trim() || null,
+      head_branch: rawPullHeadBranch(rawPr) || null,
+      head_repo_owner: rawPullHeadOwner(rawPr) || null,
+      head_repo_name: rawPullHeadRepoName(rawPr) || null,
+      head_sha: asString(head.sha).trim() || null,
+      base_sha: asString(base.sha).trim() || null,
+      author: asString(user.login).trim() || null,
+      labels_json: safeJsonStringify(labels),
+      is_bot: asString(user.type).trim().toLowerCase() === "bot" ? 1 : 0,
+      comment_count: asNumber(rawPr.comments),
+      created_at: createdAt,
+      updated_at: updatedAt,
+      synced_at: syncedAt,
+      last_event_name: eventName,
+      last_delivery_id: deliveryId,
+    };
+  };
+
+  const upsertGithubPrProjection = (row: GitHubPrProjectionRow): void => {
+    db.run(
+      `
+        insert into github_pr_projections(
+          project_id,
+          repo_owner,
+          repo_name,
+          github_pr_number,
+          github_node_id,
+          github_url,
+          title,
+          state,
+          is_draft,
+          base_branch,
+          head_branch,
+          head_repo_owner,
+          head_repo_name,
+          head_sha,
+          base_sha,
+          author,
+          labels_json,
+          is_bot,
+          comment_count,
+          created_at,
+          updated_at,
+          synced_at,
+          last_event_name,
+          last_delivery_id
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(project_id, repo_owner, repo_name, github_pr_number) do update set
+          github_node_id = excluded.github_node_id,
+          github_url = excluded.github_url,
+          title = excluded.title,
+          state = excluded.state,
+          is_draft = excluded.is_draft,
+          base_branch = excluded.base_branch,
+          head_branch = excluded.head_branch,
+          head_repo_owner = excluded.head_repo_owner,
+          head_repo_name = excluded.head_repo_name,
+          head_sha = excluded.head_sha,
+          base_sha = excluded.base_sha,
+          author = excluded.author,
+          labels_json = excluded.labels_json,
+          is_bot = excluded.is_bot,
+          comment_count = excluded.comment_count,
+          updated_at = excluded.updated_at,
+          synced_at = excluded.synced_at,
+          last_event_name = excluded.last_event_name,
+          last_delivery_id = excluded.last_delivery_id
+      `,
+      [
+        row.project_id,
+        row.repo_owner,
+        row.repo_name,
+        row.github_pr_number,
+        row.github_node_id,
+        row.github_url,
+        row.title,
+        row.state,
+        row.is_draft,
+        row.base_branch,
+        row.head_branch,
+        row.head_repo_owner,
+        row.head_repo_name,
+        row.head_sha,
+        row.base_sha,
+        row.author,
+        row.labels_json,
+        row.is_bot,
+        row.comment_count,
+        row.created_at,
+        row.updated_at,
+        row.synced_at,
+        row.last_event_name,
+        row.last_delivery_id,
+      ],
+    );
+  };
+
+  const projectionFromPullRequestRow = (row: PullRequestRow): GitHubPrProjectionRow => {
+    const syncedAt = row.last_synced_at || row.updated_at || nowIso();
+    return {
+      project_id: projectId,
+      repo_owner: row.repo_owner,
+      repo_name: row.repo_name,
+      github_pr_number: Number(row.github_pr_number),
+      github_node_id: row.github_node_id,
+      github_url: row.github_url,
+      title: row.title || `PR #${Number(row.github_pr_number)}`,
+      state: row.state,
+      is_draft: row.state === "draft" ? 1 : 0,
+      base_branch: row.base_branch || null,
+      head_branch: row.head_branch || null,
+      head_repo_owner: row.repo_owner,
+      head_repo_name: row.repo_name,
+      head_sha: (row as PullRequestRow & { head_sha?: string | null }).head_sha ?? null,
+      base_sha: null,
+      author: null,
+      labels_json: "[]",
+      is_bot: 0,
+      comment_count: 0,
+      created_at: row.created_at || syncedAt,
+      updated_at: row.updated_at || syncedAt,
+      synced_at: syncedAt,
+      last_event_name: "local_pull_request_row",
+      last_delivery_id: null,
+    };
+  };
+
+  const pruneGithubPrProjectionsForRepo = (repo: GitHubRepoRef): void => {
+    db.run(
+      `
+        delete from github_pr_projections
+         where project_id = ?
+           and lower(repo_owner) = lower(?)
+           and lower(repo_name) = lower(?)
+           and state not in ('open', 'draft')
+           and github_pr_number not in (
+             select github_pr_number
+               from github_pr_projections
+              where project_id = ?
+                and lower(repo_owner) = lower(?)
+                and lower(repo_name) = lower(?)
+                and state not in ('open', 'draft')
+              order by updated_at desc, github_pr_number desc
+              limit ?
+           )
+      `,
+      [
+        projectId,
+        repo.owner,
+        repo.name,
+        projectId,
+        repo.owner,
+        repo.name,
+        GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT,
+      ],
+    );
+  };
+
+  const seedGithubPrProjectionsFromLinkedRows = (repo: GitHubRepoRef, rows: PullRequestRow[]): void => {
+    for (const row of rows) {
+      if (
+        row.project_id !== projectId
+        || row.repo_owner.toLowerCase() !== repo.owner.toLowerCase()
+        || row.repo_name.toLowerCase() !== repo.name.toLowerCase()
+      ) {
+        continue;
+      }
+      upsertGithubPrProjection(projectionFromPullRequestRow(row));
+    }
+    pruneGithubPrProjectionsForRepo(repo);
+  };
+
+  const upsertGithubPrProjectionsFromRawPulls = (
+    repo: GitHubRepoRef,
+    rawPulls: unknown[],
+  ): void => {
+    let wrote = false;
+    for (const rawPull of rawPulls) {
+      if (!isRecord(rawPull)) continue;
+      const projection = projectionFromRawPull(rawPull, "snapshot", null, repo);
+      if (!projection) continue;
+      upsertGithubPrProjection(projection);
+      wrote = true;
+    }
+    if (wrote) pruneGithubPrProjectionsForRepo(repo);
+  };
+
+  const applyProjectionToLinkedPrRows = (projection: GitHubPrProjectionRow): string[] => {
+    const row = getRowForRepoPr(projection.repo_owner, projection.repo_name, Number(projection.github_pr_number));
+    if (!row) return [];
+    db.run(
+      `
+        update pull_requests
+           set repo_owner = ?,
+               repo_name = ?,
+               github_pr_number = ?,
+               github_url = ?,
+               github_node_id = ?,
+               title = ?,
+               state = ?,
+               base_branch = coalesce(?, base_branch),
+               head_branch = coalesce(?, head_branch),
+               last_synced_at = ?,
+               updated_at = ?,
+               head_sha = coalesce(?, head_sha)
+         where id = ? and project_id = ?
+      `,
+      [
+        projection.repo_owner,
+        projection.repo_name,
+        projection.github_pr_number,
+        projection.github_url ?? row.github_url,
+        projection.github_node_id ?? row.github_node_id,
+        projection.title,
+        projection.state,
+        projection.base_branch,
+        projection.head_branch,
+        projection.synced_at,
+        projection.updated_at,
+        projection.head_sha,
+        row.id,
+        projectId,
+      ],
+    );
+    return [row.id];
+  };
+
+  const listGithubPrProjectionRows = (
+    repo: GitHubRepoRef,
+    options: { includeExternalClosed?: boolean; historyPageLimit?: number } = {},
+  ): GitHubPrProjectionRow[] => {
+    const includeClosed = options.includeExternalClosed === true;
+    const limit = includeClosed
+      ? Math.min(
+          GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT,
+          Math.max(250, normalizeGithubHistoryPageLimit(options) * 100),
+        )
+      : 250;
+    return db.all<GitHubPrProjectionRow>(
+      `
+        select project_id, repo_owner, repo_name, github_pr_number, github_node_id,
+               github_url, title, state, is_draft, base_branch, head_branch,
+               head_repo_owner, head_repo_name, head_sha, base_sha, author,
+               labels_json, is_bot, comment_count, created_at, updated_at,
+               synced_at, last_event_name, last_delivery_id
+          from github_pr_projections
+         where project_id = ?
+           and lower(repo_owner) = lower(?)
+           and lower(repo_name) = lower(?)
+           ${includeClosed ? "" : "and state in ('open', 'draft')"}
+         order by updated_at desc
+         limit ?
+      `,
+      [projectId, repo.owner, repo.name, limit],
+    );
   };
 
   const fetchMissingSameRepoLanePulls = async (
@@ -7386,23 +7800,60 @@ export function createPrService({
     return result;
   };
 
-  type GithubSnapshotOptions = { force?: boolean; includeExternalClosed?: boolean };
+  type GithubSnapshotOptions = {
+    force?: boolean;
+    includeExternalClosed?: boolean;
+    historyPageLimit?: number;
+  };
 
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
+  const GITHUB_OPEN_SNAPSHOT_MAX_PAGES = 10;
+  const GITHUB_HISTORY_INITIAL_PAGE_LIMIT = 2;
+  const GITHUB_HISTORY_MAX_PAGE_LIMIT = 10;
+  const GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT = 300;
+  const GITHUB_WEBHOOK_DELIVERY_RETAIN_LIMIT = 1_000;
+  const GITHUB_WEBHOOK_ERROR_DELIVERY_RETAIN_LIMIT = 100;
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
   let cachedGithubSnapshotIncludesClosed = false;
+  let cachedGithubSnapshotHistoryPageLimit = 0;
   let githubSnapshotCacheEpoch = 0;
-  let githubSnapshotInFlight: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null = null;
+  let githubSnapshotInFlight: {
+    request: Promise<GitHubPrSnapshot>;
+    includeExternalClosed: boolean;
+    historyPageLimit: number;
+  } | null = null;
+
+  const normalizeGithubHistoryPageLimit = (options: GithubSnapshotOptions = {}): number => {
+    if (options.includeExternalClosed !== true) return 0;
+    const rawLimit = Number(options.historyPageLimit ?? GITHUB_HISTORY_INITIAL_PAGE_LIMIT);
+    if (!Number.isFinite(rawLimit)) return GITHUB_HISTORY_INITIAL_PAGE_LIMIT;
+    return Math.min(
+      GITHUB_HISTORY_MAX_PAGE_LIMIT,
+      Math.max(1, Math.floor(rawLimit)),
+    );
+  };
+
+  const githubSnapshotRequestSatisfies = (
+    request: { includeExternalClosed: boolean; historyPageLimit: number } | null,
+    options: GithubSnapshotOptions,
+  ): boolean => {
+    if (!request) return false;
+    if (options.includeExternalClosed !== true) return true;
+    return request.includeExternalClosed
+      && request.historyPageLimit >= normalizeGithubHistoryPageLimit(options);
+  };
 
   const publishGithubSnapshot = (
     snapshot: GitHubPrSnapshot,
     capturedAt = Date.now(),
     includeExternalClosed = false,
+    historyPageLimit = 0,
   ): void => {
     cachedGithubSnapshot = snapshot;
     cachedGithubSnapshotAt = capturedAt;
     cachedGithubSnapshotIncludesClosed = includeExternalClosed;
+    cachedGithubSnapshotHistoryPageLimit = includeExternalClosed ? historyPageLimit : 0;
   };
 
   const clearGithubSnapshotAuthCache = (): void => {
@@ -7490,6 +7941,100 @@ export function createPrService({
     return null;
   };
 
+  const gitHubItemFromProjection = (
+    row: GitHubPrProjectionRow,
+    metadata: GithubSnapshotMetadata,
+    scope: "repo" | "external" = "repo",
+  ): GitHubPrListItem => {
+    const githubPrNumber = Number(row.github_pr_number);
+    const linkedPrRow = metadata.linkedPrByRepoKey.get(repoPrKey(row.repo_owner, row.repo_name, githubPrNumber)) ?? null;
+    const workflowRow = linkedPrRow ? metadata.workflowByPrId.get(linkedPrRow.id) ?? null : null;
+    const groupRow = linkedPrRow ? metadata.groupByPrId.get(linkedPrRow.id) ?? null : null;
+
+    return {
+      id: row.github_node_id || syntheticGithubPrId({
+        repoOwner: row.repo_owner,
+        repoName: row.repo_name,
+        githubPrNumber,
+      }),
+      scope,
+      repoOwner: row.repo_owner,
+      repoName: row.repo_name,
+      githubPrNumber,
+      githubUrl: row.github_url || `https://github.com/${row.repo_owner}/${row.repo_name}/pull/${githubPrNumber}`,
+      title: row.title || `PR #${githubPrNumber}`,
+      state: (row.state as PrState) || "open",
+      isDraft: Number(row.is_draft ?? 0) !== 0 || row.state === "draft",
+      baseBranch: row.base_branch ?? null,
+      headBranch: row.head_branch ?? null,
+      headRepoOwner: row.head_repo_owner ?? null,
+      headRepoName: row.head_repo_name ?? null,
+      author: row.author ?? null,
+      createdAt: row.created_at || row.synced_at || nowIso(),
+      updatedAt: row.updated_at || row.synced_at || nowIso(),
+      linkedPrId: linkedPrRow?.id ?? null,
+      linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
+      linkedLaneId: linkedPrRow?.lane_id ?? null,
+      linkedLaneName: linkedPrRow ? (metadata.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+      adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
+      workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
+      cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
+      labels: parseProjectionLabels(row.labels_json),
+      isBot: Number(row.is_bot ?? 0) !== 0,
+      commentCount: Number(row.comment_count ?? 0),
+    };
+  };
+
+  const mergeGithubPrItems = (
+    liveItems: GitHubPrListItem[],
+    projectedItems: GitHubPrListItem[],
+  ): GitHubPrListItem[] => {
+    const byKey = new Map<string, GitHubPrListItem>();
+    for (const item of projectedItems) {
+      byKey.set(repoPrKey(item.repoOwner, item.repoName, item.githubPrNumber), item);
+    }
+    for (const item of liveItems) {
+      byKey.set(repoPrKey(item.repoOwner, item.repoName, item.githubPrNumber), item);
+    }
+    return Array.from(byKey.values()).sort((left, right) => {
+      const diff = parseIsoMs(right.updatedAt) - parseIsoMs(left.updatedAt);
+      return diff !== 0 ? diff : left.githubPrNumber - right.githubPrNumber;
+    });
+  };
+
+  const buildProjectedGithubSnapshot = async (
+    githubStatus: GitHubStatus,
+    options: GithubSnapshotOptions = {},
+  ): Promise<GitHubPrSnapshot | null> => {
+    const repo = githubStatus.repo;
+    if (!repo) return null;
+    const metadata = await loadGithubSnapshotMetadata();
+    let projectionRows = listGithubPrProjectionRows(repo, options);
+    if (projectionRows.length === 0 && metadata.pullRequestRows.length > 0) {
+      seedGithubPrProjectionsFromLinkedRows(repo, metadata.pullRequestRows);
+      projectionRows = listGithubPrProjectionRows(repo, options);
+    }
+    if (projectionRows.length === 0) return null;
+    const historyPageLimit = normalizeGithubHistoryPageLimit(options);
+    return {
+      repo,
+      viewerLogin: githubStatus.userLogin,
+      repoPullRequests: projectionRows.map((row) => gitHubItemFromProjection(row, metadata, "repo")),
+      externalPullRequests: [],
+      syncedAt: projectionRows[0]?.synced_at || nowIso(),
+      history: {
+        includeExternalClosed: options.includeExternalClosed === true,
+        pageLimit: historyPageLimit,
+        repoPullRequestsLoaded: projectionRows.length,
+        repoPullRequestsMayHaveMore: options.includeExternalClosed === true
+          && projectionRows.length >= Math.min(
+            GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT,
+            Math.max(250, historyPageLimit * 100),
+          ),
+      },
+    };
+  };
+
   const getGithubSnapshotUncached = async (
     precheckedGithubStatus?: GitHubStatus,
     options: GithubSnapshotOptions = {},
@@ -7504,26 +8049,20 @@ export function createPrService({
         repoPullRequests: [],
         externalPullRequests: [],
         syncedAt: nowIso(),
+        history: null,
       };
     }
 
     let metadata = await loadGithubSnapshotMetadata();
-
-    const toGitHubState = (rawPr: any): PrState => {
-      if (rawPr?.merged_at) return "merged";
-      if (asString(rawPr?.state).toLowerCase() === "closed") return "closed";
-      if (Boolean(rawPr?.draft)) return "draft";
-      return "open";
-    };
+    const historyPageLimit = normalizeGithubHistoryPageLimit(options);
+    const repoPullRequestMaxPages = options.includeExternalClosed === true
+      ? historyPageLimit
+      : GITHUB_OPEN_SNAPSHOT_MAX_PAGES;
 
     const toGitHubItem = (rawPr: any, scope: "repo" | "external"): GitHubPrListItem => {
-      const rawRepo = rawPr?.base?.repo ?? rawPr?.repository ?? {};
-      const repositoryUrl = asString(rawPr?.repository_url);
-      const repositoryParts = repositoryUrl
-        ? repositoryUrl.split("/").filter(Boolean).slice(-2)
-        : [];
-      const repoOwner = asString(rawRepo?.owner?.login) || repositoryParts[0] || repo.owner;
-      const repoName = asString(rawRepo?.name) || repositoryParts[1] || repo.name;
+      const rawRepo = rawPullBaseRepo(rawPr, repo) ?? repo;
+      const repoOwner = rawRepo.owner;
+      const repoName = rawRepo.name;
       const githubPrNumber = Number(rawPr?.number) || 0;
       const linkedPrRow = metadata.linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
       const workflowRow = linkedPrRow ? metadata.workflowByPrId.get(linkedPrRow.id) ?? null : null;
@@ -7570,7 +8109,9 @@ export function createPrService({
         sort: "updated",
         direction: "desc",
       },
+      maxPages: repoPullRequestMaxPages,
     });
+    const repoPullRequestsFetchedBeforeLaneBackfill = repoPullRequestsRaw.length;
     repoPullRequestsRaw = await fetchMissingSameRepoLanePulls(
       repoPullRequestsRaw,
       repo,
@@ -7578,6 +8119,7 @@ export function createPrService({
       metadata.pullRequestRows,
       { skipBranchesWithLocalRows: options.includeExternalClosed !== true },
     );
+    upsertGithubPrProjectionsFromRawPulls(repo, repoPullRequestsRaw);
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
     // throws into snapshot building. The legacy backfill below then adopts any
@@ -7596,7 +8138,10 @@ export function createPrService({
     if (autoMappedCount > 0 || backfilled) {
       metadata = await loadGithubSnapshotMetadata();
     }
-    const repoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
+    const liveRepoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
+    const projectedRepoPullRequests = listGithubPrProjectionRows(repo, options)
+      .map((row) => gitHubItemFromProjection(row, metadata, "repo"));
+    const repoPullRequests = mergeGithubPrItems(liveRepoPullRequests, projectedRepoPullRequests);
     const syncedAt = nowIso();
 
     return {
@@ -7605,6 +8150,13 @@ export function createPrService({
       repoPullRequests,
       externalPullRequests: [],
       syncedAt,
+      history: {
+        includeExternalClosed: options.includeExternalClosed === true,
+        pageLimit: historyPageLimit,
+        repoPullRequestsLoaded: repoPullRequestsFetchedBeforeLaneBackfill,
+        repoPullRequestsMayHaveMore: options.includeExternalClosed === true
+          && repoPullRequestsFetchedBeforeLaneBackfill >= historyPageLimit * 100,
+      },
     };
   };
 
@@ -7621,7 +8173,12 @@ export function createPrService({
     ): Promise<GitHubPrSnapshot> => {
       const requestEpoch = githubSnapshotCacheEpoch;
       const includeExternalClosed = requestOptions.includeExternalClosed === true;
-      let inFlight!: { request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean };
+      const historyPageLimit = normalizeGithubHistoryPageLimit(requestOptions);
+      let inFlight!: {
+        request: Promise<GitHubPrSnapshot>;
+        includeExternalClosed: boolean;
+        historyPageLimit: number;
+      };
       const request = getGithubSnapshotUncached(precheckedGithubStatus, requestOptions)
         .then((snapshot) => {
           const capturedAt = Date.now();
@@ -7629,7 +8186,7 @@ export function createPrService({
             githubSnapshotInFlight === inFlight
             && requestEpoch === githubSnapshotCacheEpoch;
           if (canPublishSnapshot) {
-            publishGithubSnapshot(snapshot, capturedAt, includeExternalClosed);
+            publishGithubSnapshot(snapshot, capturedAt, includeExternalClosed, historyPageLimit);
           }
           return snapshot;
         })
@@ -7638,26 +8195,34 @@ export function createPrService({
             githubSnapshotInFlight = null;
           }
         });
-      inFlight = { request, includeExternalClosed };
+      inFlight = { request, includeExternalClosed, historyPageLimit };
       githubSnapshotInFlight = inFlight;
       return request;
     };
 
     const needsClosedHistory = options.includeExternalClosed === true;
+    const requestedHistoryPageLimit = normalizeGithubHistoryPageLimit(options);
     const cachedSnapshotSatisfiesRequest =
       cachedGithubSnapshot !== null
-      && (!needsClosedHistory || cachedGithubSnapshotIncludesClosed);
+      && (!needsClosedHistory || (
+        cachedGithubSnapshotIncludesClosed
+        && cachedGithubSnapshotHistoryPageLimit >= requestedHistoryPageLimit
+      ));
     if (!force && cachedSnapshotSatisfiesRequest) {
       const cachedSnapshot = cachedGithubSnapshot!;
       const ageMs = Date.now() - cachedGithubSnapshotAt;
       if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
         return cachedSnapshot;
       }
-      if (!githubSnapshotInFlight) {
-        const revalidationOptions =
-          cachedGithubSnapshotIncludesClosed && options.includeExternalClosed !== true
-            ? { ...options, includeExternalClosed: true }
-            : options;
+      const revalidationOptions =
+        cachedGithubSnapshotIncludesClosed && options.includeExternalClosed !== true
+          ? {
+              ...options,
+              includeExternalClosed: true,
+              historyPageLimit: cachedGithubSnapshotHistoryPageLimit || GITHUB_HISTORY_INITIAL_PAGE_LIMIT,
+            }
+          : options;
+      if (!githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) {
         void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
           logger.warn("prs.github_snapshot_revalidation_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -7666,11 +8231,345 @@ export function createPrService({
       }
       return cachedSnapshot;
     }
-    if (!force && githubSnapshotInFlight && (!needsClosedHistory || githubSnapshotInFlight.includeExternalClosed)) {
-      return githubSnapshotInFlight.request;
+    if (!force) {
+      const projectedSnapshot = await buildProjectedGithubSnapshot(githubStatus, options);
+      if (projectedSnapshot) {
+        publishGithubSnapshot(
+          projectedSnapshot,
+          Date.now(),
+          options.includeExternalClosed === true,
+          requestedHistoryPageLimit,
+        );
+        if (!githubSnapshotRequestSatisfies(githubSnapshotInFlight, options)) {
+          void startSnapshotRequest(githubStatus, options).catch((error) => {
+            logger.warn("prs.github_snapshot_revalidation_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
+        return projectedSnapshot;
+      }
+    }
+    const compatibleInFlight = githubSnapshotInFlight;
+    if (!force && compatibleInFlight && githubSnapshotRequestSatisfies(compatibleInFlight, options)) {
+      return compatibleInFlight.request;
     }
 
     return startSnapshotRequest(githubStatus, options);
+  };
+
+  const emitPrsUpdated = (): void => {
+    emitPrEvent?.({
+      type: "prs-updated",
+      polledAt: nowIso(),
+      prs: listRows().map(rowToSummary),
+    });
+  };
+
+  const markWebhookRelatedPrsHot = (refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }>): string[] => {
+    const linkedPrIds: string[] = [];
+    for (const ref of refs) {
+      const row = getRowForRepoPr(ref.repoOwner, ref.repoName, ref.githubPrNumber);
+      if (row) linkedPrIds.push(row.id);
+    }
+    const unique = [...new Set(linkedPrIds)];
+    if (unique.length > 0) markHotRefresh(unique);
+    else invalidateGithubSnapshotCache();
+    return unique;
+  };
+
+  const pruneGithubWebhookDeliveries = (): void => {
+    db.run(
+      `
+        delete from github_webhook_deliveries
+         where project_id = ?
+           and status in ('processed', 'ignored')
+           and id not in (
+             select id
+               from github_webhook_deliveries
+              where project_id = ?
+              order by received_at desc
+              limit ?
+           )
+      `,
+      [projectId, projectId, GITHUB_WEBHOOK_DELIVERY_RETAIN_LIMIT],
+    );
+    db.run(
+      `
+        delete from github_webhook_deliveries
+         where project_id = ?
+           and status = 'error'
+           and id not in (
+             select id
+               from github_webhook_deliveries
+              where project_id = ?
+                and status = 'error'
+              order by received_at desc
+              limit ?
+           )
+      `,
+      [projectId, projectId, GITHUB_WEBHOOK_ERROR_DELIVERY_RETAIN_LIMIT],
+    );
+  };
+
+  const webhookPrRefsFromPayload = (
+    eventName: string,
+    payload: Record<string, unknown>,
+  ): Array<{ repoOwner: string; repoName: string; githubPrNumber: number }> => {
+    const refs: Array<{ repoOwner: string; repoName: string; githubPrNumber: number }> = [];
+    const fallbackRepo = githubWebhookRepoFromPayload(payload);
+    const addRawPull = (raw: unknown) => {
+      if (!isRecord(raw)) return;
+      const projection = projectionFromRawPull(raw, eventName, null, fallbackRepo);
+      if (!projection) return;
+      refs.push({
+        repoOwner: projection.repo_owner,
+        repoName: projection.repo_name,
+        githubPrNumber: Number(projection.github_pr_number),
+      });
+    };
+    addRawPull(readWebhookPullPayload(eventName, payload));
+
+    const collectPullArray = (source: unknown) => {
+      if (!Array.isArray(source)) return;
+      for (const entry of source) addRawPull(entry);
+    };
+    const workflowRun = isRecord(payload.workflow_run) ? payload.workflow_run : null;
+    const checkRun = isRecord(payload.check_run) ? payload.check_run : null;
+    const checkSuite = isRecord(payload.check_suite) ? payload.check_suite : null;
+    collectPullArray(workflowRun?.pull_requests);
+    collectPullArray(checkRun?.pull_requests);
+    collectPullArray(checkSuite?.pull_requests);
+
+    if (eventName === "status" && fallbackRepo) {
+      const sha = asString(payload.sha).trim();
+      if (sha) {
+        const rows = db.all<PullRequestRow>(
+          `select ${PR_COLUMNS}
+             from pull_requests
+            where project_id = ?
+              and lower(repo_owner) = lower(?)
+              and lower(repo_name) = lower(?)
+              and head_sha = ?`,
+          [projectId, fallbackRepo.owner, fallbackRepo.name, sha],
+        );
+        for (const row of rows) {
+          refs.push({
+            repoOwner: row.repo_owner,
+            repoName: row.repo_name,
+            githubPrNumber: Number(row.github_pr_number),
+          });
+        }
+      }
+    }
+
+    const seen = new Set<string>();
+    return refs.filter((ref) => {
+      const key = repoPrKey(ref.repoOwner, ref.repoName, ref.githubPrNumber);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
+  const ingestGithubWebhook = async (args: GitHubWebhookIngestArgs): Promise<GitHubWebhookIngestResult> => {
+    const eventName = asString(args.eventName).trim();
+    const deliveryId = asString(args.deliveryId).trim() || null;
+    const payload = isRecord(args.payload) ? args.payload : {};
+    if (!eventName) {
+      return {
+        processed: false,
+        duplicate: false,
+        repoOwner: null,
+        repoName: null,
+        githubPrNumber: null,
+        linkedPrIds: [],
+        reason: "missing_event_name",
+      };
+    }
+
+    let existingDelivery: { id: string; status: string | null } | null = null;
+    if (deliveryId) {
+      existingDelivery = db.get<{ id: string; status: string | null }>(
+        `select id, status from github_webhook_deliveries where project_id = ? and delivery_id = ? limit 1`,
+        [projectId, deliveryId],
+      ) ?? null;
+      if (existingDelivery && existingDelivery.status !== "error") {
+        return {
+          processed: false,
+          duplicate: true,
+          repoOwner: null,
+          repoName: null,
+          githubPrNumber: null,
+          linkedPrIds: [],
+          reason: existingDelivery.status || "duplicate_delivery",
+        };
+      }
+    }
+
+    const receivedAt = nowIso();
+    const deliveryRowId = existingDelivery?.id ?? randomUUID();
+    const rawPayloadJson = safeJsonStringify(payload);
+    const payloadHash = createHash("sha256").update(rawPayloadJson).digest("hex");
+    if (existingDelivery) {
+      db.run(
+        `
+          update github_webhook_deliveries
+             set delivery_id = ?,
+                 event_name = ?,
+                 repo_owner = null,
+                 repo_name = null,
+                 github_pr_number = null,
+                 payload_hash = ?,
+                 status = ?,
+                 reason = null,
+                 received_at = ?,
+                 processed_at = null,
+                 raw_payload_json = ?
+           where id = ? and project_id = ?
+        `,
+        [deliveryId, eventName, payloadHash, "received", receivedAt, rawPayloadJson, deliveryRowId, projectId],
+      );
+    } else {
+      db.run(
+        `
+          insert into github_webhook_deliveries(
+            id, project_id, delivery_id, event_name, payload_hash, status, received_at, raw_payload_json
+          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        [deliveryRowId, projectId, deliveryId, eventName, payloadHash, "received", receivedAt, rawPayloadJson],
+      );
+    }
+
+    try {
+      const fallbackRepo = githubWebhookRepoFromPayload(payload);
+      const rawPull = readWebhookPullPayload(eventName, payload);
+      const projection = rawPull ? projectionFromRawPull(rawPull, eventName, deliveryId, fallbackRepo) : null;
+      let linkedPrIds: string[] = [];
+
+      if (projection) {
+        upsertGithubPrProjection(projection);
+        pruneGithubPrProjectionsForRepo({ owner: projection.repo_owner, name: projection.repo_name });
+        linkedPrIds = applyProjectionToLinkedPrRows(projection);
+        const repo = { owner: projection.repo_owner, name: projection.repo_name };
+        if (linkedPrIds.length === 0) {
+          const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+          await autoMapRawPullsByBranch([rawPull], repo, lanes)
+            .catch((error) => {
+              logger.warn("prs.github_webhook_auto_map_failed", {
+                eventName,
+                deliveryId,
+                repoOwner: projection.repo_owner,
+                repoName: projection.repo_name,
+                githubPrNumber: projection.github_pr_number,
+                error: getErrorMessage(error),
+              });
+              return 0;
+            });
+          if (autoMapByBranchEnabled()) {
+            backfillLanePrRowsFromGithubPulls([rawPull], repo, lanes);
+          }
+          const adoptedRow = getRowForRepoPr(
+            projection.repo_owner,
+            projection.repo_name,
+            Number(projection.github_pr_number),
+          );
+          if (adoptedRow) linkedPrIds.push(adoptedRow.id);
+        }
+        linkedPrIds = [...new Set(linkedPrIds)];
+        if (linkedPrIds.length > 0) markHotRefresh(linkedPrIds, { invalidateGithubSnapshot: false });
+        invalidateGithubSnapshotCache();
+        emitPrsUpdated();
+        db.run(
+          `
+            update github_webhook_deliveries
+               set repo_owner = ?,
+                   repo_name = ?,
+                   github_pr_number = ?,
+                   status = ?,
+                   reason = ?,
+                   processed_at = ?,
+                   raw_payload_json = null
+             where id = ? and project_id = ?
+          `,
+          [
+            projection.repo_owner,
+            projection.repo_name,
+            projection.github_pr_number,
+            "processed",
+            null,
+            nowIso(),
+            deliveryRowId,
+            projectId,
+          ],
+        );
+        pruneGithubWebhookDeliveries();
+        return {
+          processed: true,
+          duplicate: false,
+          repoOwner: projection.repo_owner,
+          repoName: projection.repo_name,
+          githubPrNumber: Number(projection.github_pr_number),
+          linkedPrIds,
+          reason: null,
+        };
+      }
+
+      const refs = webhookPrRefsFromPayload(eventName, payload);
+      linkedPrIds = markWebhookRelatedPrsHot(refs);
+      if (linkedPrIds.length > 0) emitPrsUpdated();
+      const firstRef = refs[0] ?? null;
+      const processed = refs.length > 0;
+      const reason = processed ? "invalidated_related_prs" : "unsupported_event";
+      db.run(
+        `
+          update github_webhook_deliveries
+             set repo_owner = ?,
+                 repo_name = ?,
+                 github_pr_number = ?,
+                 status = ?,
+                 reason = ?,
+                 processed_at = ?,
+                 raw_payload_json = null
+           where id = ? and project_id = ?
+        `,
+        [
+          firstRef?.repoOwner ?? fallbackRepo?.owner ?? null,
+          firstRef?.repoName ?? fallbackRepo?.name ?? null,
+          firstRef?.githubPrNumber ?? null,
+          processed ? "processed" : "ignored",
+          reason,
+          nowIso(),
+          deliveryRowId,
+          projectId,
+        ],
+      );
+      pruneGithubWebhookDeliveries();
+      return {
+        processed,
+        duplicate: false,
+        repoOwner: firstRef?.repoOwner ?? fallbackRepo?.owner ?? null,
+        repoName: firstRef?.repoName ?? fallbackRepo?.name ?? null,
+        githubPrNumber: firstRef?.githubPrNumber ?? null,
+        linkedPrIds,
+        reason,
+      };
+    } catch (error) {
+      const message = getErrorMessage(error);
+      db.run(
+        `
+          update github_webhook_deliveries
+             set status = ?,
+                 reason = ?,
+                 processed_at = ?,
+                 raw_payload_json = null
+           where id = ? and project_id = ?
+        `,
+        ["error", message, nowIso(), deliveryRowId, projectId],
+      );
+      pruneGithubWebhookDeliveries();
+      throw error;
+    }
   };
 
   const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
@@ -8789,6 +9688,10 @@ export function createPrService({
 
     async getGithubSnapshot(options?: GithubSnapshotOptions): Promise<GitHubPrSnapshot> {
       return await getGithubSnapshot(options);
+    },
+
+    async ingestGithubWebhook(args: GitHubWebhookIngestArgs): Promise<GitHubWebhookIngestResult> {
+      return await ingestGithubWebhook(args);
     },
 
     async discoverLanePullRequests(): Promise<PrSummary[]> {

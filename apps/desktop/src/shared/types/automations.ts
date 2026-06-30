@@ -206,6 +206,7 @@ export type AutomationIngressStatus = {
   };
   localWebhook: {
     configured: boolean;
+    healthy: boolean;
     listening: boolean;
     status: "disabled" | "ready" | "listening" | "error";
     url: string | null;

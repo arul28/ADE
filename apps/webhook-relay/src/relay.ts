@@ -1,0 +1,1014 @@
+export type RelayEnv = {
+  DB: D1Database;
+  GITHUB_WEBHOOK_SECRET: string;
+  RELAY_ACCESS_TOKEN: string;
+  EVENT_RETENTION_DAYS?: string;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
+  GITHUB_API_BASE_URL?: string;
+};
+
+type GitHubEventRow = {
+  event_seq: number;
+  event_id: string;
+  github_event: string;
+  github_delivery: string | null;
+  repository_full_name: string | null;
+  summary: string;
+  payload_json: string;
+  received_at: string;
+};
+
+type CursorRow = {
+  event_seq: number;
+  event_id: string;
+};
+
+type AppRepositoryRow = {
+  repository_full_name: string;
+  installation_id: number | null;
+  repository_selection: string | null;
+  installed: number;
+  last_seen_at: string;
+  removed_at: string | null;
+};
+
+type LatestHookConfigRow = {
+  hook_events_json: string | null;
+  received_at: string;
+};
+
+type LatestWebhookMetaRow = {
+  payload_json: string;
+  received_at: string;
+};
+
+type GitHubAppApiInstallation = {
+  id?: unknown;
+  repository_selection?: unknown;
+};
+
+type GitHubAppApiStatus =
+  | {
+      configured: true;
+      installed: true;
+      installationId: number | null;
+      repositorySelection: "all" | "selected" | "unknown";
+    }
+  | {
+      configured: true;
+      installed: false;
+      error: string | null;
+    }
+  | {
+      configured: false;
+    };
+
+const DEFAULT_EVENT_LIMIT = 100;
+const MAX_EVENT_LIMIT = 500;
+const DEFAULT_RETENTION_DAYS = 30;
+const PROJECT_RELAY_TOKEN_PREFIX = "ade_proj_";
+const PROJECT_RELAY_TOKEN_CONTEXT = "ade-github-relay-project";
+const encoder = new TextEncoder();
+
+function json(value: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(value), {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+}
+
+function text(value: string, status = 200): Response {
+  return new Response(value, {
+    status,
+    headers: { "content-type": "text/plain; charset=utf-8" },
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function readString(source: Record<string, unknown> | null | undefined, key: string): string {
+  const value = source?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
+  const value = source?.[key];
+  return isRecord(value) ? value : null;
+}
+
+function toHex(bytes: ArrayBuffer): string {
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function base64UrlEncode(value: string | ArrayBuffer): string {
+  const bytes = typeof value === "string" ? encoder.encode(value) : new Uint8Array(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function derLength(length: number): number[] {
+  if (length < 128) return [length];
+  const bytes: number[] = [];
+  let remaining = length;
+  while (remaining > 0) {
+    bytes.unshift(remaining & 0xff);
+    remaining >>= 8;
+  }
+  return [0x80 | bytes.length, ...bytes];
+}
+
+function derEncode(tag: number, content: Uint8Array): Uint8Array {
+  return new Uint8Array([tag, ...derLength(content.length), ...content]);
+}
+
+function wrapPkcs1RsaPrivateKeyAsPkcs8(pkcs1Der: Uint8Array): Uint8Array {
+  const version = new Uint8Array([0x02, 0x01, 0x00]);
+  const rsaAlgorithmIdentifier = new Uint8Array([
+    0x30, 0x0d,
+    0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01,
+    0x05, 0x00,
+  ]);
+  const privateKey = derEncode(0x04, pkcs1Der);
+  return derEncode(0x30, new Uint8Array([...version, ...rsaAlgorithmIdentifier, ...privateKey]));
+}
+
+function readPrivateKeyDer(privateKey: string): ArrayBuffer {
+  const normalized = privateKey.replace(/\\n/g, "\n").trim();
+  const match = normalized.match(/-----BEGIN ([^-]+)-----([\s\S]+?)-----END \1-----/);
+  if (!match) throw new Error("GitHub App private key must be a PEM encoded private key.");
+  const label = match[1]?.trim();
+  const body = match[2]?.replace(/\s+/g, "") ?? "";
+  const der = base64ToBytes(body);
+  if (label === "PRIVATE KEY") return der.slice().buffer;
+  if (label === "RSA PRIVATE KEY") return wrapPkcs1RsaPrivateKeyAsPkcs8(der).slice().buffer;
+  throw new Error("GitHub App private key must be a PKCS#8 or RSA PEM private key.");
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const a = encoder.encode(left);
+  const b = encoder.encode(right);
+  let diff = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    diff |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return diff === 0;
+}
+
+export async function signGitHubWebhookBody(secret: string, body: string | ArrayBuffer): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const data = typeof body === "string" ? encoder.encode(body) : body;
+  const digest = await crypto.subtle.sign("HMAC", key, data);
+  return `sha256=${toHex(digest)}`;
+}
+
+async function verifyGitHubSignature(secret: string, body: ArrayBuffer, signature: string): Promise<boolean> {
+  if (!secret.trim()) return false;
+  if (!signature.startsWith("sha256=")) return false;
+  const expected = await signGitHubWebhookBody(secret, body);
+  return constantTimeEqual(expected, signature);
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  return toHex(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+}
+
+async function createGitHubAppJwt(appId: string, privateKey: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    readPrivateKeyDer(privateKey),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+  const payload = base64UrlEncode(JSON.stringify({
+    iat: nowSeconds - 60,
+    exp: nowSeconds + 540,
+    iss: appId,
+  }));
+  const signingInput = `${header}.${payload}`;
+  const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, encoder.encode(signingInput));
+  return `${signingInput}.${base64UrlEncode(signature)}`;
+}
+
+export async function deriveProjectRelayAccessToken(rootToken: string, projectId: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(rootToken.trim()),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const digest = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    encoder.encode(`${PROJECT_RELAY_TOKEN_CONTEXT}:${projectId.trim()}`),
+  );
+  return `${PROJECT_RELAY_TOKEN_PREFIX}${toHex(digest)}`;
+}
+
+function parseLimit(url: URL): number {
+  const raw = Number(url.searchParams.get("limit") ?? DEFAULT_EVENT_LIMIT);
+  if (!Number.isFinite(raw)) return DEFAULT_EVENT_LIMIT;
+  return Math.max(1, Math.min(MAX_EVENT_LIMIT, Math.trunc(raw)));
+}
+
+function routeProject(pathname: string): { projectId: string; action: "webhook" | "events" } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 4 && parts[0] === "projects" && parts[2] === "github") {
+    if (parts[3] === "webhook") return { projectId: decodeURIComponent(parts[1] ?? ""), action: "webhook" };
+    if (parts[3] === "events") return { projectId: decodeURIComponent(parts[1] ?? ""), action: "events" };
+  }
+  if (parts.length === 3 && parts[0] === "github" && parts[1] === "webhook") {
+    return { projectId: decodeURIComponent(parts[2] ?? ""), action: "webhook" };
+  }
+  return null;
+}
+
+function routeRepoStatus(pathname: string): { projectId: string | null; owner: string; name: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 7 && parts[0] === "projects" && parts[2] === "github" && parts[3] === "repos" && parts[6] === "status") {
+    const projectId = decodeURIComponent(parts[1] ?? "").trim();
+    const owner = decodeURIComponent(parts[4] ?? "").trim();
+    const name = decodeURIComponent(parts[5] ?? "").trim();
+    if (projectId && owner && name) return { projectId, owner, name };
+  }
+  if (parts.length === 5 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "status") {
+    const owner = decodeURIComponent(parts[2] ?? "").trim();
+    const name = decodeURIComponent(parts[3] ?? "").trim();
+    if (owner && name) return { projectId: null, owner, name };
+  }
+  return null;
+}
+
+function readBearerToken(request: Request): string {
+  const header = request.headers.get("authorization") ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header);
+  return match?.[1]?.trim() ?? "";
+}
+
+function assertRelayAuthorized(request: Request, env: RelayEnv): Response | null {
+  const expected = env.RELAY_ACCESS_TOKEN?.trim();
+  if (!expected) return json({ ok: false, error: "relay token is not configured" }, { status: 503 });
+  const token = readBearerToken(request) || request.headers.get("x-ade-relay-token")?.trim() || "";
+  if (!constantTimeEqual(token, expected)) {
+    return json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+async function assertProjectRelayAuthorized(request: Request, env: RelayEnv, projectId: string): Promise<Response | null> {
+  const rootToken = env.RELAY_ACCESS_TOKEN?.trim();
+  if (!rootToken) return json({ ok: false, error: "relay token is not configured" }, { status: 503 });
+  const token = readBearerToken(request) || request.headers.get("x-ade-relay-token")?.trim() || "";
+  const expected = await deriveProjectRelayAccessToken(rootToken, projectId);
+  if (!constantTimeEqual(token, expected)) {
+    return json({ ok: false, error: "unauthorized" }, { status: 401 });
+  }
+  return null;
+}
+
+function repositoryFullName(payload: Record<string, unknown>): string | null {
+  const repository = readNested(payload, "repository");
+  const fullName = readString(repository, "full_name");
+  if (fullName) return fullName;
+  const owner = readString(readNested(repository, "owner"), "login");
+  const name = readString(repository, "name");
+  return owner && name ? `${owner}/${name}` : null;
+}
+
+function installationId(payload: Record<string, unknown>): number | null {
+  const raw = readNested(payload, "installation")?.id;
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : null;
+}
+
+function repositorySelection(payload: Record<string, unknown>): "all" | "selected" | "unknown" {
+  const raw = readString(readNested(payload, "installation"), "repository_selection")
+    || readString(payload, "repository_selection");
+  return raw === "all" || raw === "selected" ? raw : "unknown";
+}
+
+type RepositoryRef = {
+  owner: string;
+  name: string;
+  fullName: string;
+  key: string;
+};
+
+function repositoryRefFromRecord(record: Record<string, unknown>, fallbackOwner = ""): RepositoryRef | null {
+  const fullName = readString(record, "full_name");
+  if (fullName.includes("/")) {
+    const [owner, name] = fullName.split("/");
+    if (owner?.trim() && name?.trim()) {
+      return {
+        owner: owner.trim(),
+        name: name.trim(),
+        fullName: `${owner.trim()}/${name.trim()}`,
+        key: `${owner.trim()}/${name.trim()}`.toLowerCase(),
+      };
+    }
+  }
+  const owner = readString(readNested(record, "owner"), "login") || fallbackOwner;
+  const name = readString(record, "name");
+  if (!owner || !name) return null;
+  return {
+    owner,
+    name,
+    fullName: `${owner}/${name}`,
+    key: `${owner}/${name}`.toLowerCase(),
+  };
+}
+
+function repositoryRefFromPayload(payload: Record<string, unknown>): RepositoryRef | null {
+  const repository = readNested(payload, "repository");
+  return repository ? repositoryRefFromRecord(repository) : null;
+}
+
+function accountOwner(payload: Record<string, unknown>): string {
+  return readString(readNested(payload, "account"), "login")
+    || readString(readNested(readNested(payload, "installation"), "account"), "login")
+    || "";
+}
+
+function repositoryRefsFromArray(value: unknown, fallbackOwner = ""): RepositoryRef[] {
+  if (!Array.isArray(value)) return [];
+  const refs: RepositoryRef[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const ref = repositoryRefFromRecord(entry, fallbackOwner);
+    if (!ref || seen.has(ref.key)) continue;
+    seen.add(ref.key);
+    refs.push(ref);
+  }
+  return refs;
+}
+
+function parseHookEvents(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((event): event is string => typeof event === "string")
+      .map((event) => event.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function readWebhookEventDiagnostics(env: RelayEnv): Promise<{
+  webhookEvents: string[];
+  missingWebhookEvents: string[];
+  webhookState: "active" | "deleted" | "unknown";
+  webhookLastSeenAt: string | null;
+}> {
+  const ping = await env.DB
+    .prepare(`
+      select json_extract(payload_json, '$.hook.events') as hook_events_json,
+             received_at
+        from github_events
+       where github_event = 'ping'
+       order by received_at desc
+       limit 1
+    `)
+    .first<LatestHookConfigRow>();
+  const meta = await env.DB
+    .prepare(`
+      select payload_json, received_at
+        from github_events
+       where github_event = 'meta'
+       order by received_at desc
+       limit 1
+    `)
+    .first<LatestWebhookMetaRow>();
+  let webhookState: "active" | "deleted" | "unknown" = ping ? "active" : "unknown";
+  let webhookLastSeenAt = ping?.received_at ?? null;
+  if (meta) {
+    let action = "";
+    try {
+      const parsed = JSON.parse(meta.payload_json) as unknown;
+      if (isRecord(parsed)) action = readString(parsed, "action");
+    } catch {
+      action = "";
+    }
+    if (action === "deleted" && (!ping || meta.received_at >= ping.received_at)) {
+      webhookState = "deleted";
+      webhookLastSeenAt = meta.received_at;
+    }
+  }
+  const webhookEvents = parseHookEvents(ping?.hook_events_json ?? null);
+  return {
+    webhookEvents,
+    // GitHub's install-status events are default GitHub App events and are not
+    // shown in the selectable hook.events list, so absence here is not a setup
+    // error. Keep the field for future diagnostics without flagging false gaps.
+    missingWebhookEvents: [],
+    webhookState,
+    webhookLastSeenAt,
+  };
+}
+
+async function upsertAppRepository(
+  env: RelayEnv,
+  repo: RepositoryRef,
+  args: {
+    installationId: number | null;
+    repositorySelection: string;
+    sourceEvent: string;
+    seenAt: string;
+  },
+): Promise<void> {
+  await env.DB
+    .prepare(`
+      insert into github_app_repositories(
+        repository_key, repository_full_name, owner, name, installation_id,
+        repository_selection, installed, last_seen_at, removed_at, source_event
+      ) values (?, ?, ?, ?, ?, ?, 1, ?, null, ?)
+      on conflict(repository_key) do update set
+        repository_full_name = excluded.repository_full_name,
+        owner = excluded.owner,
+        name = excluded.name,
+        installation_id = coalesce(excluded.installation_id, github_app_repositories.installation_id),
+        repository_selection = excluded.repository_selection,
+        installed = 1,
+        last_seen_at = excluded.last_seen_at,
+        removed_at = null,
+        source_event = excluded.source_event
+    `)
+    .bind(
+      repo.key,
+      repo.fullName,
+      repo.owner,
+      repo.name,
+      args.installationId,
+      args.repositorySelection,
+      args.seenAt,
+      args.sourceEvent,
+    )
+    .run();
+}
+
+function gitHubAppApiConfigured(env: RelayEnv): boolean {
+  return Boolean(env.GITHUB_APP_ID?.trim() && env.GITHUB_APP_PRIVATE_KEY?.trim());
+}
+
+async function fetchGitHubAppApiStatus(
+  env: RelayEnv,
+  repo: { owner: string; name: string },
+): Promise<GitHubAppApiStatus> {
+  const appId = env.GITHUB_APP_ID?.trim();
+  const privateKey = env.GITHUB_APP_PRIVATE_KEY?.trim();
+  if (!appId || !privateKey) return { configured: false };
+
+  let jwt: string;
+  try {
+    jwt = await createGitHubAppJwt(appId, privateKey);
+  } catch (error) {
+    return {
+      configured: true,
+      installed: false,
+      error: `GitHub App JWT could not be created: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const apiBaseUrl = (env.GITHUB_API_BASE_URL?.trim() || "https://api.github.com").replace(/\/+$/, "");
+  const url = `${apiBaseUrl}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/installation`;
+  const response = await fetch(url, {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${jwt}`,
+      "user-agent": "ADE GitHub Webhook Relay",
+      "x-github-api-version": "2022-11-28",
+    },
+  });
+  if (response.status === 404) {
+    return { configured: true, installed: false, error: null };
+  }
+  if (!response.ok) {
+    return {
+      configured: true,
+      installed: false,
+      error: `GitHub App installation check failed with HTTP ${response.status}.`,
+    };
+  }
+
+  const payload = await response.json() as GitHubAppApiInstallation;
+  const installationId = Number(payload.id);
+  const selection = payload.repository_selection === "all" || payload.repository_selection === "selected"
+    ? payload.repository_selection
+    : "unknown";
+  return {
+    configured: true,
+    installed: true,
+    installationId: Number.isFinite(installationId) ? Math.trunc(installationId) : null,
+    repositorySelection: selection,
+  };
+}
+
+async function markAppRepositoryRemoved(
+  env: RelayEnv,
+  repo: RepositoryRef,
+  args: {
+    installationId: number | null;
+    repositorySelection: string;
+    sourceEvent: string;
+    seenAt: string;
+  },
+): Promise<void> {
+  await env.DB
+    .prepare(`
+      insert into github_app_repositories(
+        repository_key, repository_full_name, owner, name, installation_id,
+        repository_selection, installed, last_seen_at, removed_at, source_event
+      ) values (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+      on conflict(repository_key) do update set
+        repository_full_name = excluded.repository_full_name,
+        owner = excluded.owner,
+        name = excluded.name,
+        installation_id = coalesce(excluded.installation_id, github_app_repositories.installation_id),
+        repository_selection = excluded.repository_selection,
+        installed = 0,
+        last_seen_at = excluded.last_seen_at,
+        removed_at = excluded.removed_at,
+        source_event = excluded.source_event
+    `)
+    .bind(
+      repo.key,
+      repo.fullName,
+      repo.owner,
+      repo.name,
+      args.installationId,
+      args.repositorySelection,
+      args.seenAt,
+      args.seenAt,
+      args.sourceEvent,
+    )
+    .run();
+}
+
+async function markInstallationRemoved(env: RelayEnv, installId: number, seenAt: string, sourceEvent: string): Promise<void> {
+  await env.DB
+    .prepare(`
+      update github_app_repositories
+         set installed = 0,
+             last_seen_at = ?,
+             removed_at = ?,
+             source_event = ?
+       where installation_id = ?
+    `)
+    .bind(seenAt, seenAt, sourceEvent, installId)
+    .run();
+}
+
+async function updateAppRepositoryStatus(
+  env: RelayEnv,
+  githubEvent: string,
+  payload: Record<string, unknown>,
+  seenAt: string,
+): Promise<void> {
+  const installId = installationId(payload);
+  const selection = repositorySelection(payload);
+  const action = readString(payload, "action");
+  if (githubEvent === "installation") {
+    const repos = repositoryRefsFromArray(payload.repositories, accountOwner(payload));
+    if (action === "deleted") {
+      if (repos.length > 0) {
+        await Promise.all(repos.map((repo) => markAppRepositoryRemoved(env, repo, {
+          installationId: installId,
+          repositorySelection: selection,
+          sourceEvent: githubEvent,
+          seenAt,
+        })));
+      } else if (installId != null) {
+        await markInstallationRemoved(env, installId, seenAt, githubEvent);
+      }
+      return;
+    }
+    if (repos.length > 0) {
+      await Promise.all(repos.map((repo) => upsertAppRepository(env, repo, {
+        installationId: installId,
+        repositorySelection: selection,
+        sourceEvent: githubEvent,
+        seenAt,
+      })));
+    }
+    return;
+  }
+
+  if (githubEvent === "installation_repositories") {
+    const owner = accountOwner(payload);
+    const added = repositoryRefsFromArray(payload.repositories_added, owner);
+    const removed = repositoryRefsFromArray(payload.repositories_removed, owner);
+    await Promise.all([
+      ...added.map((repo) => upsertAppRepository(env, repo, {
+        installationId: installId,
+        repositorySelection: selection,
+        sourceEvent: githubEvent,
+        seenAt,
+      })),
+      ...removed.map((repo) => markAppRepositoryRemoved(env, repo, {
+        installationId: installId,
+        repositorySelection: selection,
+        sourceEvent: githubEvent,
+        seenAt,
+      })),
+    ]);
+    return;
+  }
+
+  const repo = repositoryRefFromPayload(payload);
+  if (repo && installId != null) {
+    await upsertAppRepository(env, repo, {
+      installationId: installId,
+      repositorySelection: selection,
+      sourceEvent: githubEvent,
+      seenAt,
+    });
+  }
+}
+
+function summarizeGitHubEvent(githubEvent: string, payload: Record<string, unknown>): string {
+  const action = readString(payload, "action");
+  const repo = repositoryFullName(payload);
+  const pr = readNested(payload, "pull_request");
+  const issue = readNested(payload, "issue");
+  const subject = pr ?? issue;
+  const number = Number(subject?.number);
+  const title = readString(subject, "title");
+  return [
+    `GitHub ${githubEvent}`,
+    action,
+    repo,
+    Number.isFinite(number) ? `#${number}` : "",
+    title,
+  ].filter(Boolean).join(" · ");
+}
+
+async function pruneOldEvents(env: RelayEnv): Promise<void> {
+  const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
+  const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from github_events where received_at < ?")
+    .bind(cutoff)
+    .run();
+}
+
+async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: string): Promise<Response> {
+  if (request.method !== "POST") return text("method not allowed", 405);
+  const webhookSecret = String(env.GITHUB_WEBHOOK_SECRET ?? "").trim();
+  if (!webhookSecret) return json({ ok: false, error: "GitHub webhook secret is not configured" }, { status: 503 });
+  const githubEvent = request.headers.get("x-github-event")?.trim() || "";
+  const githubDelivery = request.headers.get("x-github-delivery")?.trim() || "";
+  if (!githubEvent) return json({ ok: false, error: "missing x-github-event" }, { status: 400 });
+
+  const body = await request.arrayBuffer();
+  const verified = await verifyGitHubSignature(
+    webhookSecret,
+    body,
+    request.headers.get("x-hub-signature-256")?.trim() || "",
+  );
+  if (!verified) return json({ ok: false, error: "signature mismatch" }, { status: 401 });
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>;
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  if (!isRecord(payload)) return json({ ok: false, error: "payload must be an object" }, { status: 400 });
+
+  const payloadJson = JSON.stringify(payload);
+  const eventId = githubDelivery || `sha256:${(await sha256Hex(`${githubEvent}:${payloadJson}`)).slice(0, 32)}`;
+  const existing = await env.DB
+    .prepare("select event_id from github_events where project_id = ? and event_id = ? limit 1")
+    .bind(projectId, eventId)
+    .first<{ event_id: string }>();
+  if (existing) return json({ ok: true, duplicate: true, eventId }, { status: 202 });
+
+  const receivedAt = new Date().toISOString();
+  await env.DB
+    .prepare(`
+      insert into github_events(
+        project_id, event_id, github_event, github_delivery, repository_full_name,
+        installation_id, summary, payload_json, received_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    .bind(
+      projectId,
+      eventId,
+      githubEvent,
+      githubDelivery || null,
+      repositoryFullName(payload),
+      installationId(payload),
+      summarizeGitHubEvent(githubEvent, payload),
+      payloadJson,
+      receivedAt,
+    )
+    .run();
+
+  await updateAppRepositoryStatus(env, githubEvent, payload, receivedAt);
+
+  await pruneOldEvents(env);
+
+  return json({ ok: true, duplicate: false, eventId }, { status: 202 });
+}
+
+function rowToEvent(row: GitHubEventRow): Record<string, unknown> {
+  let payload: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(row.payload_json) as unknown;
+    if (isRecord(parsed)) payload = parsed;
+  } catch {
+    payload = {};
+  }
+  const cursor = `seq:${Math.max(0, Math.trunc(Number(row.event_seq) || 0))}`;
+  return {
+    cursor,
+    eventId: row.event_id,
+    githubEvent: row.github_event,
+    githubDelivery: row.github_delivery,
+    repo: row.repository_full_name,
+    summary: row.summary,
+    createdAt: row.received_at,
+    payload,
+  };
+}
+
+function parseSequenceCursor(after: string): number | null {
+  const match = /^seq:(\d+)$/i.exec(after.trim());
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function nextCursorForRows(rows: GitHubEventRow[], fallback: string): string | null {
+  const latest = rows.reduce((max, row) => Math.max(max, Math.trunc(Number(row.event_seq) || 0)), 0);
+  if (latest > 0) return `seq:${latest}`;
+  return fallback || null;
+}
+
+async function handleListEvents(request: Request, env: RelayEnv, projectId: string): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const authError = await assertProjectRelayAuthorized(request, env, projectId);
+  if (authError) return authError;
+
+  const url = new URL(request.url);
+  const limit = parseLimit(url);
+  const after = url.searchParams.get("after")?.trim() || "";
+  let rows: GitHubEventRow[];
+  let cursorExpired = false;
+
+  if (after) {
+    const sequenceCursor = parseSequenceCursor(after);
+    if (sequenceCursor != null) {
+      rows = (await env.DB
+        .prepare(`
+          select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+                 summary, payload_json, received_at
+            from github_events
+           where project_id = ?
+             and rowid > ?
+           order by rowid desc
+           limit ?
+        `)
+        .bind(projectId, sequenceCursor, limit)
+        .all<GitHubEventRow>()).results ?? [];
+    } else {
+      const cursor = await env.DB
+        .prepare("select rowid as event_seq, event_id from github_events where project_id = ? and event_id = ? limit 1")
+        .bind(projectId, after)
+        .first<CursorRow>();
+      if (cursor) {
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+                   summary, payload_json, received_at
+              from github_events
+             where project_id = ?
+               and rowid > ?
+             order by rowid desc
+             limit ?
+          `)
+          .bind(projectId, cursor.event_seq, limit)
+          .all<GitHubEventRow>()).results ?? [];
+      } else {
+        cursorExpired = true;
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+                   summary, payload_json, received_at
+              from github_events
+             where project_id = ?
+             order by rowid desc
+             limit ?
+          `)
+          .bind(projectId, limit)
+          .all<GitHubEventRow>()).results ?? [];
+      }
+    }
+  } else {
+    rows = (await env.DB
+      .prepare(`
+        select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+               summary, payload_json, received_at
+          from github_events
+         where project_id = ?
+         order by rowid desc
+         limit ?
+      `)
+      .bind(projectId, limit)
+      .all<GitHubEventRow>()).results ?? [];
+  }
+
+  return json({
+    events: rows.map(rowToEvent),
+    nextCursor: nextCursorForRows(rows, after),
+    cursorExpired,
+  });
+}
+
+async function handleRepoStatus(request: Request, env: RelayEnv, repo: { projectId: string | null; owner: string; name: string }): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const authError = repo.projectId
+    ? await assertProjectRelayAuthorized(request, env, repo.projectId)
+    : assertRelayAuthorized(request, env);
+  if (authError) return authError;
+
+  const forceRefresh = new URL(request.url).searchParams.get("refresh") === "1";
+  const key = `${repo.owner}/${repo.name}`.toLowerCase();
+  const diagnostics = await readWebhookEventDiagnostics(env);
+  const row = await env.DB
+    .prepare(`
+      select repository_full_name, installation_id, repository_selection,
+             installed, last_seen_at, removed_at
+        from github_app_repositories
+       where repository_key = ?
+       limit 1
+    `)
+    .bind(key)
+    .first<AppRepositoryRow>();
+  const checkedAt = new Date().toISOString();
+  const installedFromWebhook = row?.installed === 1 && !row.removed_at;
+  if ((forceRefresh || !installedFromWebhook) && gitHubAppApiConfigured(env)) {
+    const apiStatus = await fetchGitHubAppApiStatus(env, repo);
+    if (apiStatus.configured && apiStatus.installed) {
+      const fullName = `${repo.owner}/${repo.name}`;
+      await upsertAppRepository(env, {
+        owner: repo.owner,
+        name: repo.name,
+        fullName,
+        key,
+      }, {
+        installationId: apiStatus.installationId,
+        repositorySelection: apiStatus.repositorySelection,
+        sourceEvent: "github_app_api",
+        seenAt: checkedAt,
+      });
+      return json({
+        repo: { owner: repo.owner, name: repo.name, fullName },
+        installed: true,
+        state: "configured",
+        installationId: apiStatus.installationId,
+        repositorySelection: apiStatus.repositorySelection,
+        lastSeenAt: checkedAt,
+        webhookEvents: diagnostics.webhookEvents,
+        missingWebhookEvents: diagnostics.missingWebhookEvents,
+        webhookState: diagnostics.webhookState,
+        webhookLastSeenAt: diagnostics.webhookLastSeenAt,
+        checkedAt,
+        error: null,
+      });
+    }
+    if (apiStatus.configured && apiStatus.error) {
+      return json({
+        repo: { owner: repo.owner, name: repo.name, fullName: row?.repository_full_name ?? `${repo.owner}/${repo.name}` },
+        installed: false,
+        state: "error",
+        installationId: row?.installation_id ?? null,
+        repositorySelection:
+          row?.repository_selection === "all" || row?.repository_selection === "selected"
+            ? row.repository_selection
+            : row?.repository_selection === "unknown"
+              ? "unknown"
+              : null,
+        lastSeenAt: row?.last_seen_at ?? null,
+        webhookEvents: diagnostics.webhookEvents,
+        missingWebhookEvents: diagnostics.missingWebhookEvents,
+        webhookState: diagnostics.webhookState,
+        webhookLastSeenAt: diagnostics.webhookLastSeenAt,
+        checkedAt,
+        error: apiStatus.error,
+      }, { status: 502 });
+    }
+    if (forceRefresh && row) {
+      await markAppRepositoryRemoved(env, {
+        owner: repo.owner,
+        name: repo.name,
+        fullName: row.repository_full_name,
+        key,
+      }, {
+        installationId: row.installation_id,
+        repositorySelection: row.repository_selection ?? "unknown",
+        sourceEvent: "github_app_api",
+        seenAt: checkedAt,
+      });
+      return json({
+        repo: { owner: repo.owner, name: repo.name, fullName: row.repository_full_name },
+        installed: false,
+        state: "not_installed",
+        installationId: row.installation_id,
+        repositorySelection:
+          row.repository_selection === "all" || row.repository_selection === "selected"
+            ? row.repository_selection
+            : row.repository_selection === "unknown"
+              ? "unknown"
+              : null,
+        lastSeenAt: checkedAt,
+        webhookEvents: diagnostics.webhookEvents,
+        missingWebhookEvents: diagnostics.missingWebhookEvents,
+        webhookState: diagnostics.webhookState,
+        webhookLastSeenAt: diagnostics.webhookLastSeenAt,
+        checkedAt,
+        error: null,
+      });
+    }
+  }
+  if (!row) {
+    return json({
+      repo: { owner: repo.owner, name: repo.name, fullName: `${repo.owner}/${repo.name}` },
+      installed: false,
+      state: "not_installed",
+      installationId: null,
+      repositorySelection: null,
+      lastSeenAt: null,
+      webhookEvents: diagnostics.webhookEvents,
+      missingWebhookEvents: diagnostics.missingWebhookEvents,
+      webhookState: diagnostics.webhookState,
+      webhookLastSeenAt: diagnostics.webhookLastSeenAt,
+      checkedAt,
+      error: null,
+    });
+  }
+
+  const installed = installedFromWebhook;
+  return json({
+    repo: { owner: repo.owner, name: repo.name, fullName: row.repository_full_name },
+    installed,
+    state: installed ? "configured" : "not_installed",
+    installationId: row.installation_id,
+    repositorySelection:
+      row.repository_selection === "all" || row.repository_selection === "selected"
+        ? row.repository_selection
+        : "unknown",
+    lastSeenAt: row.last_seen_at,
+    webhookEvents: diagnostics.webhookEvents,
+    missingWebhookEvents: diagnostics.missingWebhookEvents,
+    webhookState: diagnostics.webhookState,
+    webhookLastSeenAt: diagnostics.webhookLastSeenAt,
+    checkedAt,
+    error: null,
+  });
+}
+
+export async function handleRequest(request: Request, env: RelayEnv): Promise<Response> {
+  const url = new URL(request.url);
+  if (url.pathname === "/health") {
+    return json({ ok: true });
+  }
+
+  const repoStatus = routeRepoStatus(url.pathname);
+  if (repoStatus) return await handleRepoStatus(request, env, repoStatus);
+
+  const route = routeProject(url.pathname);
+  if (!route?.projectId) return text("not found", 404);
+  if (route.action === "webhook") return await handleGitHubWebhook(request, env, route.projectId);
+  return await handleListEvents(request, env, route.projectId);
+}

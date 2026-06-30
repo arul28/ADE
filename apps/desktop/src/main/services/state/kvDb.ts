@@ -494,6 +494,8 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // rows to phones whose schema may not have the table — a changeset that an
   // older client hard-rejects, freezing its sync cursor entirely.
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
+  "github_pr_projections",
+  "github_webhook_deliveries",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
@@ -1909,6 +1911,64 @@ function migrate(db: MigrationDb) {
   safeAddColumn(db, "alter table pull_requests add column behind_base_by integer");
 
   db.run("drop table if exists github_pr_cache");
+
+  db.run(`
+    create table if not exists github_webhook_deliveries (
+      id text primary key,
+      project_id text not null,
+      delivery_id text,
+      event_name text not null,
+      repo_owner text,
+      repo_name text,
+      github_pr_number integer,
+      payload_hash text not null,
+      status text not null,
+      reason text,
+      received_at text not null,
+      processed_at text,
+      raw_payload_json text,
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run(`
+    create unique index if not exists idx_github_webhook_deliveries_project_delivery
+      on github_webhook_deliveries(project_id, delivery_id)
+      where delivery_id is not null and delivery_id <> ''
+  `);
+  db.run("create index if not exists idx_github_webhook_deliveries_project_received on github_webhook_deliveries(project_id, received_at desc)");
+
+  db.run(`
+    create table if not exists github_pr_projections (
+      project_id text not null,
+      repo_owner text not null,
+      repo_name text not null,
+      github_pr_number integer not null,
+      github_node_id text,
+      github_url text,
+      title text not null,
+      state text not null,
+      is_draft integer not null default 0,
+      base_branch text,
+      head_branch text,
+      head_repo_owner text,
+      head_repo_name text,
+      head_sha text,
+      base_sha text,
+      author text,
+      labels_json text not null default '[]',
+      is_bot integer not null default 0,
+      comment_count integer not null default 0,
+      created_at text not null,
+      updated_at text not null,
+      synced_at text not null,
+      last_event_name text,
+      last_delivery_id text,
+      primary key(project_id, repo_owner, repo_name, github_pr_number),
+      foreign key(project_id) references projects(id)
+    )
+  `);
+  db.run("create index if not exists idx_github_pr_projections_project_updated on github_pr_projections(project_id, updated_at desc)");
+  db.run("create index if not exists idx_github_pr_projections_project_repo on github_pr_projections(project_id, repo_owner, repo_name)");
 
   db.run(`
     create table if not exists pr_auto_link_ignores (

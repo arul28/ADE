@@ -2842,6 +2842,25 @@ describe("preload OAuth bridge", () => {
     const autolinks = [{ id: 1, keyPrefix: "ADE-", urlTemplate: "https://example.test/<num>", isAlphanumeric: false }];
     const createdAutolink = { id: 2, keyPrefix: "ADEPR-", urlTemplate: "https://ade-app.dev/open?number=<num>", isAlphanumeric: false };
     const remoteStatus = { repo: { owner: "acme", name: "repo" }, hasOrigin: true };
+    const appInstallationStatus = {
+      repo: { owner: "acme", name: "repo" },
+      appName: "ADE",
+      appSlug: "ade-for-github",
+      installUrl: "https://github.com/apps/ade-for-github/installations/new",
+      manageUrl: "https://github.com/settings/installations",
+      relayConfigured: true,
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "all",
+      lastSeenAt: "2026-06-30T00:00:00.000Z",
+      webhookEvents: ["installation", "installation_repositories", "pull_request"],
+      missingWebhookEvents: [],
+      webhookState: "active",
+      webhookLastSeenAt: "2026-06-30T00:00:00.000Z",
+      checkedAt: "2026-06-30T00:00:00.000Z",
+      error: null,
+    };
     const myRepos = {
       repos: [{
         owner: "acme",
@@ -2903,6 +2922,15 @@ describe("preload OAuth bridge", () => {
             statusHints: {},
           };
         }
+        if (request?.action === "getAppInstallationStatus") {
+          return {
+            ok: true,
+            domain: "github",
+            action: "getAppInstallationStatus",
+            result: appInstallationStatus,
+            statusHints: {},
+          };
+        }
       }
       return undefined;
     });
@@ -2937,6 +2965,8 @@ describe("preload OAuth bridge", () => {
       isAlphanumeric: false,
     })).resolves.toEqual(createdAutolink);
     await expect(bridge.github.getRemoteStatus({ forceRefresh: true })).resolves.toEqual(remoteStatus);
+    await expect(bridge.github.getAppInstallationStatus({ owner: "acme", name: "repo" })).resolves.toEqual(appInstallationStatus);
+    await expect(bridge.github.getAppInstallationStatus({ owner: "acme", name: "repo", forceRefresh: true })).resolves.toEqual(appInstallationStatus);
     await expect(bridge.github.listMyRepos({ search: "repo" })).resolves.toEqual(myRepos);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
@@ -2990,6 +3020,24 @@ describe("preload OAuth bridge", () => {
         args: { forceRefresh: true },
       },
     });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "github",
+        action: "getAppInstallationStatus",
+        args: { owner: "acme", name: "repo" },
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "github",
+        action: "getAppInstallationStatus",
+        args: { owner: "acme", name: "repo", forceRefresh: true },
+      },
+    });
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeListMyGitHubRepos, {
       id: "target-1",
       input: { search: "repo" },
@@ -2999,6 +3047,7 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListRepoAutolinks, { owner: "acme", name: "repo" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubCreateRepoAutolink, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetRemoteStatus, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.githubGetAppInstallationStatus, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.githubListMyRepos, expect.anything());
   });
 

@@ -1076,6 +1076,7 @@ export async function createAdeRuntime(args: {
     ? createAutomationIngressService({
         logger,
         automationService,
+        prService: headlessLinearServices.prService,
         secretService: automationSecretService,
         listRules: () => projectConfigService.get().effective.automations ?? [],
       })
