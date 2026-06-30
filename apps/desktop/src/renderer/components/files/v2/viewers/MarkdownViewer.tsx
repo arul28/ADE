@@ -20,7 +20,7 @@ export function MarkdownViewer(props: ViewerProps) {
   const { registry, tab, content } = props;
 
   // Preview reflects the live model value (incl. unsaved edits) when present.
-  const previewText = mode === "preview" ? registry.getValue(tab.path) ?? content.content : "";
+  const previewText = mode === "preview" ? registry.getValue(tab.id) ?? content.content : "";
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">

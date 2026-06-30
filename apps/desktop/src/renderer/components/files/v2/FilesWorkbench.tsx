@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, Copy, FilePlus, FolderPlus, LockOpen, PencilSimple, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, Copy, FilePlus, FolderPlus, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { FileTreeNode, FilesWorkspace } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
@@ -11,6 +11,7 @@ import {
   applyGitStatusToTree,
   appendTreeNodeChildren,
   defaultFilesWorkspaceId,
+  filesProjectSessionKey,
   filesSessionKey,
   formatFilesError,
   hasAncestorDirectoryPath,
@@ -29,14 +30,18 @@ import {
   closeOtherTabs,
   closeTab,
   createInitialGroupsState,
+  editorTabId,
+  mergeLegacyLaneSessions,
   moveTabToGroup,
   openInGroup,
   pinTab,
   promoteFromPreview,
   splitGroup,
   splitTabToNewGroup,
+  upgradeLegacySession,
   useEditorGroupsStore,
 } from "./editorGroupsStore";
+import { getFilesTabScope, setFilesTabScope, type FilesTabScope } from "./filesTabScope";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
 import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
@@ -104,6 +109,7 @@ export function FilesWorkbench({
   const projectRootPath = project?.rootPath ?? "";
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const lanes = useAppStore((s) => s.lanes);
   const globalLaneId = preferredLaneId ?? selectedLaneId ?? null;
 
   // Seed from the cross-mount cache so a repeat visit renders immediately.
@@ -114,31 +120,12 @@ export function FilesWorkbench({
   const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
-  // Per-workspace, session-only "edit anyway" override. The primary lane is
-  // read-only-by-default (edit-protected), and there was no way to edit its files
-  // from the Files tab; this lets you opt in for the session without permanently
-  // flipping the lane's protection.
-  const [editOverrides, setEditOverrides] = useState<Set<string>>(() => new Set());
-  const editOverride = workspaceId ? editOverrides.has(workspaceId) : false;
-  const canEdit = workspace ? (!workspace.isReadOnlyByDefault || editOverride) : false;
+  const canEdit = !workspace?.mobileReadOnly;
   const canRevealInFinder = workspace != null && (workspace.kind === "external" || !isRemoteProject);
-  const showEnableEditing = Boolean(workspace?.isReadOnlyByDefault) && !editOverride;
-  const enableEditingForWorkspace = () => {
-    if (!workspaceId) return;
-    setEditOverrides((prev) => {
-      const next = new Set(prev);
-      next.add(workspaceId);
-      return next;
-    });
-  };
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = "dark";
-  // Session (tabs/layout) follows the ACTIVE workspace's lane, so switching the
-  // workspace picker switches the tab set; falls back to the global lane until resolved.
-  const sessionKey = filesSessionKey(
-    projectRootPath,
-    workspace?.kind === "external" ? workspace.id : workspace?.laneId ?? globalLaneId,
-  );
+  const sessionKey = filesProjectSessionKey(projectRootPath);
+  const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
   const [tree, setTree] = useState<FileTreeNode[]>(
     () => rootTreeCacheByKey.get(rootTreeCacheKey(projectRootPath, initialWorkspaceId)) ?? [],
@@ -147,9 +134,9 @@ export function FilesWorkbench({
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [selectedNodePath, setSelectedNodePath] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const [dirtyPaths, setDirtyPaths] = useState<Set<string>>(new Set());
+  const [dirtyTabIds, setDirtyTabIds] = useState<Set<string>>(new Set());
   const [dirtyBufferRevision, setDirtyBufferRevision] = useState(0);
-  const [reloadTokensByPath, setReloadTokensByPath] = useState<Record<string, number>>({});
+  const [reloadTokensByTabId, setReloadTokensByTabId] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<
     | null
@@ -171,15 +158,15 @@ export function FilesWorkbench({
   const workspacesProjectRootRef = useRef(projectRootPath);
   const renameNonceRef = useRef(0);
   const registryRef = useRef(createMonacoModelRegistry());
-  const dragRef = useRef<{ groupId: string; path: string } | null>(null);
+  const dragRef = useRef<{ groupId: string; tabId: string } | null>(null);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
   const treeRef = useRef(tree);
   treeRef.current = tree;
   const rootPathRef = useRef(rootPath);
   rootPathRef.current = rootPath;
-  const dirtyPathsRef = useRef(dirtyPaths);
-  dirtyPathsRef.current = dirtyPaths;
+  const dirtyTabIdsRef = useRef(dirtyTabIds);
+  dirtyTabIdsRef.current = dirtyTabIds;
 
   const store = useEditorGroupsStore();
   const groupsState = store.sessions[sessionKey] ?? createInitialGroupsState();
@@ -202,17 +189,77 @@ export function FilesWorkbench({
   );
 
   const activeGroup = groupsState.groups[groupsState.activeGroupId];
-  const activeTab = activeGroup?.tabs.find((t) => t.path === activeGroup.activeTabId) ?? null;
-  const openCount = useMemo(
-    () => new Set(Object.values(groupsState.groups).flatMap((g) => g.tabs.map((t) => t.path))).size,
+  const activeTab = activeGroup?.tabs.find((t) => t.id === activeGroup.activeTabId) ?? null;
+  const allOpenTabs = useMemo(
+    () => Object.values(groupsState.groups).flatMap((g) => g.tabs),
     [groupsState.groups],
   );
-  const openTabPaths = useMemo(
-    () => new Set(Object.values(groupsState.groups).flatMap((g) => g.tabs.map((t) => t.path))),
-    [groupsState.groups],
+  const openCount = allOpenTabs.length;
+  const openTabIds = useMemo(() => new Set(allOpenTabs.map((t) => t.id)), [allOpenTabs]);
+  const openTabIdsRef = useRef(openTabIds);
+  openTabIdsRef.current = openTabIds;
+  const openWorkspaceIds = useMemo(() => new Set(allOpenTabs.map((t) => t.workspaceId)), [allOpenTabs]);
+  const resolveTabContext = useCallback(
+    (tab: EditorTab) => {
+      const ws = workspaces.find((candidate) => candidate.id === tab.workspaceId);
+      const wsRoot = ws?.rootPath ?? projectRootPath;
+      return {
+        workspaceId: tab.workspaceId,
+        rootPath: wsRoot,
+        laneId: tab.laneId,
+        canEdit: !ws?.mobileReadOnly,
+        canRevealInFinder: ws != null && (ws.kind === "external" || !isRemoteProject),
+      };
+    },
+    [isRemoteProject, projectRootPath, workspaces],
   );
-  const openTabPathsRef = useRef(openTabPaths);
-  openTabPathsRef.current = openTabPaths;
+
+  const migratedSessionsRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!projectRootPath || workspaces.length === 0) return;
+    if (migratedSessionsRef.current === projectRootPath) return;
+    migratedSessionsRef.current = projectRootPath;
+    const projectKey = filesProjectSessionKey(projectRootPath);
+    const existing = store.getSession(projectKey);
+    const hasProjectTabs = existing && Object.values(existing.groups).some((g) => g.tabs.length > 0);
+    if (hasProjectTabs) return;
+
+    const legacySessions: ReturnType<typeof createInitialGroupsState>[] = [];
+    for (const ws of workspaces) {
+      if (ws.kind === "external") continue;
+      const laneKey = filesSessionKey(projectRootPath, ws.laneId);
+      const legacy = store.getSession(laneKey);
+      if (legacy && Object.values(legacy.groups).some((g) => g.tabs.length > 0)) {
+        legacySessions.push(upgradeLegacySession(legacy, ws.id, ws.laneId));
+      }
+    }
+    if (legacySessions.length > 0) {
+      store.apply(projectKey, () => mergeLegacyLaneSessions(legacySessions));
+    }
+  }, [projectRootPath, store, workspaces]);
+
+  const allOpenTabsRef = useRef(allOpenTabs);
+  allOpenTabsRef.current = allOpenTabs;
+
+  useEffect(() => {
+    if (tabScope !== "lane") return;
+    const explorerLane = workspace?.laneId ?? globalLaneId;
+    for (const groupId of groupsState.groupOrder) {
+      const group = groupsState.groups[groupId];
+      if (!group?.activeTabId) continue;
+      const active = group.tabs.find((tab) => tab.id === group.activeTabId);
+      if (!active || active.laneId === explorerLane) continue;
+      const fallback = group.tabs.find((tab) => tab.laneId === explorerLane);
+      if (fallback) {
+        applyGroups((s) => activateTab(s, groupId, fallback.id));
+      }
+    }
+  }, [applyGroups, globalLaneId, groupsState.groupOrder, groupsState.groups, tabScope, workspace?.laneId]);
+
+  useEffect(() => {
+    setTabScope(getFilesTabScope(projectRootPath));
+  }, [projectRootPath]);
+
   const knownRootPaths = useMemo(() => new Set(tree.map((node) => node.path)), [tree]);
   const recentFiles = getRecentFiles(sessionKey);
   const visibleRecentFiles = useMemo(
@@ -229,38 +276,49 @@ export function FilesWorkbench({
     pruneMissingRootRecentFiles(sessionKey, knownRootPaths);
   }, [knownRootPaths, sessionKey, tree.length]);
 
-  const dirtyPathsUnder = useCallback(
-    (target: string): string[] => [...dirtyPaths].filter((path) => pathIsAtOrUnder(path, target)),
-    [dirtyPaths],
+  const dirtyTabsUnder = useCallback(
+    (wsId: string, target: string): string[] =>
+      [...dirtyTabIds].filter((tabId) => {
+        const candidate = allOpenTabs.find((entry) => entry.id === tabId);
+        return candidate?.workspaceId === wsId && pathIsAtOrUnder(candidate.path, target);
+      }),
+    [allOpenTabs, dirtyTabIds],
   );
 
-  const confirmDiscardDirtyPaths = useCallback((paths: readonly string[], action: string): boolean => {
-    if (paths.length === 0) return true;
-    const label = paths.length === 1 ? `"${paths[0]}" has` : `${paths.length} files have`;
-    return window.confirm(`${label} unsaved changes. ${action} anyway?`);
-  }, []);
+  const dirtyTabIdsForWorkspace = useCallback(
+    (wsId: string): string[] =>
+      [...dirtyTabIds].filter((tabId) => allOpenTabs.find((tab) => tab.id === tabId)?.workspaceId === wsId),
+    [allOpenTabs, dirtyTabIds],
+  );
 
-  const pruneClosedPathState = useCallback((shouldPrune: (path: string) => boolean) => {
-    setDirtyPaths((prev) => {
+  const confirmDiscardDirtyTabIds = useCallback((tabIds: readonly string[], action: string): boolean => {
+    if (tabIds.length === 0) return true;
+    const labels = tabIds.map((tabId) => allOpenTabs.find((tab) => tab.id === tabId)?.path ?? tabId);
+    const label = labels.length === 1 ? `"${labels[0]}" has` : `${labels.length} files have`;
+    return window.confirm(`${label} unsaved changes. ${action} anyway?`);
+  }, [allOpenTabs]);
+
+  const pruneClosedTabState = useCallback((shouldPrune: (tabId: string) => boolean) => {
+    setDirtyTabIds((prev) => {
       let changed = false;
       const next = new Set<string>();
-      for (const path of prev) {
-        if (shouldPrune(path)) {
+      for (const tabId of prev) {
+        if (shouldPrune(tabId)) {
           changed = true;
         } else {
-          next.add(path);
+          next.add(tabId);
         }
       }
       return changed ? next : prev;
     });
-    setReloadTokensByPath((prev) => {
+    setReloadTokensByTabId((prev) => {
       let changed = false;
       const next: Record<string, number> = {};
-      for (const [path, token] of Object.entries(prev)) {
-        if (shouldPrune(path)) {
+      for (const [tabId, token] of Object.entries(prev)) {
+        if (shouldPrune(tabId)) {
           changed = true;
         } else {
-          next[path] = token;
+          next[tabId] = token;
         }
       }
       return changed ? next : prev;
@@ -271,37 +329,52 @@ export function FilesWorkbench({
   const selectWorkspace = useCallback(
     (nextWorkspaceId: string) => {
       if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
-      if (!confirmDiscardDirtyPaths([...dirtyPaths], "Switch workspaces")) return;
-      clearDirtyBuffersForWorkspace(rootPath);
-      setDirtyPaths(new Set());
+      const dirtyInWorkspace = dirtyTabIdsForWorkspace(workspaceId);
+      if (!confirmDiscardDirtyTabIds(dirtyInWorkspace, "Switch workspaces")) return;
+      const leavingWorkspace = workspaces.find((ws) => ws.id === workspaceId);
+      if (leavingWorkspace) clearDirtyBuffersForWorkspace(leavingWorkspace.rootPath);
+      setDirtyTabIds((prev) => {
+        const next = new Set(prev);
+        for (const tabId of dirtyInWorkspace) next.delete(tabId);
+        return next;
+      });
       setDirtyBufferRevision((revision) => revision + 1);
-      setReloadTokensByPath({});
       setWorkspaceId(nextWorkspaceId);
     },
-    [confirmDiscardDirtyPaths, dirtyPaths, rootPath, workspaceId],
+    [confirmDiscardDirtyTabIds, dirtyTabIdsForWorkspace, workspaceId, workspaces],
   );
 
   useEffect(() => {
-    if (!active || dirtyPaths.size === 0) return;
+    if (!active || dirtyTabIds.size === 0) return;
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [active, dirtyPaths.size]);
+  }, [active, dirtyTabIds.size]);
 
   useEffect(() => {
-    if (!rootPath) return;
-    const buffers = [...dirtyPaths].flatMap((path) => {
-      const content = registryRef.current.getValue(path);
-      return content == null ? [] : [{ path, content }];
-    });
-    replaceDirtyBufferValuesForWorkspace(rootPath, buffers);
+    const dirtyByWorkspace = new Map<string, Array<{ path: string; content: string }>>();
+    for (const tabId of dirtyTabIds) {
+      const tab = allOpenTabs.find((candidate) => candidate.id === tabId);
+      if (!tab) continue;
+      const content = registryRef.current.getValue(tabId);
+      if (content == null) continue;
+      const ctx = resolveTabContext(tab);
+      const list = dirtyByWorkspace.get(ctx.rootPath) ?? [];
+      list.push({ path: tab.path, content });
+      dirtyByWorkspace.set(ctx.rootPath, list);
+    }
+    for (const [wsRoot, buffers] of dirtyByWorkspace) {
+      replaceDirtyBufferValuesForWorkspace(wsRoot, buffers);
+    }
     return () => {
-      clearDirtyBuffersForWorkspace(rootPath);
+      for (const wsRoot of dirtyByWorkspace.keys()) {
+        clearDirtyBuffersForWorkspace(wsRoot);
+      }
     };
-  }, [dirtyBufferRevision, dirtyPaths, rootPath]);
+  }, [allOpenTabs, dirtyBufferRevision, dirtyTabIds, resolveTabContext]);
 
   /* ---- Workspace resolution ---- */
   useEffect(() => {
@@ -333,8 +406,7 @@ export function FilesWorkbench({
     };
   }, [active, projectRootPath]);
 
-  // Resolve the workspace from the global lane on mount + lane changes.
-  // Workspace-list refreshes preserve a still-valid manual/external selection.
+  // Resolve the explorer workspace from the global lane on mount + lane changes.
   useEffect(() => {
     if (!workspaces.length) return;
     const laneChanged = lastGlobalLaneIdRef.current !== globalLaneId;
@@ -343,15 +415,9 @@ export function FilesWorkbench({
     if (!laneChanged && current && workspaces.some((candidate) => candidate.id === current)) return;
     const next = defaultFilesWorkspaceId(workspaces, globalLaneId) || current;
     if (next && next !== current) {
-      const dirty = [...dirtyPathsRef.current];
-      if (dirty.length > 0 && !confirmDiscardDirtyPaths(dirty, "Switch workspaces")) return;
-      clearDirtyBuffersForWorkspace(rootPathRef.current);
-      setDirtyPaths(new Set());
-      setDirtyBufferRevision((revision) => revision + 1);
-      setReloadTokensByPath({});
       setWorkspaceId(next);
     }
-  }, [workspaces, globalLaneId, confirmDiscardDirtyPaths]);
+  }, [workspaces, globalLaneId]);
 
   /* ---- Tree loading ---- */
   const refreshTreeGitDecorations = useCallback(
@@ -393,24 +459,23 @@ export function FilesWorkbench({
     }
   }, [workspaceId, projectRootPath, refreshTreeGitDecorations]);
 
-  // Reset + load when the workspace changes; dispose models from the old lane.
+  // Reload explorer tree when the selected workspace changes (tabs stay open).
   useEffect(() => {
     if (!active || !workspaceId) return;
-    // Seed from cache (instant) rather than clearing to empty, then refresh.
     setTree(rootTreeCacheByKey.get(rootTreeCacheKey(projectRootPath, workspaceId)) ?? []);
     setExpanded(new Set());
     setLoadingDirs(new Set());
     setError(null);
-    setDirtyPaths(new Set());
-    setDirtyBufferRevision((revision) => revision + 1);
-    setReloadTokensByPath({});
     void refreshRoot();
-    const registry = registryRef.current;
-    return () => {
-      registry.disposeAll();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, workspaceId, refreshRoot, projectRootPath]);
+
+  useEffect(() => {
+    if (!active) return;
+    return () => {
+      registryRef.current.disposeAll();
+    };
+  }, [active]);
 
   const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string, minChildren = MAX_AUTO_LOADED_CHILDREN) => {
     const children: FileTreeNode[] = [];
@@ -609,13 +674,20 @@ export function FilesWorkbench({
     };
 
     const unsub = window.ade.files.onChange((ev) => {
-      if (ev.workspaceId !== workspaceIdRef.current) return;
-      // Drop the cached content for the changed path so a reopen re-reads disk.
+      const isExplorerWorkspace = ev.workspaceId === workspaceIdRef.current;
+      const openTab = allOpenTabsRef.current.find((tab) => tab.workspaceId === ev.workspaceId && tab.path === ev.path);
+      const openTabOld = ev.oldPath
+        ? allOpenTabsRef.current.find((tab) => tab.workspaceId === ev.workspaceId && tab.path === ev.oldPath)
+        : undefined;
       invalidateFileContent(ev.workspaceId, ev.path);
       if (ev.oldPath) invalidateFileContent(ev.workspaceId, ev.oldPath);
-      if (openTabPathsRef.current.has(ev.path) && !dirtyPathsRef.current.has(ev.path)) {
-        setReloadTokensByPath((prev) => ({ ...prev, [ev.path]: (prev[ev.path] ?? 0) + 1 }));
+      if (openTab && !dirtyTabIdsRef.current.has(openTab.id)) {
+        setReloadTokensByTabId((prev) => ({ ...prev, [openTab.id]: (prev[openTab.id] ?? 0) + 1 }));
       }
+      if (openTabOld && !dirtyTabIdsRef.current.has(openTabOld.id)) {
+        setReloadTokensByTabId((prev) => ({ ...prev, [openTabOld.id]: (prev[openTabOld.id] ?? 0) + 1 }));
+      }
+      if (!isExplorerWorkspace) return;
       enqueuePathRefresh(ev.path);
       enqueuePathRefresh(ev.oldPath);
       if (timer) clearTimeout(timer);
@@ -623,13 +695,18 @@ export function FilesWorkbench({
         flushQueuedRefreshes();
       }, 200);
     });
-    void window.ade.files.watchChanges({ workspaceId, includeIgnored: true }).catch(() => {});
+    const watchedIds = new Set([workspaceId, ...openWorkspaceIds]);
+    for (const watchedId of watchedIds) {
+      void window.ade.files.watchChanges({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
+    }
     return () => {
       if (timer) clearTimeout(timer);
       unsub();
-      void window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
+      for (const watchedId of watchedIds) {
+        void window.ade.files.stopWatching({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
+      }
     };
-  }, [active, workspaceId, refreshLoadedDirectory, refreshRoot, refreshTreeGitDecorations]);
+  }, [active, openWorkspaceIds, refreshLoadedDirectory, refreshRoot, refreshTreeGitDecorations, workspaceId]);
 
   /* ---- Open file ---- */
   const openFile = useCallback(
@@ -649,6 +726,9 @@ export function FilesWorkbench({
           isPartial: content.isPartial,
         });
         const tab: EditorTab = {
+          id: editorTabId(workspaceId, path),
+          workspaceId,
+          laneId: workspace?.laneId ?? null,
           path,
           title: path.split("/").pop() ?? path,
           viewerKind,
@@ -662,7 +742,19 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, applyGroups, sessionKey],
+    [workspace, workspaceId, applyGroups, sessionKey],
+  );
+
+  const handleActivateTab = useCallback(
+    (groupId: string, tabId: string) => {
+      const tab = allOpenTabs.find((candidate) => candidate.id === tabId);
+      applyGroups((s) => activateTab(s, groupId, tabId));
+      if (tab && tab.workspaceId !== workspaceIdRef.current) {
+        setWorkspaceId(tab.workspaceId);
+        setSelectedNodePath(tab.path);
+      }
+    },
+    [allOpenTabs, applyGroups],
   );
 
   const openExternalPathRequest = useCallback(
@@ -720,32 +812,34 @@ export function FilesWorkbench({
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(
-    (groupId: string, path: string) => {
-      if (dirtyPaths.has(path)) {
-        const ok = window.confirm(`"${path}" has unsaved changes. Close anyway?`);
+    (groupId: string, tabId: string) => {
+      const tab = allOpenTabs.find((candidate) => candidate.id === tabId);
+      if (dirtyTabIds.has(tabId)) {
+        const label = tab?.path ?? tabId;
+        const ok = window.confirm(`"${label}" has unsaved changes. Close anyway?`);
         if (!ok) return;
       }
-      registryRef.current.dispose(path);
-      pruneClosedPathState((candidate) => candidate === path);
-      applyGroups((s) => closeTab(s, groupId, path));
+      registryRef.current.dispose(tabId);
+      pruneClosedTabState((candidate) => candidate === tabId);
+      applyGroups((s) => closeTab(s, groupId, tabId));
     },
-    [applyGroups, dirtyPaths, pruneClosedPathState],
+    [allOpenTabs, applyGroups, dirtyTabIds, pruneClosedTabState],
   );
 
-  const handleDirtyChange = useCallback((path: string, dirty: boolean) => {
+  const handleDirtyChange = useCallback((tabId: string, dirty: boolean) => {
     setDirtyBufferRevision((revision) => revision + 1);
-    setDirtyPaths((prev) => {
-      const has = prev.has(path);
+    setDirtyTabIds((prev) => {
+      const has = prev.has(tabId);
       if (has === dirty) return prev;
       const next = new Set(prev);
-      if (dirty) next.add(path);
-      else next.delete(path);
+      if (dirty) next.add(tabId);
+      else next.delete(tabId);
       return next;
     });
   }, []);
 
-  const handleTabDragStart = useCallback((groupId: string, path: string) => {
-    dragRef.current = { groupId, path };
+  const handleTabDragStart = useCallback((groupId: string, tabId: string) => {
+    dragRef.current = { groupId, tabId };
     setDraggingTab(true);
   }, []);
   const handleTabDragEnd = useCallback(() => {
@@ -756,7 +850,7 @@ export function FilesWorkbench({
     (toGroupId: string) => {
       const drag = dragRef.current;
       if (!drag || drag.groupId === toGroupId) return;
-      applyGroups((s) => moveTabToGroup(s, drag.groupId, toGroupId, drag.path));
+      applyGroups((s) => moveTabToGroup(s, drag.groupId, toGroupId, drag.tabId));
     },
     [applyGroups],
   );
@@ -770,11 +864,11 @@ export function FilesWorkbench({
       if (!drag) return;
       if (side === "center") {
         if (drag.groupId !== targetGroupId) {
-          applyGroups((s) => moveTabToGroup(s, drag.groupId, targetGroupId, drag.path));
+          applyGroups((s) => moveTabToGroup(s, drag.groupId, targetGroupId, drag.tabId));
         }
         return;
       }
-      applyGroups((s) => splitTabToNewGroup(s, drag.groupId, drag.path, targetGroupId, side));
+      applyGroups((s) => splitTabToNewGroup(s, drag.groupId, drag.tabId, targetGroupId, side));
     },
     [applyGroups],
   );
@@ -783,48 +877,48 @@ export function FilesWorkbench({
   // their models. Matching paths are computed from the current snapshot before
   // applying, so dispose isn't run inside a reducer.
   const closeOpenTabsUnder = useCallback(
-    (target: string) => {
-      const toClose: Array<{ gid: string; path: string }> = [];
+    (targetWorkspaceId: string, target: string) => {
+      const toClose: Array<{ gid: string; tabId: string }> = [];
       for (const gid of groupsState.groupOrder) {
         const g = groupsState.groups[gid];
         if (!g) continue;
-        for (const t of g.tabs) if (pathIsAtOrUnder(t.path, target)) toClose.push({ gid, path: t.path });
+        for (const t of g.tabs) {
+          if (t.workspaceId === targetWorkspaceId && pathIsAtOrUnder(t.path, target)) {
+            toClose.push({ gid, tabId: t.id });
+          }
+        }
       }
       if (toClose.length === 0) return;
-      for (const { path } of toClose) registryRef.current.dispose(path);
-      pruneClosedPathState((path) => pathIsAtOrUnder(path, target));
-      applyGroups((s) => toClose.reduce((acc, { gid, path }) => closeTab(acc, gid, path), s));
+      for (const { tabId } of toClose) registryRef.current.dispose(tabId);
+      pruneClosedTabState((tabId) => toClose.some((entry) => entry.tabId === tabId));
+      applyGroups((s) => toClose.reduce((acc, { gid, tabId }) => closeTab(acc, gid, tabId), s));
     },
-    [groupsState, pruneClosedPathState, applyGroups],
+    [groupsState, pruneClosedTabState, applyGroups],
   );
 
   const handleCloseOthers = useCallback(
-    (groupId: string, keepPath: string) => {
+    (groupId: string, keepTabId: string) => {
       const group = groupsState.groups[groupId];
       if (!group) return;
       const closing = group.tabs
-        .filter((tab) => tab.path !== keepPath && !tab.pinned)
-        .map((tab) => tab.path);
-      const dirtyClosing = closing.filter((path) => dirtyPaths.has(path));
-      if (!confirmDiscardDirtyPaths(dirtyClosing, "Close them")) return;
-      for (const path of closing) registryRef.current.dispose(path);
+        .filter((tab) => tab.id !== keepTabId && !tab.pinned)
+        .map((tab) => tab.id);
+      const dirtyClosing = closing.filter((tabId) => dirtyTabIds.has(tabId));
+      if (!confirmDiscardDirtyTabIds(dirtyClosing, "Close them")) return;
+      for (const tabId of closing) registryRef.current.dispose(tabId);
       if (closing.length > 0) {
         const closingSet = new Set(closing);
-        pruneClosedPathState((path) => closingSet.has(path));
+        pruneClosedTabState((tabId) => closingSet.has(tabId));
       }
-      applyGroups((s) => closeOtherTabs(s, groupId, keepPath));
+      applyGroups((s) => closeOtherTabs(s, groupId, keepTabId));
     },
-    [applyGroups, confirmDiscardDirtyPaths, dirtyPaths, groupsState.groups, pruneClosedPathState],
+    [applyGroups, confirmDiscardDirtyTabIds, dirtyTabIds, groupsState.groups, pruneClosedTabState],
   );
 
   const renamePath = useCallback(
     async (sourcePath: string, destinationPath: string) => {
       if (!workspaceId) return;
-      if (!canEdit) {
-        setError("This workspace is read-only.");
-        return;
-      }
-      if (!confirmDiscardDirtyPaths(dirtyPathsUnder(sourcePath), "Rename it")) return;
+      if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, sourcePath), "Rename it")) return;
       try {
         await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
       } catch (err) {
@@ -832,32 +926,28 @@ export function FilesWorkbench({
         return;
       }
       forgetRecentFilesUnder(sessionKey, sourcePath);
-      closeOpenTabsUnder(sourcePath); // old path/tabs are stale after rename
+      closeOpenTabsUnder(workspaceId, sourcePath);
       await refreshRoot();
     },
-    [workspaceId, canEdit, confirmDiscardDirtyPaths, dirtyPathsUnder, sessionKey, closeOpenTabsUnder, refreshRoot],
+    [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, refreshRoot, sessionKey, workspaceId],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
       if (!workspaceId) return;
-      if (!canEdit) {
-        setError("This workspace is read-only.");
-        return;
-      }
       const ok = window.confirm(`Delete "${path}"? This cannot be undone.`);
       if (!ok) return;
-      if (!confirmDiscardDirtyPaths(dirtyPathsUnder(path), "Delete it")) return;
+      if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, path), "Delete it")) return;
       try {
         await window.ade.files.delete({ workspaceId, path });
         forgetRecentFilesUnder(sessionKey, path);
-        closeOpenTabsUnder(path);
+        closeOpenTabsUnder(workspaceId, path);
         await refreshRoot();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, canEdit, confirmDiscardDirtyPaths, dirtyPathsUnder, sessionKey, closeOpenTabsUnder, refreshRoot],
+    [closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, refreshRoot, sessionKey, workspaceId],
   );
 
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
@@ -896,10 +986,6 @@ export function FilesWorkbench({
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
       if (!workspaceId) return;
-      if (!canEdit) {
-        setError("This workspace is read-only.");
-        return;
-      }
       const rel = baseDir ? `${baseDir}/${name}` : name;
       try {
         if (kind === "file") await window.ade.files.createFile({ workspaceId, path: rel });
@@ -910,7 +996,7 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, canEdit, refreshRoot, openFile],
+    [workspaceId, refreshRoot, openFile],
   );
 
   // Files-scoped keybindings: ⌘P / ⌘⇧F both open the unified in-depth search.
@@ -988,25 +1074,15 @@ export function FilesWorkbench({
           {!embedded ? (
             <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
           ) : null}
-          {showEnableEditing ? (
-            <button
-              type="button"
-              onClick={enableEditingForWorkspace}
-              className="mx-2 mb-2 mt-1 flex shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-sans text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06]"
-              style={{ borderColor: COLORS.border }}
-              title="This workspace is read-only by default (edit-protected). Enable editing for this session."
-            >
-              <LockOpen size={13} weight="bold" />
-              Enable editing
-            </button>
-          ) : null}
           <div className="min-h-0 flex-1">
             <FilesExplorer
               tree={tree}
               expanded={expanded}
               loadingDirectories={loadingDirs}
               selectedNodePath={selectedNodePath}
-              activeTabPath={activeTab?.path ?? null}
+              activeTabPath={
+                activeTab && activeTab.workspaceId === workspaceId ? activeTab.path : null
+              }
               activeContextDir=""
               workspaceComparisonRoot={null}
               searchQuery={searchQuery}
@@ -1034,7 +1110,7 @@ export function FilesWorkbench({
             <WarmEmptyState
               workspaceName={workspace?.name ?? null}
               branch={branch}
-              dirtyCount={dirtyPaths.size}
+              dirtyCount={dirtyTabIds.size}
               recents={visibleRecentFiles}
               onOpen={(path) => void openFile(path, { preview: false })}
               onSearch={() => setOverlay({ kind: "search", query: "" })}
@@ -1044,21 +1120,26 @@ export function FilesWorkbench({
           <EditorGroups
             sessionKey={sessionKey}
             state={groupsState}
-            workspaceId={workspaceId}
-            rootPath={rootPath}
-            laneId={workspace?.laneId ?? null}
-            canEdit={canEdit}
-            canRevealInFinder={canRevealInFinder}
+            workspaces={workspaces}
+            explorerWorkspaceId={workspaceId}
+            explorerLaneId={workspace?.laneId ?? globalLaneId}
+            lanes={lanes}
+            tabScope={tabScope}
+            onTabScopeChange={(scope) => {
+              setFilesTabScope(projectRootPath, scope);
+              setTabScope(scope);
+            }}
+            resolveTabContext={resolveTabContext}
             theme={theme}
             registry={registryRef.current}
-            dirtyPaths={dirtyPaths}
-            reloadTokensByPath={reloadTokensByPath}
-            onActivateTab={(groupId, path) => applyGroups((s) => activateTab(s, groupId, path))}
+            dirtyTabIds={dirtyTabIds}
+            reloadTokensByTabId={reloadTokensByTabId}
+            onActivateTab={handleActivateTab}
             onCloseTab={handleCloseTab}
             onCloseOthers={handleCloseOthers}
-            onPinTab={(groupId, path) => applyGroups((s) => pinTab(s, groupId, path))}
-            onSplitTab={(groupId, path) => applyGroups((s) => splitTabToNewGroup(s, groupId, path, groupId, "right"))}
-            onPromoteTab={(groupId, path) => applyGroups((s) => promoteFromPreview(s, groupId, path))}
+            onPinTab={(groupId, tabId) => applyGroups((s) => pinTab(s, groupId, tabId))}
+            onSplitTab={(groupId, tabId) => applyGroups((s) => splitTabToNewGroup(s, groupId, tabId, groupId, "right"))}
+            onPromoteTab={(groupId, tabId) => applyGroups((s) => promoteFromPreview(s, groupId, tabId))}
             onFocusGroup={(groupId) => applyGroups((s) => ({ ...s, activeGroupId: groupId }))}
             onSplit={(groupId) => applyGroups((s) => splitGroup(s, groupId))}
             onDirtyChange={handleDirtyChange}
@@ -1074,11 +1155,13 @@ export function FilesWorkbench({
       </div>
       <StatusBar
         activeTab={activeTab}
-        activeFullPath={activeTab ? joinDisplayPath(rootPath, activeTab.path) : null}
+        activeFullPath={
+          activeTab ? joinDisplayPath(resolveTabContext(activeTab).rootPath, activeTab.path) : null
+        }
         branch={branch}
         groupCount={groupsState.groupOrder.length}
         openCount={openCount}
-        dirtyCount={dirtyPaths.size}
+        dirtyCount={dirtyTabIds.size}
       />
 
       {treeMenu ? (

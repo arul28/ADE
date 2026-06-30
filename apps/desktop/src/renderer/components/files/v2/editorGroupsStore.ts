@@ -10,8 +10,9 @@ import { create } from "zustand";
  * it lives in the Monaco model registry / is streamed on demand.
  *
  * All mutation logic is expressed as pure reducer functions (exported for unit
- * tests); the Zustand store is a thin wrapper that applies them per `sessionKey`
- * (`${projectRoot}::${laneId}`), so switching lanes restores the exact tab set.
+ * tests); the Zustand store is a thin wrapper that applies them per project-level
+ * `sessionKey` (`${projectRoot}::__project__`), so open tabs persist across lane
+ * switches.
  */
 
 export type ViewerKind =
@@ -29,7 +30,11 @@ export type ViewerKind =
   | "conflict";
 
 export type EditorTab = {
-  /** Workspace-relative path; also the tab's identity within a group. */
+  /** Composite identity: `${workspaceId}::${path}`. */
+  id: string;
+  workspaceId: string;
+  laneId: string | null;
+  /** Workspace-relative path. */
   path: string;
   title: string;
   viewerKind: ViewerKind;
@@ -40,12 +45,16 @@ export type EditorTab = {
   pinned: boolean;
 };
 
+export function editorTabId(workspaceId: string, path: string): string {
+  return `${workspaceId}::${path}`;
+}
+
 export type EditorGroup = {
   id: string;
   tabs: EditorTab[];
-  /** Active tab path, or null when the group is empty. */
+  /** Active tab id, or null when the group is empty. */
   activeTabId: string | null;
-  /** Most-recently-active paths (front = most recent) for Ctrl+Tab + close fallback. */
+  /** Most-recently-active tab ids (front = most recent) for Ctrl+Tab + close fallback. */
   recentTabIds: string[];
 };
 
@@ -71,8 +80,8 @@ function nextGroupId(state: GroupsState): string {
   return `group-${n}`;
 }
 
-function touchRecent(recent: string[], path: string): string[] {
-  return [path, ...recent.filter((p) => p !== path)];
+function touchRecent(recent: string[], tabId: string): string[] {
+  return [tabId, ...recent.filter((id) => id !== tabId)];
 }
 
 function withGroup(state: GroupsState, groupId: string, update: (g: EditorGroup) => EditorGroup): GroupsState {
@@ -82,11 +91,13 @@ function withGroup(state: GroupsState, groupId: string, update: (g: EditorGroup)
 }
 
 /** Recompute a sensible active tab after the current one is removed. */
-function pickActiveAfterRemoval(group: EditorGroup, removedPath: string): string | null {
-  const recentCandidate = group.recentTabIds.find((p) => p !== removedPath && group.tabs.some((t) => t.path === p));
+function pickActiveAfterRemoval(group: EditorGroup, removedTabId: string): string | null {
+  const recentCandidate = group.recentTabIds.find(
+    (id) => id !== removedTabId && group.tabs.some((t) => t.id === id),
+  );
   if (recentCandidate) return recentCandidate;
-  const remaining = group.tabs.filter((t) => t.path !== removedPath);
-  return remaining[remaining.length - 1]?.path ?? null;
+  const remaining = group.tabs.filter((t) => t.id !== removedTabId);
+  return remaining[remaining.length - 1]?.id ?? null;
 }
 
 export function openInGroup(
@@ -98,13 +109,13 @@ export function openInGroup(
   const group = state.groups[groupId];
   if (!group) return state;
   const preview = opts.preview ?? false;
-  const existing = group.tabs.find((t) => t.path === tab.path);
+  const existing = group.tabs.find((t) => t.id === tab.id);
 
   let nextTabs: EditorTab[];
   if (existing) {
     // Already open: opening non-preview promotes it out of the preview slot.
     nextTabs = group.tabs.map((t) =>
-      t.path === tab.path ? { ...t, preview: preview ? t.preview : false } : t,
+      t.id === tab.id ? { ...t, preview: preview ? t.preview : false } : t,
     );
   } else if (preview) {
     // Replace the existing preview slot (if any) rather than growing the strip.
@@ -123,50 +134,50 @@ export function openInGroup(
     ...withGroup(state, groupId, (g) => ({
       ...g,
       tabs: nextTabs,
-      activeTabId: tab.path,
-      recentTabIds: touchRecent(g.recentTabIds, tab.path),
+      activeTabId: tab.id,
+      recentTabIds: touchRecent(g.recentTabIds, tab.id),
     })),
     activeGroupId: groupId,
   };
 }
 
-export function activateTab(state: GroupsState, groupId: string, path: string): GroupsState {
+export function activateTab(state: GroupsState, groupId: string, tabId: string): GroupsState {
   return {
     ...withGroup(state, groupId, (g) =>
-      g.tabs.some((t) => t.path === path)
-        ? { ...g, activeTabId: path, recentTabIds: touchRecent(g.recentTabIds, path) }
+      g.tabs.some((t) => t.id === tabId)
+        ? { ...g, activeTabId: tabId, recentTabIds: touchRecent(g.recentTabIds, tabId) }
         : g,
     ),
     activeGroupId: state.groups[groupId] ? groupId : state.activeGroupId,
   };
 }
 
-export function pinTab(state: GroupsState, groupId: string, path: string): GroupsState {
+export function pinTab(state: GroupsState, groupId: string, tabId: string): GroupsState {
   return withGroup(state, groupId, (g) => ({
     ...g,
-    tabs: g.tabs.map((t) => (t.path === path ? { ...t, pinned: true, preview: false } : t)),
+    tabs: g.tabs.map((t) => (t.id === tabId ? { ...t, pinned: true, preview: false } : t)),
   }));
 }
 
 /** First edit promotes a preview tab to a permanent (non-preview) tab. */
-export function promoteFromPreview(state: GroupsState, groupId: string, path: string): GroupsState {
+export function promoteFromPreview(state: GroupsState, groupId: string, tabId: string): GroupsState {
   return withGroup(state, groupId, (g) => ({
     ...g,
-    tabs: g.tabs.map((t) => (t.path === path && t.preview ? { ...t, preview: false } : t)),
+    tabs: g.tabs.map((t) => (t.id === tabId && t.preview ? { ...t, preview: false } : t)),
   }));
 }
 
-export function closeTab(state: GroupsState, groupId: string, path: string): GroupsState {
+export function closeTab(state: GroupsState, groupId: string, tabId: string): GroupsState {
   const group = state.groups[groupId];
-  if (!group || !group.tabs.some((t) => t.path === path)) return state;
+  if (!group || !group.tabs.some((t) => t.id === tabId)) return state;
 
-  const nextTabs = group.tabs.filter((t) => t.path !== path);
-  const nextActive = group.activeTabId === path ? pickActiveAfterRemoval(group, path) : group.activeTabId;
+  const nextTabs = group.tabs.filter((t) => t.id !== tabId);
+  const nextActive = group.activeTabId === tabId ? pickActiveAfterRemoval(group, tabId) : group.activeTabId;
   const updatedGroup: EditorGroup = {
     ...group,
     tabs: nextTabs,
     activeTabId: nextActive,
-    recentTabIds: group.recentTabIds.filter((p) => p !== path),
+    recentTabIds: group.recentTabIds.filter((id) => id !== tabId),
   };
 
   // Remove an emptied group unless it is the only one.
@@ -181,14 +192,14 @@ export function closeTab(state: GroupsState, groupId: string, path: string): Gro
   return { ...state, groups: { ...state.groups, [groupId]: updatedGroup } };
 }
 
-export function closeOtherTabs(state: GroupsState, groupId: string, keepPath: string): GroupsState {
+export function closeOtherTabs(state: GroupsState, groupId: string, keepTabId: string): GroupsState {
   return withGroup(state, groupId, (g) => {
-    const kept = g.tabs.filter((t) => t.path === keepPath || t.pinned);
+    const kept = g.tabs.filter((t) => t.id === keepTabId || t.pinned);
     return {
       ...g,
       tabs: kept,
-      activeTabId: kept.some((t) => t.path === keepPath) ? keepPath : kept[kept.length - 1]?.path ?? null,
-      recentTabIds: g.recentTabIds.filter((p) => kept.some((t) => t.path === p)),
+      activeTabId: kept.some((t) => t.id === keepTabId) ? keepTabId : kept[kept.length - 1]?.id ?? null,
+      recentTabIds: g.recentTabIds.filter((id) => kept.some((t) => t.id === id)),
     };
   });
 }
@@ -197,15 +208,15 @@ export function closeOtherTabs(state: GroupsState, groupId: string, keepPath: st
 export function splitGroup(state: GroupsState, fromGroupId: string): GroupsState {
   const from = state.groups[fromGroupId];
   if (!from || !from.activeTabId) return state;
-  const seedTab = from.tabs.find((t) => t.path === from.activeTabId);
+  const seedTab = from.tabs.find((t) => t.id === from.activeTabId);
   if (!seedTab) return state;
 
   const newId = nextGroupId(state);
   const newGroup: EditorGroup = {
     id: newId,
     tabs: [{ ...seedTab, preview: false }],
-    activeTabId: seedTab.path,
-    recentTabIds: [seedTab.path],
+    activeTabId: seedTab.id,
+    recentTabIds: [seedTab.id],
   };
   const fromIdx = state.groupOrder.indexOf(fromGroupId);
   const nextOrder = [...state.groupOrder];
@@ -221,17 +232,17 @@ export function moveTabToGroup(
   state: GroupsState,
   fromGroupId: string,
   toGroupId: string,
-  path: string,
+  tabId: string,
 ): GroupsState {
-  if (fromGroupId === toGroupId) return activateTab(state, toGroupId, path);
+  if (fromGroupId === toGroupId) return activateTab(state, toGroupId, tabId);
   const from = state.groups[fromGroupId];
   const to = state.groups[toGroupId];
   if (!from || !to) return state;
-  const tab = from.tabs.find((t) => t.path === path);
+  const tab = from.tabs.find((t) => t.id === tabId);
   if (!tab) return state;
 
   // Remove from source (closeTab handles emptied-group removal + active fallback).
-  let next = closeTab(state, fromGroupId, path);
+  let next = closeTab(state, fromGroupId, tabId);
   // Source group may have been removed; only re-add if target still exists.
   if (!next.groups[toGroupId]) return next;
   next = openInGroup(next, toGroupId, { ...tab, preview: false }, { preview: false });
@@ -247,13 +258,13 @@ export function moveTabToGroup(
 export function splitTabToNewGroup(
   state: GroupsState,
   fromGroupId: string,
-  path: string,
+  tabId: string,
   anchorGroupId: string,
   side: "left" | "right",
 ): GroupsState {
   const from = state.groups[fromGroupId];
   if (!from) return state;
-  const tab = from.tabs.find((t) => t.path === path);
+  const tab = from.tabs.find((t) => t.id === tabId);
   if (!tab) return state;
   if (from.tabs.length <= 1 && fromGroupId === anchorGroupId) return state; // nothing to split off
 
@@ -261,12 +272,12 @@ export function splitTabToNewGroup(
   const newGroup: EditorGroup = {
     id: newId,
     tabs: [{ ...tab, preview: false }],
-    activeTabId: tab.path,
-    recentTabIds: [tab.path],
+    activeTabId: tab.id,
+    recentTabIds: [tab.id],
   };
 
   // Remove the tab from its source (collapses an emptied, non-sole group).
-  const afterClose = closeTab(state, fromGroupId, path);
+  const afterClose = closeTab(state, fromGroupId, tabId);
   const order = [...afterClose.groupOrder];
   const anchorIdx = order.indexOf(anchorGroupId);
   const insertAt = anchorIdx < 0 ? order.length : side === "left" ? anchorIdx : anchorIdx + 1;
@@ -287,10 +298,75 @@ export function focusGroup(state: GroupsState, groupId: string): GroupsState {
 export function cycleTab(state: GroupsState, groupId: string, direction: 1 | -1): GroupsState {
   const group = state.groups[groupId];
   if (!group || group.tabs.length < 2) return state;
-  const order = group.tabs.map((t) => t.path);
+  const order = group.tabs.map((t) => t.id);
   const currentIdx = group.activeTabId ? order.indexOf(group.activeTabId) : 0;
   const nextIdx = (currentIdx + direction + order.length) % order.length;
   return activateTab(state, groupId, order[nextIdx]!);
+}
+
+/** Upgrade tabs from legacy per-lane sessions that only stored `path`. */
+export function upgradeLegacySession(
+  session: GroupsState,
+  workspaceId: string,
+  laneId: string | null,
+): GroupsState {
+  let next = session;
+  for (const groupId of session.groupOrder) {
+    const group = session.groups[groupId];
+    if (!group) continue;
+    const upgradedTabs = group.tabs.map((raw) => {
+      const partial = raw as Partial<EditorTab> & { path: string };
+      const id = partial.id ?? editorTabId(workspaceId, partial.path);
+      return {
+        id,
+        workspaceId: partial.workspaceId ?? workspaceId,
+        laneId: partial.laneId !== undefined ? partial.laneId : laneId,
+        path: partial.path,
+        title: partial.title ?? partial.path.split("/").pop() ?? partial.path,
+        viewerKind: partial.viewerKind ?? "code",
+        languageId: partial.languageId ?? "plaintext",
+        preview: partial.preview ?? false,
+        pinned: partial.pinned ?? false,
+      } satisfies EditorTab;
+    });
+    const pathToId = new Map(upgradedTabs.map((t) => [t.path, t.id]));
+    const activeTabId = group.activeTabId
+      ? (pathToId.get(group.activeTabId) ?? group.activeTabId)
+      : null;
+    const recentTabIds = group.recentTabIds.map((entry) => pathToId.get(entry) ?? entry);
+    next = withGroup(next, groupId, () => ({
+      ...group,
+      tabs: upgradedTabs,
+      activeTabId,
+      recentTabIds,
+    }));
+  }
+  return next;
+}
+
+/** Merge tabs from legacy per-lane sessions into a single project-level state. */
+export function mergeLegacyLaneSessions(sessions: GroupsState[]): GroupsState {
+  if (sessions.length === 0) return createInitialGroupsState();
+  if (sessions.length === 1) return sessions[0]!;
+
+  let merged = createInitialGroupsState();
+  const seenTabIds = new Set<string>();
+
+  for (const session of sessions) {
+    for (const groupId of session.groupOrder) {
+      const group = session.groups[groupId];
+      if (!group) continue;
+      for (const tab of group.tabs) {
+        if (seenTabIds.has(tab.id)) {
+          merged = activateTab(merged, merged.activeGroupId, tab.id);
+          continue;
+        }
+        seenTabIds.add(tab.id);
+        merged = openInGroup(merged, merged.activeGroupId, tab, { preview: false });
+      }
+    }
+  }
+  return merged;
 }
 
 /* ---- Zustand store: one GroupsState per sessionKey ---- */

@@ -1,58 +1,58 @@
 import React, { Fragment } from "react";
+import { Funnel, Stack } from "@phosphor-icons/react";
 import { Group, Panel } from "react-resizable-panels";
+import type { FilesWorkspace, LaneSummary } from "../../../../shared/types";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
-import type { GroupsState } from "./editorGroupsStore";
+import type { EditorTab, GroupsState } from "./editorGroupsStore";
 import { EditorGroup } from "./EditorGroup";
+import type { FilesTabScope } from "./filesTabScope";
 import type { EditorThemeMode } from "./viewers/types";
 
-// Persisted divider sizes, keyed by lane session + exact group layout. A given
-// split config (e.g. [g1,g2]) restores its dragged sizes when you return to it;
-// a NEW split config has no entry and starts even. In-memory (per app run).
 const splitSizesByKey = new Map<string, Record<string, number>>();
 
-export type EditorGroupsProps = {
-  sessionKey: string;
-  state: GroupsState;
+export type TabWorkspaceContext = {
   workspaceId: string;
   rootPath: string;
   laneId: string | null;
   canEdit: boolean;
   canRevealInFinder: boolean;
+};
+
+export type EditorGroupsProps = {
+  sessionKey: string;
+  state: GroupsState;
+  workspaces: FilesWorkspace[];
+  explorerWorkspaceId: string;
+  explorerLaneId: string | null;
+  lanes: LaneSummary[];
+  tabScope: FilesTabScope;
+  onTabScopeChange: (scope: FilesTabScope) => void;
+  resolveTabContext: (tab: EditorTab) => TabWorkspaceContext;
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
-  dirtyPaths: ReadonlySet<string>;
-  reloadTokensByPath: Readonly<Record<string, number>>;
-  onActivateTab: (groupId: string, path: string) => void;
-  onCloseTab: (groupId: string, path: string) => void;
-  onCloseOthers: (groupId: string, path: string) => void;
-  onPinTab: (groupId: string, path: string) => void;
-  onSplitTab: (groupId: string, path: string) => void;
-  onPromoteTab: (groupId: string, path: string) => void;
+  dirtyTabIds: ReadonlySet<string>;
+  reloadTokensByTabId: Readonly<Record<string, number>>;
+  onActivateTab: (groupId: string, tabId: string) => void;
+  onCloseTab: (groupId: string, tabId: string) => void;
+  onCloseOthers: (groupId: string, tabId: string) => void;
+  onPinTab: (groupId: string, tabId: string) => void;
+  onSplitTab: (groupId: string, tabId: string) => void;
+  onPromoteTab: (groupId: string, tabId: string) => void;
   onFocusGroup: (groupId: string) => void;
   onSplit: (groupId: string) => void;
-  onDirtyChange: (path: string, dirty: boolean) => void;
+  onDirtyChange: (tabId: string, dirty: boolean) => void;
   onError: (message: string) => void;
-  onTabDragStart: (groupId: string, path: string) => void;
+  onTabDragStart: (groupId: string, tabId: string) => void;
   onTabDragEnd: () => void;
   onTabDrop: (groupId: string) => void;
   isTabDragging: boolean;
   onBodyDrop: (targetGroupId: string, side: "left" | "right" | "center") => void;
 };
 
-/**
- * Editor groups laid out side-by-side in a single horizontal resizable group.
- * Splits always tile left↔right (VSCode-style), unlike the perpendicular grid
- * tiling of PaneTilingLayout — so an explicit split or a drag-to-edge produces
- * columns, never stacked rows. react-resizable-panels reconciles the dynamic
- * panel set by stable `id`.
- */
 export function EditorGroups(props: EditorGroupsProps) {
   const ids = props.state.groupOrder.filter((id) => props.state.groups[id]);
   const evenSize = (100 / Math.max(1, ids.length)).toFixed(4);
-  // Re-key only when the SET of groups changes (split/close/move) so the group
-  // re-initialises; manual divider resizes keep the same key and are preserved.
-  // Sizes are percentages, so they reflow with the window width.
   const layoutKey = ids.join("|");
   const sizeKey = `${props.sessionKey}::${layoutKey}`;
   const persisted = splitSizesByKey.get(sizeKey);
@@ -62,50 +62,74 @@ export function EditorGroups(props: EditorGroupsProps) {
     return typeof saved === "number" && Number.isFinite(saved) ? `${saved}%` : `${evenSize}%`;
   };
 
+  const scopeLabel = props.tabScope === "all" ? "All lanes" : "This lane only";
+  const scopeTitle =
+    props.tabScope === "all"
+      ? "Keep files from all lanes open. Click to show only this lane's files."
+      : "Show only this lane's files. Click to keep files from all lanes open.";
+
   return (
-    <Group
-      key={layoutKey}
-      orientation="horizontal"
-      className="h-full w-full min-h-0 min-w-0"
-      onLayoutChanged={(next) => {
-        if (next && Object.keys(next).length > 1) splitSizesByKey.set(sizeKey, next);
-      }}
-    >
-      {ids.map((id, i) => (
-        <Fragment key={id}>
-          <Panel id={`files-group-${id}`} defaultSize={panelSize(id)} minSize="15%" className="min-h-0 min-w-0 overflow-hidden">
-            <EditorGroup
-              group={props.state.groups[id]!}
-              isActiveGroup={id === props.state.activeGroupId}
-              workspaceId={props.workspaceId}
-              rootPath={props.rootPath}
-              laneId={props.laneId}
-              canEdit={props.canEdit}
-              canRevealInFinder={props.canRevealInFinder}
-              theme={props.theme}
-              registry={props.registry}
-              dirtyPaths={props.dirtyPaths}
-              reloadTokensByPath={props.reloadTokensByPath}
-              onActivateTab={props.onActivateTab}
-              onCloseTab={props.onCloseTab}
-              onCloseOthers={props.onCloseOthers}
-              onPinTab={props.onPinTab}
-              onSplitTab={props.onSplitTab}
-              onPromoteTab={props.onPromoteTab}
-              onFocusGroup={props.onFocusGroup}
-              onSplit={props.onSplit}
-              onDirtyChange={props.onDirtyChange}
-              onError={props.onError}
-              onTabDragStart={props.onTabDragStart}
-              onTabDragEnd={props.onTabDragEnd}
-              onTabDrop={props.onTabDrop}
-              isTabDragging={props.isTabDragging}
-              onBodyDrop={props.onBodyDrop}
-            />
-          </Panel>
-          {i < ids.length - 1 ? <ResizeGutter orientation="vertical" thin /> : null}
-        </Fragment>
-      ))}
-    </Group>
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <div
+        className="flex shrink-0 items-center justify-end gap-1 border-b px-2 py-0.5"
+        style={{ borderColor: "var(--color-border, rgba(255,255,255,0.08))" }}
+      >
+        <button
+          type="button"
+          onClick={() => props.onTabScopeChange(props.tabScope === "all" ? "lane" : "all")}
+          title={scopeTitle}
+          aria-label={scopeTitle}
+          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium hover:bg-white/5"
+          style={{ color: "var(--color-fg-muted, rgba(255,255,255,0.55))" }}
+        >
+          {props.tabScope === "all" ? <Stack size={12} weight="fill" /> : <Funnel size={12} weight="fill" />}
+          <span>{scopeLabel}</span>
+        </button>
+      </div>
+      <Group
+        key={layoutKey}
+        orientation="horizontal"
+        className="h-full w-full min-h-0 min-w-0"
+        onLayoutChanged={(next) => {
+          if (next && Object.keys(next).length > 1) splitSizesByKey.set(sizeKey, next);
+        }}
+      >
+        {ids.map((id, i) => (
+          <Fragment key={id}>
+            <Panel id={`files-group-${id}`} defaultSize={panelSize(id)} minSize="15%" className="min-h-0 min-w-0 overflow-hidden">
+              <EditorGroup
+                group={props.state.groups[id]!}
+                isActiveGroup={id === props.state.activeGroupId}
+                workspaces={props.workspaces}
+                explorerLaneId={props.explorerLaneId}
+                lanes={props.lanes}
+                tabScope={props.tabScope}
+                resolveTabContext={props.resolveTabContext}
+                theme={props.theme}
+                registry={props.registry}
+                dirtyTabIds={props.dirtyTabIds}
+                reloadTokensByTabId={props.reloadTokensByTabId}
+                onActivateTab={props.onActivateTab}
+                onCloseTab={props.onCloseTab}
+                onCloseOthers={props.onCloseOthers}
+                onPinTab={props.onPinTab}
+                onSplitTab={props.onSplitTab}
+                onPromoteTab={props.onPromoteTab}
+                onFocusGroup={props.onFocusGroup}
+                onSplit={props.onSplit}
+                onDirtyChange={props.onDirtyChange}
+                onError={props.onError}
+                onTabDragStart={props.onTabDragStart}
+                onTabDragEnd={props.onTabDragEnd}
+                onTabDrop={props.onTabDrop}
+                isTabDragging={props.isTabDragging}
+                onBodyDrop={props.onBodyDrop}
+              />
+            </Panel>
+            {i < ids.length - 1 ? <ResizeGutter orientation="vertical" thin /> : null}
+          </Fragment>
+        ))}
+      </Group>
+    </div>
   );
 }

@@ -28,11 +28,11 @@ export type ViewerProps = {
   /** Shared per-workbench Monaco model cache (code + markdown source use it). */
   registry: MonacoModelRegistry;
   /** Notify the shell that the in-editor buffer became dirty/clean (code viewer only). */
-  onDirtyChange?: (path: string, dirty: boolean) => void;
+  onDirtyChange?: (tabId: string, dirty: boolean) => void;
   /** Promote a preview tab to permanent on first edit. */
-  onEdit?: (path: string) => void;
+  onEdit?: (tabId: string) => void;
   /** Register/unregister the editor's imperative API for toolbar actions. */
-  onRegisterEditorApi?: (path: string, api: EditorApi | null) => void;
+  onRegisterEditorApi?: (tabId: string, api: EditorApi | null) => void;
   /** Surface viewer-owned async failures in the workbench shell. */
   onError?: (message: string) => void;
 };
