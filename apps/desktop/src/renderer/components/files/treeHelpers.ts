@@ -5,9 +5,14 @@ import type {
   FilesWorkspace,
 } from "../../../shared/types";
 
-/** Per-(project, lane) session key — the unit of tab/layout restore. */
+/** Per-(project, lane) session key — legacy; used only for migration. */
 export function filesSessionKey(projectRoot: string, laneId: string | null): string {
   return `${projectRoot}::${laneId ?? "__primary__"}`;
+}
+
+/** Project-level session key — unified tab store across all lanes. */
+export function filesProjectSessionKey(projectRoot: string): string {
+  return JSON.stringify({ kind: "files-project-session", projectRoot });
 }
 
 /**

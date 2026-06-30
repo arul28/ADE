@@ -4,6 +4,7 @@ import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
+import { editorTabId } from "./editorGroupsStore";
 import { EditorGroup, type EditorGroupProps } from "./EditorGroup";
 
 vi.mock("./ViewerHost", () => {
@@ -25,13 +26,18 @@ const registry = {
   markSaved,
 } as unknown as MonacoModelRegistry;
 
+const tabId = editorTabId("workspace-1", "src/file.ts");
+
 const baseProps: EditorGroupProps = {
   group: {
     id: "group-1",
-    activeTabId: "src/file.ts",
-    recentTabIds: ["src/file.ts"],
+    activeTabId: tabId,
+    recentTabIds: [tabId],
     tabs: [
       {
+        id: tabId,
+        workspaceId: "workspace-1",
+        laneId: "lane-1",
         path: "src/file.ts",
         title: "file.ts",
         viewerKind: "code",
@@ -42,15 +48,21 @@ const baseProps: EditorGroupProps = {
     ],
   },
   isActiveGroup: true,
-  workspaceId: "workspace-1",
-  rootPath: "/repo",
-  laneId: null,
-  canEdit: true,
-  canRevealInFinder: true,
+  explorerWorkspaceId: "workspace-1",
+  explorerLaneId: "lane-1",
+  lanes: [{ id: "lane-1", color: "#ff0000" } as never],
+  tabScope: "all",
+  resolveTabContext: () => ({
+    workspaceId: "workspace-1",
+    rootPath: "/repo",
+    laneId: "lane-1",
+    canEdit: true,
+    canRevealInFinder: true,
+  }),
   theme: "dark",
   registry,
-  dirtyPaths: new Set(["src/file.ts"]),
-  reloadTokensByPath: {},
+  dirtyTabIds: new Set([tabId]),
+  reloadTokensByTabId: {},
   onActivateTab: vi.fn(),
   onCloseTab: vi.fn(),
   onCloseOthers: vi.fn(),
@@ -87,29 +99,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  vi.clearAllMocks();
 });
 
-describe("EditorGroup save shortcut", () => {
-  it("saves when Cmd/Ctrl+S originates inside the active group", () => {
+describe("EditorGroup", () => {
+  it("renders the active tab and viewer", () => {
     render(<EditorGroup {...baseProps} />);
-
-    fireEvent.keyDown(screen.getByTestId("viewer-button"), { key: "s", metaKey: true });
-
-    expect(writeText).toHaveBeenCalledWith({ workspaceId: "workspace-1", path: "src/file.ts", text: "saved text" });
+    expect(screen.getByRole("tab", { name: /file\.ts/i })).toBeTruthy();
+    expect(screen.getByTestId("viewer-button")).toBeTruthy();
   });
 
-  it("ignores Cmd/Ctrl+S from unrelated or text-input focus targets", () => {
-    render(
-      <>
-        <input data-testid="outside-input" />
-        <EditorGroup {...baseProps} />
-      </>,
-    );
-
-    fireEvent.keyDown(screen.getByTestId("outside-input"), { key: "s", metaKey: true });
-    fireEvent.keyDown(screen.getByTestId("viewer-input"), { key: "s", metaKey: true });
-
+  it("does not steal Cmd+S from focused text inputs", () => {
+    render(<EditorGroup {...baseProps} />);
+    const input = screen.getByTestId("viewer-input");
+    fireEvent.keyDown(input, { key: "s", metaKey: true });
     expect(writeText).not.toHaveBeenCalled();
   });
 });

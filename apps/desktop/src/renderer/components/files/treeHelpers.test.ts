@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   hasAncestorDirectoryPath,
   hasLoadedDirectoryChildren,
+  filesProjectSessionKey,
+  filesSessionKey,
   isUnavailableGitDecorationsError,
   loadedDirectoryChildrenCount,
   nearestLoadedAncestorDirectoryPath,
@@ -28,6 +30,13 @@ describe("isUnavailableGitDecorationsError", () => {
   it("does not hide unrelated Files errors", () => {
     expect(isUnavailableGitDecorationsError(new Error("ENOENT: no such file or directory"))).toBe(false);
     expect(isUnavailableGitDecorationsError(new Error("Action 'file.readFile' is not callable."))).toBe(false);
+  });
+});
+
+describe("files session keys", () => {
+  it("keeps the project session key outside the lane-key namespace", () => {
+    expect(filesProjectSessionKey("/repo")).not.toBe(filesSessionKey("/repo", "__project__"));
+    expect(filesProjectSessionKey("/repo")).not.toBe(filesSessionKey("/repo", null));
   });
 });
 

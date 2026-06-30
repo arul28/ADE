@@ -33,37 +33,33 @@ export function CodeViewer({
   ctxRef.current = { workspaceId, tab, registry, onDirtyChange, onEdit, onRegisterEditorApi, onError, readOnly };
 
   const apiRef = useRef<EditorApi | null>(null);
-  const registeredPathRef = useRef<string | null>(null);
+  const registeredTabIdRef = useRef<string | null>(null);
 
   const save = useRef(async () => {
     const { workspaceId: ws, tab: t, registry: reg, onDirtyChange: onDirty } = ctxRef.current;
     const editor = editorRef.current;
     if (!editor) return;
-    if (!ctxRef.current.readOnly) {
-      try {
-        await editor.getAction("editor.action.formatDocument")?.run();
-      } catch {
-        // formatter may be unavailable for this language — save unformatted
-      }
+    if (ctxRef.current.readOnly) return;
+    try {
+      await editor.getAction("editor.action.formatDocument")?.run();
+    } catch {
+      // formatter may be unavailable for this language — save unformatted
     }
-    const text = reg.getValue(t.path) ?? editor.getValue();
+    const text = reg.getValue(t.id) ?? editor.getValue();
     await window.ade.files.writeText({ workspaceId: ws, path: t.path, text });
-    reg.markSaved(t.path);
-    onDirty?.(t.path, false);
+    reg.markSaved(t.id);
+    onDirty?.(t.id, false);
   }).current;
 
-  // This editor instance is reused across tab switches (no per-path remount), so
-  // the editor API must be (re)registered under whichever path is now active and
-  // unregistered from the previous one.
-  const registerApiForActivePath = useRef(() => {
+  const registerApiForActiveTab = useRef(() => {
     const api = apiRef.current;
     if (!api) return;
     const { tab: t, onRegisterEditorApi: register } = ctxRef.current;
-    if (registeredPathRef.current && registeredPathRef.current !== t.path) {
-      register?.(registeredPathRef.current, null);
+    if (registeredTabIdRef.current && registeredTabIdRef.current !== t.id) {
+      register?.(registeredTabIdRef.current, null);
     }
-    register?.(t.path, api);
-    registeredPathRef.current = t.path;
+    register?.(t.id, api);
+    registeredTabIdRef.current = t.id;
   }).current;
 
   // Create the editor once per mount.
@@ -112,7 +108,7 @@ export function CodeViewer({
         },
       };
       apiRef.current = api;
-      registerApiForActivePath();
+      registerApiForActiveTab();
 
       attachModel(monaco, editor);
     });
@@ -121,9 +117,9 @@ export function CodeViewer({
       disposed = true;
       changeSubRef.current?.dispose();
       changeSubRef.current = null;
-      if (registeredPathRef.current) {
-        ctxRef.current.onRegisterEditorApi?.(registeredPathRef.current, null);
-        registeredPathRef.current = null;
+      if (registeredTabIdRef.current) {
+        ctxRef.current.onRegisterEditorApi?.(registeredTabIdRef.current, null);
+        registeredTabIdRef.current = null;
       }
       apiRef.current = null;
       try {
@@ -143,9 +139,9 @@ export function CodeViewer({
     const editor = editorRef.current;
     if (!monaco || !editor) return;
     attachModel(monaco, editor);
-    registerApiForActivePath();
+    registerApiForActiveTab();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab.path, content.content, content.languageId]);
+  }, [tab.id, content.content, content.languageId]);
 
   // React to readOnly / theme without recreating the editor.
   useEffect(() => {
@@ -157,18 +153,18 @@ export function CodeViewer({
 
   function attachModel(monaco: typeof Monaco, editor: Monaco.editor.IStandaloneCodeEditor) {
     const language = resolveLanguageId(tab.path, content.languageId);
-    registry.refreshClean(monaco, tab.path, content.content, language);
-    const model = registry.getOrCreate(monaco, tab.path, content.content, language);
+    registry.refreshClean(monaco, tab.id, content.content, language);
+    const model = registry.getOrCreate(monaco, tab.id, content.content, language);
     if (editor.getModel() !== model) {
       editor.setModel(model);
     }
     changeSubRef.current?.dispose();
     changeSubRef.current = model.onDidChangeContent(() => {
       const { tab: t, registry: reg, onDirtyChange: onDirty, onEdit: onEditCb } = ctxRef.current;
-      onEditCb?.(t.path); // first edit promotes a preview tab to permanent
+      onEditCb?.(t.id); // first edit promotes a preview tab to permanent
       if (dirtyTimerRef.current) clearTimeout(dirtyTimerRef.current);
       dirtyTimerRef.current = setTimeout(() => {
-        onDirty?.(t.path, reg.isDirty(t.path));
+        onDirty?.(t.id, reg.isDirty(t.id));
       }, 120);
     });
     // Jump to a line requested by the search overlay (one-shot).

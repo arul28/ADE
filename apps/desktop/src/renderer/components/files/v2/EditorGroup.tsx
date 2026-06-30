@@ -1,10 +1,15 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, CaretRight, Copy, FloppyDisk, PushPin, SplitHorizontal, X, XCircle } from "@phosphor-icons/react";
+import type { LaneSummary } from "../../../../shared/types";
+import { getLaneAccent } from "../../lanes/laneColorPalette";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { getFileIcon } from "../filePresentation";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorGroup as EditorGroupModel, EditorTab } from "./editorGroupsStore";
+import type { TabWorkspaceContext } from "./EditorGroups";
 import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
+import type { FilesTabScope } from "./filesTabScope";
+import { filterTabsForScope, isLaneGroupBoundary, orderTabsByLane } from "./tabDisplayOrder";
 import { ViewerHost } from "./ViewerHost";
 import { DiffViewer } from "./viewers/DiffViewer";
 import type { EditorApi, EditorThemeMode } from "./viewers/types";
@@ -13,35 +18,39 @@ import { joinDisplayPath } from "./pathDisplay";
 export type EditorGroupProps = {
   group: EditorGroupModel;
   isActiveGroup: boolean;
-  workspaceId: string;
-  rootPath: string;
-  /** Lane id of the active workspace, or null for the primary checkout (no diff). */
-  laneId: string | null;
-  canEdit: boolean;
-  canRevealInFinder: boolean;
+  explorerWorkspaceId: string;
+  explorerLaneId: string | null;
+  lanes: LaneSummary[];
+  tabScope: FilesTabScope;
+  resolveTabContext: (tab: EditorTab) => TabWorkspaceContext;
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
-  dirtyPaths: ReadonlySet<string>;
-  reloadTokensByPath: Readonly<Record<string, number>>;
-  onActivateTab: (groupId: string, path: string) => void;
-  onCloseTab: (groupId: string, path: string) => void;
-  onCloseOthers: (groupId: string, path: string) => void;
-  onPinTab: (groupId: string, path: string) => void;
-  onSplitTab: (groupId: string, path: string) => void;
-  onPromoteTab: (groupId: string, path: string) => void;
+  dirtyTabIds: ReadonlySet<string>;
+  reloadTokensByTabId: Readonly<Record<string, number>>;
+  onActivateTab: (groupId: string, tabId: string) => void;
+  onCloseTab: (groupId: string, tabId: string) => void;
+  onCloseOthers: (groupId: string, tabId: string) => void;
+  onPinTab: (groupId: string, tabId: string) => void;
+  onSplitTab: (groupId: string, tabId: string) => void;
+  onPromoteTab: (groupId: string, tabId: string) => void;
   onFocusGroup: (groupId: string) => void;
   onSplit: (groupId: string) => void;
-  onDirtyChange: (path: string, dirty: boolean) => void;
+  onDirtyChange: (tabId: string, dirty: boolean) => void;
   onError: (message: string) => void;
-  onTabDragStart: (groupId: string, path: string) => void;
+  onTabDragStart: (groupId: string, tabId: string) => void;
   onTabDragEnd: () => void;
   onTabDrop: (groupId: string) => void;
-  /** True while any tab is being dragged — shows this group's split/move drop zones. */
   isTabDragging: boolean;
   onBodyDrop: (targetGroupId: string, side: "left" | "right" | "center") => void;
 };
 
 type DropZone = "left" | "right" | "center";
+
+function laneAccentForTab(tab: EditorTab, lanes: readonly LaneSummary[]): string {
+  const lane = tab.laneId ? lanes.find((entry) => entry.id === tab.laneId) : null;
+  const fallbackIndex = tab.laneId ? lanes.findIndex((entry) => entry.id === tab.laneId) : 0;
+  return getLaneAccent(lane, fallbackIndex >= 0 ? fallbackIndex : 0);
+}
 
 function isTextInputTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -49,77 +58,92 @@ function isTextInputTarget(target: EventTarget | null): boolean {
 }
 
 export function EditorGroup(props: EditorGroupProps) {
-  const { group, dirtyPaths } = props;
-  const { canEdit, onDirtyChange, onError, registry, workspaceId } = props;
+  const { group, dirtyTabIds, onDirtyChange, onError, registry, resolveTabContext } = props;
   const groupRef = useRef<HTMLDivElement | null>(null);
   const editorApis = useRef<Map<string, EditorApi>>(new Map());
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
-  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; path: string } | null>(null);
-  const [diffPaths, setDiffPaths] = useState<Set<string>>(new Set());
-  const activeTab = group.tabs.find((t) => t.path === group.activeTabId) ?? null;
-  const diffAvailable = !!props.laneId && activeTab?.viewerKind === "code";
-  const activeInDiff = !!activeTab && diffAvailable && diffPaths.has(activeTab.path);
-  const toggleDiff = (path: string) =>
-    setDiffPaths((prev) => {
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+  const [diffTabIds, setDiffTabIds] = useState<Set<string>>(new Set());
+
+  const displayTabs = useMemo(() => {
+    const filtered = filterTabsForScope(group.tabs, props.tabScope, props.explorerLaneId, props.explorerWorkspaceId);
+    return props.tabScope === "all" ? orderTabsByLane(filtered, props.lanes) : filtered;
+  }, [group.tabs, props.explorerLaneId, props.explorerWorkspaceId, props.lanes, props.tabScope]);
+
+  const activeTab = useMemo(() => {
+    const fromGroup = group.tabs.find((t) => t.id === group.activeTabId) ?? null;
+    if (props.tabScope === "all") return fromGroup;
+    if (!fromGroup) return null;
+    if (displayTabs.some((tab) => tab.id === fromGroup.id)) return fromGroup;
+    return displayTabs[displayTabs.length - 1] ?? null;
+  }, [displayTabs, group.activeTabId, group.tabs, props.tabScope]);
+  const activeContext = activeTab ? resolveTabContext(activeTab) : null;
+  const diffAvailable = !!activeContext?.laneId && activeTab?.viewerKind === "code";
+  const activeInDiff = !!activeTab && diffAvailable && diffTabIds.has(activeTab.id);
+  const toggleDiff = (tabId: string) =>
+    setDiffTabIds((prev) => {
       const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
+      if (next.has(tabId)) next.delete(tabId);
+      else next.add(tabId);
       return next;
     });
 
-  const tabMenuItems = (path: string): ContextMenuItem[] => {
-    const pinned = group.tabs.find((t) => t.path === path)?.pinned ?? false;
-    const name = path.split("/").filter(Boolean).pop() ?? path;
+  const tabMenuItems = (tabId: string): ContextMenuItem[] => {
+    const tab = group.tabs.find((t) => t.id === tabId);
+    if (!tab) return [];
+    const ctx = resolveTabContext(tab);
+    const pinned = tab.pinned;
+    const name = tab.path.split("/").filter(Boolean).pop() ?? tab.path;
     return [
-      { type: "item", label: "Close", icon: <X size={13} />, onClick: () => props.onCloseTab(group.id, path) },
-      { type: "item", label: "Close Others", icon: <XCircle size={13} />, onClick: () => props.onCloseOthers(group.id, path), disabled: group.tabs.length <= 1 },
+      { type: "item", label: "Close", icon: <X size={13} />, onClick: () => props.onCloseTab(group.id, tabId) },
+      { type: "item", label: "Close Others", icon: <XCircle size={13} />, onClick: () => props.onCloseOthers(group.id, tabId), disabled: group.tabs.length <= 1 },
       { type: "separator" },
-      { type: "item", label: pinned ? "Pinned" : "Pin", icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} />, onClick: () => props.onPinTab(group.id, path), disabled: pinned },
-      { type: "item", label: "Split Right", icon: <SplitHorizontal size={13} />, onClick: () => props.onSplitTab(group.id, path), disabled: group.tabs.length <= 1 },
+      { type: "item", label: pinned ? "Pinned" : "Pin", icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} />, onClick: () => props.onPinTab(group.id, tabId), disabled: pinned },
+      { type: "item", label: "Split Right", icon: <SplitHorizontal size={13} />, onClick: () => props.onSplitTab(group.id, tabId), disabled: group.tabs.length <= 1 },
       { type: "separator" },
-      { type: "item", label: "Copy Full Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(joinDisplayPath(props.rootPath, path)) },
-      { type: "item", label: "Copy Relative Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(path) },
+      { type: "item", label: "Copy Full Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(joinDisplayPath(ctx.rootPath, tab.path)) },
+      { type: "item", label: "Copy Relative Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(tab.path) },
       { type: "item", label: "Copy Name", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(name) },
       {
         type: "item",
         label: "Reveal in Finder",
         icon: <ArrowSquareOut size={13} />,
-        onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: props.rootPath, relativePath: path, target: "finder" }).catch(() => {}),
-        disabled: !props.canRevealInFinder,
+        onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: ctx.rootPath, relativePath: tab.path, target: "finder" }).catch(() => {}),
+        disabled: !ctx.canRevealInFinder,
       },
     ];
   };
 
-  const registerApi = (path: string, api: EditorApi | null) => {
-    if (api) editorApis.current.set(path, api);
-    else editorApis.current.delete(path);
+  const registerApi = (tabId: string, api: EditorApi | null) => {
+    if (api) editorApis.current.set(tabId, api);
+    else editorApis.current.delete(tabId);
   };
 
   const saveActive = useCallback(() => {
-    if (!activeTab) return;
-    const api = editorApis.current.get(activeTab.path);
+    if (!activeTab || !activeContext) return;
+    const api = editorApis.current.get(activeTab.id);
     if (api) {
       void api.save().catch((err) => {
         onError(err instanceof Error ? err.message : String(err));
       });
       return;
     }
-    if (!canEdit || activeTab.viewerKind !== "code") return;
-    const text = registry.getValue(activeTab.path);
+    if (!activeContext.canEdit || activeTab.viewerKind !== "code") return;
+    const text = registry.getValue(activeTab.id);
     if (text == null) return;
     void window.ade.files
-      .writeText({ workspaceId, path: activeTab.path, text })
+      .writeText({ workspaceId: activeContext.workspaceId, path: activeTab.path, text })
       .then(() => {
-        registry.markSaved(activeTab.path);
-        onDirtyChange(activeTab.path, false);
+        registry.markSaved(activeTab.id);
+        onDirtyChange(activeTab.id, false);
       })
       .catch((err) => {
         onError(err instanceof Error ? err.message : String(err));
       });
-  }, [activeTab, canEdit, onDirtyChange, onError, registry, workspaceId]);
+  }, [activeContext, activeTab, onDirtyChange, onError, registry]);
 
   useEffect(() => {
-    if (!props.isActiveGroup || !activeTab || !canEdit || activeTab.viewerKind !== "code") return;
+    if (!props.isActiveGroup || !activeTab || !activeContext?.canEdit || activeTab.viewerKind !== "code") return;
     const onKey = (event: KeyboardEvent) => {
       const mod = event.metaKey || event.ctrlKey;
       if (!mod || event.shiftKey || event.altKey || (event.key !== "s" && event.key !== "S")) return;
@@ -132,7 +156,7 @@ export function EditorGroup(props: EditorGroupProps) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeTab, canEdit, props.isActiveGroup, saveActive]);
+  }, [activeContext?.canEdit, activeTab, props.isActiveGroup, saveActive]);
 
   return (
     <div
@@ -141,35 +165,35 @@ export function EditorGroup(props: EditorGroupProps) {
       onMouseDown={() => props.onFocusGroup(group.id)}
       style={{ outline: props.isActiveGroup ? `1px solid ${COLORS.accentBorder}` : "none", outlineOffset: -1 }}
     >
-      {/* Tab strip */}
       <div
         className="flex shrink-0 items-stretch overflow-x-auto border-b"
         style={{ borderColor: COLORS.border, background: COLORS.recessedBg }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={() => props.onTabDrop(group.id)}
       >
-        {group.tabs.length === 0 ? (
+        {displayTabs.length === 0 ? (
           <div className="px-3 py-1.5 text-xs" style={{ color: COLORS.textDim }}>No open files</div>
         ) : (
-          group.tabs.map((tab) => (
+          displayTabs.map((tab, index) => (
             <TabButton
-              key={tab.path}
+              key={tab.id}
               tab={tab}
-              active={tab.path === group.activeTabId}
-              dirty={dirtyPaths.has(tab.path)}
-              onActivate={() => props.onActivateTab(group.id, tab.path)}
-              onClose={() => props.onCloseTab(group.id, tab.path)}
-              onPromote={() => props.onPromoteTab(group.id, tab.path)}
-              onDragStart={() => props.onTabDragStart(group.id, tab.path)}
+              active={tab.id === group.activeTabId}
+              dirty={dirtyTabIds.has(tab.id)}
+              laneAccent={props.tabScope === "all" ? laneAccentForTab(tab, props.lanes) : undefined}
+              showLaneDivider={props.tabScope === "all" && isLaneGroupBoundary(displayTabs, index)}
+              onActivate={() => props.onActivateTab(group.id, tab.id)}
+              onClose={() => props.onCloseTab(group.id, tab.id)}
+              onPromote={() => props.onPromoteTab(group.id, tab.id)}
+              onDragStart={() => props.onTabDragStart(group.id, tab.id)}
               onDragEnd={props.onTabDragEnd}
-              onContextMenu={(x, y) => setTabMenu({ x, y, path: tab.path })}
+              onContextMenu={(x, y) => setTabMenu({ x, y, tabId: tab.id })}
             />
           ))
         )}
       </div>
 
-      {/* Breadcrumb + toolbar */}
-      {activeTab ? (
+      {activeTab && activeContext ? (
         <div className="flex shrink-0 items-center gap-1 border-b px-2 py-1 text-xs" style={{ borderColor: COLORS.border }}>
           <Breadcrumb path={activeTab.path} />
           <div className="ml-auto flex items-center gap-1">
@@ -181,7 +205,7 @@ export function EditorGroup(props: EditorGroupProps) {
                     <button
                       key={m}
                       type="button"
-                      onClick={() => toggleDiff(activeTab.path)}
+                      onClick={() => toggleDiff(activeTab.id)}
                       className="px-2 py-0.5 text-[10px] font-semibold uppercase"
                       style={{ color: isOn ? "var(--color-accent-fg)" : COLORS.textMuted, background: isOn ? COLORS.accent : "transparent" }}
                     >
@@ -191,7 +215,7 @@ export function EditorGroup(props: EditorGroupProps) {
                 })}
               </div>
             ) : null}
-            {activeTab.viewerKind === "code" && props.canEdit ? (
+            {activeTab.viewerKind === "code" && activeContext.canEdit ? (
               <button type="button" onClick={saveActive} title="Save (⌘S)" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
                 <FloppyDisk size={14} />
               </button>
@@ -203,21 +227,20 @@ export function EditorGroup(props: EditorGroupProps) {
         </div>
       ) : null}
 
-      {/* Body */}
       <div className="relative min-h-0 min-w-0 flex-1">
-        {activeTab && activeInDiff && props.laneId ? (
-          <DiffViewer laneId={props.laneId} path={activeTab.path} theme={props.theme} />
-        ) : activeTab ? (
+        {activeTab && activeContext && activeInDiff && activeContext.laneId ? (
+          <DiffViewer laneId={activeContext.laneId} path={activeTab.path} theme={props.theme} />
+        ) : activeTab && activeContext ? (
           <ViewerHost
-            workspaceId={props.workspaceId}
-            rootPath={props.rootPath}
+            workspaceId={activeContext.workspaceId}
+            rootPath={activeContext.rootPath}
             tab={activeTab}
-            canEdit={props.canEdit}
+            canEdit={activeContext.canEdit}
             theme={props.theme}
             registry={props.registry}
-            reloadToken={props.reloadTokensByPath[activeTab.path] ?? 0}
+            reloadToken={props.reloadTokensByTabId[activeTab.id] ?? 0}
             onDirtyChange={props.onDirtyChange}
-            onEdit={(path) => props.onPromoteTab(group.id, path)}
+            onEdit={(tabId) => props.onPromoteTab(group.id, tabId)}
             onRegisterEditorApi={registerApi}
             onError={props.onError}
           />
@@ -227,7 +250,6 @@ export function EditorGroup(props: EditorGroupProps) {
           </div>
         )}
 
-        {/* Drag-to-split / move drop zone (only while a tab is being dragged). */}
         {props.isTabDragging ? (
           <div
             className="absolute inset-0 z-10"
@@ -265,7 +287,7 @@ export function EditorGroup(props: EditorGroupProps) {
       </div>
 
       {tabMenu ? (
-        <ContextMenu x={tabMenu.x} y={tabMenu.y} items={tabMenuItems(tabMenu.path)} onClose={() => setTabMenu(null)} />
+        <ContextMenu x={tabMenu.x} y={tabMenu.y} items={tabMenuItems(tabMenu.tabId)} onClose={() => setTabMenu(null)} />
       ) : null}
     </div>
   );
@@ -275,6 +297,8 @@ function TabButton({
   tab,
   active,
   dirty,
+  laneAccent,
+  showLaneDivider,
   onActivate,
   onClose,
   onPromote,
@@ -285,6 +309,8 @@ function TabButton({
   tab: EditorTab;
   active: boolean;
   dirty: boolean;
+  laneAccent?: string;
+  showLaneDivider?: boolean;
   onActivate: () => void;
   onClose: () => void;
   onPromote: () => void;
@@ -299,8 +325,7 @@ function TabButton({
       aria-selected={active}
       draggable
       onDragStart={(e) => {
-        // Some Chromium builds won't start a DnD without payload set.
-        try { e.dataTransfer.setData("text/plain", tab.path); e.dataTransfer.effectAllowed = "move"; } catch { /* ignore */ }
+        try { e.dataTransfer.setData("text/plain", tab.id); e.dataTransfer.effectAllowed = "move"; } catch { /* ignore */ }
         onDragStart();
       }}
       onDragEnd={onDragEnd}
@@ -319,6 +344,8 @@ function TabButton({
       className="group flex shrink-0 cursor-pointer items-center gap-1.5 border-r px-2.5 py-1.5 text-xs"
       style={{
         borderColor: COLORS.border,
+        borderLeft: laneAccent ? `2px solid ${laneAccent}` : showLaneDivider ? `2px solid ${COLORS.border}` : undefined,
+        marginLeft: showLaneDivider ? 4 : undefined,
         background: active ? COLORS.cardBg : "transparent",
         color: active ? COLORS.textPrimary : COLORS.textMuted,
         fontStyle: tab.preview ? "italic" : "normal",
