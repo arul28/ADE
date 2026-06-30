@@ -17,6 +17,17 @@ function projectKey(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "active";
 }
 
+function summaryFreshness(summary: PrSummary): number {
+  const updatedAt = Date.parse(summary.updatedAt || "");
+  const lastSyncedAt = Date.parse(summary.lastSyncedAt || "");
+  return Math.max(Number.isFinite(updatedAt) ? updatedAt : 0, Number.isFinite(lastSyncedAt) ? lastSyncedAt : 0);
+}
+
+function freshestLinkedPr(current: PrSummary, recent: PrSummary | null): PrSummary | null {
+  if (!recent) return null;
+  return summaryFreshness(current) > summaryFreshness(recent) ? current : recent;
+}
+
 function coalesceInFlight<T>(
   cache: Map<string, InFlightEntry<T>>,
   key: string,
@@ -92,7 +103,7 @@ export function refreshLinkedPrCoalesced(
   const cooldownMs = Math.max(0, options?.cooldownMs ?? LINKED_PR_LIVE_REFRESH_COOLDOWN_MS);
   const recent = linkedPrRecentRefresh.get(key);
   if (!options?.force && recent && Date.now() - recent.refreshedAt < cooldownMs) {
-    return Promise.resolve(recent.result);
+    return Promise.resolve(freshestLinkedPr(pr, recent.result));
   }
 
   return coalesceInFlight(

@@ -123,4 +123,30 @@ describe("prReadCache", () => {
 
     expect(refresh).toHaveBeenCalledTimes(1);
   });
+
+  it("does not replace a fresher linked PR row during the cooldown", async () => {
+    const stalePr = {
+      id: "pr-1",
+      laneId: "lane-1",
+      state: "open",
+      updatedAt: "2026-06-29T14:00:00.000Z",
+      lastSyncedAt: "2026-06-29T14:00:00.000Z",
+    };
+    const fresherPr = {
+      ...stalePr,
+      state: "merged",
+      updatedAt: "2026-06-29T14:01:00.000Z",
+      lastSyncedAt: "2026-06-29T14:01:00.000Z",
+    };
+    refresh.mockResolvedValueOnce([stalePr]);
+
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(stalePr);
+    await expect(
+      refreshLinkedPrCoalesced(fresherPr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(fresherPr);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });
