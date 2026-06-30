@@ -1,9 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import type { PrSummary } from "../../../shared/types";
+import type { PrEventPayload, PrSummary } from "../../../shared/types";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
 import { ChatPrPane } from "./ChatPrPane";
@@ -36,16 +36,28 @@ function buildPr(overrides: Partial<PrSummary> = {}): PrSummary {
 }
 
 function installAdeMocks(stalePr: PrSummary, freshPr: PrSummary) {
+  let prEventListener: ((event: PrEventPayload) => void) | null = null;
   globalThis.window.ade = {
     prs: {
       getForLane: vi.fn().mockResolvedValue(stalePr),
       refresh: vi.fn().mockResolvedValue([freshPr]),
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      onEvent: vi.fn().mockImplementation((listener) => {
+        prEventListener = listener;
+        return () => {
+          if (prEventListener === listener) prEventListener = null;
+        };
+      }),
     },
     app: {
       openExternal: vi.fn().mockResolvedValue(undefined),
     },
   } as any;
+
+  return {
+    emitPrEvent: (event: PrEventPayload) => {
+      prEventListener?.(event);
+    },
+  };
 }
 
 describe("ChatPrPane", () => {
@@ -80,7 +92,7 @@ describe("ChatPrPane", () => {
       title: "Fix stale PR pane after merge",
       updatedAt: "2026-06-29T14:00:00.000Z",
     });
-    installAdeMocks(stalePr, freshPr);
+    const { emitPrEvent } = installAdeMocks(stalePr, freshPr);
 
     render(
       <MemoryRouter>
@@ -95,5 +107,17 @@ describe("ChatPrPane", () => {
     await waitFor(() => {
       expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-333"] });
     });
+    expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emitPrEvent({
+        type: "prs-updated",
+        polledAt: "2026-06-29T14:01:00.000Z",
+        prs: [buildPr({ id: "other-pr", laneId: "other-lane", githubPrNumber: 444 })],
+      });
+    });
+
+    expect(screen.getByText("MERGED #333")).toBeTruthy();
+    expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
   });
 });

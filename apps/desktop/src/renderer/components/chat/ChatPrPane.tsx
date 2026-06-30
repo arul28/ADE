@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowSquareOut,
@@ -119,50 +119,55 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const currentPrIdRef = useRef<string | null>(null);
+
+  const setCurrentPr = useCallback((nextPr: PrSummary | null) => {
+    currentPrIdRef.current = nextPr?.id ?? null;
+    setPr(nextPr);
+  }, []);
 
   const refresh = useCallback(async (options: { live?: boolean } = {}) => {
     let cached: PrSummary | null = null;
     try {
       cached = await window.ade.prs.getForLane(laneId);
-      setPr(cached);
+      setCurrentPr(cached);
       if (options.live && cached) {
         const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot });
-        setPr(refreshed ?? cached);
+        setCurrentPr(refreshed ?? cached);
       }
     } catch {
-      if (!cached) setPr(null);
+      if (!cached) setCurrentPr(null);
     } finally {
       setLoading(false);
     }
-  }, [laneId, projectRoot]);
+  }, [laneId, projectRoot, setCurrentPr]);
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
   // next GitHub polling round-trip (`prs-updated`) to refresh the row. (The
   // creator only renders once `loading` is false, so no setLoading needed here.)
   const handleCreated = useCallback((created: PrSummary) => {
-    setPr(created);
-  }, []);
+    setCurrentPr(created);
+  }, [setCurrentPr]);
 
   useEffect(() => { void refresh({ live: true }); }, [refresh]);
 
   useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event) => {
+      const currentPrId = currentPrIdRef.current;
       if (event.type === "pr-notification") {
-        if (event.laneId === laneId || event.prId === pr?.id) void refresh();
+        if (event.laneId === laneId || event.prId === currentPrId) void refresh();
         return;
       }
       if (event.type !== "prs-updated") return;
       const eventIncludesLanePr = event.prs.some((next) => next.laneId === laneId);
-      const eventIncludesCurrentPr = pr ? event.prs.some((next) => next.id === pr.id) : false;
-      if (eventIncludesLanePr || eventIncludesCurrentPr || !pr) {
+      const eventIncludesCurrentPr = currentPrId ? event.prs.some((next) => next.id === currentPrId) : false;
+      if (eventIncludesLanePr || eventIncludesCurrentPr || !currentPrId) {
         void refresh();
-      } else {
-        setPr(null);
       }
     });
     return unsubscribe;
-  }, [laneId, pr, refresh]);
+  }, [laneId, refresh]);
 
   useEffect(() => {
     if (!copied) return;
