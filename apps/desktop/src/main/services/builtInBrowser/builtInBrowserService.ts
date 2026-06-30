@@ -575,6 +575,7 @@ function createBuiltInBrowserWindowService(args: {
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
+  const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
 
   const logger = (): Logger | null => {
@@ -1057,6 +1058,55 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
+  const recoverTabAfterRenderProcessGone = async (
+    tab: BrowserTabState,
+    details: Electron.RenderProcessGoneDetails,
+  ): Promise<void> => {
+    if (renderProcessRecoveryTabs.has(tab.id) || tab.webContents.isDestroyed()) return;
+    const crashedUrl = emptyToNull(tab.webContents.getURL()) ?? "about:blank";
+    const reason = details.reason || "unknown";
+    if (reason === "clean-exit") {
+      notifyTabActivity(tab);
+      emitStatus();
+      return;
+    }
+    renderProcessRecoveryTabs.add(tab.id);
+    const exitCode = Number.isFinite(details.exitCode) ? `, exit code ${details.exitCode}` : "";
+    const message = `ADE browser tab renderer exited (${reason}${exitCode}). Recovered the tab to a blank page.`;
+    try {
+      tab.pendingNetworkRequests.clear();
+      pushNetworkDiagnostic(tab, {
+        url: crashedUrl,
+        method: null,
+        resourceType: "mainFrame",
+        statusCode: null,
+        error: message,
+        startedAt: null,
+        endedAt: new Date().toISOString(),
+        durationMs: null,
+      });
+      if (tab.id === activeTabId) {
+        clearSelectionInternal();
+        await stopInspectQuietly("built_in_browser.render_process_gone_stop_inspect_failed");
+      }
+      emitError(new Error(message));
+      if (!tab.webContents.isDestroyed()) {
+        await tab.webContents.loadURL("about:blank");
+      }
+    } catch (error) {
+      logger()?.warn("built_in_browser.render_process_recovery_failed", {
+        tabId: tab.id,
+        reason,
+        err: errorMessage(error),
+      });
+      emitError(new Error(`ADE browser tab renderer exited and recovery failed: ${errorMessage(error)}`));
+    } finally {
+      renderProcessRecoveryTabs.delete(tab.id);
+      notifyTabActivity(tab);
+      emitStatus();
+    }
+  };
+
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
@@ -1075,11 +1125,15 @@ function createBuiltInBrowserWindowService(args: {
     });
     wc.setWindowOpenHandler(({ url }) => {
       const tab = createPopupTabState(url, tabForWebContents(wc) ?? activeTab());
-      if (!tab) return { action: "deny" };
-      return {
-        action: "allow",
-        createWindow: () => tab.webContents,
-      };
+      if (tab) {
+        const popupUrl = stringOrNull(url) ?? "about:blank";
+        // Own popup navigation; Electron cannot attach an existing WebContentsView as a native guest window.
+        void tab.webContents.loadURL(popupUrl).catch((error) => {
+          emitError(new Error(`Could not open browser popup: ${errorMessage(error)}`));
+          emitStatus();
+        });
+      }
+      return { action: "deny" };
     });
     wc.on("will-navigate", (event, url) => {
       if (isAllowedNavigationUrl(url)) return;
@@ -1109,12 +1163,20 @@ function createBuiltInBrowserWindowService(args: {
       emitStatus();
     });
     wc.on("render-process-gone", (_event, details) => {
+      const tab = tabForWebContents(wc);
       logger()?.warn("built_in_browser.render_process_gone", {
         reason: details.reason,
         exitCode: details.exitCode,
+        tabId: tab?.id ?? null,
+        url: tab ? emptyToNull(tab.webContents.getURL()) : null,
       });
-      notifyTabActivity(tabForWebContents(wc));
-      emitStatus();
+      if (!tab) {
+        emitStatus();
+        return;
+      }
+      void recoverTabAfterRenderProcessGone(tab, details).catch((error) => {
+        emitError(new Error(`ADE browser tab renderer recovery failed: ${errorMessage(error)}`));
+      });
     });
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame || errorCode === -3) return;

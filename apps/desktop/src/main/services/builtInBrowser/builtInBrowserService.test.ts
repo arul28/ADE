@@ -989,6 +989,53 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.openExternal).not.toHaveBeenCalled();
   });
 
+  it("recovers crashed browser renderers to a blank tab with an error event", async () => {
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const service = createBuiltInBrowserService({ getLogger: () => logger, onEvent: collector.onEvent });
+    service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://linear.app/integrations/agents", activate: true });
+    collector.events.length = 0;
+
+    const wc = fakes.webContentsInstances[0];
+    expect(wc, "browser tab webContents exists").toBeTruthy();
+    const originalLoadURL = wc.loadURL;
+    let resolveRecovery: () => void = () => undefined;
+    const recovered = new Promise<void>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    wc.loadURL = vi.fn(async (url: string) => {
+      await originalLoadURL(url);
+      if (url === "about:blank") resolveRecovery();
+    });
+
+    wc.emit("render-process-gone", {}, {
+      reason: "crashed",
+      exitCode: 133,
+    });
+    await recovered;
+
+    expect(service.getStatus().url).toBe("about:blank");
+    expect(service.getStatus().tabs[0]).toMatchObject({
+      url: "about:blank",
+      isLoading: false,
+    });
+    expect(collector.events.some((event) => (
+      event.type === "error"
+      && event.message.includes("renderer exited (crashed, exit code 133)")
+      && event.message.includes("Recovered the tab to a blank page")
+    ))).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith("built_in_browser.render_process_gone", expect.objectContaining({
+      reason: "crashed",
+      exitCode: 133,
+      url: "https://linear.app/integrations/agents",
+    }));
+  });
+
   it("does not impersonate Chrome or rewrite browser request headers", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({ url: "https://example.test", activate: true });
@@ -1029,7 +1076,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     })).toBe(false);
   });
 
-  it("opens popup requests as real ADE browser tabs", async () => {
+  it("intercepts popup requests as real ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({
       url: "https://example.test",
@@ -1042,11 +1089,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     const response = firstWc?.openWindow("https://accounts.google.com/gsi/select");
 
-    expect(response?.action).toBe("allow");
+    expect(response?.action).toBe("deny");
     expect(service.getStatus().tabs).toHaveLength(2);
     expect(service.getStatus().activeTabId).not.toBe(firstTabId);
-    expect(response?.createWindow?.({})).toBe(fakes.webContentsInstances[1]);
+    expect(response?.createWindow).toBeUndefined();
     expect(service.getStatus().tabs.at(-1)).toMatchObject({
+      url: "https://accounts.google.com/gsi/select",
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
