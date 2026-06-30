@@ -345,11 +345,17 @@ See the detail docs for the specifics:
    does not complete within that window the stale runtime is discarded and
    recreated on the next turn.
 3. `sendMessage({ sessionId, text, attachments? })` via
-   `ade.agentChat.send` dispatches a turn. Interactive chat sends are not
-   wall-clock bounded by the service; the turn runs until the provider
-   completes or the user/app interrupts it. The blocking `runSessionTurn`
-   helper used by automation has a 5 min default RPC timeout unless the
-   caller passes `timeoutMs: null`; background/headless chat launches opt out.
+   `ade.agentChat.send` dispatches a turn. The ADE action bridge exposes
+   the same path as `chat.sendMessage`; `ade chat send` returns an accepted
+   acknowledgement after the service accepts the message, while provider
+   dispatch and event streaming continue asynchronously. `ade chat create
+   --prompt` uses this same follow-up send after the session is created, and
+   `ade chat read <session>` calls `chat.readTranscript` to inspect recent
+   transcript messages. Interactive chat sends are not wall-clock bounded by
+   the service; the turn runs until the provider completes or the user/app
+   interrupts it. The blocking `runSessionTurn` helper used by automation has
+   a 5 min default RPC timeout unless the caller passes `timeoutMs: null`;
+   background/headless chat launches opt out.
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).
