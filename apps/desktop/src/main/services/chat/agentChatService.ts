@@ -20001,6 +20001,9 @@ export function createAgentChatService(args: {
       } finally {
         if (deferInheritedGoalUntilHandoffDispatch) {
           applyInheritedGoal();
+          if (createdManaged.runtime?.kind === "codex") {
+            await seedCodexThreadGoalFromSessionGoal(createdManaged, createdManaged.runtime);
+          }
           persistChatState(createdManaged);
         }
       }

@@ -3198,6 +3198,7 @@ describe("createAgentChatService", () => {
         sourceRow.summary = "Fix the iPhone 17 simulator chat layout handoff.";
       }
 
+      const handoffStart = mockState.codexRequestPayloads.length;
       const result = await service.handoffSession({
         sourceSessionId: source.id,
         targetModelId: "openai/gpt-5.5",
@@ -3206,18 +3207,24 @@ describe("createAgentChatService", () => {
       expect(result.session.provider).toBe("codex");
       expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
 
-      const requestMethods = mockState.codexRequestPayloads.map((payload) => String(payload.method ?? ""));
+      const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
+      const requestMethods = handoffPayloads.map((payload) => String(payload.method ?? ""));
       const turnStartIndex = requestMethods.indexOf("turn/start");
       const goalSetIndex = requestMethods.indexOf("thread/goal/set");
       expect(turnStartIndex).toBeGreaterThanOrEqual(0);
-      expect(goalSetIndex === -1 || goalSetIndex > turnStartIndex).toBe(true);
+      expect(goalSetIndex).toBeGreaterThan(turnStartIndex);
 
-      const turnStartRequest = mockState.codexRequestPayloads[turnStartIndex] as {
+      const turnStartRequest = handoffPayloads[turnStartIndex] as {
         params?: { input?: Array<{ text?: unknown }> };
       };
       const inputText = turnStartRequest.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(inputText).toContain("This message was injected automatically by ADE during a chat handoff.");
       expect(inputText).toContain("No Machine State Polish");
+
+      const goalSetRequest = handoffPayloads[goalSetIndex] as {
+        params?: { objective?: unknown };
+      };
+      expect(goalSetRequest.params?.objective).toBe("No Machine State Polish");
     });
 
     it("uses the selected Claude handoff permission instead of the source interaction mode", async () => {
