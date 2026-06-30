@@ -1136,9 +1136,9 @@ function createBuiltInBrowserWindowService(args: {
       if (!popupUrl) return { action: "deny" };
       return {
         action: "allow",
-        createWindow: (options) => {
+        createWindow: () => {
           const tab = createPopupTabStateFromView(popupUrl, opener, new WebContentsView({
-            webPreferences: browserWebPreferences(options.webPreferences),
+            webPreferences: browserWebPreferences(),
           }));
           return tab.webContents;
         },
@@ -1214,8 +1214,7 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
-  const browserWebPreferences = (overrides: Electron.WebPreferences = {}): Electron.WebPreferences => ({
-    ...overrides,
+  const browserWebPreferences = (): Electron.WebPreferences => ({
     partition: args.profile.partition,
     nodeIntegration: false,
     contextIsolation: true,

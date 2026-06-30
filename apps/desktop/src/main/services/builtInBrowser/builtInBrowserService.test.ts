@@ -1123,8 +1123,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const popupWc = response?.createWindow?.({
       webPreferences: {
         additionalArguments: ["--popup"],
+        javascript: false,
         nodeIntegration: true,
         partition: "persist:other",
+        webviewTag: true,
       },
     });
     expect(popupWc).toBe(fakes.webContentsInstances.at(-1));
@@ -1137,8 +1139,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
-    expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toMatchObject({
-      additionalArguments: ["--popup"],
+    const popupWebPreferences = fakes.webContentsViewInstances.at(-1)?.webPreferences as Record<string, unknown>;
+    expect(popupWebPreferences).toMatchObject({
       partition: service.getStatus().partition,
       nodeIntegration: false,
       contextIsolation: true,
@@ -1146,6 +1148,9 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       webSecurity: true,
       backgroundThrottling: false,
     });
+    expect(popupWebPreferences.additionalArguments).toBeUndefined();
+    expect(popupWebPreferences.javascript).toBeUndefined();
+    expect(popupWebPreferences.webviewTag).toBeUndefined();
 
     const openEvent = collector.events.findLast((event) => event.type === "open-request");
     expect(openEvent).toMatchObject({
