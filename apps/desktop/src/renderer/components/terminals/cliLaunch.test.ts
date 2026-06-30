@@ -396,6 +396,34 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(meta.promptTitle).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs");
     });
 
+    it("derives metadata from ADE lane guidance without a blank separator", () => {
+      const meta = deriveTrackedCliInitialInputSessionMeta({
+        provider: "codex",
+        title: "Codex",
+        initialInput: [
+          "You are working in ADE lane:",
+          "/repo/.ade/worktrees/context-iphone-17-simulator",
+          "Redesign the ADE mobile project hub.",
+        ].join("\n"),
+      });
+
+      expect(meta.goal).toBe("Redesign the ADE mobile project hub.");
+      expect(meta.title).toBe("Redesign the ADE mobile project hub");
+      expect(meta.promptTitle).toBe("Redesign the ADE mobile project hub");
+    });
+
+    it("does not unwrap ordinary prompts that mention ADE guidance text", () => {
+      const meta = deriveTrackedCliInitialInputSessionMeta({
+        provider: "codex",
+        title: "Codex",
+        initialInput: "Explain why docs say Start working on that user prompt immediately.",
+      });
+
+      expect(meta.goal).toBe("Explain why docs say Start working on that user prompt immediately.");
+      expect(meta.title).toBe("Explain why docs say Start working on that user prompt immediately");
+      expect(meta.promptTitle).toBe("Explain why docs say Start working on that user prompt immediately");
+    });
+
     it("passes explicit Codex service tier overrides for fast mode", () => {
       const fastLaunch = buildTrackedCliLaunchCommand({
         provider: "codex",

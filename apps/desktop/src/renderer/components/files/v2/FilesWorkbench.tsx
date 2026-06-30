@@ -68,12 +68,21 @@ const workspacesCacheByProject = new Map<string, FilesWorkspace[]>();
 const rootTreeCacheByKey = new Map<string, FileTreeNode[]>();
 const readCachedWorkspaces = (projectRoot: string): FilesWorkspace[] => workspacesCacheByProject.get(projectRoot) ?? [];
 const rootTreeCacheKey = (projectRoot: string, workspaceId: string): string => `${projectRoot}::${workspaceId}`;
+const editOverrideKey = (projectRoot: string, workspaceId: string): string => `${projectRoot}::${workspaceId}`;
+
+function recentScopeIdForWorkspace(workspace: FilesWorkspace | null | undefined, fallbackLaneId: string | null): string | null {
+  if (!workspace) return fallbackLaneId;
+  if (workspace.kind === "worktree") return workspace.laneId ?? workspace.id;
+  if (workspace.kind === "primary") return workspace.laneId ?? fallbackLaneId;
+  return workspace.id;
+}
 
 function canEditWorkspace(
   workspace: FilesWorkspace | null | undefined,
   editOverrides: ReadonlySet<string> = new Set(),
+  projectRoot = "",
 ): boolean {
-  return workspace != null && (!workspace.isReadOnlyByDefault || editOverrides.has(workspace.id));
+  return workspace != null && (!workspace.isReadOnlyByDefault || editOverrides.has(editOverrideKey(projectRoot, workspace.id)));
 }
 
 function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspace[]): FilesWorkspace[] {
@@ -130,23 +139,24 @@ export function FilesWorkbench({
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
   const [editOverrides, setEditOverrides] = useState<Set<string>>(() => new Set());
-  const canEdit = canEditWorkspace(workspace, editOverrides);
+  const workspaceEditOverrideKey = workspace ? editOverrideKey(projectRootPath, workspace.id) : "";
+  const canEdit = canEditWorkspace(workspace, editOverrides, projectRootPath);
   const canRevealInFinder = workspace != null && (workspace.kind === "external" || !isRemoteProject);
-  const showEnableEditing = Boolean(workspace?.isReadOnlyByDefault) && !editOverrides.has(workspaceId);
+  const showEnableEditing = Boolean(workspace?.isReadOnlyByDefault) && !editOverrides.has(workspaceEditOverrideKey);
   const enableEditingForWorkspace = useCallback(() => {
-    if (!workspaceId) return;
+    if (!workspace) return;
     setEditOverrides((prev) => {
       const next = new Set(prev);
-      next.add(workspaceId);
+      next.add(editOverrideKey(projectRootPath, workspace.id));
       return next;
     });
-  }, [workspaceId]);
+  }, [projectRootPath, workspace]);
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = "dark";
   const sessionKey = filesProjectSessionKey(projectRootPath);
   const recentSessionKey = filesSessionKey(
     projectRootPath,
-    workspace?.kind === "external" ? workspace.id : workspace?.laneId ?? globalLaneId,
+    recentScopeIdForWorkspace(workspace, globalLaneId),
   );
   const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
@@ -227,7 +237,7 @@ export function FilesWorkbench({
         workspaceId: tab.workspaceId,
         rootPath: wsRoot,
         laneId: tab.laneId,
-        canEdit: canEditWorkspace(ws, editOverrides),
+        canEdit: canEditWorkspace(ws, editOverrides, projectRootPath),
         canRevealInFinder: ws != null && (ws.kind === "external" || !isRemoteProject),
       };
     },

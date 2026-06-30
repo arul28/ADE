@@ -96,12 +96,12 @@ export function sanitizeTrackedCliPromptSeed(raw: string): string {
 function unwrapAdeGuidancePromptForTitle(raw: string): string {
   const text = raw.trim();
   if (!text.length) return "";
+  const marker = /\bUser prompt:\s*/iu.exec(text);
   const looksLikeAdeGuidance =
     /^ADE session guidance\b/iu.test(text)
-    || text.includes("Start working on that user prompt immediately.");
+    || (/^Start working on that user prompt immediately\./iu.test(text) && marker != null);
   if (!looksLikeAdeGuidance) return stripAdeLaneDirectiveForTitle(text);
 
-  const marker = /\bUser prompt:\s*/iu.exec(text);
   const userPrompt = marker ? text.slice(marker.index + marker[0].length).trim() : text;
   return stripAdeLaneDirectiveForTitle(userPrompt);
 }
@@ -119,11 +119,10 @@ function stripAdeLaneDirectiveForTitle(raw: string): string {
       pathLine.includes(".ade/worktrees/")
       || pathLine.startsWith("/")
       || /^[A-Za-z]:[\\/]/u.test(pathLine)
-    );
+  );
   if (!looksLikeLaneDirective) return raw.trim();
 
   let i = start + 2;
-  while (i < lines.length && lines[i]!.trim().length > 0) i += 1;
   while (i < lines.length && lines[i]!.trim().length === 0) i += 1;
 
   const maybeMutationRule = lines[i]?.trim() ?? "";
@@ -137,7 +136,7 @@ function stripAdeLaneDirectiveForTitle(raw: string): string {
   }
 
   const remainder = lines.slice(i).join("\n").trim();
-  return remainder || raw.trim();
+  return remainder;
 }
 
 function trimPromptLeadIn(raw: string): string {
