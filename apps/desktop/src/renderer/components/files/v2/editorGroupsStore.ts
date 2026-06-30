@@ -44,6 +44,10 @@ export type EditorTab = {
   pinned: boolean;
 };
 
+type LegacyEditorTab = Partial<EditorTab> & {
+  path: string;
+};
+
 export function editorTabId(workspaceId: string, path: string): string {
   return `${workspaceId}::${path}`;
 }
@@ -318,18 +322,18 @@ export function upgradeLegacySession(
     const group = session.groups[groupId];
     if (!group) continue;
     const upgradedTabs = group.tabs.map((raw) => {
-      const partial = raw as Partial<EditorTab> & { path: string };
-      const id = partial.id ?? editorTabId(workspaceId, partial.path);
+      const legacy = raw as LegacyEditorTab;
+      const id = legacy.id ?? editorTabId(workspaceId, legacy.path);
       return {
         id,
-        workspaceId: partial.workspaceId ?? workspaceId,
-        laneId: partial.laneId !== undefined ? partial.laneId : laneId,
-        path: partial.path,
-        title: partial.title ?? partial.path.split("/").pop() ?? partial.path,
-        viewerKind: partial.viewerKind ?? "code",
-        languageId: partial.languageId ?? "plaintext",
-        preview: partial.preview ?? false,
-        pinned: partial.pinned ?? false,
+        workspaceId: legacy.workspaceId ?? workspaceId,
+        laneId: legacy.laneId !== undefined ? legacy.laneId : laneId,
+        path: legacy.path,
+        title: legacy.title ?? legacy.path.split("/").pop() ?? legacy.path,
+        viewerKind: legacy.viewerKind ?? "code",
+        languageId: legacy.languageId ?? "plaintext",
+        preview: legacy.preview ?? false,
+        pinned: legacy.pinned ?? false,
       } satisfies EditorTab;
     });
     const pathToId = new Map(upgradedTabs.map((t) => [t.path, t.id]));

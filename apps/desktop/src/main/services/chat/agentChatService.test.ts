@@ -12069,6 +12069,38 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("readTranscript", () => {
+    it("refuses non-chat sessions even when a transcript file exists", async () => {
+      const { service, sessionService } = createService();
+      const transcriptPath = path.join(tmpRoot, "transcripts", "terminal-session.chat.jsonl");
+      fs.writeFileSync(
+        transcriptPath,
+        `${JSON.stringify({
+          sessionId: "terminal-session",
+          timestamp: "2026-06-30T12:00:00.000Z",
+          event: { type: "user_message", text: "terminal secret" },
+          sequence: 1,
+        })}\n`,
+        "utf8",
+      );
+      sessionService.create({
+        sessionId: "terminal-session",
+        laneId: "lane-1",
+        toolType: "terminal",
+        transcriptPath,
+      });
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([{
+        sessionId: "terminal-session",
+        timestamp: "2026-06-30T12:00:00.000Z",
+        event: { type: "user_message", text: "terminal secret" },
+        sequence: 1,
+      }]);
+
+      await expect(service.readTranscript("terminal-session")).resolves.toEqual([]);
+      expect(parseAgentChatTranscript).not.toHaveBeenCalled();
+    });
+  });
+
   describe("getChatEventHistory", () => {
     it("returns an empty history for an unknown session", async () => {
       const { service } = createService();

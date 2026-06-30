@@ -4,8 +4,10 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FilesWorkspace } from "../../../../shared/types";
+import { filesSessionKey } from "../treeHelpers";
 import { useEditorGroupsStore } from "./editorGroupsStore";
 import { FilesWorkbench } from "./FilesWorkbench";
+import { recordRecentFile } from "./recentFiles";
 
 const testState = vi.hoisted(() => ({
   appState: {
@@ -24,18 +26,26 @@ vi.mock("../../../state/appStore", () => ({
 }));
 
 vi.mock("../FilesExplorer", () => ({
-  FilesExplorer: ({ onOpenFile }: { onOpenFile: (path: string) => void }) => (
-    <button type="button" data-testid="open-file" onClick={() => onOpenFile("src/a.ts")}>
-      Open file
-    </button>
+  FilesExplorer: ({ canMutate, onOpenFile }: { canMutate?: boolean; onOpenFile: (path: string) => void }) => (
+    <div>
+      <div data-testid="explorer-can-mutate">{String(canMutate)}</div>
+      <button type="button" data-testid="open-file" onClick={() => onOpenFile("src/a.ts")}>
+        Open file
+      </button>
+    </div>
   ),
 }));
 
 vi.mock("./WorkspacePicker", () => ({
   WorkspacePicker: ({ onChange }: { onChange: (workspaceId: string) => void }) => (
-    <button type="button" data-testid="switch-workspace" onClick={() => onChange("workspace-b")}>
-      Switch workspace
-    </button>
+    <div>
+      <button type="button" data-testid="switch-workspace" onClick={() => onChange("workspace-b")}>
+        Switch workspace
+      </button>
+      <button type="button" data-testid="switch-attached-workspace" onClick={() => onChange("workspace-c")}>
+        Switch attached
+      </button>
+    </div>
   ),
 }));
 
@@ -82,6 +92,15 @@ const workspaces: FilesWorkspace[] = [
     name: "Lane B",
     rootPath: "/repo/.ade/worktrees/b",
     laneId: "lane-b",
+    isReadOnlyByDefault: true,
+    mobileReadOnly: true,
+  },
+  {
+    id: "workspace-c",
+    kind: "attached",
+    name: "Attached",
+    rootPath: "/repo-attached",
+    laneId: null,
     isReadOnlyByDefault: false,
     mobileReadOnly: true,
   },
@@ -89,6 +108,8 @@ const workspaces: FilesWorkspace[] = [
 
 describe("FilesWorkbench", () => {
   beforeEach(() => {
+    testState.appState.project = { rootPath: "/repo" };
+    testState.appState.selectedLaneId = "lane-a";
     useEditorGroupsStore.setState({ sessions: {} });
     vi.spyOn(window, "confirm").mockReturnValue(true);
     Object.defineProperty(window, "ade", {
@@ -142,5 +163,55 @@ describe("FilesWorkbench", () => {
 
     expect(window.confirm).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
+  });
+
+  it("lets read-only-by-default workspaces opt into editing for the session", async () => {
+    const { rerender } = render(<FilesWorkbench active />);
+
+    fireEvent.click(await screen.findByTestId("switch-workspace"));
+
+    await waitFor(() => expect(screen.getByTestId("explorer-can-mutate").textContent).toBe("false"));
+    fireEvent.click(screen.getByTestId("open-file"));
+    await waitFor(() => expect(screen.getByTestId("can-edit").textContent).toBe("false"));
+
+    fireEvent.click(screen.getByRole("button", { name: /enable editing/i }));
+
+    await waitFor(() => expect(screen.getByTestId("explorer-can-mutate").textContent).toBe("true"));
+    expect(screen.getByTestId("can-edit").textContent).toBe("true");
+
+    testState.appState.project = { rootPath: "/other-repo" };
+    rerender(<FilesWorkbench active />);
+
+    await waitFor(() => expect(screen.getByTestId("explorer-can-mutate").textContent).toBe("false"));
+  });
+
+  it("keeps recent files scoped to the selected lane workspace", async () => {
+    recordRecentFile(filesSessionKey("/repo", "lane-a"), "src/lane-a.ts");
+    recordRecentFile(filesSessionKey("/repo", "lane-b"), "src/lane-b.ts");
+
+    render(<FilesWorkbench active />);
+
+    await screen.findByRole("button", { name: /lane-a\.ts/i });
+    expect(screen.queryByRole("button", { name: /lane-b\.ts/i })).toBeNull();
+
+    fireEvent.click(screen.getByTestId("switch-workspace"));
+
+    await screen.findByRole("button", { name: /lane-b\.ts/i });
+    expect(screen.queryByRole("button", { name: /lane-a\.ts/i })).toBeNull();
+  });
+
+  it("keeps recent files scoped to attached workspace ids", async () => {
+    recordRecentFile(filesSessionKey("/repo", "lane-a"), "src/lane-a.ts");
+    recordRecentFile(filesSessionKey("/repo", "workspace-c"), "src/attached.ts");
+
+    render(<FilesWorkbench active />);
+
+    await screen.findByRole("button", { name: /lane-a\.ts/i });
+    expect(screen.queryByRole("button", { name: /attached\.ts/i })).toBeNull();
+
+    fireEvent.click(screen.getByTestId("switch-attached-workspace"));
+
+    await screen.findByRole("button", { name: /attached\.ts/i });
+    expect(screen.queryByRole("button", { name: /lane-a\.ts/i })).toBeNull();
   });
 });

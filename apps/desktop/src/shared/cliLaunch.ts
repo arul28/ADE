@@ -79,14 +79,64 @@ function stripAnsiForCliTitle(raw: string): string {
 }
 
 export function sanitizeTrackedCliPromptSeed(raw: string): string {
-  const stripped = stripAnsiForCliTitle(raw)
+  const normalized = stripAnsiForCliTitle(raw)
     .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
+    .trim();
+  const unwrapped = unwrapAdeGuidancePromptForTitle(normalized);
+  const stripped = unwrapped
     .replace(/\n/g, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (!stripped.length) return "";
   return stripped.slice(0, TRACKED_CLI_PROMPT_SEED_MAX_LEN);
+}
+
+function unwrapAdeGuidancePromptForTitle(raw: string): string {
+  const text = raw.trim();
+  if (!text.length) return "";
+  const marker = /\bUser prompt:\s*/iu.exec(text);
+  const looksLikeAdeGuidance =
+    /^ADE session guidance\b/iu.test(text)
+    || (/^Start working on that user prompt immediately\./iu.test(text) && marker != null);
+  if (!looksLikeAdeGuidance) return stripAdeLaneDirectiveForTitle(text);
+
+  const userPrompt = marker ? text.slice(marker.index + marker[0].length).trim() : text;
+  return stripAdeLaneDirectiveForTitle(userPrompt);
+}
+
+function stripAdeLaneDirectiveForTitle(raw: string): string {
+  const lines = raw.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  let start = lines.findIndex((line) => line.trim().length > 0);
+  if (start < 0) return "";
+
+  const firstLine = lines[start]?.trim() ?? "";
+  const pathLine = lines[start + 1]?.trim() ?? "";
+  const looksLikeLaneDirective =
+    /^You are working in ADE lane:?$/iu.test(firstLine)
+    && (
+      pathLine.includes(".ade/worktrees/")
+      || pathLine.startsWith("/")
+      || /^[A-Za-z]:[\\/]/u.test(pathLine)
+  );
+  if (!looksLikeLaneDirective) return raw.trim();
+
+  let i = start + 2;
+  while (i < lines.length && lines[i]!.trim().length === 0) i += 1;
+
+  const maybeMutationRule = lines[i]?.trim() ?? "";
+  if (
+    maybeMutationRule.length > 0
+    && /(?:edit|edits|mutating|commands)/iu.test(maybeMutationRule)
+    && /(?:worktree|lane|inside)/iu.test(maybeMutationRule)
+  ) {
+    i += 1;
+    while (i < lines.length && lines[i]!.trim().length === 0) i += 1;
+  }
+
+  const remainder = lines.slice(i).join("\n").trim();
+  return remainder;
 }
 
 function trimPromptLeadIn(raw: string): string {

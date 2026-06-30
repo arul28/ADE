@@ -1,7 +1,7 @@
 import React, { Fragment } from "react";
 import { Funnel, Stack } from "@phosphor-icons/react";
 import { Group, Panel } from "react-resizable-panels";
-import type { FilesWorkspace, LaneSummary } from "../../../../shared/types";
+import type { LaneSummary } from "../../../../shared/types";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import type { MonacoModelRegistry } from "../monacoModelRegistry";
 import type { EditorTab, GroupsState } from "./editorGroupsStore";
@@ -22,7 +22,6 @@ export type TabWorkspaceContext = {
 export type EditorGroupsProps = {
   sessionKey: string;
   state: GroupsState;
-  workspaces: FilesWorkspace[];
   explorerWorkspaceId: string;
   explorerLaneId: string | null;
   lanes: LaneSummary[];
@@ -51,9 +50,14 @@ export type EditorGroupsProps = {
 };
 
 export function EditorGroups(props: EditorGroupsProps) {
-  const ids = props.state.groupOrder.filter((id) => props.state.groups[id]);
-  const evenSize = (100 / Math.max(1, ids.length)).toFixed(4);
-  const layoutKey = ids.join("|");
+  const groupEntries = props.state.groupOrder
+    .map((id) => {
+      const group = props.state.groups[id];
+      return group ? { id, group } : null;
+    })
+    .filter((entry): entry is { id: string; group: GroupsState["groups"][string] } => entry != null);
+  const evenSize = (100 / Math.max(1, groupEntries.length)).toFixed(4);
+  const layoutKey = groupEntries.map((entry) => entry.id).join("|");
   const sizeKey = `${props.sessionKey}::${layoutKey}`;
   const persisted = splitSizesByKey.get(sizeKey);
 
@@ -94,11 +98,11 @@ export function EditorGroups(props: EditorGroupsProps) {
           if (next && Object.keys(next).length > 1) splitSizesByKey.set(sizeKey, next);
         }}
       >
-        {ids.map((id, i) => (
+        {groupEntries.map(({ id, group }, i) => (
           <Fragment key={id}>
             <Panel id={`files-group-${id}`} defaultSize={panelSize(id)} minSize="15%" className="min-h-0 min-w-0 overflow-hidden">
               <EditorGroup
-                group={props.state.groups[id]!}
+                group={group}
                 isActiveGroup={id === props.state.activeGroupId}
                 explorerWorkspaceId={props.explorerWorkspaceId}
                 explorerLaneId={props.explorerLaneId}
@@ -126,7 +130,7 @@ export function EditorGroups(props: EditorGroupsProps) {
                 onBodyDrop={props.onBodyDrop}
               />
             </Panel>
-            {i < ids.length - 1 ? <ResizeGutter orientation="vertical" thin /> : null}
+            {i < groupEntries.length - 1 ? <ResizeGutter orientation="vertical" thin /> : null}
           </Fragment>
         ))}
       </Group>

@@ -5,6 +5,7 @@ import {
   buildTrackedCliStartupCommand,
   buildOpenCodeReplayResumeCommand,
   defaultTrackedCliStartupCommand,
+  deriveTrackedCliInitialInputSessionMeta,
   resolveCleanShellLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
@@ -370,6 +371,57 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.initialInput).toContain("Fix the failing Work tests.");
       expect(launch.startupCommand).toContain("model_reasoning_effort");
       expect(launch.startupCommand).not.toContain("Fix the failing Work tests.");
+    });
+
+    it("derives initial metadata from the user task inside ADE guidance", () => {
+      const meta = deriveTrackedCliInitialInputSessionMeta({
+        provider: "codex",
+        title: "Codex",
+        initialInput: [
+          "ADE session guidance. Treat this as operating guidance for the CLI session.",
+          "Start working on that user prompt immediately.",
+          "",
+          "User prompt:",
+          "You are working in ADE lane:",
+          "/repo/.ade/worktrees/context-iphone-17-simulator",
+          "",
+          "Edits and mutating commands must stay inside that worktree.",
+          "",
+          "The user is debugging the ADE iOS Work chat scroll/layout bugs.",
+        ].join("\n"),
+      });
+
+      expect(meta.goal).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs.");
+      expect(meta.title).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs");
+      expect(meta.promptTitle).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs");
+    });
+
+    it("derives metadata from ADE lane guidance without a blank separator", () => {
+      const meta = deriveTrackedCliInitialInputSessionMeta({
+        provider: "codex",
+        title: "Codex",
+        initialInput: [
+          "You are working in ADE lane:",
+          "/repo/.ade/worktrees/context-iphone-17-simulator",
+          "Redesign the ADE mobile project hub.",
+        ].join("\n"),
+      });
+
+      expect(meta.goal).toBe("Redesign the ADE mobile project hub.");
+      expect(meta.title).toBe("Redesign the ADE mobile project hub");
+      expect(meta.promptTitle).toBe("Redesign the ADE mobile project hub");
+    });
+
+    it("does not unwrap ordinary prompts that mention ADE guidance text", () => {
+      const meta = deriveTrackedCliInitialInputSessionMeta({
+        provider: "codex",
+        title: "Codex",
+        initialInput: "Explain why docs say Start working on that user prompt immediately.",
+      });
+
+      expect(meta.goal).toBe("Explain why docs say Start working on that user prompt immediately.");
+      expect(meta.title).toBe("Explain why docs say Start working on that user prompt immediately");
+      expect(meta.promptTitle).toBe("Explain why docs say Start working on that user prompt immediately");
     });
 
     it("passes explicit Codex service tier overrides for fast mode", () => {

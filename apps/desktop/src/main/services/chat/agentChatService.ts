@@ -28003,10 +28003,14 @@ export function createAgentChatService(args: {
     limit?: number,
     since?: string,
   ): Promise<AgentChatTranscriptEntry[]> => {
-    const managed = managedSessions.get(sessionId);
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) return [];
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return [];
+    const managed = managedSessions.get(trimmedId);
     const entries = managed
       ? readTranscriptEntries(managed)
-      : transcriptEntriesFromEnvelopes(sessionId, readFullTranscriptEnvelopesForSessionId(sessionId));
+      : transcriptEntriesFromEnvelopes(trimmedId, readFullTranscriptEnvelopesForSessionId(trimmedId));
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {
       filtered = filtered.filter((entry) => entry.timestamp >= since);

@@ -736,6 +736,8 @@ export async function createAdeRuntime(args: {
     laneService,
     sessionService,
     processRegistry,
+    aiIntegrationService,
+    projectConfigService,
     logger,
     broadcastData: (event) => {
       pushEvent("pty", { type: "pty_data", event });

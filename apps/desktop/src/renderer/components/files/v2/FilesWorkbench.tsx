@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, Copy, FilePlus, FolderPlus, PencilSimple, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, Copy, FilePlus, FolderPlus, LockOpen, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { FileTreeNode, FilesWorkspace } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
@@ -68,9 +68,21 @@ const workspacesCacheByProject = new Map<string, FilesWorkspace[]>();
 const rootTreeCacheByKey = new Map<string, FileTreeNode[]>();
 const readCachedWorkspaces = (projectRoot: string): FilesWorkspace[] => workspacesCacheByProject.get(projectRoot) ?? [];
 const rootTreeCacheKey = (projectRoot: string, workspaceId: string): string => `${projectRoot}::${workspaceId}`;
+const editOverrideKey = (projectRoot: string, workspaceId: string): string => `${projectRoot}::${workspaceId}`;
 
-function canEditWorkspace(workspace: FilesWorkspace | null | undefined): boolean {
-  return workspace != null && !workspace.isReadOnlyByDefault;
+function recentScopeIdForWorkspace(workspace: FilesWorkspace | null | undefined, fallbackLaneId: string | null): string | null {
+  if (!workspace) return fallbackLaneId;
+  if (workspace.kind === "worktree") return workspace.laneId ?? workspace.id;
+  if (workspace.kind === "primary") return workspace.laneId ?? fallbackLaneId;
+  return workspace.id;
+}
+
+function canEditWorkspace(
+  workspace: FilesWorkspace | null | undefined,
+  editOverrides: ReadonlySet<string> = new Set(),
+  projectRoot = "",
+): boolean {
+  return workspace != null && (!workspace.isReadOnlyByDefault || editOverrides.has(editOverrideKey(projectRoot, workspace.id)));
 }
 
 function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspace[]): FilesWorkspace[] {
@@ -126,11 +138,26 @@ export function FilesWorkbench({
   const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
-  const canEdit = canEditWorkspace(workspace);
+  const [editOverrides, setEditOverrides] = useState<Set<string>>(() => new Set());
+  const workspaceEditOverrideKey = workspace ? editOverrideKey(projectRootPath, workspace.id) : "";
+  const canEdit = canEditWorkspace(workspace, editOverrides, projectRootPath);
   const canRevealInFinder = workspace != null && (workspace.kind === "external" || !isRemoteProject);
+  const showEnableEditing = Boolean(workspace?.isReadOnlyByDefault) && !editOverrides.has(workspaceEditOverrideKey);
+  const enableEditingForWorkspace = useCallback(() => {
+    if (!workspace) return;
+    setEditOverrides((prev) => {
+      const next = new Set(prev);
+      next.add(editOverrideKey(projectRootPath, workspace.id));
+      return next;
+    });
+  }, [projectRootPath, workspace]);
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = "dark";
   const sessionKey = filesProjectSessionKey(projectRootPath);
+  const recentSessionKey = filesSessionKey(
+    projectRootPath,
+    recentScopeIdForWorkspace(workspace, globalLaneId),
+  );
   const [tabScope, setTabScope] = useState<FilesTabScope>(() => getFilesTabScope(projectRootPath));
 
   const [tree, setTree] = useState<FileTreeNode[]>(
@@ -210,11 +237,11 @@ export function FilesWorkbench({
         workspaceId: tab.workspaceId,
         rootPath: wsRoot,
         laneId: tab.laneId,
-        canEdit: canEditWorkspace(ws),
+        canEdit: canEditWorkspace(ws, editOverrides, projectRootPath),
         canRevealInFinder: ws != null && (ws.kind === "external" || !isRemoteProject),
       };
     },
-    [isRemoteProject, projectRootPath, workspaces],
+    [editOverrides, isRemoteProject, projectRootPath, workspaces],
   );
 
   const migratedSessionsRef = useRef<string | null>(null);
@@ -266,7 +293,7 @@ export function FilesWorkbench({
   }, [projectRootPath]);
 
   const knownRootPaths = useMemo(() => new Set(tree.map((node) => node.path)), [tree]);
-  const recentFiles = getRecentFiles(sessionKey);
+  const recentFiles = getRecentFiles(recentSessionKey);
   const visibleRecentFiles = useMemo(
     () => (
       tree.length > 0
@@ -278,8 +305,8 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (tree.length === 0) return;
-    pruneMissingRootRecentFiles(sessionKey, knownRootPaths);
-  }, [knownRootPaths, sessionKey, tree.length]);
+    pruneMissingRootRecentFiles(recentSessionKey, knownRootPaths);
+  }, [knownRootPaths, recentSessionKey, tree.length]);
 
   const dirtyTabsUnder = useCallback(
     (wsId: string, target: string): string[] =>
@@ -732,12 +759,12 @@ export function FilesWorkbench({
           pinned: false,
         };
         applyGroups((s) => openInGroup(s, s.activeGroupId, tab, { preview: opts.preview ?? true }));
-        recordRecentFile(sessionKey, path);
+        recordRecentFile(recentSessionKey, path);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspace, workspaceId, applyGroups, sessionKey],
+    [workspace, workspaceId, applyGroups, recentSessionKey],
   );
 
   const handleActivateTab = useCallback(
@@ -941,11 +968,11 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
         return;
       }
-      forgetRecentFilesUnder(sessionKey, sourcePath);
+      forgetRecentFilesUnder(recentSessionKey, sourcePath);
       closeOpenTabsUnder(workspaceId, sourcePath);
       await refreshRoot();
     },
-    [canEdit, closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, refreshRoot, sessionKey, workspaceId],
+    [canEdit, closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, recentSessionKey, refreshRoot, workspaceId],
   );
 
   const deletePath = useCallback(
@@ -960,14 +987,14 @@ export function FilesWorkbench({
       if (!confirmDiscardDirtyTabIds(dirtyTabsUnder(workspaceId, path), "Delete it")) return;
       try {
         await window.ade.files.delete({ workspaceId, path });
-        forgetRecentFilesUnder(sessionKey, path);
+        forgetRecentFilesUnder(recentSessionKey, path);
         closeOpenTabsUnder(workspaceId, path);
         await refreshRoot();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [canEdit, closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, refreshRoot, sessionKey, workspaceId],
+    [canEdit, closeOpenTabsUnder, confirmDiscardDirtyTabIds, dirtyTabsUnder, recentSessionKey, refreshRoot, workspaceId],
   );
 
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
@@ -1096,6 +1123,18 @@ export function FilesWorkbench({
           {!embedded ? (
             <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
           ) : null}
+          {showEnableEditing ? (
+            <button
+              type="button"
+              onClick={enableEditingForWorkspace}
+              className="mx-2 mb-2 mt-1 flex shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-sans text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06]"
+              style={{ borderColor: COLORS.border }}
+              title="This workspace is read-only by default (edit-protected). Enable editing for this session."
+            >
+              <LockOpen size={13} weight="bold" />
+              Enable editing
+            </button>
+          ) : null}
           <div className="min-h-0 flex-1">
             <FilesExplorer
               tree={tree}
@@ -1142,7 +1181,6 @@ export function FilesWorkbench({
           <EditorGroups
             sessionKey={sessionKey}
             state={groupsState}
-            workspaces={workspaces}
             explorerWorkspaceId={workspaceId}
             explorerLaneId={workspace?.laneId ?? null}
             lanes={lanes}

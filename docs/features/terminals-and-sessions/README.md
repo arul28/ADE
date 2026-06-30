@@ -422,9 +422,12 @@ Renderer surfaces:
   without a startup command. `deriveTrackedCliInitialInputSessionMeta`
   seeds the session title and `goal` field from the first prompt
   (sanitised + clipped to ~72 chars) when the caller did not supply a
-  manual title, so tracked CLI rows render with a meaningful name
-  instead of "Codex" / "Claude" while still letting providers like
-  Shell fall back to the generic profile title.
+  manual title; ADE launch guidance is unwrapped first so lane/worktree
+  directives do not become the title. Tracked CLI rows render with a
+  meaningful name instead of "Codex" / "Claude" while still letting
+  providers like Shell fall back to the generic profile title. If ADE
+  AI title generation is unavailable, `ptyService` can also adopt a
+  provider-emitted terminal window title after sanitizing it.
 - `apps/desktop/src/renderer/components/terminals/cliLaunch.ts` — thin
   re-export of `apps/desktop/src/shared/cliLaunch.ts` plus the renderer-
   local Work launch envelope types: `WorkPtyLaunchDisposition`
@@ -582,7 +585,11 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    service may summarize the early output into a short title via the AI
    integration service. For Claude/Codex it prefers the first submitted
    user line (`tryCliUserTitleFromWrite`) because the TUI hides useful
-   text in the alternate screen.
+   text in the alternate screen; ADE guidance wrappers are stripped
+   before deriving the visible title/goal. Provider-emitted OSC window
+   titles are accepted only when ADE title generation is not available,
+   so the ADE summarizer remains authoritative for normal desktop and
+   CLI runtime launches.
 
 5. **Runtime exit** — on PTY exit, `sessionService.end()` finalizes `endedAt`,
    `exitCode`, and `status`. The transcript stream is flushed, then:
