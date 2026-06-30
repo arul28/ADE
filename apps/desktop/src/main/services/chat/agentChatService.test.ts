@@ -3181,6 +3181,45 @@ describe("createAgentChatService", () => {
       }, { timeout: 2000, interval: 50 });
     });
 
+    it("sends Codex brief handoff text before syncing the inherited goal", async () => {
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      sessionService.updateMeta({
+        sessionId: source.id,
+        goal: "No Machine State Polish",
+      });
+      const sourceRow = mockState.sessions.get(source.id);
+      if (sourceRow) {
+        sourceRow.summary = "Fix the iPhone 17 simulator chat layout handoff.";
+      }
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+      });
+
+      expect(result.session.provider).toBe("codex");
+      expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
+
+      const requestMethods = mockState.codexRequestPayloads.map((payload) => String(payload.method ?? ""));
+      const turnStartIndex = requestMethods.indexOf("turn/start");
+      const goalSetIndex = requestMethods.indexOf("thread/goal/set");
+      expect(turnStartIndex).toBeGreaterThanOrEqual(0);
+      expect(goalSetIndex === -1 || goalSetIndex > turnStartIndex).toBe(true);
+
+      const turnStartRequest = mockState.codexRequestPayloads[turnStartIndex] as {
+        params?: { input?: Array<{ text?: unknown }> };
+      };
+      const inputText = turnStartRequest.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(inputText).toContain("This message was injected automatically by ADE during a chat handoff.");
+      expect(inputText).toContain("No Machine State Polish");
+    });
+
     it("uses the selected Claude handoff permission instead of the source interaction mode", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);

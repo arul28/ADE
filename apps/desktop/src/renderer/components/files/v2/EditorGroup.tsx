@@ -178,7 +178,7 @@ export function EditorGroup(props: EditorGroupProps) {
             <TabButton
               key={tab.id}
               tab={tab}
-              active={tab.id === group.activeTabId}
+              active={tab.id === activeTab?.id}
               dirty={dirtyTabIds.has(tab.id)}
               laneAccent={props.tabScope === "all" ? laneAccentForTab(tab, props.lanes) : undefined}
               showLaneDivider={props.tabScope === "all" && isLaneGroupBoundary(displayTabs, index)}

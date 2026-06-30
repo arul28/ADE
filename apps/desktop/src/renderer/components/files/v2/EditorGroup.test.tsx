@@ -27,6 +27,7 @@ const registry = {
 } as unknown as MonacoModelRegistry;
 
 const tabId = editorTabId("workspace-1", "src/file.ts");
+const otherLaneTabId = editorTabId("workspace-2", "src/other.ts");
 
 const baseProps: EditorGroupProps = {
   group: {
@@ -106,6 +107,36 @@ describe("EditorGroup", () => {
     render(<EditorGroup {...baseProps} />);
     expect(screen.getByRole("tab", { name: /file\.ts/i })).toBeTruthy();
     expect(screen.getByTestId("viewer-button")).toBeTruthy();
+  });
+
+  it("marks the visible fallback tab active when lane scope hides the stored active tab", () => {
+    render(
+      <EditorGroup
+        {...baseProps}
+        tabScope="lane"
+        group={{
+          ...baseProps.group,
+          activeTabId: otherLaneTabId,
+          tabs: [
+            ...baseProps.group.tabs,
+            {
+              id: otherLaneTabId,
+              workspaceId: "workspace-2",
+              laneId: "lane-2",
+              path: "src/other.ts",
+              title: "other.ts",
+              viewerKind: "code",
+              languageId: "typescript",
+              preview: false,
+              pinned: false,
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: /file\.ts/i }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("tab", { name: /other\.ts/i })).toBeNull();
   });
 
   it("does not steal Cmd+S from focused text inputs", () => {
