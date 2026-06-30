@@ -42,7 +42,7 @@ import {
   upgradeLegacySession,
   useEditorGroupsStore,
 } from "./editorGroupsStore";
-import { getFilesTabScope, setFilesTabScope, toggleFilesTabScope, type FilesTabScope } from "./filesTabScope";
+import { getFilesTabScope, toggleFilesTabScope, type FilesTabScope } from "./filesTabScope";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
 import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
@@ -121,7 +121,7 @@ export function FilesWorkbench({
   const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
-  const canEdit = !workspace?.mobileReadOnly;
+  const canEdit = workspace != null && !workspace.mobileReadOnly;
   const canRevealInFinder = workspace != null && (workspace.kind === "external" || !isRemoteProject);
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = "dark";
@@ -205,7 +205,7 @@ export function FilesWorkbench({
         workspaceId: tab.workspaceId,
         rootPath: wsRoot,
         laneId: tab.laneId,
-        canEdit: !ws?.mobileReadOnly,
+        canEdit: ws != null && !ws.mobileReadOnly,
         canRevealInFinder: ws != null && (ws.kind === "external" || !isRemoteProject),
       };
     },
@@ -283,12 +283,6 @@ export function FilesWorkbench({
     [allOpenTabs, dirtyTabIds],
   );
 
-  const dirtyTabIdsForWorkspace = useCallback(
-    (wsId: string): string[] =>
-      [...dirtyTabIds].filter((tabId) => allOpenTabs.find((tab) => tab.id === tabId)?.workspaceId === wsId),
-    [allOpenTabs, dirtyTabIds],
-  );
-
   const confirmDiscardDirtyTabIds = useCallback((tabIds: readonly string[], action: string): boolean => {
     if (tabIds.length === 0) return true;
     const labels = tabIds.map((tabId) => allOpenTabs.find((tab) => tab.id === tabId)?.path ?? tabId);
@@ -327,19 +321,9 @@ export function FilesWorkbench({
   const selectWorkspace = useCallback(
     (nextWorkspaceId: string) => {
       if (!nextWorkspaceId || nextWorkspaceId === workspaceId) return;
-      const dirtyInWorkspace = dirtyTabIdsForWorkspace(workspaceId);
-      if (!confirmDiscardDirtyTabIds(dirtyInWorkspace, "Switch workspaces")) return;
-      const leavingWorkspace = workspaces.find((ws) => ws.id === workspaceId);
-      if (leavingWorkspace) clearDirtyBuffersForWorkspace(leavingWorkspace.rootPath);
-      setDirtyTabIds((prev) => {
-        const next = new Set(prev);
-        for (const tabId of dirtyInWorkspace) next.delete(tabId);
-        return next;
-      });
-      setDirtyBufferRevision((revision) => revision + 1);
       setWorkspaceId(nextWorkspaceId);
     },
-    [confirmDiscardDirtyTabIds, dirtyTabIdsForWorkspace, workspaceId, workspaces],
+    [workspaceId],
   );
 
   useEffect(() => {
@@ -470,8 +454,9 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (!active) return;
+    const registry = registryRef.current;
     return () => {
-      registryRef.current.disposeAll();
+      registry.disposeAll();
     };
   }, [active]);
 
@@ -1001,6 +986,10 @@ export function FilesWorkbench({
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
       if (!workspaceId) return;
+      if (!canEdit) {
+        setError("This workspace is read-only.");
+        return;
+      }
       const rel = baseDir ? `${baseDir}/${name}` : name;
       try {
         if (kind === "file") await window.ade.files.createFile({ workspaceId, path: rel });
@@ -1011,7 +1000,7 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, refreshRoot, openFile],
+    [canEdit, workspaceId, refreshRoot, openFile],
   );
 
   // Files-scoped keybindings: ⌘P / ⌘⇧F both open the unified in-depth search.
@@ -1050,8 +1039,6 @@ export function FilesWorkbench({
     },
     [draggingTab, openExternalPathRequest],
   );
-
-  const noop = useCallback(() => {}, []);
 
   if (!workspaceId) {
     // Only call it "empty" once the workspace list has actually loaded; while it's
