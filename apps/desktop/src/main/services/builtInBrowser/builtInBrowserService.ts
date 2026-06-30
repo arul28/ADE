@@ -1131,17 +1131,18 @@ function createBuiltInBrowserWindowService(args: {
       });
     });
     wc.setWindowOpenHandler((details) => {
-      const tab = createPopupTabState(details.url, tabForWebContents(wc) ?? activeTab());
-      if (tab) {
-        const popupUrl = stringOrNull(details.url) ?? "about:blank";
-        const popupLoadOptions = loadUrlOptionsForWindowOpen(details);
-        // Own popup navigation; Electron cannot attach an existing WebContentsView as a native guest window.
-        void tab.webContents.loadURL(popupUrl, popupLoadOptions).catch((error) => {
-          emitError(new Error(`Could not open browser popup: ${errorMessage(error)}`));
-          emitStatus();
-        });
-      }
-      return { action: "deny" };
+      const opener = tabForWebContents(wc) ?? activeTab();
+      const popupUrl = popupUrlForOpen(details.url);
+      if (!popupUrl) return { action: "deny" };
+      return {
+        action: "allow",
+        createWindow: (options) => {
+          const tab = createPopupTabStateFromView(popupUrl, opener, new WebContentsView({
+            webPreferences: browserWebPreferences(options.webPreferences),
+          }));
+          return tab.webContents;
+        },
+      };
     });
     wc.on("will-navigate", (event, url) => {
       if (isAllowedNavigationUrl(url)) return;
@@ -1213,19 +1214,17 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
-  const createTabState = (): BrowserTabState => {
-    configureBrowserSession();
+  const browserWebPreferences = (overrides: Electron.WebPreferences = {}): Electron.WebPreferences => ({
+    ...overrides,
+    partition: args.profile.partition,
+    nodeIntegration: false,
+    contextIsolation: true,
+    sandbox: true,
+    webSecurity: true,
+    backgroundThrottling: false,
+  });
 
-    const nextView = new WebContentsView({
-      webPreferences: {
-        partition: args.profile.partition,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        webSecurity: true,
-        backgroundThrottling: false,
-      },
-    });
+  const createTabStateForView = (nextView: WebContentsView): BrowserTabState => {
     nextView.setBackgroundColor("#111827");
     nextView.setBounds(toElectronRect(bounds));
     nextView.setVisible(false);
@@ -1250,7 +1249,14 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
-  const createPopupTabState = (url: string, opener: BrowserTabState | null = activeTab()): BrowserTabState | null => {
+  const createTabState = (): BrowserTabState => {
+    configureBrowserSession();
+    return createTabStateForView(new WebContentsView({
+      webPreferences: browserWebPreferences(),
+    }));
+  };
+
+  const popupUrlForOpen = (url: string): string | null => {
     const popupUrl = stringOrNull(url) ?? "about:blank";
     if (!isAllowedNavigationUrl(popupUrl)) {
       emitError(new Error(`Blocked unsupported browser popup protocol: ${url}`));
@@ -1260,7 +1266,16 @@ function createBuiltInBrowserWindowService(args: {
       emitError(new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`));
       return null;
     }
-    const tab = createTabState();
+    return popupUrl;
+  };
+
+  const createPopupTabStateFromView = (
+    popupUrl: string,
+    opener: BrowserTabState | null,
+    nextView: WebContentsView,
+  ): BrowserTabState => {
+    configureBrowserSession();
+    const tab = createTabStateForView(nextView);
     copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
     activeTabId = tab.id;
@@ -2906,22 +2921,6 @@ function urlForBrowserLog(value: string): string | null {
   } catch {
     return null;
   }
-}
-
-function loadUrlOptionsForWindowOpen(details: Electron.HandlerDetails): Electron.LoadURLOptions | undefined {
-  const options: Electron.LoadURLOptions = {};
-  if (emptyToNull(details.referrer?.url ?? "")) {
-    options.httpReferrer = details.referrer;
-  }
-  if (details.postBody?.data.length) {
-    options.postData = details.postBody.data;
-    let contentType = details.postBody.contentType;
-    if (details.postBody.boundary && !/;\s*boundary=/i.test(contentType)) {
-      contentType = `${contentType}; boundary=${details.postBody.boundary}`;
-    }
-    options.extraHeaders = `content-type: ${contentType}\n`;
-  }
-  return Object.keys(options).length > 0 ? options : undefined;
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {

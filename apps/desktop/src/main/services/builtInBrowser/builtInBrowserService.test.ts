@@ -1118,22 +1118,33 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       },
     });
 
-    expect(response?.action).toBe("deny");
+    expect(response?.action).toBe("allow");
+    expect(response?.createWindow).toEqual(expect.any(Function));
+    const popupWc = response?.createWindow?.({
+      webPreferences: {
+        additionalArguments: ["--popup"],
+        nodeIntegration: true,
+        partition: "persist:other",
+      },
+    });
+    expect(popupWc).toBe(fakes.webContentsInstances.at(-1));
+    await popupWc?.loadURL("https://accounts.google.com/gsi/select");
+
     expect(service.getStatus().tabs).toHaveLength(2);
     expect(service.getStatus().activeTabId).not.toBe(firstTabId);
-    expect(response?.createWindow).toBeUndefined();
     expect(service.getStatus().tabs.at(-1)).toMatchObject({
       url: "https://accounts.google.com/gsi/select",
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
-    expect(fakes.webContentsInstances.at(-1)?.loadURLCalls.at(-1)).toEqual({
-      url: "https://accounts.google.com/gsi/select",
-      options: {
-        httpReferrer: { url: "https://example.test/sign-in", policy: "strict-origin-when-cross-origin" },
-        postData,
-        extraHeaders: "content-type: application/x-www-form-urlencoded\n",
-      },
+    expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toMatchObject({
+      additionalArguments: ["--popup"],
+      partition: service.getStatus().partition,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      backgroundThrottling: false,
     });
 
     const openEvent = collector.events.findLast((event) => event.type === "open-request");
