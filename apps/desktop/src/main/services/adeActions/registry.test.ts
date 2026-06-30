@@ -81,8 +81,10 @@ describe("isAllowedAdeAction", () => {
   it("exposes subagent transcript reads through the chat runtime action surface", () => {
     expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
+    expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
     expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
   });
 
   it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
@@ -435,6 +437,41 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       sessionId: "chat-1",
     });
     expect(sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "next" });
+    await expect(chat.sendMessage?.({ sessionId: "chat-1", text: "   " })).rejects.toThrow(/text/);
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to headless chat transcript reads when readTranscript is unavailable", async () => {
+    const getChatTranscript = vi.fn(async () => ({
+      sessionId: "chat-1",
+      entries: [
+        { role: "user", text: "old", timestamp: "2026-06-28T00:00:00.000Z" },
+        { role: "assistant", text: "new", timestamp: "2026-06-29T00:00:00.000Z" },
+      ],
+      totalEntries: 2,
+      truncated: false,
+    }));
+    const runtime = {
+      agentChatService: {
+        getChatTranscript,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      readTranscript?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.readTranscript?.({
+      sessionId: " chat-1 ",
+      limit: "25",
+      since: "2026-06-29T00:00:00.000Z",
+    })).resolves.toMatchObject({
+      sessionId: "chat-1",
+      entries: [
+        { role: "assistant", text: "new", timestamp: "2026-06-29T00:00:00.000Z" },
+      ],
+    });
+    expect(getChatTranscript).toHaveBeenCalledWith({ sessionId: "chat-1", limit: 25 });
   });
 
   it("unwraps chat.listSessions action args before calling the positional chat service API", async () => {

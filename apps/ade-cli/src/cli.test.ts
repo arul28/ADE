@@ -1217,6 +1217,48 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("prints chat create from Linear dry-run with attachment flags", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--from-linear-issue",
+      "ENG-431",
+      "--role",
+      "worked",
+      "--source",
+      "chat_attach",
+      "--include-in-pr",
+      "--close-on-merge",
+      "--print-config",
+    ]);
+
+    const staticPlan = expectStaticPlan(plan);
+    expect(staticPlan.value).toMatchObject({
+      action: "chat.createSession",
+      afterCreate: [
+        {
+          action: "lane.attachLinearIssueToSession",
+          input: {
+            chatSessionId: "<created-session-id>",
+            issues: [{ identifier: "ENG-431" }],
+            role: "worked",
+            source: "chat_attach",
+            includeInPr: true,
+            closeOnMerge: true,
+          },
+        },
+        {
+          action: "chat.sendMessage",
+          input: {
+            sessionId: "<created-session-id>",
+          },
+        },
+      ],
+    });
+  });
+
   it("omits unset optional fields from chat create config previews", () => {
     const plan = buildCliPlan([
       "chat",
@@ -1297,18 +1339,33 @@ describe("ADE CLI", () => {
     ).toThrow(/agent spawn does not support reasoning effort/);
   });
 
-  it("rejects conflicting plain chat create prompt and no-kickoff flags", () => {
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--prompt",
-        "Fix the tests",
-        "--no-kickoff",
-      ]),
-    ).toThrow(/--no-kickoff cannot be used with --prompt/);
+  it("rejects conflicting chat create kickoff aliases and no-kickoff flags", () => {
+    for (const kickoffFlag of ["--prompt", "--kickoff", "--kickoff-prompt"]) {
+      expect(() =>
+        buildCliPlan([
+          "chat",
+          "create",
+          "--lane",
+          "lane-1",
+          kickoffFlag,
+          "Fix the tests",
+          "--no-kickoff",
+        ]),
+      ).toThrow(/--no-kickoff cannot be used with --prompt\/--kickoff/);
+      expect(() =>
+        buildCliPlan([
+          "chat",
+          "create",
+          "--lane",
+          "lane-1",
+          "--from-linear-issue",
+          "ENG-431",
+          kickoffFlag,
+          "Fix the tests",
+          "--no-kickoff",
+        ]),
+      ).toThrow(/--no-kickoff cannot be used with --prompt\/--kickoff/);
+    }
   });
 
   it("rejects --print=value on chat send", () => {
@@ -1511,27 +1568,43 @@ describe("ADE CLI", () => {
       result: { clean: true },
     });
 
-    const chatCreateWithKickoff = summarizeExecution({
-      plan: { kind: "execute", label: "chat create", steps: [] },
-      connection,
-      values: {
-        session: {
-          domain: "chat",
-          action: "createSession",
-          result: { sessionId: "chat-new" },
+    for (const mode of ["headless", "desktop-socket"] as const) {
+      const chatConnection = { ...connection, mode };
+      const chatCreateWithKickoff = summarizeExecution({
+        plan: { kind: "execute", label: "chat create", steps: [] },
+        connection: chatConnection,
+        values: {
+          session: {
+            domain: "chat",
+            action: "createSession",
+            result: { sessionId: "chat-new" },
+          },
+          result: {
+            domain: "chat",
+            action: "sendMessage",
+            result: { ok: true, accepted: true, sessionId: "chat-new" },
+          },
         },
-        result: {
-          domain: "chat",
-          action: "sendMessage",
-          result: { ok: true, accepted: true, sessionId: "chat-new" },
+      } as any);
+      expect(chatCreateWithKickoff).toEqual({
+        ok: true,
+        session: { sessionId: "chat-new" },
+        kickoff: { ok: true, accepted: true, sessionId: "chat-new" },
+      });
+
+      const chatRead = summarizeExecution({
+        plan: { kind: "execute", label: "chat read", steps: [] },
+        connection: chatConnection,
+        values: {
+          result: {
+            domain: "chat",
+            action: "readTranscript",
+            result: { entries: [{ role: "user", text: mode }] },
+          },
         },
-      },
-    } as any);
-    expect(chatCreateWithKickoff).toEqual({
-      ok: true,
-      session: { sessionId: "chat-new" },
-      kickoff: { ok: true, accepted: true, sessionId: "chat-new" },
-    });
+      } as any);
+      expect(chatRead).toEqual({ entries: [{ role: "user", text: mode }] });
+    }
   });
 
 
@@ -3066,6 +3139,47 @@ describe("ADE CLI", () => {
         action: "attachLinearIssueToSession",
         args: { chatSessionId: "session-x", issues: [{ identifier: "ENG-431" }] },
       },
+    });
+
+    const noKickoffPlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--from-linear-issue",
+      "ENG-431",
+      "--no-kickoff",
+    ]));
+    expect(noKickoffPlan.steps).toHaveLength(2);
+    expect(noKickoffPlan.steps[1]?.key).toBe("attach");
+
+    const summary = summarizeExecution({
+      plan: noKickoffPlan,
+      connection: {
+        mode: "headless",
+        projectRoot: "/tmp/project",
+        workspaceRoot: "/tmp/project",
+        socketPath: "/tmp/project/.ade/ade.sock",
+        request: async () => null,
+        close: () => {},
+      },
+      values: {
+        session: {
+          domain: "chat",
+          action: "createSession",
+          result: { sessionId: "session-x" },
+        },
+        attach: {
+          domain: "lane",
+          action: "attachLinearIssueToSession",
+          result: { linked: true },
+        },
+      },
+    } as any);
+    expect(summary).toEqual({
+      ok: true,
+      session: { sessionId: "session-x" },
+      attach: { linked: true },
     });
   });
 

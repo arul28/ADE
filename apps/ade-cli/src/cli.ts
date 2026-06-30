@@ -3638,6 +3638,7 @@ function buildChatCreateConfigPreview(
   args: JsonObject,
   options: {
     linearIssue?: JsonObject | null;
+    attachmentFlags?: JsonObject;
     kickoffText?: string | null;
     noKickoff?: boolean;
   } = {},
@@ -3651,6 +3652,7 @@ function buildChatCreateConfigPreview(
       input: compactPreviewObject({
         chatSessionId: "<created-session-id>",
         issues: [options.linearIssue],
+        ...(options.attachmentFlags ?? {}),
       }),
     });
   }
@@ -5919,8 +5921,8 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const noKickoff = readFlag(args, ["--no-kickoff"]);
     const explicitKickoff = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
-    if (!linearIssue && noKickoff && explicitKickoff) {
-      throw new CliUsageError("--no-kickoff cannot be used with --prompt on plain chat create.");
+    if (noKickoff && explicitKickoff) {
+      throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
     const createStep = actionStep(
@@ -5958,6 +5960,7 @@ function buildChatPlan(args: string[]): CliPlan {
         kind: "static",
         value: buildChatCreateConfigPreview(actionArgs, {
           linearIssue,
+          attachmentFlags,
           kickoffText,
           noKickoff,
         }),
@@ -6003,7 +6006,7 @@ function buildChatPlan(args: string[]): CliPlan {
       // First step keyed "session" so attach/kickoff can read the new id.
       { ...createStep, key: "session" },
       {
-        key: noKickoff ? "result" : "attach",
+        key: "attach",
         method: "ade/actions/call",
         params: (values) => {
           const targetSession = sessionIdFromCreateChatValue(values.session);

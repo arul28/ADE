@@ -1110,7 +1110,7 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         Object.keys(options).length ? options : undefined,
       );
     },
-    readTranscript: (args?: unknown) => {
+    readTranscript: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.readTranscript");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const limitValue = record.limit;
@@ -1125,12 +1125,39 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       const since = typeof record.since === "string" && record.since.trim()
         ? record.since.trim()
         : undefined;
-      return agentChatService.readTranscript(sessionId, limit, since);
+      const chatService = agentChatService as {
+        readTranscript?: (sessionId: string, limit?: number, since?: string) => Promise<unknown> | unknown;
+        getChatTranscript?: (args: { sessionId: string; limit?: number }) => Promise<unknown> | unknown;
+      };
+      if (typeof chatService.readTranscript === "function") {
+        return chatService.readTranscript(sessionId, limit, since);
+      }
+      if (typeof chatService.getChatTranscript === "function") {
+        const transcript = await chatService.getChatTranscript({
+          sessionId,
+          ...(limit !== undefined ? { limit } : {}),
+        });
+        if (!since || !isRecord(transcript) || !Array.isArray(transcript.entries)) {
+          return transcript;
+        }
+        const sinceMs = Date.parse(since);
+        if (!Number.isFinite(sinceMs)) return transcript;
+        return {
+          ...transcript,
+          entries: transcript.entries.filter((entry) => {
+            if (!isRecord(entry) || typeof entry.timestamp !== "string") return true;
+            const timestampMs = Date.parse(entry.timestamp);
+            return !Number.isFinite(timestampMs) || timestampMs >= sinceMs;
+          }),
+        };
+      }
+      throw new Error("Chat transcript reads are not available in this runtime.");
     },
     sendMessage: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.sendMessage");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
-      await agentChatService.sendMessage({ ...record, sessionId } as never);
+      const text = requireNonEmptyString(record.text, "text");
+      await agentChatService.sendMessage({ ...record, sessionId, text } as never);
       return {
         ok: true,
         accepted: true,
