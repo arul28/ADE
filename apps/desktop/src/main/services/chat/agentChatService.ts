@@ -19970,27 +19970,51 @@ export function createAgentChatService(args: {
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
       ?? trimLine(sourceSession.title);
-    if (inheritedGoal) {
+    const applyInheritedGoal = (): void => {
+      if (!inheritedGoal) return;
       createdManaged.session.goal = inheritedGoal;
       sessionService.updateMeta({
         sessionId: created.id,
         goal: inheritedGoal,
       });
+    };
+    const deferInheritedGoalUntilHandoffDispatch =
+      handoffMode === "brief" && createdManaged.session.provider === "codex";
+    if (!deferInheritedGoalUntilHandoffDispatch) {
+      applyInheritedGoal();
     }
     persistChatState(createdManaged);
 
     if (handoffMode === "brief") {
-      await sendMessage({
-        sessionId: created.id,
-        text: buildHandoffPrompt(brief),
-        displayText: "Chat handoff from previous session",
-        metadata: { kind: "handoff", hideFullPrompt: true },
-        reasoningEffort: targetReasoningEffort,
-        executionMode: createdManaged.session.executionMode ?? null,
-        interactionMode: createdManaged.session.interactionMode ?? null,
-      }, {
-        awaitDispatch: true,
-      });
+      try {
+        await sendMessage({
+          sessionId: created.id,
+          text: buildHandoffPrompt(brief),
+          displayText: "Chat handoff from previous session",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+          reasoningEffort: targetReasoningEffort,
+          executionMode: createdManaged.session.executionMode ?? null,
+          interactionMode: createdManaged.session.interactionMode ?? null,
+        }, {
+          awaitDispatch: true,
+        });
+      } finally {
+        if (deferInheritedGoalUntilHandoffDispatch) {
+          applyInheritedGoal();
+          persistChatState(createdManaged);
+          if (createdManaged.runtime?.kind === "codex") {
+            try {
+              await seedCodexThreadGoalFromSessionGoal(createdManaged, createdManaged.runtime);
+            } catch (error) {
+              logger.warn("agent_chat.codex_goal_seed_after_handoff_failed", {
+                sessionId: createdManaged.session.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              persistChatState(createdManaged);
+            }
+          }
+        }
+      }
     }
 
     return {
