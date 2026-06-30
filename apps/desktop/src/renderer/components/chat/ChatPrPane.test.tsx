@@ -35,6 +35,14 @@ function buildPr(overrides: Partial<PrSummary> = {}): PrSummary {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 function installAdeMocks(stalePr: PrSummary, freshPr: PrSummary) {
   let prEventListener: ((event: PrEventPayload) => void) | null = null;
   globalThis.window.ade = {
@@ -121,5 +129,69 @@ describe("ChatPrPane", () => {
       expect(screen.queryByText("MERGED #333")).toBeNull();
     });
     expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores stale live refresh results after switching lanes", async () => {
+    const laneOnePr = buildPr({
+      id: "pr-lane-1",
+      laneId: "lane-1",
+      githubPrNumber: 111,
+      title: "Lane one stale PR",
+    });
+    const laneOneFreshPr = buildPr({
+      ...laneOnePr,
+      title: "Lane one refreshed PR",
+      updatedAt: "2026-06-29T14:00:00.000Z",
+    });
+    const laneTwoPr = buildPr({
+      id: "pr-lane-2",
+      laneId: "lane-2",
+      githubPrNumber: 222,
+      title: "Lane two PR",
+    });
+    const laneOneLive = deferred<PrSummary[]>();
+    const laneTwoLive = deferred<PrSummary[]>();
+
+    globalThis.window.ade = {
+      prs: {
+        getForLane: vi.fn(async (requestedLaneId: string) => (requestedLaneId === "lane-1" ? laneOnePr : laneTwoPr)),
+        refresh: vi.fn((args?: { prIds?: string[] }) => (
+          args?.prIds?.[0] === "pr-lane-1" ? laneOneLive.promise : laneTwoLive.promise
+        )),
+        onEvent: vi.fn().mockImplementation(() => () => undefined),
+      },
+      app: {
+        openExternal: vi.fn().mockResolvedValue(undefined),
+      },
+    } as any;
+
+    const { rerender } = render(
+      <MemoryRouter>
+        <ChatPrPane laneId="lane-1" branchName="feature/pr-pane" chatModelId="openai/gpt-5" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Lane one stale PR")).toBeTruthy();
+
+    rerender(
+      <MemoryRouter>
+        <ChatPrPane laneId="lane-2" branchName="feature/pr-pane-2" chatModelId="openai/gpt-5" />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Lane two PR")).toBeTruthy();
+
+    await act(async () => {
+      laneOneLive.resolve([laneOneFreshPr]);
+      await laneOneLive.promise;
+    });
+
+    expect(screen.getByText("Lane two PR")).toBeTruthy();
+    expect(screen.queryByText("Lane one refreshed PR")).toBeNull();
+
+    await act(async () => {
+      laneTwoLive.resolve([laneTwoPr]);
+      await laneTwoLive.promise;
+    });
   });
 });

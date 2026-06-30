@@ -120,6 +120,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const currentPrIdRef = useRef<string | null>(null);
+  const laneIdRef = useRef(laneId);
+  const refreshRequestRef = useRef(0);
+  laneIdRef.current = laneId;
 
   const setCurrentPr = useCallback((nextPr: PrSummary | null) => {
     currentPrIdRef.current = nextPr?.id ?? null;
@@ -127,18 +130,24 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   }, []);
 
   const refresh = useCallback(async (options: { live?: boolean } = {}) => {
+    const requestId = refreshRequestRef.current + 1;
+    refreshRequestRef.current = requestId;
+    const requestIsCurrent = () => laneIdRef.current === laneId && refreshRequestRef.current === requestId;
     let cached: PrSummary | null = null;
     try {
       cached = await window.ade.prs.getForLane(laneId);
+      if (!requestIsCurrent()) return;
       setCurrentPr(cached);
+      setLoading(false);
       if (options.live && cached) {
         const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot });
+        if (!requestIsCurrent()) return;
         setCurrentPr(refreshed ?? cached);
       }
     } catch {
-      if (!cached) setCurrentPr(null);
+      if (!cached && requestIsCurrent()) setCurrentPr(null);
     } finally {
-      setLoading(false);
+      if (requestIsCurrent()) setLoading(false);
     }
   }, [laneId, projectRoot, setCurrentPr]);
 

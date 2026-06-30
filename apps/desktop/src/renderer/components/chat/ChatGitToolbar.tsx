@@ -126,6 +126,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const [prChecks, setPrChecks] = useState<PrCheck[] | null>(null);
   const [prChecksLoading, setPrChecksLoading] = useState(false);
   const [copyConfirmed, setCopyConfirmed] = useState(false);
+  const laneIdRef = React.useRef(laneId);
+  const refreshPrRequestRef = React.useRef(0);
+  laneIdRef.current = laneId;
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link
@@ -141,13 +144,18 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   }, [laneId]);
 
   const refreshPr = useCallback(async (options: { live?: boolean } = {}) => {
+    const requestId = refreshPrRequestRef.current + 1;
+    refreshPrRequestRef.current = requestId;
+    const requestIsCurrent = () => laneIdRef.current === laneId && refreshPrRequestRef.current === requestId;
     try {
       const pr = await window.ade.prs.getForLane(laneId);
+      if (!requestIsCurrent()) return null;
       setLinkedPr(pr);
       setPrLoaded(true);
       if (options.live && pr) {
         try {
           const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot });
+          if (!requestIsCurrent()) return null;
           const next = refreshed ?? pr;
           setLinkedPr(next);
           return next;
@@ -157,8 +165,10 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       }
       return pr;
     } catch {
-      setLinkedPr(null);
-      setPrLoaded(true);
+      if (requestIsCurrent()) {
+        setLinkedPr(null);
+        setPrLoaded(true);
+      }
       return null;
     }
   }, [laneId, projectRoot]);

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { useAppStore } from "../../state/appStore";
@@ -9,6 +9,14 @@ import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 
 const originalAde = globalThis.window.ade;
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 function installAdeMocks() {
   globalThis.window.ade = {
@@ -253,5 +261,90 @@ describe("ChatGitToolbar", () => {
       expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] });
     });
     expect(await screen.findByText("MERGED #333")).toBeTruthy();
+  });
+
+  it("ignores stale toolbar live refresh results after switching lanes", async () => {
+    const laneOnePr = {
+      id: "pr-lane-1",
+      laneId: "lane-1",
+      title: "Lane one stale PR",
+      state: "open",
+      checksStatus: "pending",
+      githubPrNumber: 111,
+      githubUrl: "https://github.com/acme/ade/pull/111",
+      additions: 2,
+      deletions: 1,
+      updatedAt: null,
+    };
+    const laneOneFreshPr = {
+      ...laneOnePr,
+      title: "Lane one refreshed PR",
+      state: "merged",
+      updatedAt: "2026-06-29T14:00:00.000Z",
+    };
+    const laneTwoPr = {
+      id: "pr-lane-2",
+      laneId: "lane-2",
+      title: "Lane two PR",
+      state: "open",
+      checksStatus: "passing",
+      githubPrNumber: 222,
+      githubUrl: "https://github.com/acme/ade/pull/222",
+      additions: 4,
+      deletions: 0,
+      updatedAt: null,
+    };
+    const laneOneLive = deferred<any[]>();
+
+    vi.mocked(window.ade.prs.getForLane).mockImplementation(async (requestedLaneId: string) => (
+      requestedLaneId === "lane-1" ? laneOnePr : laneTwoPr
+    ) as any);
+    vi.mocked(window.ade.prs.refresh).mockImplementation((args?: { prIds?: string[] }) => (
+      args?.prIds?.[0] === "pr-lane-1" ? laneOneLive.promise : Promise.resolve([laneTwoPr])
+    ) as any);
+
+    function Harness() {
+      const [laneId, setLaneId] = React.useState("lane-1");
+      const [open, setOpen] = React.useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => {
+            setOpen(false);
+            setLaneId("lane-2");
+          }}>
+            Switch lane
+          </button>
+          <ChatGitToolbar
+            laneId={laneId}
+            prPaneOpen={open}
+            onTogglePrPane={() => setOpen((value) => !value)}
+          />
+        </>
+      );
+    }
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <Harness />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click((await screen.findByText("PR #111")).closest("button")!);
+
+    await waitFor(() => {
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-lane-1"] });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch lane" }));
+
+    expect(await screen.findByText("PR #222")).toBeTruthy();
+
+    await act(async () => {
+      laneOneLive.resolve([laneOneFreshPr]);
+      await laneOneLive.promise;
+    });
+
+    expect(screen.getByText("PR #222")).toBeTruthy();
+    expect(screen.queryByText("MERGED #111")).toBeNull();
   });
 });
