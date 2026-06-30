@@ -996,21 +996,32 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       info: vi.fn(),
       warn: vi.fn(),
     };
-    const service = createBuiltInBrowserService({ getLogger: () => logger, onEvent: collector.onEvent });
+    let resolveRecovery: () => void = () => undefined;
+    const recovered = new Promise<void>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    const service = createBuiltInBrowserService({
+      getLogger: () => logger,
+      onEvent: (event) => {
+        collector.onEvent(event);
+        if (
+          event.type === "error"
+          && event.message.includes("renderer exited (crashed, exit code 133)")
+          && event.message.includes("Recovered the tab to a blank page")
+        ) {
+          resolveRecovery();
+        }
+      },
+    });
     service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
-    await service.createTab({ url: "https://linear.app/integrations/agents", activate: true });
+    await service.createTab({ url: "https://linear.app/integrations/agents?code=secret", activate: true });
     collector.events.length = 0;
 
     const wc = fakes.webContentsInstances[0];
     expect(wc, "browser tab webContents exists").toBeTruthy();
     const originalLoadURL = wc.loadURL;
-    let resolveRecovery: () => void = () => undefined;
-    const recovered = new Promise<void>((resolve) => {
-      resolveRecovery = resolve;
-    });
     wc.loadURL = vi.fn(async (url: string) => {
       await originalLoadURL(url);
-      if (url === "about:blank") resolveRecovery();
     });
 
     wc.emit("render-process-gone", {}, {
@@ -1032,7 +1043,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(logger.warn).toHaveBeenCalledWith("built_in_browser.render_process_gone", expect.objectContaining({
       reason: "crashed",
       exitCode: 133,
-      url: "https://linear.app/integrations/agents",
+      url: "https://linear.app",
     }));
   });
 

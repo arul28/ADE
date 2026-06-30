@@ -1062,8 +1062,9 @@ function createBuiltInBrowserWindowService(args: {
     tab: BrowserTabState,
     details: Electron.RenderProcessGoneDetails,
   ): Promise<void> => {
-    if (renderProcessRecoveryTabs.has(tab.id) || tab.webContents.isDestroyed()) return;
-    const crashedUrl = emptyToNull(tab.webContents.getURL()) ?? "about:blank";
+    const crashedWebContents = tab.webContents;
+    if (renderProcessRecoveryTabs.has(tab.id) || crashedWebContents.isDestroyed()) return;
+    const crashedUrl = emptyToNull(crashedWebContents.getURL()) ?? "about:blank";
     const reason = details.reason || "unknown";
     if (reason === "clean-exit") {
       notifyTabActivity(tab);
@@ -1072,7 +1073,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     renderProcessRecoveryTabs.add(tab.id);
     const exitCode = Number.isFinite(details.exitCode) ? `, exit code ${details.exitCode}` : "";
-    const message = `ADE browser tab renderer exited (${reason}${exitCode}). Recovered the tab to a blank page.`;
+    const exitMessage = `ADE browser tab renderer exited (${reason}${exitCode}).`;
     try {
       tab.pendingNetworkRequests.clear();
       pushNetworkDiagnostic(tab, {
@@ -1080,7 +1081,7 @@ function createBuiltInBrowserWindowService(args: {
         method: null,
         resourceType: "mainFrame",
         statusCode: null,
-        error: message,
+        error: exitMessage,
         startedAt: null,
         endedAt: new Date().toISOString(),
         durationMs: null,
@@ -1089,10 +1090,16 @@ function createBuiltInBrowserWindowService(args: {
         clearSelectionInternal();
         await stopInspectQuietly("built_in_browser.render_process_gone_stop_inspect_failed");
       }
-      emitError(new Error(message));
-      if (!tab.webContents.isDestroyed()) {
-        await tab.webContents.loadURL("about:blank");
+      if (tab.webContents !== crashedWebContents) {
+        emitError(new Error(`${exitMessage} Recovery skipped because the tab target changed.`));
+        return;
       }
+      if (crashedWebContents.isDestroyed()) {
+        emitError(new Error(`${exitMessage} Recovery skipped because the browser tab was destroyed.`));
+        return;
+      }
+      await crashedWebContents.loadURL("about:blank");
+      emitError(new Error(`${exitMessage} Recovered the tab to a blank page.`));
     } catch (error) {
       logger()?.warn("built_in_browser.render_process_recovery_failed", {
         tabId: tab.id,
@@ -1168,7 +1175,7 @@ function createBuiltInBrowserWindowService(args: {
         reason: details.reason,
         exitCode: details.exitCode,
         tabId: tab?.id ?? null,
-        url: tab ? emptyToNull(tab.webContents.getURL()) : null,
+        url: tab && !wc.isDestroyed() ? urlForBrowserLog(wc.getURL()) : null,
       });
       if (!tab) {
         emitStatus();
@@ -1176,6 +1183,7 @@ function createBuiltInBrowserWindowService(args: {
       }
       void recoverTabAfterRenderProcessGone(tab, details).catch((error) => {
         emitError(new Error(`ADE browser tab renderer recovery failed: ${errorMessage(error)}`));
+        emitStatus();
       });
     });
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -2884,6 +2892,19 @@ export type BuiltInBrowserService = ReturnType<typeof createBuiltInBrowserServic
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function urlForBrowserLog(value: string): string | null {
+  const url = emptyToNull(value);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
+    if (parsed.protocol === "about:") return parsed.href === "about:blank" ? parsed.href : "about:";
+    return parsed.protocol;
+  } catch {
+    return null;
+  }
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
