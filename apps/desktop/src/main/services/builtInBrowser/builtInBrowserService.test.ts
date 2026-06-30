@@ -11,7 +11,16 @@ const fakes = vi.hoisted(() => {
     action: "allow" | "deny";
     createWindow?: (options: Record<string, unknown>) => FakeWebContents;
   };
-  type WindowOpenHandler = (details: { url: string }) => WindowOpenHandlerResponse;
+  type WindowOpenDetails = {
+    url: string;
+    referrer?: { url: string; policy: string };
+    postBody?: {
+      boundary?: string;
+      contentType: string;
+      data: Array<Record<string, unknown>>;
+    };
+  };
+  type WindowOpenHandler = (details: WindowOpenDetails) => WindowOpenHandlerResponse;
   type BeforeSendHeadersHandler = (
     details: { requestHeaders: Record<string, string | string[] | undefined> },
     callback: (response: { requestHeaders: Record<string, string | string[] | undefined> }) => void,
@@ -77,10 +86,12 @@ const fakes = vi.hoisted(() => {
     session: unknown = null;
     audioMutedCalls: boolean[] = [];
     userAgentCalls: string[] = [];
+    loadURLCalls: Array<{ url: string; options?: Record<string, unknown> }> = [];
     currentUrl = "";
     private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
     private windowOpenHandler: WindowOpenHandler | null = null;
-    loadURL = async (url: string): Promise<void> => {
+    loadURL = async (url: string, options?: Record<string, unknown>): Promise<void> => {
+      this.loadURLCalls.push({ url, options });
       const event = { preventDefault: vi.fn() };
       this.emit("will-navigate", event, url);
       if (event.preventDefault.mock.calls.length === 0) {
@@ -116,7 +127,7 @@ const fakes = vi.hoisted(() => {
     setWindowOpenHandler = (handler: WindowOpenHandler): void => {
       this.windowOpenHandler = handler;
     };
-    openWindow = (url: string): WindowOpenHandlerResponse | null => this.windowOpenHandler?.({ url }) ?? null;
+    openWindow = (url: string, details: Partial<WindowOpenDetails> = {}): WindowOpenHandlerResponse | null => this.windowOpenHandler?.({ ...details, url }) ?? null;
     on = (event: string, fn: (...args: unknown[]) => void): void => {
       (this.listeners[event] ??= []).push(fn);
     };
@@ -1097,8 +1108,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
     const firstTabId = service.getStatus().activeTabId;
     const firstWc = fakes.webContentsInstances[0];
+    const postData = [{ bytes: Buffer.from("token=abc"), type: "rawData" }];
 
-    const response = firstWc?.openWindow("https://accounts.google.com/gsi/select");
+    const response = firstWc?.openWindow("https://accounts.google.com/gsi/select", {
+      referrer: { url: "https://example.test/sign-in", policy: "strict-origin-when-cross-origin" },
+      postBody: {
+        contentType: "application/x-www-form-urlencoded",
+        data: postData,
+      },
+    });
 
     expect(response?.action).toBe("deny");
     expect(service.getStatus().tabs).toHaveLength(2);
@@ -1108,6 +1126,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       url: "https://accounts.google.com/gsi/select",
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
+    });
+    expect(fakes.webContentsInstances.at(-1)?.loadURLCalls.at(-1)).toEqual({
+      url: "https://accounts.google.com/gsi/select",
+      options: {
+        httpReferrer: { url: "https://example.test/sign-in", policy: "strict-origin-when-cross-origin" },
+        postData,
+        extraHeaders: "content-type: application/x-www-form-urlencoded\n",
+      },
     });
 
     const openEvent = collector.events.findLast((event) => event.type === "open-request");

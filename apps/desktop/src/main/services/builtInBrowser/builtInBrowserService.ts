@@ -1130,12 +1130,13 @@ function createBuiltInBrowserWindowService(args: {
         timestamp: new Date().toISOString(),
       });
     });
-    wc.setWindowOpenHandler(({ url }) => {
-      const tab = createPopupTabState(url, tabForWebContents(wc) ?? activeTab());
+    wc.setWindowOpenHandler((details) => {
+      const tab = createPopupTabState(details.url, tabForWebContents(wc) ?? activeTab());
       if (tab) {
-        const popupUrl = stringOrNull(url) ?? "about:blank";
+        const popupUrl = stringOrNull(details.url) ?? "about:blank";
+        const popupLoadOptions = loadUrlOptionsForWindowOpen(details);
         // Own popup navigation; Electron cannot attach an existing WebContentsView as a native guest window.
-        void tab.webContents.loadURL(popupUrl).catch((error) => {
+        void tab.webContents.loadURL(popupUrl, popupLoadOptions).catch((error) => {
           emitError(new Error(`Could not open browser popup: ${errorMessage(error)}`));
           emitStatus();
         });
@@ -2905,6 +2906,22 @@ function urlForBrowserLog(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function loadUrlOptionsForWindowOpen(details: Electron.HandlerDetails): Electron.LoadURLOptions | undefined {
+  const options: Electron.LoadURLOptions = {};
+  if (emptyToNull(details.referrer?.url ?? "")) {
+    options.httpReferrer = details.referrer;
+  }
+  if (details.postBody?.data.length) {
+    options.postData = details.postBody.data;
+    let contentType = details.postBody.contentType;
+    if (details.postBody.boundary && !/;\s*boundary=/i.test(contentType)) {
+      contentType = `${contentType}; boundary=${details.postBody.boundary}`;
+    }
+    options.extraHeaders = `content-type: ${contentType}\n`;
+  }
+  return Object.keys(options).length > 0 ? options : undefined;
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
