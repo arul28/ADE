@@ -24,9 +24,12 @@ export function filterTabsForScope(
   tabs: readonly EditorTab[],
   scope: "all" | "lane",
   currentLaneId: string | null,
+  currentWorkspaceId: string,
 ): EditorTab[] {
   if (scope === "all") return [...tabs];
-  return tabs.filter((tab) => tab.laneId === currentLaneId);
+  return tabs.filter((tab) =>
+    currentLaneId != null ? tab.laneId === currentLaneId : tab.workspaceId === currentWorkspaceId,
+  );
 }
 
 export function isLaneGroupBoundary(tabs: readonly EditorTab[], index: number): boolean {

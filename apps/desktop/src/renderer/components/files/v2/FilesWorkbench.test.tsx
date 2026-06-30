@@ -43,12 +43,14 @@ vi.mock("./EditorGroups", () => ({
   EditorGroups: (props: {
     state: { groups: Record<string, { tabs: Array<{ id: string }> }> };
     dirtyTabIds: ReadonlySet<string>;
+    resolveTabContext: (tab: { id: string }) => { canEdit: boolean };
     onDirtyChange: (tabId: string, dirty: boolean) => void;
   }) => {
     const tab = Object.values(props.state.groups).flatMap((group) => group.tabs)[0];
     return (
       <div>
         <div data-testid="tab-count">{tab ? 1 : 0}</div>
+        <div data-testid="can-edit">{tab ? String(props.resolveTabContext(tab).canEdit) : "unknown"}</div>
         <div data-testid="dirty-count">{props.dirtyTabIds.size}</div>
         <button
           type="button"
@@ -72,6 +74,7 @@ const workspaces: FilesWorkspace[] = [
     rootPath: "/repo/.ade/worktrees/a",
     laneId: "lane-a",
     isReadOnlyByDefault: false,
+    mobileReadOnly: true,
   },
   {
     id: "workspace-b",
@@ -80,6 +83,7 @@ const workspaces: FilesWorkspace[] = [
     rootPath: "/repo/.ade/worktrees/b",
     laneId: "lane-b",
     isReadOnlyByDefault: false,
+    mobileReadOnly: true,
   },
 ];
 
@@ -128,6 +132,7 @@ describe("FilesWorkbench", () => {
 
     fireEvent.click(await screen.findByTestId("open-file"));
     await waitFor(() => expect(screen.getByTestId("tab-count").textContent).toBe("1"));
+    expect(screen.getByTestId("can-edit").textContent).toBe("true");
     expect(window.ade.files.readFile).toHaveBeenCalledWith({ workspaceId: "workspace-a", path: "src/a.ts" });
 
     fireEvent.click(screen.getByTestId("mark-dirty"));

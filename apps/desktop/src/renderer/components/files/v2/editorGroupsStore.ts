@@ -11,8 +11,7 @@ import { create } from "zustand";
  *
  * All mutation logic is expressed as pure reducer functions (exported for unit
  * tests); the Zustand store is a thin wrapper that applies them per project-level
- * `sessionKey` (`${projectRoot}::__project__`), so open tabs persist across lane
- * switches.
+ * `sessionKey`, so open tabs persist across lane switches.
  */
 
 export type ViewerKind =
@@ -354,20 +353,61 @@ export function mergeLegacyLaneSessions(sessions: GroupsState[]): GroupsState {
   if (sessions.length === 1) return sessions[0]!;
 
   let merged = createInitialGroupsState();
-  const seenTabIds = new Set<string>();
+  const ensureTargetGroup = (state: GroupsState, useSharedGroup: boolean): { state: GroupsState; groupId: string } => {
+    if (useSharedGroup) return { state, groupId: FIRST_GROUP_ID };
+    const firstGroup = state.groups[FIRST_GROUP_ID];
+    if (state.groupOrder.length === 1 && firstGroup && firstGroup.tabs.length === 0) {
+      return { state, groupId: FIRST_GROUP_ID };
+    }
+    const groupId = nextGroupId(state);
+    return {
+      state: {
+        ...state,
+        groups: {
+          ...state.groups,
+          [groupId]: { id: groupId, tabs: [], activeTabId: null, recentTabIds: [] },
+        },
+        groupOrder: [...state.groupOrder, groupId],
+      },
+      groupId,
+    };
+  };
+
+  const restoreGroupSelection = (state: GroupsState, groupId: string, sourceGroup: EditorGroup): GroupsState => {
+    const targetGroup = state.groups[groupId];
+    if (!targetGroup) return state;
+    const tabIds = new Set(targetGroup.tabs.map((tab) => tab.id));
+    const sourceRecent = sourceGroup.recentTabIds.filter((tabId) => tabIds.has(tabId));
+    const generatedRecent = targetGroup.recentTabIds.filter((tabId) => tabIds.has(tabId) && !sourceRecent.includes(tabId));
+    const activeTabId = sourceGroup.activeTabId && tabIds.has(sourceGroup.activeTabId)
+      ? sourceGroup.activeTabId
+      : targetGroup.activeTabId;
+    return {
+      ...state,
+      activeGroupId: activeTabId ? groupId : state.activeGroupId,
+      groups: {
+        ...state.groups,
+        [groupId]: {
+          ...targetGroup,
+          activeTabId,
+          recentTabIds: [...sourceRecent, ...generatedRecent],
+        },
+      },
+    };
+  };
 
   for (const session of sessions) {
-    for (const groupId of session.groupOrder) {
-      const group = session.groups[groupId];
-      if (!group) continue;
+    const sourceGroups = session.groupOrder
+      .map((groupId) => session.groups[groupId])
+      .filter((group): group is EditorGroup => Boolean(group && group.tabs.length > 0));
+    const preserveSourceGroups = sourceGroups.length > 1;
+    for (const group of sourceGroups) {
+      const target = ensureTargetGroup(merged, !preserveSourceGroups);
+      merged = target.state;
       for (const tab of group.tabs) {
-        if (seenTabIds.has(tab.id)) {
-          merged = activateTab(merged, merged.activeGroupId, tab.id);
-          continue;
-        }
-        seenTabIds.add(tab.id);
-        merged = openInGroup(merged, merged.activeGroupId, tab, { preview: false });
+        merged = openInGroup(merged, target.groupId, tab, { preview: false });
       }
+      merged = restoreGroupSelection(merged, target.groupId, group);
     }
   }
   return merged;

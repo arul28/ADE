@@ -16,6 +16,7 @@ import {
   promoteFromPreview,
   splitGroup,
   splitTabToNewGroup,
+  upgradeLegacySession,
 } from "./editorGroupsStore";
 
 const WS_A = "workspace-a";
@@ -243,11 +244,57 @@ describe("editorGroupsStore reducers", () => {
     expect(group(state).activeTabId).toBeNull();
   });
 
-  it("merges legacy per-lane sessions deduping by tab id", () => {
+  it("merges simple legacy per-lane sessions into one tab strip", () => {
     const sessionA = openInGroup(createInitialGroupsState(), g1, tab("a.ts", { workspaceId: WS_A }));
     const sessionB = openInGroup(createInitialGroupsState(), g1, tab("b.ts", { workspaceId: WS_B }));
     const merged = mergeLegacyLaneSessions([sessionA, sessionB]);
     expect(merged.groups[g1]!.tabs.map((t) => t.path).sort()).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("preserves duplicate split panes during legacy session merge", () => {
+    const existing = openInGroup(createInitialGroupsState(), g1, tab("existing.ts", { workspaceId: WS_B }));
+    let splitSession = openInGroup(createInitialGroupsState(), g1, tab("split.ts", { workspaceId: WS_A }));
+    splitSession = splitGroup(splitSession, g1);
+
+    const merged = mergeLegacyLaneSessions([existing, splitSession]);
+    const splitTabId = editorTabId(WS_A, "split.ts");
+    const groupsWithSplitTab = Object.values(merged.groups).filter((entry) =>
+      entry.tabs.some((entryTab) => entryTab.id === splitTabId),
+    );
+
+    expect(groupsWithSplitTab).toHaveLength(2);
+    expect(groupsWithSplitTab.every((entry) => entry.activeTabId === splitTabId)).toBe(true);
+  });
+
+  it("upgrades legacy path-based session fields to tab ids", () => {
+    const legacy = createInitialGroupsState();
+    legacy.groups[g1] = {
+      id: g1,
+      tabs: [
+        {
+          path: "src/legacy.ts",
+          title: "legacy.ts",
+          viewerKind: "code",
+          languageId: "typescript",
+          preview: false,
+          pinned: false,
+        } as EditorTab,
+      ],
+      activeTabId: "src/legacy.ts",
+      recentTabIds: ["src/legacy.ts"],
+    };
+
+    const upgraded = upgradeLegacySession(legacy, WS_B, LANE_B);
+    const upgradedTabId = editorTabId(WS_B, "src/legacy.ts");
+
+    expect(group(upgraded).tabs[0]).toMatchObject({
+      id: upgradedTabId,
+      workspaceId: WS_B,
+      laneId: LANE_B,
+      path: "src/legacy.ts",
+    });
+    expect(group(upgraded).activeTabId).toBe(upgradedTabId);
+    expect(group(upgraded).recentTabIds).toEqual([upgradedTabId]);
   });
 
   it("isTabOpenInGroups detects duplicate split panes", () => {

@@ -18,6 +18,7 @@ import { joinDisplayPath } from "./pathDisplay";
 export type EditorGroupProps = {
   group: EditorGroupModel;
   isActiveGroup: boolean;
+  explorerWorkspaceId: string;
   explorerLaneId: string | null;
   lanes: LaneSummary[];
   tabScope: FilesTabScope;
@@ -65,9 +66,9 @@ export function EditorGroup(props: EditorGroupProps) {
   const [diffTabIds, setDiffTabIds] = useState<Set<string>>(new Set());
 
   const displayTabs = useMemo(() => {
-    const filtered = filterTabsForScope(group.tabs, props.tabScope, props.explorerLaneId);
+    const filtered = filterTabsForScope(group.tabs, props.tabScope, props.explorerLaneId, props.explorerWorkspaceId);
     return props.tabScope === "all" ? orderTabsByLane(filtered, props.lanes) : filtered;
-  }, [group.tabs, props.explorerLaneId, props.lanes, props.tabScope]);
+  }, [group.tabs, props.explorerLaneId, props.explorerWorkspaceId, props.lanes, props.tabScope]);
 
   const activeTab = useMemo(() => {
     const fromGroup = group.tabs.find((t) => t.id === group.activeTabId) ?? null;

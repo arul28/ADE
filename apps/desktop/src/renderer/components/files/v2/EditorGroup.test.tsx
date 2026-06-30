@@ -48,6 +48,7 @@ const baseProps: EditorGroupProps = {
     ],
   },
   isActiveGroup: true,
+  explorerWorkspaceId: "workspace-1",
   explorerLaneId: "lane-1",
   lanes: [{ id: "lane-1", color: "#ff0000" } as never],
   tabScope: "all",

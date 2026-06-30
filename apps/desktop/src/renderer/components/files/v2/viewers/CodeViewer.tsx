@@ -39,12 +39,11 @@ export function CodeViewer({
     const { workspaceId: ws, tab: t, registry: reg, onDirtyChange: onDirty } = ctxRef.current;
     const editor = editorRef.current;
     if (!editor) return;
-    if (!ctxRef.current.readOnly) {
-      try {
-        await editor.getAction("editor.action.formatDocument")?.run();
-      } catch {
-        // formatter may be unavailable for this language — save unformatted
-      }
+    if (ctxRef.current.readOnly) return;
+    try {
+      await editor.getAction("editor.action.formatDocument")?.run();
+    } catch {
+      // formatter may be unavailable for this language — save unformatted
     }
     const text = reg.getValue(t.id) ?? editor.getValue();
     await window.ade.files.writeText({ workspaceId: ws, path: t.path, text });

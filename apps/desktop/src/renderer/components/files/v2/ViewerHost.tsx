@@ -57,10 +57,11 @@ export function ViewerHost(props: ViewerHostProps) {
     onError: props.onError,
   };
 
-  // Non-code viewers carry per-file view state (zoom, page, scroll), so key them
-  // by path to reset on file change. CodeViewer is intentionally NOT keyed: one
-  // stable Monaco instance per group re-binds models via the registry, so tab
-  // switches are an instant setModel rather than an editor rebuild.
+  // Non-code viewers carry per-tab view state (zoom, page, scroll), so key them
+  // by tab id to reset when the active tab identity changes. CodeViewer is
+  // intentionally NOT keyed: one stable Monaco instance per group re-binds
+  // models via the registry, so tab switches are an instant setModel rather than
+  // an editor rebuild.
   switch (tab.viewerKind) {
     case "image":
       return <ImageViewer key={tab.id} {...viewerProps} />;

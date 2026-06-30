@@ -66,11 +66,11 @@ export function createMonacoModelRegistry() {
      */
     refreshClean(
       monaco: typeof Monaco,
-      path: string,
+      modelKey: string,
       content: string,
       languageId: string,
     ): boolean {
-      const entry = models.get(path);
+      const entry = models.get(modelKey);
       if (!entry || entry.model.isDisposed()) return false;
       setLanguage(monaco, entry, languageId);
       if (entry.model.getAlternativeVersionId() !== entry.baseVersionId) return false;
@@ -82,36 +82,36 @@ export function createMonacoModelRegistry() {
     },
 
     /** Mark the current buffer as the clean baseline (after load or save). */
-    markSaved(path: string): void {
-      const entry = models.get(path);
+    markSaved(modelKey: string): void {
+      const entry = models.get(modelKey);
       if (entry && !entry.model.isDisposed()) {
         entry.baseVersionId = entry.model.getAlternativeVersionId();
       }
     },
 
     /** True when the buffer has unsaved edits relative to the last save baseline. */
-    isDirty(path: string): boolean {
-      const entry = models.get(path);
+    isDirty(modelKey: string): boolean {
+      const entry = models.get(modelKey);
       if (!entry || entry.model.isDisposed()) return false;
       return entry.model.getAlternativeVersionId() !== entry.baseVersionId;
     },
 
-    /** Current buffer text, or null when no model exists for the path. */
-    getValue(path: string): string | null {
-      const entry = models.get(path);
+    /** Current buffer text, or null when no model exists for the key. */
+    getValue(modelKey: string): string | null {
+      const entry = models.get(modelKey);
       if (!entry || entry.model.isDisposed()) return null;
       return entry.model.getValue();
     },
 
-    has(path: string): boolean {
-      const entry = models.get(path);
+    has(modelKey: string): boolean {
+      const entry = models.get(modelKey);
       return Boolean(entry && !entry.model.isDisposed());
     },
 
-    dispose(path: string): void {
-      const entry = models.get(path);
+    dispose(modelKey: string): void {
+      const entry = models.get(modelKey);
       if (!entry) return;
-      models.delete(path);
+      models.delete(modelKey);
       safeDispose(entry.model);
     },
 

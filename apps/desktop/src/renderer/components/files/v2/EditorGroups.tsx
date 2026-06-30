@@ -23,6 +23,7 @@ export type EditorGroupsProps = {
   sessionKey: string;
   state: GroupsState;
   workspaces: FilesWorkspace[];
+  explorerWorkspaceId: string;
   explorerLaneId: string | null;
   lanes: LaneSummary[];
   tabScope: FilesTabScope;
@@ -99,6 +100,7 @@ export function EditorGroups(props: EditorGroupsProps) {
               <EditorGroup
                 group={props.state.groups[id]!}
                 isActiveGroup={id === props.state.activeGroupId}
+                explorerWorkspaceId={props.explorerWorkspaceId}
                 explorerLaneId={props.explorerLaneId}
                 lanes={props.lanes}
                 tabScope={props.tabScope}

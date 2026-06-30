@@ -12,7 +12,7 @@ export function filesSessionKey(projectRoot: string, laneId: string | null): str
 
 /** Project-level session key — unified tab store across all lanes. */
 export function filesProjectSessionKey(projectRoot: string): string {
-  return `${projectRoot}::__project__`;
+  return JSON.stringify({ kind: "files-project-session", projectRoot });
 }
 
 /**
