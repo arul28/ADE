@@ -16,7 +16,7 @@ import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, nextAvailableColor } from "./laneColorPalette";
 import { BranchPickerView } from "./BranchPickerView";
 import { formatRelativeTime } from "./branchPickerSearch";
-import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
+import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisplay";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
@@ -69,6 +69,12 @@ const MODE_META: Record<CreateLaneMode, ModeMeta> = {
 };
 
 const MODE_ORDER: readonly CreateLaneMode[] = ["primary", "existing", "child"];
+
+function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranchOption[]): string {
+  const branch = branches.find((candidate) => candidate.name === branchName);
+  if (branch?.isRemote) return branch.name.replace(/^[^/]+\//, "");
+  return branchName;
+}
 
 function submitLabel(
   busy: boolean | undefined,
@@ -193,11 +199,13 @@ export function CreateLaneDialog({
 
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [issuePickerOpen, setIssuePickerOpen] = React.useState(false);
+  const importBranchAutoNameRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     if (!open) {
       setPickerOpen(false);
       setIssuePickerOpen(false);
+      importBranchAutoNameRef.current = null;
     }
   }, [open]);
 
@@ -211,6 +219,35 @@ export function CreateLaneDialog({
       setCreateImportBranch("");
     }
   }, [createMode, selectedLinearIssue, setCreateImportBranch, setCreateMode]);
+
+  const handleSetCreateLaneName = React.useCallback((value: string) => {
+    importBranchAutoNameRef.current = null;
+    setCreateLaneName(value);
+  }, [setCreateLaneName]);
+
+  const handleSelectImportBranch = React.useCallback((branchName: string) => {
+    setCreateImportBranch(branchName);
+
+    const nextName = defaultLaneNameForImportBranch(branchName, createBranches);
+    const previousAutoName = importBranchAutoNameRef.current;
+    const trimmedCurrentName = createLaneName.trim();
+    if (!trimmedCurrentName || (previousAutoName && trimmedCurrentName === previousAutoName)) {
+      importBranchAutoNameRef.current = nextName;
+      setCreateLaneName(nextName);
+      return;
+    }
+
+    importBranchAutoNameRef.current = null;
+  }, [createBranches, createLaneName, setCreateImportBranch, setCreateLaneName]);
+
+  React.useEffect(() => {
+    if (!selectedLinearIssue) return;
+    const previousAutoName = importBranchAutoNameRef.current;
+    if (previousAutoName && createLaneName.trim() === previousAutoName) {
+      setCreateLaneName(linearIssueLaneName(selectedLinearIssue));
+    }
+    importBranchAutoNameRef.current = null;
+  }, [createLaneName, selectedLinearIssue, setCreateLaneName]);
 
   const prByBranch = React.useMemo(() => {
     const map = new Map<string, BranchPullRequest>();
@@ -265,6 +302,7 @@ export function CreateLaneDialog({
           : "Create a lane from Primary, an existing branch, or another lane."}
       icon={Plus}
       widthClassName="w-[min(560px,calc(100vw-24px))]"
+      heightClassName="h-[min(760px,calc(100vh-24px))]"
       busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
@@ -280,7 +318,7 @@ export function CreateLaneDialog({
           pullRequests={branchPullRequests ?? []}
           currentUserName={currentGitUserName ?? ""}
           selectedBranch={createImportBranch}
-          onSelect={(name) => setCreateImportBranch(name)}
+          onSelect={handleSelectImportBranch}
           onConfirm={() => setPickerOpen(false)}
           onBack={() => setPickerOpen(false)}
           busy={busy || laneCreated}
@@ -288,14 +326,14 @@ export function CreateLaneDialog({
           loadingPullRequests={loadingBranchPullRequests}
         />
       ) : (
-      <div className="space-y-3" data-tour="lanes.createDialog">
+      <div className="min-h-full space-y-3" data-tour="lanes.createDialog">
         {/* Lane name */}
         <section className={SECTION_CLASS_NAME}>
           <label className="block">
             <span className={LABEL_CLASS_NAME}>Lane name</span>
             <input
               value={createLaneName}
-              onChange={(e) => setCreateLaneName(e.target.value)}
+              onChange={(e) => handleSetCreateLaneName(e.target.value)}
               placeholder="e.g. feature/auth-refresh"
               className={INPUT_CLASS_NAME}
               autoFocus
@@ -706,7 +744,7 @@ export function CreateLaneDialog({
             disabled={busy}
             onClick={() => {
               onOpenChange(false);
-              setCreateLaneName("");
+              handleSetCreateLaneName("");
               setCreateParentLaneId("");
               setCreateMode("primary");
               setCreateBaseBranch("");

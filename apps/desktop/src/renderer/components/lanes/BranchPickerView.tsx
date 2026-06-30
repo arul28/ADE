@@ -182,7 +182,7 @@ export function BranchPickerView({
   else emptyMessage = "No branches match your search.";
 
   return (
-    <div className="flex flex-col gap-3" data-testid="branch-picker-view">
+    <div className="flex h-full min-h-0 flex-col gap-3" data-testid="branch-picker-view">
       <div className="flex items-center gap-2">
         <button
           type="button"
@@ -225,7 +225,7 @@ export function BranchPickerView({
 
       <div
         ref={listRef}
-        className="h-[360px] overflow-y-auto rounded-lg border border-white/[0.06] bg-black/20"
+        className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-white/[0.06] bg-black/20"
       >
         {filtered.length === 0 ? (
           <div className="flex h-full items-center justify-center px-4 text-center text-[12px] text-muted-fg/60">
