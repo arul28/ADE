@@ -598,6 +598,12 @@ best-effort — failures log a warning and do not abort the tick.
   `detailDeployments`, `detailAiSummary`). It exposes
   `setTimelineFilters`, `setAiSummaryDismissed`, and
   `regeneratePrAiSummary`.
+- Chat-side PR surfaces (`ChatGitToolbar`, `ChatPrPane`) render the cached
+  lane PR row first, then use `renderer/lib/prReadCache.ts` to coalesce and
+  throttle a targeted `prs.refresh({ prIds })` for the linked PR when the
+  pane or compact menu opens. This keeps chat PR badges near-live without
+  forcing a repo snapshot refresh or broad background sync on every Work
+  chat mount.
 - `PrDetailPane` is where most rich behavior concentrates:
   issue resolver modal, rebase banner, check/review/comment sections
   with running indicators (`PrCiRunningIndicator`), merge readiness

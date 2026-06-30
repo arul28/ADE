@@ -17,6 +17,7 @@ import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { useAppStore } from "../../state/appStore";
+import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,7 +42,8 @@ function dirtyFileCount(changes: DiffChanges): number {
   return changes.staged.length + changes.unstaged.length;
 }
 
-function checksIcon(status: PrSummary["checksStatus"]) {
+function checksIcon(status: PrSummary["checksStatus"], state: PrSummary["state"]) {
+  if (state !== "open" && state !== "draft") return null;
   switch (status) {
     case "passing":
       return <CheckCircle size={10} weight="fill" className="text-emerald-400/80" />;
@@ -114,6 +116,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
 
   const [dirtyCount, setDirtyCount] = useState(0);
   const [linkedPr, setLinkedPr] = useState<PrSummary | null>(null);
@@ -123,6 +126,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const [prChecks, setPrChecks] = useState<PrCheck[] | null>(null);
   const [prChecksLoading, setPrChecksLoading] = useState(false);
   const [copyConfirmed, setCopyConfirmed] = useState(false);
+  const laneIdRef = React.useRef(laneId);
+  const refreshPrRequestRef = React.useRef(0);
+  laneIdRef.current = laneId;
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link
@@ -137,18 +143,34 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     }
   }, [laneId]);
 
-  const refreshPr = useCallback(async () => {
+  const refreshPr = useCallback(async (options: { live?: boolean } = {}) => {
+    const requestId = refreshPrRequestRef.current + 1;
+    refreshPrRequestRef.current = requestId;
+    const requestIsCurrent = () => laneIdRef.current === laneId && refreshPrRequestRef.current === requestId;
     try {
       const pr = await window.ade.prs.getForLane(laneId);
+      if (!requestIsCurrent()) return null;
       setLinkedPr(pr);
       setPrLoaded(true);
+      if (options.live && pr) {
+        try {
+          const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot });
+          if (!requestIsCurrent()) return null;
+          setLinkedPr(refreshed);
+          return refreshed;
+        } catch {
+          return pr;
+        }
+      }
       return pr;
     } catch {
-      setLinkedPr(null);
-      setPrLoaded(true);
+      if (requestIsCurrent()) {
+        setLinkedPr(null);
+        setPrLoaded(true);
+      }
       return null;
     }
-  }, [laneId]);
+  }, [laneId, projectRoot]);
 
   useEffect(() => {
     setDirtyCount(0);
@@ -227,6 +249,12 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     setPrMenuOpen(false);
     setPrChecks(null);
   }, [linkedPrId]);
+
+  useEffect(() => {
+    if (!linkedPrId) return;
+    if (!prPaneOpen && !prMenuOpen) return;
+    void refreshPr({ live: true });
+  }, [linkedPrId, prMenuOpen, prPaneOpen, refreshPr]);
 
   // Fetch live check details when the PR menu opens. Lazy: only fetched while
   // the menu is open so closed-state idles cost zero.
@@ -308,7 +336,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       >
         <span className={cn("inline-block h-1.5 w-1.5 rounded-full", prStateDot(linkedPr.state))} />
         <span>{label}</span>
-        {checksIcon(linkedPr.checksStatus)}
+        {checksIcon(linkedPr.checksStatus, linkedPr.state)}
         <CaretRight
           size={9}
           weight="bold"

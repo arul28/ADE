@@ -3,6 +3,7 @@ import {
   clearPrReadInFlightForTest,
   getGitHubSnapshotCoalesced,
   listPrsCoalesced,
+  refreshLinkedPrCoalesced,
   refreshPrsCoalesced,
 } from "./prReadCache";
 
@@ -86,5 +87,66 @@ describe("prReadCache", () => {
 
     await expect(first).resolves.toEqual([{ id: "pr-1" }, { id: "pr-2" }]);
     await expect(second).resolves.toEqual([{ id: "pr-1" }, { id: "pr-2" }]);
+  });
+
+  it("throttles repeated linked PR refreshes after a fresh result", async () => {
+    const stalePr = { id: "pr-1", laneId: "lane-1", state: "open" };
+    const freshPr = { ...stalePr, state: "merged" };
+    refresh.mockResolvedValueOnce([freshPr]);
+
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(freshPr);
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(freshPr);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    refresh.mockResolvedValueOnce([{ ...freshPr, title: "forced" }]);
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo", force: true }),
+    ).resolves.toMatchObject({ title: "forced" });
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves missing linked PR refreshes as null during the cooldown", async () => {
+    const stalePr = { id: "pr-1", laneId: "lane-1", state: "open" };
+    refresh.mockResolvedValueOnce([]);
+
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toBeNull();
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toBeNull();
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace a fresher linked PR row during the cooldown", async () => {
+    const stalePr = {
+      id: "pr-1",
+      laneId: "lane-1",
+      state: "open",
+      updatedAt: "2026-06-29T14:00:00.000Z",
+      lastSyncedAt: "2026-06-29T14:00:00.000Z",
+    };
+    const fresherPr = {
+      ...stalePr,
+      state: "merged",
+      updatedAt: "2026-06-29T14:01:00.000Z",
+      lastSyncedAt: "2026-06-29T14:01:00.000Z",
+    };
+    refresh.mockResolvedValueOnce([stalePr]);
+
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(stalePr);
+    await expect(
+      refreshLinkedPrCoalesced(fresherPr as any, { projectRoot: "/repo" }),
+    ).resolves.toEqual(fresherPr);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });
