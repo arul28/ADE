@@ -117,7 +117,9 @@ describe("ChatPrPane", () => {
       });
     });
 
-    expect(screen.getByText("MERGED #333")).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.queryByText("MERGED #333")).toBeNull();
+    });
     expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
   });
 });

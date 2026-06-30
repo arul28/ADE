@@ -164,10 +164,12 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       const eventIncludesCurrentPr = currentPrId ? event.prs.some((next) => next.id === currentPrId) : false;
       if (eventIncludesLanePr || eventIncludesCurrentPr || !currentPrId) {
         void refresh();
+      } else {
+        setCurrentPr(null);
       }
     });
     return unsubscribe;
-  }, [laneId, refresh]);
+  }, [laneId, refresh, setCurrentPr]);
 
   useEffect(() => {
     if (!copied) return;
