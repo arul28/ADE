@@ -29,15 +29,10 @@ export function filterTabsForScope(
   return tabs.filter((tab) => tab.laneId === currentLaneId);
 }
 
-export function isLaneGroupBoundary(
-  tabs: readonly EditorTab[],
-  index: number,
-  lanes: readonly LaneSummary[],
-): boolean {
+export function isLaneGroupBoundary(tabs: readonly EditorTab[], index: number): boolean {
   if (index <= 0) return false;
-  const ordered = orderTabsByLane(tabs, lanes);
-  const prev = ordered[index - 1];
-  const curr = ordered[index];
+  const prev = tabs[index - 1];
+  const curr = tabs[index];
   if (!prev || !curr) return false;
   return prev.laneId !== curr.laneId;
 }

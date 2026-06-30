@@ -31,6 +31,7 @@ import {
   closeTab,
   createInitialGroupsState,
   editorTabId,
+  isTabOpenInGroups,
   mergeLegacyLaneSessions,
   moveTabToGroup,
   openInGroup,
@@ -41,7 +42,7 @@ import {
   upgradeLegacySession,
   useEditorGroupsStore,
 } from "./editorGroupsStore";
-import { getFilesTabScope, setFilesTabScope, type FilesTabScope } from "./filesTabScope";
+import { getFilesTabScope, setFilesTabScope, toggleFilesTabScope, type FilesTabScope } from "./filesTabScope";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
 import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
@@ -195,9 +196,6 @@ export function FilesWorkbench({
     [groupsState.groups],
   );
   const openCount = allOpenTabs.length;
-  const openTabIds = useMemo(() => new Set(allOpenTabs.map((t) => t.id)), [allOpenTabs]);
-  const openTabIdsRef = useRef(openTabIds);
-  openTabIdsRef.current = openTabIds;
   const openWorkspaceIds = useMemo(() => new Set(allOpenTabs.map((t) => t.workspaceId)), [allOpenTabs]);
   const resolveTabContext = useCallback(
     (tab: EditorTab) => {
@@ -243,7 +241,7 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (tabScope !== "lane") return;
-    const explorerLane = workspace?.laneId ?? globalLaneId;
+    const explorerLane = workspace?.laneId ?? null;
     for (const groupId of groupsState.groupOrder) {
       const group = groupsState.groups[groupId];
       if (!group?.activeTabId) continue;
@@ -254,7 +252,7 @@ export function FilesWorkbench({
         applyGroups((s) => activateTab(s, groupId, fallback.id));
       }
     }
-  }, [applyGroups, globalLaneId, groupsState.groupOrder, groupsState.groups, tabScope, workspace?.laneId]);
+  }, [applyGroups, groupsState.groupOrder, groupsState.groups, tabScope, workspace?.laneId]);
 
   useEffect(() => {
     setTabScope(getFilesTabScope(projectRootPath));
@@ -819,11 +817,14 @@ export function FilesWorkbench({
         const ok = window.confirm(`"${label}" has unsaved changes. Close anyway?`);
         if (!ok) return;
       }
-      registryRef.current.dispose(tabId);
-      pruneClosedTabState((candidate) => candidate === tabId);
-      applyGroups((s) => closeTab(s, groupId, tabId));
+      const nextState = closeTab(groupsState, groupId, tabId);
+      if (!isTabOpenInGroups(nextState, tabId)) {
+        registryRef.current.dispose(tabId);
+        pruneClosedTabState((candidate) => candidate === tabId);
+      }
+      applyGroups(() => nextState);
     },
-    [allOpenTabs, applyGroups, dirtyTabIds, pruneClosedTabState],
+    [allOpenTabs, applyGroups, dirtyTabIds, groupsState, pruneClosedTabState],
   );
 
   const handleDirtyChange = useCallback((tabId: string, dirty: boolean) => {
@@ -889,9 +890,18 @@ export function FilesWorkbench({
         }
       }
       if (toClose.length === 0) return;
-      for (const { tabId } of toClose) registryRef.current.dispose(tabId);
-      pruneClosedTabState((tabId) => toClose.some((entry) => entry.tabId === tabId));
-      applyGroups((s) => toClose.reduce((acc, { gid, tabId }) => closeTab(acc, gid, tabId), s));
+      let nextState = groupsState;
+      for (const { gid, tabId } of toClose) {
+        nextState = closeTab(nextState, gid, tabId);
+      }
+      const closedTabIds = new Set(toClose.map((entry) => entry.tabId));
+      for (const tabId of closedTabIds) {
+        if (!isTabOpenInGroups(nextState, tabId)) {
+          registryRef.current.dispose(tabId);
+        }
+      }
+      pruneClosedTabState((tabId) => closedTabIds.has(tabId) && !isTabOpenInGroups(nextState, tabId));
+      applyGroups(() => nextState);
     },
     [groupsState, pruneClosedTabState, applyGroups],
   );
@@ -905,14 +915,19 @@ export function FilesWorkbench({
         .map((tab) => tab.id);
       const dirtyClosing = closing.filter((tabId) => dirtyTabIds.has(tabId));
       if (!confirmDiscardDirtyTabIds(dirtyClosing, "Close them")) return;
-      for (const tabId of closing) registryRef.current.dispose(tabId);
+      const nextState = closeOtherTabs(groupsState, groupId, keepTabId);
+      for (const tabId of closing) {
+        if (!isTabOpenInGroups(nextState, tabId)) {
+          registryRef.current.dispose(tabId);
+        }
+      }
       if (closing.length > 0) {
         const closingSet = new Set(closing);
-        pruneClosedTabState((tabId) => closingSet.has(tabId));
+        pruneClosedTabState((tabId) => closingSet.has(tabId) && !isTabOpenInGroups(nextState, tabId));
       }
-      applyGroups((s) => closeOtherTabs(s, groupId, keepTabId));
+      applyGroups(() => nextState);
     },
-    [applyGroups, confirmDiscardDirtyTabIds, dirtyTabIds, groupsState.groups, pruneClosedTabState],
+    [applyGroups, confirmDiscardDirtyTabIds, dirtyTabIds, groupsState, pruneClosedTabState],
   );
 
   const renamePath = useCallback(
@@ -1121,13 +1136,12 @@ export function FilesWorkbench({
             sessionKey={sessionKey}
             state={groupsState}
             workspaces={workspaces}
-            explorerWorkspaceId={workspaceId}
-            explorerLaneId={workspace?.laneId ?? globalLaneId}
+            explorerLaneId={workspace?.laneId ?? null}
             lanes={lanes}
             tabScope={tabScope}
-            onTabScopeChange={(scope) => {
-              setFilesTabScope(projectRootPath, scope);
-              setTabScope(scope);
+            onTabScopeChange={() => {
+              const next = toggleFilesTabScope(projectRootPath);
+              setTabScope(next);
             }}
             resolveTabContext={resolveTabContext}
             theme={theme}

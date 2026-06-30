@@ -8,7 +8,8 @@ type Entry = {
 };
 
 /**
- * Per-workbench cache of Monaco text models keyed by workspace-relative path.
+ * Per-workbench cache of Monaco text models keyed by tab model id
+ * (`editorTabId(workspaceId, path)`).
  *
  * A model is created once per file and reused across tab switches, so switching
  * tabs is `editor.setModel(existing)` instead of dispose → recreate → re-tokenize.
@@ -16,8 +17,8 @@ type Entry = {
  * preserves each file's undo stack. The renderer keeps owning the
  * content-in-state contract; this registry only owns model *lifetime*.
  *
- * Callers must `dispose(path)` when a tab closes and `disposeAll()` on workspace
- * switch / unmount, otherwise detached models leak.
+ * Callers must `dispose(modelKey)` when a tab closes everywhere and `disposeAll()`
+ * on unmount, otherwise detached models leak.
  */
 export function createMonacoModelRegistry() {
   const models = new Map<string, Entry>();
@@ -39,23 +40,23 @@ export function createMonacoModelRegistry() {
 
   return {
     /**
-     * Return the cached model for `path`, creating it from `content` on first
+     * Return the cached model for `modelKey`, creating it from `content` on first
      * use. An already-cached model is returned untouched (it holds the live
      * edited buffer); only its language is re-applied in place when it changes.
      */
     getOrCreate(
       monaco: typeof Monaco,
-      path: string,
+      modelKey: string,
       content: string,
       languageId: string,
     ): Monaco.editor.ITextModel {
-      const existing = models.get(path);
+      const existing = models.get(modelKey);
       if (existing && !existing.model.isDisposed()) {
         setLanguage(monaco, existing, languageId);
         return existing.model;
       }
       const model = monaco.editor.createModel(content, languageId);
-      models.set(path, { model, languageId, baseVersionId: model.getAlternativeVersionId() });
+      models.set(modelKey, { model, languageId, baseVersionId: model.getAlternativeVersionId() });
       return model;
     },
 

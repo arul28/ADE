@@ -48,7 +48,6 @@ const baseProps: EditorGroupProps = {
     ],
   },
   isActiveGroup: true,
-  workspaces: [{ id: "workspace-1", rootPath: "/repo", kind: "worktree" }],
   explorerLaneId: "lane-1",
   lanes: [{ id: "lane-1", color: "#ff0000" } as never],
   tabScope: "all",

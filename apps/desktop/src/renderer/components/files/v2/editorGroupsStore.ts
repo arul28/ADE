@@ -204,6 +204,10 @@ export function closeOtherTabs(state: GroupsState, groupId: string, keepTabId: s
   });
 }
 
+export function isTabOpenInGroups(state: GroupsState, tabId: string): boolean {
+  return Object.values(state.groups).some((group) => group.tabs.some((tab) => tab.id === tabId));
+}
+
 /** Split: create a new group to the side seeded with the source group's active tab. */
 export function splitGroup(state: GroupsState, fromGroupId: string): GroupsState {
   const from = state.groups[fromGroupId];

@@ -18,7 +18,6 @@ import { joinDisplayPath } from "./pathDisplay";
 export type EditorGroupProps = {
   group: EditorGroupModel;
   isActiveGroup: boolean;
-  workspaces: Array<{ id: string; rootPath: string; mobileReadOnly?: boolean; kind: string }>;
   explorerLaneId: string | null;
   lanes: LaneSummary[];
   tabScope: FilesTabScope;
@@ -58,7 +57,7 @@ function isTextInputTarget(target: EventTarget | null): boolean {
 }
 
 export function EditorGroup(props: EditorGroupProps) {
-  const { group, dirtyTabIds } = props;
+  const { group, dirtyTabIds, onDirtyChange, onError, registry, resolveTabContext } = props;
   const groupRef = useRef<HTMLDivElement | null>(null);
   const editorApis = useRef<Map<string, EditorApi>>(new Map());
   const [dropZone, setDropZone] = useState<DropZone | null>(null);
@@ -70,8 +69,14 @@ export function EditorGroup(props: EditorGroupProps) {
     return props.tabScope === "all" ? orderTabsByLane(filtered, props.lanes) : filtered;
   }, [group.tabs, props.explorerLaneId, props.lanes, props.tabScope]);
 
-  const activeTab = group.tabs.find((t) => t.id === group.activeTabId) ?? null;
-  const activeContext = activeTab ? props.resolveTabContext(activeTab) : null;
+  const activeTab = useMemo(() => {
+    const fromGroup = group.tabs.find((t) => t.id === group.activeTabId) ?? null;
+    if (props.tabScope === "all") return fromGroup;
+    if (!fromGroup) return null;
+    if (displayTabs.some((tab) => tab.id === fromGroup.id)) return fromGroup;
+    return displayTabs[displayTabs.length - 1] ?? null;
+  }, [displayTabs, group.activeTabId, group.tabs, props.tabScope]);
+  const activeContext = activeTab ? resolveTabContext(activeTab) : null;
   const diffAvailable = !!activeContext?.laneId && activeTab?.viewerKind === "code";
   const activeInDiff = !!activeTab && diffAvailable && diffTabIds.has(activeTab.id);
   const toggleDiff = (tabId: string) =>
@@ -85,7 +90,7 @@ export function EditorGroup(props: EditorGroupProps) {
   const tabMenuItems = (tabId: string): ContextMenuItem[] => {
     const tab = group.tabs.find((t) => t.id === tabId);
     if (!tab) return [];
-    const ctx = props.resolveTabContext(tab);
+    const ctx = resolveTabContext(tab);
     const pinned = tab.pinned;
     const name = tab.path.split("/").filter(Boolean).pop() ?? tab.path;
     return [
@@ -118,23 +123,23 @@ export function EditorGroup(props: EditorGroupProps) {
     const api = editorApis.current.get(activeTab.id);
     if (api) {
       void api.save().catch((err) => {
-        props.onError(err instanceof Error ? err.message : String(err));
+        onError(err instanceof Error ? err.message : String(err));
       });
       return;
     }
     if (!activeContext.canEdit || activeTab.viewerKind !== "code") return;
-    const text = props.registry.getValue(activeTab.id);
+    const text = registry.getValue(activeTab.id);
     if (text == null) return;
     void window.ade.files
       .writeText({ workspaceId: activeContext.workspaceId, path: activeTab.path, text })
       .then(() => {
-        props.registry.markSaved(activeTab.id);
-        props.onDirtyChange(activeTab.id, false);
+        registry.markSaved(activeTab.id);
+        onDirtyChange(activeTab.id, false);
       })
       .catch((err) => {
-        props.onError(err instanceof Error ? err.message : String(err));
+        onError(err instanceof Error ? err.message : String(err));
       });
-  }, [activeContext, activeTab, props]);
+  }, [activeContext, activeTab, onDirtyChange, onError, registry]);
 
   useEffect(() => {
     if (!props.isActiveGroup || !activeTab || !activeContext?.canEdit || activeTab.viewerKind !== "code") return;
@@ -175,7 +180,7 @@ export function EditorGroup(props: EditorGroupProps) {
               active={tab.id === group.activeTabId}
               dirty={dirtyTabIds.has(tab.id)}
               laneAccent={props.tabScope === "all" ? laneAccentForTab(tab, props.lanes) : undefined}
-              showLaneDivider={props.tabScope === "all" && isLaneGroupBoundary(displayTabs, index, props.lanes)}
+              showLaneDivider={props.tabScope === "all" && isLaneGroupBoundary(displayTabs, index)}
               onActivate={() => props.onActivateTab(group.id, tab.id)}
               onClose={() => props.onCloseTab(group.id, tab.id)}
               onPromote={() => props.onPromoteTab(group.id, tab.id)}

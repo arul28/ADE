@@ -8,6 +8,7 @@ import {
   editorTabId,
   type EditorTab,
   type GroupsState,
+  isTabOpenInGroups,
   mergeLegacyLaneSessions,
   moveTabToGroup,
   openInGroup,
@@ -247,5 +248,17 @@ describe("editorGroupsStore reducers", () => {
     const sessionB = openInGroup(createInitialGroupsState(), g1, tab("b.ts", { workspaceId: WS_B }));
     const merged = mergeLegacyLaneSessions([sessionA, sessionB]);
     expect(merged.groups[g1]!.tabs.map((t) => t.path).sort()).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("isTabOpenInGroups detects duplicate split panes", () => {
+    let state = createInitialGroupsState();
+    const a = tab("a.ts");
+    state = openInGroup(state, g1, a);
+    state = splitGroup(state, g1);
+    expect(isTabOpenInGroups(state, a.id)).toBe(true);
+    state = closeTab(state, state.groupOrder[1]!, a.id);
+    expect(isTabOpenInGroups(state, a.id)).toBe(true);
+    state = closeTab(state, g1, a.id);
+    expect(isTabOpenInGroups(state, a.id)).toBe(false);
   });
 });
