@@ -20001,10 +20001,18 @@ export function createAgentChatService(args: {
       } finally {
         if (deferInheritedGoalUntilHandoffDispatch) {
           applyInheritedGoal();
-          if (createdManaged.runtime?.kind === "codex") {
-            await seedCodexThreadGoalFromSessionGoal(createdManaged, createdManaged.runtime);
-          }
           persistChatState(createdManaged);
+          if (createdManaged.runtime?.kind === "codex") {
+            try {
+              await seedCodexThreadGoalFromSessionGoal(createdManaged, createdManaged.runtime);
+            } catch (error) {
+              logger.warn("agent_chat.codex_goal_seed_after_handoff_failed", {
+                sessionId: createdManaged.session.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              persistChatState(createdManaged);
+            }
+          }
         }
       }
     }

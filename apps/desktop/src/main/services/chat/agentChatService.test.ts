@@ -3227,6 +3227,37 @@ describe("createAgentChatService", () => {
       expect(goalSetRequest.params?.objective).toBe("No Machine State Polish");
     });
 
+    it("keeps Codex brief handoff successful when deferred goal seeding throws", async () => {
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      sessionService.updateMeta({
+        sessionId: source.id,
+        goal: "No Machine State Polish",
+      });
+      mockState.codexResponseOverrides.set("thread/goal/set", () => {
+        throw new Error("goal seed unavailable");
+      });
+
+      const handoffStart = mockState.codexRequestPayloads.length;
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+      });
+
+      expect(result.session.provider).toBe("codex");
+      expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
+      const handoffMethods = mockState.codexRequestPayloads
+        .slice(handoffStart)
+        .map((payload) => String(payload.method ?? ""));
+      expect(handoffMethods).toContain("turn/start");
+      expect(handoffMethods).toContain("thread/goal/set");
+    });
+
     it("uses the selected Claude handoff permission instead of the source interaction mode", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
