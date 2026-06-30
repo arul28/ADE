@@ -11,7 +11,16 @@ const fakes = vi.hoisted(() => {
     action: "allow" | "deny";
     createWindow?: (options: Record<string, unknown>) => FakeWebContents;
   };
-  type WindowOpenHandler = (details: { url: string }) => WindowOpenHandlerResponse;
+  type WindowOpenDetails = {
+    url: string;
+    referrer?: { url: string; policy: string };
+    postBody?: {
+      boundary?: string;
+      contentType: string;
+      data: Array<Record<string, unknown>>;
+    };
+  };
+  type WindowOpenHandler = (details: WindowOpenDetails) => WindowOpenHandlerResponse;
   type BeforeSendHeadersHandler = (
     details: { requestHeaders: Record<string, string | string[] | undefined> },
     callback: (response: { requestHeaders: Record<string, string | string[] | undefined> }) => void,
@@ -77,10 +86,12 @@ const fakes = vi.hoisted(() => {
     session: unknown = null;
     audioMutedCalls: boolean[] = [];
     userAgentCalls: string[] = [];
+    loadURLCalls: Array<{ url: string; options?: Record<string, unknown> }> = [];
     currentUrl = "";
     private listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
     private windowOpenHandler: WindowOpenHandler | null = null;
-    loadURL = async (url: string): Promise<void> => {
+    loadURL = async (url: string, options?: Record<string, unknown>): Promise<void> => {
+      this.loadURLCalls.push({ url, options });
       const event = { preventDefault: vi.fn() };
       this.emit("will-navigate", event, url);
       if (event.preventDefault.mock.calls.length === 0) {
@@ -116,7 +127,7 @@ const fakes = vi.hoisted(() => {
     setWindowOpenHandler = (handler: WindowOpenHandler): void => {
       this.windowOpenHandler = handler;
     };
-    openWindow = (url: string): WindowOpenHandlerResponse | null => this.windowOpenHandler?.({ url }) ?? null;
+    openWindow = (url: string, details: Partial<WindowOpenDetails> = {}): WindowOpenHandlerResponse | null => this.windowOpenHandler?.({ ...details, url }) ?? null;
     on = (event: string, fn: (...args: unknown[]) => void): void => {
       (this.listeners[event] ??= []).push(fn);
     };
@@ -989,6 +1000,64 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.openExternal).not.toHaveBeenCalled();
   });
 
+  it("recovers crashed browser renderers to a blank tab with an error event", async () => {
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    let resolveRecovery: () => void = () => undefined;
+    const recovered = new Promise<void>((resolve) => {
+      resolveRecovery = resolve;
+    });
+    const service = createBuiltInBrowserService({
+      getLogger: () => logger,
+      onEvent: (event) => {
+        collector.onEvent(event);
+        if (
+          event.type === "error"
+          && event.message.includes("renderer exited (crashed, exit code 133)")
+          && event.message.includes("Recovered the tab to a blank page")
+        ) {
+          resolveRecovery();
+        }
+      },
+    });
+    service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+    await service.createTab({ url: "https://linear.app/integrations/agents?code=secret", activate: true });
+    collector.events.length = 0;
+
+    const wc = fakes.webContentsInstances[0];
+    expect(wc, "browser tab webContents exists").toBeTruthy();
+    const originalLoadURL = wc.loadURL;
+    wc.loadURL = vi.fn(async (url: string) => {
+      await originalLoadURL(url);
+    });
+
+    wc.emit("render-process-gone", {}, {
+      reason: "crashed",
+      exitCode: 133,
+    });
+    await recovered;
+
+    expect(service.getStatus().url).toBe("about:blank");
+    expect(service.getStatus().tabs[0]).toMatchObject({
+      url: "about:blank",
+      isLoading: false,
+    });
+    expect(collector.events.some((event) => (
+      event.type === "error"
+      && event.message.includes("renderer exited (crashed, exit code 133)")
+      && event.message.includes("Recovered the tab to a blank page")
+    ))).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith("built_in_browser.render_process_gone", expect.objectContaining({
+      reason: "crashed",
+      exitCode: 133,
+      url: "https://linear.app",
+    }));
+  });
+
   it("does not impersonate Chrome or rewrite browser request headers", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({ url: "https://example.test", activate: true });
@@ -1029,7 +1098,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     })).toBe(false);
   });
 
-  it("opens popup requests as real ADE browser tabs", async () => {
+  it("intercepts popup requests as real ADE browser tabs", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     await service.createTab({
       url: "https://example.test",
@@ -1039,17 +1108,49 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
     const firstTabId = service.getStatus().activeTabId;
     const firstWc = fakes.webContentsInstances[0];
+    const postData = [{ bytes: Buffer.from("token=abc"), type: "rawData" }];
 
-    const response = firstWc?.openWindow("https://accounts.google.com/gsi/select");
+    const response = firstWc?.openWindow("https://accounts.google.com/gsi/select", {
+      referrer: { url: "https://example.test/sign-in", policy: "strict-origin-when-cross-origin" },
+      postBody: {
+        contentType: "application/x-www-form-urlencoded",
+        data: postData,
+      },
+    });
 
     expect(response?.action).toBe("allow");
+    expect(response?.createWindow).toEqual(expect.any(Function));
+    const popupWc = response?.createWindow?.({
+      webPreferences: {
+        additionalArguments: ["--popup"],
+        javascript: false,
+        nodeIntegration: true,
+        partition: "persist:other",
+        webviewTag: true,
+      },
+    });
+    expect(popupWc).toBe(fakes.webContentsInstances.at(-1));
+    await popupWc?.loadURL("https://accounts.google.com/gsi/select");
+
     expect(service.getStatus().tabs).toHaveLength(2);
     expect(service.getStatus().activeTabId).not.toBe(firstTabId);
-    expect(response?.createWindow?.({})).toBe(fakes.webContentsInstances[1]);
     expect(service.getStatus().tabs.at(-1)).toMatchObject({
+      url: "https://accounts.google.com/gsi/select",
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
+    const popupWebPreferences = fakes.webContentsViewInstances.at(-1)?.webPreferences as Record<string, unknown>;
+    expect(popupWebPreferences).toMatchObject({
+      partition: service.getStatus().partition,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
+      backgroundThrottling: false,
+    });
+    expect(popupWebPreferences.additionalArguments).toBeUndefined();
+    expect(popupWebPreferences.javascript).toBeUndefined();
+    expect(popupWebPreferences.webviewTag).toBeUndefined();
 
     const openEvent = collector.events.findLast((event) => event.type === "open-request");
     expect(openEvent).toMatchObject({
