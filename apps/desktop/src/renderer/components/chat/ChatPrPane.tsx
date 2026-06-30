@@ -142,7 +142,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       if (options.live && cached) {
         const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot });
         if (!requestIsCurrent()) return;
-        setCurrentPr(refreshed ?? cached);
+        setCurrentPr(refreshed);
       }
     } catch {
       if (!cached && requestIsCurrent()) setCurrentPr(null);

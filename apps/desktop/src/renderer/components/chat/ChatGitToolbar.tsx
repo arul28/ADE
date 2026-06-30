@@ -156,9 +156,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         try {
           const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot });
           if (!requestIsCurrent()) return null;
-          const next = refreshed ?? pr;
-          setLinkedPr(next);
-          return next;
+          setLinkedPr(refreshed);
+          return refreshed;
         } catch {
           return pr;
         }

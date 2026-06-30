@@ -109,4 +109,18 @@ describe("prReadCache", () => {
     ).resolves.toMatchObject({ title: "forced" });
     expect(refresh).toHaveBeenCalledTimes(2);
   });
+
+  it("preserves missing linked PR refreshes as null during the cooldown", async () => {
+    const stalePr = { id: "pr-1", laneId: "lane-1", state: "open" };
+    refresh.mockResolvedValueOnce([]);
+
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toBeNull();
+    await expect(
+      refreshLinkedPrCoalesced(stalePr as any, { projectRoot: "/repo" }),
+    ).resolves.toBeNull();
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
 });

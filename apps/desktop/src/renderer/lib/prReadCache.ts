@@ -92,7 +92,7 @@ export function refreshLinkedPrCoalesced(
   const cooldownMs = Math.max(0, options?.cooldownMs ?? LINKED_PR_LIVE_REFRESH_COOLDOWN_MS);
   const recent = linkedPrRecentRefresh.get(key);
   if (!options?.force && recent && Date.now() - recent.refreshedAt < cooldownMs) {
-    return Promise.resolve(recent.result ?? pr);
+    return Promise.resolve(recent.result);
   }
 
   return coalesceInFlight(
@@ -102,8 +102,8 @@ export function refreshLinkedPrCoalesced(
       try {
         const refreshed = await refreshPrsCoalesced({ prIds: [prId] }, { projectRoot: options?.projectRoot });
         const result = refreshed.find((next) => next.id === prId) ?? null;
-        linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result: result ?? pr });
-        return result ?? pr;
+        linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result });
+        return result;
       } catch (error) {
         linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result: pr });
         throw error;
