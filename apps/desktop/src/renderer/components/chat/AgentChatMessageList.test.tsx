@@ -702,6 +702,43 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByRole("button")).toBeTruthy();
   });
 
+  it("renders Claude PreToolUse hook errors in the compact work-log disclosure", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook: PreToolUse:Bash error",
+          detail: "Command rejected by hook",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook: PreToolUse:Read error",
+          detail: "Read rejected by hook",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    const disclosure = findButtonByTextContent(/Tool calls.*\(2\).*PreToolUse:Read error/);
+    expect(screen.queryByText("Hook: PreToolUse:Bash error")).toBeNull();
+
+    fireEvent.click(disclosure);
+
+    expect(screen.getByText("PreToolUse:Bash error")).toBeTruthy();
+    expect(screen.getAllByText("PreToolUse:Read error").length).toBeGreaterThan(0);
+    expect(screen.getByText("Command rejected by hook")).toBeTruthy();
+    expect(screen.getByText("Read rejected by hook")).toBeTruthy();
+  });
+
   // Work-log grouping, file-change grouping, and overflow-expand tests
   // removed: they tested old ChatWorkLogBlock rendering (Show N earlier,
   // specific label text) which changes with every UI iteration.

@@ -85,6 +85,9 @@ function entryArgText(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "web_search") {
     return summarizeInlineText(entry.query ?? "", 140);
   }
+  if (entry.entryKind === "hook") {
+    return summarizeInlineText(entry.detail ?? entry.label, 140);
+  }
   if (entry.entryKind === "tool" && entry.toolName) {
     const meta = getToolMeta(entry.toolName);
     const args = readRecord(entry.args) ?? {};
@@ -214,6 +217,7 @@ function terminalizePrompt(args: {
 function workLogEntryKindSlug(entry: ChatWorkLogEntry): string {
   if (entry.entryKind === "command") return "shell";
   if (entry.entryKind === "web_search") return "search";
+  if (entry.entryKind === "hook") return "hook";
   if (entry.entryKind === "tool" && entry.toolName?.trim()) {
     let raw = entry.toolName.trim();
     if (raw.includes(".")) {
@@ -448,6 +452,11 @@ function buildEntryDetail(entry: ChatWorkLogEntry): string | null {
     const out = entry.output?.trim();
     if (!out) return null;
     return out;
+  }
+  if (entry.entryKind === "hook") {
+    const out = entry.output?.trim();
+    if (out) return out;
+    return entry.detail?.trim().length ? entry.detail : null;
   }
   if (entry.entryKind === "web_search") {
     const action = entry.action?.trim();
