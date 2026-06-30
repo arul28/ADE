@@ -3311,7 +3311,7 @@ describe("ptyService", () => {
       });
 
       const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
-      expect(createdSessionId).toBeTruthy();
+      expect(typeof createdSessionId).toBe("string");
 
       service.write({ ptyId, data: "Fix the flaky login tests\r" });
 
@@ -3322,6 +3322,43 @@ describe("ptyService", () => {
         }),
       );
       expect(sessionService.get(createdSessionId)?.goal).toBe("Fix the flaky login tests");
+    });
+
+    it("uses the wrapped ADE user task instead of launch guidance for CLI fallback titles", async () => {
+      const { service, sessionService } = createHarness();
+      const { ptyId } = await service.create({
+        laneId: "lane-1",
+        title: "Codex",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(typeof createdSessionId).toBe("string");
+
+      service.write({
+        ptyId,
+        data: [
+          "ADE session guidance. Treat this as operating guidance for the CLI session.",
+          "Start working on that user prompt immediately.",
+          "",
+          "User prompt:",
+          "You are working in ADE lane:",
+          "/repo/.ade/worktrees/context-iphone-17-simulator",
+          "",
+          "Edits and mutating commands must stay inside that worktree.",
+          "",
+          "The user is debugging the ADE iOS Work chat scroll/layout bugs.",
+        ].join("\n") + "\r",
+      });
+
+      expect(sessionService.get(createdSessionId)?.title).toBe(
+        "The user is debugging the ADE iOS Work chat scroll/layout bugs",
+      );
+      expect(sessionService.get(createdSessionId)?.goal).toBe(
+        "The user is debugging the ADE iOS Work chat scroll/layout bugs.",
+      );
     });
 
     it("ignores provider slash commands when choosing the first CLI title seed", async () => {
@@ -3335,7 +3372,7 @@ describe("ptyService", () => {
       });
 
       const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
-      expect(createdSessionId).toBeTruthy();
+      expect(typeof createdSessionId).toBe("string");
 
       service.write({ ptyId, data: "/model\r" });
 
@@ -3359,7 +3396,7 @@ describe("ptyService", () => {
       });
 
       const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
-      expect(createdSessionId).toBeTruthy();
+      expect(typeof createdSessionId).toBe("string");
 
       service.write({ ptyId, data: "/this is a test\r" });
 
@@ -3416,6 +3453,69 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("adopts Claude runtime window titles emitted by the live PTY", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Start with context skill then i wanna redesign the ade",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(typeof createdSessionId).toBe("string");
+
+      mockPty._emitter.emit(
+        "data",
+        "\x1b]0;\u2802 Redesign ADE mobile app with unified project hub\x07",
+      );
+
+      expect(sessionService.get(createdSessionId)?.title).toBe(
+        "Redesign ADE mobile app with unified project hub",
+      );
+      expect(sessionService.updateMeta).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: createdSessionId,
+          title: "Redesign ADE mobile app with unified project hub",
+          manuallyNamed: false,
+        }),
+      );
+    });
+
+    it("does not let provider window titles replace ADE AI title generation", async () => {
+      const aiIntegrationService = {
+        getMode: vi.fn(() => "subscription"),
+        summarizeTerminal: vi.fn(async () => ({ text: "ADE generated title" })),
+      };
+      const { service, mockPty, sessionService } = createHarness({ aiIntegrationService });
+      await service.create({
+        laneId: "lane-1",
+        title: "Start with context skill then i wanna redesign the ade",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+      });
+
+      const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+      expect(typeof createdSessionId).toBe("string");
+
+      mockPty._emitter.emit(
+        "data",
+        "\x1b]0;\u2802 Redesign ADE mobile app with unified project hub\x07",
+      );
+
+      expect(sessionService.get(createdSessionId)?.title).toBe(
+        "Start with context skill then i wanna redesign the ade",
+      );
+      expect(sessionService.updateMeta).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: createdSessionId,
+          title: "Redesign ADE mobile app with unified project hub",
+        }),
+      );
     });
 
     it("sets a deterministic title immediately, then upgrades it via a deferred AI pass for Claude CLI sessions", async () => {

@@ -53,7 +53,11 @@ import type {
   PtyProcessResourceUsageSnapshot,
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
-import { withCodexNoAltScreen } from "../../../shared/cliLaunch";
+import {
+  sanitizeTrackedCliPromptSeed,
+  trackedCliTitleFromPromptSeed,
+  withCodexNoAltScreen,
+} from "../../../shared/cliLaunch";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
@@ -109,8 +113,6 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 }
 
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
-const CLI_USER_TITLE_SEED_MAX_LEN = 180;
-const CLI_USER_TITLE_FALLBACK_MAX_LEN = 72;
 const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
 const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
@@ -492,52 +494,6 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   return next;
 }
 
-function sanitizeCliUserTitleSeed(raw: string): string {
-  const stripped = stripAnsi(raw)
-    .replace(/\r\n/g, "\n")
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "")
-    .replace(/\n/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!stripped.length) return "";
-  return stripped.slice(0, CLI_USER_TITLE_SEED_MAX_LEN);
-}
-
-function trimPromptLeadIn(raw: string): string {
-  let text = raw.trim();
-  for (let i = 0; i < 4; i += 1) {
-    const next = text
-      .replace(/^(?:ok(?:ay)?|so|hey|hi|hello|please|pls|vv)\b[\s,.:;-]*/iu, "")
-      .trim();
-    if (next === text) break;
-    text = next;
-  }
-  return text;
-}
-
-function sentenceCase(raw: string): string {
-  return raw ? raw.charAt(0).toUpperCase() + raw.slice(1) : raw;
-}
-
-function deterministicCliTitleFromSeed(seed: string): string {
-  const naturalLanguageSlashTitle = seed.startsWith("/") && !isProviderSlashCommandInput(seed)
-    ? seed.slice(1).trim()
-    : seed;
-  const cleaned = trimPromptLeadIn(naturalLanguageSlashTitle)
-    .replace(/^["'`]+|["'`]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!cleaned) return "";
-
-  const clauseMatch = cleaned.match(/^(.{18,}?[,.!?;:])\s/u);
-  const clause = clauseMatch?.[1]?.replace(/[,.!?;:]+$/u, "").trim();
-  const base = clause && clause.length >= 12 ? clause : cleaned;
-  const clipped = base.length > CLI_USER_TITLE_FALLBACK_MAX_LEN
-    ? base.slice(0, CLI_USER_TITLE_FALLBACK_MAX_LEN).replace(/\s+\S*$/u, "").trim()
-    : base;
-  return sentenceCase(clipped || base.slice(0, CLI_USER_TITLE_FALLBACK_MAX_LEN).trim()).replace(/[.?!,:;]+$/u, "");
-}
-
 function isCliPlaceholderTitle(title: string | null | undefined, toolType: TerminalToolType | null | undefined): boolean {
   const normalized = String(title ?? "").trim().toLowerCase();
   if (!normalized.length) return true;
@@ -576,6 +532,30 @@ function sanitizeGeneratedCliTitle(raw: string): string {
   ]);
   if (/^(new session|new chat|untitled chat|untitled)\b/u.test(collapsed)) return "";
   return rejected.has(collapsed) ? "" : title;
+}
+
+function extractLatestOscWindowTitle(entry: PtyEntry, data: string): string {
+  const combined = `${entry.runtimeWindowTitleScanBuffer}${data}`.slice(-2048);
+  const titlePattern = /\x1b\](?:0|2);([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+  let match: RegExpExecArray | null;
+  let latestRawTitle = "";
+  let latestEnd = 0;
+  while ((match = titlePattern.exec(combined))) {
+    latestRawTitle = match[1] ?? "";
+    latestEnd = titlePattern.lastIndex;
+  }
+
+  const partialStart = combined.lastIndexOf("\x1b]");
+  entry.runtimeWindowTitleScanBuffer = partialStart >= latestEnd
+    ? combined.slice(partialStart)
+    : "";
+
+  if (!latestRawTitle.trim()) return "";
+  return sanitizeGeneratedCliTitle(
+    latestRawTitle
+      .replace(/^[\s\u2800-\u28ff\u2022\u00b7.:-]+/u, "")
+      .trim(),
+  );
 }
 
 function isSessionManuallyNamed(
@@ -626,6 +606,7 @@ type PtyEntry = {
   lastUserInputAt: number;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
+  runtimeWindowTitleScanBuffer: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
   aiTitleTimer: ReturnType<typeof setTimeout> | null;
   startupTimer: ReturnType<typeof setTimeout> | null;
@@ -1495,7 +1476,7 @@ export function createPtyService({
       if (idx === -1) break;
       const segment = entry.cliUserTitleLineBuffer.slice(0, idx);
       entry.cliUserTitleLineBuffer = entry.cliUserTitleLineBuffer.slice(idx + 1);
-      const seed = sanitizeCliUserTitleSeed(segment);
+      const seed = sanitizeTrackedCliPromptSeed(segment);
       if (seed.length < CLI_USER_TITLE_SEED_MIN_LEN) continue;
       if (isProviderSlashCommandInput(seed)) continue;
 
@@ -1515,7 +1496,7 @@ export function createPtyService({
         return;
       }
       if (isCliPlaceholderTitle(session.title, session.toolType)) {
-        const fallbackTitle = deterministicCliTitleFromSeed(seed);
+        const fallbackTitle = trackedCliTitleFromPromptSeed(seed);
         if (fallbackTitle) {
           sessionService.updateMeta({ sessionId: entry.sessionId, title: fallbackTitle, manuallyNamed: false });
         }
@@ -1538,6 +1519,25 @@ export function createPtyService({
     if (entry.cliUserTitleLineBuffer.length > 8000) {
       entry.cliUserTitleLineBuffer = entry.cliUserTitleLineBuffer.slice(-4000);
     }
+  };
+
+  const adoptCliRuntimeWindowTitle = (entry: PtyEntry, data: string): void => {
+    if (!CLI_USER_TITLE_TOOL_TYPES.has(entry.toolTypeHint ?? "shell")) return;
+    if (aiIntegrationService && aiIntegrationService.getMode() !== "guest" && isTitleGenerationEnabled()) return;
+    const title = extractLatestOscWindowTitle(entry, data);
+    if (!title) return;
+    if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
+      logger.info("pty.cli_runtime_window_title_skipped_user_renamed", { sessionId: entry.sessionId });
+      return;
+    }
+    const session = sessionService.get(entry.sessionId);
+    if (!session || session.title?.trim() === title) return;
+    sessionService.updateMeta({ sessionId: entry.sessionId, title, manuallyNamed: false });
+    logger.info("pty.cli_runtime_window_title_adopted", {
+      sessionId: entry.sessionId,
+      toolType: entry.toolTypeHint,
+      titleLength: title.length,
+    });
   };
 
   const clearIdleTimer = (sessionId: string) => {
@@ -3917,6 +3917,7 @@ export function createPtyService({
         lastUserInputAt: 0,
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
+        runtimeWindowTitleScanBuffer: "",
         aiTitleTimer: null,
         startupTimer: null,
         initialInputTimer: null,
@@ -3945,6 +3946,7 @@ export function createPtyService({
         if (entry.disposed) return;
         resyncLiveSessionRowIfNeeded(entry, ptyId);
         appendRecentOutput(entry, data);
+        adoptCliRuntimeWindowTitle(entry, data);
         writeTranscript(entry, data);
         feedTerminalSnapshot(entry, data);
         updatePreviewThrottled(entry, data);

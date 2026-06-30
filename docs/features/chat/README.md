@@ -352,11 +352,12 @@ See the detail docs for the specifics:
    dispatch and event streaming continue asynchronously. `ade chat create
    --prompt` uses this same follow-up send after the session is created, and
    `ade chat read <session>` calls `chat.readTranscript` to inspect recent
-   transcript messages. Interactive chat sends are not wall-clock bounded by
-   the service; the turn runs until the provider completes or the user/app
-   interrupts it. The blocking `runSessionTurn` helper used by automation has
-   a 5 min default RPC timeout unless the caller passes `timeoutMs: null`;
-   background/headless chat launches opt out.
+   transcript messages for chat sessions only; shell/terminal transcript reads
+   stay on the terminal/session surfaces. Interactive chat sends are not
+   wall-clock bounded by the service; the turn runs until the provider
+   completes or the user/app interrupts it. The blocking `runSessionTurn`
+   helper used by automation has a 5 min default RPC timeout unless the caller
+   passes `timeoutMs: null`; background/headless chat launches opt out.
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).

@@ -5,6 +5,7 @@ import {
   buildTrackedCliStartupCommand,
   buildOpenCodeReplayResumeCommand,
   defaultTrackedCliStartupCommand,
+  deriveTrackedCliInitialInputSessionMeta,
   resolveCleanShellLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
@@ -370,6 +371,29 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.initialInput).toContain("Fix the failing Work tests.");
       expect(launch.startupCommand).toContain("model_reasoning_effort");
       expect(launch.startupCommand).not.toContain("Fix the failing Work tests.");
+    });
+
+    it("derives initial metadata from the user task inside ADE guidance", () => {
+      const meta = deriveTrackedCliInitialInputSessionMeta({
+        provider: "codex",
+        title: "Codex",
+        initialInput: [
+          "ADE session guidance. Treat this as operating guidance for the CLI session.",
+          "Start working on that user prompt immediately.",
+          "",
+          "User prompt:",
+          "You are working in ADE lane:",
+          "/repo/.ade/worktrees/context-iphone-17-simulator",
+          "",
+          "Edits and mutating commands must stay inside that worktree.",
+          "",
+          "The user is debugging the ADE iOS Work chat scroll/layout bugs.",
+        ].join("\n"),
+      });
+
+      expect(meta.goal).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs.");
+      expect(meta.title).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs");
+      expect(meta.promptTitle).toBe("The user is debugging the ADE iOS Work chat scroll/layout bugs");
     });
 
     it("passes explicit Codex service tier overrides for fast mode", () => {
