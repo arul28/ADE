@@ -451,7 +451,7 @@ private enum WorkPreviewData {
       onOpenLane: {},
       onSend: { _ in true },
       onInterrupt: {},
-      onApproveRequest: { _, _ in },
+      onApproveRequest: { _, _, _ in },
       onRespondToQuestion: { _, _, _, _ in },
       onSubmitQuestionAnswers: { _, _, _ in },
       onDeclineQuestion: { _ in },

@@ -53,7 +53,7 @@ struct WorkChatSessionView: View {
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String) async -> Bool
   let onInterrupt: @MainActor () async -> Void
-  let onApproveRequest: @MainActor (String, AgentChatApprovalDecision) async -> Void
+  let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
   let onDeclineQuestion: @MainActor (String) async -> Void
@@ -341,6 +341,9 @@ struct WorkChatSessionView: View {
       return "Reconnect to send messages."
     }
     if !pendingInputs.isEmpty {
+      if pendingInputs.count == 1, case .planApproval = pendingInputs[0] {
+        return "Review the plan above the composer, or reject it before sending another message."
+      }
       return "Answer the waiting prompt above, or decline it before sending another message."
     }
     if awaitingPromptDetailsMissing {
@@ -382,7 +385,7 @@ struct WorkChatSessionView: View {
             busy: actionInFlight,
             onDecision: { decision in
               await runSessionAction {
-                await onApproveRequest(approval.id, decision)
+                await onApproveRequest(approval.id, decision, nil)
               }
             }
           )
@@ -540,14 +543,12 @@ struct WorkChatSessionView: View {
           busy: actionInFlight || !isLive,
           onDecision: { decision, feedback in
             await runSessionAction {
-              await onApproveRequest(planApproval.id, decision)
-              if decision == .decline, let feedback, !feedback.isEmpty {
-                _ = await onSend(feedback)
-              }
+              await onApproveRequest(planApproval.id, decision, feedback)
             }
           },
           fallbackProvider: chatSummary?.provider
         )
+        .id(planApproval.id)
       }
 
       WorkChatComposerCard(
@@ -785,6 +786,8 @@ struct WorkChatSessionView: View {
         pendingCodexFastMode = nil
         composerSettingMutationInFlight = false
         composerSettingMutationGeneration &+= 1
+        lastBlockingPendingInputId = nil
+        blockingPendingHapticToken = 0
       }
       .onChange(of: transcript) { _, _ in
         scheduleTimelineSnapshotRebuild()

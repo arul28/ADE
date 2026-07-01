@@ -85,9 +85,15 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func approveRequest(itemId: String, decision: AgentChatApprovalDecision) async {
+  func approveRequest(itemId: String, decision: AgentChatApprovalDecision, responseText: String? = nil) async {
     do {
-      try await syncService.approveChatSession(sessionId: sessionId, itemId: itemId, decision: decision)
+      let trimmed = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
+      try await syncService.approveChatSession(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: decision,
+        responseText: (trimmed?.isEmpty ?? true) ? nil : trimmed
+      )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
