@@ -12,6 +12,11 @@ const CLAUDE_AUTH_ERROR_PATTERNS: RegExp[] = [
   /\bplease\s+run\s+\/login\b/i,
   ...CLAUDE_INVALID_CREDENTIALS_PATTERNS,
   /\bclaude\b.*\bauthentication[_\s-]*failed\b/i,
+  // ADE's own classified message reads "Authentication failed for <model>. Check
+  // your API key in Settings." — "claude" follows the keyword there, so the
+  // claude-first patterns above miss it. Keep the match Claude-specific so tool
+  // auth failures in a Claude chat do not trigger the Claude login CTA.
+  /\bauthentication\s+failed\s+for\b.*\bclaude\b/i,
   /\bclaude\b.*\bfailed\s+to\s+authenticate\b/i,
   /\bclaude\b.*\b(not\s+logged\s+in|not\s+authenticated|unauthorized|authentication\s+failed|login\s+required)\b/i,
   /\brun\s+[`'"]?claude\s+auth\s+login[`'"]?/i,

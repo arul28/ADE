@@ -1878,6 +1878,74 @@ describe("createAgentChatService", () => {
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
+    it("fast-fails a logged-out Claude turn into the inline re-login card", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            // Startup warmup stream — healthy.
+            yield { type: "system", subtype: "init", session_id: "sdk-auth", model: "claude-opus-4-8", slash_commands: [] };
+            yield { type: "result", subtype: "success", is_error: false, session_id: "sdk-auth" };
+            return;
+          }
+          // The SDK reports a logged-out session as an assistant message carrying
+          // error="authentication_failed", with the 401 surfaced as plain text.
+          yield { type: "system", subtype: "init", session_id: "sdk-auth", model: "claude-opus-4-8", slash_commands: [] };
+          yield {
+            type: "assistant",
+            error: "authentication_failed",
+            message: {
+              model: "claude-opus-4-8",
+              content: [{ type: "text", text: "Failed to authenticate. API Error: 401 Invalid authentication credentials" }],
+            },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-auth",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "use context skill" });
+
+      // The raw 401 is not surfaced as a plain assistant bubble.
+      const authText = events.find(
+        (event) => event.event.type === "text"
+          && /invalid authentication credentials/i.test((event.event as any).text ?? ""),
+      );
+      expect(authText).toBeUndefined();
+
+      // A single "logged out" notice replaces the "retry 1/10 … 10/10" storm.
+      const notice = events.find(
+        (event) => event.event.type === "system_notice"
+          && /logged out/i.test((event.event as any).message ?? ""),
+      );
+      expect(notice).toBeTruthy();
+
+      // The error carries the agentCli signal that renders the inline re-login card.
+      const errorEvent = events.find(
+        (event) => event.event.type === "error"
+          && (event.event as any).errorInfo?.agentCli?.category === "unauthenticated",
+      );
+      expect(errorEvent).toBeTruthy();
+      expect((errorEvent!.event as any).errorInfo.agentCli.agent).toBe("claude");
+
+      const failedDone = events.filter((event) => event.event.type === "done").at(-1);
+      expect((failedDone!.event as any).status).toBe("failed");
+    });
+
     it("honors an explicit initial chat title", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({

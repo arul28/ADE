@@ -661,6 +661,36 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getAllByRole("button")).toHaveLength(2);
   });
 
+  it("renders unauthenticated agent CLI errors as a re-login card", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "error",
+          message: "Authentication failed for Claude Sonnet 4.6.",
+          detail: "API Error: 401 Invalid authentication credentials",
+          errorInfo: {
+            category: "agent_cli_auth",
+            provider: "Claude Code",
+            agentCli: {
+              agent: "claude",
+              displayName: "Claude Code",
+              category: "unauthenticated",
+              installCommand: "npm install -g @anthropic-ai/claude-code",
+              authCommand: "claude auth login",
+            },
+          },
+        },
+      },
+    ], { sessionId: "session-1" });
+
+    expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /retry turn/i })).toBeTruthy();
+    expect(screen.getByText("Details")).toBeTruthy();
+    expect(screen.queryByText("Error")).toBeNull();
+  });
+
   it("renders Claude plan usage warning as a compact non-error notice", () => {
     renderMessageList([
       {

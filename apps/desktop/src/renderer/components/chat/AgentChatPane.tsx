@@ -128,6 +128,7 @@ import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
+import { CHAT_AUTH_RECOVERED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
@@ -3507,6 +3508,11 @@ export function AgentChatPane({
     };
     return [...displayEvents.slice(0, insertAt), synthetic, ...displayEvents.slice(insertAt)];
   }, [optimisticOutgoingMessage, selectedEvents, selectedSession?.cursorCloudAgentId, selectedSession?.cursorPromotedTurnId, selectedSessionId]);
+  // Fresh snapshot of the visible transcript for the auth-retry/recovery handlers
+  // below, which run from window-event listeners (stale-closure-safe).
+  const selectedEventsForDisplayRef = useRef(selectedEventsForDisplay);
+  selectedEventsForDisplayRef.current = selectedEventsForDisplay;
+  const dispatchedAuthRecoveryRef = useRef<Set<string>>(new Set());
   const selectedCodexGoal = useMemo<CodexThreadGoal | null>(() => {
     let goalFromEvents: CodexThreadGoal | null = null;
     let sawGoalEvent = false;
@@ -6272,6 +6278,87 @@ export function AgentChatPane({
     forceDraft,
     insertComposerDraft,
   ]);
+
+  // Resend the most recent user message for a session that fast-failed on a
+  // Claude logout — fired by the inline re-login card's "Retry turn" button. The
+  // re-check is implicit: if Claude is still logged out the new turn fast-fails
+  // again and a fresh card appears.
+  const resendLastUserMessageForAuthRetry = useCallback(async (sessionId: string) => {
+    if (submitInFlightRef.current) return;
+    const events = selectedEventsForDisplayRef.current;
+    let text: string | null = null;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const evt = events[index]?.event;
+      if (evt?.type === "user_message" && typeof evt.text === "string" && evt.text.trim().length > 0) {
+        text = evt.text;
+        break;
+      }
+    }
+    if (!text) return;
+    try {
+      submitInFlightRef.current = true;
+      setBusy(true);
+      setError(null);
+      touchSession(sessionId);
+      await window.ade.agentChat.send({ sessionId, text, displayText: text });
+      void refreshSessions().catch(() => {});
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      submitInFlightRef.current = false;
+      setBusy(false);
+    }
+  }, [refreshSessions, touchSession]);
+
+  // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
+  // turn"; only the pane that owns the session resends.
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+      const sessionId = detail?.sessionId;
+      if (typeof sessionId !== "string" || sessionId !== selectedSessionIdRef.current) return;
+      void resendLastUserMessageForAuthRetry(sessionId);
+    };
+    window.addEventListener(CHAT_RETRY_AUTH_TURN_EVENT, handler);
+    return () => window.removeEventListener(CHAT_RETRY_AUTH_TURN_EVENT, handler);
+  }, [resendLastUserMessageForAuthRetry]);
+
+  // When a turn succeeds after a logout, tell visible re-login cards for this
+  // session to collapse into a quiet "Reconnected" confirmation.
+  useEffect(() => {
+    const sessionId = selectedSessionId;
+    if (!sessionId) return;
+    const events = selectedEventsForDisplay;
+    let lastAuthErrorIndex = -1;
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const evt = events[index]?.event;
+      if (
+        evt?.type === "error"
+        && typeof evt.errorInfo === "object"
+        && evt.errorInfo?.agentCli?.category === "unauthenticated"
+      ) {
+        lastAuthErrorIndex = index;
+        break;
+      }
+    }
+    if (lastAuthErrorIndex === -1) return;
+    let recovered = false;
+    for (let index = lastAuthErrorIndex + 1; index < events.length; index += 1) {
+      const evt = events[index]?.event;
+      if (!evt) continue;
+      if (evt.type === "done" && evt.status === "completed") { recovered = true; break; }
+      if (evt.type === "text" && typeof evt.text === "string" && evt.text.trim().length > 0) { recovered = true; break; }
+      if (evt.type === "tool_call") { recovered = true; break; }
+    }
+    if (!recovered) return;
+    const key = `${sessionId}:${lastAuthErrorIndex}`;
+    if (dispatchedAuthRecoveryRef.current.has(key)) return;
+    const recoveryDispatchTimer = window.setTimeout(() => {
+      dispatchedAuthRecoveryRef.current.add(key);
+      window.dispatchEvent(new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId } }));
+    }, 0);
+    return () => window.clearTimeout(recoveryDispatchTimer);
+  }, [selectedEventsForDisplay, selectedSessionId]);
 
   const removeAttachment = useCallback((attachmentPath: string) => {
     linkedIosAttachmentPathsRef.current.delete(attachmentPath);
@@ -9566,6 +9653,23 @@ export function AgentChatPane({
   const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
   const isOrchestratorDraft = forceDraft && orchestratorEnabled && selectedSessionId == null;
 
+  // While Claude is logged out, keep a re-login affordance pinned just above the
+  // composer so it stays reachable even when the inline transcript card has
+  // scrolled out of view. Reuses the self-contained login pill (styled + own
+  // dismiss); it hides itself once the session reconnects. Only shown when the
+  // chat header login pill is absent so the two never double up.
+  const authStickyBar = showClaudeLoginPrompt && selectedSessionId && !chatTerminalVisible ? (
+    <div className="mb-1.5 flex justify-start px-0.5">
+      <ClaudeLoginPromptButton
+        visible
+        storageKey={`composer-auth:${selectedSessionId}`}
+        laneId={laneId}
+        chatSessionId={selectedSessionId}
+        onRevealTerminal={revealChatTerminal}
+      />
+    </div>
+  ) : null;
+
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
@@ -10087,6 +10191,7 @@ export function AgentChatPane({
           </div>
         );
       })}
+      {authStickyBar}
       {composerElement}
     </div>
   );
@@ -10434,6 +10539,7 @@ export function AgentChatPane({
                     ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
+                        {authStickyBar}
                         {composerElement}
                       </div>
                     ) : null}

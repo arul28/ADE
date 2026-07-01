@@ -3,7 +3,12 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
+import {
+  AgentCliAuthCard,
+  CHAT_AUTH_RECOVERED_EVENT,
+  CHAT_RETRY_AUTH_TURN_EVENT,
+  type AgentCliAuthCardInfo,
+} from "./AgentCliAuthCard";
 
 const originalAde = globalThis.window.ade;
 
@@ -18,6 +23,14 @@ const missingCli: AgentCliAuthCardInfo = {
 const unauthenticatedCli: AgentCliAuthCardInfo = {
   ...missingCli,
   category: "unauthenticated",
+};
+
+const unauthenticatedClaude: AgentCliAuthCardInfo = {
+  agent: "claude",
+  displayName: "Claude Code",
+  category: "unauthenticated",
+  installCommand: "npm install -g @anthropic-ai/claude-code",
+  authCommand: "claude auth login",
 };
 
 function installAdeStub() {
@@ -118,6 +131,50 @@ describe("AgentCliAuthCard", () => {
     render(<AgentCliAuthCard agentCli={missingCli} runtimeName="Mac Studio" />);
 
     expect(screen.getByText(/Install the CLI on Mac Studio/i)).toBeTruthy();
+  });
+
+  it("labels the Claude login action and surfaces a Retry that resends the turn", () => {
+    const retrySpy = vi.fn();
+    window.addEventListener(CHAT_RETRY_AUTH_TURN_EVENT, retrySpy);
+    try {
+      render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+
+      expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
+      expect(screen.getByRole("button", { name: /log in to claude/i })).toBeTruthy();
+
+      fireEvent.click(screen.getByRole("button", { name: /retry turn/i }));
+
+      expect(retrySpy).toHaveBeenCalledTimes(1);
+      const event = retrySpy.mock.calls[0][0] as CustomEvent<{ sessionId?: string }>;
+      expect(event.detail.sessionId).toBe("chat-7");
+    } finally {
+      window.removeEventListener(CHAT_RETRY_AUTH_TURN_EVENT, retrySpy);
+    }
+  });
+
+  it("does not offer Retry without a session to resend into", () => {
+    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" />);
+    expect(screen.queryByRole("button", { name: /retry turn/i })).toBeNull();
+  });
+
+  it("collapses to a reconnected confirmation when the session recovers", () => {
+    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+
+    expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
+
+    fireEvent(window, new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "chat-7" } }));
+
+    expect(screen.queryByText("Claude Code is logged out")).toBeNull();
+    expect(screen.getByText(/Reconnected to Claude Code/i)).toBeTruthy();
+  });
+
+  it("ignores reconnected events for a different session", () => {
+    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+
+    fireEvent(window, new CustomEvent(CHAT_AUTH_RECOVERED_EVENT, { detail: { sessionId: "other-session" } }));
+
+    expect(screen.getByText("Claude Code is logged out")).toBeTruthy();
+    expect(screen.queryByText(/Reconnected to Claude Code/i)).toBeNull();
   });
 
   it("uses the project default lane when no chat context is available", async () => {

@@ -43,6 +43,7 @@ import {
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
+import { CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -1389,6 +1390,66 @@ describe("AgentChatPane companion drawers", () => {
 });
 
 describe("AgentChatPane submit recovery", () => {
+  it("resends the latest user message for the selected session after auth retry", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    const transcript = [
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:45.700Z",
+        event: {
+          type: "user_message",
+          text: "First prompt",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:46.700Z",
+        event: {
+          type: "text",
+          text: "First answer",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:47.700Z",
+        event: {
+          type: "user_message",
+          text: "Retry this exact prompt",
+          turnId: "turn-2",
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    const { send } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      includeClaudeModel: true,
+    });
+    seedDrawerStore();
+
+    renderPane(session);
+
+    expect(await screen.findByText("Retry this exact prompt")).toBeTruthy();
+
+    fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
+      detail: { sessionId: session.sessionId },
+    }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        text: "Retry this exact prompt",
+        displayText: "Retry this exact prompt",
+      });
+    });
+  });
+
   it("uses the model override as the constrained draft picker list", async () => {
     installAdeMocks({ sessions: [] });
     seedRuntimeModelCatalog();
