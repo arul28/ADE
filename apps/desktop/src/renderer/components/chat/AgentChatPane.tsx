@@ -6300,7 +6300,12 @@ export function AgentChatPane({
       setBusy(true);
       setError(null);
       touchSession(sessionId);
-      await window.ade.agentChat.send({ sessionId, text, displayText: text });
+      try {
+        await window.ade.agentChat.send({ sessionId, text, displayText: text });
+      } catch (sendError) {
+        if (!isTurnAlreadyActiveError(sendError)) throw sendError;
+        await window.ade.agentChat.steer({ sessionId, text });
+      }
       void refreshSessions().catch(() => {});
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

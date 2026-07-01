@@ -3167,20 +3167,30 @@ function renderEvent(
     const errorCopyValue = event.detail?.trim().length
       ? `${event.message}\n\n${event.detail}`
       : event.message;
+    const renderAgentCliAuthCard = () => agentCliInfo ? (
+      <AgentCliAuthCard
+        agentCli={agentCliInfo}
+        laneId={options?.laneId}
+        chatSessionId={options?.sessionId}
+        runtimeName={options?.runtimeName}
+        onRevealTerminal={options?.onRevealChatTerminal}
+      />
+    ) : null;
     // A logged-out runtime is recoverable, not a crash — lead with the calm
     // re-login card and tuck the raw 401 behind a Details disclosure instead of
     // the loud red error chrome. (The "missing CLI" card keeps the red frame.)
     if (agentCliInfo?.category === "unauthenticated") {
       return (
-        <div className={cn(GLASS_CARD_CLASS, "group border-[#d97757]/12 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
+        <div
+          className={cn(
+            GLASS_CARD_CLASS,
+            "group p-0",
+            agentCliInfo.agent === "claude" ? "border-[#d97757]/12" : "border-amber-400/12",
+          )}
+          style={SURFACE_INLINE_CARD_STYLE}
+        >
           <div className="p-4 pt-3">
-            <AgentCliAuthCard
-              agentCli={agentCliInfo}
-              laneId={options?.laneId}
-              chatSessionId={options?.sessionId}
-              runtimeName={options?.runtimeName}
-              onRevealTerminal={options?.onRevealChatTerminal}
-            />
+            {renderAgentCliAuthCard()}
             <details className="mt-2">
               <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65">
                 Details
@@ -3220,15 +3230,7 @@ function renderEvent(
               {event.detail}
             </div>
           ) : null}
-          {agentCliInfo ? (
-            <AgentCliAuthCard
-              agentCli={agentCliInfo}
-              laneId={options?.laneId}
-              chatSessionId={options?.sessionId}
-              runtimeName={options?.runtimeName}
-              onRevealTerminal={options?.onRevealChatTerminal}
-            />
-          ) : null}
+          {renderAgentCliAuthCard()}
           {event.errorInfo && !agentCliInfo ? (
             <div className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
               {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}

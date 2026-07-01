@@ -43,7 +43,7 @@ import {
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
-import { CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import { CHAT_AUTH_RECOVERED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -1448,6 +1448,108 @@ describe("AgentChatPane submit recovery", () => {
         displayText: "Retry this exact prompt",
       });
     });
+  });
+
+  it("steers the auth retry when a turn becomes active before resend", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T05:57:47.700Z",
+      event: {
+        type: "user_message",
+        text: "Retry into active turn",
+        turnId: "turn-2",
+      },
+    })}\n`;
+    const { send, steer } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      includeClaudeModel: true,
+    });
+    send.mockRejectedValueOnce(new Error("turn is already active"));
+    seedDrawerStore();
+
+    renderPane(session);
+
+    expect(await screen.findByText("Retry into active turn")).toBeTruthy();
+
+    fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
+      detail: { sessionId: session.sessionId },
+    }));
+
+    await waitFor(() => {
+      expect(steer).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        text: "Retry into active turn",
+      });
+    });
+  });
+
+  it("dispatches auth recovery once after a later successful turn", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    const transcript = [
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:45.700Z",
+        event: {
+          type: "error",
+          message: "Authentication failed for Claude Sonnet 4.6.",
+          turnId: "turn-1",
+          errorInfo: {
+            category: "agent_cli_auth",
+            agentCli: {
+              agent: "claude",
+              displayName: "Claude Code",
+              category: "unauthenticated",
+              installCommand: "npm install -g @anthropic-ai/claude-code",
+              authCommand: "claude auth login",
+            },
+          },
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:46.700Z",
+        event: {
+          type: "done",
+          status: "completed",
+          turnId: "turn-2",
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    const recoverySpy = vi.fn();
+    window.addEventListener(CHAT_AUTH_RECOVERED_EVENT, recoverySpy);
+    try {
+      installAdeMocks({
+        sessions: [session],
+        transcript,
+        includeClaudeModel: true,
+      });
+      seedDrawerStore();
+
+      renderPane(session);
+
+      await waitFor(() => {
+        expect(recoverySpy).toHaveBeenCalledTimes(1);
+      });
+      const event = recoverySpy.mock.calls[0][0] as CustomEvent<{ sessionId?: string }>;
+      expect(event.detail.sessionId).toBe(session.sessionId);
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(recoverySpy).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(CHAT_AUTH_RECOVERED_EVENT, recoverySpy);
+    }
   });
 
   it("uses the model override as the constrained draft picker list", async () => {
