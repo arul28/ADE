@@ -1342,6 +1342,63 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.items).toHaveLength(2);
   });
 
+  it("batches Claude PreToolUse hook errors into compact work-log groups", () => {
+    const grouped = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook: PreToolUse:Bash error",
+          detail: "Command rejected by hook",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "system_notice",
+          noticeKind: "hook",
+          message: "Hook: PreToolUse:Read error",
+          detail: "Read rejected by hook",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0]!.event.type).toBe("work_log_group");
+    if (grouped[0]!.event.type !== "work_log_group") {
+      throw new Error("Expected a work log group");
+    }
+    expect(grouped[0]!.event.entries.map((entry) => entry.entryKind)).toEqual(["tool", "hook", "hook"]);
+    expect(grouped[0]!.event.entries[1]).toMatchObject({
+      label: "Hook",
+      detail: "PreToolUse:Bash error",
+      output: "Command rejected by hook",
+      status: "failed",
+      tone: "error",
+    });
+    expect(grouped[0]!.event.entries[2]).toMatchObject({
+      detail: "PreToolUse:Read error",
+      output: "Read rejected by hook",
+      status: "failed",
+    });
+  });
+
   it("builds web_search work log entries", () => {
     const rows = collapseChatTranscriptEvents([
       {
