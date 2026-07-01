@@ -133,18 +133,32 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopyState("idle"), 1800);
     };
-    try {
-      const write = navigator.clipboard?.writeText;
-      if (!write) {
+
+    const copyWithNavigator = () => {
+      try {
+        const write = navigator.clipboard?.writeText;
+        if (!write) {
+          finish("failed");
+          return;
+        }
+        void write
+          .call(navigator.clipboard, ADE_MOBILE_TESTFLIGHT_URL)
+          .then(() => finish("copied"), () => finish("failed"));
+      } catch {
         finish("failed");
-        return;
       }
-      void write
-        .call(navigator.clipboard, ADE_MOBILE_TESTFLIGHT_URL)
-        .then(() => finish("copied"), () => finish("failed"));
-    } catch {
-      finish("failed");
+    };
+
+    const appBridge = window.ade?.app;
+    const writeClipboardText = appBridge?.writeClipboardText;
+    if (typeof writeClipboardText === "function") {
+      void writeClipboardText
+        .call(appBridge, ADE_MOBILE_TESTFLIGHT_URL)
+        .then(() => finish("copied"), copyWithNavigator);
+      return;
     }
+
+    copyWithNavigator();
   }, []);
 
   const handleOpenChange = useCallback(

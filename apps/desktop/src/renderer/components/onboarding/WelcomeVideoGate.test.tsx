@@ -22,6 +22,7 @@ describe("WelcomeVideoGate", () => {
 
   beforeEach(() => {
     window.history.pushState({}, "", "/");
+    Object.assign(navigator, { clipboard: undefined });
     getWelcomeVideoState.mockReset();
     markWelcomeVideoSeen.mockReset();
     openExternal.mockReset();
@@ -158,7 +159,35 @@ describe("WelcomeVideoGate", () => {
     expect(openExternal).toHaveBeenCalledWith(ADE_MOBILE_TESTFLIGHT_URL);
   });
 
-  it("copies the install link and confirms it in place", async () => {
+  it("copies the install link through the desktop clipboard bridge when available", async () => {
+    getWelcomeVideoState.mockResolvedValue({
+      videoId: ADE_WELCOME_VIDEO_ID,
+      version: ADE_WELCOME_VIDEO_VERSION,
+      completedAt: null,
+      dismissedAt: null,
+    });
+    const writeClipboardText = vi.fn().mockResolvedValue(undefined);
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    window.ade = ({
+      app: {
+        ...window.ade.app,
+        writeClipboardText,
+      },
+    } as unknown) as typeof window.ade;
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    render(<WelcomeVideoGate />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /copy install link/i }));
+
+    await waitFor(() => {
+      expect(writeClipboardText).toHaveBeenCalledWith(ADE_MOBILE_TESTFLIGHT_URL);
+    });
+    expect(writeText).not.toHaveBeenCalled();
+    expect(await screen.findByRole("button", { name: /link copied/i })).toBeTruthy();
+  });
+
+  it("falls back to the browser clipboard and confirms it in place", async () => {
     getWelcomeVideoState.mockResolvedValue({
       videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
