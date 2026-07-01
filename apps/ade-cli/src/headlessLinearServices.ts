@@ -57,6 +57,10 @@ import type {
   GitHubPullRequest,
   GitHubPullRequestReview,
 } from "../../desktop/src/main/services/github/githubService";
+import {
+  fetchGitHubAppInstallationStatus,
+  type GitHubRelaySecretReader,
+} from "../../desktop/src/main/services/github/githubRelayConfig";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -449,6 +453,7 @@ export function createHeadlessGitHubService(
   logger: Logger,
   options: {
     onStatusChanged?: (status: HeadlessGitHubStatus) => void;
+    githubRelaySecretReader?: GitHubRelaySecretReader | null;
   } = {},
 ): HeadlessGitHubService {
   const credentialStore = new EncryptedFileCredentialStore();
@@ -996,6 +1001,15 @@ export function createHeadlessGitHubService(
     },
     async detectRepo() {
       return detectGitHubRepo(projectRoot);
+    },
+    async getAppInstallationStatus(args = {}) {
+      const owner = args.owner?.trim();
+      const name = args.name?.trim();
+      const repo = owner && name ? { owner, name } : detectGitHubRepo(projectRoot);
+      return fetchGitHubAppInstallationStatus({
+        repo,
+        secretReader: options.githubRelaySecretReader,
+      });
     },
     async getRepoOrThrow() {
       const repo = detectGitHubRepo(projectRoot);
@@ -1903,7 +1917,10 @@ export function createHeadlessLinearServices(
   const githubService = createHeadlessGitHubService(
     args.projectRoot,
     args.logger,
-    { onStatusChanged: args.onGitHubStatusChanged },
+    {
+      onStatusChanged: args.onGitHubStatusChanged,
+      githubRelaySecretReader: (ref) => automationSecretService.getSecret(ref),
+    },
   );
   const linearClient = createLinearClientImpl({
     credentials: linearCredentialService,

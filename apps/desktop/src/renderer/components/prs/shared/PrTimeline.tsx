@@ -1394,17 +1394,31 @@ function openExternal(url: string) {
 }
 
 /** A username that opens its GitHub profile externally, like github.com. */
-function GhUserLink({ login, bold = true }: { login: string | null; bold?: boolean }) {
+function GhUserLink({
+  login,
+  bold = true,
+  interactive = true,
+}: {
+  login: string | null;
+  bold?: boolean;
+  interactive?: boolean;
+}) {
   const name = login ?? "someone";
-  if (!login) return <strong style={{ color: COLORS.textPrimary }}>{name}</strong>;
+  const style = {
+    color: COLORS.textPrimary,
+    fontWeight: bold ? 600 : 400,
+  };
+  if (!login) return <strong style={style}>{name}</strong>;
+  if (!interactive) {
+    return <span style={style}>{name}</span>;
+  }
   return (
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); openExternal(ghProfileUrl(login)); }}
       className="hover:underline"
       style={{
-        color: COLORS.textPrimary,
-        fontWeight: bold ? 600 : 400,
+        ...style,
         background: "none",
         border: "none",
         padding: 0,
@@ -1417,8 +1431,8 @@ function GhUserLink({ login, bold = true }: { login: string | null; bold?: boole
   );
 }
 
-function Actor({ name }: { name: string | null }) {
-  return <GhUserLink login={name} />;
+function Actor({ name, interactive = true }: { name: string | null; interactive?: boolean }) {
+  return <GhUserLink login={name} interactive={interactive} />;
 }
 
 // Inline `#<n> <title>` chip tinted by the referenced PR/issue state — the
@@ -1651,7 +1665,7 @@ function CommitGroup({
         />
         <GitCommit size={14} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
         <span className="flex-1 text-[12px]" style={{ color: COLORS.textSecondary }}>
-          <Actor name={author} /> added {commits.length} commits
+          <Actor name={author} interactive={false} /> added {commits.length} commits
         </span>
         <Timestamp ts={commits[commits.length - 1]!.timestamp} />
       </button>

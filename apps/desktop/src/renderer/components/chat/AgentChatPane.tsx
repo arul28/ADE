@@ -126,6 +126,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
+import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -3063,32 +3064,9 @@ export function AgentChatPane({
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
-  // Left PR floating pane (ADE chats only). Session-scoped UI state; not persisted.
-  const [prPaneOpen, setPrPaneOpen] = useState(false);
-  // Auto-open the PR pane when this lane's PR transitions to opened / closed /
-  // merged (otherwise it follows normal toggle rules).
-  const prevPrStateRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!laneId) {
-      prevPrStateRef.current = null;
-      return;
-    }
-    let cancelled = false;
-    window.ade.prs.getForLane(laneId)
-      .then((pr) => { if (!cancelled) prevPrStateRef.current = pr?.state ?? null; })
-      .catch(() => {});
-    const unsubscribe = window.ade.prs.onEvent((event) => {
-      if (event.type !== "prs-updated") return;
-      const nextState = event.prs.find((pr) => pr.laneId === laneId)?.state ?? null;
-      if (nextState !== prevPrStateRef.current) {
-        if (nextState === "open" || nextState === "closed" || nextState === "merged") {
-          setPrPaneOpen(true);
-        }
-        prevPrStateRef.current = nextState;
-      }
-    });
-    return () => { cancelled = true; unsubscribe(); };
-  }, [laneId]);
+  // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
+  // changes; shared with the CLI session surface via useChatPrAutoPop.
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(laneId);
   useEffect(() => () => {
     if (handoffErrorClearTimerRef.current != null) {
       window.clearTimeout(handoffErrorClearTimerRef.current);
@@ -10477,6 +10455,7 @@ export function AgentChatPane({
                             laneId={laneId}
                             branchName={laneGitBranch}
                             chatModelId={selectedSessionModelId ?? modelId}
+                            delta={prPaneDelta}
                             onClose={() => setPrPaneOpen(false)}
                           />,
                         )

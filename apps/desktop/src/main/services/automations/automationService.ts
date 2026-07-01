@@ -983,6 +983,7 @@ export function createAutomationService({
     },
     localWebhook: {
       configured: false,
+      healthy: false,
       listening: false,
       status: "disabled",
       url: null,

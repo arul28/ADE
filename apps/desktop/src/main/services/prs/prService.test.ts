@@ -359,6 +359,26 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
 
   db.run.mockImplementation((sql: string, params: unknown[] = []) => {
     const text = String(sql);
+    if (text.includes("update pull_requests")) {
+      const prId = params[12];
+      const projectIdParam = params[13];
+      const row = rows.find((entry) => entry.id === prId && entry.project_id === projectIdParam);
+      if (row) {
+        row.repo_owner = params[0];
+        row.repo_name = params[1];
+        row.github_pr_number = params[2];
+        row.github_url = params[3];
+        row.github_node_id = params[4];
+        row.title = params[5];
+        row.state = params[6];
+        row.base_branch = params[7] ?? row.base_branch;
+        row.head_branch = params[8] ?? row.head_branch;
+        row.last_synced_at = params[9];
+        row.updated_at = params[10];
+        row.head_sha = params[11] ?? row.head_sha ?? null;
+      }
+      return undefined;
+    }
     if (!text.includes("insert into pull_requests(")) return undefined;
     rows.push({
       id: params[0],
@@ -590,6 +610,146 @@ describe("prService.getGithubSnapshot", () => {
     expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
       path: `/repos/${REPO.owner}/${REPO.name}/pulls`,
       query: expect.objectContaining({ state: "open" }),
+    }));
+  });
+
+  it("serves a webhook projection before live GitHub revalidation", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const projectionRow = {
+      project_id: "proj-1",
+      repo_owner: REPO.owner,
+      repo_name: REPO.name,
+      github_pr_number: 222,
+      github_node_id: "PR_projection_222",
+      github_url: "https://github.com/test-owner/test-repo/pull/222",
+      title: "Webhook projected PR",
+      state: "open",
+      is_draft: 0,
+      base_branch: "main",
+      head_branch: "feature/webhook",
+      head_repo_owner: REPO.owner,
+      head_repo_name: REPO.name,
+      head_sha: "webhook-head",
+      base_sha: "base-sha",
+      author: "octocat",
+      labels_json: JSON.stringify([{ name: "webhook", color: "4f46e5", description: null }]),
+      is_bot: 0,
+      comment_count: 3,
+      created_at: "2026-05-01T00:00:00Z",
+      updated_at: "2026-05-02T00:00:00Z",
+      synced_at: "2026-05-02T00:00:01Z",
+      last_event_name: "pull_request",
+      last_delivery_id: "delivery-projection",
+    };
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from github_pr_projections")) return [projectionRow];
+      return [];
+    });
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("open_count")) {
+        return { open_count: 1, closed_count: 2, merged_count: 3 };
+      }
+      return null;
+    });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const snapshot = await service.getGithubSnapshot();
+
+    expect(snapshot.repoPullRequests).toEqual([
+      expect.objectContaining({
+        githubPrNumber: 222,
+        title: "Webhook projected PR",
+        headBranch: "feature/webhook",
+        labels: [expect.objectContaining({ name: "webhook" })],
+        commentCount: 3,
+      }),
+    ]);
+    expect(snapshot.history?.repoPullRequestCounts).toEqual({
+      open: 1,
+      closed: 2,
+      merged: 3,
+    });
+    await flushMicrotasks();
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      path: `/repos/${REPO.owner}/${REPO.name}/pulls`,
+    }));
+  });
+
+  it("persists live GitHub snapshot rows into the compact projection catalog", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({
+        data: [
+          makeGitHubPull({
+            number: 333,
+            title: "Catalog persisted PR",
+            html_url: "https://github.com/test-owner/test-repo/pull/333",
+            updated_at: "2026-05-03T00:00:00Z",
+          }),
+        ],
+      })),
+    });
+    const db = makeMockDb();
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const snapshot = await service.getGithubSnapshot({ force: true });
+
+    expect(snapshot.repoPullRequests[0]?.title).toBe("Catalog persisted PR");
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_projections"),
+      expect.arrayContaining([
+        "proj-1",
+        REPO.owner,
+        REPO.name,
+        333,
+        "PR_node_1",
+        "https://github.com/test-owner/test-repo/pull/333",
+        "Catalog persisted PR",
+      ]),
+    );
+  });
+
+  it("caps initial closed-history fetches and reports when more history may exist", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { query?: { page?: number } }) => {
+        const page = Number(args.query?.page ?? 1);
+        return {
+          data: Array.from({ length: 100 }, (_value, index) => makeGitHubPull({
+            number: (page - 1) * 100 + index + 1,
+            title: `History PR ${(page - 1) * 100 + index + 1}`,
+            state: "closed",
+            merged_at: index % 2 === 0 ? "2026-05-01T00:00:00Z" : null,
+          })),
+        };
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const snapshot = await service.getGithubSnapshot({ force: true, includeExternalClosed: true });
+
+    const repoCalls = githubService.apiRequest.mock.calls.filter(([args]: [{ path?: string }]) =>
+      args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`,
+    );
+    expect(repoCalls).toHaveLength(2);
+    expect(repoCalls[0]?.[0]).toEqual(expect.objectContaining({
+      query: expect.objectContaining({ state: "all", page: 1 }),
+    }));
+    expect(repoCalls[1]?.[0]).toEqual(expect.objectContaining({
+      query: expect.objectContaining({ state: "all", page: 2 }),
+    }));
+    expect(snapshot.repoPullRequests).toHaveLength(200);
+    expect(snapshot.history).toEqual(expect.objectContaining({
+      includeExternalClosed: true,
+      pageLimit: 2,
+      repoPullRequestsLoaded: 200,
+      repoPullRequestsMayHaveMore: true,
     }));
   });
 
@@ -1323,6 +1483,148 @@ describe("prService.getGithubSnapshot", () => {
       expect.stringContaining("insert into pull_requests("),
       expect.anything(),
     );
+  });
+});
+
+describe("prService.ingestGithubWebhook", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deduplicates GitHub webhook deliveries by delivery id", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_webhook_deliveries")) {
+        return { id: "delivery-row-1", status: "processed" };
+      }
+      return null;
+    });
+    const { service } = buildService({ db });
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-1",
+      payload: { pull_request: makeGitHubPull() },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      processed: false,
+      duplicate: true,
+      reason: "processed",
+    }));
+    expect(db.run).not.toHaveBeenCalled();
+  });
+
+  it("allows errored GitHub webhook deliveries to retry with the same delivery id", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_webhook_deliveries")) {
+        return { id: "delivery-row-error", status: "error" };
+      }
+      return null;
+    });
+    const { service } = buildService({ db });
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "ping",
+      deliveryId: "delivery-retry",
+      payload: {
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      processed: false,
+      duplicate: false,
+      repoOwner: REPO.owner,
+      repoName: REPO.name,
+      reason: "unsupported_event",
+    }));
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("update github_webhook_deliveries"),
+      expect.arrayContaining(["delivery-retry", "ping", "received", "delivery-row-error", "proj-1"]),
+    );
+  });
+
+  it("updates the webhook projection, linked PR row, and PR event stream", async () => {
+    const db = makeMockDb();
+    const rows = installPullRequestRowStore(db, [
+      makePrRow({
+        github_pr_number: 90,
+        title: "Before webhook",
+        state: "open",
+        head_branch: "my-feature",
+      }),
+    ]);
+    const { service } = buildService({
+      db,
+      laneService: makeLaneService([makeFakeLane({ branchRef: "refs/heads/my-feature" })]),
+    });
+    const events: unknown[] = [];
+    service.setEventEmitter((event) => events.push(event));
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-2",
+      payload: {
+        action: "synchronize",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeGitHubPull({
+          number: 90,
+          node_id: "PR_webhook_90",
+          html_url: "https://github.com/test-owner/test-repo/pull/90",
+          title: "After webhook",
+          draft: true,
+          updated_at: "2026-05-03T00:00:00Z",
+          base: {
+            ref: "main",
+            sha: "base-sha",
+            repo: { owner: { login: REPO.owner }, name: REPO.name },
+          },
+          head: {
+            ref: "my-feature",
+            sha: "head-sha-webhook",
+            user: { login: REPO.owner },
+            repo: { owner: { login: REPO.owner }, name: REPO.name },
+          },
+          labels: [{ name: "webhook", color: "10b981" }],
+          comments: 5,
+        }),
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      processed: true,
+      duplicate: false,
+      repoOwner: REPO.owner,
+      repoName: REPO.name,
+      githubPrNumber: 90,
+      linkedPrIds: ["pr-row-1"],
+      reason: null,
+    }));
+    expect(rows[0]).toEqual(expect.objectContaining({
+      title: "After webhook",
+      state: "draft",
+      github_node_id: "PR_webhook_90",
+      head_sha: "head-sha-webhook",
+      last_synced_at: expect.any(String),
+    }));
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_projections"),
+      expect.arrayContaining([REPO.owner, REPO.name, 90, "PR_webhook_90", "After webhook", "draft"]),
+    );
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "prs-updated",
+      prs: [expect.objectContaining({ title: "After webhook", state: "draft" })],
+    }));
   });
 });
 

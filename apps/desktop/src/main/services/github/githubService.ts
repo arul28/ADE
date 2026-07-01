@@ -5,11 +5,12 @@ import { spawnSync } from "node:child_process";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
-import type { GitHubAutolink, GitHubRepoRef, GitHubStatus } from "../../../shared/types";
+import type { GitHubAppInstallationStatus, GitHubAutolink, GitHubRepoRef, GitHubStatus } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -335,12 +336,14 @@ export function createGithubService({
   appDataDir,
   credentialStore,
   ghAuthTokenProvider,
+  githubRelaySecretReader,
 }: {
   logger: Logger;
   projectRoot: string;
   appDataDir: string;
   credentialStore?: SyncCredentialStore | null;
   ghAuthTokenProvider?: (() => GitHubCliAuthResult) | null;
+  githubRelaySecretReader?: GitHubRelaySecretReader | null;
 }) {
   const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
@@ -1039,6 +1042,19 @@ export function createGithubService({
     return Array.isArray(data) ? data : [];
   };
 
+  const getAppInstallationStatus = async (
+    args: { owner?: string; name?: string; forceRefresh?: boolean } = {},
+  ): Promise<GitHubAppInstallationStatus> => {
+    const owner = args.owner?.trim();
+    const name = args.name?.trim();
+    const repo = owner && name ? { owner, name } : await detectRepo();
+    return fetchGitHubAppInstallationStatus({
+      repo,
+      secretReader: githubRelaySecretReader,
+      forceRefresh: args.forceRefresh === true,
+    });
+  };
+
   const getIssue = async (owner: string, name: string, number: number): Promise<GitHubIssue | null> => {
     try {
       const { data } = await apiRequest<GitHubIssue>({
@@ -1411,6 +1427,7 @@ export function createGithubService({
     },
 
     detectRepo,
+    getAppInstallationStatus,
     apiRequest,
     parseNextLink,
     parseGitHubRepoFromRemoteUrl,

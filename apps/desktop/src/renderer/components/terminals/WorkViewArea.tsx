@@ -33,7 +33,9 @@ import { ModelRowLogo } from "../shared/ProviderLogos";
 import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
-import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
+import { ChatPrPane } from "../chat/ChatPrPane";
+import { useChatPrAutoPop } from "../chat/useChatPrAutoPop";
+import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLaunchResult } from "./cliLaunch";
@@ -606,6 +608,115 @@ function ClosedCliSessionSurface({
   );
 }
 
+const CLI_PR_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
+const CLI_FLOATING_PANE_CARD_CLASS =
+  "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+
+/**
+ * CLI session work surface: the header + PTY terminal, with the floating PR pane
+ * overlaid on top of the terminal. The overlay is absolutely positioned inside a
+ * wrapper that sizes the terminal — it never changes the terminal host's box, so
+ * the PTY's ResizeObserver never fires and the running CLI process is not
+ * re-flowed (no SIGWINCH). The pill in the header toggles it, and it auto-pops on
+ * webhook-driven PR changes via the same useChatPrAutoPop hook the ADE chat uses.
+ */
+function CliSessionSurface({
+  session,
+  lanes,
+  stopping = false,
+  layoutVariant = "standard",
+  surfaceActive,
+  pageActive,
+  terminalVisible,
+  onInfoClick,
+  onContextMenu,
+  onStopRunningSession,
+  onToggleSessionsPane,
+  sessionsPaneCollapsed,
+  sessionsPaneCount,
+  onToggleToolsPane,
+  toolsPaneOpen,
+  onToggleTerminalPane,
+  terminalPaneOpen,
+}: {
+  session: TerminalSessionSummary & { ptyId: string };
+  lanes: LaneSummary[];
+  stopping?: boolean;
+  layoutVariant?: "standard" | "grid-tile";
+  surfaceActive: boolean;
+  pageActive: boolean;
+  terminalVisible: boolean;
+  onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
+  onStopRunningSession?: (session: TerminalSessionSummary) => void;
+  onToggleSessionsPane?: () => void;
+  sessionsPaneCollapsed?: boolean;
+  sessionsPaneCount?: number;
+  onToggleToolsPane?: () => void;
+  toolsPaneOpen?: boolean;
+  onToggleTerminalPane?: () => void;
+  terminalPaneOpen?: boolean;
+}) {
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId);
+  const supportsSplit = layoutVariant !== "grid-tile";
+  const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
+      {layoutVariant !== "grid-tile" ? (
+        <CliSessionWorkSurfaceHeader
+          session={session}
+          lanes={lanes}
+          stopping={stopping}
+          onInfoClick={onInfoClick}
+          onContextMenu={onContextMenu}
+          onStopRunningSession={onStopRunningSession}
+          onToggleSessionsPane={onToggleSessionsPane}
+          sessionsPaneCollapsed={sessionsPaneCollapsed}
+          sessionsPaneCount={sessionsPaneCount}
+          onToggleToolsPane={onToggleToolsPane}
+          toolsPaneOpen={toolsPaneOpen}
+          onToggleTerminalPane={onToggleTerminalPane}
+          terminalPaneOpen={terminalPaneOpen}
+          onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+          prPaneOpen={prPaneOpen}
+        />
+      ) : null}
+      <div className="relative min-h-0 w-full flex-1 overflow-hidden">
+        <TerminalView
+          key={session.id}
+          ptyId={session.ptyId}
+          sessionId={session.id}
+          isActive={surfaceActive}
+          isVisible={pageActive && terminalVisible}
+          imagePasteMode="runtime-attachment"
+          className="h-full w-full"
+        />
+        <AnimatePresence initial={false}>
+          {prFloating && session.laneId ? (
+            <motion.div
+              key="cli-pr-floating-pane"
+              className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={CLI_PR_PANE_FADE}
+            >
+              <div className={CLI_FLOATING_PANE_CARD_CLASS}>
+                <ChatPrPane
+                  laneId={session.laneId}
+                  branchName={null}
+                  delta={prPaneDelta}
+                  onClose={() => setPrPaneOpen(false)}
+                />
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
 function SessionSurface({
   session,
   lanes,
@@ -685,34 +796,25 @@ function SessionSurface({
   if (isRunningPtySession(session)) {
     if (isAgentCliSession(session)) {
       return (
-        <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
-          {layoutVariant !== "grid-tile" ? (
-            <CliSessionWorkSurfaceHeader
-              session={session}
-              lanes={lanes}
-              stopping={stopping}
-              onInfoClick={onInfoClick}
-              onContextMenu={onContextMenu}
-              onStopRunningSession={onStopRunningSession}
-              onToggleSessionsPane={onToggleSessionsPane}
-              sessionsPaneCollapsed={sessionsPaneCollapsed}
-              sessionsPaneCount={sessionsPaneCount}
-              onToggleToolsPane={onToggleToolsPane}
-              toolsPaneOpen={toolsPaneOpen}
-              onToggleTerminalPane={onToggleTerminalPane}
-              terminalPaneOpen={terminalPaneOpen}
-            />
-          ) : null}
-          <TerminalView
-            key={session.id}
-            ptyId={session.ptyId}
-            sessionId={session.id}
-            isActive={surfaceActive}
-            isVisible={pageActive && terminalVisible}
-            imagePasteMode="runtime-attachment"
-            className="min-h-0 w-full flex-1"
-          />
-        </div>
+        <CliSessionSurface
+          session={session}
+          lanes={lanes}
+          stopping={stopping}
+          layoutVariant={layoutVariant}
+          surfaceActive={surfaceActive}
+          pageActive={pageActive}
+          terminalVisible={terminalVisible}
+          onInfoClick={onInfoClick}
+          onContextMenu={onContextMenu}
+          onStopRunningSession={onStopRunningSession}
+          onToggleSessionsPane={onToggleSessionsPane}
+          sessionsPaneCollapsed={sessionsPaneCollapsed}
+          sessionsPaneCount={sessionsPaneCount}
+          onToggleToolsPane={onToggleToolsPane}
+          toolsPaneOpen={toolsPaneOpen}
+          onToggleTerminalPane={onToggleTerminalPane}
+          terminalPaneOpen={terminalPaneOpen}
+        />
       );
     }
     return (
@@ -871,7 +973,7 @@ export function WorkViewArea({
   onContinueCliSession,
   onResumeCliSession,
   onSelectItem,
-  onCloseItem,
+  onCloseItem: _onCloseItem,
   onOpenChatSession,
   onLaunchPtySession,
   onDraftLaneChange,
@@ -891,7 +993,7 @@ export function WorkViewArea({
   initialModelId = null,
   onInitialLinearIssueContextConsumed,
   suppressDraftLaunchNavigation = false,
-  onGoToLane,
+  onGoToLane: _onGoToLane,
   onInfoClick,
   onStopRunningSession,
   gridSets = EMPTY_GRID_SETS,

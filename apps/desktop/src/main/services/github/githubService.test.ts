@@ -69,6 +69,9 @@ function resetMocks() {
   mockFetch.mockReset();
   runGitMock.mockReset();
   delete process.env.GH_TOKEN;
+  delete process.env.ADE_GITHUB_RELAY_API_BASE_URL;
+  delete process.env.ADE_GITHUB_RELAY_ACCESS_TOKEN;
+  delete process.env.ADE_GITHUB_RELAY_REMOTE_PROJECT_ID;
   process.env.ADE_DISABLE_GH_AUTH_FALLBACK = "1";
 }
 
@@ -111,6 +114,7 @@ class MemoryCredentialStore {
 function makeService(options: {
   credentialStore?: MemoryCredentialStore;
   ghAuthTokenProvider?: () => { token: string | null; ghCliPath: string | null; ghAuthError: string | null };
+  githubRelaySecretReader?: (ref: string) => string | null;
 } = {}) {
   return createGithubService({
     logger: makeLogger(),
@@ -118,6 +122,7 @@ function makeService(options: {
     appDataDir: "/tmp/test-appdata",
     credentialStore: options.credentialStore as any,
     ghAuthTokenProvider: options.ghAuthTokenProvider,
+    githubRelaySecretReader: options.githubRelaySecretReader,
   });
 }
 
@@ -1299,6 +1304,92 @@ describe("githubService.publishCurrentProject", () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect(caught.code).toBe("repo_name_taken");
+  });
+});
+
+describe("githubService.getAppInstallationStatus", () => {
+  beforeEach(() => {
+    resetMocks();
+  });
+
+  it("returns an unconfigured status without calling the relay when relay config is missing", async () => {
+    const status = await makeService().getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status).toMatchObject({
+      repo: { owner: "acme", name: "repo" },
+      relayConfigured: false,
+      installed: false,
+      state: "unconfigured",
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("checks the relay for a repo-scoped GitHub App installation", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, {
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "all",
+      lastSeenAt: "2026-06-30T00:00:00.000Z",
+      checkedAt: "2026-06-30T00:00:01.000Z",
+    }));
+    const service = makeService({
+      githubRelaySecretReader: (ref) => {
+        if (ref === "automations.githubRelay.apiBaseUrl") return "https://relay.example.com/";
+        if (ref === "automations.githubRelay.accessToken") return "relay-token";
+        if (ref === "automations.githubRelay.remoteProjectId") return "project-1";
+        return null;
+      },
+    });
+
+    const status = await service.getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status).toMatchObject({
+      repo: { owner: "acme", name: "repo" },
+      relayConfigured: true,
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "all",
+      lastSeenAt: "2026-06-30T00:00:00.000Z",
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://relay.example.com/projects/project-1/github/repos/acme/repo/status",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          authorization: expect.stringMatching(/^Bearer ade_proj_[0-9a-f]{64}$/),
+        }),
+      }),
+    );
+  });
+
+  it("asks the relay for a live GitHub App status refresh when forced", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, {
+      installed: false,
+      state: "not_installed",
+      checkedAt: "2026-06-30T00:00:01.000Z",
+    }));
+    const service = makeService({
+      githubRelaySecretReader: (ref) => {
+        if (ref === "automations.githubRelay.apiBaseUrl") return "https://relay.example.com/";
+        if (ref === "automations.githubRelay.accessToken") return "relay-token";
+        if (ref === "automations.githubRelay.remoteProjectId") return "project-1";
+        return null;
+      },
+    });
+
+    await service.getAppInstallationStatus({ owner: "acme", name: "repo", forceRefresh: true });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://relay.example.com/projects/project-1/github/repos/acme/repo/status?refresh=1",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          authorization: expect.stringMatching(/^Bearer ade_proj_[0-9a-f]{64}$/),
+        }),
+      }),
+    );
   });
 });
 

@@ -8,7 +8,7 @@ export function GitHubIntegrationSection() {
     <SettingsSectionShell
       id="github-connection"
       title="GitHub integration"
-      description="Authenticate with GitHub CLI or a personal access token so ADE can create PRs, post reviews, and manage CI for this repo."
+      description="Authenticate with GitHub CLI or a personal access token, and install ADE for GitHub for webhook-backed PR updates."
       icon={GithubLogo}
       brandColor="#3FB950"
       iconWeight="fill"

@@ -375,6 +375,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getReviews",
     "getReviewsByGithub",
     "getStatus",
+    "ingestGithubWebhook",
     "land",
     "landQueueNext",
     "landStack",
@@ -590,6 +591,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   github: [
     "clearToken",
     "detectRepo",
+    "getAppInstallationStatus",
     "getRepoOrThrow",
     "getRemoteStatus",
     "getStatus",
@@ -2483,6 +2485,13 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
           isAlphanumeric: actionArgs.isAlphanumeric === true,
         },
       );
+    },
+    async getAppInstallationStatus(args?: unknown) {
+      const actionArgs = asActionRecord(args);
+      return githubService.getAppInstallationStatus({
+        owner: typeof actionArgs.owner === "string" ? actionArgs.owner : undefined,
+        name: typeof actionArgs.name === "string" ? actionArgs.name : undefined,
+      });
     },
     async listRepoCollaborators(args?: unknown) {
       const actionArgs = asActionRecord(args);

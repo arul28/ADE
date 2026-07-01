@@ -48,11 +48,33 @@ describe("buildRendererCspPolicy", () => {
     expect(frameTokens).not.toContain("https:");
   });
 
-  it("does not allow arbitrary public Google Cloud Storage image beacons", () => {
+  it("allows CodeRabbit review assets without allowing arbitrary Google Cloud Storage images", () => {
     const policy = buildRendererCspPolicy(false);
+    const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+    const imgTokens = imgSrc?.split(/\s+/).slice(1) ?? [];
 
     expect(policy).toContain("img-src");
-    expect(policy).not.toContain("https://storage.googleapis.com");
+    expect(imgTokens).toContain("https://storage.googleapis.com/coderabbit_public_assets/");
+    expect(imgTokens).not.toContain("https://storage.googleapis.com");
+  });
+
+  it("allows Dependabot compatibility badges without allowing arbitrary GitHub app images", () => {
+    const policy = buildRendererCspPolicy(false);
+    const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+    const imgTokens = imgSrc?.split(/\s+/).slice(1) ?? [];
+
+    expect(imgTokens).toContain("https://dependabot-badges.githubapp.com/badges/");
+    expect(imgTokens).not.toContain("https://githubapp.com");
+    expect(imgTokens).not.toContain("https://*.githubapp.com");
+  });
+
+  it("allows Cursor PR badge assets without allowing arbitrary Cursor images", () => {
+    const policy = buildRendererCspPolicy(false);
+    const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+    const imgTokens = imgSrc?.split(/\s+/).slice(1) ?? [];
+
+    expect(imgTokens).toContain("https://cursor.com/assets/images/");
+    expect(imgTokens).not.toContain("https://cursor.com");
   });
 });
 
