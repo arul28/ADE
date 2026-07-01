@@ -104,10 +104,13 @@ Renderer — onboarding:
   video gate plus `DidYouKnow`; guided per-tab tours and the old
   welcome wizard are no longer mounted.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
-  — one-time app-level welcome screen backed by global app state. It
-  links to GitHub, the docs site, the ADE Mobile TestFlight install,
-  and the current welcome YouTube video. The Help menu can replay it
+  — one-time app-level welcome card backed by global app state. It
+  uses sanitized bundled welcome assets, lazy-loads the intro video,
+  links to GitHub and the docs site, and includes an ADE Mobile
+  TestFlight QR/download/copy panel. The Help menu can replay it
   without resetting setup.
+- `apps/desktop/src/renderer/public/welcome/` — sanitized bundled
+  screenshots/poster/icon assets consumed by the welcome card.
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
   — persistent help menu in the top bar: glossary, docs links, welcome
   video replay, and help preferences. Tour replay entries were removed
