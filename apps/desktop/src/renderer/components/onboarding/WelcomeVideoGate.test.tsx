@@ -3,7 +3,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WelcomeVideoGate } from "./WelcomeVideoGate";
+import { WelcomeVideoGate, publicAssetUrl } from "./WelcomeVideoGate";
 import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
@@ -21,6 +21,7 @@ describe("WelcomeVideoGate", () => {
   const openExternal = vi.fn();
 
   beforeEach(() => {
+    window.history.pushState({}, "", "/");
     getWelcomeVideoState.mockReset();
     markWelcomeVideoSeen.mockReset();
     openExternal.mockReset();
@@ -89,6 +90,31 @@ describe("WelcomeVideoGate", () => {
     );
     expect(video.getAttribute("allow")).toBe("autoplay; encrypted-media; picture-in-picture");
     expect(video.getAttribute("src")).toContain("autoplay=1");
+  });
+
+  it("uses route-stable public asset URLs on nested browser routes", async () => {
+    window.history.pushState({}, "", "/automations/templates");
+    getWelcomeVideoState.mockResolvedValue({
+      videoId: ADE_WELCOME_VIDEO_ID,
+      version: ADE_WELCOME_VIDEO_VERSION,
+      completedAt: null,
+      dismissedAt: null,
+    });
+
+    render(<WelcomeVideoGate />);
+
+    await screen.findByRole("dialog", { name: DIALOG_NAME });
+
+    expect(document.querySelector('img[aria-hidden="true"]')?.getAttribute("src")).toBe(
+      "/logo.png",
+    );
+    expect(publicAssetUrl("welcome/video-poster.jpg")).toBe("/welcome/video-poster.jpg");
+    expect(
+      screen
+        .getByRole("button", { name: /^desktop:/i })
+        .querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("/welcome/desktop.webp");
   });
 
   it("stays hidden after a seen video until the replay event opens it", async () => {

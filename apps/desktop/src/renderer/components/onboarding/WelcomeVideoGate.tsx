@@ -36,6 +36,14 @@ type Surface = {
   device: DeviceKind;
 };
 
+export function publicAssetUrl(path: string): string {
+  const normalized = path.replace(/^\/+/, "");
+  if (typeof window !== "undefined" && /^https?:$/.test(window.location.protocol)) {
+    return `/${normalized}`;
+  }
+  return `./${normalized}`;
+}
+
 // The three surfaces ADE runs on. Each tile frames a real screenshot in its
 // device chrome and doubles as navigation into the matching docs section.
 const SURFACES: ReadonlyArray<Surface> = [
@@ -43,7 +51,7 @@ const SURFACES: ReadonlyArray<Surface> = [
     key: "desktop",
     label: "Desktop",
     blurb: "The full lane workspace",
-    img: "./welcome/desktop.webp",
+    img: publicAssetUrl("welcome/desktop.webp"),
     url: docs.home,
     device: "macbook",
   },
@@ -51,7 +59,7 @@ const SURFACES: ReadonlyArray<Surface> = [
     key: "mobile",
     label: "Mobile",
     blurb: "Review & approve on the go",
-    img: "./welcome/mobile.webp",
+    img: publicAssetUrl("welcome/mobile.webp"),
     url: docs.syncMultiDevice,
     device: "phone",
   },
@@ -59,7 +67,7 @@ const SURFACES: ReadonlyArray<Surface> = [
     key: "tui",
     label: "Terminal",
     blurb: "ADE Code in your shell",
-    img: "./welcome/tui.webp",
+    img: publicAssetUrl("welcome/tui.webp"),
     url: docs.terminals,
     device: "terminal",
   },
@@ -205,7 +213,7 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
             >
               <Dialog.Title style={{ margin: 0, display: "flex", alignItems: "center", minWidth: 0 }}>
                 <img
-                  src="./logo.png"
+                  src={publicAssetUrl("logo.png")}
                   alt=""
                   aria-hidden="true"
                   draggable={false}
@@ -372,7 +380,7 @@ function VideoPanel({
             border: 0,
             padding: 0,
             cursor: "pointer",
-            backgroundImage: `linear-gradient(180deg, rgba(8,6,18,0) 40%, rgba(8,6,18,0.5)), url("./welcome/video-poster.jpg")`,
+            backgroundImage: `linear-gradient(180deg, rgba(8,6,18,0) 40%, rgba(8,6,18,0.5)), url("${publicAssetUrl("welcome/video-poster.jpg")}")`,
             backgroundSize: "cover",
             backgroundPosition: "center",
           }}
@@ -475,7 +483,7 @@ function PhonePanel({
           fgColor="#111827"
           title="QR code to install ADE Mobile via TestFlight"
           imageSettings={{
-            src: "./welcome/ade-icon.webp",
+            src: publicAssetUrl("welcome/ade-icon.webp"),
             height: 38,
             width: 38,
             excavate: true,
