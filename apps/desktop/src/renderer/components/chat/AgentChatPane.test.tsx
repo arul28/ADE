@@ -1421,7 +1421,21 @@ describe("AgentChatPane submit recovery", () => {
         timestamp: "2026-03-24T05:57:47.700Z",
         event: {
           type: "user_message",
-          text: "Retry this exact prompt",
+          text: "Retry this exact prompt\n\nUse docs/auth.md and the selected plan note.",
+          displayText: "Retry this exact prompt",
+          attachments: [{ path: "docs/auth.md", type: "file" }],
+          contextAttachments: [{
+            type: "orchestration_annotation",
+            item: {
+              type: "orchestration_annotation",
+              runId: "run-auth",
+              anchor: { kind: "plan_step", id: "step-auth", preview: "login recovery" },
+              selectionExcerpt: "login recovery",
+              comment: "Use this selected plan note.",
+              capturedAt: "2026-03-24T05:57:47.500Z",
+            },
+          }],
+          metadata: { source: "auth-retry-test" },
           turnId: "turn-2",
         },
       },
@@ -1444,8 +1458,21 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith({
         sessionId: session.sessionId,
-        text: "Retry this exact prompt",
+        text: "Retry this exact prompt\n\nUse docs/auth.md and the selected plan note.",
         displayText: "Retry this exact prompt",
+        attachments: [{ path: "docs/auth.md", type: "file" }],
+        contextAttachments: [{
+          type: "orchestration_annotation",
+          item: {
+            type: "orchestration_annotation",
+            runId: "run-auth",
+            anchor: { kind: "plan_step", id: "step-auth", preview: "login recovery" },
+            selectionExcerpt: "login recovery",
+            comment: "Use this selected plan note.",
+            capturedAt: "2026-03-24T05:57:47.500Z",
+          },
+        }],
+        metadata: { source: "auth-retry-test" },
       });
     });
   });
@@ -1463,6 +1490,20 @@ describe("AgentChatPane submit recovery", () => {
       event: {
         type: "user_message",
         text: "Retry into active turn",
+        displayText: "Retry into active turn",
+        attachments: [{ path: "docs/race.md", type: "file" }],
+        contextAttachments: [{
+          type: "orchestration_annotation",
+          item: {
+            type: "orchestration_annotation",
+            runId: "run-race",
+            anchor: { kind: "plan_step", id: "step-race", preview: "active turn fallback" },
+            selectionExcerpt: "active turn fallback",
+            comment: "Retry with this fallback context.",
+            capturedAt: "2026-03-24T05:57:47.500Z",
+          },
+        }],
+        metadata: { source: "auth-retry-steer-test" },
         turnId: "turn-2",
       },
     })}\n`;
@@ -1486,6 +1527,19 @@ describe("AgentChatPane submit recovery", () => {
       expect(steer).toHaveBeenCalledWith({
         sessionId: session.sessionId,
         text: "Retry into active turn",
+        attachments: [{ path: "docs/race.md", type: "file" }],
+        contextAttachments: [{
+          type: "orchestration_annotation",
+          item: {
+            type: "orchestration_annotation",
+            runId: "run-race",
+            anchor: { kind: "plan_step", id: "step-race", preview: "active turn fallback" },
+            selectionExcerpt: "active turn fallback",
+            comment: "Retry with this fallback context.",
+            capturedAt: "2026-03-24T05:57:47.500Z",
+          },
+        }],
+        metadata: { source: "auth-retry-steer-test" },
       });
     });
   });

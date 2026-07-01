@@ -6293,28 +6293,38 @@ export function AgentChatPane({
       return;
     }
     const events = selectedEventsForDisplayRef.current;
-    let text: string | null = null;
+    let userEvent: Extract<AgentChatEvent, { type: "user_message" }> | null = null;
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const evt = events[index]?.event;
       if (evt?.type === "user_message" && typeof evt.text === "string" && evt.text.trim().length > 0) {
-        text = evt.text;
+        userEvent = evt;
         break;
       }
     }
-    if (!text) {
+    if (!userEvent) {
       rejectAuthRetry(sessionId);
       return;
     }
+    const text = userEvent.text;
+    const displayText = typeof userEvent.displayText === "string" ? userEvent.displayText : text;
+    const attachments = Array.isArray(userEvent.attachments) ? userEvent.attachments : [];
+    const contextAttachments = Array.isArray(userEvent.contextAttachments) ? userEvent.contextAttachments : [];
+    const metadata = userEvent.metadata;
+    const replayContext = {
+      ...(attachments.length ? { attachments } : {}),
+      ...(contextAttachments.length ? { contextAttachments } : {}),
+      ...(metadata !== undefined ? { metadata } : {}),
+    };
     try {
       submitInFlightRef.current = true;
       setBusy(true);
       setError(null);
       touchSession(sessionId);
       try {
-        await window.ade.agentChat.send({ sessionId, text, displayText: text });
+        await window.ade.agentChat.send({ sessionId, text, displayText, ...replayContext });
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
-        await window.ade.agentChat.steer({ sessionId, text });
+        await window.ade.agentChat.steer({ sessionId, text, ...replayContext });
       }
       void refreshSessions().catch(() => {});
     } catch (err) {
