@@ -345,7 +345,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const [contextMenu, setContextMenu] = React.useState<{ laneId: string; x: number; y: number } | null>(null);
   const { ref: graphContextMenuRef, position: graphContextMenuPosition } = useClampedFixedPosition(
     contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null,
-    [contextMenu?.laneId],
+    contextMenu?.laneId ?? null,
   );
   const [selectedLaneIds, setSelectedLaneIds] = React.useState<string[]>([]);
   const [batchStatus, setBatchStatus] = React.useState<{

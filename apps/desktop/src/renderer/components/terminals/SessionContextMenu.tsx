@@ -51,7 +51,7 @@ export function SessionContextMenu({
   const finalizedRef = useRef(false);
   const { ref: menuRef, position: clampedPosition } = useClampedFixedPosition(
     menu ? { x: menu.x, y: menu.y } : null,
-    [menu?.x, menu?.y, renaming],
+    renaming,
   );
 
   // Reset rename state when menu changes

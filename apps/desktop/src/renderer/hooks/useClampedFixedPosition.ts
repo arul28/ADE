@@ -29,7 +29,7 @@ export function clampFixedPosition(
  */
 export function useClampedFixedPosition(
   anchor: FixedAnchor | null,
-  deps: unknown[] = [],
+  remeasureKey: unknown = null,
 ): {
   ref: MutableRefObject<HTMLDivElement | null>;
   position: ClampedFixedPosition | null;
@@ -44,7 +44,7 @@ export function useClampedFixedPosition(
     }
     const rect = ref.current.getBoundingClientRect();
     setPosition(clampFixedPosition(anchor, { width: rect.width, height: rect.height }));
-  }, [anchor?.x, anchor?.y, ...deps]);
+  }, [anchor?.x, anchor?.y, remeasureKey]);
 
   return { ref, position };
 }

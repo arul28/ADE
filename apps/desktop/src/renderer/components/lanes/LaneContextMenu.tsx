@@ -113,7 +113,7 @@ export function LaneContextMenu({
 
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(
     { x: laneContextMenu.x, y: laneContextMenu.y },
-    [laneContextMenu.laneId, ctxLane?.id],
+    `${laneContextMenu.laneId}:${ctxLane?.id ?? ""}`,
   );
 
   React.useEffect(() => {

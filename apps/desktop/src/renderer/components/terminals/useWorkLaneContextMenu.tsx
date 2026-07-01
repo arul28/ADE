@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { useAppStore, selectActiveProjectRoot } from "../../state/appStore";
-import { startChatDraftPatch } from "../../lib/workDraft";
+import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 
 type MenuState = { laneId: string; x: number; y: number };
@@ -60,19 +60,12 @@ export function useWorkLaneContextMenu(): {
     [navigate, selectLane],
   );
 
-  const startChatInLane = useCallback(
-    (laneId: string) => {
-      if (projectRoot) {
-        setWorkViewState(projectRoot, (prev) => ({
-          ...prev,
-          ...startChatDraftPatch(laneId),
-        }));
-      }
-      selectLane(laneId);
-      void navigate("/work");
-    },
-    [navigate, projectRoot, selectLane, setWorkViewState],
-  );
+  const startChatInLane = useStartChatInLane({
+    projectRoot,
+    setWorkViewState,
+    selectLane,
+    navigate,
+  });
 
   const menu = menuState
     ? createPortal(

@@ -29,7 +29,7 @@ export function ContextMenu({
   onClose: () => void;
 }) {
   const itemsKey = items.map((item) => (item.type === "separator" ? "|" : `${item.label}:${item.disabled ? "0" : "1"}`)).join("\0");
-  const { ref, position } = useClampedFixedPosition({ x, y }, [itemsKey]);
+  const { ref, position } = useClampedFixedPosition({ x, y }, itemsKey);
 
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {

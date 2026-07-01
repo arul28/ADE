@@ -15,7 +15,7 @@ import { ResizeGutter } from "../ui/ResizeGutter";
 import { LaneStackPane } from "./LaneStackPane";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
-import { startChatDraftPatch } from "../../lib/workDraft";
+import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import {
   consumeLaunchedLanesHighlight,
   subscribeLaunchedLanesHighlight,
@@ -1279,19 +1279,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [laneContextMenu]);
 
-  const startChatInLane = useCallback(
-    (laneId: string) => {
-      if (activeProjectRoot) {
-        setWorkViewState(activeProjectRoot, (prev) => ({
-          ...prev,
-          ...startChatDraftPatch(laneId),
-        }));
-      }
-      selectLane(laneId);
-      void navigate("/work");
-    },
-    [activeProjectRoot, navigate, selectLane, setWorkViewState],
-  );
+  const startChatInLane = useStartChatInLane({
+    projectRoot: activeProjectRoot,
+    setWorkViewState,
+    selectLane,
+    navigate,
+  });
 
   useEffect(() => {
     if (!adoptTargetLaneId) return;
