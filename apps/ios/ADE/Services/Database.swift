@@ -1366,7 +1366,8 @@ final class DatabaseService {
         laneId: lane.id,
         name: lane.name,
         rootPath: lane.attachedRootPath ?? lane.worktreePath,
-        isReadOnlyByDefault: lane.isEditProtected
+        // Edit-protection no longer gates file editing; workspaces are always editable.
+        isReadOnlyByDefault: false
       )
     }
   }

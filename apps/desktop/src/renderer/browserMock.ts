@@ -1037,7 +1037,7 @@ function getBrowserMockFilesWorkspaces(): any[] {
         branchRef:
           typeof lane.branchRef === "string" ? lane.branchRef : undefined,
         rootPath: String(lane.worktreePath ?? MOCK_PROJECT.rootPath),
-        isReadOnlyByDefault: Boolean(lane.isEditProtected),
+        isReadOnlyByDefault: false,
         mobileReadOnly: true,
       };
     })
