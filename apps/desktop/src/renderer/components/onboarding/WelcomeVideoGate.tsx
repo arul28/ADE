@@ -332,8 +332,8 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
                   One app, every surface
                 </div>
                 <div className="ade-welcome-card__surfaces">
-                  {SURFACES.map((surface) => (
-                    <SurfaceTile key={surface.key} surface={surface} />
+                  {SURFACES.map((surface, index) => (
+                    <SurfaceTile key={surface.key} surface={surface} index={index} />
                   ))}
                 </div>
               </div>
@@ -555,8 +555,10 @@ function PhonePanel({
 }
 
 function SurfaceTile({
+  index,
   surface,
 }: {
+  index: number;
   surface: Surface;
 }) {
   return (
@@ -574,6 +576,7 @@ function SurfaceTile({
         background: "transparent",
         color: "var(--color-fg, #F5F3FF)",
         cursor: "pointer",
+        animationDelay: `${(index + 1) * 60}ms`,
       }}
     >
       <div

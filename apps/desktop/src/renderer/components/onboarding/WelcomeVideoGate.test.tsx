@@ -3,7 +3,7 @@
 import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { WelcomeVideoGate, publicAssetUrl } from "./WelcomeVideoGate";
+import { WelcomeVideoGate } from "./WelcomeVideoGate";
 import {
   ADE_WELCOME_VIDEO_ID,
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
@@ -109,13 +109,24 @@ describe("WelcomeVideoGate", () => {
     expect(document.querySelector('img[aria-hidden="true"]')?.getAttribute("src")).toBe(
       "/logo.png",
     );
-    expect(publicAssetUrl("welcome/video-poster.jpg")).toBe("/welcome/video-poster.jpg");
     expect(
       screen
         .getByRole("button", { name: /^desktop:/i })
         .querySelector("img")
         ?.getAttribute("src"),
     ).toBe("/welcome/desktop.webp");
+    expect(
+      screen
+        .getByRole("button", { name: /^mobile:/i })
+        .querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("/welcome/mobile.webp");
+    expect(
+      screen
+        .getByRole("button", { name: /^terminal:/i })
+        .querySelector("img")
+        ?.getAttribute("src"),
+    ).toBe("/welcome/tui.webp");
   });
 
   it("stays hidden after a seen video until the replay event opens it", async () => {
