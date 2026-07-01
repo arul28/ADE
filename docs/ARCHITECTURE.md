@@ -664,7 +664,7 @@ Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, 
 
 - `renderer/lib/dialogBus.ts` — tiny pub/sub that lets shared UI open/close dialogs by a stable id (`lanes.create`, `settings.ai`, etc.) without prop-drilling. Dialogs subscribe by id; a `subscribeAll` channel exists for devtools. Default singleton export `dialogBus`.
 - `renderer/onboarding/docsLinks.ts` — typed registry of internal/public doc URLs (`docs.lanes`, `docs.cto`, …) used by `DidYouKnow`, glossary/help surfaces, and the `HelpMenu`.
-- `renderer/components/onboarding/WelcomeVideoGate.tsx` — app-level one-time welcome video overlay. Seen/dismissed state is stored in the global app state file, separate from per-project setup onboarding.
+- `renderer/components/onboarding/WelcomeVideoGate.tsx` — app-level one-time welcome card overlay with sanitized bundled screenshots/assets, a lazy intro video, and an ADE Mobile TestFlight QR/download/copy panel. Seen/dismissed state is stored in the global app state file, separate from per-project setup onboarding.
 
 Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-surfaces.md), [Files and editor](./features/files-and-editor/README.md), and [Onboarding and settings](./features/onboarding-and-settings/README.md).
 
