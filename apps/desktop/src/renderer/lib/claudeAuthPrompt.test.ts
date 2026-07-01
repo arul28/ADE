@@ -50,6 +50,16 @@ describe("claude auth prompt helpers", () => {
     expect(textHasClaudeAuthError("Please run /login · API Error: 401 Invalid authentication credentials")).toBe(true);
   });
 
+  it("detects ADE's own classified auth message despite reversed word order", () => {
+    // "Authentication failed" precedes "Claude" here, so the claude-first
+    // patterns miss it — the dedicated "failed for" pattern catches it.
+    expect(textHasClaudeAuthError("Authentication failed for Claude Sonnet 4.6. Check your API key in Settings.")).toBe(true);
+  });
+
+  it("does not treat other service auth failures as Claude login failures", () => {
+    expect(textHasClaudeAuthError("Authentication failed for GitHub. Check your token in Settings.")).toBe(false);
+  });
+
   it("shows for the latest Claude chat auth error", () => {
     expect(shouldShowClaudeChatLoginPrompt({
       provider: "claude",

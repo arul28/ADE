@@ -3167,6 +3167,45 @@ function renderEvent(
     const errorCopyValue = event.detail?.trim().length
       ? `${event.message}\n\n${event.detail}`
       : event.message;
+    const renderAgentCliAuthCard = () => agentCliInfo ? (
+      <AgentCliAuthCard
+        agentCli={agentCliInfo}
+        laneId={options?.laneId}
+        chatSessionId={options?.sessionId}
+        runtimeName={options?.runtimeName}
+        onRevealTerminal={options?.onRevealChatTerminal}
+      />
+    ) : null;
+    // A logged-out runtime is recoverable, not a crash — lead with the calm
+    // re-login card and tuck the raw 401 behind a Details disclosure instead of
+    // the loud red error chrome. (The "missing CLI" card keeps the red frame.)
+    if (agentCliInfo?.category === "unauthenticated") {
+      return (
+        <div
+          className={cn(
+            GLASS_CARD_CLASS,
+            "group p-0",
+            agentCliInfo.agent === "claude" ? "border-[#d97757]/12" : "border-amber-400/12",
+          )}
+          style={SURFACE_INLINE_CARD_STYLE}
+        >
+          <div className="p-4 pt-3">
+            {renderAgentCliAuthCard()}
+            <details className="mt-2">
+              <summary className="cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65">
+                Details
+              </summary>
+              <div className="mt-1.5 flex items-start gap-2 rounded-[calc(var(--chat-radius-card)-8px)] border border-white/[0.06] bg-black/15 px-3 py-2">
+                <div className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55">
+                  {errorCopyValue}
+                </div>
+                <MessageCopyButton value={errorCopyValue} className="shrink-0" />
+              </div>
+            </details>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={cn(GLASS_CARD_CLASS, "group border-red-500/12 p-0")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="h-px w-full bg-gradient-to-r from-transparent via-red-500/40 to-transparent" />
@@ -3191,15 +3230,7 @@ function renderEvent(
               {event.detail}
             </div>
           ) : null}
-          {agentCliInfo ? (
-            <AgentCliAuthCard
-              agentCli={agentCliInfo}
-              laneId={options?.laneId}
-              chatSessionId={options?.sessionId}
-              runtimeName={options?.runtimeName}
-              onRevealTerminal={options?.onRevealChatTerminal}
-            />
-          ) : null}
+          {renderAgentCliAuthCard()}
           {event.errorInfo && !agentCliInfo ? (
             <div className="mt-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/40">
               {typeof event.errorInfo === "string" ? event.errorInfo : `${event.errorInfo.provider ? `${event.errorInfo.provider}` : ""}${event.errorInfo.model ? ` / ${event.errorInfo.model}` : ""}`}

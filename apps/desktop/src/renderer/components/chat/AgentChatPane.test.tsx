@@ -43,6 +43,7 @@ import {
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
+import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -1389,6 +1390,246 @@ describe("AgentChatPane companion drawers", () => {
 });
 
 describe("AgentChatPane submit recovery", () => {
+  it("resends the latest user message for the selected session after auth retry", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    const transcript = [
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:45.700Z",
+        event: {
+          type: "user_message",
+          text: "First prompt",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:46.700Z",
+        event: {
+          type: "text",
+          text: "First answer",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:47.700Z",
+        event: {
+          type: "user_message",
+          text: "Retry this exact prompt\n\nUse docs/auth.md and the selected plan note.",
+          displayText: "Retry this exact prompt",
+          attachments: [{ path: "docs/auth.md", type: "file" }],
+          contextAttachments: [{
+            type: "orchestration_annotation",
+            item: {
+              type: "orchestration_annotation",
+              runId: "run-auth",
+              anchor: { kind: "plan_step", id: "step-auth", preview: "login recovery" },
+              selectionExcerpt: "login recovery",
+              comment: "Use this selected plan note.",
+              capturedAt: "2026-03-24T05:57:47.500Z",
+            },
+          }],
+          metadata: { source: "auth-retry-test" },
+          turnId: "turn-2",
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    const { send } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      includeClaudeModel: true,
+    });
+    const getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: true, source: "path", path: "/usr/local/bin/claude" },
+          auth: { ready: true, mode: "subscription", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "claude", authenticated: true },
+      ],
+      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+    });
+    window.ade.ai.getStatus = getStatus as any;
+    seedDrawerStore();
+
+    renderPane(session);
+
+    expect(await screen.findByText("Retry this exact prompt")).toBeTruthy();
+    await waitFor(() => {
+      expect(getStatus).toHaveBeenCalled();
+    });
+    getStatus.mockClear();
+    send.mockImplementationOnce(async () => {
+      expect(getStatus).toHaveBeenCalledWith({
+        force: true,
+        refreshOpenCodeInventory: false,
+      });
+    });
+
+    fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
+      detail: { sessionId: session.sessionId },
+    }));
+
+    await waitFor(() => {
+      expect(send).toHaveBeenCalledWith({
+        sessionId: session.sessionId,
+        text: "Retry this exact prompt\n\nUse docs/auth.md and the selected plan note.",
+        displayText: "Retry this exact prompt",
+        attachments: [{ path: "docs/auth.md", type: "file" }],
+        contextAttachments: [{
+          type: "orchestration_annotation",
+          item: {
+            type: "orchestration_annotation",
+            runId: "run-auth",
+            anchor: { kind: "plan_step", id: "step-auth", preview: "login recovery" },
+            selectionExcerpt: "login recovery",
+            comment: "Use this selected plan note.",
+            capturedAt: "2026-03-24T05:57:47.500Z",
+          },
+        }],
+        metadata: { source: "auth-retry-test" },
+      });
+    });
+  });
+
+  it("rejects the auth retry when a turn becomes active before resend", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T05:57:47.700Z",
+      event: {
+        type: "user_message",
+        text: "Retry into active turn",
+        displayText: "Retry into active turn",
+        attachments: [{ path: "docs/race.md", type: "file" }],
+        contextAttachments: [{
+          type: "orchestration_annotation",
+          item: {
+            type: "orchestration_annotation",
+            runId: "run-race",
+            anchor: { kind: "plan_step", id: "step-race", preview: "active turn fallback" },
+            selectionExcerpt: "active turn fallback",
+            comment: "Retry with this fallback context.",
+            capturedAt: "2026-03-24T05:57:47.500Z",
+          },
+        }],
+        metadata: { source: "auth-retry-steer-test" },
+        turnId: "turn-2",
+      },
+    })}\n`;
+    const { send, steer } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      includeClaudeModel: true,
+    });
+    send.mockRejectedValueOnce(new Error("turn is already active"));
+    seedDrawerStore();
+    const rejectedEvents: Array<CustomEvent<{ sessionId?: string }>> = [];
+    const onRejected = (event: Event) => {
+      rejectedEvents.push(event as CustomEvent<{ sessionId?: string }>);
+    };
+    window.addEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, onRejected);
+
+    renderPane(session);
+
+    try {
+      expect(await screen.findByText("Retry into active turn")).toBeTruthy();
+
+      fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
+        detail: { sessionId: session.sessionId },
+      }));
+
+      await waitFor(() => {
+        expect(rejectedEvents).toHaveLength(1);
+      });
+      expect(rejectedEvents[0]?.detail).toEqual({ sessionId: session.sessionId });
+      expect(steer).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, onRejected);
+    }
+  });
+
+  it("dispatches auth recovery once after a later successful turn", async () => {
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
+    const transcript = [
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:45.700Z",
+        event: {
+          type: "error",
+          message: "Authentication failed for Claude Sonnet 4.6.",
+          turnId: "turn-1",
+          errorInfo: {
+            category: "agent_cli_auth",
+            agentCli: {
+              agent: "claude",
+              displayName: "Claude Code",
+              category: "unauthenticated",
+              installCommand: "npm install -g @anthropic-ai/claude-code",
+              authCommand: "claude auth login",
+            },
+          },
+        },
+      },
+      {
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:57:46.700Z",
+        event: {
+          type: "done",
+          status: "completed",
+          turnId: "turn-2",
+        },
+      },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    const recoverySpy = vi.fn();
+    window.addEventListener(CHAT_AUTH_RECOVERED_EVENT, recoverySpy);
+    try {
+      installAdeMocks({
+        sessions: [session],
+        transcript,
+        includeClaudeModel: true,
+      });
+      seedDrawerStore();
+
+      renderPane(session);
+
+      await waitFor(() => {
+        expect(recoverySpy).toHaveBeenCalledTimes(1);
+      });
+      const event = recoverySpy.mock.calls[0][0] as CustomEvent<{ sessionId?: string }>;
+      expect(event.detail.sessionId).toBe(session.sessionId);
+
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(recoverySpy).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener(CHAT_AUTH_RECOVERED_EVENT, recoverySpy);
+    }
+  });
+
   it("uses the model override as the constrained draft picker list", async () => {
     installAdeMocks({ sessions: [] });
     seedRuntimeModelCatalog();
@@ -5771,6 +6012,53 @@ describe("AgentChatPane submit recovery", () => {
 
     expect(await screen.findByText("Visible inactive grid tile loaded")).toBeTruthy();
     expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
+  });
+
+  it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
+    const session = buildSession("grid-claude-auth", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+      title: "Claude auth grid tile",
+    });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T06:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "error",
+        message: "Authentication failed for Claude Sonnet 4.6.",
+        turnId: "turn-grid-auth",
+        errorInfo: {
+          category: "agent_cli_auth",
+          agentCli: {
+            agent: "claude",
+            displayName: "Claude Code",
+            category: "unauthenticated",
+            installCommand: "npm install -g @anthropic-ai/claude-code",
+            authCommand: "claude auth login",
+          },
+        },
+      },
+    })}\n`;
+    installAdeMocks({ sessions: [session], transcript, includeClaudeModel: true });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          layoutVariant="grid-tile"
+          isTileActive
+          isTileVisible
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
   });
 
   it("streams live events into visible inactive grid tiles without requiring focus", async () => {
