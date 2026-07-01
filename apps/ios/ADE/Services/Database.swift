@@ -905,6 +905,16 @@ final class DatabaseService {
     let hydratableSessions = sessions.filter { laneIds.contains($0.laneId) }
     let sessionIds = hydratableSessions.map(\.id)
 
+    let shouldRestoreForeignKeys = (queryInt64("pragma foreign_keys") ?? 0) != 0
+    if shouldRestoreForeignKeys {
+      try exec("pragma foreign_keys = off")
+    }
+    defer {
+      if shouldRestoreForeignKeys {
+        try? exec("pragma foreign_keys = on")
+      }
+    }
+
     try exec("begin")
     do {
       try prepareTemporaryIdTable(named: "temp_project_lane_ids", ids: laneIds.sorted())
@@ -949,6 +959,43 @@ final class DatabaseService {
                  select 1
                    from temp_hydrated_session_ids hydrated
                   where hydrated.id = checkpoints.session_id
+               )
+          """)
+        }
+      }
+      if hasTable(named: "claude_sessions") {
+        if sessionIds.isEmpty {
+          try exec("""
+            update claude_sessions
+               set chat_session_id = null
+             where chat_session_id in (
+               select terminal_sessions.id
+                 from terminal_sessions
+                where exists (
+                  select 1
+                    from temp_project_lane_ids project_lanes
+                   where project_lanes.id = terminal_sessions.lane_id
+                )
+             )
+          """)
+        } else {
+          try exec("""
+            update claude_sessions
+               set chat_session_id = null
+             where chat_session_id is not null
+               and chat_session_id in (
+                 select terminal_sessions.id
+                   from terminal_sessions
+                  where exists (
+                    select 1
+                      from temp_project_lane_ids project_lanes
+                     where project_lanes.id = terminal_sessions.lane_id
+                  )
+               )
+               and not exists (
+                 select 1
+                   from temp_hydrated_session_ids hydrated
+                  where hydrated.id = claude_sessions.chat_session_id
                )
           """)
         }
@@ -1104,7 +1151,7 @@ final class DatabaseService {
       try exec("drop table if exists temp_project_lane_ids")
 
       try exec("commit")
-      notifyDidChange(touchedTables: ["terminal_sessions", "session_deltas", "checkpoints"])
+      notifyDidChange(touchedTables: ["terminal_sessions", "session_deltas", "checkpoints", "claude_sessions"])
     } catch {
       try? exec("rollback")
       try? exec("drop table if exists temp_hydrated_session_ids")
@@ -1619,6 +1666,10 @@ final class DatabaseService {
     withLock { fetchSessionsLocked() }
   }
 
+  func fetchSession(id sessionId: String) -> TerminalSessionSummary? {
+    withLock { fetchSessionLocked(id: sessionId) }
+  }
+
   private func fetchSessionsLocked() -> [TerminalSessionSummary] {
     guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
@@ -1636,64 +1687,90 @@ final class DatabaseService {
     return query(sql, bind: { [self] statement in
       try self.bindText(projectId, to: statement, index: 1)
     }) { statement in
-      SessionRow(
-        id: stringValue(statement, index: 0) ?? "",
-        laneId: stringValue(statement, index: 1) ?? "",
-        laneName: stringValue(statement, index: 2) ?? "",
-        ptyId: stringValue(statement, index: 3),
-        tracked: sqlite3_column_int(statement, 4) == 1,
-        pinned: sqlite3_column_int(statement, 5) == 1,
-        manuallyNamed: sqlite3_column_int(statement, 6) == 1,
-        goal: stringValue(statement, index: 7),
-        toolType: stringValue(statement, index: 8),
-        title: stringValue(statement, index: 9) ?? "",
-        status: stringValue(statement, index: 10) ?? "unknown",
-        startedAt: stringValue(statement, index: 11) ?? "",
-        endedAt: stringValue(statement, index: 12),
-        exitCode: columnIsNull(statement, index: 13) ? nil : Int(sqlite3_column_int64(statement, 13)),
-        transcriptPath: stringValue(statement, index: 14) ?? "",
-        headShaStart: stringValue(statement, index: 15),
-        headShaEnd: stringValue(statement, index: 16),
-        lastOutputPreview: stringValue(statement, index: 17),
-        summary: stringValue(statement, index: 18),
-        runtimeState: stringValue(statement, index: 19) ?? runtimeState(for: stringValue(statement, index: 10) ?? "unknown"),
-        resumeCommand: stringValue(statement, index: 20),
-        resumeMetadata: decodeJson(stringValue(statement, index: 21), as: TerminalResumeMetadata.self),
-        chatIdleSinceAt: stringValue(statement, index: 22),
-        chatSessionId: stringValue(statement, index: 23),
-        pendingInputItemId: stringValue(statement, index: 24),
-        archivedAt: stringValue(statement, index: 25)
-      )
-    }.map { row in
-      TerminalSessionSummary(
-        id: row.id,
-        laneId: row.laneId,
-        laneName: row.laneName,
-        ptyId: row.ptyId,
-        tracked: row.tracked,
-        pinned: row.pinned,
-        manuallyNamed: row.manuallyNamed,
-        goal: row.goal,
-        toolType: row.toolType,
-        title: row.title,
-        status: row.status,
-        startedAt: row.startedAt,
-        endedAt: row.endedAt,
-        archivedAt: row.archivedAt,
-        exitCode: row.exitCode,
-        transcriptPath: row.transcriptPath,
-        headShaStart: row.headShaStart,
-        headShaEnd: row.headShaEnd,
-        lastOutputPreview: row.lastOutputPreview,
-        summary: row.summary,
-        runtimeState: row.runtimeState,
-        resumeCommand: row.resumeCommand,
-        resumeMetadata: row.resumeMetadata,
-        chatIdleSinceAt: row.chatIdleSinceAt,
-        chatSessionId: row.chatSessionId,
-        pendingInputItemId: row.pendingInputItemId
-      )
-    }
+      sessionRow(from: statement)
+    }.map(terminalSessionSummary(from:))
+  }
+
+  private func fetchSessionLocked(id sessionId: String) -> TerminalSessionSummary? {
+    let trimmedId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedId.isEmpty else { return nil }
+    let sql = """
+      select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
+             s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
+             s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
+             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at
+        from terminal_sessions s
+        left join lanes l on l.id = s.lane_id
+       where s.id = ?
+       limit 1
+    """
+    return query(sql, bind: { [self] statement in
+      try self.bindText(trimmedId, to: statement, index: 1)
+    }) { statement in
+      terminalSessionSummary(from: sessionRow(from: statement))
+    }.first
+  }
+
+  private func sessionRow(from statement: OpaquePointer) -> SessionRow {
+    SessionRow(
+      id: stringValue(statement, index: 0) ?? "",
+      laneId: stringValue(statement, index: 1) ?? "",
+      laneName: stringValue(statement, index: 2) ?? "",
+      ptyId: stringValue(statement, index: 3),
+      tracked: sqlite3_column_int(statement, 4) == 1,
+      pinned: sqlite3_column_int(statement, 5) == 1,
+      manuallyNamed: sqlite3_column_int(statement, 6) == 1,
+      goal: stringValue(statement, index: 7),
+      toolType: stringValue(statement, index: 8),
+      title: stringValue(statement, index: 9) ?? "",
+      status: stringValue(statement, index: 10) ?? "unknown",
+      startedAt: stringValue(statement, index: 11) ?? "",
+      endedAt: stringValue(statement, index: 12),
+      exitCode: columnIsNull(statement, index: 13) ? nil : Int(sqlite3_column_int64(statement, 13)),
+      transcriptPath: stringValue(statement, index: 14) ?? "",
+      headShaStart: stringValue(statement, index: 15),
+      headShaEnd: stringValue(statement, index: 16),
+      lastOutputPreview: stringValue(statement, index: 17),
+      summary: stringValue(statement, index: 18),
+      runtimeState: stringValue(statement, index: 19) ?? runtimeState(for: stringValue(statement, index: 10) ?? "unknown"),
+      resumeCommand: stringValue(statement, index: 20),
+      resumeMetadata: decodeJson(stringValue(statement, index: 21), as: TerminalResumeMetadata.self),
+      chatIdleSinceAt: stringValue(statement, index: 22),
+      chatSessionId: stringValue(statement, index: 23),
+      pendingInputItemId: stringValue(statement, index: 24),
+      archivedAt: stringValue(statement, index: 25)
+    )
+  }
+
+  private func terminalSessionSummary(from row: SessionRow) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: row.id,
+      laneId: row.laneId,
+      laneName: row.laneName,
+      ptyId: row.ptyId,
+      tracked: row.tracked,
+      pinned: row.pinned,
+      manuallyNamed: row.manuallyNamed,
+      goal: row.goal,
+      toolType: row.toolType,
+      title: row.title,
+      status: row.status,
+      startedAt: row.startedAt,
+      endedAt: row.endedAt,
+      archivedAt: row.archivedAt,
+      exitCode: row.exitCode,
+      transcriptPath: row.transcriptPath,
+      headShaStart: row.headShaStart,
+      headShaEnd: row.headShaEnd,
+      lastOutputPreview: row.lastOutputPreview,
+      summary: row.summary,
+      runtimeState: row.runtimeState,
+      resumeCommand: row.resumeCommand,
+      resumeMetadata: row.resumeMetadata,
+      chatIdleSinceAt: row.chatIdleSinceAt,
+      chatSessionId: row.chatSessionId,
+      pendingInputItemId: row.pendingInputItemId
+    )
   }
 
   func updateSessionTitle(sessionId: String, title: String) throws {

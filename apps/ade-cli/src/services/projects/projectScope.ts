@@ -51,6 +51,17 @@ export class ProjectScopeRegistry {
     };
   }
 
+  /**
+   * Non-booting lookup of an already-booted (or currently-booting) scope.
+   * Returns the cached scope promise when one exists, or `null` when the
+   * project has never been activated. Unlike `get()` this NEVER boots a scope,
+   * so the all-projects roster can overlay live fidelity onto the projects that
+   * happen to be running without spinning up a runtime for every project.
+   */
+  getIfBooted(projectId: ProjectId): Promise<ProjectScope> | null {
+    return this.scopes.get(projectId) ?? null;
+  }
+
   async get(projectId: ProjectId): Promise<ProjectScope> {
     const cached = this.scopes.get(projectId);
     if (cached) return await cached;

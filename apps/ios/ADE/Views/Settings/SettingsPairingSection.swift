@@ -5,29 +5,24 @@ struct SettingsPairingSection: View {
   @Binding var presentedSheet: SettingsPairSheetRoute?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      SettingsSectionHeader(
-        label: "PAIR A MACHINE",
-        hint: pairingHint
-      )
+    // Header lives in the parent "MACHINE" subsection now — this just renders
+    // the pairing action rows.
+    GlassEffectContainer(spacing: 8) {
+      VStack(spacing: 8) {
+        SettingsPairActionRow(
+          icon: "dot.radiowaves.left.and.right",
+          title: "Discover on network",
+          subtitle: discoverSubtitle
+        ) {
+          presentedSheet = .discover
+        }
 
-      GlassEffectContainer(spacing: 8) {
-        VStack(spacing: 8) {
-          SettingsPairActionRow(
-            icon: "dot.radiowaves.left.and.right",
-            title: "Discover on network",
-            subtitle: discoverSubtitle
-          ) {
-            presentedSheet = .discover
-          }
-
-          SettingsPairActionRow(
-            icon: "keyboard",
-            title: "Enter machine details",
-            subtitle: "Machine address and port"
-          ) {
-            presentedSheet = .manual
-          }
+        SettingsPairActionRow(
+          icon: "keyboard",
+          title: "Enter machine details",
+          subtitle: "Machine address and port"
+        ) {
+          presentedSheet = .manual
         }
       }
     }
@@ -43,13 +38,6 @@ struct SettingsPairingSection: View {
       return "Looking nearby"
     }
     return count == 1 ? "1 nearby machine found" : "\(count) nearby machines found"
-  }
-
-  private var pairingHint: String? {
-    guard snapshot.savedReconnectHostCount > 0 else {
-      return "Pick how to reach your machine"
-    }
-    return "Add another machine or switch saved machines"
   }
 }
 

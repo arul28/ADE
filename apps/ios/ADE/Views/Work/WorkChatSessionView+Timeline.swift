@@ -10,9 +10,69 @@ extension WorkChatSessionView {
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
     guard shouldShowInterruptControl else { return nil }
+    return timelineSnapshot.latestMessageAssistantId
+  }
+
+  @ViewBuilder
+  func timelineRenderEntryView(
+    for entry: WorkTimelineRenderEntry,
+    proxy: ScrollViewProxy,
+    streamingAssistantMessageId: String?,
+    maxUserBubbleWidth: CGFloat?
+  ) -> some View {
+    switch entry.payload {
+    case .entry(let timelineEntry):
+      timelineEntryView(
+        for: timelineEntry,
+        proxy: proxy,
+        streamingAssistantMessageId: streamingAssistantMessageId,
+        maxUserBubbleWidth: maxUserBubbleWidth
+      )
+    case .assistantMarkdownBlock(let model):
+      WorkAssistantMarkdownBlockRow(
+        model: model,
+        onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) }
+      )
+      .equatable()
+    case .assistantMonospaced(let model):
+      WorkAssistantMonospacedRow(
+        model: model,
+        onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) }
+      )
+      .equatable()
+    case .assistantControls(let model):
+      WorkAssistantMessageControlsView(
+        controls: model,
+        onCopyMessage: { copyAssistantMarkdown(messageId: model.messageId) },
+        onShowMore: {
+          assistantLineBudgets[model.messageId] = model.nextLineBudget
+          refreshTimelinePresentation()
+          if isNearBottom {
+            pinToLatestAfterLayout(proxy, reason: "assistant-show-more")
+          }
+        }
+      )
+      .equatable()
+    }
+  }
+
+  func copyAssistantMarkdown(messageId: String) {
+    guard let markdown = assistantMarkdown(messageId: messageId) else { return }
+    UIPasteboard.general.string = markdown
+  }
+
+  private func assistantMarkdown(messageId: String) -> String? {
+    for entry in visibleTimeline.reversed() {
+      if case .message(let message) = entry.payload,
+         message.id == messageId {
+        return message.markdown
+      }
+    }
     for entry in timelineSnapshot.timeline.reversed() {
-      guard case .message(let message) = entry.payload else { continue }
-      return message.role == "assistant" ? message.id : nil
+      if case .message(let message) = entry.payload,
+         message.id == messageId {
+        return message.markdown
+      }
     }
     return nil
   }
@@ -38,8 +98,8 @@ extension WorkChatSessionView {
     case .usageSummary(let summary):
       WorkTurnUsageSummaryBanner(
         summary: summary,
-        provider: chatSummary?.provider,
-        modelLabel: chatSummary.map { prettyWorkChatModelName($0.model) }
+        provider: chatSummaryContext.provider,
+        modelLabel: chatSummaryContext.modelLabel
       )
     case .commandCard(let commandCard):
       WorkCommandCardView(card: commandCard)
@@ -95,7 +155,7 @@ extension WorkChatSessionView {
             }
           }
         },
-        fallbackProvider: chatSummary?.provider
+        fallbackProvider: chatSummaryContext.provider
       )
       .id("pending-question-\(question.id)")
     case .pendingPermission(let permission):
@@ -108,25 +168,8 @@ extension WorkChatSessionView {
           }
         }
       )
-    case .pendingPlanApproval(let plan):
-      WorkPlanReviewCard(
-        plan: plan,
-        busy: actionInFlight || !isLive,
-        onDecision: { decision, feedback in
-          await runSessionAction {
-            // Approve: send "accept" decision directly.
-            // Reject: send "decline"; if the user typed feedback, also
-            // queue it as a follow-up steer message so the agent sees the
-            // revision notes in the next turn.
-            await onApproveRequest(plan.id, decision)
-            if decision == .decline, let feedback, !feedback.isEmpty {
-              _ = await onSend(feedback)
-            }
-          }
-        },
-        fallbackProvider: chatSummary?.provider
-      )
-      .id("pending-question-\(plan.id)")
+    case .pendingPlanApproval:
+      EmptyView()
     case .pendingModelSelection(let request):
       WorkModelSelectionPendingCard(
         request: request,
@@ -220,5 +263,102 @@ extension WorkChatSessionView {
         fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
       }
     )
+  }
+}
+
+struct WorkAssistantMarkdownBlockRow: View, Equatable {
+  let model: WorkAssistantMarkdownBlockRenderModel
+  let onCopyMessage: () -> Void
+
+  static func == (lhs: WorkAssistantMarkdownBlockRow, rhs: WorkAssistantMarkdownBlockRow) -> Bool {
+    lhs.model == rhs.model
+  }
+
+  var body: some View {
+    WorkMarkdownBlockView(block: model.block)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contextMenu {
+        Button(action: onCopyMessage) {
+          Label("Copy message", systemImage: "doc.on.doc")
+        }
+      }
+      .accessibilityElement(children: .contain)
+      .adeInspectable(
+        "Work.Chat.MessageBubble.Assistant.Block",
+        metadata: [
+          "messageId": model.messageId,
+          "turnId": model.turnId ?? "",
+          "itemId": model.itemId ?? "",
+          "blockId": model.block.id
+        ]
+      )
+  }
+}
+
+struct WorkAssistantMonospacedRow: View, Equatable {
+  let model: WorkAssistantMonospacedRenderModel
+  let onCopyMessage: () -> Void
+
+  static func == (lhs: WorkAssistantMonospacedRow, rhs: WorkAssistantMonospacedRow) -> Bool {
+    lhs.model == rhs.model
+  }
+
+  var body: some View {
+    WorkAssistantMonospacedPreview(text: model.text)
+      .accessibilityLabel(model.accessibilityLabel)
+      .contextMenu {
+        Button(action: onCopyMessage) {
+          Label("Copy message", systemImage: "doc.on.doc")
+        }
+      }
+      .adeInspectable(
+        "Work.Chat.MessageBubble.Assistant.Monospace",
+        metadata: [
+          "messageId": model.messageId,
+          "turnId": model.turnId ?? "",
+          "itemId": model.itemId ?? ""
+        ]
+      )
+  }
+}
+
+struct WorkAssistantMessageControlsView: View, Equatable {
+  let controls: WorkAssistantMessageControlsModel
+  let onCopyMessage: () -> Void
+  let onShowMore: () -> Void
+
+  static func == (lhs: WorkAssistantMessageControlsView, rhs: WorkAssistantMessageControlsView) -> Bool {
+    lhs.controls == rhs.controls
+  }
+
+  var body: some View {
+    HStack(spacing: 12) {
+      Text(controls.summaryText)
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+
+      Spacer(minLength: 0)
+
+      Button(action: onCopyMessage) {
+        Label("Copy full", systemImage: "doc.on.doc")
+          .labelStyle(.titleAndIcon)
+          .font(.caption2.weight(.semibold))
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(ADEColor.textSecondary)
+
+      if controls.canShowMore {
+        Button(action: onShowMore) {
+          Label("Show more", systemImage: "chevron.down")
+            .labelStyle(.titleAndIcon)
+            .font(.caption2.weight(.semibold))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.accent)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Assistant response preview. \(controls.visibleLineCount) of \(controls.totalLineCount) lines shown.")
   }
 }

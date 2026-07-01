@@ -4,6 +4,7 @@ import AVKit
 
 
 let workDateFormatter = ISO8601DateFormatter()
+private let workRootBottomTabBarScrollMargin: CGFloat = 150
 
 func resolvedWorkArchivedSessionIds(
   localStorage: String,
@@ -21,6 +22,7 @@ func resolvedWorkArchivedSessionIds(
 }
 
 struct WorkSessionRoute: Hashable {
+  let openId: UUID = UUID()
   let sessionId: String
   var openingPrompt: String? = nil
 }
@@ -34,6 +36,8 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let sessions: [TerminalSessionSummary]
   let chatSummaries: [String: AgentChatSessionSummary]
   let lanes: [LaneSummary]
+  let pullRequests: [PullRequestListItem]
+  let githubPrs: [GitHubPrListItem]
   let optimisticSessions: [String: TerminalSessionSummary]
   let selectedLaneId: String
   let selectedStatus: WorkSessionStatusFilter
@@ -41,23 +45,6 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let searchOutputRevision: Int?
   let archivedSessionIdsStorage: String
   let sessionOrganizationRaw: String
-}
-
-final class WorkRootTranscriptCache {
-  /// Reference cache by design: live transcript prefetches should not repaint
-  /// the Work list. Opening a session mutates `path`, which re-evaluates the
-  /// destination closure and reads the latest storage for `initialTranscript`.
-  private var storage: [String: [WorkChatEnvelope]] = [:]
-
-  subscript(sessionId: String) -> [WorkChatEnvelope]? {
-    get { storage[sessionId] }
-    set { storage[sessionId] = newValue }
-  }
-
-  func prune(keeping sessionIds: Set<String>) {
-    guard storage.keys.contains(where: { !sessionIds.contains($0) }) else { return }
-    storage = storage.filter { sessionIds.contains($0.key) }
-  }
 }
 
 struct WorkRootScreen: View {
@@ -77,7 +64,6 @@ struct WorkRootScreen: View {
   /// lane with its PR status next to the lane name. Combined with
   /// `syncService.laneGithubPrItems` for PRs opened outside ADE.
   @State var pullRequests: [PullRequestListItem] = []
-  @State var transcriptCache = WorkRootTranscriptCache()
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
   @State var sessionPresentationRebuildGeneration = 0
@@ -134,18 +120,18 @@ struct WorkRootScreen: View {
   }
 
   var laneById: [String: LaneSummary] {
-    Dictionary(lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+    sessionPresentation.laneById
+  }
+
+  var workOrderedLanes: [LaneSummary] {
+    sessionPresentation.workOrderedLanes
   }
 
   /// PR status tag per lane id, merging ADE-mapped PRs with branch-matched
   /// GitHub PRs (same resolution the Lanes tab uses), so the Work session rows
   /// can show a minimal PR indicator beside the lane name.
   var lanePrTagsByLaneId: [String: LanePrTag] {
-    lanePrTagByLaneId(
-      lanes: lanes,
-      pullRequests: pullRequests,
-      githubPrs: syncService.laneGithubPrItems
-    )
+    sessionPresentation.lanePrTagsByLaneId
   }
 
   var mergedSessions: [TerminalSessionSummary] {
@@ -232,11 +218,14 @@ struct WorkRootScreen: View {
     isTabActive && path.isEmpty
   }
 
-  var sessionPresentationTaskKey: WorkRootSessionPresentationTaskKey {
-    WorkRootSessionPresentationTaskKey(
+  var sessionPresentationTaskKey: WorkRootSessionPresentationTaskKey? {
+    guard isWorkRootActive else { return nil }
+    return WorkRootSessionPresentationTaskKey(
       sessions: sessions,
       chatSummaries: chatSummaries,
       lanes: lanes,
+      pullRequests: pullRequests,
+      githubPrs: syncService.laneGithubPrItems,
       optimisticSessions: optimisticSessions,
       selectedLaneId: selectedLaneId,
       selectedStatus: selectedStatus,
@@ -292,7 +281,7 @@ struct WorkRootScreen: View {
             selectedStatus: selectedStatusBinding,
             organization: sessionOrganizationBinding,
             filterOpen: $filterPanelOpen,
-            lanes: lanes,
+            lanes: workOrderedLanes,
             liveCount: globalLiveSessionCount,
             needsInputCount: globalNeedsInputCount,
             isLive: isLive,
@@ -342,10 +331,17 @@ struct WorkRootScreen: View {
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           } else {
+            let rowLaneById = laneById
+            let rowPrTagsByLaneId = lanePrTagsByLaneId
+            let rowArchivedSessionIds = archivedSessionIds
+            let rowCollapsedSectionIds = collapsedSectionIds
+            let rowTopLevelDisplaySessionIds = sessionPresentation.topLevelDisplaySessionIds
+            let rowChildGroupsByParentId = sessionPresentation.childGroupsByParentId
+
             ForEach(sessionGroups) { group in
               WorkSidebarSectionHeader(
                 group: group,
-                collapsed: collapsedSectionIds.contains(group.id),
+                collapsed: rowCollapsedSectionIds.contains(group.id),
                 onToggle: {
                   withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
                     toggleCollapsed(group.id)
@@ -356,14 +352,14 @@ struct WorkRootScreen: View {
               .listRowSeparator(.hidden)
               .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
 
-              if !collapsedSectionIds.contains(group.id) {
-                ForEach(group.sessions) { session in
+              if !rowCollapsedSectionIds.contains(group.id) {
+                ForEach(group.sessions.filter { rowTopLevelDisplaySessionIds.contains($0.id) }) { session in
                   WorkSessionListRow(
                     session: session,
-                    lane: laneById[session.laneId],
-                    pullRequest: lanePrTagsByLaneId[session.laneId],
+                    lane: rowLaneById[session.laneId],
+                    pullRequest: rowPrTagsByLaneId[session.laneId],
                     chatSummary: chatSummaries[session.id],
-                    isArchived: archivedSessionIds.contains(session.id),
+                    isArchived: rowArchivedSessionIds.contains(session.id),
                     transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
                     selectedSessionId: $selectedSessionTransitionId,
                     isSelecting: isSelecting,
@@ -383,17 +379,64 @@ struct WorkRootScreen: View {
                   .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
                   .listRowBackground(Color.clear)
                   .listRowSeparator(.hidden)
+
+                  if let childGroup = rowChildGroupsByParentId[session.id] {
+                    WorkChildShellSection(
+                      group: childGroup,
+                      collapsed: rowCollapsedSectionIds.contains(childGroup.collapsedSectionId),
+                      onToggle: {
+                        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+                          toggleCollapsed(childGroup.collapsedSectionId)
+                        }
+                      }
+                    ) {
+                      ForEach(childGroup.children) { child in
+                        WorkSessionListRow(
+                          session: child,
+                          lane: rowLaneById[child.laneId],
+                          pullRequest: rowPrTagsByLaneId[child.laneId],
+                          chatSummary: chatSummaries[child.id],
+                          isArchived: rowArchivedSessionIds.contains(child.id),
+                          transitionNamespace: nil,
+                          compact: true,
+                          selectedSessionId: $selectedSessionTransitionId,
+                          isSelecting: isSelecting,
+                          isChecked: selectedSessionIds.contains(child.id),
+                          onLongPressSelect: startSelection,
+                          onToggleSelect: toggleSelection,
+                          onOpen: openSession,
+                          onPin: togglePin,
+                          onRename: beginRename,
+                          onStopRuntime: { session in stopRuntimeTarget = session },
+                          onDelete: deleteChatSession,
+                          onCopyId: copySessionId,
+                          onCopyDeepLink: copySessionDeepLink,
+                          onGoToLane: goToLane
+                        )
+                        .id(child.id)
+                      }
+                    }
+                    .listRowInsets(EdgeInsets(top: 0, leading: 30, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+                  }
                 }
               }
             }
           }
         }
+
+        Color.clear
+          .frame(height: workRootBottomTabBarScrollMargin)
+          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
       }
       .listStyle(.plain)
       .listSectionSpacing(.compact)
       .scrollContentBackground(.hidden)
       .scrollDismissesKeyboard(.interactively)
-      .contentMargins(.bottom, 72, for: .scrollContent)
+      .contentMargins(.bottom, workRootBottomTabBarScrollMargin, for: .scrollContent)
       .adeScreenBackground()
       .adeNavigationGlass()
       .navigationTitle("")
@@ -491,8 +534,9 @@ struct WorkRootScreen: View {
         let now = Date()
         if !sessions.isEmpty {
           let elapsed = now.timeIntervalSince(lastWorkLocalProjectionReload)
-          if elapsed < 0.35 {
-            try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+          let minimumProjectionReloadInterval = syncService.prefersReducedSyncLoad ? 1.2 : 0.75
+          if elapsed < minimumProjectionReloadInterval {
+            try? await Task.sleep(for: .milliseconds(max(1, Int((minimumProjectionReloadInterval - elapsed) * 1_000))))
             guard !Task.isCancelled, workProjectionReloadKey == revision else { return }
           }
         }
@@ -502,11 +546,13 @@ struct WorkRootScreen: View {
         lastWorkProjectionReloadRevision = revision
       }
       .task(id: sessionPresentationTaskKey) {
+        guard sessionPresentationTaskKey != nil else {
+          sessionPresentationRebuildTask?.cancel()
+          sessionPresentationRebuildTask = nil
+          return
+        }
         scheduleSessionPresentationRebuild()
         await hydrateSearchOutputBuffersIfNeeded()
-      }
-      .task(id: pollingKey) {
-        await pollRunningChats()
       }
       .task(id: workSessionNavigationRequestKey) {
         guard isTabActive, workSessionNavigationRequestKey != nil else { return }
@@ -535,18 +581,20 @@ struct WorkRootScreen: View {
           initialOpeningPrompt: route.openingPrompt,
           initialSession: initialSession,
           initialChatSummary: chatSummaries[route.sessionId],
-          initialTranscript: transcriptCache[route.sessionId],
+          initialTranscript: nil,
           transitionNamespace: routeTransitionNamespace,
           isLive: isLive,
           navigationChrome: .pushedDetail,
-          lanes: lanes
+          lanes: workOrderedLanes
         )
+        .equatable()
+        .id(route.openId)
         .environmentObject(syncService)
         .environmentObject(dictationController)
       }
       .navigationDestination(for: WorkNewChatRoute.self) { route in
         WorkNewChatScreen(
-          lanes: lanes,
+          lanes: workOrderedLanes,
           preferredLaneId: route.preferredLaneId,
           onStarted: { summary, opener in
             let sessionId = summary.sessionId
@@ -630,14 +678,6 @@ struct WorkRootScreen: View {
         }
       }
     )
-  }
-
-  var pollingKey: String {
-    guard isWorkRootActive else { return "paused" }
-    let ids = liveChatSessions.map(\.id).sorted().joined(separator: ",")
-    // Intentionally omit global DB revision: it changes constantly during host DB sync and was
-    // restarting this poll loop while the list `.task(id:)` also reloaded sessions every tick.
-    return "\(isLive)-\(ids)"
   }
 
   func clearWorkFilters() {

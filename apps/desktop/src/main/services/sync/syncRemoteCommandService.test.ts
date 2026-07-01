@@ -90,6 +90,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "chat.create",
   "chat.getSummary",
   "chat.getTranscript",
+  "chat.getChatEventHistory",
   "chat.send",
   "chat.interrupt",
   "chat.steer",

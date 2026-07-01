@@ -569,6 +569,7 @@ struct PRsTabView: View {
   @ViewBuilder
   private var prsInlineTopBar: some View {
     HStack(alignment: .center, spacing: 12) {
+      ADEHubBackButton()
       HStack(alignment: .firstTextBaseline, spacing: 8) {
         Text("PRs")
           .font(.system(size: 28, weight: .bold, design: .rounded))
@@ -659,9 +660,8 @@ struct PRsTabView: View {
         .disabled(!canCreatePr)
         .opacity(canCreatePr ? 1 : 0.4)
 
-        // Global triad (laptop/grid/bell) — kept in PRs tab for parity with
-        // every other tab. The user doesn't have to context-switch tabs to
-        // reach connection status, project home, or attention.
+        // Keep the shared attention control in the PRs tab so alerts remain
+        // reachable without switching tabs.
         ADERootToolbarControls(scopeKey: "PRs")
       }
     }

@@ -867,6 +867,51 @@ func buildWorkToolCards(
   return orderedIds.compactMap { cards[$0] }
 }
 
+func buildWorkMobileTimelineToolCards(
+  from transcript: [WorkChatEnvelope],
+  suppressedPendingItemIds: Set<String> = []
+) -> [WorkToolCardModel] {
+  var cards: [String: WorkToolCardModel] = [:]
+  var orderedIds: [String] = []
+
+  for envelope in transcript {
+    switch envelope.event {
+    case .toolCall(let tool, let argsText, let itemId, _, _):
+      guard isQuestionInputToolName(tool),
+            !suppressedPendingItemIds.contains(itemId),
+            pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) == nil
+      else { continue }
+      if cards[itemId] == nil {
+        orderedIds.append(itemId)
+      }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: tool,
+        status: .running,
+        startedAt: envelope.timestamp,
+        completedAt: nil,
+        argsText: nonEmpty(argsText),
+        resultText: cards[itemId]?.resultText
+      )
+    case .toolResult(let tool, let resultText, let itemId, _, _, let status):
+      guard isQuestionInputToolName(tool), let existing = cards[itemId] else { continue }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: existing.toolName,
+        status: status,
+        startedAt: existing.startedAt,
+        completedAt: envelope.timestamp,
+        argsText: existing.argsText,
+        resultText: nonEmpty(resultText)
+      )
+    default:
+      continue
+    }
+  }
+
+  return orderedIds.compactMap { cards[$0] }
+}
+
 func parseANSISegments(_ input: String) -> [ANSISegment] {
   var segments: [ANSISegment] = []
   var buffer = ""

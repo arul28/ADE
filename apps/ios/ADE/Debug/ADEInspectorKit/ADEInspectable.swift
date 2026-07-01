@@ -53,6 +53,19 @@ private struct ADEInspectorSnapshot: Codable, Equatable {
   let elements: [ADEInspectorElementSnapshot]
 }
 
+private enum ADEInspectorRuntime {
+  static let snapshotsEnabled: Bool = {
+    let environment = ProcessInfo.processInfo.environment
+    if let explicit = environment["ADE_INSPECTOR_ENABLED"]?.lowercased() {
+      return explicit == "1" || explicit == "true" || explicit == "yes"
+    }
+    if environment["ADE_INSPECTOR_SESSION_ID"] != nil || environment["ADE_INSPECTOR_MODE"] != nil {
+      return true
+    }
+    return ProcessInfo.processInfo.arguments.contains("--ade-inspector-mode")
+  }()
+}
+
 private actor ADEInspectorSnapshotWriter {
   static let shared = ADEInspectorSnapshotWriter()
 
@@ -62,12 +75,12 @@ private actor ADEInspectorSnapshotWriter {
     return encoder
   }()
 
-  private var lastData: Data?
+  private var lastSignature: String?
 
-  func write(_ snapshot: ADEInspectorSnapshot) async {
+  func write(_ snapshot: ADEInspectorSnapshot, signature: String) async {
+    guard signature != lastSignature else { return }
     guard let data = try? encoder.encode(snapshot) else { return }
-    guard data != lastData else { return }
-    lastData = data
+    lastSignature = signature
 
     let documentsDirectory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
     guard let documentsDirectory else { return }
@@ -76,8 +89,10 @@ private actor ADEInspectorSnapshotWriter {
   }
 }
 
+private let adeInspectorTimestampFormatter = ISO8601DateFormatter()
+
 private func adeInspectorIsoTimestamp() -> String {
-  ISO8601DateFormatter().string(from: Date())
+  adeInspectorTimestampFormatter.string(from: Date())
 }
 
 private func adeInspectorElementId(payload: ADEInspectablePayload) -> String {
@@ -87,6 +102,35 @@ private func adeInspectorElementId(payload: ADEInspectablePayload) -> String {
     .joined(separator: "&")
   let keySegment = payload.key.map { "|key=\($0)" } ?? ""
   return "\(payload.componentId)|\(payload.file)|\(payload.line)\(keySegment)|\(metadata)"
+}
+
+private func adeInspectorRoundedPixel(_ value: Double) -> Int {
+  Int(value.rounded())
+}
+
+private func adeInspectorSnapshotSignature(_ snapshot: ADEInspectorSnapshot) -> String {
+  let screen = snapshot.screen
+  let screenSignature = [
+    adeInspectorRoundedPixel(screen.width * screen.scale),
+    adeInspectorRoundedPixel(screen.height * screen.scale),
+    adeInspectorRoundedPixel(screen.scale * 100)
+  ]
+    .map(String.init)
+    .joined(separator: "x")
+  let elementSignature = snapshot.elements
+    .map { element in
+      let frame = element.pixelFrame
+      return [
+        element.id,
+        String(adeInspectorRoundedPixel(frame.x)),
+        String(adeInspectorRoundedPixel(frame.y)),
+        String(adeInspectorRoundedPixel(frame.width)),
+        String(adeInspectorRoundedPixel(frame.height))
+      ]
+        .joined(separator: ":")
+    }
+    .joined(separator: "|")
+  return "\(screenSignature)|\(elementSignature)"
 }
 
 private struct ADEInspectorSnapshotEmitter: View {
@@ -142,21 +186,13 @@ private struct ADEInspectorSnapshotEmitter: View {
     )
   }
 
-  private var snapshotIdentity: String {
-    snapshot.elements
-      .map { element in
-        let frame = element.pixelFrame
-        return "\(element.id):\(frame.x):\(frame.y):\(frame.width):\(frame.height)"
-      }
-      .joined(separator: "|")
-  }
-
   var body: some View {
     let currentSnapshot = snapshot
+    let signature = adeInspectorSnapshotSignature(currentSnapshot)
     Color.clear
       .allowsHitTesting(false)
-      .task(id: snapshotIdentity) {
-        await ADEInspectorSnapshotWriter.shared.write(currentSnapshot)
+      .task(id: signature) {
+        await ADEInspectorSnapshotWriter.shared.write(currentSnapshot, signature: signature)
       }
   }
 }
@@ -164,13 +200,17 @@ private struct ADEInspectorSnapshotEmitter: View {
 private struct ADEInspectorHostModifier: ViewModifier {
   func body(content: Content) -> some View {
 #if DEBUG
-    content
-      .overlayPreferenceValue(ADEInspectablePreferenceKey.self) { items in
-        GeometryReader { proxy in
-          ADEInspectorSnapshotEmitter(items: items, proxy: proxy)
+    if ADEInspectorRuntime.snapshotsEnabled {
+      content
+        .overlayPreferenceValue(ADEInspectablePreferenceKey.self) { items in
+          GeometryReader { proxy in
+            ADEInspectorSnapshotEmitter(items: items, proxy: proxy)
+          }
+          .allowsHitTesting(false)
         }
-        .allowsHitTesting(false)
-      }
+    } else {
+      content
+    }
 #else
     content
 #endif

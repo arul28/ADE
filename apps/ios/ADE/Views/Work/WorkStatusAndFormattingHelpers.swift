@@ -23,6 +23,11 @@ func isRunOwnedSession(_ session: TerminalSessionSummary) -> Bool {
 func isStoppableRuntimeSession(_ session: TerminalSessionSummary, summary: AgentChatSessionSummary? = nil) -> Bool {
   guard !isChatSession(session) else { return false }
   let status = normalizedWorkChatSessionStatus(session: session, summary: summary)
+  return isStoppableRuntimeStatus(session, status: status)
+}
+
+func isStoppableRuntimeStatus(_ session: TerminalSessionSummary, status: String) -> Bool {
+  guard !isChatSession(session) else { return false }
   return status == "active" || status == "awaiting-input" || status == "idle"
 }
 
@@ -54,6 +59,131 @@ func workChatComposerPlaceholder(pendingInputCount: Int, sessionStatus: String) 
     return "Answer the prompt above..."
   }
   return "Type to vibecode..."
+}
+
+func workChatComposerPlaceholder(pendingInputs: [WorkPendingInputItem], sessionStatus: String) -> String {
+  if workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus) {
+    return "Waiting for prompt details..."
+  }
+  if pendingInputs.count == 1,
+     case .planApproval = pendingInputs[0] {
+    return "Review the plan above..."
+  }
+  if workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus) {
+    return "Answer the prompt above..."
+  }
+  return "Type to vibecode..."
+}
+
+func workMobileShowsToolCardInTimeline(_ card: WorkToolCardModel) -> Bool {
+  isQuestionInputToolName(card.toolName)
+}
+
+struct WorkToolActivityPresentation: Equatable {
+  let label: String
+  let detail: String?
+}
+
+struct WorkSubagentCapability: Equatable {
+  let canList: Bool
+  let canViewFullTranscript: Bool
+
+  static let none = WorkSubagentCapability(canList: false, canViewFullTranscript: false)
+}
+
+func workResolveSubagentCapability(provider: String?) -> WorkSubagentCapability {
+  switch providerFamilyKey(provider ?? "") {
+  case "codex", "claude", "opencode":
+    return WorkSubagentCapability(canList: true, canViewFullTranscript: true)
+  case "cursor", "droid", "factory":
+    return WorkSubagentCapability(canList: true, canViewFullTranscript: false)
+  default:
+    return .none
+  }
+}
+
+func workSubagentRunningCount(_ snapshots: [WorkSubagentSnapshot]) -> Int {
+  snapshots.filter { $0.status == .running }.count
+}
+
+func workSubagentMeaningfulName(_ snapshot: WorkSubagentSnapshot) -> String {
+  let genericAgentTypes: Set<String> = ["opencode-subagent", "subagent"]
+  let agentType = snapshot.agentType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !agentType.isEmpty, !genericAgentTypes.contains(agentType.lowercased()) {
+    return agentType
+  }
+  let description = snapshot.description.trimmingCharacters(in: .whitespacesAndNewlines)
+  if !description.isEmpty, description.lowercased() != "subagent" {
+    return description
+  }
+  if let agentId = snapshot.agentId?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !agentId.isEmpty {
+    return agentId
+  }
+  return snapshot.taskId
+}
+
+func workSubagentSelection(from snapshot: WorkSubagentSnapshot) -> WorkSubagentSelection {
+  WorkSubagentSelection(
+    taskId: snapshot.taskId,
+    agentId: snapshot.agentId,
+    name: workSubagentMeaningfulName(snapshot),
+    status: snapshot.status,
+    background: snapshot.background
+  )
+}
+
+func workToolActivityPresentation(tool: String, argsText: String?) -> WorkToolActivityPresentation {
+  let normalized = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let label: String
+  if normalized.contains("grep") || normalized.contains("search") {
+    label = "Grepping"
+  } else if normalized.contains("read") {
+    label = "Reading"
+  } else if normalized.contains("write") {
+    label = "Writing"
+  } else if normalized.contains("edit") {
+    label = "Editing"
+  } else if normalized.contains("bash") || normalized.contains("shell") || normalized.contains("command") {
+    label = "Running command"
+  } else if normalized.contains("web") || normalized.contains("browser") {
+    label = "Browsing"
+  } else if normalized.contains("list") || normalized.contains("ls") {
+    label = "Listing"
+  } else {
+    let display = toolDisplayName(tool).trimmingCharacters(in: .whitespacesAndNewlines)
+    label = display.isEmpty || display == "Tool" ? "Working" : display
+  }
+  return WorkToolActivityPresentation(
+    label: label,
+    detail: workToolArgPreview(tool: tool, argsText: argsText)
+  )
+}
+
+func workToolArgPreview(tool: String, argsText: String?) -> String? {
+  guard let argsText else { return nil }
+  let trimmed = argsText.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return nil }
+
+  if let object = workJSONObject(from: trimmed) {
+    let keys = ["file_path", "path", "pattern", "query", "command", "cmd", "url"]
+    for key in keys {
+      if let value = object[key] as? String,
+         let text = nonEmptyWorkToolArgPreview(value) {
+        return text
+      }
+    }
+  }
+
+  let firstLine = trimmed.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? trimmed
+  return nonEmptyWorkToolArgPreview(firstLine)
+}
+
+private func nonEmptyWorkToolArgPreview(_ value: String) -> String? {
+  let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmed.isEmpty else { return nil }
+  if trimmed.count <= 72 { return trimmed }
+  return "...\(trimmed.suffix(69))"
 }
 
 func terminalSessionHasResumeTarget(_ session: TerminalSessionSummary) -> Bool {
@@ -342,11 +472,7 @@ func normalizedWorkChatSessionStatus(session: TerminalSessionSummary?, summary: 
 private let workChatStaleAfterSeconds: TimeInterval = 7 * 24 * 60 * 60
 
 private func workChatLastActivityDate(_ raw: String) -> Date? {
-  let iso = ISO8601DateFormatter()
-  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  if let d = iso.date(from: raw) { return d }
-  iso.formatOptions = [.withInternetDateTime]
-  return iso.date(from: raw)
+  workParsedDate(raw)
 }
 
 private func rawWorkChatSessionStatus(session: TerminalSessionSummary?, summary: AgentChatSessionSummary?) -> String {
@@ -831,12 +957,34 @@ private let workDateFormatterFractional: ISO8601DateFormatter = {
   return formatter
 }()
 
+private final class WorkParsedDateCacheBox: NSObject {
+  let date: Date
+
+  init(_ date: Date) {
+    self.date = date
+  }
+}
+
+private let workParsedDateCache: NSCache<NSString, WorkParsedDateCacheBox> = {
+  let cache = NSCache<NSString, WorkParsedDateCacheBox>()
+  cache.countLimit = 2_048
+  return cache
+}()
+
 func workParsedDate(_ value: String?) -> Date? {
   guard let value, !value.isEmpty else { return nil }
+  let cacheKey = value as NSString
+  if let cached = workParsedDateCache.object(forKey: cacheKey) {
+    return cached.date
+  }
   // Sync hosts emit timestamps with fractional seconds (`...095Z`); the default
   // ISO8601DateFormatter rejects those, leaving `relativeTimestamp` to fall back
   // to the raw ISO string and leaking it into the UI.
-  return workDateFormatterFractional.date(from: value) ?? workDateFormatter.date(from: value)
+  guard let date = workDateFormatterFractional.date(from: value) ?? workDateFormatter.date(from: value) else {
+    return nil
+  }
+  workParsedDateCache.setObject(WorkParsedDateCacheBox(date), forKey: cacheKey)
+  return date
 }
 
 func formattedSessionDuration(startedAt: String, endedAt: String?) -> String {

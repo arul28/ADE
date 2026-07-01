@@ -122,21 +122,24 @@ struct WorkChatMessageBubble: View {
     )
   }
 
-  /// Desktop's `--chat-user-bubble-gradient`: a 135° sweep that starts at the
-  /// (slightly lightened) provider accent, eases into #7c3aed (violet), then
-  /// settles on #4c1d95 (deep violet). Replicated with explicit color mixes so
-  /// the per-runtime accent still tints the bubble while every message shares
-  /// the same violet base.
-  private var userBubbleGradient: LinearGradient {
-    LinearGradient(
-      stops: [
-        .init(color: workMixColors(accent, Color.white, 0.08), location: 0.0),
-        .init(color: workMixColors(accent, workViolet, 0.40), location: 0.5),
-        .init(color: workMixColors(accent, workDeepViolet, 0.42), location: 1.0),
-      ],
-      startPoint: .topLeading,
-      endPoint: .bottomTrailing
-    )
+  private var isCodexChat: Bool {
+    let provider = (message.turnProvider ?? sessionProvider ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    let model = (message.turnModelId ?? sessionModelId ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    return provider == "codex"
+      || provider == "openai"
+      || model.contains("codex")
+      || model.hasPrefix("gpt-")
+      || model.hasPrefix("openai/gpt-")
+  }
+
+  private var userBubbleFill: Color {
+    isCodexChat
+      ? workMixColors(accent, workViolet, 0.44)
+      : workMixColors(accent, workViolet, 0.36)
   }
 
   private var userBubbleBorder: Color {
@@ -154,16 +157,23 @@ struct WorkChatMessageBubble: View {
     // reads like a document. The truncation / "Show more" affordance stays but
     // unstyled so it doesn't reintroduce a boxed feel.
     let preview = assistantPreview
+    let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(preview.text)
+    let maxLineBudget = workAssistantMessageMaxLineBudget(for: message.markdown)
 
     return VStack(alignment: .leading, spacing: 10) {
       if preview.isTruncated {
-        Text(preview.text)
-          .font(.body)
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineSpacing(5)
-          .tint(ADEColor.accent)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .textSelection(.enabled)
+        if usesMonospacedPreview {
+          WorkAssistantMonospacedPreview(text: preview.text)
+            .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
+        } else {
+          WorkMarkdownRenderer(
+            markdown: preview.text,
+            streamingCacheKey: isStreaming ? message.id : nil
+          )
+            .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
+        }
+      } else if usesMonospacedPreview {
+        WorkAssistantMonospacedPreview(text: preview.text)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       } else {
         WorkMarkdownRenderer(
@@ -176,9 +186,9 @@ struct WorkChatMessageBubble: View {
 
       if preview.isTruncated {
         HStack(spacing: 12) {
-          Text("\(preview.visibleLineCount) of \(preview.totalLineCount) lines")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
+              Text(workAssistantMessagePreviewSummaryText(preview))
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
 
           Spacer(minLength: 0)
 
@@ -192,11 +202,12 @@ struct WorkChatMessageBubble: View {
           .buttonStyle(.plain)
           .foregroundStyle(ADEColor.textSecondary)
 
-          if assistantLineBudget < min(preview.totalLineCount, workAssistantMessageMaxLineBudget) {
+          if preview.isTruncated,
+             assistantLineBudget < maxLineBudget {
             Button {
               assistantLineBudget = min(
                 assistantLineBudget + workAssistantMessageLineBudgetStep,
-                workAssistantMessageMaxLineBudget
+                maxLineBudget
               )
             } label: {
               Label("Show more", systemImage: "chevron.down")
@@ -269,24 +280,11 @@ struct WorkChatMessageBubble: View {
           }
           .padding(.horizontal, 16)
           .padding(.vertical, 8)
-          .background(userBubbleGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-          .overlay(
-            // Subtle inset top highlight — the desktop bubble's soft sheen.
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-              .fill(
-                LinearGradient(
-                  colors: [Color.white.opacity(0.14), .clear],
-                  startPoint: .top,
-                  endPoint: .center
-                )
-              )
-              .allowsHitTesting(false)
-          )
+          .background(userBubbleFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
               .stroke(userBubbleBorder, lineWidth: 0.8)
           )
-          .shadow(color: accent.opacity(0.34), radius: 12, y: 5)
           .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
           .fixedSize(horizontal: false, vertical: true)
         }
@@ -321,7 +319,8 @@ struct WorkChatMessageBubble: View {
     return workAssistantMessagePreview(
       message.markdown,
       lineBudget: assistantLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget)
+      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget),
+      anchor: .head
     )
   }
 
@@ -380,6 +379,23 @@ struct WorkChatMessageBubble: View {
   }
 }
 
+struct WorkAssistantMonospacedPreview: View {
+  let text: String
+
+  var body: some View {
+    Text(text)
+      .font(.system(.caption, design: .monospaced))
+      .foregroundStyle(ADEColor.textPrimary)
+      .lineSpacing(3)
+      .multilineTextAlignment(.leading)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .textSelection(.enabled)
+      .padding(.vertical, 2)
+    .tint(ADEColor.accent)
+  }
+}
+
 /// Linearly blend two colors in sRGB. `fraction` is the weight of `other`
 /// (0 → all `base`, 1 → all `other`), matching CSS `color-mix` semantics where
 /// `mix(base X%, other …)` means `other` gets `1 - X` weight. Resolves both
@@ -403,36 +419,53 @@ func workMixColors(_ base: Color, _ other: Color, _ fraction: Double) -> Color {
 let workAssistantMessageInitialLineBudget = 48
 let workAssistantMessageLineBudgetStep = 48
 let workAssistantMessageMaxLineBudget = 192
-let workAssistantMessageInitialCharacterBudget = 4_000
-let workAssistantMessageCharacterBudgetStep = 4_000
+let workAssistantMessageInitialCharacterBudget = 1_600
+let workAssistantMessageCharacterBudgetStep = 2_400
+let workAssistantMessageSmallFullCharacterBudget = 6_000
+let workAssistantMessageTailFullLineBudget = 96
+let workAssistantMessageTailFullCharacterBudget = 12_000
+let workAssistantMessageWideInitialLineBudget = 24
+let workAssistantMessageWideMaxLineBudget = 96
 let workChatAccessibilityPreviewLimit = 800
+
+enum WorkAssistantMessagePreviewAnchor: Equatable {
+  case head
+  case tail
+}
 
 struct WorkAssistantMessagePreview: Equatable {
   let text: String
   let isTruncated: Bool
   let visibleLineCount: Int
   let totalLineCount: Int
+  let visibleCharacterCount: Int
+  let totalCharacterCount: Int
+  let anchor: WorkAssistantMessagePreviewAnchor
 }
 
 final class WorkAssistantPreviewCache {
   private struct Entry {
     let utf8Count: Int
-    let markdown: String
+    let textHash: Int
+    let anchor: WorkAssistantMessagePreviewAnchor
     let preview: WorkAssistantMessagePreview
   }
 
   private var entries: [String: Entry] = [:]
 
-  func preview(for message: WorkChatMessage) -> WorkAssistantMessagePreview {
+  func preview(for message: WorkChatMessage, anchor: WorkAssistantMessagePreviewAnchor = .head) -> WorkAssistantMessagePreview {
     let utf8Count = message.markdown.utf8.count
+    let textHash = message.markdown.hashValue
     if let entry = entries[message.id],
        entry.utf8Count == utf8Count,
-       entry.markdown == message.markdown {
+       entry.textHash == textHash,
+       entry.anchor == anchor,
+       entry.preview.anchor == anchor {
       return entry.preview
     }
 
-    let preview = workInitialAssistantMessagePreview(message.markdown)
-    entries[message.id] = Entry(utf8Count: utf8Count, markdown: message.markdown, preview: preview)
+    let preview = workInitialAssistantMessagePreview(message.markdown, anchor: anchor)
+    entries[message.id] = Entry(utf8Count: utf8Count, textHash: textHash, anchor: anchor, preview: preview)
     return preview
   }
 
@@ -441,11 +474,15 @@ final class WorkAssistantPreviewCache {
   }
 }
 
-func workInitialAssistantMessagePreview(_ markdown: String) -> WorkAssistantMessagePreview {
+func workInitialAssistantMessagePreview(
+  _ markdown: String,
+  anchor: WorkAssistantMessagePreviewAnchor = .head
+) -> WorkAssistantMessagePreview {
   workAssistantMessagePreview(
     markdown,
     lineBudget: workAssistantMessageInitialLineBudget,
-    characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
+    characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget),
+    anchor: anchor
   )
 }
 
@@ -457,22 +494,55 @@ func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int) -> Int {
 func workAssistantMessagePreview(
   _ markdown: String,
   lineBudget: Int,
-  characterBudget: Int
+  characterBudget: Int,
+  anchor: WorkAssistantMessagePreviewAnchor = .head
 ) -> WorkAssistantMessagePreview {
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
   guard !normalized.isEmpty else {
-    return WorkAssistantMessagePreview(text: markdown, isTruncated: false, visibleLineCount: 0, totalLineCount: 0)
+    return WorkAssistantMessagePreview(
+      text: markdown,
+      isTruncated: false,
+      visibleLineCount: 0,
+      totalLineCount: 0,
+      visibleCharacterCount: 0,
+      totalCharacterCount: 0,
+      anchor: anchor
+    )
   }
 
-  let clampedLineBudget = max(lineBudget, 1)
-  let clampedCharacterBudget = max(characterBudget, 256)
+  let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(normalized)
+  let clampedLineBudget = workAssistantMessageEffectiveLineBudget(
+    requestedLineBudget: max(lineBudget, 1),
+    usesMonospacedPreview: usesMonospacedPreview
+  )
+  let clampedCharacterBudget = max(
+    usesMonospacedPreview
+      ? min(characterBudget, workAssistantMessageWideCharacterBudget(forLineBudget: clampedLineBudget))
+      : characterBudget,
+    256
+  )
   let totalLineCount = workAssistantMessageLineCount(normalized)
-  if totalLineCount <= clampedLineBudget && normalized.count <= clampedCharacterBudget {
+  let totalCharacterCount = normalized.count
+  let smallFullCharacterBudget = max(clampedCharacterBudget, workAssistantMessageSmallFullCharacterBudget)
+  if totalLineCount <= clampedLineBudget && normalized.count <= smallFullCharacterBudget {
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
       visibleLineCount: totalLineCount,
-      totalLineCount: totalLineCount
+      totalLineCount: totalLineCount,
+      visibleCharacterCount: totalCharacterCount,
+      totalCharacterCount: totalCharacterCount,
+      anchor: anchor
+    )
+  }
+
+  if anchor == .tail {
+    return workAssistantMessageTailPreview(
+      normalized,
+      lineBudget: clampedLineBudget,
+      characterBudget: clampedCharacterBudget,
+      totalLineCount: totalLineCount,
+      totalCharacterCount: totalCharacterCount
     )
   }
 
@@ -514,11 +584,93 @@ func workAssistantMessagePreview(
     text: rendered,
     isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
     visibleLineCount: visibleLineCount,
-    totalLineCount: totalLineCount
+    totalLineCount: totalLineCount,
+    visibleCharacterCount: rendered.count,
+    totalCharacterCount: totalCharacterCount,
+    anchor: .head
   )
 }
 
-private func workAssistantMessageLineCount(_ text: String) -> Int {
+private func workAssistantMessageTailPreview(
+  _ normalized: String,
+  lineBudget: Int,
+  characterBudget: Int,
+  totalLineCount: Int,
+  totalCharacterCount: Int
+) -> WorkAssistantMessagePreview {
+  var segments: [Substring] = []
+  segments.reserveCapacity(min(lineBudget, 16))
+  var usedCharacters = 0
+  var visibleLineCount = 0
+  var lineEnd = normalized.endIndex
+
+  while lineEnd >= normalized.startIndex, visibleLineCount < lineBudget {
+    let lineStart = normalized[..<lineEnd]
+      .lastIndex(of: "\n")
+      .map { normalized.index(after: $0) }
+      ?? normalized.startIndex
+    let newlineCost = segments.isEmpty ? 0 : 1
+    let remaining = characterBudget - usedCharacters - newlineCost
+    guard remaining > 0 else { break }
+
+    let lineLength = normalized.distance(from: lineStart, to: lineEnd)
+    if lineLength > remaining {
+      let suffixStart = normalized.index(lineEnd, offsetBy: -remaining)
+      segments.append(normalized[suffixStart..<lineEnd])
+      usedCharacters = characterBudget
+      visibleLineCount += 1
+      break
+    }
+
+    segments.append(normalized[lineStart..<lineEnd])
+    usedCharacters += lineLength + newlineCost
+    visibleLineCount += 1
+
+    guard lineStart > normalized.startIndex else { break }
+    lineEnd = normalized.index(before: lineStart)
+  }
+
+  let rendered = segments.reversed().joined(separator: "\n")
+  return WorkAssistantMessagePreview(
+    text: rendered,
+    isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    visibleLineCount: visibleLineCount,
+    totalLineCount: totalLineCount,
+    visibleCharacterCount: rendered.count,
+    totalCharacterCount: totalCharacterCount,
+    anchor: .tail
+  )
+}
+
+func workAssistantMessageUsesMonospacedPreview(_ text: String) -> Bool {
+  workPreviewIsWireframe(text)
+}
+
+func workAssistantMessageMaxLineBudget(for text: String) -> Int {
+  workAssistantMessageUsesMonospacedPreview(text)
+    ? workAssistantMessageWideMaxLineBudget
+    : workAssistantMessageMaxLineBudget
+}
+
+private func workAssistantMessageEffectiveLineBudget(
+  requestedLineBudget: Int,
+  usesMonospacedPreview: Bool
+) -> Int {
+  guard usesMonospacedPreview else {
+    return requestedLineBudget
+  }
+  if requestedLineBudget <= workAssistantMessageInitialLineBudget {
+    return min(requestedLineBudget, workAssistantMessageWideInitialLineBudget)
+  }
+  return min(requestedLineBudget, workAssistantMessageWideMaxLineBudget)
+}
+
+private func workAssistantMessageWideCharacterBudget(forLineBudget lineBudget: Int) -> Int {
+  let extraSteps = max((lineBudget - workAssistantMessageWideInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
+  return workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+}
+
+func workAssistantMessageLineCount(_ text: String) -> Int {
   text.reduce(1) { count, character in
     character == "\n" ? count + 1 : count
   }
@@ -526,7 +678,7 @@ private func workAssistantMessageLineCount(_ text: String) -> Int {
 
 func workAssistantMessageAccessibilityLabel(_ preview: WorkAssistantMessagePreview) -> String {
   if preview.isTruncated {
-    return "Assistant response preview. \(preview.visibleLineCount) of \(preview.totalLineCount) lines shown."
+    return "Assistant response preview. \(workAssistantMessagePreviewSummaryText(preview)) shown."
   }
   let trimmed = preview.text.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !trimmed.isEmpty else {
@@ -536,6 +688,40 @@ func workAssistantMessageAccessibilityLabel(_ preview: WorkAssistantMessagePrevi
     return "Assistant response. \(trimmed)"
   }
   return "Assistant response preview. \(trimmed.prefix(500))"
+}
+
+func workAssistantMessagePreviewSummaryText(_ preview: WorkAssistantMessagePreview) -> String {
+  if preview.visibleLineCount < preview.totalLineCount {
+    switch preview.anchor {
+    case .head:
+      return "\(preview.visibleLineCount) of \(preview.totalLineCount) lines"
+    case .tail:
+      return "Latest \(preview.visibleLineCount) of \(preview.totalLineCount) lines"
+    }
+  }
+
+  if preview.visibleCharacterCount < preview.totalCharacterCount {
+    let visible = workAssistantCompactCount(preview.visibleCharacterCount)
+    let total = workAssistantCompactCount(preview.totalCharacterCount)
+    switch preview.anchor {
+    case .head:
+      return "\(visible) of \(total) characters"
+    case .tail:
+      return "Latest \(visible) of \(total) characters"
+    }
+  }
+
+  return "\(preview.totalLineCount) line\(preview.totalLineCount == 1 ? "" : "s")"
+}
+
+private func workAssistantCompactCount(_ count: Int) -> String {
+  if count >= 1_000_000 {
+    return String(format: "%.1fM", Double(count) / 1_000_000.0)
+  }
+  if count >= 1_000 {
+    return String(format: "%.1fK", Double(count) / 1_000.0)
+  }
+  return "\(count)"
 }
 
 func workChatAccessibilityPreview(_ markdown: String) -> String {
@@ -600,9 +786,41 @@ struct WorkTurnSeparatorView: View {
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
 
+  private var status: String {
+    marker.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private var completed: Bool {
+    status.isEmpty || status == "completed" || status == "complete" || status == "succeeded" || status == "success"
+  }
+
+  private var statusTint: Color {
+    status == "failed" ? ADEColor.danger : ADEColor.warning
+  }
+
+  private var accent: Color {
+    ADEColor.chatSurfaceAccent(modelId: marker.modelId, provider: marker.provider)
+  }
+
   var body: some View {
     HStack(spacing: 10) {
       hairline
+      content
+      hairline
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 8)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      completed
+        ? "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Worked for \(marker.workedDurationLabel)"
+        : "Turn \(status). \(marker.modelLabel). Worked for \(marker.workedDurationLabel)"
+    )
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    if completed {
       Text("\(workTurnSeparatorTimeLabel(marker.time)) · Worked for \(marker.workedDurationLabel)")
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
@@ -610,14 +828,42 @@ struct WorkTurnEndMarkerView: View {
         .minimumScaleFactor(0.9)
         .fixedSize(horizontal: true, vertical: false)
         .layoutPriority(1)
-      hairline
+    } else {
+      HStack(spacing: 6) {
+        runtimeGlyph
+        if !marker.modelLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          Text(marker.modelLabel)
+            .font(.caption2.weight(.semibold))
+        }
+        Text(status.uppercased())
+          .font(.caption2.weight(.semibold))
+          .tracking(0.5)
+        Text("·")
+          .opacity(0.42)
+        Text("Worked for \(marker.workedDurationLabel)")
+          .font(.caption2)
+      }
+      .foregroundStyle(statusTint.opacity(0.9))
+      .lineLimit(1)
+      .minimumScaleFactor(0.82)
+      .fixedSize(horizontal: true, vertical: false)
+      .layoutPriority(1)
     }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 8)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Worked for \(marker.workedDurationLabel)"
-    )
+  }
+
+  @ViewBuilder
+  private var runtimeGlyph: some View {
+    if let asset = providerAssetName(marker.provider) {
+      Image(asset)
+        .resizable()
+        .scaledToFit()
+        .frame(width: 11, height: 11)
+        .opacity(0.9)
+    } else {
+      Circle()
+        .fill(accent.opacity(0.75))
+        .frame(width: 5, height: 5)
+    }
   }
 
   private var hairline: some View {

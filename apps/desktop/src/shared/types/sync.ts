@@ -291,6 +291,93 @@ export type SyncProjectCatalogChunkPayload = {
   projects: SyncMobileProjectSummary[];
 };
 
+// ---------------------------------------------------------------------------
+// All-projects chat roster (mobile hub)
+//
+// A lightweight, machine-wide projection of every project's lanes + chat
+// sessions, so the mobile hub can render all projects' chats-grouped-by-lane at
+// once without activating each project. Sourced cheaply from disk (each
+// project's `<root>/.ade/ade.db` + `.ade/cache/chat-sessions/*.json`) for
+// un-booted projects, with live running/awaiting fidelity overlaid for any
+// project scope currently booted on the runtime. Transcripts are NOT included
+// here — they load on demand when a chat is opened (which activates that
+// project's full sync). Pushed over dedicated `roster_snapshot` / `roster_delta`
+// envelopes (subscribe handshake mirrors `chat_subscribe`); oversized snapshots
+// ride the generic `envelope_chunk` mechanism transparently.
+// ---------------------------------------------------------------------------
+
+/**
+ * Status of a roster chat row. For an un-booted project (no live runtime) the
+ * truthful states are `idle` / `ended` / `awaiting` (the last persisted to
+ * disk); `running` and live `awaiting` are only emitted for a booted scope.
+ */
+export type SyncRosterChatStatus = "running" | "awaiting" | "idle" | "ended" | "failed";
+
+export type SyncRosterChat = {
+  id: string; // sessionId
+  laneId: string;
+  /** Parent chat/session id for attached shell rows. Mirrors TerminalSessionSummary.chatSessionId. */
+  chatSessionId?: string | null;
+  title?: string | null;
+  provider?: string | null;
+  model?: string | null;
+  toolType?: string | null; // distinguishes chat vs CLI rows
+  status: SyncRosterChatStatus;
+  awaitingInput?: boolean;
+  pinned?: boolean;
+  archived?: boolean;
+  lastActivityAt?: string | null;
+  preview?: string | null; // last-output preview, hard-truncated (~120 chars)
+};
+
+export type SyncRosterLane = {
+  id: string;
+  name: string;
+  color?: string | null;
+  icon?: string | null;
+  laneType?: string | null;
+  branchRef?: string | null;
+};
+
+export type SyncRosterProject = {
+  projectId: string;
+  rootPath?: string | null;
+  displayName: string;
+  iconDataUrl?: string | null;
+  lastOpenedAt?: string | null;
+  /** true ⇒ live running/awaiting fidelity; false ⇒ disk-derived status only. */
+  booted: boolean;
+  runningCount: number;
+  /** awaiting-input + failed sessions — drives the hub attention bubbles. */
+  attentionCount: number;
+  lanes: SyncRosterLane[];
+  chats: SyncRosterChat[];
+};
+
+/** Full roster snapshot — sent on subscribe and on resync. */
+export type SyncRosterSnapshotPayload = {
+  seq: number;
+  projects: SyncRosterProject[];
+};
+
+/**
+ * Incremental roster update. `changed` upserts whole project entries (per-project
+ * delta granularity — simple and cheap since a project's row set is small);
+ * `removed` lists projectIds no longer present.
+ */
+export type SyncRosterDeltaPayload = {
+  seq: number;
+  changed?: SyncRosterProject[];
+  removed?: string[];
+};
+
+export type SyncRosterSubscribePayload = {
+  /** Last seq the client holds; lets the host send a delta instead of a snapshot. */
+  sinceSeq?: number | null;
+};
+
+export type SyncRosterUnsubscribePayload = Record<string, never>;
+
 export type SyncProjectSwitchRequestPayload = {
   projectId?: string | null;
   rootPath?: string | null;
@@ -746,6 +833,9 @@ export type SyncRemoteCommandAction =
   | "chat.listSessions"
   | "chat.getSummary"
   | "chat.getTranscript"
+  | "chat.getChatEventHistory"
+  | "chat.listSubagents"
+  | "chat.getSubagentTranscript"
   | "chat.create"
   | "chat.send"
   | "chat.interrupt"
@@ -1003,6 +1093,10 @@ export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe"
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
 export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", SyncBrainStatusPayload>;
+export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
+export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
+export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
+export type SyncRosterDeltaEnvelope = SyncEnvelopeWithPayload<"roster_delta", SyncRosterDeltaPayload>;
 export type SyncCommandEnvelope = SyncEnvelopeWithPayload<"command", SyncCommandPayload>;
 export type SyncCommandAckEnvelope = SyncEnvelopeWithPayload<"command_ack", SyncCommandAckPayload>;
 export type SyncCommandResultEnvelope = SyncEnvelopeWithPayload<"command_result", SyncCommandResultPayload>;
@@ -1062,6 +1156,10 @@ export type SyncEnvelope =
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
   | SyncBrainStatusEnvelope
+  | SyncRosterSubscribeEnvelope
+  | SyncRosterUnsubscribeEnvelope
+  | SyncRosterSnapshotEnvelope
+  | SyncRosterDeltaEnvelope
   | SyncCommandEnvelope
   | SyncCommandAckEnvelope
   | SyncCommandResultEnvelope

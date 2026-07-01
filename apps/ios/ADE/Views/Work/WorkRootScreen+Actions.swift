@@ -2,33 +2,6 @@ import SwiftUI
 import UIKit
 import AVKit
 
-private struct WorkRootLiveTranscriptBuildInput {
-  let sessionId: String
-  let streamedEvents: [AgentChatEventEnvelope]
-  let terminalTail: String
-}
-
-func workRootLiveTranscriptFingerprint(
-  chatEventRevision: Int,
-  streamedEventCount: Int,
-  terminalBufferRevision: Int?,
-  terminalTail: String?
-) -> String {
-  guard streamedEventCount == 0 else {
-    return "events:\(chatEventRevision):\(streamedEventCount)"
-  }
-  guard let terminalTail, !terminalTail.isEmpty else {
-    return "empty"
-  }
-  if let terminalBufferRevision {
-    return "terminal:\(terminalBufferRevision):\(terminalTail.utf8.count)"
-  }
-
-  var hasher = Hasher()
-  hasher.combine(terminalTail)
-  return "terminal:\(terminalTail.utf8.count):\(hasher.finalize())"
-}
-
 extension WorkRootScreen {
   @MainActor
   func scheduleSessionPresentationRebuild() {
@@ -38,6 +11,8 @@ extension WorkRootScreen {
     let sessionsSnapshot = sessions
     let chatSummariesSnapshot = chatSummaries
     let lanesSnapshot = lanes
+    let pullRequestsSnapshot = pullRequests
+    let githubPrsSnapshot = syncService.laneGithubPrItems
     let optimisticSessionsSnapshot = optimisticSessions
     let archivedSessionIdsSnapshot = archivedSessionIds
     let selectedStatusSnapshot = selectedStatus
@@ -61,7 +36,9 @@ extension WorkRootScreen {
         searchText: searchTextSnapshot,
         outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
-        orderedLanes: lanesSnapshot
+        orderedLanes: lanesSnapshot,
+        pullRequests: pullRequestsSnapshot,
+        githubPrs: githubPrsSnapshot
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
@@ -252,59 +229,6 @@ extension WorkRootScreen {
       chatSummaries = nextSummaries
     }
     syncService.cacheChatSummaries(nextSummaries)
-  }
-
-  @MainActor
-  func pollRunningChats() async {
-    guard isLive, isWorkRootActive else { return }
-    guard !liveChatSessions.isEmpty else { return }
-
-    var lastTranscriptFingerprint: [String: String] = [:]
-    while !Task.isCancelled && isLive && isWorkRootActive && !liveChatSessions.isEmpty {
-      let liveSessions = liveChatSessions
-      let liveSessionIds = Set(liveSessions.map(\.id))
-      transcriptCache.prune(keeping: liveSessionIds)
-
-      var buildInputs: [WorkRootLiveTranscriptBuildInput] = []
-      buildInputs.reserveCapacity(liveSessions.count)
-      for session in liveSessions {
-        try? await syncService.subscribeToChatEvents(sessionId: session.id)
-        let streamed = syncService.chatEventHistory(sessionId: session.id)
-        let revision = syncService.chatEventRevision(for: session.id)
-        let terminalTail = streamed.isEmpty ? (syncService.terminalBuffers[session.id] ?? "") : ""
-        let fingerprint = workRootLiveTranscriptFingerprint(
-          chatEventRevision: revision,
-          streamedEventCount: streamed.count,
-          terminalBufferRevision: streamed.isEmpty ? syncService.terminalBufferRevisionsBySessionId[session.id] : nil,
-          terminalTail: streamed.isEmpty ? terminalTail : nil
-        )
-        if lastTranscriptFingerprint[session.id] == fingerprint {
-          continue
-        }
-        lastTranscriptFingerprint[session.id] = fingerprint
-        buildInputs.append(WorkRootLiveTranscriptBuildInput(
-          sessionId: session.id,
-          streamedEvents: streamed,
-          terminalTail: terminalTail
-        ))
-      }
-
-      if !buildInputs.isEmpty {
-        let builtTranscripts = await Task.detached(priority: .utility) {
-          buildInputs.map { input -> (String, [WorkChatEnvelope]) in
-            let transcript = input.streamedEvents.isEmpty
-              ? parseWorkChatTranscript(input.terminalTail)
-              : makeWorkChatTranscript(from: input.streamedEvents)
-            return (input.sessionId, transcript)
-          }
-        }.value
-        guard !Task.isCancelled, isLive, isWorkRootActive else { return }
-        for (sessionId, transcript) in builtTranscripts where liveSessionIds.contains(sessionId) {
-          transcriptCache[sessionId] = transcript
-        }
-      }
-      try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 1_800_000_000 : 900_000_000)
-    }
   }
 
   func toggleArchive(_ session: TerminalSessionSummary) {

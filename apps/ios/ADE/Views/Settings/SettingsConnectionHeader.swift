@@ -29,6 +29,8 @@ struct SettingsConnectionHeader: View {
             Text(detail)
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(2)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
         Spacer(minLength: 0)
@@ -43,16 +45,16 @@ struct SettingsConnectionHeader: View {
       }
 
       if health.transport.isConnected {
-        SettingsConnectedHostDetails(
-          hostDisplayName: snapshot.hostDisplayName,
-          routeLine: snapshot.routeLine
-        )
+        SettingsConnectedHostDetails(routeLine: snapshot.routeLine)
       } else if let hostName = pendingHostName {
         Text(pendingDescription(hostName: hostName))
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
-      } else {
+      } else if !snapshot.canReconnectToSavedHost {
+        // Onboarding copy for users who have never paired a machine. Once a
+        // machine is saved we never show this again — the status caption above
+        // ("Last connected to: …") carries the returning-user message instead.
         Text("Pair once on Wi‑Fi to remotely connect later.")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
@@ -134,25 +136,20 @@ struct SettingsConnectionHeader: View {
   private var stateDetailLine: String? {
     switch health.transport {
     case .connected:
-      if health.load == .strained {
-        return "Live · machine responding slowly"
-      }
-      if snapshot.connectionState == .syncing {
-        return "Live · syncing changes"
-      }
-      return "Live · ready to sync"
+      // Name the machine you're attached to, right under the status word.
+      return snapshot.hostDisplayName
     case .connecting:
       return "Connecting to saved machine"
     case .unreachable:
       return "Unable to reach your machine"
     case .disconnected:
-      if snapshot.savedReconnectPrefersTailnet {
-        return "Saved machine · Tailscale route ready"
+      // Returning users see where they left off. Brand-new users (no saved
+      // machine) get no caption here at all — the pairing onboarding copy
+      // below carries the message instead.
+      if snapshot.canReconnectToSavedHost, let host = snapshot.hostDisplayName {
+        return "Last connected to: \(host)"
       }
-      if snapshot.canReconnectToSavedHost {
-        return "Saved machine · not connected"
-      }
-      return "No paired machine"
+      return nil
     }
   }
 
@@ -169,24 +166,17 @@ struct SettingsConnectionHeader: View {
 }
 
 private struct SettingsConnectedHostDetails: View {
-  let hostDisplayName: String?
   let routeLine: String?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if let hostName = hostDisplayName {
-        Text(hostName)
-          .font(.title3.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-      }
-      if let routeLine {
-        Text(routeLine)
-          .font(.caption.monospaced())
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-          .truncationMode(.middle)
-      }
+    // The machine name now lives in the status caption above, so this block
+    // only carries the route line (Tailscale/LAN address · port).
+    if let routeLine {
+      Text(routeLine)
+        .font(.caption.monospaced())
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
   }
 }

@@ -85,9 +85,15 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func approveRequest(itemId: String, decision: AgentChatApprovalDecision) async {
+  func approveRequest(itemId: String, decision: AgentChatApprovalDecision, responseText: String? = nil) async {
     do {
-      try await syncService.approveChatSession(sessionId: sessionId, itemId: itemId, decision: decision)
+      let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
+      try await syncService.approveChatSession(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: decision,
+        responseText: responseValue?.isEmpty == true ? nil : responseValue
+      )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -391,17 +397,17 @@ extension WorkSessionDestinationView {
     let cacheKey = "work-artifact::\(artifact.id)::\(artifact.uri)"
 
     if artifact.artifactKind != "video_recording", let cachedImage = ADEImageCache.shared.cachedImage(for: cacheKey) {
-      artifactContent[artifact.id] = .image(cachedImage)
+      setArtifactContent(.image(cachedImage), for: artifact.id)
       return
     }
 
     if let directURL = URL(string: artifact.uri), directURL.scheme?.hasPrefix("http") == true {
       if artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true) {
-        artifactContent[artifact.id] = .remoteURL(directURL)
+        setArtifactContent(.remoteURL(directURL), for: artifact.id)
       } else if let image = try? await ADEImageCache.shared.loadRemoteImage(from: directURL, cacheKey: cacheKey) {
-        artifactContent[artifact.id] = .image(image)
+        setArtifactContent(.image(image), for: artifact.id)
       } else {
-        artifactContent[artifact.id] = .error("The machine returned an unreadable image preview.")
+        setArtifactContent(.error("The machine returned an unreadable image preview."), for: artifact.id)
       }
       return
     }
@@ -416,7 +422,7 @@ extension WorkSessionDestinationView {
       }
 
       guard let data else {
-        artifactContent[artifact.id] = .error("The machine returned an artifact payload that could not be decoded.")
+        setArtifactContent(.error("The machine returned an artifact payload that could not be decoded."), for: artifact.id)
         return
       }
 
@@ -425,15 +431,15 @@ extension WorkSessionDestinationView {
           .appendingPathComponent("ade-work-artifact-\(artifact.id)")
           .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
         try data.write(to: url, options: .atomic)
-        artifactContent[artifact.id] = .video(url)
+        setArtifactContent(.video(url), for: artifact.id)
       } else if let image = UIImage(data: data) {
         ADEImageCache.shared.store(data, for: cacheKey)
-        artifactContent[artifact.id] = .image(image)
+        setArtifactContent(.image(image), for: artifact.id)
       } else {
-        artifactContent[artifact.id] = .text(blob.content)
+        setArtifactContent(.text(blob.content), for: artifact.id)
       }
     } catch {
-      artifactContent[artifact.id] = .error(error.localizedDescription)
+      setArtifactContent(.error(error.localizedDescription), for: artifact.id)
     }
   }
 

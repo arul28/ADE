@@ -1,25 +1,126 @@
 import SwiftUI
 import UIKit
 import AVKit
-import OSLog
 
-let workChatScrollLog = Logger(subsystem: "com.ade.ios", category: "WorkChatScroll")
 let workChatScrollCoordinateSpace = "WorkChatScrollCoordinateSpace"
 let workChatStickThreshold: CGFloat = 160
-let workChatStickResumeThreshold: CGFloat = 24
+let workChatStickResumeThreshold: CGFloat = 48
 let workChatTouchScrollDeadband: CGFloat = 2
+let workChatBottomAnchorSpacerHeight: CGFloat = 1
+let workChatContentBottomGutterHeight: CGFloat = 2
+let workChatSubagentActivePopupHeight: CGFloat = 34
+
+final class WorkChatScrollMetrics {
+  var distanceFromBottom: CGFloat = 0
+}
+
+struct WorkChatSummaryRenderContext: Equatable {
+  let isAvailable: Bool
+  let provider: String
+  let model: String
+  let modelId: String?
+  let reasoningEffort: String
+  let effectiveFastMode: Bool
+  let runtimeMode: String
+  let fastModeSupported: Bool
+  let idleSinceAt: String?
+  let endedAt: String?
+  let lastOutputPreview: String?
+  let requestedCwd: String?
+  let modelLabel: String
+  let contextWindowFallback: Int?
+
+  init(_ summary: AgentChatSessionSummary?) {
+    guard let summary else {
+      self.isAvailable = false
+      self.provider = ""
+      self.model = ""
+      self.modelId = nil
+      self.reasoningEffort = ""
+      self.effectiveFastMode = false
+      self.runtimeMode = ""
+      self.fastModeSupported = false
+      self.idleSinceAt = nil
+      self.endedAt = nil
+      self.lastOutputPreview = nil
+      self.requestedCwd = nil
+      self.modelLabel = "Model"
+      self.contextWindowFallback = nil
+      return
+    }
+
+    self.isAvailable = true
+    self.provider = summary.provider
+    self.model = summary.model
+    self.modelId = summary.modelId
+    self.reasoningEffort = summary.reasoningEffort ?? ""
+    self.effectiveFastMode = summary.effectiveFastMode
+    self.runtimeMode = workInitialRuntimeMode(summary)
+    self.fastModeSupported = workChatComposerSupportsFastMode(summary)
+    self.idleSinceAt = summary.idleSinceAt
+    self.endedAt = summary.endedAt
+    self.lastOutputPreview = summary.lastOutputPreview
+    self.requestedCwd = summary.requestedCwd
+    self.modelLabel = prettyWorkChatModelName(summary.model)
+    self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
+  }
+
+  var currentModelId: String {
+    modelId ?? model
+  }
+}
+
+struct WorkChatSessionRenderContext: Equatable {
+  let id: String
+  let laneId: String
+  let chatIdleSinceAt: String?
+  let endedAt: String?
+  let lastOutputPreview: String?
+  let normalizedStatus: String
+
+  init(_ session: TerminalSessionSummary) {
+    self.id = session.id
+    self.laneId = session.laneId
+    self.chatIdleSinceAt = session.chatIdleSinceAt
+    self.endedAt = session.endedAt
+    self.lastOutputPreview = session.lastOutputPreview
+    self.normalizedStatus = normalizedWorkChatSessionStatus(session: session, summary: nil)
+  }
+}
+
+private struct WorkChatSummaryTimelineKey: Equatable {
+  let provider: String
+  let model: String
+  let modelId: String?
+
+  init(_ context: WorkChatSummaryRenderContext) {
+    self.provider = context.provider
+    self.model = context.model
+    self.modelId = context.modelId
+  }
+}
 
 struct WorkChatSessionView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
-  @EnvironmentObject private var syncService: SyncService
 
-  let session: TerminalSessionSummary
-  let chatSummary: AgentChatSessionSummary?
+  let session: WorkChatSessionRenderContext
+  let chatSummaryContext: WorkChatSummaryRenderContext
   let transcript: [WorkChatEnvelope]
+  let transcriptRenderSignature: Int
   let fallbackEntries: [AgentChatTranscriptEntry]
+  let fallbackEntriesRenderSignature: Int
   let artifacts: [ComputerUseArtifactSummary]
+  let artifactsRenderSignature: Int
   let optimisticPendingSteers: [WorkPendingSteerModel]
+  let optimisticPendingSteersRenderSignature: Int
   let localEchoMessages: [WorkLocalEchoMessage]
+  let localEchoMessagesRenderSignature: Int
+  let expandedToolCardIdsSnapshot: Set<String>
+  let expandedToolCardIdsRenderSignature: Int
+  let artifactContentRenderSignature: Int
+  let artifactDrawerPresentedSnapshot: Bool
+  let sendingSnapshot: Bool
+  let errorMessageSnapshot: String?
   @Binding var expandedToolCardIds: Set<String>
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
@@ -35,25 +136,40 @@ struct WorkChatSessionView: View {
   @State var lastTimelineTailId: String?
   @State var scrollViewportHeight: CGFloat = 0
   @State var scrollViewportWidth: CGFloat = 0
-  @State var lastScrollDistanceFromBottom: CGFloat = 0
+  @State var composerLayoutHeight: CGFloat = 150
+  @State var scrollMetrics = WorkChatScrollMetrics()
   @State var timelineDragActive = false
+  @State var bottomStickinessReleasedByUser = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
+  @State var timelineIncrementalCache = WorkTimelineIncrementalCache()
+  @State var timelineSourceKey: String?
   @State var timelineRebuildTask: Task<Void, Never>?
+  @State var timelineRebuildPending = false
   @State var timelineRebuildGeneration = 0
+  @State var timelineBuildScopeId = UUID().uuidString
+  @State var latestPinTask: Task<Void, Never>?
+  @State var latestPinGeneration = 0
   @State var assistantPreviewCache = WorkAssistantPreviewCache()
+  @State var assistantLineBudgets: [String: Int] = [:]
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
+  @State var scrollStateSessionId: String?
+  @State var pendingInitialBottomPinSessionId: String?
+  @State var timelineLayoutPinToken = 0
   let isLive: Bool
+  let hostUnreachable: Bool
   let canComposeMessages: Bool
   let canSendMessages: Bool
   let sendWillQueue: Bool
+  let sendWillQueueIsReconnect: Bool
+  var inputLockMessage: String? = nil
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
   let onSend: @MainActor (String) async -> Bool
   let onInterrupt: @MainActor () async -> Void
-  let onApproveRequest: @MainActor (String, AgentChatApprovalDecision) async -> Void
+  let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
   let onSubmitQuestionAnswers: @MainActor (String, [String: AgentChatInputAnswerValue], String?) async -> Void
   let onDeclineQuestion: @MainActor (String) async -> Void
@@ -72,16 +188,22 @@ struct WorkChatSessionView: View {
   let onSelectEffort: @MainActor (String) async -> Void
   let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
 
+  var resolvedSessionStatus: String? = nil
   var lanes: [LaneSummary] = []
+  var lanesRenderSignature: Int = 0
   // Host-side scroll-back: true while older transcript pages remain on the
   // host beyond what the phone has fetched; the callback pulls the next page.
   var hasOlderTranscriptHistory: Bool = false
   var onLoadOlderTranscript: (@MainActor () async -> Void)? = nil
+  var subagentSnapshots: [WorkSubagentSnapshot] = []
+  var subagentSnapshotsRenderSignature: Int = 0
+  var selectedSubagentTaskId: String? = nil
+  var onOpenSubagents: (() -> Void)? = nil
   /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
   /// live status/done events). Covers the gap where the synced session row
   /// still says idle while chat events are already streaming — without it
   /// the chat renders output with no stop button or working indicator.
-  var liveTurnActiveHint: Bool = false
+  var liveTurnActiveHint: Bool? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -94,14 +216,18 @@ struct WorkChatSessionView: View {
   @State var lastBlockingPendingInputId: String?
 
   var sessionStatus: String {
-    normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+    resolvedSessionStatus ?? session.normalizedStatus
+  }
+
+  private var chatSummaryTimelineKey: WorkChatSummaryTimelineKey {
+    WorkChatSummaryTimelineKey(chatSummaryContext)
   }
 
   /// Terminal transcript signal from the local event window. When present, it
   /// beats stale session rows / subscribe hints that can lag a just-finished
   /// turn by a few seconds.
   var transcriptLatestTurnEnded: Bool {
-    workTranscriptLatestTurnEnded(transcript)
+    timelineSnapshot.transcriptLatestTurnEnded
   }
 
   /// The live turn hint can be stale if mobile misses the final `done` event.
@@ -110,18 +236,25 @@ struct WorkChatSessionView: View {
   var sessionRowEndedAfterLatestTranscript: Bool {
     guard sessionStatus == "idle" || sessionStatus == "ended" else { return false }
     let rowEndedAt = [
-      chatSummary?.idleSinceAt,
-      chatSummary?.endedAt,
+      chatSummaryContext.idleSinceAt,
+      chatSummaryContext.endedAt,
       session.chatIdleSinceAt,
       session.endedAt
     ]
-    .compactMap(workParsedDate)
+    .compactMap { value in
+      value?.isEmpty == false ? value : nil
+    }
     .max()
     guard let rowEndedAt else { return false }
-    guard let latestTranscriptAt = transcript.compactMap({ workParsedDate($0.timestamp) }).max() else {
+    guard let latestTranscriptAt = timelineSnapshot.latestTranscriptTimestamp else { return false }
+    if rowEndedAt >= latestTranscriptAt {
+      return true
+    }
+    guard let rowEndedDate = workParsedDate(rowEndedAt),
+          let latestTranscriptDate = workParsedDate(latestTranscriptAt) else {
       return false
     }
-    return rowEndedAt >= latestTranscriptAt.addingTimeInterval(-0.25)
+    return rowEndedDate >= latestTranscriptDate.addingTimeInterval(-0.25)
   }
 
   /// Single source of truth for "the assistant is generating right now".
@@ -139,7 +272,7 @@ struct WorkChatSessionView: View {
   }
 
   var shouldShowInterruptControl: Bool {
-    workChatShouldShowInterruptControl(isStreamingTurn: isStreamingTurn, transcript: transcript)
+    isStreamingTurn && timelineSnapshot.transcriptHasInterruptibleActivity
   }
 
   var pendingInputs: [WorkPendingInputItem] {
@@ -157,8 +290,21 @@ struct WorkChatSessionView: View {
     pendingInputs.first
   }
 
+  var pendingPlanApproval: WorkPendingPlanApprovalModel? {
+    pendingInputs.compactMap { item -> WorkPendingPlanApprovalModel? in
+      if case .planApproval(let model) = item {
+        return model
+      }
+      return nil
+    }.first
+  }
+
   var hasPendingInputGate: Bool {
     workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
+  }
+
+  var composerPlaceholderText: String {
+    workChatComposerPlaceholder(pendingInputs: pendingInputs, sessionStatus: sessionStatus)
   }
 
   /// Stable id of the first blocking pending input awaiting a reply, or nil when
@@ -170,14 +316,12 @@ struct WorkChatSessionView: View {
     return primaryPendingInput?.id
   }
 
-  /// Scroll anchor for the first blocking inline pending card. Questions and
-  /// plan approvals render inline under "pending-question-<id>"; approval gates
-  /// render in the top overview section, so we just pin to the top for those.
+  /// Scroll anchor for the first blocking inline pending card. Plan approvals
+  /// live in the composer strip, so they stay visible without transcript scroll.
   private var blockingPendingScrollAnchor: String? {
     switch primaryPendingInput {
     case .question(let model): return "pending-question-\(model.id)"
-    case .planApproval(let model): return "pending-question-\(model.id)"
-    case .permission, .modelSelection, .approval, .none: return nil
+    case .permission, .modelSelection, .approval, .planApproval, .none: return nil
     }
   }
 
@@ -210,7 +354,7 @@ struct WorkChatSessionView: View {
   }
 
   private var awaitingPromptPreview: String? {
-    [chatSummary?.lastOutputPreview, session.lastOutputPreview]
+    [chatSummaryContext.lastOutputPreview, session.lastOutputPreview]
       .compactMap { value -> String? in
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -258,15 +402,19 @@ struct WorkChatSessionView: View {
     timelineSnapshot.timeline
   }
 
-  /// Timeline with synthetic turn-separator pills inserted before each new
-  /// user-message turn. Cached alongside the visible slice so focus and
-  /// keyboard layout changes do not rebuild transcript arrays.
-  var timelineWithSeparators: [WorkTimelineEntry] {
-    timelinePresentation.entries
-  }
-
   var visibleTimeline: [WorkTimelineEntry] {
     timelinePresentation.visibleEntries
+  }
+
+  var visibleTimelineRenderEntries: [WorkTimelineRenderEntry] {
+    timelinePresentation.renderEntries
+  }
+
+  var latestScrollTargetId: String {
+    if isStreamingTurn {
+      return "chat-streaming-status"
+    }
+    return visibleTimelineRenderEntries.last?.id ?? "chat-end"
   }
 
   var hiddenTimelineCount: Int {
@@ -279,27 +427,34 @@ struct WorkChatSessionView: View {
     var nextPresentation = makeWorkTimelinePresentation(
       timeline: timeline,
       visibleCount: visibleTimelineCount,
-      chatSummary: chatSummary,
+      chatSummary: chatSummaryContext,
       transcript: transcript,
-      assistantPreviewCache: assistantPreviewCache
+      assistantPreviewCache: assistantPreviewCache,
+      assistantLineBudgets: assistantLineBudgets,
+      streamingAssistantMessageId: streamingAssistantMessageId
     )
-    if isNearBottom,
-       timelinePresentation.hiddenCount > 0,
-       nextPresentation.entries.count > timelinePresentation.entries.count {
-      visibleTimelineCount += nextPresentation.entries.count - timelinePresentation.entries.count
+    let timelineDelta = nextPresentation.timelineCount - timelinePresentation.timelineCount
+    let prependedHistory = (
+      timelineDelta > 0
+      && timelinePresentation.timelineFirstId != nil
+      && timelinePresentation.timelineLastId != nil
+      && timelinePresentation.timelineLastId == nextPresentation.timelineLastId
+      && timelinePresentation.timelineFirstId != nextPresentation.timelineFirstId
+    )
+    if prependedHistory {
+      visibleTimelineCount += timelineDelta
       nextPresentation = makeWorkTimelinePresentation(
         timeline: timeline,
         visibleCount: visibleTimelineCount,
-        chatSummary: chatSummary,
+        chatSummary: chatSummaryContext,
         transcript: transcript,
-        assistantPreviewCache: assistantPreviewCache
+        assistantPreviewCache: assistantPreviewCache,
+        assistantLineBudgets: assistantLineBudgets,
+        streamingAssistantMessageId: streamingAssistantMessageId
       )
     }
     guard nextPresentation != timelinePresentation else { return }
     timelinePresentation = nextPresentation
-    workChatScrollLog.notice(
-      "presentation_update session=\(session.id, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(nextPresentation.visibleEntries.count, privacy: .public) hidden=\(nextPresentation.hiddenCount, privacy: .public) firstVisible=\(nextPresentation.visibleEntries.first?.id ?? "none", privacy: .public) lastVisible=\(nextPresentation.visibleEntries.last?.id ?? "none", privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) limit=\(visibleTimelineCount, privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
-    )
   }
 
   var canCompose: Bool {
@@ -317,17 +472,20 @@ struct WorkChatSessionView: View {
   }
 
   var composerFeedback: String? {
+    if let inputLockMessage {
+      return inputLockMessage
+    }
     if sending && !sendWillQueue {
       return "Sending message to machine..."
     }
-    if sendWillQueue, sessionStatus == "active" {
-      return "Message will stage behind the active turn."
-    }
-    if sendWillQueue, pendingSteers.isEmpty {
+    if sendWillQueueIsReconnect, pendingSteers.isEmpty {
       return "Machine is reconnecting. Send will queue until it is back."
     }
     if !canSendMessages {
       return "Reconnect to send messages."
+    }
+    if pendingInputs.count == 1, pendingPlanApproval != nil {
+      return "Review the plan above the composer, or reject it before sending another message."
     }
     if !pendingInputs.isEmpty {
       return "Answer the waiting prompt above, or decline it before sending another message."
@@ -339,12 +497,7 @@ struct WorkChatSessionView: View {
   }
 
   var jumpToLatestPillBottomPadding: CGFloat {
-    // The pill is an overlay, so it needs to sit above the safe-area composer
-    // instead of covering the Send/Stop control. Staged steers add a second
-    // composer band, so give the pill extra air when that strip is present.
-    if !pendingSteers.isEmpty { return 220 }
-    if !pendingInputs.isEmpty { return 150 }
-    return 116
+    16
   }
 
   var maxUserBubbleWidth: CGFloat? {
@@ -371,7 +524,7 @@ struct WorkChatSessionView: View {
             busy: actionInFlight,
             onDecision: { decision in
               await runSessionAction {
-                await onApproveRequest(approval.id, decision)
+                await onApproveRequest(approval.id, decision, nil)
               }
             }
           )
@@ -392,7 +545,7 @@ struct WorkChatSessionView: View {
 
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
-    if let errorMessage, !syncService.connectionState.isHostUnreachable {
+    if let errorMessage, !hostUnreachable {
       ADENoticeCard(
         title: "Chat error",
         message: errorMessage,
@@ -409,8 +562,10 @@ struct WorkChatSessionView: View {
     if timeline.isEmpty {
       ADEEmptyStateView(
         symbol: "bubble.left.and.bubble.right",
-        title: "No chat messages yet",
-        message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the machine."
+        title: selectedSubagentTaskId == nil ? "No chat messages yet" : "No subagent transcript",
+        message: selectedSubagentTaskId == nil
+          ? (isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the machine.")
+          : "This subagent did not publish detailed transcript output."
       )
     } else {
       if hiddenTimelineCount > 0 || hasOlderTranscriptHistory {
@@ -438,8 +593,8 @@ struct WorkChatSessionView: View {
 
       let streamingMessageId = streamingAssistantMessageId
       let userBubbleWidth = maxUserBubbleWidth
-      ForEach(visibleTimeline) { entry in
-        timelineEntryView(
+      ForEach(visibleTimelineRenderEntries) { entry in
+        timelineRenderEntryView(
           for: entry,
           proxy: proxy,
           streamingAssistantMessageId: streamingMessageId,
@@ -449,11 +604,16 @@ struct WorkChatSessionView: View {
     }
   }
 
+  @ViewBuilder
   var streamingStatusSection: some View {
-    WorkActivityIndicator(
-      transcript: transcript,
-      isStreaming: isStreamingTurn
-    )
+    if isStreamingTurn {
+      WorkActivityIndicator(
+        transcript: transcript,
+        isStreaming: true
+      )
+      .id("chat-streaming-status")
+      .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+    }
   }
 
   /// Single desktop-shaped composer card: text field on top, chip strip and
@@ -464,6 +624,14 @@ struct WorkChatSessionView: View {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
+      let runningSubagentCount = workSubagentRunningCount(subagentSnapshots)
+      if inputLockMessage == nil,
+         runningSubagentCount > 0,
+         let onOpenSubagents {
+        WorkSubagentActivePopup(count: runningSubagentCount, onOpen: onOpenSubagents)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .frame(height: workChatSubagentActivePopupHeight, alignment: .leading)
+      }
 
       if !pendingSteers.isEmpty {
         WorkQueuedSteerStrip(
@@ -523,12 +691,31 @@ struct WorkChatSessionView: View {
           )
       }
 
+      if let planApproval = pendingPlanApproval {
+        WorkPlanComposerStrip(
+          plan: planApproval,
+          busy: actionInFlight || !isLive,
+          fallbackProvider: chatSummaryContext.provider,
+          onDecision: { decision, feedback in
+            await runSessionAction {
+              await onApproveRequest(planApproval.id, decision, feedback)
+            }
+          }
+        )
+        .id(planApproval.id)
+      }
+
       WorkChatComposerCard(
-        chatSummary: chatSummary,
-        usageViewModel: workContextUsageViewModel(transcript: transcript, summary: chatSummary),
+        chatSummary: chatSummaryContext,
+        usageViewModel: workContextUsageViewModel(
+          transcript: transcript,
+          provider: chatSummaryContext.provider,
+          fallbackContextWindow: chatSummaryContext.contextWindowFallback
+        ),
         dictationTargetId: "work-chat:\(session.id)",
         pendingInputCount: pendingInputs.count,
         awaitingInputGate: hasPendingInputGate,
+        composerPlaceholder: composerPlaceholderText,
         canCompose: canCompose,
         canSend: canSend && !composerSettingMutationInFlight,
         sending: sending && !sendWillQueue,
@@ -542,13 +729,13 @@ struct WorkChatSessionView: View {
         onInterrupt: {
           await runSessionAction(onInterrupt)
         },
-        onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
-        onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
+        onOpenModelPicker: !chatSummaryContext.isAvailable ? nil : { modelPickerPresented = true },
+        onSelectRuntimeMode: !chatSummaryContext.isAvailable ? nil : { mode in
           runComposerSettingMutation {
             await onSelectRuntimeMode(mode)
           }
         },
-        onToggleCodexFastMode: chatSummary == nil ? nil : { enabled in
+        onToggleCodexFastMode: !chatSummaryContext.isAvailable ? nil : { enabled in
           pendingCodexFastMode = enabled
           runComposerSettingMutation(onFailure: {
             pendingCodexFastMode = nil
@@ -563,258 +750,442 @@ struct WorkChatSessionView: View {
       )
     }
     .padding(.horizontal, 16)
-    .padding(.top, 8)
+    .padding(.top, 4)
     .padding(.bottom, 0)
   }
 
   var body: some View {
     ScrollViewReader { proxy in
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: 14) {
-          sessionOverviewSection
-          if !timelineSnapshot.subagentSnapshots.isEmpty {
-            WorkSubagentStrip(snapshots: timelineSnapshot.subagentSnapshots)
-          }
-          timelineSection(proxy: proxy)
-          streamingStatusSection
+      VStack(spacing: 0) {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: 14) {
+            sessionOverviewSection
+            timelineSection(proxy: proxy)
+            streamingStatusSection
 
-          Color.clear
-            .frame(height: 1)
-            .id("chat-end")
-            .background(
-              GeometryReader { geometry in
-                Color.clear.preference(
-                  key: WorkChatContentBottomPreferenceKey.self,
-                  value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).maxY
-                )
+            Color.clear
+              .frame(height: workChatContentBottomGutterHeight + workChatBottomAnchorSpacerHeight)
+              .id("chat-end")
+              .transaction { transaction in
+                transaction.animation = nil
               }
+              .background(
+                GeometryReader { geometry in
+                  Color.clear.preference(
+                    key: WorkChatContentBottomPreferenceKey.self,
+                    value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).maxY
+                  )
+                }
+              )
+          }
+          .padding(16)
+          .frame(
+            maxWidth: .infinity,
+            minHeight: max(scrollViewportHeight, 0),
+            alignment: .bottomLeading
+          )
+          .modifier(
+            WorkChatTranscriptEnvironmentModifier(
+              provider: chatSummaryContext.provider,
+              modelId: chatSummaryContext.currentModelId,
+              modelLabel: chatSummaryContext.modelLabel,
+              laneId: session.laneId,
+              requestedCwd: chatSummaryContext.requestedCwd
             )
-            .onAppear {
-              workChatScrollLog.notice(
-                "bottom_sentinel_appeared session=\(session.id, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public) unread=\(unreadBelowCount, privacy: .public) distance=\(lastScrollDistanceFromBottom, privacy: .public)"
-              )
-            }
-            .onDisappear {
-              workChatScrollLog.notice(
-                "bottom_sentinel_disappeared session=\(session.id, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public) unread=\(unreadBelowCount, privacy: .public) distance=\(lastScrollDistanceFromBottom, privacy: .public)"
-              )
-            }
-        }
-        .padding(16)
-        .modifier(
-          WorkChatTranscriptEnvironmentModifier(
-            provider: chatSummary?.provider,
-            modelId: chatSummary?.modelId ?? chatSummary?.model,
-            modelLabel: chatSummary.map { prettyWorkChatModelName($0.model) },
-            laneId: session.laneId,
-            requestedCwd: chatSummary?.requestedCwd
-          )
-        )
-      }
-      .scrollIndicators(.hidden)
-      .scrollDismissesKeyboard(.interactively)
-      .coordinateSpace(name: workChatScrollCoordinateSpace)
-      .background(
-        GeometryReader { geometry in
-          Color.clear.preference(
-            key: WorkChatViewportHeightPreferenceKey.self,
-            value: geometry.size.height
-          )
-          .preference(
-            key: WorkChatViewportWidthPreferenceKey.self,
-            value: geometry.size.width
           )
         }
-      )
-      .background(workChatCanvasBackground.ignoresSafeArea())
-      .adeNavigationGlass()
-      .simultaneousGesture(
-        DragGesture(minimumDistance: 0)
-          .onChanged { value in
-            timelineDragActive = true
-            if value.translation.height > workChatTouchScrollDeadband {
-              releaseBottomStickinessForUserScroll(reason: "drag")
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .layoutPriority(1)
+          .clipped()
+          .scrollIndicators(.hidden)
+          .scrollDismissesKeyboard(.interactively)
+          .defaultScrollAnchor(.bottom)
+          .coordinateSpace(name: workChatScrollCoordinateSpace)
+          .background(
+            GeometryReader { geometry in
+              Color.clear
+                .preference(
+                  key: WorkChatViewportHeightPreferenceKey.self,
+                  value: geometry.size.height
+                )
+                .preference(
+                  key: WorkChatViewportWidthPreferenceKey.self,
+                  value: geometry.size.width
+                )
+            }
+          )
+          .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+              .onChanged { value in
+                if !timelineDragActive {
+                  timelineDragActive = true
+                }
+                if value.translation.height > workChatTouchScrollDeadband {
+                  releaseBottomStickinessForUserScroll(reason: "drag")
+                } else if value.translation.height < -workChatTouchScrollDeadband {
+                  allowBottomStickinessResumeFromUserScroll(reason: "drag")
+                }
+              }
+              .onEnded { value in
+                let releasedBottomStickiness = value.translation.height > workChatTouchScrollDeadband
+                if timelineDragActive {
+                  timelineDragActive = false
+                }
+                guard !releasedBottomStickiness else { return }
+                updateBottomStickiness(distanceFromBottom: scrollMetrics.distanceFromBottom, proxy: proxy)
+              }
+          )
+          .overlay(alignment: .top) {
+            WorkChatNavigationBackdrop()
+          }
+          .overlay(alignment: .bottomTrailing) {
+            if unreadBelowCount > 0 || !isNearBottom {
+              WorkJumpToLatestPill(count: unreadBelowCount) {
+                isNearBottom = true
+                if timelineDragActive {
+                  timelineDragActive = false
+                }
+                scrollToLatest(proxy, animated: true)
+                unreadBelowCount = 0
+              }
+              .padding(.trailing, 16)
+              .padding(.bottom, jumpToLatestPillBottomPadding)
+              .transition(.move(edge: .trailing).combined(with: .opacity))
             }
           }
-          .onEnded { _ in
-            timelineDragActive = false
-            updateBottomStickiness(distanceFromBottom: lastScrollDistanceFromBottom, proxy: proxy)
-          }
-      )
-      .safeAreaInset(edge: .bottom, spacing: 0) {
+
         composerInset(proxy: proxy)
+          .fixedSize(horizontal: false, vertical: true)
           .background(alignment: .bottom) {
             WorkChatComposerBackdrop()
           }
+          .background(
+            GeometryReader { geometry in
+              Color.clear.preference(
+                key: WorkChatComposerLayoutHeightPreferenceKey.self,
+                value: geometry.size.height
+              )
+            }
+          )
       }
-      .overlay(alignment: .top) {
-        WorkChatNavigationBackdrop()
-      }
-      .overlay(alignment: .bottomTrailing) {
-        if unreadBelowCount > 0 || !isNearBottom {
-          WorkJumpToLatestPill(count: unreadBelowCount) {
-            workChatScrollLog.notice(
-              "jump_to_latest_tapped session=\(session.id, privacy: .public) unread=\(unreadBelowCount, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public)"
-            )
-            isNearBottom = true
-            timelineDragActive = false
-            scrollToLatest(proxy, animated: true)
-            unreadBelowCount = 0
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(workChatCanvasBackground.ignoresSafeArea())
+        .adeNavigationGlass()
+        .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
+          let changed = abs(scrollViewportHeight - height) > 1
+          scrollViewportHeight = height
+          guard changed, isNearBottom else { return }
+          pinToLatestAfterLayout(proxy, reason: "viewport-height")
+        }
+        .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
+          scrollViewportWidth = width
+        }
+        .onPreferenceChange(WorkChatComposerLayoutHeightPreferenceKey.self) { height in
+          guard height > 0, abs(composerLayoutHeight - height) > 1 else { return }
+          composerLayoutHeight = height
+          guard isNearBottom else { return }
+          pinToLatestAfterLayout(proxy, reason: "composer-height")
+        }
+        .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
+          guard scrollViewportHeight > 1 else { return }
+          updateBottomStickiness(
+            distanceFromBottom: max(0, bottomY - scrollViewportHeight),
+            proxy: proxy
+          )
+          resolvePendingInitialBottomPinAfterLayout(proxy, reason: "content-bottom")
+        }
+        .onChange(of: timeline.count) { oldCount, newCount in
+          let previousTailId = lastTimelineTailId
+          lastTimelineTailId = timeline.last?.id
+          let delta = newCount - oldCount
+          guard delta > 0 else { return }
+          // Older-page prepends grow the timeline above the viewport — the
+          // newest entry stays put. Don't autoscroll to the bottom or flag
+          // the prepended entries as "new messages below".
+          if let previousTailId, previousTailId == timeline.last?.id {
+            return
           }
-          .padding(.trailing, 16)
-          .padding(.bottom, jumpToLatestPillBottomPadding)
-          .transition(.move(edge: .trailing).combined(with: .opacity))
-        }
-      }
-      .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
-        scrollViewportHeight = height
-      }
-      .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
-        scrollViewportWidth = width
-      }
-      .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
-        guard scrollViewportHeight > 1 else { return }
-        updateBottomStickiness(
-          distanceFromBottom: max(0, bottomY - scrollViewportHeight),
-          proxy: proxy
-        )
-      }
-      .onChange(of: timeline.count) { oldCount, newCount in
-        let previousTailId = lastTimelineTailId
-        lastTimelineTailId = timeline.last?.id
-        let delta = newCount - oldCount
-        guard delta > 0 else {
-          workChatScrollLog.notice(
-            "timeline_count_changed_no_growth session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) previousTail=\(previousTailId ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
-          )
-          return
-        }
-        // Older-page prepends grow the timeline above the viewport — the
-        // newest entry stays put. Don't autoscroll to the bottom or flag
-        // the prepended entries as "new messages below".
-        if let previousTailId, previousTailId == timeline.last?.id {
-          workChatScrollLog.notice(
-            "timeline_growth_skipped_prepended session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) delta=\(delta, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
-          )
-          return
-        }
-        if isNearBottom {
-          workChatScrollLog.notice(
-            "timeline_growth_autoscroll session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) delta=\(delta, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) previousTail=\(previousTailId ?? "none", privacy: .public)"
-          )
-          pinToLatestAfterLayout(proxy, reason: "timeline-growth")
-        } else {
-          let nextCount = unreadBelowCount + delta
-          workChatScrollLog.notice(
-            "timeline_growth_unread session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) delta=\(delta, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) unread=\(nextCount, privacy: .public)"
-          )
-          if unreadBelowCount == 0 {
-            withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
+          if isNearBottom {
+            pinToLatestAfterLayout(proxy, reason: "timeline-growth")
+          } else {
+            let nextCount = unreadBelowCount + delta
+            if unreadBelowCount == 0 {
+              withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
+                unreadBelowCount = nextCount
+              }
+            } else {
               unreadBelowCount = nextCount
             }
+          }
+        }
+        .onChange(of: timeline.last?.id) { oldTailId, newTailId in
+          guard oldTailId != newTailId else { return }
+          lastTimelineTailId = newTailId
+          guard oldTailId != nil, newTailId != nil, isNearBottom else { return }
+          pinToLatestAfterLayout(proxy, reason: "timeline-tail")
+        }
+        .onChange(of: workSubagentRunningCount(subagentSnapshots)) { _, _ in
+          guard isNearBottom else { return }
+          pinToLatestAfterLayout(proxy, reason: "subagent-active-count")
+        }
+        .onChange(of: timelineLayoutPinToken) { _, _ in
+          if pendingInitialBottomPinSessionId == session.id {
+            forcePinToLatestAfterLayout(proxy, reason: "initial-timeline-layout")
           } else {
-            unreadBelowCount = nextCount
+            pinToLatestAfterLayout(proxy, reason: "timeline-layout")
           }
         }
-      }
-      .onChange(of: timeline.last?.id) { oldTailId, newTailId in
-        guard oldTailId != newTailId else { return }
-        workChatScrollLog.notice(
-          "timeline_tail_changed session=\(session.id, privacy: .public) oldTail=\(oldTailId ?? "none", privacy: .public) newTail=\(newTailId ?? "none", privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
-        )
-        lastTimelineTailId = newTailId
-        guard oldTailId != nil, newTailId != nil, isNearBottom else { return }
-        pinToLatestAfterLayout(proxy, reason: "timeline-tail")
-      }
-      .onChange(of: isNearBottom) { _, nearBottom in
-        guard nearBottom, unreadBelowCount > 0 else { return }
-        workChatScrollLog.notice(
-          "near_bottom_clears_unread session=\(session.id, privacy: .public) unread=\(unreadBelowCount, privacy: .public) timeline=\(timeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public)"
-        )
-        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-          unreadBelowCount = 0
+        .onChange(of: isNearBottom) { _, nearBottom in
+          guard nearBottom, unreadBelowCount > 0 else { return }
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            unreadBelowCount = 0
+          }
         }
-      }
-      .onAppear {
-        refreshTimelinePresentation()
-        scheduleTimelineSnapshotRebuild()
-        // Seed the blocking-input tracker so an already-open gate on first
-        // render doesn't re-fire the haptic, but a gate that arrives later does.
-        lastBlockingPendingInputId = blockingPendingInputId
-      }
-      .onDisappear {
-        cancelScheduledTimelineSnapshotRebuild()
-      }
-      .onChange(of: chatSummary) { _, _ in
-        refreshTimelinePresentation()
-      }
-      .onChange(of: chatSummary?.effectiveFastMode) { _, newValue in
-        if let pendingCodexFastMode, pendingCodexFastMode == (newValue == true) {
-          self.pendingCodexFastMode = nil
+        .onAppear {
+          prepareScrollStateForCurrentSessionIfNeeded(reason: "appear")
+          if transcript.isEmpty && fallbackEntries.isEmpty {
+            scheduleTimelineSnapshotRebuild()
+          } else {
+            rebuildTimelineSnapshot()
+          }
+          // Seed the blocking-input tracker so an already-open gate on first
+          // render doesn't re-fire the haptic, but a gate that arrives later does.
+          lastBlockingPendingInputId = blockingPendingInputId
         }
-      }
-      .onChange(of: session.id) { _, _ in
-        pendingCodexFastMode = nil
-        composerSettingMutationInFlight = false
-        composerSettingMutationGeneration &+= 1
-      }
-      .onChange(of: transcript) { _, _ in
-        scheduleTimelineSnapshotRebuild()
-      }
-      .onChange(of: fallbackEntries) { _, _ in
-        scheduleTimelineSnapshotRebuild()
-      }
-      .onChange(of: artifacts) { _, _ in
-        scheduleTimelineSnapshotRebuild()
-      }
-      .onChange(of: localEchoMessages) { _, _ in
-        scheduleTimelineSnapshotRebuild()
-      }
-      .onChange(of: blockingPendingInputId) { _, newId in
-        handleBlockingPendingInputChange(newId, proxy: proxy)
-      }
-      .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
-      .sheet(isPresented: $artifactDrawerPresented) {
-        WorkArtifactDrawerSheet(
-          artifacts: artifacts,
-          artifactContent: $artifactContent,
-          isRefreshing: artifactRefreshInFlight,
-          refreshError: artifactRefreshError,
-          onRefresh: onRefreshArtifacts,
-          onLoadArtifact: onLoadArtifact
-        )
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-      }
-      .sheet(isPresented: $modelPickerPresented) {
-        let currentModelId = chatSummary?.modelId ?? chatSummary?.model ?? ""
-        WorkModelPickerSheet(
-          currentModelId: currentModelId,
-          currentProvider: chatSummary?.provider ?? "",
-          currentReasoningEffort: chatSummary?.reasoningEffort ?? "",
-          isBusy: modelUpdateInFlight,
-          onSelect: { option, pickedReasoning, _ in
-            Task { @MainActor in
-              modelUpdateInFlight = true
-              defer { modelUpdateInFlight = false }
-              let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
-              if !wasCurrentModel {
-                await onSelectModel(option.id)
+        .task(id: timelineInputRecoveryKey) {
+          recoverEmptyTimelineSnapshotIfNeeded()
+        }
+        .onDisappear {
+          cancelScheduledTimelineSnapshotRebuild()
+        }
+        .onChange(of: chatSummaryTimelineKey) { _, _ in
+          refreshTimelinePresentation()
+        }
+        .onChange(of: chatSummaryContext.effectiveFastMode) { _, newValue in
+          if let pendingCodexFastMode, pendingCodexFastMode == newValue {
+            self.pendingCodexFastMode = nil
+          }
+        }
+        .onChange(of: session.id) { _, _ in
+          pendingCodexFastMode = nil
+          lastBlockingPendingInputId = nil
+          blockingPendingHapticToken = 0
+          assistantLineBudgets.removeAll()
+          composerSettingMutationInFlight = false
+          composerSettingMutationGeneration &+= 1
+          resetScrollStateForCurrentSession(reason: "session-change")
+          cancelScheduledTimelineSnapshotRebuild()
+          timelineSnapshot = .empty
+          timelinePresentation = .empty
+          scheduleTimelineSnapshotRebuild()
+        }
+        .onChange(of: transcript) { _, _ in
+          if timelineSnapshot.timeline.isEmpty, !transcript.isEmpty {
+            cancelScheduledTimelineSnapshotRebuild()
+            rebuildTimelineSnapshot()
+          } else {
+            scheduleTimelineSnapshotRebuild()
+          }
+        }
+        .onChange(of: fallbackEntries) { _, _ in
+          guard transcript.isEmpty else {
+            return
+          }
+          if timelineSnapshot.timeline.isEmpty, !fallbackEntries.isEmpty {
+            cancelScheduledTimelineSnapshotRebuild()
+            rebuildTimelineSnapshot()
+          } else {
+            scheduleTimelineSnapshotRebuild()
+          }
+        }
+        .onChange(of: artifacts) { _, _ in
+          scheduleTimelineSnapshotRebuild()
+        }
+        .onChange(of: localEchoMessages) { _, _ in
+          scheduleTimelineSnapshotRebuild()
+        }
+        .onChange(of: blockingPendingInputId) { _, newId in
+          handleBlockingPendingInputChange(newId, proxy: proxy)
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
+        .sheet(isPresented: $artifactDrawerPresented) {
+          WorkArtifactDrawerSheet(
+            artifacts: artifacts,
+            artifactContent: $artifactContent,
+            isRefreshing: artifactRefreshInFlight,
+            refreshError: artifactRefreshError,
+            onRefresh: onRefreshArtifacts,
+            onLoadArtifact: onLoadArtifact
+          )
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $modelPickerPresented) {
+          let currentModelId = chatSummaryContext.currentModelId
+          WorkModelPickerSheet(
+            currentModelId: currentModelId,
+            currentProvider: chatSummaryContext.provider,
+            currentReasoningEffort: chatSummaryContext.reasoningEffort,
+            isBusy: modelUpdateInFlight,
+            onSelect: { option, pickedReasoning, _ in
+              Task { @MainActor in
+                modelUpdateInFlight = true
+                defer { modelUpdateInFlight = false }
+                let wasCurrentModel = workModelIdsEquivalent(option.id, currentModelId)
+                if !wasCurrentModel {
+                  await onSelectModel(option.id)
+                }
+                guard !Task.isCancelled else { return }
+                let currentReasoning = chatSummaryContext.reasoningEffort
+                let nextReasoning = pickedReasoning ?? ""
+                if nextReasoning != currentReasoning {
+                  await onSelectEffort(nextReasoning)
+                }
+                guard !Task.isCancelled else { return }
+                modelPickerPresented = false
               }
-              guard !Task.isCancelled else { return }
-              let currentReasoning = chatSummary?.reasoningEffort ?? ""
-              let nextReasoning = pickedReasoning ?? ""
-              if nextReasoning != currentReasoning {
-                await onSelectEffort(nextReasoning)
-              }
-              guard !Task.isCancelled else { return }
-              modelPickerPresented = false
             }
-          }
-        )
+          )
+        }
       }
     }
+}
+
+func workLoadedArtifactContentRenderSignature(_ content: [String: WorkLoadedArtifactContent]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(content.count)
+  for key in content.keys.sorted() {
+    hasher.combine(key)
+    guard let value = content[key] else { continue }
+    switch value {
+    case .image(let image):
+      hasher.combine("image")
+      hasher.combine(Int(image.size.width.rounded()))
+      hasher.combine(Int(image.size.height.rounded()))
+      hasher.combine(Int(image.scale.rounded()))
+    case .video(let url):
+      hasher.combine("video")
+      hasher.combine(url.absoluteString)
+    case .remoteURL(let url):
+      hasher.combine("remoteURL")
+      hasher.combine(url.absoluteString)
+    case .text(let text):
+      hasher.combine("text")
+      hasher.combine(text.utf8.count)
+      hasher.combine(text.hashValue)
+    case .error(let message):
+      hasher.combine("error")
+      hasher.combine(message)
+    }
   }
+  return hasher.finalize()
+}
+
+func workChatEnvelopeListRenderSignature(_ transcript: [WorkChatEnvelope]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(transcript.count)
+  for envelope in transcript {
+    hasher.combine(workChatEnvelopeMergeKey(envelope))
+    hasher.combine(envelope.sequence)
+    hasher.combine(envelope.timestamp)
+    if case .assistantText(let text, _, _) = envelope.event {
+      hasher.combine(text.utf8.count)
+      hasher.combine(text.hashValue)
+    }
+  }
+  return hasher.finalize()
+}
+
+func workFallbackEntriesRenderSignature(_ entries: [AgentChatTranscriptEntry]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(entries.count)
+  for entry in entries {
+    hasher.combine(workTranscriptEntryIdentity(entry))
+  }
+  return hasher.finalize()
+}
+
+func workArtifactSummariesRenderSignature(_ artifacts: [ComputerUseArtifactSummary]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(artifacts.count)
+  for artifact in artifacts {
+    hasher.combine(artifact.id)
+    hasher.combine(artifact.uri)
+    hasher.combine(artifact.title)
+    hasher.combine(artifact.reviewState)
+    hasher.combine(artifact.workflowState)
+  }
+  return hasher.finalize()
+}
+
+func workPendingSteersRenderSignature(_ steers: [WorkPendingSteerModel]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(steers.count)
+  for steer in steers {
+    hasher.combine(steer.id)
+    hasher.combine(steer.text.utf8.count)
+    hasher.combine(steer.text.hashValue)
+    hasher.combine(steer.turnId)
+    hasher.combine(steer.timestamp)
+  }
+  return hasher.finalize()
+}
+
+func workLocalEchoMessagesRenderSignature(_ messages: [WorkLocalEchoMessage]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(messages.count)
+  for message in messages {
+    hasher.combine(message.id)
+    hasher.combine(message.text.utf8.count)
+    hasher.combine(message.text.hashValue)
+    hasher.combine(message.timestamp)
+    hasher.combine(message.deliveryState)
+  }
+  return hasher.finalize()
+}
+
+func workExpandedToolCardIdsRenderSignature(_ ids: Set<String>) -> Int {
+  var hasher = Hasher()
+  hasher.combine(ids.count)
+  for id in ids.sorted() {
+    hasher.combine(id)
+  }
+  return hasher.finalize()
+}
+
+func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(snapshots.count)
+  for snapshot in snapshots {
+    hasher.combine(snapshot.taskId)
+    hasher.combine(snapshot.agentId)
+    hasher.combine(snapshot.agentType)
+    hasher.combine(snapshot.parentToolUseId)
+    hasher.combine(snapshot.description)
+    hasher.combine(snapshot.background)
+    hasher.combine(snapshot.status)
+    hasher.combine(snapshot.lastToolName)
+    hasher.combine(snapshot.latestSummary)
+    hasher.combine(snapshot.turnId)
+    hasher.combine(snapshot.startedAt)
+    hasher.combine(snapshot.updatedAt)
+  }
+  return hasher.finalize()
+}
+
+func workLaneListRenderSignature(_ lanes: [LaneSummary]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(lanes.count)
+  for lane in lanes {
+    hasher.combine(lane.id)
+    hasher.combine(lane.name)
+    hasher.combine(lane.color)
+    hasher.combine(lane.icon)
+    hasher.combine(lane.status.dirty)
+    hasher.combine(lane.status.ahead)
+    hasher.combine(lane.status.behind)
+  }
+  return hasher.finalize()
 }
 
 private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
@@ -827,6 +1198,15 @@ private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
 }
 
 private struct WorkChatViewportWidthPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    let next = nextValue()
+    if next > 0 { value = next }
+  }
+}
+
+private struct WorkChatComposerLayoutHeightPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
 
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -873,7 +1253,7 @@ private struct WorkChatComposerBackdrop: View {
   var body: some View {
     LinearGradient(
       colors: [
-        workChatCanvasBackground.opacity(0),
+        workChatCanvasBackground.opacity(0.98),
         workChatCanvasBackground.opacity(0.94),
         workChatCanvasBackground
       ],
@@ -886,43 +1266,147 @@ private struct WorkChatComposerBackdrop: View {
 }
 
 struct WorkTimelinePresentation: Equatable {
-  let entries: [WorkTimelineEntry]
   let visibleEntries: [WorkTimelineEntry]
+  let renderEntries: [WorkTimelineRenderEntry]
+  let timelineCount: Int
+  let timelineFirstId: String?
+  let timelineLastId: String?
   let hiddenCount: Int
+  let signature: Int
 
   static let empty = WorkTimelinePresentation(
-    entries: [],
     visibleEntries: [],
-    hiddenCount: 0
+    renderEntries: [],
+    timelineCount: 0,
+    timelineFirstId: nil,
+    timelineLastId: nil,
+    hiddenCount: 0,
+    signature: 0
   )
+
+  static func == (lhs: WorkTimelinePresentation, rhs: WorkTimelinePresentation) -> Bool {
+    lhs.signature == rhs.signature
+  }
 }
 
 private func makeWorkTimelinePresentation(
   timeline: [WorkTimelineEntry],
   visibleCount: Int,
-  chatSummary: AgentChatSessionSummary?,
+  chatSummary: WorkChatSummaryRenderContext,
   transcript: [WorkChatEnvelope],
-  assistantPreviewCache: WorkAssistantPreviewCache
+  assistantPreviewCache: WorkAssistantPreviewCache,
+  assistantLineBudgets: [String: Int],
+  streamingAssistantMessageId: String?
 ) -> WorkTimelinePresentation {
-  let entries = injectWorkTurnSeparators(
-    into: timeline,
-    chatSummary: chatSummary,
+  let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
+  let visibleEntriesWithSeparators = injectWorkTurnSeparators(
+    into: rawVisibleEntries,
+    provider: chatSummary.provider,
+    model: chatSummary.model,
+    modelId: chatSummary.modelId,
     transcript: transcript
   )
   let visibleEntries = workTimelineEntriesWithAssistantPreviews(
-    visibleWorkTimelineEntries(from: entries, visibleCount: visibleCount),
-    cache: assistantPreviewCache
+    visibleEntriesWithSeparators,
+    cache: assistantPreviewCache,
+    assistantLineBudgets: assistantLineBudgets,
+    tailAnchoredAssistantMessageId: workLatestAssistantMessageId(in: timeline)
   )
+  let renderEntries = workTimelineRenderEntries(
+    from: visibleEntries,
+    streamingAssistantMessageId: streamingAssistantMessageId,
+    splitAssistantMessageId: workLatestAssistantMessageId(in: timeline),
+    assistantLineBudgets: assistantLineBudgets
+  )
+  let hiddenCount = max(timeline.count - rawVisibleEntries.count, 0)
   return WorkTimelinePresentation(
-    entries: entries,
     visibleEntries: visibleEntries,
-    hiddenCount: max(entries.count - visibleEntries.count, 0)
+    renderEntries: renderEntries,
+    timelineCount: timeline.count,
+    timelineFirstId: timeline.first?.id,
+    timelineLastId: timeline.last?.id,
+    hiddenCount: hiddenCount,
+    signature: workTimelinePresentationSignature(
+      timelineCount: timeline.count,
+      timelineFirstId: timeline.first?.id,
+      timelineLastId: timeline.last?.id,
+      visibleEntries: visibleEntries,
+      renderEntries: renderEntries,
+      hiddenCount: hiddenCount
+    )
   )
+}
+
+private func workTimelinePresentationSignature(
+  timelineCount: Int,
+  timelineFirstId: String?,
+  timelineLastId: String?,
+  visibleEntries: [WorkTimelineEntry],
+  renderEntries: [WorkTimelineRenderEntry],
+  hiddenCount: Int
+) -> Int {
+  var hasher = Hasher()
+  hasher.combine(hiddenCount)
+  hasher.combine(timelineCount)
+  hasher.combine(timelineFirstId)
+  hasher.combine(timelineLastId)
+  hasher.combine(visibleEntries.count)
+  hasher.combine(visibleEntries.first?.id)
+  hasher.combine(visibleEntries.last?.id)
+  hasher.combine(renderEntries.count)
+  for entry in renderEntries {
+    hasher.combine(entry.id)
+    hasher.combine(entry.sourceEntryId)
+    hasher.combine(entry.timestamp)
+    switch entry.payload {
+    case .entry(let timelineEntry):
+      hasher.combine(timelineEntry.id)
+      hasher.combine(timelineEntry.timestamp)
+      hasher.combine(timelineEntry.rank)
+      if case .message(let message) = timelineEntry.payload {
+        hasher.combine(message.id)
+        hasher.combine(message.role)
+        workTimelineCombineTextSignature(message.markdown, into: &hasher)
+        if let preview = message.assistantPreview {
+          workTimelineCombineTextSignature(preview.text, into: &hasher)
+          hasher.combine(preview.isTruncated)
+          hasher.combine(preview.visibleLineCount)
+          hasher.combine(preview.totalLineCount)
+        }
+      }
+    case .assistantMarkdownBlock(let model):
+      hasher.combine(model.id)
+      hasher.combine(model.messageId)
+      hasher.combine(model.block.id)
+      workTimelineCombineTextSignature(model.block.kind.cacheKey, into: &hasher)
+    case .assistantMonospaced(let model):
+      hasher.combine(model.id)
+      hasher.combine(model.messageId)
+      workTimelineCombineTextSignature(model.text, into: &hasher)
+      workTimelineCombineTextSignature(model.accessibilityLabel, into: &hasher)
+    case .assistantControls(let model):
+      hasher.combine(model.id)
+      hasher.combine(model.messageId)
+      hasher.combine(model.summaryText)
+      hasher.combine(model.visibleLineCount)
+      hasher.combine(model.totalLineCount)
+      hasher.combine(model.canShowMore)
+      hasher.combine(model.nextLineBudget)
+    }
+  }
+  return hasher.finalize()
+}
+
+private func workTimelineCombineTextSignature(_ text: String, into hasher: inout Hasher) {
+  hasher.combine(text.utf8.count)
+  hasher.combine(text.hashValue)
 }
 
 private func workTimelineEntriesWithAssistantPreviews(
   _ entries: [WorkTimelineEntry],
-  cache: WorkAssistantPreviewCache
+  cache: WorkAssistantPreviewCache,
+  assistantLineBudgets: [String: Int],
+  tailAnchoredAssistantMessageId: String?
 ) -> [WorkTimelineEntry] {
   var visibleAssistantMessageIds = Set<String>()
   let hydratedEntries = entries.map { entry -> WorkTimelineEntry in
@@ -931,7 +1415,23 @@ private func workTimelineEntriesWithAssistantPreviews(
     else { return entry }
 
     visibleAssistantMessageIds.insert(message.id)
-    message.assistantPreview = cache.preview(for: message)
+    let previewAnchor: WorkAssistantMessagePreviewAnchor = message.id == tailAnchoredAssistantMessageId ? .tail : .head
+    let tailCanRenderFull = previewAnchor == .tail
+      && !workAssistantMessageUsesMonospacedPreview(message.markdown)
+      && workAssistantMessageLineCount(message.markdown) <= workAssistantMessageTailFullLineBudget
+      && message.markdown.count <= workAssistantMessageTailFullCharacterBudget
+    let lineBudget = assistantLineBudgets[message.id]
+      ?? (tailCanRenderFull ? workAssistantMessageTailFullLineBudget : workAssistantMessageInitialLineBudget)
+    if lineBudget == workAssistantMessageInitialLineBudget {
+      message.assistantPreview = cache.preview(for: message, anchor: previewAnchor)
+    } else {
+      message.assistantPreview = workAssistantMessagePreview(
+        message.markdown,
+        lineBudget: lineBudget,
+        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
+        anchor: previewAnchor
+      )
+    }
     return WorkTimelineEntry(
       id: entry.id,
       timestamp: entry.timestamp,
@@ -941,6 +1441,117 @@ private func workTimelineEntriesWithAssistantPreviews(
   }
   cache.prune(keeping: visibleAssistantMessageIds)
   return hydratedEntries
+}
+
+private func workLatestAssistantMessageId(in timeline: [WorkTimelineEntry]) -> String? {
+  for entry in timeline.reversed() {
+    guard case .message(let message) = entry.payload,
+          message.role == "assistant"
+    else { continue }
+    return message.id
+  }
+  return nil
+}
+
+func workTimelineRenderEntries(
+  from entries: [WorkTimelineEntry],
+  streamingAssistantMessageId: String?,
+  splitAssistantMessageId: String? = nil,
+  assistantLineBudgets: [String: Int] = [:]
+) -> [WorkTimelineRenderEntry] {
+  var rendered: [WorkTimelineRenderEntry] = []
+  rendered.reserveCapacity(entries.count)
+
+  for entry in entries {
+    guard case .message(let message) = entry.payload,
+          message.role == "assistant"
+    else {
+      rendered.append(WorkTimelineRenderEntry(
+        id: entry.id,
+        sourceEntryId: entry.id,
+        timestamp: entry.timestamp,
+        payload: .entry(entry)
+      ))
+      continue
+    }
+
+    let preview = message.assistantPreview ?? workInitialAssistantMessagePreview(message.markdown)
+    let shouldSplitAssistantMessage = (
+      message.id == streamingAssistantMessageId
+      || message.id == splitAssistantMessageId
+    )
+    guard shouldSplitAssistantMessage else {
+      rendered.append(WorkTimelineRenderEntry(
+        id: entry.id,
+        sourceEntryId: entry.id,
+        timestamp: entry.timestamp,
+        payload: .entry(entry)
+      ))
+      continue
+    }
+
+    let requestedLineBudget = assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
+    let maxLineBudget = workAssistantMessageMaxLineBudget(for: message.markdown)
+    let nextLineBudget = min(requestedLineBudget + workAssistantMessageLineBudgetStep, maxLineBudget)
+    let accessibilityLabel = workAssistantMessageAccessibilityLabel(preview)
+
+    if workAssistantMessageUsesMonospacedPreview(preview.text) {
+      let model = WorkAssistantMonospacedRenderModel(
+        id: "\(entry.id)-assistant-monospace",
+        messageId: message.id,
+        turnId: message.turnId,
+        itemId: message.itemId,
+        text: preview.text,
+        accessibilityLabel: accessibilityLabel
+      )
+      rendered.append(WorkTimelineRenderEntry(
+        id: model.id,
+        sourceEntryId: entry.id,
+        timestamp: entry.timestamp,
+        payload: .assistantMonospaced(model)
+      ))
+    } else {
+      let blocks = message.id == streamingAssistantMessageId
+        ? parseMarkdownBlocksForStreaming(preview.text, cacheKey: "\(message.id):preview")
+        : parseMarkdownBlocks(preview.text)
+      rendered.reserveCapacity(rendered.count + blocks.count + (preview.isTruncated ? 1 : 0))
+      for block in blocks {
+        let model = WorkAssistantMarkdownBlockRenderModel(
+          id: "\(entry.id)-\(block.id)",
+          messageId: message.id,
+          turnId: message.turnId,
+          itemId: message.itemId,
+          block: block
+        )
+        rendered.append(WorkTimelineRenderEntry(
+          id: model.id,
+          sourceEntryId: entry.id,
+          timestamp: entry.timestamp,
+          payload: .assistantMarkdownBlock(model)
+        ))
+      }
+    }
+
+    if preview.isTruncated {
+      let controls = WorkAssistantMessageControlsModel(
+        id: "\(entry.id)-assistant-controls",
+        messageId: message.id,
+        summaryText: workAssistantMessagePreviewSummaryText(preview),
+        visibleLineCount: preview.visibleLineCount,
+        totalLineCount: preview.totalLineCount,
+        canShowMore: requestedLineBudget < maxLineBudget,
+        nextLineBudget: nextLineBudget
+      )
+      rendered.append(WorkTimelineRenderEntry(
+        id: controls.id,
+        sourceEntryId: entry.id,
+        timestamp: entry.timestamp,
+        payload: .assistantControls(controls)
+      ))
+    }
+  }
+
+  return rendered
 }
 
 func mergeWorkPendingSteers(
@@ -959,11 +1570,12 @@ func mergeWorkPendingSteers(
 }
 
 private struct WorkChatComposerCard: View {
-  let chatSummary: AgentChatSessionSummary?
+  let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
   let dictationTargetId: String
   let pendingInputCount: Int
   let awaitingInputGate: Bool
+  let composerPlaceholder: String
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
@@ -989,6 +1601,7 @@ private struct WorkChatComposerCard: View {
       dictationTargetId: dictationTargetId,
       pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
+      composerPlaceholder: composerPlaceholder,
       canCompose: canCompose,
       canSend: canSend,
       sending: sending,
@@ -1011,32 +1624,20 @@ private struct WorkChatComposerCard: View {
   private var composerSurface: some View {
     RoundedRectangle(cornerRadius: 24, style: .continuous)
       .fill(ADEColor.composerBackground)
-      .glassEffect(in: .rect(cornerRadius: 24))
-      .overlay(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [Color.white.opacity(0.10), .clear],
-              startPoint: .top,
-              endPoint: .bottom
-            )
-          )
-          .allowsHitTesting(false)
-      )
       .overlay(
         RoundedRectangle(cornerRadius: 24, style: .continuous)
           .stroke(ADEColor.glassBorder, lineWidth: 1)
       )
-      .shadow(color: Color.black.opacity(0.42), radius: 18, y: 8)
   }
 }
 
 private struct WorkChatComposerDraftInput: View {
-  let chatSummary: AgentChatSessionSummary?
+  let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
   let dictationTargetId: String
   let pendingInputCount: Int
   let awaitingInputGate: Bool
+  let composerPlaceholder: String
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
@@ -1061,10 +1662,7 @@ private struct WorkChatComposerDraftInput: View {
       WorkChatComposerTextField(
         draftState: draftState,
         canCompose: canCompose,
-        placeholder: workChatComposerPlaceholder(
-          pendingInputCount: pendingInputCount,
-          sessionStatus: awaitingInputGate ? "awaiting-input" : ""
-        )
+        placeholder: composerPlaceholder
       )
 
       if showInterrupt && draftState.hasSendableText {
@@ -1106,7 +1704,7 @@ private struct WorkChatComposerDraftInput: View {
             ) {
               WorkContextUsagePopover(
                 usage: usageViewModel,
-                modelLabel: chatSummary?.model
+                modelLabel: chatSummary.modelLabel
               )
               .frame(maxWidth: 320, alignment: .leading)
               .presentationCompactAdaptation(.popover)
@@ -1362,7 +1960,7 @@ private struct WorkContextUsagePopover: View {
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(0.32), radius: 14, y: 8)
+    .shadow(color: Color.black.opacity(0.10), radius: 3, y: 1)
     .accessibilityIdentifier("Work.Chat.Composer.ContextUsagePopover")
   }
 }
@@ -1409,8 +2007,8 @@ private struct WorkChatComposerTextField: View {
       .foregroundStyle(ADEColor.textPrimary)
       .tint(ADEColor.accent)
       .disabled(!canCompose)
-      .autocorrectionDisabled(false)
-      .textInputAutocapitalization(.sentences)
+      .autocorrectionDisabled(true)
+      .textInputAutocapitalization(.never)
       .focused($composerFocused)
       .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
   }

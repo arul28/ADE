@@ -20,28 +20,36 @@ struct ConnectionSettingsView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 18) {
-          SettingsConnectionHeader(
-            snapshot: presentationModel.connectionSnapshot,
-            onDisconnect: {
-              syncService.disconnect()
-            },
-            onReconnect: { preferTailnet in
-              Task {
-                await syncService.reconnectIfPossible(
-                  userInitiated: true,
-                  preferTailnet: preferTailnet
-                )
+          // One "MACHINE" subsection: header → connection status card → pair
+          // actions, so the whole machine area reads as a single group.
+          VStack(alignment: .leading, spacing: 12) {
+            SettingsSectionHeader(
+              label: "MACHINE",
+              hint: "Your machine connection"
+            )
+
+            SettingsConnectionHeader(
+              snapshot: presentationModel.connectionSnapshot,
+              onDisconnect: {
+                syncService.disconnect()
+              },
+              onReconnect: { preferTailnet in
+                Task {
+                  await syncService.reconnectIfPossible(
+                    userInitiated: true,
+                    preferTailnet: preferTailnet
+                  )
+                }
               }
-            }
-          )
+            )
+
+            SettingsPairingSection(
+              snapshot: presentationModel.pairingSnapshot,
+              presentedSheet: $presentedSheet
+            )
+          }
             .padding(.horizontal, 16)
             .padding(.top, 4)
-
-          SettingsPairingSection(
-            snapshot: presentationModel.pairingSnapshot,
-            presentedSheet: $presentedSheet
-          )
-            .padding(.horizontal, 16)
 
           SettingsAppearanceSection()
             .padding(.horizontal, 16)

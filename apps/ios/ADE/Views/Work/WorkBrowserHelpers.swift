@@ -57,8 +57,9 @@ func workFilteredSessions(
   searchText: String,
   outputSearchBySessionId: [String: String] = [:]
 ) -> [TerminalSessionSummary] {
-  sessions
-    .filter { !isRunOwnedSession($0) }
+  let chatSessionIds = Set(sessions.filter(isChatSession).map(\.id))
+  return sessions
+    .filter { workSessionShouldAppearInWorkList($0, parentChatSessionIds: chatSessionIds) }
     .filter { session in
       let isArchived = archivedSessionIds.contains(session.id)
       let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
@@ -87,6 +88,33 @@ func workFilteredSessions(
       )
     }
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
+}
+
+func workSessionShouldAppearInWorkList(
+  _ session: TerminalSessionSummary,
+  parentChatSessionIds: Set<String>
+) -> Bool {
+  if isRunOwnedSession(session) { return false }
+  if isChatSession(session) { return true }
+
+  let parentId = session.chatSessionId?
+    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !parentId.isEmpty, parentId != session.id, parentChatSessionIds.contains(parentId) {
+    return true
+  }
+
+  if let ptyId = session.ptyId?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !ptyId.isEmpty {
+    return true
+  }
+
+  let status = session.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let runtimeState = session.runtimeState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return status == "running"
+    || status == "idle"
+    || runtimeState == "running"
+    || runtimeState == "idle"
+    || runtimeState == "waiting-input"
 }
 
 func workRunningBannerLiveCounts(_ liveSessions: [TerminalSessionSummary]) -> (chat: Int, terminal: Int) {

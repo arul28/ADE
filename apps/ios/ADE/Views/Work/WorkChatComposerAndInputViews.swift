@@ -98,20 +98,70 @@ func workReasoningChipLabel(_ effort: String?) -> String? {
 }
 
 func workChatComposerSupportsFastMode(_ summary: AgentChatSessionSummary) -> Bool {
-  if summary.effectiveFastMode { return true }
-  if workComposerModelOption(modelId: summary.modelId ?? summary.model, provider: summary.provider)?
-    .supportsServiceTier("fast") == true { return true }
-  return workModelRefsLookFastCapable([summary.modelId, summary.model])
+  workComposerFastModeSupported(
+    modelId: summary.modelId ?? summary.model,
+    provider: summary.provider,
+    effectiveFastMode: summary.effectiveFastMode,
+    fallbackRefs: [summary.modelId, summary.model]
+  )
 }
 
 /// Whether a model (by raw id + provider family) can use the "fast" service
 /// tier. Shared by the in-session and new-chat composers so both surfaces show
 /// the fast-mode lightning toggle for the same models.
 func workComposerSupportsFastMode(modelId: String, provider: String) -> Bool {
-  if workComposerModelOption(modelId: modelId, provider: provider)?.supportsServiceTier("fast") == true {
-    return true
+  workComposerFastModeSupported(
+    modelId: modelId,
+    provider: provider,
+    effectiveFastMode: false,
+    fallbackRefs: [modelId]
+  )
+}
+
+private func workComposerFastModeSupported(
+  modelId: String,
+  provider: String,
+  effectiveFastMode: Bool,
+  fallbackRefs: [String?]
+) -> Bool {
+  if effectiveFastMode { return true }
+  return WorkComposerFastModeCapabilityCache.shared.supportsFastMode(
+    modelId: modelId,
+    provider: provider,
+    fallbackRefs: fallbackRefs
+  )
+}
+
+private final class WorkComposerFastModeCapabilityCache {
+  static let shared = WorkComposerFastModeCapabilityCache()
+
+  private let lock = NSLock()
+  private var cachedValues: [String: Bool] = [:]
+
+  func supportsFastMode(modelId: String, provider: String, fallbackRefs: [String?]) -> Bool {
+    let trimmedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let refsKey = fallbackRefs
+      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+      .filter { !$0.isEmpty }
+      .joined(separator: ",")
+    let key = "\(providerFamilyKey(provider))|\(trimmedModelId.lowercased())|\(refsKey)"
+
+    lock.lock()
+    if let cached = cachedValues[key] {
+      lock.unlock()
+      return cached
+    }
+    lock.unlock()
+
+    let supported = workComposerModelOption(modelId: trimmedModelId, provider: provider)?
+      .supportsServiceTier("fast") == true
+      || workModelRefsLookFastCapable(fallbackRefs)
+
+    lock.lock()
+    cachedValues[key] = supported
+    lock.unlock()
+    return supported
   }
-  return workModelRefsLookFastCapable([modelId])
 }
 
 /// Resolve the catalog `WorkModelOption` for a raw model id, preferring the
@@ -446,7 +496,7 @@ struct WorkComposerControlsRow: View {
 /// and nothing else. Reasoning is summarized in the model chip and changed
 /// through the full model picker.
 struct WorkComposerChipStrip: View {
-  let chatSummary: AgentChatSessionSummary?
+  let chatSummary: WorkChatSummaryRenderContext
   let pendingInputCount: Int
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
@@ -471,17 +521,17 @@ struct WorkComposerChipStrip: View {
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
-        if let chatSummary {
-          let currentMode = workInitialRuntimeMode(chatSummary)
+        if chatSummary.isAvailable {
+          let currentMode = chatSummary.runtimeMode
           WorkComposerControlsRow(
             provider: chatSummary.provider,
-            modelDisplayName: prettyModelName(chatSummary.model),
-            reasoningEffort: chatSummary.reasoningEffort ?? "",
+            modelDisplayName: chatSummary.modelLabel,
+            reasoningEffort: chatSummary.reasoningEffort,
             currentMode: currentMode,
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
             modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
             isCollapsed: isCollapsed,
-            fastModeSupported: workChatComposerSupportsFastMode(chatSummary),
+            fastModeSupported: chatSummary.fastModeSupported,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
             settingsMutationInFlight: settingsMutationInFlight,
             onOpenModelPicker: onOpenModelPicker,
@@ -632,7 +682,6 @@ struct WorkQueuedSteerStrip: View {
     }
     .padding(10)
     .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 14))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
@@ -831,8 +880,7 @@ struct WorkQueuedSteerRow: View {
       }
     }
     .padding(10)
-    .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 12))
+    .background(ADEColor.surfaceBackground.opacity(0.86), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
@@ -897,17 +945,16 @@ func workPreviewIsWireframe(_ text: String) -> Bool {
     "│", "┌", "┐", "└", "┘", "├", "┤", "┼", "─",
     "╭", "╮", "╰", "╯", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╬",
     "▌", "▐", "█", "▓", "▒", "░", "▢", "▣", "□", "■",
-    "●", "○", "◉", "◯", "◦",
   ]
   if text.contains(where: { wireframeScalars.contains($0) }) {
     return true
   }
   let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
   guard lines.count >= 2 else { return false }
-  let indentedLines = lines.filter { line in
-    line.range(of: #"^\s{2,}\S"#, options: .regularExpression) != nil
+  let alignedColumnLines = lines.filter { line in
+    line.range(of: #"\S\s{3,}\S"#, options: .regularExpression) != nil
   }
-  return indentedLines.count >= 2
+  return alignedColumnLines.count >= 2
 }
 
 struct WorkStructuredQuestionCard: View {

@@ -12833,6 +12833,7 @@ async function runServe(
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler },
+    { buildRosterSnapshot },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -12841,6 +12842,7 @@ async function runServe(
     import("./services/sync/sharedSyncListener"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
     import("./services/sync/brainProjectActionsSyncHandler"),
+    import("./services/sync/rosterBuilder"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -13198,6 +13200,19 @@ async function runServe(
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       phonePairingStateDir: layout.secretsDir,
       projectCatalogProvider: machineProjectCatalogProvider,
+      // All-projects chat roster (mobile hub). Closes over `scopeRegistry`,
+      // which is assigned by this very `new ProjectScopeRegistry(...)` call —
+      // safe because `buildSnapshot` only runs later (on `roster_subscribe`),
+      // by which point the binding is set (mirrors machineProjectCatalogProvider).
+      rosterProvider: {
+        buildSnapshot: () =>
+          buildRosterSnapshot({
+            projectRegistry,
+            scopeRegistry,
+            hostProjectId: preferredSyncProjectId,
+            logger: headlessProjectLogger,
+          }),
+      },
     },
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;

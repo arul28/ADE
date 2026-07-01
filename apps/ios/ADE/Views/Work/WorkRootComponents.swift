@@ -240,7 +240,6 @@ struct WorkFilterChip: View {
           selected ? tint.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.5),
           in: Capsule(style: .continuous)
         )
-        .glassEffect()
         .overlay(
           Capsule(style: .continuous)
             .stroke(selected ? tint.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.6)
@@ -278,8 +277,7 @@ struct WorkFilterMenuLabel: View {
     .padding(.horizontal, 10)
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 10))
+    .background(ADEColor.surfaceBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
@@ -317,7 +315,6 @@ struct WorkSidebarSectionHeader: View {
           .padding(.horizontal, 7)
           .padding(.vertical, 2)
           .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
-          .glassEffect()
       }
       .padding(.horizontal, 4)
       .padding(.vertical, 8)
@@ -462,6 +459,7 @@ struct WorkSessionListRow: View {
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
+  var compact: Bool = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
   let isChecked: Bool
@@ -477,6 +475,7 @@ struct WorkSessionListRow: View {
   let onGoToLane: (TerminalSessionSummary) -> Void
 
   var body: some View {
+    let rowStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     Button {
       if isSelecting {
         onToggleSelect(session)
@@ -496,10 +495,13 @@ struct WorkSessionListRow: View {
           lane: lane,
           pullRequest: pullRequest,
           chatSummary: chatSummary,
+          status: rowStatus,
           isArchived: isArchived,
           transitionNamespace: transitionNamespace,
-          isSelectedTransitionSource: selectedSessionId == session.id
+          isSelectedTransitionSource: selectedSessionId == session.id,
+          compact: compact
         )
+        .equatable()
       }
     }
     .buttonStyle(.plain)
@@ -511,7 +513,7 @@ struct WorkSessionListRow: View {
         }
     )
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-      if shouldShowStopRuntimeAction {
+      if isStoppableRuntimeStatus(session, status: rowStatus) {
         Button("Stop runtime", role: .destructive) {
           onStopRuntime(session)
         }
@@ -534,7 +536,7 @@ struct WorkSessionListRow: View {
       } label: {
         Label("Rename", systemImage: "pencil")
       }
-      if shouldShowStopRuntimeAction {
+      if isStoppableRuntimeStatus(session, status: rowStatus) {
         Button(role: .destructive) {
           onStopRuntime(session)
         } label: {
@@ -573,16 +575,67 @@ struct WorkSessionListRow: View {
     }
   }
 
-  private var status: String {
-    normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-  }
-
-  private var shouldShowStopRuntimeAction: Bool {
-    isStoppableRuntimeSession(session, summary: chatSummary)
-  }
-
   private var shouldShowDeleteAction: Bool {
     isChatSession(session)
+  }
+}
+
+struct WorkChildShellSection<Content: View>: View {
+  let group: WorkSessionChildGroup
+  let collapsed: Bool
+  let onToggle: () -> Void
+  let content: () -> Content
+
+  init(
+    group: WorkSessionChildGroup,
+    collapsed: Bool,
+    onToggle: @escaping () -> Void,
+    @ViewBuilder content: @escaping () -> Content
+  ) {
+    self.group = group
+    self.collapsed = collapsed
+    self.onToggle = onToggle
+    self.content = content
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Button(action: onToggle) {
+        HStack(spacing: 5) {
+          Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 9, alignment: .center)
+          Image(systemName: "terminal")
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+          Text(group.label)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .textCase(.uppercase)
+            .tracking(0.4)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(group.label). Tap to \(collapsed ? "expand" : "collapse").")
+
+      if !collapsed {
+        VStack(spacing: 3) {
+          content()
+        }
+      }
+    }
+    .padding(.leading, 14)
+    .overlay(alignment: .leading) {
+      Rectangle()
+        .fill(ADEColor.glassBorder.opacity(0.75))
+        .frame(width: 1)
+        .padding(.leading, 3)
+    }
   }
 }
 
@@ -685,16 +738,148 @@ struct WorkLanePrIndicator: View {
   }
 }
 
-struct WorkSessionRow: View {
+private struct WorkSessionRowRenderSignature: Equatable {
+  let sessionId: String
+  let title: String
+  let provider: String?
+  let symbolProvider: String?
+  let laneName: String
+  let laneColor: String?
+  let laneDirty: Bool
+  let laneAhead: Int
+  let laneBehind: Int
+  let activityTimestamp: String
+  let previewSource: String?
+  let pinned: Bool
+  let pullRequestNumber: Int?
+  let pullRequestState: String?
+  let status: String
+  let isArchived: Bool
+  let isSelectedTransitionSource: Bool
+  let compact: Bool
+
+  init(
+    session: TerminalSessionSummary,
+    lane: LaneSummary?,
+    pullRequest: LanePrTag?,
+    chatSummary: AgentChatSessionSummary?,
+    status: String,
+    isArchived: Bool,
+    isSelectedTransitionSource: Bool,
+    compact: Bool
+  ) {
+    self.sessionId = session.id
+    self.title = chatSummary?.title ?? session.title
+    self.provider = chatSummary?.provider ?? session.toolType
+    self.symbolProvider = chatSummary?.provider
+    self.laneName = session.laneName
+    self.laneColor = lane?.color
+    self.laneDirty = lane?.status.dirty == true
+    self.laneAhead = lane?.status.ahead ?? 0
+    self.laneBehind = lane?.status.behind ?? 0
+    self.activityTimestamp = workSessionActivityTimestamp(session: session, summary: chatSummary)
+    self.previewSource = chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview
+    self.pinned = session.pinned
+    self.pullRequestNumber = pullRequest?.githubPrNumber
+    self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
+    self.status = status
+    self.isArchived = isArchived
+    self.isSelectedTransitionSource = isSelectedTransitionSource
+    self.compact = compact
+  }
+}
+
+struct WorkSessionRow: View, Equatable {
   let session: TerminalSessionSummary
   let lane: LaneSummary?
   var pullRequest: LanePrTag? = nil
   let chatSummary: AgentChatSessionSummary?
+  let status: String
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
+  var compact: Bool = false
+  private let renderSignature: WorkSessionRowRenderSignature
+
+  init(
+    session: TerminalSessionSummary,
+    lane: LaneSummary?,
+    pullRequest: LanePrTag? = nil,
+    chatSummary: AgentChatSessionSummary?,
+    status: String,
+    isArchived: Bool,
+    transitionNamespace: Namespace.ID?,
+    isSelectedTransitionSource: Bool,
+    compact: Bool = false
+  ) {
+    self.session = session
+    self.lane = lane
+    self.pullRequest = pullRequest
+    self.chatSummary = chatSummary
+    self.status = status
+    self.isArchived = isArchived
+    self.transitionNamespace = transitionNamespace
+    self.isSelectedTransitionSource = isSelectedTransitionSource
+    self.compact = compact
+    self.renderSignature = WorkSessionRowRenderSignature(
+      session: session,
+      lane: lane,
+      pullRequest: pullRequest,
+      chatSummary: chatSummary,
+      status: status,
+      isArchived: isArchived,
+      isSelectedTransitionSource: isSelectedTransitionSource,
+      compact: compact
+    )
+  }
+
+  static func == (lhs: WorkSessionRow, rhs: WorkSessionRow) -> Bool {
+    lhs.renderSignature == rhs.renderSignature
+  }
 
   var body: some View {
+    if compact {
+      compactBody
+    } else {
+      standardBody
+    }
+  }
+
+  private var compactBody: some View {
+    HStack(alignment: .center, spacing: 8) {
+      WorkProviderBareLogo(
+        provider: chatSummary?.provider ?? session.toolType,
+        fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
+        tint: providerTintColor,
+        size: 20
+      )
+
+      Text(chatSummary?.title ?? session.title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+
+      Spacer(minLength: 6)
+
+      Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(providerTintColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 11, style: .continuous)
+        .stroke(providerTintColor.opacity(0.18), lineWidth: 0.6)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityLabel)
+  }
+
+  private var standardBody: some View {
     HStack(alignment: .center, spacing: 12) {
       WorkProviderBareLogo(
         provider: chatSummary?.provider ?? session.toolType,
@@ -805,8 +990,7 @@ struct WorkSessionRow: View {
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(providerTintColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 16))
+    .background(providerTintColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 16, style: .continuous)
         .stroke(providerTintColor.opacity(0.25), lineWidth: 0.75)
@@ -831,11 +1015,11 @@ struct WorkSessionRow: View {
 
   var rowTint: Color {
     if isArchived { return ADEColor.warning }
-    return workChatStatusTint(normalizedWorkChatSessionStatus(session: session, summary: chatSummary))
+    return workChatStatusTint(status)
   }
 
   var accessibilityLabel: String {
-    var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(session, summary: chatSummary)]
+    var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
     if session.pinned {
       parts.append("pinned")
     }

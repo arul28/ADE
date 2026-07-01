@@ -978,6 +978,8 @@ struct WorkEventCardView: View {
   var body: some View {
     if card.kind == "contextCompact" {
       WorkContextCompactDivider(summary: card.body, isInProgress: card.isInProgress)
+    } else if card.kind == "status" {
+      statusRibbonBody
     } else if isRibbonKind(card.kind) {
       ribbonBody
     } else {
@@ -1017,6 +1019,42 @@ struct WorkEventCardView: View {
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel([card.title, card.body].compactMap { $0 }.joined(separator: ". "))
+  }
+
+  private var statusRibbonBody: some View {
+    let normalized = card.metadata.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    let isFailure = normalized == "failed"
+    let isInterrupted = normalized == "interrupted"
+    let tint = isFailure ? ADEColor.danger : (isInterrupted ? ADEColor.warning : ADEColor.textMuted)
+
+    return HStack(alignment: .center, spacing: 8) {
+      Image(systemName: isFailure ? "xmark.circle.fill" : "pause.circle.fill")
+        .font(.system(size: 11, weight: .bold))
+      Text(normalized.isEmpty ? ribbonText.uppercased() : normalized.uppercased())
+        .font(.caption2.monospaced().weight(.semibold))
+        .tracking(0.8)
+      if let body = card.body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+        Text(body)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+      Spacer(minLength: 8)
+      Text(relativeTimestamp(card.timestamp))
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .foregroundStyle(tint.opacity(0.9))
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .background(tint.opacity(isFailure || isInterrupted ? 0.05 : 0.0), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(tint.opacity(isFailure || isInterrupted ? 0.14 : 0.0), lineWidth: 1)
+    )
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .combine)
     .accessibilityLabel([card.title, card.body].compactMap { $0 }.joined(separator: ". "))
@@ -1701,6 +1739,10 @@ struct WorkSubagentStrip: View {
       Image(systemName: "xmark.circle.fill")
         .font(.system(size: 11, weight: .bold))
         .foregroundStyle(tint)
+    case .stopped:
+      Image(systemName: "pause.circle.fill")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(tint)
     }
   }
 
@@ -1749,6 +1791,7 @@ struct WorkSubagentStrip: View {
     case .running: return ADEColor.accent
     case .succeeded: return ADEColor.success
     case .failed: return ADEColor.danger
+    case .stopped: return ADEColor.warning
     }
   }
 
@@ -1757,6 +1800,7 @@ struct WorkSubagentStrip: View {
     case .running: return "Running"
     case .succeeded: return "Done"
     case .failed: return "Failed"
+    case .stopped: return "Halted"
     }
   }
 
@@ -1771,3 +1815,343 @@ struct WorkSubagentStrip: View {
     return String(trimmed.prefix(limit - 1)) + "…"
   }
 }
+
+struct WorkSubagentActivePopup: View {
+  let count: Int
+  let onOpen: () -> Void
+
+  var body: some View {
+    Button(action: onOpen) {
+      HStack(spacing: 8) {
+        Image(systemName: "person.2.fill")
+          .font(.system(size: 12, weight: .semibold))
+        Text("\(count) active")
+          .font(.caption.weight(.semibold))
+        Image(systemName: "chevron.up")
+          .font(.system(size: 10, weight: .bold))
+      }
+      .foregroundStyle(ADEColor.accent)
+      .padding(.horizontal, 12)
+      .padding(.vertical, 8)
+      .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.22), lineWidth: 1)
+      )
+      .contentShape(Capsule(style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(count) active subagent\(count == 1 ? "" : "s")")
+  }
+}
+
+struct WorkSubagentDrawerSheet: View {
+  let snapshots: [WorkSubagentSnapshot]
+  let provider: String?
+  let selectedTaskId: String?
+  let probingTaskId: String?
+  @Binding var expandedTaskIds: Set<String>
+  let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
+
+  private var foreground: [WorkSubagentSnapshot] {
+    snapshots.filter { !$0.background }
+  }
+
+  private var background: [WorkSubagentSnapshot] {
+    snapshots.filter(\.background)
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 16) {
+          if !foreground.isEmpty {
+            section(title: "Subagents", snapshots: foreground)
+          }
+          if !background.isEmpty {
+            section(title: "Background", snapshots: background)
+          }
+          if snapshots.isEmpty {
+            ADEEmptyStateView(
+              symbol: "person.2",
+              title: "No subagents",
+              message: "This chat has not started any subagents yet."
+            )
+            .padding(.top, 24)
+          }
+        }
+        .padding(16)
+      }
+      .scrollIndicators(.hidden)
+      .background(workChatCanvasBackground.ignoresSafeArea())
+      .navigationTitle("Subagents")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+  }
+
+  @ViewBuilder
+  private func section(title: String, snapshots: [WorkSubagentSnapshot]) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text(title)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .textCase(.uppercase)
+      VStack(spacing: 6) {
+        ForEach(snapshots) { snapshot in
+          row(snapshot)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func row(_ snapshot: WorkSubagentSnapshot) -> some View {
+    let selected = selectedTaskId == snapshot.taskId
+    let expanded = expandedTaskIds.contains(snapshot.taskId)
+    let elapsed = workSubagentElapsedLabel(snapshot)
+    let detailText = drawerDetailText(snapshot)
+    let lastToolName = trimmedNonEmpty(snapshot.lastToolName)
+    let subtitle = drawerSubtitleText(snapshot, elapsed: elapsed, detailText: detailText)
+    let showsDisclosure = snapshot.status == .running || detailText != nil || lastToolName != nil
+    Button {
+      Task { await onSelect(snapshot) }
+    } label: {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 10) {
+          WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+          VStack(alignment: .leading, spacing: 2) {
+            Text(workSubagentMeaningfulName(snapshot))
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(rowTitleColor(snapshot))
+              .lineLimit(1)
+              .truncationMode(.tail)
+            if let subtitle {
+              Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+          }
+          Spacer(minLength: 0)
+          HStack(spacing: 8) {
+            if probingTaskId == snapshot.taskId {
+              ProgressView()
+                .controlSize(.small)
+            }
+            WorkSubagentStatusChip(status: snapshot.status)
+            if showsDisclosure {
+              Image(systemName: selected ? "arrow.uturn.left" : "chevron.right")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
+        }
+
+        if expanded, detailText != nil || lastToolName != nil {
+          VStack(alignment: .leading, spacing: 5) {
+            if let detailText {
+              Text(detailText)
+            }
+            if let tool = lastToolName {
+              Text("last: \(tool)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.leading, 34)
+        }
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 9)
+      .background(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .fill(selected ? ADEColor.accent.opacity(0.12) : ADEColor.cardBackground.opacity(0.52))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func drawerDetailText(_ snapshot: WorkSubagentSnapshot) -> String? {
+    if let summary = filteredSubagentDetail(snapshot.latestSummary) {
+      return summary
+    }
+
+    return filteredSubagentDetail(snapshot.description)
+  }
+
+  private func drawerSubtitleText(
+    _ snapshot: WorkSubagentSnapshot,
+    elapsed: String?,
+    detailText: String?
+  ) -> String? {
+    var parts: [String] = []
+    if let elapsed {
+      parts.append(elapsed)
+    }
+    if snapshot.background {
+      parts.append("background")
+    }
+    if let detailText {
+      parts.append(truncatedDrawerText(detailText, limit: 58))
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  private func filteredSubagentDetail(_ value: String?) -> String? {
+    guard let trimmed = trimmedNonEmpty(value) else {
+      return nil
+    }
+    switch trimmed.lowercased() {
+    case "agent closed", "agent stopped", "subagent closed", "subagent stopped":
+      return nil
+    default:
+      return trimmed
+    }
+  }
+
+  private func trimmedNonEmpty(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    return trimmed
+  }
+
+  private func truncatedDrawerText(_ value: String, limit: Int) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count > limit, limit > 1 else {
+      return trimmed
+    }
+    return String(trimmed.prefix(limit - 1)) + "…"
+  }
+
+  private func rowTitleColor(_ snapshot: WorkSubagentSnapshot) -> Color {
+    switch snapshot.status {
+    case .running: return ADEColor.accent
+    case .failed: return ADEColor.danger
+    case .succeeded: return ADEColor.textPrimary
+    case .stopped: return ADEColor.textMuted
+    }
+  }
+}
+
+private struct WorkSubagentStatusChip: View {
+  let status: WorkSubagentSnapshot.Status
+
+  var body: some View {
+    Text(workSubagentStatusLabel(status))
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(tint)
+      .lineLimit(1)
+      .fixedSize(horizontal: true, vertical: false)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 3)
+      .background(tint.opacity(0.13), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(tint.opacity(0.28), lineWidth: 0.75)
+      )
+      .accessibilityLabel(workSubagentStatusLabel(status))
+  }
+
+  private var tint: Color {
+    workSubagentStatusTint(status)
+  }
+}
+
+private struct WorkSubagentGlyph: View {
+  let id: String
+  let status: WorkSubagentSnapshot.Status
+
+  private var color: Color {
+    let palette: [Color] = [ADEColor.accent, ADEColor.success, ADEColor.warning, ADEColor.info, ADEColor.danger]
+    return palette[abs(workStableSubagentHash(id)) % palette.count]
+  }
+
+  var body: some View {
+    ZStack(alignment: .bottomTrailing) {
+      LazyVGrid(columns: Array(repeating: GridItem(.fixed(5), spacing: 1), count: 3), spacing: 1) {
+        ForEach(0..<9, id: \.self) { index in
+          RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+            .fill(workSubagentGlyphBit(id: id, index: index) ? color : color.opacity(0.22))
+            .frame(width: 5, height: 5)
+        }
+      }
+      .padding(5)
+      .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+      Circle()
+        .fill(statusColor)
+        .frame(width: 7, height: 7)
+        .overlay(Circle().stroke(workChatCanvasBackground, lineWidth: 1.5))
+    }
+    .frame(width: 28, height: 28)
+  }
+
+  private var statusColor: Color {
+    workSubagentStatusTint(status)
+  }
+}
+
+private func workStableSubagentHash(_ value: String) -> Int {
+  var hash = 5381
+  for scalar in value.unicodeScalars {
+    hash = ((hash << 5) &+ hash) &+ Int(scalar.value)
+  }
+  return hash
+}
+
+private func workSubagentGlyphBit(id: String, index: Int) -> Bool {
+  let hash = abs(workStableSubagentHash("\(id):\(index)"))
+  return hash % 3 != 0
+}
+
+private func workSubagentStatusLabel(_ status: WorkSubagentSnapshot.Status) -> String {
+  switch status {
+  case .running: return "Running"
+  case .succeeded: return "Completed"
+  case .failed: return "Failed"
+  case .stopped: return "Stopped"
+  }
+}
+
+private func workSubagentStatusTint(_ status: WorkSubagentSnapshot.Status) -> Color {
+  switch status {
+  case .running: return ADEColor.accent
+  case .succeeded: return ADEColor.success
+  case .failed: return ADEColor.danger
+  case .stopped: return ADEColor.warning
+  }
+}
+
+private func workSubagentElapsedLabel(_ snapshot: WorkSubagentSnapshot) -> String? {
+  guard let startedAt = snapshot.startedAt,
+        let start = parseWorkTimestampForSubagent(startedAt)
+  else { return nil }
+  let end = snapshot.status == .running
+    ? Date()
+    : snapshot.updatedAt.flatMap(parseWorkTimestampForSubagent) ?? Date()
+  return WorkActivityIndicator.formatElapsedSeconds(Int(max(0, end.timeIntervalSince(start))))
+}
+
+private func parseWorkTimestampForSubagent(_ value: String) -> Date? {
+  workSubagentIsoFormatter.date(from: value) ?? workSubagentIsoFallbackFormatter.date(from: value)
+}
+
+private let workSubagentIsoFormatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+
+private let workSubagentIsoFallbackFormatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime]
+  return formatter
+}()

@@ -51,6 +51,7 @@ import {
   SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
   type SyncHostService,
   type SyncProjectCatalogProvider,
+  type SyncRosterProvider,
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -127,6 +128,7 @@ type SyncServiceArgs = {
   forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
+  rosterProvider?: SyncRosterProvider;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
@@ -722,6 +724,7 @@ export function createSyncService(args: SyncServiceArgs) {
       runtimeVersion: args.appVersion ?? "",
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
+      rosterProvider: args.rosterProvider,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
       onStateChanged: () => {
