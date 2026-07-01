@@ -12406,12 +12406,13 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && (msg as any).subtype === "api_retry") {
           const retryMsg = msg as any;
           const error = typeof retryMsg.error === "string" ? retryMsg.error : "transient_error";
-          // A 401/403 (logged-out) retry will never recover on its own. Stop the
-          // retry storm on the first auth attempt instead of surfacing
+          // A logged-out/auth retry will never recover on its own. Stop the retry
+          // storm on the first auth attempt instead of surfacing
           // "retry 1/10 … 10/10" — rate-limit/overloaded retries still proceed.
+          // Do not treat every bare 403 as logout: Anthropic can use 403 for
+          // org/model access restrictions, which should not render a login card.
           if (
             retryMsg.error_status === 401
-            || retryMsg.error_status === 403
             || error === "authentication_failed"
             || isClaudeRuntimeAuthError(error)
           ) {

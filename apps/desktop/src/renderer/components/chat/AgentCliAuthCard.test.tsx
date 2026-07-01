@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   AgentCliAuthCard,
+  CHAT_AUTH_RETRY_REJECTED_EVENT,
   CHAT_AUTH_RECOVERED_EVENT,
   CHAT_RETRY_AUTH_TURN_EVENT,
   type AgentCliAuthCardInfo,
@@ -155,6 +156,17 @@ describe("AgentCliAuthCard", () => {
   it("does not offer Retry without a session to resend into", () => {
     render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" />);
     expect(screen.queryByRole("button", { name: /retry turn/i })).toBeNull();
+  });
+
+  it("clears the retry spinner when the pane rejects the retry", () => {
+    render(<AgentCliAuthCard agentCli={unauthenticatedClaude} laneId="lane-1" chatSessionId="chat-7" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /retry turn/i }));
+    expect(screen.getByRole("button", { name: /retrying/i })).toBeTruthy();
+
+    fireEvent(window, new CustomEvent(CHAT_AUTH_RETRY_REJECTED_EVENT, { detail: { sessionId: "chat-7" } }));
+
+    expect(screen.getByRole("button", { name: /retry turn/i })).toBeTruthy();
   });
 
   it("collapses to a reconnected confirmation when the session recovers", () => {

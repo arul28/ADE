@@ -195,7 +195,7 @@ render them, but neither one *runs* them.
   through its retry budget ("retry 1/10 … 10/10"). On the first
   definitive auth signal — an `auth_status` error, an `assistant`
   message with `error: "authentication_failed"`, an `api_retry` whose
-  `error_status` is 401/403 (or whose error reads as auth), or a
+  `error_status` is 401 (or whose error reads as auth), or a
   `result` whose errors look like invalid credentials
   (`isClaudeRuntimeAuthError`) — `failClaudeTurnUnauthenticated()`
   emits one terse `system_notice` (`noticeKind: "auth"`, "Claude is

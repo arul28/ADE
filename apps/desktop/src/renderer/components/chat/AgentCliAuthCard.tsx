@@ -20,6 +20,11 @@ export const CHAT_RETRY_AUTH_TURN_EVENT = "ade:chat:retry-auth-turn";
  * cards for that session collapse into a quiet "Reconnected" confirmation.
  */
 export const CHAT_AUTH_RECOVERED_EVENT = "ade:chat:auth-recovered";
+/**
+ * Dispatched by the chat pane when a retry click is ignored locally (for example
+ * another send is already in flight or there is no user message to resend).
+ */
+export const CHAT_AUTH_RETRY_REJECTED_EVENT = "ade:chat:retry-auth-rejected";
 
 // Claude logs out far more often than the other CLIs, so its recovery card wears
 // Claude's terracotta rather than the generic amber — it reads as "Claude", not a
@@ -192,23 +197,39 @@ export function AgentCliAuthCard({
     }
   }, []);
 
+  const clearRetrying = useCallback(() => {
+    if (retryResetTimerRef.current != null) {
+      window.clearTimeout(retryResetTimerRef.current);
+      retryResetTimerRef.current = null;
+    }
+    setRetrying(false);
+  }, []);
+
   // A later turn for this session succeeded — collapse to a quiet confirmation.
   useEffect(() => {
     if (!chatSessionId) return undefined;
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
       if (detail?.sessionId && detail.sessionId === chatSessionId) {
-        if (retryResetTimerRef.current != null) {
-          window.clearTimeout(retryResetTimerRef.current);
-          retryResetTimerRef.current = null;
-        }
-        setRetrying(false);
+        clearRetrying();
         setResolved(true);
       }
     };
     window.addEventListener(CHAT_AUTH_RECOVERED_EVENT, handler);
     return () => window.removeEventListener(CHAT_AUTH_RECOVERED_EVENT, handler);
-  }, [chatSessionId]);
+  }, [chatSessionId, clearRetrying]);
+
+  useEffect(() => {
+    if (!chatSessionId) return undefined;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
+      if (detail?.sessionId && detail.sessionId === chatSessionId) {
+        clearRetrying();
+      }
+    };
+    window.addEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, handler);
+    return () => window.removeEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, handler);
+  }, [chatSessionId, clearRetrying]);
 
   const handleRetry = useCallback(() => {
     if (!chatSessionId || retrying) return;

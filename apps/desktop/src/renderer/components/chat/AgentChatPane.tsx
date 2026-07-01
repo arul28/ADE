@@ -128,7 +128,7 @@ import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
-import { CHAT_AUTH_RECOVERED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
@@ -6283,8 +6283,15 @@ export function AgentChatPane({
   // Claude logout — fired by the inline re-login card's "Retry turn" button. The
   // re-check is implicit: if Claude is still logged out the new turn fast-fails
   // again and a fresh card appears.
+  const rejectAuthRetry = useCallback((sessionId: string) => {
+    window.dispatchEvent(new CustomEvent(CHAT_AUTH_RETRY_REJECTED_EVENT, { detail: { sessionId } }));
+  }, []);
+
   const resendLastUserMessageForAuthRetry = useCallback(async (sessionId: string) => {
-    if (submitInFlightRef.current) return;
+    if (submitInFlightRef.current) {
+      rejectAuthRetry(sessionId);
+      return;
+    }
     const events = selectedEventsForDisplayRef.current;
     let text: string | null = null;
     for (let index = events.length - 1; index >= 0; index -= 1) {
@@ -6294,7 +6301,10 @@ export function AgentChatPane({
         break;
       }
     }
-    if (!text) return;
+    if (!text) {
+      rejectAuthRetry(sessionId);
+      return;
+    }
     try {
       submitInFlightRef.current = true;
       setBusy(true);
@@ -6313,7 +6323,7 @@ export function AgentChatPane({
       submitInFlightRef.current = false;
       setBusy(false);
     }
-  }, [refreshSessions, touchSession]);
+  }, [refreshSessions, rejectAuthRetry, touchSession]);
 
   // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
   // turn"; only the pane that owns the session resends.
@@ -6335,7 +6345,9 @@ export function AgentChatPane({
     if (!sessionId) return;
     const events = selectedEventsForDisplay;
     let lastAuthErrorIndex = -1;
+    let lastAuthErrorKey: string | null = null;
     for (let index = events.length - 1; index >= 0; index -= 1) {
+      const envelope = events[index];
       const evt = events[index]?.event;
       if (
         evt?.type === "error"
@@ -6343,6 +6355,9 @@ export function AgentChatPane({
         && evt.errorInfo?.agentCli?.category === "unauthenticated"
       ) {
         lastAuthErrorIndex = index;
+        const turnId = typeof evt.turnId === "string" && evt.turnId.trim().length ? evt.turnId.trim() : null;
+        const itemId = typeof evt.itemId === "string" && evt.itemId.trim().length ? evt.itemId.trim() : null;
+        lastAuthErrorKey = `${sessionId}:${turnId ?? itemId ?? envelope?.timestamp ?? evt.message}`;
         break;
       }
     }
@@ -6356,7 +6371,7 @@ export function AgentChatPane({
       if (evt.type === "tool_call") { recovered = true; break; }
     }
     if (!recovered) return;
-    const key = `${sessionId}:${lastAuthErrorIndex}`;
+    const key = lastAuthErrorKey ?? `${sessionId}:auth-error`;
     if (dispatchedAuthRecoveryRef.current.has(key)) return;
     const recoveryDispatchTimer = window.setTimeout(() => {
       dispatchedAuthRecoveryRef.current.add(key);
