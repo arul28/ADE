@@ -170,15 +170,26 @@ struct WorkChatSessionView: View {
     return primaryPendingInput?.id
   }
 
-  /// Scroll anchor for the first blocking inline pending card. Questions and
-  /// plan approvals render inline under "pending-question-<id>"; approval gates
-  /// render in the top overview section, so we just pin to the top for those.
+  /// Scroll anchor for the first blocking inline pending card. Plan approvals
+  /// render in the composer strip above the prompt, so they do not scroll.
   private var blockingPendingScrollAnchor: String? {
     switch primaryPendingInput {
     case .question(let model): return "pending-question-\(model.id)"
-    case .planApproval(let model): return "pending-question-\(model.id)"
-    case .permission, .modelSelection, .approval, .none: return nil
+    case .planApproval, .permission, .modelSelection, .approval, .none: return nil
     }
+  }
+
+  var pendingPlanApproval: WorkPendingPlanApprovalModel? {
+    for input in pendingInputs {
+      if case .planApproval(let model) = input {
+        return model
+      }
+    }
+    return nil
+  }
+
+  private var composerPlaceholderText: String {
+    workChatComposerPlaceholder(pendingInputs: pendingInputs, sessionStatus: sessionStatus)
   }
 
   /// React to a newly-arrived blocking pending input: fire one light haptic and
@@ -523,10 +534,27 @@ struct WorkChatSessionView: View {
           )
       }
 
+      if let planApproval = pendingPlanApproval {
+        WorkPlanComposerStrip(
+          plan: planApproval,
+          busy: actionInFlight || !isLive,
+          onDecision: { decision, feedback in
+            await runSessionAction {
+              await onApproveRequest(planApproval.id, decision)
+              if decision == .decline, let feedback, !feedback.isEmpty {
+                _ = await onSend(feedback)
+              }
+            }
+          },
+          fallbackProvider: chatSummary?.provider
+        )
+      }
+
       WorkChatComposerCard(
         chatSummary: chatSummary,
         usageViewModel: workContextUsageViewModel(transcript: transcript, summary: chatSummary),
         dictationTargetId: "work-chat:\(session.id)",
+        composerPlaceholder: composerPlaceholderText,
         pendingInputCount: pendingInputs.count,
         awaitingInputGate: hasPendingInputGate,
         canCompose: canCompose,
@@ -962,6 +990,7 @@ private struct WorkChatComposerCard: View {
   let chatSummary: AgentChatSessionSummary?
   let usageViewModel: WorkContextUsageViewModel?
   let dictationTargetId: String
+  let composerPlaceholder: String
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
@@ -987,6 +1016,7 @@ private struct WorkChatComposerCard: View {
       chatSummary: chatSummary,
       usageViewModel: usageViewModel,
       dictationTargetId: dictationTargetId,
+      composerPlaceholder: composerPlaceholder,
       pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
       canCompose: canCompose,
@@ -1035,6 +1065,7 @@ private struct WorkChatComposerDraftInput: View {
   let chatSummary: AgentChatSessionSummary?
   let usageViewModel: WorkContextUsageViewModel?
   let dictationTargetId: String
+  let composerPlaceholder: String
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
@@ -1061,10 +1092,7 @@ private struct WorkChatComposerDraftInput: View {
       WorkChatComposerTextField(
         draftState: draftState,
         canCompose: canCompose,
-        placeholder: workChatComposerPlaceholder(
-          pendingInputCount: pendingInputCount,
-          sessionStatus: awaitingInputGate ? "awaiting-input" : ""
-        )
+        placeholder: composerPlaceholder
       )
 
       if showInterrupt && draftState.hasSendableText {

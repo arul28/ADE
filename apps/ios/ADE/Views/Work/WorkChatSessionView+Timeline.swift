@@ -108,25 +108,9 @@ extension WorkChatSessionView {
           }
         }
       )
-    case .pendingPlanApproval(let plan):
-      WorkPlanReviewCard(
-        plan: plan,
-        busy: actionInFlight || !isLive,
-        onDecision: { decision, feedback in
-          await runSessionAction {
-            // Approve: send "accept" decision directly.
-            // Reject: send "decline"; if the user typed feedback, also
-            // queue it as a follow-up steer message so the agent sees the
-            // revision notes in the next turn.
-            await onApproveRequest(plan.id, decision)
-            if decision == .decline, let feedback, !feedback.isEmpty {
-              _ = await onSend(feedback)
-            }
-          }
-        },
-        fallbackProvider: chatSummary?.provider
-      )
-      .id("pending-question-\(plan.id)")
+    case .pendingPlanApproval:
+      // Final plan approval renders in the composer strip above the prompt.
+      EmptyView()
     case .pendingModelSelection(let request):
       WorkModelSelectionPendingCard(
         request: request,

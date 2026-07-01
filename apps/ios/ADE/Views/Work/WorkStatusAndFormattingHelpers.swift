@@ -56,6 +56,22 @@ func workChatComposerPlaceholder(pendingInputCount: Int, sessionStatus: String) 
   return "Type to vibecode..."
 }
 
+func workChatComposerPlaceholder(
+  pendingInputs: [WorkPendingInputItem],
+  sessionStatus: String
+) -> String {
+  if workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus) {
+    return "Waiting for prompt details..."
+  }
+  if pendingInputs.count == 1, case .planApproval = pendingInputs[0] {
+    return "Review the plan above..."
+  }
+  return workChatComposerPlaceholder(
+    pendingInputCount: pendingInputs.count,
+    sessionStatus: sessionStatus
+  )
+}
+
 func terminalSessionHasResumeTarget(_ session: TerminalSessionSummary) -> Bool {
   if session.resumeMetadata != nil {
     return true

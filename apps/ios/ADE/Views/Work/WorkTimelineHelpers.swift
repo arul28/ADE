@@ -268,14 +268,9 @@ func buildWorkTimeline(
         rank: 1_600 + index,
         payload: .pendingPermission(model)
       )
-    case .planApproval(let model):
-      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
-      return WorkTimelineEntry(
-        id: "pending-plan-approval-\(model.id)",
-        timestamp: ts,
-        rank: 1_600 + index,
-        payload: .pendingPlanApproval(model)
-      )
+    case .planApproval:
+      // Composer strip owns live plan-approval UI; keep it out of the transcript.
+      return nil
     case .modelSelection(let model):
       let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
       return WorkTimelineEntry(

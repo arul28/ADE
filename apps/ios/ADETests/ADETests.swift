@@ -8159,6 +8159,93 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testBuildWorkTimelineOmitsPendingPlanApprovalFromTranscript() {
+    let detail = """
+    {
+      "request": {
+        "kind": "plan_approval",
+        "source": "claude",
+        "title": "Implementation plan",
+        "description": "## Plan\\nShip the composer strip."
+      }
+    }
+    """
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .approvalRequest(
+          description: "Plan ready",
+          detail: detail,
+          itemId: "plan-approval-1",
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let inputs = derivePendingWorkInputs(from: transcript)
+    guard case .planApproval(let plan) = inputs.first else {
+      return XCTFail("Expected plan approval pending input.")
+    }
+    XCTAssertEqual(plan.id, "plan-approval-1")
+
+    let timeline = buildWorkTimeline(
+      transcript: transcript,
+      fallbackEntries: [],
+      toolCards: [],
+      commandCards: [],
+      fileChangeCards: [],
+      eventCards: [],
+      pendingInputs: inputs,
+      artifacts: [],
+      localEchoMessages: []
+    )
+    XCTAssertFalse(
+      timeline.contains(where: {
+        if case .pendingPlanApproval = $0.payload { return true }
+        return false
+      }),
+      "Plan approval should render in the composer strip, not the transcript timeline."
+    )
+  }
+
+  func testWorkChatComposerPlaceholderUsesPlanReviewCopyForPlanApprovalOnly() {
+    let plan = WorkPendingPlanApprovalModel(
+      id: "plan-1",
+      source: "claude",
+      planText: "## Plan\nDo the thing.",
+      title: "Implementation plan"
+    )
+    XCTAssertEqual(
+      workChatComposerPlaceholder(pendingInputs: [.planApproval(plan)], sessionStatus: "idle"),
+      "Review the plan above..."
+    )
+    XCTAssertEqual(
+      workChatComposerPlaceholder(
+        pendingInputs: [
+          .planApproval(plan),
+          .question(
+            WorkPendingQuestionModel(
+              id: "q-1",
+              questions: [
+                WorkPendingQuestion(
+                  questionId: "q-1",
+                  question: "Pick one?",
+                  options: [],
+                  allowsFreeform: true
+                )
+              ],
+              source: "claude"
+            )
+          ),
+        ],
+        sessionStatus: "idle"
+      ),
+      "Answer the prompt above..."
+    )
+  }
+
   func testWorkChatStatusNormalizationFallsBackToSessionRuntimeStateAndTerminalState() {
     let completedSummary = makeAgentChatSessionSummary(status: "completed", awaitingInput: false)
     XCTAssertEqual(normalizedWorkChatSessionStatus(session: nil, summary: completedSummary), "ended")
