@@ -331,8 +331,15 @@ struct WorkSessionDestinationView: View {
   /// item. Nil until resolved (or when the lane has no cached PR), which keeps
   /// that menu item disabled with a "No PR yet" hint.
   @State var laneOpenPr: PullRequestListItem?
+  @State var lanePrSummary: PrSummary?
+  @State var lanePrTag: LanePrTag?
   @State var prCreateCapabilities: PrCreateCapabilities?
   @State var createPrPresented = false
+  @State var createPrAfterDetailsDismiss = false
+  @State var prDetailsPresented = false
+  @State var prDetailsSnapshot: PullRequestSnapshot?
+  @State var prDetailsRefreshing = false
+  @State var prDetailsError: String?
   @State var prLinkCopied = false
   @State var sessionActionRenamePresented = false
   @State var sessionActionRenameText = ""
@@ -490,6 +497,14 @@ struct WorkSessionDestinationView: View {
     return resolvedWorkNavigationLaneId(for: session, lanes: lanes)
   }
 
+  var headerMenuPrLookupKey: String {
+    let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let githubKey = syncService.laneGithubPrItems
+      .map { "\($0.id):\($0.state):\($0.isDraft):\($0.updatedAt):\($0.linkedPrId ?? "")" }
+      .joined(separator: "|")
+    return "\(laneId)|\(syncService.prsProjectionRevision)|\(githubKey)"
+  }
+
   /// Trailing nav-bar overflow menu for chat sessions: proof drawer plus lane
   /// shortcuts when the session is lane-backed.
   @ViewBuilder
@@ -569,44 +584,55 @@ struct WorkSessionDestinationView: View {
 
   @ViewBuilder
   private var chatPullRequestMenuItems: some View {
-    if let laneOpenPr {
+    Menu {
       Button {
-        openLaneOpenPr()
+        presentChatPrDetails()
       } label: {
-        Label("Open in ADE (#\(laneOpenPr.githubPrNumber))", systemImage: "arrow.triangle.pull")
+        Label("View PR details", systemImage: "sidebar.trailing")
       }
 
-      Button {
-        openLanePrOnGitHub()
-      } label: {
-        Label("Open on GitHub", systemImage: "link")
-      }
-      .disabled(laneOpenPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      if let tag = lanePrTag {
+        Button {
+          openLaneOpenPr()
+        } label: {
+          Label("PRs tab", systemImage: "rectangle.grid.1x2")
+        }
+        .accessibilityHint("Opens \(formatLanePrBadgeLabel(tag)) in the PRs tab")
 
-      Button {
-        copyLanePrLink()
-      } label: {
-        if prLinkCopied {
-          Label("Copied link", systemImage: "checkmark")
-        } else {
-          Label("Copy link", systemImage: "doc.on.doc")
+        Button {
+          openLanePrOnGitHub()
+        } label: {
+          Label("Open on GitHub", systemImage: "link")
+        }
+        .disabled(lanePrGitHubUrlString.isEmpty)
+
+        Button {
+          copyLanePrLink()
+        } label: {
+          if prLinkCopied {
+            Label("Copied link", systemImage: "checkmark")
+          } else {
+            Label("Copy link", systemImage: "doc.on.doc")
+          }
+        }
+        .disabled(lanePrGitHubUrlString.isEmpty)
+      } else {
+        Button {
+          openPrCreationInPrsTab()
+        } label: {
+          Label("Open PR in PRs tab", systemImage: "rectangle.grid.1x2")
+        }
+        .disabled(headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        if let blockedReason = createPullRequestBlockedReason {
+          Button {} label: {
+            Label(blockedReason, systemImage: "info.circle")
+          }
+          .disabled(true)
         }
       }
-      .disabled(laneOpenPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-    } else {
-      Button {
-        presentCreateLanePr()
-      } label: {
-        Label("Create pull request", systemImage: "plus")
-      }
-      .disabled(!canCreatePullRequestForHeaderLane)
-
-      if let blockedReason = createPullRequestBlockedReason {
-        Button {} label: {
-          Label(blockedReason, systemImage: "info.circle")
-        }
-        .disabled(true)
-      }
+    } label: {
+      Label("Pull request", systemImage: "arrow.triangle.pull")
     }
 
     Button {
@@ -614,6 +640,11 @@ struct WorkSessionDestinationView: View {
     } label: {
       Label("Open lane", systemImage: "arrow.triangle.branch")
     }
+  }
+
+  var lanePrGitHubUrlString: String {
+    (lanePrTag?.githubUrl ?? laneOpenPr?.githubUrl ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   @ViewBuilder
@@ -743,6 +774,42 @@ struct WorkSessionDestinationView: View {
       .sheet(isPresented: $createPrPresented) {
         chatCreatePrWizardSheet
       }
+      .sheet(isPresented: $prDetailsPresented, onDismiss: {
+        if createPrAfterDetailsDismiss {
+          createPrAfterDetailsDismiss = false
+          createPrPresented = true
+        }
+      }) {
+        WorkChatPrDetailsSheet(
+          tag: lanePrTag,
+          pr: laneOpenPr,
+          summary: lanePrSummary,
+          snapshot: prDetailsSnapshot,
+          canCreate: canCreatePullRequestForHeaderLane,
+          createBlockedReason: createPullRequestBlockedReason,
+          isRefreshing: prDetailsRefreshing,
+          errorMessage: prDetailsError,
+          copiedLink: prLinkCopied,
+          onRefresh: {
+            Task { await refreshChatPrDetails(force: true) }
+          },
+          onCreate: {
+            presentCreateLanePr()
+          },
+          onOpenPrsTab: {
+            if lanePrTag == nil {
+              openPrCreationInPrsTab()
+            } else {
+              openLaneOpenPr()
+            }
+          },
+          onOpenGitHub: openLanePrOnGitHub,
+          onCopyLink: copyLanePrLink
+        )
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+      }
       .alert("Rename session", isPresented: $sessionActionRenamePresented) {
         TextField("Title", text: $sessionActionRenameText)
         Button("Cancel", role: .cancel) {
@@ -801,7 +868,7 @@ struct WorkSessionDestinationView: View {
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
       }
-      .task(id: headerMenuLaneId) {
+      .task(id: headerMenuPrLookupKey) {
         await resolveLaneOpenPr(for: headerMenuLaneId)
         await loadPrCreateCapabilitiesIfNeeded()
       }
@@ -834,85 +901,7 @@ struct WorkSessionDestinationView: View {
   var sessionDestinationRoot: some View {
     if let session {
       if isChatSession(session) {
-        let viewingSubagent = subagentView != nil
-        let transcriptForView = viewingSubagent ? subagentTranscript : transcript
-        let fallbackEntriesForView: [AgentChatTranscriptEntry] = viewingSubagent ? [] : fallbackEntries
-        let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-        let shouldSteer = hostReachable && sessionStatus == "active"
-        WorkChatSessionView(
-          session: WorkChatSessionRenderContext(session),
-          chatSummaryContext: WorkChatSummaryRenderContext(chatSummary),
-          transcript: transcriptForView,
-          transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
-          fallbackEntries: fallbackEntriesForView,
-          fallbackEntriesRenderSignature: viewingSubagent ? 0 : fallbackEntriesRenderSignature,
-          artifacts: viewingSubagent ? [] : artifacts,
-          artifactsRenderSignature: viewingSubagent ? 0 : artifactsRenderSignature,
-          optimisticPendingSteers: viewingSubagent ? [] : optimisticPendingSteers,
-          optimisticPendingSteersRenderSignature: viewingSubagent ? 0 : workPendingSteersRenderSignature(optimisticPendingSteers),
-          localEchoMessages: viewingSubagent ? [] : localEchoMessages,
-          localEchoMessagesRenderSignature: viewingSubagent ? 0 : workLocalEchoMessagesRenderSignature(localEchoMessages),
-          expandedToolCardIdsSnapshot: expandedToolCardIds,
-          expandedToolCardIdsRenderSignature: workExpandedToolCardIdsRenderSignature(expandedToolCardIds),
-          artifactContentRenderSignature: artifactContentRenderSignature,
-          artifactDrawerPresentedSnapshot: artifactDrawerPresented,
-          sendingSnapshot: sending,
-          errorMessageSnapshot: errorMessage,
-          expandedToolCardIds: $expandedToolCardIds,
-          artifactContent: $artifactContent,
-          fullscreenImage: $fullscreenImage,
-          artifactDrawerPresented: $artifactDrawerPresented,
-          artifactRefreshInFlight: artifactRefreshInFlight,
-          artifactRefreshError: artifactRefreshError,
-          sending: $sending,
-          errorMessage: $errorMessage,
-          isLive: isLiveAndReachable,
-          hostUnreachable: syncService.connectionState.isHostUnreachable,
-          canComposeMessages: canComposeChatMessages && !viewingSubagent,
-          canSendMessages: canSendChatMessages && !viewingSubagent,
-          sendWillQueue: sendWillQueueChatMessage || shouldSteer,
-          sendWillQueueIsReconnect: sendWillQueueChatMessage,
-          inputLockMessage: viewingSubagent ? "Viewing subagent transcript. Return to main chat to send." : nil,
-          transitionNamespace: transitionNamespace,
-          onOpenLane: showsLaneActions ? openSessionLane : nil,
-          onSend: sendMessage,
-          onInterrupt: interruptSession,
-          onApproveRequest: approveRequest,
-          onRespondToQuestion: respondToQuestion,
-          onSubmitQuestionAnswers: submitQuestionAnswers,
-          onDeclineQuestion: declineQuestion,
-          onRespondToPermission: respondToPermission,
-          onRetryLoad: load,
-          onOpenFile: openFileReference,
-          onOpenPr: openPullRequestReference,
-          onLoadArtifact: loadArtifactContent,
-          onRefreshArtifacts: {
-            await refreshArtifacts(force: true)
-          },
-          onCancelSteer: cancelSteer,
-          onEditSteer: editSteer,
-          onDispatchSteerInline: supportsManualSteerDispatch ? dispatchSteerInline : nil,
-          onDispatchSteerInterrupt: supportsManualSteerDispatch ? dispatchSteerInterrupt : nil,
-          onSelectModel: selectModel,
-          onSelectRuntimeMode: selectRuntimeMode,
-          onSelectEffort: selectReasoningEffort,
-          onSelectCodexFastMode: selectCodexFastMode,
-          resolvedSessionStatus: viewingSubagent ? "ended" : sessionStatus,
-          lanes: lanes,
-          lanesRenderSignature: workLaneListRenderSignature(lanes),
-          hasOlderTranscriptHistory: viewingSubagent ? false : hasOlderTranscriptHistory,
-          onLoadOlderTranscript: viewingSubagent ? nil : loadOlderTranscriptEntries,
-          subagentSnapshots: subagentSnapshots,
-          subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature(subagentSnapshots),
-          selectedSubagentTaskId: subagentView?.taskId,
-          onOpenSubagents: { Task { await prepareSubagentDrawerPresentation() } },
-          liveTurnActiveHint: liveTurnActiveHint
-        )
-        .id(
-          viewingSubagent
-            ? "subagent-\(subagentView?.taskId ?? "unknown")-\(subagentTranscriptRenderSignature)"
-            : "main-\(session.id)-\(mainChatRenderEpoch)"
-        )
+        chatSessionDestinationRoot(for: session)
       } else {
         TerminalSessionScreen(session: session)
           .environmentObject(syncService)
@@ -925,6 +914,131 @@ struct WorkSessionDestinationView: View {
       )
       .adeScreenBackground()
     }
+  }
+
+  @ViewBuilder
+  private func chatSessionDestinationRoot(for session: TerminalSessionSummary) -> some View {
+    let viewingSubagent = subagentView != nil
+    makeWorkChatSessionView(for: session, viewingSubagent: viewingSubagent)
+      .id(chatSessionDestinationRootId(for: session, viewingSubagent: viewingSubagent))
+  }
+
+  private func chatSessionDestinationRootId(
+    for session: TerminalSessionSummary,
+    viewingSubagent: Bool
+  ) -> String {
+    if viewingSubagent {
+      return "subagent-\(subagentView?.taskId ?? "unknown")-\(subagentTranscriptRenderSignature)"
+    }
+    return "main-\(session.id)-\(mainChatRenderEpoch)"
+  }
+
+  private func makeWorkChatSessionView(
+    for session: TerminalSessionSummary,
+    viewingSubagent: Bool
+  ) -> WorkChatSessionView {
+    let transcriptForView = viewingSubagent ? subagentTranscript : transcript
+    let fallbackEntriesForView: [AgentChatTranscriptEntry] = viewingSubagent ? [] : fallbackEntries
+    let artifactsForView: [ComputerUseArtifactSummary] = viewingSubagent ? [] : artifacts
+    let optimisticPendingSteersForView: [WorkPendingSteerModel] = viewingSubagent ? [] : optimisticPendingSteers
+    let localEchoMessagesForView: [WorkLocalEchoMessage] = viewingSubagent ? [] : localEchoMessages
+    let sessionStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+    let shouldSteer = hostReachable && sessionStatus == "active"
+    let chatPrBadge: WorkChatPrBadgeModel? = viewingSubagent
+      ? nil
+      : workChatPrBadgeModel(tag: lanePrTag, pr: laneOpenPr, summary: lanePrSummary)
+    let openPrDetails: (() -> Void)? = viewingSubagent ? nil : { presentChatPrDetails() }
+    let inputLockMessage: String? = viewingSubagent
+      ? "Viewing subagent transcript. Return to main chat to send."
+      : nil
+    let openLaneAction: (() -> Void)? = showsLaneActions ? { openSessionLane() } : nil
+    let dispatchSteerInlineAction: (@MainActor (String) async -> Void)?
+    let dispatchSteerInterruptAction: (@MainActor (String) async -> Void)?
+    if supportsManualSteerDispatch {
+      dispatchSteerInlineAction = { text in await dispatchSteerInline(text) }
+      dispatchSteerInterruptAction = { text in await dispatchSteerInterrupt(text) }
+    } else {
+      dispatchSteerInlineAction = nil
+      dispatchSteerInterruptAction = nil
+    }
+    let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
+    let loadOlderTranscriptAction: (@MainActor () async -> Void)?
+    if viewingSubagent {
+      loadOlderTranscriptAction = nil
+    } else {
+      loadOlderTranscriptAction = { await loadOlderTranscriptEntries() }
+    }
+    return WorkChatSessionView(
+      session: WorkChatSessionRenderContext(session),
+      chatSummaryContext: WorkChatSummaryRenderContext(chatSummary),
+      transcript: transcriptForView,
+      transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
+      fallbackEntries: fallbackEntriesForView,
+      fallbackEntriesRenderSignature: viewingSubagent ? 0 : fallbackEntriesRenderSignature,
+      artifacts: artifactsForView,
+      artifactsRenderSignature: viewingSubagent ? 0 : artifactsRenderSignature,
+      optimisticPendingSteers: optimisticPendingSteersForView,
+      optimisticPendingSteersRenderSignature: viewingSubagent ? 0 : workPendingSteersRenderSignature(optimisticPendingSteers),
+      localEchoMessages: localEchoMessagesForView,
+      localEchoMessagesRenderSignature: viewingSubagent ? 0 : workLocalEchoMessagesRenderSignature(localEchoMessages),
+      expandedToolCardIdsSnapshot: expandedToolCardIds,
+      expandedToolCardIdsRenderSignature: workExpandedToolCardIdsRenderSignature(expandedToolCardIds),
+      artifactContentRenderSignature: artifactContentRenderSignature,
+      artifactDrawerPresentedSnapshot: artifactDrawerPresented,
+      sendingSnapshot: sending,
+      errorMessageSnapshot: errorMessage,
+      expandedToolCardIds: $expandedToolCardIds,
+      artifactContent: $artifactContent,
+      fullscreenImage: $fullscreenImage,
+      artifactDrawerPresented: $artifactDrawerPresented,
+      artifactRefreshInFlight: artifactRefreshInFlight,
+      artifactRefreshError: artifactRefreshError,
+      sending: $sending,
+      errorMessage: $errorMessage,
+      isLive: isLiveAndReachable,
+      hostUnreachable: syncService.connectionState.isHostUnreachable,
+      canComposeMessages: canComposeChatMessages && !viewingSubagent,
+      canSendMessages: canSendChatMessages && !viewingSubagent,
+      sendWillQueue: sendWillQueueChatMessage || shouldSteer,
+      sendWillQueueIsReconnect: sendWillQueueChatMessage,
+      inputLockMessage: inputLockMessage,
+      transitionNamespace: transitionNamespace,
+      onOpenLane: openLaneAction,
+      onSend: sendMessage,
+      onInterrupt: interruptSession,
+      onApproveRequest: approveRequest,
+      onRespondToQuestion: respondToQuestion,
+      onSubmitQuestionAnswers: submitQuestionAnswers,
+      onDeclineQuestion: declineQuestion,
+      onRespondToPermission: respondToPermission,
+      onRetryLoad: load,
+      onOpenFile: openFileReference,
+      onOpenPr: openPullRequestReference,
+      onLoadArtifact: loadArtifactContent,
+      onRefreshArtifacts: {
+        await refreshArtifacts(force: true)
+      },
+      onCancelSteer: cancelSteer,
+      onEditSteer: editSteer,
+      onDispatchSteerInline: dispatchSteerInlineAction,
+      onDispatchSteerInterrupt: dispatchSteerInterruptAction,
+      onSelectModel: selectModel,
+      onSelectRuntimeMode: selectRuntimeMode,
+      onSelectEffort: selectReasoningEffort,
+      onSelectCodexFastMode: selectCodexFastMode,
+      resolvedSessionStatus: resolvedSessionStatus,
+      lanes: lanes,
+      lanesRenderSignature: workLaneListRenderSignature(lanes),
+      hasOlderTranscriptHistory: viewingSubagent ? false : hasOlderTranscriptHistory,
+      onLoadOlderTranscript: loadOlderTranscriptAction,
+      subagentSnapshots: subagentSnapshots,
+      subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature(subagentSnapshots),
+      selectedSubagentTaskId: subagentView?.taskId,
+      onOpenSubagents: { Task { await prepareSubagentDrawerPresentation() } },
+      prBadge: chatPrBadge,
+      onOpenPrDetails: openPrDetails,
+      liveTurnActiveHint: liveTurnActiveHint
+    )
   }
 
   var pollingKey: String {
@@ -1060,14 +1174,18 @@ struct WorkSessionDestinationView: View {
 
     if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       let alreadySubscribed = syncService.subscribedChatSessionIds.contains(sessionId)
+      let needsOpeningSnapshot = transcript.isEmpty && fallbackEntries.isEmpty
       if status == "active" {
         // First visit subscribes (the host answers with a snapshot or a
         // sinceSeq replay). Once subscribed, live chat_event push plus the
         // host's transcript pump cover continuity — re-requesting a full
         // byte-capped snapshot on every 8s poll was redundant wire traffic
         // and a full dedupe/sort merge on the phone mid-stream.
-        try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: !alreadySubscribed)
-      } else if !alreadySubscribed {
+        try? await syncService.subscribeToChatEvents(
+          sessionId: sessionId,
+          requestSnapshot: !alreadySubscribed || needsOpeningSnapshot
+        )
+      } else if !alreadySubscribed || needsOpeningSnapshot {
         // Active streaming stays on reduced snapshots for performance, but an
         // idle detail view must reconcile against a full event snapshot. A
         // reduced JSONL tail can start mid-message and render as a broken

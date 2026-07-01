@@ -46,6 +46,7 @@
 		E1000000000000000000002B /* WorkChatSessionView+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002B /* WorkChatSessionView+Actions.swift */; };
 		E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */; };
 		E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002D /* WorkChatRichCardViews.swift */; };
+		E10000000000000000000055 /* WorkChatPrViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000055 /* WorkChatPrViews.swift */; };
 		E10000000000000000000054 /* WorkPlanComposerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000054 /* WorkPlanComposerViews.swift */; };
 		E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000050 /* WorkChatAttachmentTray.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
@@ -243,6 +244,7 @@
 		D1000000000000000000002B /* WorkChatSessionView+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Actions.swift"; path = "ADE/Views/Work/WorkChatSessionView+Actions.swift"; sourceTree = "<group>"; };
 		D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatHeaderAndMessageViews.swift; path = ADE/Views/Work/WorkChatHeaderAndMessageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002D /* WorkChatRichCardViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatRichCardViews.swift; path = ADE/Views/Work/WorkChatRichCardViews.swift; sourceTree = "<group>"; };
+		D10000000000000000000055 /* WorkChatPrViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatPrViews.swift; path = ADE/Views/Work/WorkChatPrViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000054 /* WorkPlanComposerViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPlanComposerViews.swift; path = ADE/Views/Work/WorkPlanComposerViews.swift; sourceTree = "<group>"; };
 		D10000000000000000000050 /* WorkChatAttachmentTray.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentTray.swift; path = ADE/Views/Work/WorkChatAttachmentTray.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
@@ -636,6 +638,7 @@
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
+				D10000000000000000000055 /* WorkChatPrViews.swift */,
 				D10000000000000000000054 /* WorkPlanComposerViews.swift */,
 				D10000000000000000000050 /* WorkChatAttachmentTray.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
@@ -1115,6 +1118,7 @@
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
+				E10000000000000000000055 /* WorkChatPrViews.swift in Sources */,
 				E10000000000000000000054 /* WorkPlanComposerViews.swift in Sources */,
 				E10000000000000000000050 /* WorkChatAttachmentTray.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,

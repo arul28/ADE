@@ -445,10 +445,10 @@ struct HubScreen: View {
 /// Identifies a chat opened from the hub, carrying enough context to activate
 /// the right project and render the chat over the hub.
 struct HubChatTarget: Identifiable, Equatable {
+  let id = UUID().uuidString
   let project: MobileProjectSummary
   let lane: RemoteRosterLane?
   let chat: RemoteRosterChat
-  var id: String { chat.id }
 }
 
 // MARK: - Persisted layout

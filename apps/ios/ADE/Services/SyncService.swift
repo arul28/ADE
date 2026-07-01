@@ -1025,24 +1025,45 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   }
 }
 
+enum PrNavigationRequestTarget: Equatable {
+  case detail(prId: String, prNumber: Int?, laneId: String?)
+  case githubNumber(Int)
+  case create(laneId: String)
+}
+
 struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
-  let prId: String
-  let prNumber: Int?
-  let laneId: String?
+  let target: PrNavigationRequestTarget
 
   init(prId: String, prNumber: Int? = nil, laneId: String? = nil) {
     self.id = UUID().uuidString
-    self.prId = prId
-    self.prNumber = prNumber
-    self.laneId = laneId
+    self.target = .detail(prId: prId, prNumber: prNumber, laneId: laneId)
   }
 
   init(prNumber: Int) {
     self.id = UUID().uuidString
-    self.prId = "github-pr-number:\(prNumber)"
-    self.prNumber = prNumber
-    self.laneId = nil
+    self.target = .githubNumber(prNumber)
+  }
+
+  init(createLaneId: String) {
+    self.id = UUID().uuidString
+    self.target = .create(laneId: createLaneId)
+  }
+
+  var laneId: String? {
+    switch target {
+    case .detail(_, _, let laneId):
+      return laneId
+    case .githubNumber:
+      return nil
+    case .create(let laneId):
+      return laneId
+    }
+  }
+
+  var createLaneId: String? {
+    guard case .create(let laneId) = target else { return nil }
+    return laneId
   }
 }
 
@@ -4082,6 +4103,14 @@ final class SyncService: ObservableObject {
 
   func fetchPullRequestListItems(laneId: String) async throws -> [PullRequestListItem] {
     database.fetchPullRequestListItems(forLane: laneId)
+  }
+
+  func fetchPullRequestForLane(laneId: String) async throws -> PrSummary? {
+    try await sendDecodableCommand(
+      action: "prs.getForLane",
+      args: ["laneId": laneId],
+      as: PrSummary?.self
+    )
   }
 
   func fetchPullRequestGroupMembers(groupId: String) async throws -> [PrGroupMemberSummary] {

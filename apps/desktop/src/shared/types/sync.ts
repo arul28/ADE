@@ -928,6 +928,7 @@ export type SyncRemoteCommandAction =
   | "conflicts.getBatchAssessment"
   | "prs.list"
   | "prs.refresh"
+  | "prs.getForLane"
   | "prs.getDetail"
   | "prs.getStatus"
   | "prs.getChecks"

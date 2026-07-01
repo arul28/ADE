@@ -1220,6 +1220,10 @@ function parseConflictLaneArgs(value: Record<string, unknown>, action: string): 
   };
 }
 
+function parseLaneIdArgs(value: Record<string, unknown>, action: string): { laneId: string } {
+  return parseConflictLaneArgs(value, action);
+}
+
 function parseCursorModelSource(value: unknown): "sdk" | "cli" | "all" | null {
   const source = asTrimmedString(value);
   return source === "sdk" || source === "cli" || source === "all" ? source : null;
@@ -2931,6 +2935,8 @@ function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistr
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
+  register("prs.getForLane", { viewerAllowed: true }, async (payload) =>
+    args.prService.getForLane(parseLaneIdArgs(payload, "prs.getForLane").laneId));
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
     const prIds = asStringArray(payload.prIds);

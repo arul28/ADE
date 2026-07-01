@@ -9975,6 +9975,56 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(secondPage.text.contains("97. Line 97"))
   }
 
+  func testTailAssistantMessagePreviewRendersSmallLatestAnswerFully() {
+    let lineCount = 110
+    let markdown = (1...lineCount).map { index in
+      "Line \(index): " + String(repeating: "latest transcript answer prose ", count: 2)
+    }.joined(separator: "\n")
+    XCTAssertGreaterThan(markdown.count, workAssistantMessageSmallFullCharacterBudget)
+    XCTAssertLessThan(markdown.count, workAssistantMessageTailFullCharacterBudget)
+
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageTailFullLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(
+        forLineBudget: workAssistantMessageTailFullLineBudget,
+        tailCanRenderFull: true
+      ),
+      anchor: .tail
+    )
+
+    XCTAssertFalse(preview.isTruncated)
+    XCTAssertEqual(preview.visibleLineCount, lineCount)
+    XCTAssertEqual(preview.totalLineCount, lineCount)
+    XCTAssertEqual(preview.text, markdown)
+
+    var message = WorkChatMessage(
+      id: "assistant-tail-small",
+      role: "assistant",
+      markdown: markdown,
+      timestamp: "2026-03-25T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+    message.assistantPreview = preview
+    let entry = WorkTimelineEntry(
+      id: "message-assistant-tail-small",
+      timestamp: message.timestamp,
+      rank: 0,
+      payload: .message(message)
+    )
+
+    let rendered = workTimelineRenderEntries(
+      from: [entry],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id
+    )
+    XCTAssertFalse(rendered.contains { renderEntry in
+      if case .assistantControls = renderEntry.payload { return true }
+      return false
+    })
+  }
+
   func testAssistantMessagePreviewCapsWireframesBeforeTheyCanOverloadLayout() {
     let markdown = (1...120).map { index in
       "│ \(String(repeating: "─", count: 72)) │ row \(index)"

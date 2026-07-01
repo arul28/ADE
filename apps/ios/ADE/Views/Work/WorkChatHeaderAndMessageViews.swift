@@ -422,7 +422,7 @@ let workAssistantMessageMaxLineBudget = 192
 let workAssistantMessageInitialCharacterBudget = 1_600
 let workAssistantMessageCharacterBudgetStep = 2_400
 let workAssistantMessageSmallFullCharacterBudget = 6_000
-let workAssistantMessageTailFullLineBudget = 96
+let workAssistantMessageTailFullLineBudget = 128
 let workAssistantMessageTailFullCharacterBudget = 12_000
 let workAssistantMessageWideInitialLineBudget = 24
 let workAssistantMessageWideMaxLineBudget = 96
@@ -489,6 +489,11 @@ func workInitialAssistantMessagePreview(
 func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int) -> Int {
   let extraSteps = max((lineBudget - workAssistantMessageInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
   return workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+}
+
+func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int, tailCanRenderFull: Bool) -> Int {
+  let steppedBudget = workAssistantMessageCharacterBudget(forLineBudget: lineBudget)
+  return tailCanRenderFull ? max(steppedBudget, workAssistantMessageTailFullCharacterBudget) : steppedBudget
 }
 
 func workAssistantMessagePreview(

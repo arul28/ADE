@@ -25,6 +25,7 @@ struct PRsTabView: View {
   @State private var errorMessage: String?
   @State private var actionMessage: String?
   @State private var createPresented = false
+  @State private var createInitialLaneId: String?
   @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
   @State private var lastPrsLocalProjectionReload = Date.distantPast
@@ -479,7 +480,9 @@ struct PRsTabView: View {
         )
           .environmentObject(syncService)
       }
-      .sheet(isPresented: $createPresented) {
+      .sheet(isPresented: $createPresented, onDismiss: {
+        createInitialLaneId = nil
+      }) {
         createPrWizardSheet
       }
       .sheet(item: $stackPresentation) { presentation in
@@ -633,6 +636,7 @@ struct PRsTabView: View {
         .disabled(prsStatus.phase == .hydrating)
 
         Button {
+          createInitialLaneId = nil
           createPresented = true
         } label: {
           ZStack {
@@ -1338,6 +1342,19 @@ struct PRsTabView: View {
   @MainActor
   private func handleRequestedPrNavigation() async {
     guard let request = syncService.requestedPrNavigation else { return }
+    if let createLaneId = request.createLaneId?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !createLaneId.isEmpty {
+      await reload(refreshRemote: false)
+      rootSurfaceRawValue = PrRootSurface.github.rawValue
+      path = NavigationPath()
+      selectedPrTransitionId = nil
+      laneContextLaneId = createLaneId
+      createInitialLaneId = createLaneId
+      createPresented = true
+      syncService.requestedPrNavigation = nil
+      return
+    }
+
     var target = prNavigationTarget(
       for: request,
       pullRequests: prs,
@@ -1382,6 +1399,8 @@ struct PRsTabView: View {
     CreatePrWizardView(
       lanes: lanes,
       createCapabilities: mobileSnapshot?.createCapabilities,
+      initialLaneId: createInitialLaneId,
+      singleModeOnly: createInitialLaneId != nil,
       onCreateSingle: handleCreateSinglePr,
       onCreateQueue: handleCreateQueuePrs,
       onCreateIntegration: handleCreateIntegrationPr
@@ -1418,6 +1437,7 @@ struct PRsTabView: View {
         )
       },
       onSuccess: {
+        createInitialLaneId = nil
         createPresented = false
       }
     )

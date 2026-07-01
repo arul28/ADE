@@ -110,6 +110,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "cto.getLinearIssueComments",
   "cto.runLinearSyncNow",
   "cto.saveAgent",
+  "prs.getForLane",
   "prs.createFromLane",
   "prs.createQueue",
   "prs.land",
@@ -219,6 +220,7 @@ function createMockLaneService() {
 function createMockPrService() {
   return {
     listAll: vi.fn().mockResolvedValue([]),
+    getForLane: vi.fn().mockReturnValue(null),
     refresh: vi.fn().mockResolvedValue(undefined),
     listSnapshots: vi.fn().mockReturnValue([]),
     getDetail: vi.fn().mockResolvedValue({}),
@@ -1046,6 +1048,18 @@ describe("createSyncRemoteCommandService", () => {
       const result = await service.execute(makePayload("prs.list"));
       expect(prService.listAll).toHaveBeenCalled();
       expect(result).toEqual([]);
+    });
+
+    it("prs.getForLane routes to prService.getForLane", async () => {
+      prService.getForLane.mockReturnValue({ id: "pr-1" });
+      const result = await service.execute(makePayload("prs.getForLane", { laneId: "lane-1" }));
+      expect(prService.getForLane).toHaveBeenCalledWith("lane-1");
+      expect(result).toEqual({ id: "pr-1" });
+    });
+
+    it("prs.getForLane requires laneId", async () => {
+      await expect(service.execute(makePayload("prs.getForLane", {})))
+        .rejects.toThrow("prs.getForLane requires laneId.");
     });
 
     it("prs.getDetail requires prId", async () => {

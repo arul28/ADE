@@ -490,15 +490,29 @@ func prNavigationTarget(
   pullRequests: [PullRequestListItem],
   githubItems: [GitHubPrListItem]
 ) -> PrNavigationTarget {
-  let prId = request.prId.trimmingCharacters(in: .whitespacesAndNewlines)
+  let prId: String
+  let requestLaneId: String?
+  let explicitPrNumber: Int?
+  switch request.target {
+  case .detail(let rawPrId, let prNumber, let laneId):
+    prId = rawPrId.trimmingCharacters(in: .whitespacesAndNewlines)
+    requestLaneId = laneId
+    explicitPrNumber = prNumber
+  case .githubNumber(let prNumber):
+    prId = "github-pr-number:\(prNumber)"
+    requestLaneId = nil
+    explicitPrNumber = prNumber
+  case .create:
+    return .unresolved
+  }
   guard !prId.isEmpty else { return .unresolved }
 
   guard prId.hasPrefix("github-pr-number:") else {
     let match = pullRequests.first { $0.id == prId }
-    return .detail(prId: prId, laneId: request.laneId ?? match?.laneId)
+    return .detail(prId: prId, laneId: requestLaneId ?? match?.laneId)
   }
 
-  let requestedPrNumber = request.prNumber ?? syntheticPrNumber(from: prId)
+  let requestedPrNumber = explicitPrNumber ?? syntheticPrNumber(from: prId)
   guard let requestedPrNumber else { return .unresolved }
   let githubItem = githubItems.first { $0.githubPrNumber == requestedPrNumber }
 
@@ -508,12 +522,12 @@ func prNavigationTarget(
     requestedPrNumber: requestedPrNumber,
     githubItem: githubItem
   ) {
-    return .detail(prId: match.id, laneId: request.laneId ?? match.laneId)
+    return .detail(prId: match.id, laneId: requestLaneId ?? match.laneId)
   }
 
   if let linkedPrId = githubItem?.linkedPrId?.trimmingCharacters(in: .whitespacesAndNewlines),
      !linkedPrId.isEmpty {
-    return .detail(prId: linkedPrId, laneId: request.laneId ?? githubItem?.linkedLaneId)
+    return .detail(prId: linkedPrId, laneId: requestLaneId ?? githubItem?.linkedLaneId)
   }
 
   if let githubItem {

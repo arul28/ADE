@@ -199,6 +199,8 @@ struct WorkChatSessionView: View {
   var subagentSnapshotsRenderSignature: Int = 0
   var selectedSubagentTaskId: String? = nil
   var onOpenSubagents: (() -> Void)? = nil
+  var prBadge: WorkChatPrBadgeModel? = nil
+  var onOpenPrDetails: (() -> Void)? = nil
   /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
   /// live status/done events). Covers the gap where the synced session row
   /// still says idle while chat events are already streaming — without it
@@ -411,10 +413,10 @@ struct WorkChatSessionView: View {
   }
 
   var latestScrollTargetId: String {
-    if isStreamingTurn {
-      return "chat-streaming-status"
-    }
-    return visibleTimelineRenderEntries.last?.id ?? "chat-end"
+    // The bottom sentinel is the same view used for scroll metrics. Pinning to a
+    // markdown block or streaming row can leave the sentinel below the viewport,
+    // which looks like a blank tail and keeps the Latest pill stale.
+    "chat-end"
   }
 
   var hiddenTimelineCount: Int {
@@ -625,12 +627,20 @@ struct WorkChatSessionView: View {
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
       let runningSubagentCount = workSubagentRunningCount(subagentSnapshots)
-      if inputLockMessage == nil,
-         runningSubagentCount > 0,
-         let onOpenSubagents {
-        WorkSubagentActivePopup(count: runningSubagentCount, onOpen: onOpenSubagents)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .frame(height: workChatSubagentActivePopupHeight, alignment: .leading)
+      let showsSubagentBadge = inputLockMessage == nil && runningSubagentCount > 0 && onOpenSubagents != nil
+      let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
+      if showsSubagentBadge || showsPrBadge {
+        HStack(spacing: 8) {
+          if showsSubagentBadge, let onOpenSubagents {
+            WorkSubagentActivePopup(count: runningSubagentCount, onOpen: onOpenSubagents)
+          }
+          if showsPrBadge, let prBadge, let onOpenPrDetails {
+            WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
+          }
+          Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: workChatSubagentActivePopupHeight, alignment: .leading)
       }
 
       if !pendingSteers.isEmpty {
@@ -799,7 +809,6 @@ struct WorkChatSessionView: View {
           .clipped()
           .scrollIndicators(.hidden)
           .scrollDismissesKeyboard(.interactively)
-          .defaultScrollAnchor(.bottom)
           .coordinateSpace(name: workChatScrollCoordinateSpace)
           .background(
             GeometryReader { geometry in
@@ -1422,13 +1431,17 @@ private func workTimelineEntriesWithAssistantPreviews(
       && message.markdown.count <= workAssistantMessageTailFullCharacterBudget
     let lineBudget = assistantLineBudgets[message.id]
       ?? (tailCanRenderFull ? workAssistantMessageTailFullLineBudget : workAssistantMessageInitialLineBudget)
+    let characterBudget = workAssistantMessageCharacterBudget(
+      forLineBudget: lineBudget,
+      tailCanRenderFull: tailCanRenderFull && assistantLineBudgets[message.id] == nil
+    )
     if lineBudget == workAssistantMessageInitialLineBudget {
       message.assistantPreview = cache.preview(for: message, anchor: previewAnchor)
     } else {
       message.assistantPreview = workAssistantMessagePreview(
         message.markdown,
         lineBudget: lineBudget,
-        characterBudget: workAssistantMessageCharacterBudget(forLineBudget: lineBudget),
+        characterBudget: characterBudget,
         anchor: previewAnchor
       )
     }

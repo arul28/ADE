@@ -47,7 +47,7 @@ private struct HubChatCover: View {
             navigationChrome: .pushedDetail,
             lanes: target.lane.map { [$0.asLaneSummary()] } ?? []
           )
-          .equatable()
+          .id(target.id)
         } else {
           HubChatActivatingView(projectName: target.project.displayName, onClose: onClose)
         }
