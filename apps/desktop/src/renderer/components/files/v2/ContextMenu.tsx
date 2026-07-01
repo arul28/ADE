@@ -1,5 +1,6 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect } from "react";
 import { COLORS } from "../../lanes/laneDesignTokens";
+import { useClampedFixedPosition } from "../../../hooks/useClampedFixedPosition";
 
 export type ContextMenuItem =
   | { type: "separator" }
@@ -27,7 +28,8 @@ export function ContextMenu({
   items: ContextMenuItem[];
   onClose: () => void;
 }) {
-  const ref = useRef<HTMLDivElement | null>(null);
+  const itemsKey = items.map((item) => (item.type === "separator" ? "|" : `${item.label}:${item.disabled ? "0" : "1"}`)).join("\0");
+  const { ref, position } = useClampedFixedPosition({ x, y }, [itemsKey]);
 
   useEffect(() => {
     const onDocMouseDown = (e: MouseEvent) => {
@@ -47,18 +49,16 @@ export function ContextMenu({
   }, [onClose]);
 
   const width = 220;
-  const estHeight = items.reduce((h, it) => h + (it.type === "separator" ? 9 : ROW_H), 8);
-  const left = Math.max(6, Math.min(x, window.innerWidth - width - 6));
-  const top = Math.max(6, Math.min(y, window.innerHeight - estHeight - 6));
 
   return (
     <div
       ref={ref}
       className="fixed z-[200] py-1"
       style={{
-        left,
-        top,
+        left: position?.left ?? x,
+        top: position?.top ?? y,
         width,
+        visibility: position ? "visible" : "hidden",
         background: COLORS.cardBgSolid,
         border: `1px solid ${COLORS.outlineBorder}`,
         borderRadius: 10,
