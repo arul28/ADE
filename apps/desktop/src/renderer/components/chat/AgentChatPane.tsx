@@ -9691,7 +9691,8 @@ export function AgentChatPane({
   // scrolled out of view. Reuses the self-contained login pill (styled + own
   // dismiss); it hides itself once the session reconnects. Only shown when the
   // chat header login pill is absent so the two never double up.
-  const authStickyBar = showClaudeLoginPrompt && selectedSessionId && !chatTerminalVisible ? (
+  const chatHeaderLoginPromptVisible = !compactShell && chatTerminalVisible && Boolean(selectedSessionId);
+  const authStickyBar = showClaudeLoginPrompt && selectedSessionId && !chatHeaderLoginPromptVisible ? (
     <div className="mb-1.5 flex justify-start px-0.5">
       <ClaudeLoginPromptButton
         visible

@@ -6014,6 +6014,53 @@ describe("AgentChatPane submit recovery", () => {
     expect(readTranscriptTail).toHaveBeenCalledWith(expect.objectContaining({ sessionId: session.sessionId }));
   });
 
+  it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
+    const session = buildSession("grid-claude-auth", {
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+      title: "Claude auth grid tile",
+    });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T06:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "error",
+        message: "Authentication failed for Claude Sonnet 4.6.",
+        turnId: "turn-grid-auth",
+        errorInfo: {
+          category: "agent_cli_auth",
+          agentCli: {
+            agent: "claude",
+            displayName: "Claude Code",
+            category: "unauthenticated",
+            installCommand: "npm install -g @anthropic-ai/claude-code",
+            authCommand: "claude auth login",
+          },
+        },
+      },
+    })}\n`;
+    installAdeMocks({ sessions: [session], transcript, includeClaudeModel: true });
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId={session.laneId}
+          lockSessionId={session.sessionId}
+          hideSessionTabs
+          initialSessionSummary={session}
+          layoutVariant="grid-tile"
+          isTileActive
+          isTileVisible
+        />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Login to Claude" })).toBeTruthy();
+  });
+
   it("streams live events into visible inactive grid tiles without requiring focus", async () => {
     const session = buildSession("grid-live-chat", {
       title: "Grid live chat",
