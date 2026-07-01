@@ -12,9 +12,7 @@ import {
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
 import { docs } from "../../onboarding/docsLinks";
 
-// The dialog's accessible name comes from its title, which is now just the ADE
-// logo image (alt="ADE").
-const DIALOG_NAME = /^ade$/i;
+const DIALOG_NAME = /welcome to ade/i;
 
 describe("WelcomeVideoGate", () => {
   const originalAde = window.ade;
