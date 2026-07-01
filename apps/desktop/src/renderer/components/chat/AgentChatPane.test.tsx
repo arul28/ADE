@@ -43,7 +43,7 @@ import {
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
-import { CHAT_AUTH_RECOVERED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
+import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 
 vi.mock("../terminals/TerminalView", () => {
   const ReactMod = require("react") as typeof React;
@@ -1477,7 +1477,7 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("steers the auth retry when a turn becomes active before resend", async () => {
+  it("rejects the auth retry when a turn becomes active before resend", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
       model: "claude-sonnet-4-6",
@@ -1514,34 +1514,29 @@ describe("AgentChatPane submit recovery", () => {
     });
     send.mockRejectedValueOnce(new Error("turn is already active"));
     seedDrawerStore();
+    const rejectedEvents: Array<CustomEvent<{ sessionId?: string }>> = [];
+    const onRejected = (event: Event) => {
+      rejectedEvents.push(event as CustomEvent<{ sessionId?: string }>);
+    };
+    window.addEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, onRejected);
 
     renderPane(session);
 
-    expect(await screen.findByText("Retry into active turn")).toBeTruthy();
+    try {
+      expect(await screen.findByText("Retry into active turn")).toBeTruthy();
 
-    fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
-      detail: { sessionId: session.sessionId },
-    }));
+      fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
+        detail: { sessionId: session.sessionId },
+      }));
 
-    await waitFor(() => {
-      expect(steer).toHaveBeenCalledWith({
-        sessionId: session.sessionId,
-        text: "Retry into active turn",
-        attachments: [{ path: "docs/race.md", type: "file" }],
-        contextAttachments: [{
-          type: "orchestration_annotation",
-          item: {
-            type: "orchestration_annotation",
-            runId: "run-race",
-            anchor: { kind: "plan_step", id: "step-race", preview: "active turn fallback" },
-            selectionExcerpt: "active turn fallback",
-            comment: "Retry with this fallback context.",
-            capturedAt: "2026-03-24T05:57:47.500Z",
-          },
-        }],
-        metadata: { source: "auth-retry-steer-test" },
+      await waitFor(() => {
+        expect(rejectedEvents).toHaveLength(1);
       });
-    });
+      expect(rejectedEvents[0]?.detail).toEqual({ sessionId: session.sessionId });
+      expect(steer).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(CHAT_AUTH_RETRY_REJECTED_EVENT, onRejected);
+    }
   });
 
   it("dispatches auth recovery once after a later successful turn", async () => {

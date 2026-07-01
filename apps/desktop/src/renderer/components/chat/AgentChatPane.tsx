@@ -6324,7 +6324,8 @@ export function AgentChatPane({
         await window.ade.agentChat.send({ sessionId, text, displayText, ...replayContext });
       } catch (sendError) {
         if (!isTurnAlreadyActiveError(sendError)) throw sendError;
-        await window.ade.agentChat.steer({ sessionId, text, ...replayContext });
+        rejectAuthRetry(sessionId);
+        return;
       }
       void refreshSessions().catch(() => {});
     } catch (err) {
