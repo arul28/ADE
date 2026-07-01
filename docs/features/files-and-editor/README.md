@@ -112,7 +112,8 @@ Renderer:
   Files tab shell: workspace chrome, activity bar, explorer, editor
   groups, Monaco edit host, diff/conflict surfaces, quick open, text
   search, trust warnings, read-only workspace gating, persisted recent-file
-  pruning, dirty-buffer publishing for agent reads, optional Git-decoration
+  pruning, project-level open-tab state across lane/workspace switches,
+  dirty-buffer publishing for agent reads, optional Git-decoration
   fallback, and file-type viewers. Accepts optional
   `preferredLaneId` and `embedded` props so the same component can mount inside
   the Work right-edge sidebar.
@@ -128,7 +129,8 @@ Renderer:
   tree/decorations helpers used by the workbench.
 - `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
   workbench shell: editor groups, preview/pinned tabs, split/move
-  support, warm empty state, search/create overlays, and
+  support, project-scoped tab-scope persistence, warm empty state,
+  search/create overlays, and
   viewers for code, markdown, image, audio/video playback, CSV/TSV,
   PDF, Office-document fallback, large text, binary, and diffs.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
@@ -195,6 +197,13 @@ The renderer always shows the active workspace name prominently so the
 user never edits primary when they meant to edit a lane worktree.
 External tabs also show the full host path in the status bar and path-copy
 menus so it is clear when a file comes from outside the project.
+
+The v2 workbench keeps one project-level editor session whose tab ids include
+both `workspaceId` and path. Switching the explorer workspace changes the tree
+being browsed, but it does not close tabs or discard dirty buffers from another
+lane/worktree. Selecting an already-open tab from a different workspace moves
+the explorer back to that tab's workspace so the tree, mutation controls, and
+file actions stay aligned.
 
 ## Editor modes
 
@@ -360,6 +369,9 @@ For deeper detail on the watcher + trust boundary, see
 - `FilesWorkspace.isReadOnlyByDefault` is enforced in the renderer as well as
   the service layer: Monaco opens read-only, create / rename / delete controls
   are disabled, and mutation attempts surface `This workspace is read-only.`
+- Workspace switching is navigation, not a discard action. Dirty tabs remain
+  open and published to the dirty-buffer map under their own workspace root
+  until the user saves, closes, renames, deletes, or unloads the tab.
 - File watcher subscriptions are per sender (BrowserWindow /
   webContents). Closing a window calls `stopAllForSender` to tear
   down every subscription for that window.

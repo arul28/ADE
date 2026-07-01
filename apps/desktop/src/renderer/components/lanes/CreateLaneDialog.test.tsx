@@ -1,8 +1,27 @@
 /* @vitest-environment jsdom */
 
+import React from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateLaneDialog } from "./CreateLaneDialog";
+
+vi.mock("@tanstack/react-virtual", () => {
+  return {
+    useVirtualizer: ({ count }: { count: number }) => ({
+      getTotalSize: () => count * 64,
+      getVirtualItems: () =>
+        Array.from({ length: count }, (_, index) => ({
+          index,
+          start: index * 64,
+          size: 64,
+          end: (index + 1) * 64,
+          key: index,
+          lane: 0,
+        })),
+      measureElement: () => undefined,
+    }),
+  };
+});
 
 beforeEach(() => {
   Object.defineProperty(window, "matchMedia", {
@@ -64,6 +83,47 @@ function makeProps(overrides: Partial<DialogProps> = {}): DialogProps {
     loadingBranchPullRequests: false,
     ...overrides,
   };
+}
+
+const importBranches = [
+  { name: "origin/feature/import-me", isRemote: true, isCurrent: false, upstream: null, lastCommitAuthor: "x", lastCommitDate: "" } as any,
+  { name: "origin/feature/other", isRemote: true, isCurrent: false, upstream: null, lastCommitAuthor: "x", lastCommitDate: "" } as any,
+];
+
+const linearIssue = {
+  id: "issue-1",
+  identifier: "ADE-321",
+  title: "Follow up",
+} as any;
+
+function StatefulCreateLaneDialog(overrides: Partial<DialogProps> = {}) {
+  const [name, setName] = React.useState(overrides.createLaneName ?? "");
+  const [mode, setMode] = React.useState<DialogProps["createMode"]>(overrides.createMode ?? "existing");
+  const [importBranch, setImportBranch] = React.useState(overrides.createImportBranch ?? "");
+
+  return (
+    <CreateLaneDialog
+      {...makeProps({
+        ...overrides,
+        createLaneName: name,
+        setCreateLaneName: setName,
+        createMode: mode,
+        setCreateMode: setMode,
+        createImportBranch: importBranch,
+        setCreateImportBranch: setImportBranch,
+      })}
+    />
+  );
+}
+
+function selectImportBranch(branchName: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Choose import branch" }));
+  fireEvent.click(screen.getByText(branchName));
+  fireEvent.click(screen.getByRole("button", { name: "Use this branch" }));
+}
+
+function laneNameInput(): HTMLInputElement {
+  return screen.getByRole("textbox", { name: "Lane name" }) as HTMLInputElement;
 }
 
 describe("CreateLaneDialog", () => {
@@ -133,5 +193,54 @@ describe("CreateLaneDialog", () => {
     expect(submit.disabled).toBe(true);
     fireEvent.click(submit);
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("auto-fills the lane name from the selected remote import branch", () => {
+    render(
+      <StatefulCreateLaneDialog
+        createBranches={importBranches}
+      />,
+    );
+
+    selectImportBranch("origin/feature/import-me");
+    expect(laneNameInput().value).toBe("feature/import-me");
+
+    selectImportBranch("origin/feature/other");
+    expect(laneNameInput().value).toBe("feature/other");
+  });
+
+  it("does not overwrite a custom lane name when the import branch changes", () => {
+    render(
+      <StatefulCreateLaneDialog
+        createBranches={importBranches}
+      />,
+    );
+
+    selectImportBranch("origin/feature/import-me");
+    fireEvent.change(laneNameInput(), {
+      target: { value: "Custom lane name" },
+    });
+
+    selectImportBranch("origin/feature/other");
+    expect(laneNameInput().value).toBe("Custom lane name");
+  });
+
+  it("lets Linear issue naming replace an untouched import-branch default", () => {
+    const { rerender } = render(
+      <StatefulCreateLaneDialog
+        createBranches={importBranches}
+      />,
+    );
+
+    selectImportBranch("origin/feature/import-me");
+
+    rerender(
+      <StatefulCreateLaneDialog
+        createBranches={importBranches}
+        selectedLinearIssue={linearIssue}
+      />,
+    );
+
+    expect(laneNameInput().value).toBe("ADE-321 Follow up");
   });
 });

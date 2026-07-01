@@ -226,6 +226,7 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubAppInstallationStatus,
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
@@ -843,6 +844,14 @@ const githubRemoteStatusCache = createShortIpcCache<{
   repo: GitHubRepoRef | null;
   hasOrigin: boolean;
 }>(() => ipcRenderer.invoke(IPC.githubGetRemoteStatus), 30_000);
+const githubAppInstallationStatusCache = createKeyedShortIpcCache<GitHubAppInstallationStatus>(
+  (key) => ipcRenderer.invoke(
+    IPC.githubGetAppInstallationStatus,
+    parseIpcCacheArgs<{ owner?: string; name?: string }>(key, {}),
+  ),
+  30_000,
+  { maxEntries: 32 },
+);
 
 const lanesListCache = createKeyedShortIpcCache<LaneSummary[]>(
   (key) =>
@@ -2062,6 +2071,7 @@ function dispatchRemoteRuntimeEventPayload(
   if (githubStatus) {
     githubStatusCache.clear();
     githubRemoteStatusCache.clear();
+    githubAppInstallationStatusCache.clear();
     for (const cb of [...remoteGitHubStatusChangedCallbacks]) {
       try {
         cb(githubStatus);
@@ -3002,6 +3012,7 @@ function clearProjectScopedReadCaches(): void {
   clearGitReadCaches();
   githubStatusCache.clear();
   githubRemoteStatusCache.clear();
+  githubAppInstallationStatusCache.clear();
   projectConfigSnapshotCache.clear();
   agentChatSummaryCache.clear();
   computerUseOwnerSnapshotCache.clear();
@@ -7047,6 +7058,7 @@ contextBridge.exposeInMainWorld("ade", {
         () => {
           githubStatusCache.clear();
           githubRemoteStatusCache.clear();
+          githubAppInstallationStatusCache.clear();
         },
         () =>
           callProjectRuntimeActionOr("github", "setToken", { arg: token }, () =>
@@ -7058,6 +7070,7 @@ contextBridge.exposeInMainWorld("ade", {
         () => {
           githubStatusCache.clear();
           githubRemoteStatusCache.clear();
+          githubAppInstallationStatusCache.clear();
         },
         () =>
           callProjectRuntimeActionOr("github", "clearToken", {}, () =>
@@ -7080,6 +7093,30 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("github", "listRepoAutolinks", { args }, () =>
         ipcRenderer.invoke(IPC.githubListRepoAutolinks, args),
       ),
+    getAppInstallationStatus: async (args: {
+      owner?: string;
+      name?: string;
+      forceRefresh?: boolean;
+    } = {}): Promise<GitHubAppInstallationStatus> => {
+      const cacheArgs = { owner: args.owner, name: args.name };
+      const cacheKey = serializeIpcCacheArgs(cacheArgs);
+      if (args.forceRefresh) githubAppInstallationStatusCache.clear(cacheKey);
+      const requestArgs = args.forceRefresh ? { ...cacheArgs, forceRefresh: true } : cacheArgs;
+      if (args.forceRefresh) {
+        return callProjectRuntimeActionOr(
+          "github",
+          "getAppInstallationStatus",
+          { args: requestArgs },
+          () => ipcRenderer.invoke(IPC.githubGetAppInstallationStatus, requestArgs),
+        );
+      }
+      return callProjectRuntimeActionOr(
+        "github",
+        "getAppInstallationStatus",
+        { args: requestArgs },
+        () => githubAppInstallationStatusCache.get(cacheKey),
+      );
+    },
     createRepoAutolink: async (args: {
       owner?: string;
       name?: string;
@@ -7126,6 +7163,7 @@ contextBridge.exposeInMainWorld("ade", {
         () => {
           githubStatusCache.clear();
           githubRemoteStatusCache.clear();
+          githubAppInstallationStatusCache.clear();
         },
         () =>
           callProjectRuntimeActionOr(
@@ -7142,6 +7180,7 @@ contextBridge.exposeInMainWorld("ade", {
       ) => {
         githubStatusCache.clear();
         githubRemoteStatusCache.clear();
+        githubAppInstallationStatusCache.clear();
         cb(payload);
       };
       ipcRenderer.on(IPC.githubStatusChanged, listener);
@@ -7395,6 +7434,7 @@ contextBridge.exposeInMainWorld("ade", {
     getGitHubSnapshot: (args?: {
       force?: boolean;
       includeExternalClosed?: boolean;
+      historyPageLimit?: number;
     }): Promise<GitHubPrSnapshot> =>
       callPrReadRuntimeActionOr(
         "getGithubSnapshot",

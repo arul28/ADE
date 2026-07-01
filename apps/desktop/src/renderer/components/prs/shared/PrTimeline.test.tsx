@@ -3,7 +3,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRef } from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 
 // Mock child cards to keep this test focused on Timeline behavior.
 vi.mock("./PrReviewThreadCard", () => ({
@@ -645,6 +644,46 @@ describe("PrTimeline", () => {
     expect(group.textContent).toContain("2 resolved conversations");
     // Folded threads stay hidden until the group is expanded.
     expect(screen.queryAllByTestId("review-thread-card")).toHaveLength(0);
+  });
+
+  it("does not nest the commit author button inside the commit-group expander", () => {
+    render(
+      <PrTimeline
+        events={[
+          makeEvent({
+            type: "commit_push",
+            id: "commit:abc1234",
+            sha: "abc1234",
+            shortSha: "abc1234",
+            subject: "Fix scroll behavior",
+            commitCount: 1,
+            forcePushed: false,
+            author: "alice",
+          }),
+          makeEvent({
+            type: "commit_push",
+            id: "commit:def5678",
+            sha: "def5678",
+            shortSha: "def5678",
+            subject: "Follow up",
+            commitCount: 1,
+            forcePushed: false,
+            author: "alice",
+          }),
+        ]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={DEFAULT_PR_TIMELINE_FILTERS}
+        onFiltersChange={() => {}}
+      />,
+    );
+
+    const group = screen.getByTestId("pr-timeline-commit-group");
+    expect(group.textContent).toContain("alice added 2 commits");
+    expect(group.querySelector("button button")).toBeNull();
   });
 
   it("focusing a folded thread expands its group so the thread renders (indexById maps to the group)", () => {

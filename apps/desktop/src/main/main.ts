@@ -2507,11 +2507,13 @@ app.whenReady().then(async () => {
         emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event),
     });
 
+    let githubRelaySecretService: ReturnType<typeof createAutomationSecretService> | null = null;
     const githubService = createGithubService({
       logger,
       projectRoot,
       appDataDir: app.getPath("userData"),
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
+      githubRelaySecretReader: (ref) => githubRelaySecretService?.getSecret(ref) ?? null,
     });
 
     const projectScaffoldService = createProjectScaffoldService({
@@ -2987,6 +2989,7 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       logger,
     });
+    githubRelaySecretService = automationSecretService;
 
     const linearCredentialService = createLinearCredentialService({
       adeDir: adePaths.adeDir,
@@ -3188,6 +3191,7 @@ app.whenReady().then(async () => {
       ? createAutomationIngressService({
           logger,
           automationService,
+          prService,
           secretService: automationSecretService,
           listRules: () => projectConfigService.get().effective.automations ?? [],
         })

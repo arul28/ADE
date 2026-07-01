@@ -55,7 +55,7 @@ export function listPrsCoalesced(options?: { projectRoot?: string | null }): Pro
 }
 
 export function getGitHubSnapshotCoalesced(
-  args: { force?: boolean; includeExternalClosed?: boolean } = {},
+  args: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number } = {},
   options?: { projectRoot?: string | null },
 ): Promise<GitHubPrSnapshot> {
   return coalesceInFlight(
@@ -64,6 +64,7 @@ export function getGitHubSnapshotCoalesced(
       projectRoot: projectKey(options?.projectRoot),
       force: args.force === true,
       includeExternalClosed: args.includeExternalClosed === true,
+      historyPageLimit: args.historyPageLimit ?? null,
     }),
     () => window.ade.prs.getGitHubSnapshot(args),
   );

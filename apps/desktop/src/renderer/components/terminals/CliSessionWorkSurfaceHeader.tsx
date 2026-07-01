@@ -286,6 +286,8 @@ export function CliSessionWorkSurfaceHeader({
   toolsPaneOpen,
   onToggleTerminalPane,
   terminalPaneOpen,
+  onTogglePrPane,
+  prPaneOpen,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -301,6 +303,10 @@ export function CliSessionWorkSurfaceHeader({
   toolsPaneOpen?: boolean;
   onToggleTerminalPane?: () => void;
   terminalPaneOpen?: boolean;
+  /** When set, the PR pill toggles the floating PR pane over the terminal
+   * instead of opening the inline slide-out menu. */
+  onTogglePrPane?: () => void;
+  prPaneOpen?: boolean;
 }) {
   const navigate = useNavigate();
   const lane = lanes.find((entry) => entry.id === session.laneId) ?? null;
@@ -333,6 +339,8 @@ export function CliSessionWorkSurfaceHeader({
       showCacheBadge={showCache}
       cacheIdleSinceAt={session.chatIdleSinceAt}
       showGitToolbar
+      onTogglePrPane={onTogglePrPane}
+      prPaneOpen={prPaneOpen}
       onContextMenu={
         onContextMenu
           ? (event) => {

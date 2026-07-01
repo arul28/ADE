@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, ChatText, CheckCircle, GitBranch, GitMerge, GithubLogo, Warning, XCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatText, CheckCircle, CircleNotch, GitBranch, GitMerge, GithubLogo, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -12,6 +12,7 @@ import type {
   GitHubPrSnapshot,
   LaneSummary,
   MergeMethod,
+  PrEventPayload,
   PrSummary,
   PrWithConflicts,
 } from "../../../../shared/types";
@@ -34,6 +35,9 @@ const LINKED_HYDRATION_LIMIT = 8;
 const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
 const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
 const GITHUB_TAB_HOT_REFRESH_DELAY_MS = 30_000;
+const GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT = 2;
+const GITHUB_TAB_HISTORY_PAGE_INCREMENT = 2;
+const GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT = 10;
 const GITHUB_TAB_CACHE_DISABLED = import.meta.env.MODE === "test";
 const GITHUB_PR_LIST_WIDTH_KEY = "ade.prs.githubListWidth";
 const GITHUB_PR_LIST_MIN_PX = 260;
@@ -80,21 +84,29 @@ type GitHubTabProps = {
 export type GitHubHeaderChromeState = {
   repoLabel: string;
   syncing: boolean;
+  syncedAt: string | null;
   onSync: () => void;
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
 };
 
 type GitHubFilter = "open" | "closed" | "merged";
+type GitHubFilterSelectionMap = Partial<Record<GitHubFilter, string | null>>;
 
 type GitHubTabWarmCache = {
   projectRoot: string;
   snapshot: GitHubPrSnapshot | null;
   filter: GitHubFilter;
   selectedItemId: string | null;
+  selectedItemIdsByFilter?: GitHubFilterSelectionMap;
   searchQuery: string;
   externalHistoryLoaded: boolean;
   cachedAt: number;
+};
+
+type GitHubSnapshotRequestKey = {
+  includeExternalClosed: boolean;
+  historyPageLimit: number;
 };
 
 type CreateLaneFromPrBranchApi = {
@@ -110,6 +122,45 @@ let githubTabWarmCache: GitHubTabWarmCache | null = null;
 
 function normalizeGitHubFilter(value: unknown): GitHubFilter {
   return value === "open" || value === "closed" || value === "merged" ? value : "open";
+}
+
+function initialGitHubFilterSelections(cache: GitHubTabWarmCache | null): GitHubFilterSelectionMap {
+  const selections: GitHubFilterSelectionMap = { ...(cache?.selectedItemIdsByFilter ?? {}) };
+  if (cache?.selectedItemId) {
+    selections[normalizeGitHubFilter(cache.filter)] = cache.selectedItemId;
+  }
+  return selections;
+}
+
+function normalizeHistoryPageLimit(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT;
+  }
+  return Math.min(
+    GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
+    Math.max(GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT, Math.floor(numeric)),
+  );
+}
+
+function snapshotRequestKey(options?: {
+  includeExternalClosed?: boolean;
+  historyPageLimit?: number;
+}): GitHubSnapshotRequestKey {
+  const includeExternalClosed = options?.includeExternalClosed === true;
+  return {
+    includeExternalClosed,
+    historyPageLimit: includeExternalClosed ? normalizeHistoryPageLimit(options?.historyPageLimit) : 0,
+  };
+}
+
+function snapshotRequestSatisfies(
+  current: GitHubSnapshotRequestKey | null,
+  requested: GitHubSnapshotRequestKey,
+): boolean {
+  if (!current) return false;
+  if (!requested.includeExternalClosed) return true;
+  return current.includeExternalClosed && current.historyPageLimit >= requested.historyPageLimit;
 }
 
 function readGitHubTabWarmCache(projectRoot: string | null): GitHubTabWarmCache | null {
@@ -246,6 +297,16 @@ function mergeGitHubListItems(snapshot: GitHubPrSnapshot): GitHubPrListItem[] {
     seen.add(key);
     return true;
   });
+}
+
+type GitHubFilterCounts = Record<GitHubFilter, number>;
+
+function countGitHubItemsByState(items: GitHubPrListItem[]): GitHubFilterCounts {
+  return {
+    open: items.filter((item) => item.state === "open" || item.state === "draft").length,
+    closed: items.filter((item) => item.state === "closed").length,
+    merged: items.filter((item) => item.state === "merged").length,
+  };
 }
 
 /* -- Color-coded state badge with distinct colors per state -- */
@@ -625,6 +686,9 @@ export function GitHubTab({
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
     () => initialWarmCacheRef.current?.selectedItemId ?? null,
   );
+  const [selectedItemIdsByFilter, setSelectedItemIdsByFilter] = React.useState<GitHubFilterSelectionMap>(
+    () => initialGitHubFilterSelections(initialWarmCacheRef.current),
+  );
   const [linkLaneId, setLinkLaneId] = React.useState("");
   const [linkingItemId, setLinkingItemId] = React.useState<string | null>(null);
   const [unlinkingPrId, setUnlinkingPrId] = React.useState<string | null>(null);
@@ -634,6 +698,8 @@ export function GitHubTab({
   const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
   const [createLaneError, setCreateLaneError] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
+  const [loadingOlderHistory, setLoadingOlderHistory] = React.useState(false);
+  const [loadingFilter, setLoadingFilter] = React.useState<GitHubFilter | null>(null);
   const [renderedHydrationItems, setRenderedHydrationItems] = React.useState<GitHubPrListItem[]>([]);
   const [searchQuery, setSearchQuery] = React.useState(() => initialWarmCacheRef.current?.searchQuery ?? "");
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
@@ -643,12 +709,13 @@ export function GitHubTab({
   const createLanePreflightRequestRef = React.useRef<{ id: number; itemKey: string } | null>(null);
   const lastHandledSelectedPrIdRef = React.useRef<string | null | undefined>(undefined);
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
+  const pendingRestoredSelectedItemIdRef = React.useRef<string | null>(null);
   const snapshotRef = React.useRef<GitHubPrSnapshot | null>(null);
   const hasInitializedSelectionRef = React.useRef(Boolean(initialWarmCacheRef.current?.selectedItemId));
   const lastPrFingerprintRef = React.useRef<string>("");
   const hotRefreshUntilRef = React.useRef(0);
   const hotRefreshTimerRef = React.useRef<number | null>(null);
-  const inFlightSnapshotRef = React.useRef<{ request: Promise<GitHubPrSnapshot>; includeExternalClosed: boolean } | null>(null);
+  const inFlightSnapshotRef = React.useRef<({ request: Promise<GitHubPrSnapshot> } & GitHubSnapshotRequestKey) | null>(null);
   const loadingSnapshotRequestCountRef = React.useRef(0);
   const lastSnapshotLoadedAtRef = React.useRef(initialWarmCacheRef.current?.cachedAt ?? 0);
   const missingLinkedPrHydrationRef = React.useRef<string | null>(null);
@@ -661,6 +728,11 @@ export function GitHubTab({
   snapshotRef.current = snapshot;
   filterRef.current = filter;
   externalHistoryLoadedRef.current = externalHistoryLoaded;
+
+  const currentHistoryPageLimit = React.useCallback(() => {
+    const current = snapshotRef.current?.history?.pageLimit;
+    return normalizeHistoryPageLimit(current);
+  }, []);
 
   /* Build a lookup from linkedPrId -> PrSummary for CI/review indicators */
   const prsByIdMap = React.useMemo(() => {
@@ -675,10 +747,11 @@ export function GitHubTab({
     force?: boolean;
     silent?: boolean;
     includeExternalClosed?: boolean;
+    historyPageLimit?: number;
   }) => {
-    const includeExternalClosed = options?.includeExternalClosed === true;
+    const requestKey = snapshotRequestKey(options);
     const inFlightSnapshot = inFlightSnapshotRef.current;
-    if (inFlightSnapshot && (!includeExternalClosed || inFlightSnapshot.includeExternalClosed)) {
+    if (options?.force !== true && inFlightSnapshot && snapshotRequestSatisfies(inFlightSnapshot, requestKey)) {
       return inFlightSnapshot.request;
     }
     const shouldShowLoading = !options?.silent && (options?.force === true || snapshotRef.current == null);
@@ -691,12 +764,16 @@ export function GitHubTab({
     let pending!: Promise<GitHubPrSnapshot>;
     const isCurrentSnapshotRequest = () =>
       inFlightSnapshotRef.current?.request === pending
-      && inFlightSnapshotRef.current.includeExternalClosed === includeExternalClosed;
+      && inFlightSnapshotRef.current.includeExternalClosed === requestKey.includeExternalClosed
+      && inFlightSnapshotRef.current.historyPageLimit === requestKey.historyPageLimit;
     pending = (async () => {
       return getGitHubSnapshotCoalesced(
         {
           force: options?.force === true,
-          ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+          ...(requestKey.includeExternalClosed ? {
+            includeExternalClosed: true,
+            historyPageLimit: requestKey.historyPageLimit,
+          } : {}),
         },
         { projectRoot: requestProjectRoot },
       );
@@ -706,7 +783,7 @@ export function GitHubTab({
         if (projectRootRef.current !== requestProjectRoot) return next;
         if (!isCurrentSnapshotRequest()) return next;
         setSnapshot(next);
-        setExternalHistoryLoaded((prev) => prev || includeExternalClosed);
+        setExternalHistoryLoaded((prev) => prev || requestKey.includeExternalClosed);
         lastSnapshotLoadedAtRef.current = Date.now();
         if (next.viewerLogin) {
           setContextViewerLogin?.(next.viewerLogin);
@@ -730,7 +807,7 @@ export function GitHubTab({
           }
         }
       });
-    inFlightSnapshotRef.current = { request: pending, includeExternalClosed };
+    inFlightSnapshotRef.current = { request: pending, ...requestKey };
     return pending;
   }, [setContextViewerLogin]);
 
@@ -746,6 +823,7 @@ export function GitHubTab({
     setError(null);
     setFilter(normalizeGitHubFilter(warmCache?.filter));
     setSelectedItemId(warmCache?.selectedItemId ?? null);
+    setSelectedItemIdsByFilter(initialGitHubFilterSelections(warmCache));
     setSearchQuery(warmCache?.searchQuery ?? "");
     setExternalHistoryLoaded(warmCache?.externalHistoryLoaded ?? false);
     lastSnapshotLoadedAtRef.current = warmCache?.cachedAt ?? 0;
@@ -771,10 +849,10 @@ export function GitHubTab({
       void loadSnapshot({
         force: true,
         silent: true,
-        ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+        ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
       });
     }, GITHUB_TAB_HOT_REFRESH_DELAY_MS);
-  }, [loadSnapshot]);
+  }, [currentHistoryPageLimit, loadSnapshot]);
 
   React.useEffect(() => {
     const warmCache = initialWarmCacheRef.current;
@@ -800,19 +878,38 @@ export function GitHubTab({
       snapshot,
       filter,
       selectedItemId,
+      selectedItemIdsByFilter,
       searchQuery,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, snapshot]);
+  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
+    const loadingFor = filter;
+    setLoadingFilter(loadingFor);
     void loadSnapshot({
       includeExternalClosed: true,
+      historyPageLimit: GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT,
       silent: snapshotRef.current != null,
+    }).finally(() => {
+      setLoadingFilter((current) => current === loadingFor ? null : current);
     });
   }, [externalHistoryLoaded, filter, loadSnapshot]);
+
+  React.useEffect(() => {
+    const unsubscribe = window.ade.prs.onEvent((event: PrEventPayload) => {
+      if (event.type !== "prs-updated" && event.type !== "pr-auto-linked") return;
+      const includeExternalClosed =
+        externalHistoryLoadedRef.current || filterRef.current !== "open";
+      void loadSnapshot({
+        silent: true,
+        ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
+      });
+    });
+    return unsubscribe;
+  }, [currentHistoryPageLimit, loadSnapshot]);
 
   React.useEffect(() => {
     if (prsContextLoading && prs.length === 0) return;
@@ -839,9 +936,9 @@ export function GitHubTab({
     void loadSnapshot({
       force: true,
       silent: true,
-      ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+      ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
     });
-  }, [loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
+  }, [currentHistoryPageLimit, loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
 
   const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
     if (!searchQuery.trim()) return true;
@@ -869,11 +966,20 @@ export function GitHubTab({
   );
   const hydrationItems = filteredItems.length > VIRTUALIZE_AT ? renderedHydrationItems : filteredItems;
 
-  const filterCounts = React.useMemo(() => ({
-    open: allItems.filter((item) => item.state === "open" || item.state === "draft").length,
-    closed: allItems.filter((item) => item.state === "closed").length,
-    merged: allItems.filter((item) => item.state === "merged").length,
-  }), [allItems]);
+  const filterCounts = React.useMemo(() => {
+    const listedCounts = countGitHubItemsByState(allItems);
+    const snapshotCounts = snapshot?.history?.repoPullRequestCounts;
+    return {
+      open: snapshotCounts?.open ?? listedCounts.open,
+      closed: snapshotCounts?.closed ?? listedCounts.closed,
+      merged: snapshotCounts?.merged ?? listedCounts.merged,
+    };
+  }, [allItems, snapshot?.history?.repoPullRequestCounts]);
+  const canLoadOlderHistory =
+    filter !== "open"
+    && Boolean(snapshot?.history?.repoPullRequestsMayHaveMore)
+    && currentHistoryPageLimit() < GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT;
+  const showListLoadingIndicator = loading || syncing || loadingFilter !== null;
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -892,8 +998,10 @@ export function GitHubTab({
     }
 
     pendingSelectedItemIdRef.current = linkedItem.id;
+    const linkedFilter = linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open";
+    setSelectedItemIdsByFilter((prev) => ({ ...prev, [linkedFilter]: linkedItem.id }));
     if (!matchesFilter(linkedItem, filter)) {
-      setFilter(linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open");
+      setFilter(linkedFilter);
     }
     setSelectedItemId(linkedItem.id);
     hasInitializedSelectionRef.current = true;
@@ -915,15 +1023,26 @@ export function GitHubTab({
       if (next) {
         hasInitializedSelectionRef.current = true;
         setSelectedItemId(next.id);
+        setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: next.id }));
         onSelectPr(next.linkedPrId ?? null);
       }
     }
-  }, [snapshot, filteredItems, selectedItemId, onSelectPr]);
+  }, [snapshot, filter, filteredItems, selectedItemId, onSelectPr]);
 
   const selectedItem = React.useMemo(
-    () => allItems.find((item) => item.id === selectedItemId) ?? null,
-    [allItems, selectedItemId],
+    () => {
+      const item = allItems.find((candidate) => candidate.id === selectedItemId) ?? null;
+      return item && matchesFilter(item, filter) ? item : null;
+    },
+    [allItems, filter, selectedItemId],
   );
+
+  React.useEffect(() => {
+    const pending = pendingRestoredSelectedItemIdRef.current;
+    if (!pending || !selectedItem || selectedItem.id !== pending) return;
+    pendingRestoredSelectedItemIdRef.current = null;
+    onSelectPr(selectedItem.linkedPrId ?? null);
+  }, [onSelectPr, selectedItem]);
   const missingLinkedPrId = selectedItem?.linkedPrId && !prsByIdMap.has(selectedItem.linkedPrId)
     ? selectedItem.linkedPrId
     : null;
@@ -1065,14 +1184,36 @@ export function GitHubTab({
           onRefreshAll().catch(() => {}),
           loadSnapshot({
             force: true,
-            ...(includeExternalClosed ? { includeExternalClosed: true } : {}),
+            ...(includeExternalClosed ? { includeExternalClosed: true, historyPageLimit: currentHistoryPageLimit() } : {}),
           }),
         ]);
       }
     } finally {
       setSyncing(false);
     }
-  }, [loadSnapshot, onRefreshAll, startHotRefreshWindow]);
+  }, [currentHistoryPageLimit, loadSnapshot, onRefreshAll, startHotRefreshWindow]);
+
+  const handleLoadOlderHistory = React.useCallback(async () => {
+    if (loadingOlderHistory) return;
+    const nextLimit = Math.min(
+      GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
+      currentHistoryPageLimit() + GITHUB_TAB_HISTORY_PAGE_INCREMENT,
+    );
+    setLoadingOlderHistory(true);
+    setLoadingFilter(filter);
+    try {
+      await loadSnapshot({
+        force: true,
+        includeExternalClosed: true,
+        historyPageLimit: nextLimit,
+        silent: true,
+      });
+      setExternalHistoryLoaded(true);
+    } finally {
+      setLoadingOlderHistory(false);
+      setLoadingFilter((current) => current === filter ? null : current);
+    }
+  }, [currentHistoryPageLimit, filter, loadSnapshot, loadingOlderHistory]);
 
   const repoLabel = snapshot?.repo ? `${snapshot.repo.owner}/${snapshot.repo.name}` : "";
 
@@ -1081,13 +1222,14 @@ export function GitHubTab({
     onHeaderChromeChange({
       repoLabel,
       syncing,
+      syncedAt: snapshot?.syncedAt ?? null,
       onSync: () => {
         void handleSync();
       },
       searchQuery,
       onSearchQueryChange: setSearchQuery,
     });
-  }, [handleSync, onHeaderChromeChange, relocateHeaderChrome, repoLabel, searchQuery, syncing]);
+  }, [handleSync, onHeaderChromeChange, relocateHeaderChrome, repoLabel, searchQuery, snapshot?.syncedAt, syncing]);
 
   React.useEffect(() => {
     if (!relocateHeaderChrome || !onHeaderChromeChange) return;
@@ -1097,9 +1239,42 @@ export function GitHubTab({
   const handleSelectItem = React.useCallback((item: GitHubPrListItem) => {
     hasInitializedSelectionRef.current = true;
     setSelectedItemId(item.id);
+    setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: item.id }));
+    pendingRestoredSelectedItemIdRef.current = null;
     onSelectPr(item.linkedPrId ?? null);
     setLinkLaneId("");
-  }, [onSelectPr]);
+  }, [filter, onSelectPr]);
+
+  const handleFilterChange = React.useCallback((state: GitHubFilter) => {
+    pendingSelectedItemIdRef.current = null;
+    if (state !== filter && listRef.current) {
+      if (typeof listRef.current.scrollTo === "function") {
+        listRef.current.scrollTo({ top: 0, left: 0 });
+      } else {
+        listRef.current.scrollTop = 0;
+      }
+    }
+    const cachedSelectedItemId = selectedItemIdsByFilter[state] ?? null;
+    const cachedSelectedItem = cachedSelectedItemId
+      ? allItems.find((item) => item.id === cachedSelectedItemId) ?? null
+      : null;
+    const nextSelectedItemId = cachedSelectedItem && !matchesFilter(cachedSelectedItem, state)
+      ? null
+      : cachedSelectedItemId;
+    const nextSelectedItem = cachedSelectedItem && nextSelectedItemId
+      ? cachedSelectedItem
+      : null;
+    setFilter(state);
+    setSelectedItemIdsByFilter((prev) => ({ ...prev, [filter]: selectedItemId, [state]: nextSelectedItemId }));
+    setSelectedItemId(nextSelectedItemId);
+    if (nextSelectedItemId && !nextSelectedItem) {
+      pendingRestoredSelectedItemIdRef.current = nextSelectedItemId;
+    } else {
+      pendingRestoredSelectedItemIdRef.current = null;
+      onSelectPr(nextSelectedItem?.linkedPrId ?? null);
+    }
+    setLinkLaneId("");
+  }, [allItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter]);
 
   const handleLink = React.useCallback(async () => {
     if (!selectedItem || !linkLaneId) return;
@@ -1132,6 +1307,7 @@ export function GitHubTab({
       });
       onSelectPr(null);
       setSelectedItemId(item.id);
+      setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: item.id }));
       await Promise.all([
         onRefreshAll().catch(() => {}),
         loadSnapshot({
@@ -1205,6 +1381,7 @@ export function GitHubTab({
             })
           : current);
         setSelectedItemId(createLaneItem.id);
+        setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: createLaneItem.id }));
         onSelectPr(mappedPrId);
       }
       setCreateLaneItem(null);
@@ -1281,79 +1458,29 @@ export function GitHubTab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Filter bar */}
-      <div style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 0,
-        borderBottom: "1px solid rgba(255,255,255,0.06)",
-        background: "rgba(255,255,255,0.01)",
-      }}>
-        {!relocateHeaderChrome ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 16px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-            <GitHubPrSearchInput value={searchQuery} onChange={setSearchQuery} />
-            <GitHubRepoSyncBar
-              repoLabel={repoLabel}
-              syncing={syncing}
-              onSync={() => {
-                void handleSync();
-              }}
-            />
-          </div>
-        ) : null}
-        {/* Filter tabs with counts (Better-Hub style) */}
-        <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "0 16px" }}>
-          {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
-            const active = filter === state;
-            const fc = FILTER_COLORS[state];
-            const count = filterCounts[state];
-            const icon = state === "merged" ? <GitMerge size={12} weight="bold" /> : null;
-            return (
-              <button
-                key={state}
-                type="button"
-                onClick={() => {
-                  pendingSelectedItemIdRef.current = null;
-                  setFilter(state);
-                  setSelectedItemId(null);
-                  onSelectPr(null);
-                  setLinkLaneId("");
-                }}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 5,
-                  height: 36,
-                  padding: "0 14px",
-                  fontSize: 12,
-                  fontWeight: active ? 600 : 400,
-                  fontFamily: SANS_FONT,
-                  color: active ? fc.active.text : COLORS.textMuted,
-                  background: "transparent",
-                  border: "none",
-                  borderBottom: active ? `2px solid ${fc.active.text}` : "2px solid transparent",
-                  cursor: "pointer",
-                  textTransform: "capitalize",
-                  transition: "all 150ms ease",
-                }}
-              >
-                {icon}
-                {state}
-                <span style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  fontWeight: 600,
-                  color: active ? fc.active.text : COLORS.textDim,
-                  opacity: active ? 0.8 : 0.6,
-                }}>
-                  {count}
-                </span>
-              </button>
-            );
-          })}
+      {/* Search / sync chrome only renders inline when it hasn't been hoisted to
+          the shared PRs header. The Open/Merged/Closed tabs now live at the top of
+          the list column (below) so the detail pane can rise to sit level with them. */}
+      {!relocateHeaderChrome ? (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "8px 16px",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+          background: "rgba(255,255,255,0.01)",
+        }}>
+          <GitHubPrSearchInput value={searchQuery} onChange={setSearchQuery} />
+          <GitHubRepoSyncBar
+            repoLabel={repoLabel}
+            syncing={syncing}
+            syncedAt={snapshot?.syncedAt ?? null}
+            onSync={() => {
+              void handleSync();
+            }}
+          />
         </div>
-      </div>
+      ) : null}
 
       {error ? (
         <div style={{
@@ -1381,8 +1508,96 @@ export function GitHubTab({
             className="min-h-0 min-w-0"
             style={{ overflow: "hidden", borderRight: "1px solid rgba(255,255,255,0.06)" }}
           >
-            <div ref={listRef} style={{ height: "100%", overflow: "auto" }}>
-              {filteredItems.length === 0 ? (
+            <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+              {/* Filter tabs (Open / Merged / Closed) — fixed header capping the
+                  list column. The detail pane to the right rises to sit level with
+                  these; the list min width keeps the right edge of "Closed" aligned
+                  with the list/detail divider. */}
+              <div style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 0,
+                padding: "0 16px",
+                flexShrink: 0,
+                borderBottom: "1px solid rgba(255,255,255,0.06)",
+                background: "rgba(255,255,255,0.01)",
+              }}>
+                {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
+                  const active = filter === state;
+                  const fc = FILTER_COLORS[state];
+                  const count = filterCounts[state];
+                  const icon = state === "merged" ? <GitMerge size={12} weight="bold" /> : null;
+                  const tabLoading = active && (loading || syncing || loadingFilter === state || loadingOlderHistory);
+                  return (
+                    <button
+                      key={state}
+                      type="button"
+                      onClick={() => handleFilterChange(state)}
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 5,
+                        height: 36,
+                        padding: "0 14px",
+                        fontSize: 12,
+                        fontWeight: active ? 600 : 400,
+                        fontFamily: SANS_FONT,
+                        color: active ? fc.active.text : COLORS.textMuted,
+                        background: "transparent",
+                        border: "none",
+                        borderBottom: active ? `2px solid ${fc.active.text}` : "2px solid transparent",
+                        cursor: "pointer",
+                        textTransform: "capitalize",
+                        transition: "all 150ms ease",
+                      }}
+                    >
+                      {icon}
+                      {state}
+                      {tabLoading ? (
+                        <CircleNotch
+                          size={12}
+                          className="animate-spin"
+                          weight="bold"
+                          aria-label={`Loading ${state} pull requests`}
+                          style={{ color: active ? fc.active.text : COLORS.accent, opacity: 0.9 }}
+                        />
+                      ) : (
+                        <span style={{
+                          fontFamily: MONO_FONT,
+                          fontSize: 10,
+                          fontWeight: 600,
+                          color: active ? fc.active.text : COLORS.textDim,
+                          opacity: active ? 0.8 : 0.6,
+                        }}>
+                          {count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+                <div style={{ flex: 1 }} />
+                {showListLoadingIndicator ? (
+                  <span
+                    role="status"
+                    aria-label="Loading pull requests"
+                    title="Loading pull requests"
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      width: 24,
+                      height: 24,
+                      color: COLORS.accent,
+                      opacity: 0.9,
+                    }}
+                  >
+                    <CircleNotch size={14} className="animate-spin" weight="bold" />
+                  </span>
+                ) : null}
+              </div>
+              <div ref={listRef} style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                {filteredItems.length === 0 ? (
                 <div style={{ padding: 20 }}>
                   <EmptyState
                     title={loading && !snapshot ? "Preparing pull requests" : "No pull requests"}
@@ -1411,6 +1626,23 @@ export function GitHubTab({
                   />
                 ))
               )}
+              {canLoadOlderHistory ? (
+                <div style={{ padding: "12px 14px 16px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
+                  <button
+                    type="button"
+                    aria-label="Load older pull requests"
+                    disabled={loadingOlderHistory}
+                    onClick={() => { void handleLoadOlderHistory(); }}
+                    style={{
+                      ...outlineButton({ height: 32, width: "100%", opacity: loadingOlderHistory ? 0.6 : 1 }),
+                      justifyContent: "center",
+                    }}
+                  >
+                    {loadingOlderHistory ? "Loading older..." : "Load older PRs"}
+                  </button>
+                </div>
+              ) : null}
+              </div>
             </div>
           </Panel>
           <ResizeGutter orientation="vertical" thin narrow />

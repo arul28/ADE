@@ -2774,6 +2774,72 @@ describe("adeRpcServer", () => {
       data: "continue\n",
       chatSessionId: "chat-1",
     });
+
+    const deniedChatRead = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { sessionId: "chat-2", limit: 10 },
+    });
+    expect(deniedChatRead.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
+
+    const deniedChatSend = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-2", text: "cross-chat write" },
+    });
+    expect(deniedChatSend.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.sendMessage).not.toHaveBeenCalled();
+
+    const ownChatRead = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { limit: 10 },
+    });
+    expect(ownChatRead?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      limit: 10,
+    });
+
+    const ownChatSend = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { text: "own-chat write" },
+    });
+    expect(ownChatSend?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "own-chat write",
+    });
+  });
+
+  it("keeps explicit chat ADE actions available to unbound external CLI callers", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "external-cli", role: "external" });
+
+    const read = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { sessionId: "chat-2", limit: 10 },
+    });
+    expect(read?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-2",
+      limit: 10,
+    });
+
+    const send = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "sendMessage",
+      args: { sessionId: "chat-2", text: "external write" },
+    });
+    expect(send?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith({
+      sessionId: "chat-2",
+      text: "external write",
+    });
   });
 
   it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {

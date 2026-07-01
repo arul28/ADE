@@ -1878,6 +1878,74 @@ describe("createAgentChatService", () => {
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
+    it("fast-fails a logged-out Claude turn into the inline re-login card", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            // Startup warmup stream — healthy.
+            yield { type: "system", subtype: "init", session_id: "sdk-auth", model: "claude-opus-4-8", slash_commands: [] };
+            yield { type: "result", subtype: "success", is_error: false, session_id: "sdk-auth" };
+            return;
+          }
+          // The SDK reports a logged-out session as an assistant message carrying
+          // error="authentication_failed", with the 401 surfaced as plain text.
+          yield { type: "system", subtype: "init", session_id: "sdk-auth", model: "claude-opus-4-8", slash_commands: [] };
+          yield {
+            type: "assistant",
+            error: "authentication_failed",
+            message: {
+              model: "claude-opus-4-8",
+              content: [{ type: "text", text: "Failed to authenticate. API Error: 401 Invalid authentication credentials" }],
+            },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-auth",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+
+      await service.runSessionTurn({ sessionId: session.id, text: "use context skill" });
+
+      // The raw 401 is not surfaced as a plain assistant bubble.
+      const authText = events.find(
+        (event) => event.event.type === "text"
+          && /invalid authentication credentials/i.test((event.event as any).text ?? ""),
+      );
+      expect(authText).toBeUndefined();
+
+      // A single "logged out" notice replaces the "retry 1/10 … 10/10" storm.
+      const notice = events.find(
+        (event) => event.event.type === "system_notice"
+          && /logged out/i.test((event.event as any).message ?? ""),
+      );
+      expect(notice).toBeTruthy();
+
+      // The error carries the agentCli signal that renders the inline re-login card.
+      const errorEvent = events.find(
+        (event) => event.event.type === "error"
+          && (event.event as any).errorInfo?.agentCli?.category === "unauthenticated",
+      );
+      expect(errorEvent).toBeTruthy();
+      expect((errorEvent!.event as any).errorInfo.agentCli.agent).toBe("claude");
+
+      const failedDone = events.filter((event) => event.event.type === "done").at(-1);
+      expect((failedDone!.event as any).status).toBe("failed");
+    });
+
     it("honors an explicit initial chat title", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -3179,6 +3247,83 @@ describe("createAgentChatService", () => {
         const transcript = fs.readFileSync(String(transcriptPath), "utf8");
         expect(transcript).toContain("Chat handoff from previous session");
       }, { timeout: 2000, interval: 50 });
+    });
+
+    it("sends Codex brief handoff text before syncing the inherited goal", async () => {
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      sessionService.updateMeta({
+        sessionId: source.id,
+        goal: "No Machine State Polish",
+      });
+      const sourceRow = mockState.sessions.get(source.id);
+      if (sourceRow) {
+        sourceRow.summary = "Fix the iPhone 17 simulator chat layout handoff.";
+      }
+
+      const handoffStart = mockState.codexRequestPayloads.length;
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+      });
+
+      expect(result.session.provider).toBe("codex");
+      expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
+
+      const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
+      const requestMethods = handoffPayloads.map((payload) => String(payload.method ?? ""));
+      const turnStartIndex = requestMethods.indexOf("turn/start");
+      const goalSetIndex = requestMethods.indexOf("thread/goal/set");
+      expect(turnStartIndex).toBeGreaterThanOrEqual(0);
+      expect(goalSetIndex).toBeGreaterThan(turnStartIndex);
+
+      const turnStartRequest = handoffPayloads[turnStartIndex] as {
+        params?: { input?: Array<{ text?: unknown }> };
+      };
+      const inputText = turnStartRequest.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(inputText).toContain("This message was injected automatically by ADE during a chat handoff.");
+      expect(inputText).toContain("No Machine State Polish");
+
+      const goalSetRequest = handoffPayloads[goalSetIndex] as {
+        params?: { objective?: unknown };
+      };
+      expect(goalSetRequest.params?.objective).toBe("No Machine State Polish");
+    });
+
+    it("keeps Codex brief handoff successful when deferred goal seeding throws", async () => {
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      sessionService.updateMeta({
+        sessionId: source.id,
+        goal: "No Machine State Polish",
+      });
+      mockState.codexResponseOverrides.set("thread/goal/set", () => {
+        throw new Error("goal seed unavailable");
+      });
+
+      const handoffStart = mockState.codexRequestPayloads.length;
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+      });
+
+      expect(result.session.provider).toBe("codex");
+      expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
+      const handoffMethods = mockState.codexRequestPayloads
+        .slice(handoffStart)
+        .map((payload) => String(payload.method ?? ""));
+      expect(handoffMethods).toContain("turn/start");
+      expect(handoffMethods).toContain("thread/goal/set");
     });
 
     it("uses the selected Claude handoff permission instead of the source interaction mode", async () => {
@@ -12147,6 +12292,38 @@ describe("createAgentChatService", () => {
         itemId: "item-1",
         turnId: "turn-ids",
       });
+    });
+  });
+
+  describe("readTranscript", () => {
+    it("refuses non-chat sessions even when a transcript file exists", async () => {
+      const { service, sessionService } = createService();
+      const transcriptPath = path.join(tmpRoot, "transcripts", "terminal-session.chat.jsonl");
+      fs.writeFileSync(
+        transcriptPath,
+        `${JSON.stringify({
+          sessionId: "terminal-session",
+          timestamp: "2026-06-30T12:00:00.000Z",
+          event: { type: "user_message", text: "terminal secret" },
+          sequence: 1,
+        })}\n`,
+        "utf8",
+      );
+      sessionService.create({
+        sessionId: "terminal-session",
+        laneId: "lane-1",
+        toolType: "terminal",
+        transcriptPath,
+      });
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([{
+        sessionId: "terminal-session",
+        timestamp: "2026-06-30T12:00:00.000Z",
+        event: { type: "user_message", text: "terminal secret" },
+        sequence: 1,
+      }]);
+
+      await expect(service.readTranscript("terminal-session")).resolves.toEqual([]);
+      expect(parseAgentChatTranscript).not.toHaveBeenCalled();
     });
   });
 

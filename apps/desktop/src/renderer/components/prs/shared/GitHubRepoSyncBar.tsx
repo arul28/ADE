@@ -2,11 +2,13 @@ import { memo } from "react";
 import { ArrowsClockwise } from "@phosphor-icons/react";
 
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { formatTimeAgoCompact } from "./prFormatters";
 
 export type GitHubRepoSyncBarProps = {
   repoLabel: string;
   syncing: boolean;
   onSync: () => void;
+  syncedAt?: string | null;
   compact?: boolean;
 };
 
@@ -14,9 +16,15 @@ export const GitHubRepoSyncBar = memo(function GitHubRepoSyncBar({
   repoLabel,
   syncing,
   onSync,
+  syncedAt = null,
   compact = false,
 }: GitHubRepoSyncBarProps) {
   if (!repoLabel) return null;
+  const statusText = syncing
+    ? "Syncing"
+    : syncedAt
+      ? `Updated ${formatTimeAgoCompact(syncedAt)}`
+      : "Watching GitHub";
 
   return (
     <div
@@ -44,16 +52,29 @@ export const GitHubRepoSyncBar = memo(function GitHubRepoSyncBar({
       >
         {repoLabel}
       </span>
+      <span
+        style={{
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          color: syncing ? COLORS.accent : COLORS.textMuted,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {statusText}
+      </span>
       <button
         type="button"
+        aria-label="Sync now"
+        title="Sync now"
         onClick={() => void onSync()}
         style={{
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
-          gap: 5,
+          gap: compact ? 0 : 5,
           height: compact ? 24 : 28,
-          padding: compact ? "0 8px" : "0 10px",
+          width: compact ? 24 : undefined,
+          padding: compact ? 0 : "0 10px",
           fontSize: 11,
           fontWeight: 500,
           fontFamily: SANS_FONT,
@@ -66,7 +87,7 @@ export const GitHubRepoSyncBar = memo(function GitHubRepoSyncBar({
         }}
       >
         <ArrowsClockwise size={12} className={syncing ? "animate-spin" : ""} />
-        {syncing ? "Syncing..." : "Sync"}
+        {compact ? null : "Sync now"}
       </button>
     </div>
   );

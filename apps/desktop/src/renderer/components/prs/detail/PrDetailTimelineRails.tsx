@@ -24,7 +24,6 @@ import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
 import { PrDetailMergeRail } from "../shared/PrDetailMergeRail";
 import { PrDetailRightMetadataRail, type ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { PrCommentComposer } from "../shared/PrCommentComposer";
-import { deriveParticipants } from "../shared/prMergeRailUtils";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import { COLORS, floatingPane } from "../../lanes/laneDesignTokens";
@@ -673,11 +672,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       [activity, commitSnapshots, reviewThreads],
     );
 
-    const participants = useMemo(
-      () => deriveParticipants({ detail, reviews, comments }),
-      [detail, reviews, comments],
-    );
-
     const handleSelectCommit = useCallback(
       (sha: string) => {
         setActiveCommitSha(sha);
@@ -773,7 +767,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       <div
         className="grid h-full min-h-0 w-full"
         style={{
-          gridTemplateColumns: "248px minmax(0, 1fr) 312px",
+          gridTemplateColumns: "216px minmax(0, 1fr) 240px",
           gridTemplateRows: "minmax(0, 1fr)",
           gap: 8,
           padding: 8,
@@ -857,7 +851,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
             detail={detail}
             status={status}
             reviews={reviews}
-            participants={participants}
             checks={checks}
             actionRuns={actionRuns}
             files={files}

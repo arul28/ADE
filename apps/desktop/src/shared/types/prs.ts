@@ -63,6 +63,8 @@ export type PrSummary = {
   deletions: number;
   mergeConflicts?: boolean | null;
   behindBaseBy?: number | null;
+  /** Head commit SHA at last sync. Lets the renderer detect new-commit pushes. */
+  headSha?: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -200,6 +202,33 @@ export type GitHubPrSnapshot = {
   repoPullRequests: GitHubPrListItem[];
   externalPullRequests: GitHubPrListItem[];
   syncedAt: string;
+  history?: {
+    includeExternalClosed: boolean;
+    pageLimit: number;
+    repoPullRequestsLoaded: number;
+    repoPullRequestsMayHaveMore: boolean;
+    repoPullRequestCounts?: {
+      open: number;
+      closed: number;
+      merged: number;
+    } | null;
+  } | null;
+};
+
+export type GitHubWebhookIngestArgs = {
+  eventName: string;
+  deliveryId?: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type GitHubWebhookIngestResult = {
+  processed: boolean;
+  duplicate: boolean;
+  repoOwner: string | null;
+  repoName: string | null;
+  githubPrNumber: number | null;
+  linkedPrIds: string[];
+  reason: string | null;
 };
 
 export type PrSnapshotHydration = {

@@ -22,9 +22,9 @@ export type ViewerHostProps = {
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   reloadToken?: number;
-  onDirtyChange?: (path: string, dirty: boolean) => void;
-  onEdit?: (path: string) => void;
-  onRegisterEditorApi?: (path: string, api: EditorApi | null) => void;
+  onDirtyChange?: (tabId: string, dirty: boolean) => void;
+  onEdit?: (tabId: string) => void;
+  onRegisterEditorApi?: (tabId: string, api: EditorApi | null) => void;
   onError?: (message: string) => void;
 };
 
@@ -57,29 +57,30 @@ export function ViewerHost(props: ViewerHostProps) {
     onError: props.onError,
   };
 
-  // Non-code viewers carry per-file view state (zoom, page, scroll), so key them
-  // by path to reset on file change. CodeViewer is intentionally NOT keyed: one
-  // stable Monaco instance per group re-binds models via the registry, so tab
-  // switches are an instant setModel rather than an editor rebuild.
+  // Non-code viewers carry per-tab view state (zoom, page, scroll), so key them
+  // by tab id to reset when the active tab identity changes. CodeViewer is
+  // intentionally NOT keyed: one stable Monaco instance per group re-binds
+  // models via the registry, so tab switches are an instant setModel rather than
+  // an editor rebuild.
   switch (tab.viewerKind) {
     case "image":
-      return <ImageViewer key={tab.path} {...viewerProps} />;
+      return <ImageViewer key={tab.id} {...viewerProps} />;
     case "markdown":
-      return <MarkdownViewer key={tab.path} {...viewerProps} />;
+      return <MarkdownViewer key={tab.id} {...viewerProps} />;
     case "csv":
-      return <CsvViewer key={tab.path} {...viewerProps} />;
+      return <CsvViewer key={tab.id} {...viewerProps} />;
     case "pdf":
-      return <PdfViewer key={tab.path} {...viewerProps} />;
+      return <PdfViewer key={tab.id} {...viewerProps} />;
     case "audio":
-      return <MediaViewer key={tab.path} {...viewerProps} kind="audio" />;
+      return <MediaViewer key={tab.id} {...viewerProps} kind="audio" />;
     case "video":
-      return <MediaViewer key={tab.path} {...viewerProps} kind="video" />;
+      return <MediaViewer key={tab.id} {...viewerProps} kind="video" />;
     case "document":
-      return <DocumentViewer key={tab.path} {...viewerProps} />;
+      return <DocumentViewer key={tab.id} {...viewerProps} />;
     case "largeText":
-      return <LargeTextViewer key={tab.path} {...viewerProps} />;
+      return <LargeTextViewer key={tab.id} {...viewerProps} />;
     case "binary":
-      return <BinaryViewer key={tab.path} {...viewerProps} />;
+      return <BinaryViewer key={tab.id} {...viewerProps} />;
     case "code":
     default:
       return <CodeViewer {...viewerProps} />;

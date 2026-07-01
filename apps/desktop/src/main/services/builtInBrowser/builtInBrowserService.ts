@@ -575,6 +575,7 @@ function createBuiltInBrowserWindowService(args: {
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
+  const renderProcessRecoveryTabs = new Set<string>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
 
   const logger = (): Logger | null => {
@@ -1057,6 +1058,62 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
+  const recoverTabAfterRenderProcessGone = async (
+    tab: BrowserTabState,
+    details: Electron.RenderProcessGoneDetails,
+  ): Promise<void> => {
+    const crashedWebContents = tab.webContents;
+    if (renderProcessRecoveryTabs.has(tab.id) || crashedWebContents.isDestroyed()) return;
+    const crashedUrl = emptyToNull(crashedWebContents.getURL()) ?? "about:blank";
+    const reason = details.reason || "unknown";
+    if (reason === "clean-exit") {
+      notifyTabActivity(tab);
+      emitStatus();
+      return;
+    }
+    renderProcessRecoveryTabs.add(tab.id);
+    const exitCode = Number.isFinite(details.exitCode) ? `, exit code ${details.exitCode}` : "";
+    const exitMessage = `ADE browser tab renderer exited (${reason}${exitCode}).`;
+    try {
+      tab.pendingNetworkRequests.clear();
+      pushNetworkDiagnostic(tab, {
+        url: crashedUrl,
+        method: null,
+        resourceType: "mainFrame",
+        statusCode: null,
+        error: exitMessage,
+        startedAt: null,
+        endedAt: new Date().toISOString(),
+        durationMs: null,
+      });
+      if (tab.id === activeTabId) {
+        clearSelectionInternal();
+        await stopInspectQuietly("built_in_browser.render_process_gone_stop_inspect_failed");
+      }
+      if (tab.webContents !== crashedWebContents) {
+        emitError(new Error(`${exitMessage} Recovery skipped because the tab target changed.`));
+        return;
+      }
+      if (crashedWebContents.isDestroyed()) {
+        emitError(new Error(`${exitMessage} Recovery skipped because the browser tab was destroyed.`));
+        return;
+      }
+      await crashedWebContents.loadURL("about:blank");
+      emitError(new Error(`${exitMessage} Recovered the tab to a blank page.`));
+    } catch (error) {
+      logger()?.warn("built_in_browser.render_process_recovery_failed", {
+        tabId: tab.id,
+        reason,
+        err: errorMessage(error),
+      });
+      emitError(new Error(`ADE browser tab renderer exited and recovery failed: ${errorMessage(error)}`));
+    } finally {
+      renderProcessRecoveryTabs.delete(tab.id);
+      notifyTabActivity(tab);
+      emitStatus();
+    }
+  };
+
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
@@ -1073,12 +1130,18 @@ function createBuiltInBrowserWindowService(args: {
         timestamp: new Date().toISOString(),
       });
     });
-    wc.setWindowOpenHandler(({ url }) => {
-      const tab = createPopupTabState(url, tabForWebContents(wc) ?? activeTab());
-      if (!tab) return { action: "deny" };
+    wc.setWindowOpenHandler((details) => {
+      const opener = tabForWebContents(wc) ?? activeTab();
+      const popupUrl = popupUrlForOpen(details.url);
+      if (!popupUrl) return { action: "deny" };
       return {
         action: "allow",
-        createWindow: () => tab.webContents,
+        createWindow: () => {
+          const tab = createPopupTabStateFromView(popupUrl, opener, new WebContentsView({
+            webPreferences: browserWebPreferences(),
+          }));
+          return tab.webContents;
+        },
       };
     });
     wc.on("will-navigate", (event, url) => {
@@ -1109,12 +1172,21 @@ function createBuiltInBrowserWindowService(args: {
       emitStatus();
     });
     wc.on("render-process-gone", (_event, details) => {
+      const tab = tabForWebContents(wc);
       logger()?.warn("built_in_browser.render_process_gone", {
         reason: details.reason,
         exitCode: details.exitCode,
+        tabId: tab?.id ?? null,
+        url: tab && !wc.isDestroyed() ? urlForBrowserLog(wc.getURL()) : null,
       });
-      notifyTabActivity(tabForWebContents(wc));
-      emitStatus();
+      if (!tab) {
+        emitStatus();
+        return;
+      }
+      void recoverTabAfterRenderProcessGone(tab, details).catch((error) => {
+        emitError(new Error(`ADE browser tab renderer recovery failed: ${errorMessage(error)}`));
+        emitStatus();
+      });
     });
     wc.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
       if (!isMainFrame || errorCode === -3) return;
@@ -1142,19 +1214,16 @@ function createBuiltInBrowserWindowService(args: {
     });
   };
 
-  const createTabState = (): BrowserTabState => {
-    configureBrowserSession();
+  const browserWebPreferences = (): Electron.WebPreferences => ({
+    partition: args.profile.partition,
+    nodeIntegration: false,
+    contextIsolation: true,
+    sandbox: true,
+    webSecurity: true,
+    backgroundThrottling: false,
+  });
 
-    const nextView = new WebContentsView({
-      webPreferences: {
-        partition: args.profile.partition,
-        nodeIntegration: false,
-        contextIsolation: true,
-        sandbox: true,
-        webSecurity: true,
-        backgroundThrottling: false,
-      },
-    });
+  const createTabStateForView = (nextView: WebContentsView): BrowserTabState => {
     nextView.setBackgroundColor("#111827");
     nextView.setBounds(toElectronRect(bounds));
     nextView.setVisible(false);
@@ -1179,7 +1248,14 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
-  const createPopupTabState = (url: string, opener: BrowserTabState | null = activeTab()): BrowserTabState | null => {
+  const createTabState = (): BrowserTabState => {
+    configureBrowserSession();
+    return createTabStateForView(new WebContentsView({
+      webPreferences: browserWebPreferences(),
+    }));
+  };
+
+  const popupUrlForOpen = (url: string): string | null => {
     const popupUrl = stringOrNull(url) ?? "about:blank";
     if (!isAllowedNavigationUrl(popupUrl)) {
       emitError(new Error(`Blocked unsupported browser popup protocol: ${url}`));
@@ -1189,7 +1265,16 @@ function createBuiltInBrowserWindowService(args: {
       emitError(new Error(`ADE browser is limited to ${MAX_BROWSER_TABS} tabs. Close a tab before opening another.`));
       return null;
     }
-    const tab = createTabState();
+    return popupUrl;
+  };
+
+  const createPopupTabStateFromView = (
+    popupUrl: string,
+    opener: BrowserTabState | null,
+    nextView: WebContentsView,
+  ): BrowserTabState => {
+    configureBrowserSession();
+    const tab = createTabStateForView(nextView);
     copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
     activeTabId = tab.id;
@@ -2822,6 +2907,19 @@ export type BuiltInBrowserService = ReturnType<typeof createBuiltInBrowserServic
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+}
+
+function urlForBrowserLog(value: string): string | null {
+  const url = emptyToNull(value);
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed.origin;
+    if (parsed.protocol === "about:") return parsed.href === "about:blank" ? parsed.href : "about:";
+    return parsed.protocol;
+  } catch {
+    return null;
+  }
 }
 
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {

@@ -459,6 +459,7 @@ function PRsPageInner() {
             <GitHubRepoSyncBar
               repoLabel={githubHeaderChrome.repoLabel}
               syncing={githubHeaderChrome.syncing}
+              syncedAt={githubHeaderChrome.syncedAt}
               onSync={githubHeaderChrome.onSync}
               compact
             />

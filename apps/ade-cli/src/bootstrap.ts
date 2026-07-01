@@ -737,6 +737,8 @@ export async function createAdeRuntime(args: {
     laneService,
     sessionService,
     processRegistry,
+    aiIntegrationService,
+    projectConfigService,
     logger,
     broadcastData: (event) => {
       pushEvent("pty", { type: "pty_data", event });
@@ -1075,6 +1077,7 @@ export async function createAdeRuntime(args: {
     ? createAutomationIngressService({
         logger,
         automationService,
+        prService: headlessLinearServices.prService,
         secretService: automationSecretService,
         listRules: () => projectConfigService.get().effective.automations ?? [],
       })

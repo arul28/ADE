@@ -1,7 +1,7 @@
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
-export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search";
+export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
 export type ChatWorkLogEntryTone = "tool" | "info" | "error";
 
 export type ChatLocalhostUrl = {
@@ -122,6 +122,13 @@ function isLowValueHookNotice(event: Extract<AgentChatEvent, { type: "system_not
   const message = event.message.trim();
   return /^hook:\s+.+\s+started$/i.test(message)
     || message.toLowerCase() === "trimmed large tool output before sending it back to claude.";
+}
+
+function summarizePreToolUseHookError(event: Extract<AgentChatEvent, { type: "system_notice" }>): string | null {
+  if (event.noticeKind !== "hook") return null;
+  const message = event.message.replace(/\s+/g, " ").trim();
+  const match = message.match(/^hook:\s*(PreToolUse:[^\n]+?\s+error)$/i);
+  return match?.[1]?.trim() ?? null;
 }
 
 const LOCALHOST_URL_PATTERN =
@@ -450,6 +457,29 @@ function buildWebSearchWorkLogEvent(
   };
 }
 
+function buildHookErrorWorkLogEvent(
+  event: Extract<AgentChatEvent, { type: "system_notice" }>,
+  timestamp: string,
+  sequence: number,
+  summary: string,
+): WorkLogRenderEvent {
+  const detail = eventHasPayload(event.detail) ? formatStructuredValue(event.detail) : undefined;
+  return {
+    type: "work_log_entry",
+    entry: withLocalhostUrls({
+      id: ["hook-error", event.turnId ?? "no-turn", sequence, summary].join("::"),
+      createdAt: timestamp,
+      label: "Hook",
+      detail: summary,
+      ...(detail ? { output: detail } : {}),
+      tone: "error",
+      status: "failed",
+      entryKind: "hook",
+      ...(event.turnId ? { turnId: event.turnId } : {}),
+    }),
+  };
+}
+
 function mergeFileChanges(
   previous: ReadonlyArray<ChatWorkLogFileChange> | undefined,
   next: ReadonlyArray<ChatWorkLogFileChange> | undefined,
@@ -603,6 +633,16 @@ export function appendCollapsedChatTranscriptEvent(
       return;
     }
     if (isLowValueHookNotice(event)) {
+      return;
+    }
+    const preToolUseHookError = summarizePreToolUseHookError(event);
+    if (preToolUseHookError) {
+      appendWorkLogRow(
+        rows,
+        envelope,
+        sequence,
+        buildHookErrorWorkLogEvent(event, envelope.timestamp, sequence, preToolUseHookError),
+      );
       return;
     }
   }

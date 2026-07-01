@@ -2251,6 +2251,10 @@ function ptyAccessDenied(method: string): never {
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported PTY method: ${method}`);
 }
 
+function chatAccessDenied(method: string): never {
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported chat method: ${method}`);
+}
+
 function listPtySessionsForAuthorization(runtime: AdeRuntime): TerminalSessionSummary[] {
   try {
     const rows = runtime.ptyService.list({});
@@ -2501,6 +2505,26 @@ function scopeTerminalAdeActionArgs(
     default:
       ptyAccessDenied(method);
   }
+}
+
+function scopeChatAdeActionArgs(
+  session: SessionState,
+  action: string,
+  chatArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:chat.${action}`;
+  if (action !== "readTranscript" && action !== "sendMessage") return chatArgs;
+
+  const scopedArgs = { ...chatArgs };
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (session.identity.role === "external" && !callerChatSessionId) return scopedArgs;
+
+  const requestedSessionId = asOptionalTrimmedString(scopedArgs.sessionId);
+  if (!callerChatSessionId || (requestedSessionId && requestedSessionId !== callerChatSessionId)) {
+    chatAccessDenied(method);
+  }
+  if (!requestedSessionId) scopedArgs.sessionId = callerChatSessionId;
+  return scopedArgs;
 }
 
 async function runCtoOperatorBridgeTool(
@@ -3397,6 +3421,12 @@ async function runTool(args: {
     } else if (!callerIsCto && domain === "terminal") {
       scopedObjectArgs = scopeTerminalAdeActionArgs(
         runtime,
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (!callerIsCto && domain === "chat" && (action === "readTranscript" || action === "sendMessage")) {
+      scopedObjectArgs = scopeChatAdeActionArgs(
         session,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),

@@ -802,6 +802,9 @@ const CLAUDE_BUILT_IN_SLASH_COMMANDS: AgentChatSlashCommand[] = [
 const CODEX_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CODEX_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
 const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMANDS.map((command) => slashCommandKey(command.name)));
 const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
+// Terse one-liner shown when a turn fast-fails on a logout — paired with the
+// fuller CLAUDE_RUNTIME_AUTH_ERROR card body emitted by the catch path.
+const CLAUDE_AUTH_STOPPED_NOTICE = "Claude is logged out — stopped retrying.";
 const CLAUDE_SESSION_DISABLED_PLUGINS: Record<string, boolean> = {
   "learning-output-style@claude-code-plugins": false,
   "learning-output-style@claude-plugins-official": false,
@@ -12253,6 +12256,28 @@ export function createAgentChatService(args: {
         }
       };
 
+      // Fast-fail on a definitive Claude auth failure (401 / logged out). A 401
+      // is not transient, so rather than letting the SDK grind through its retry
+      // budget ("retry 1/10 … 10/10"), we stop on the first auth signal: emit a
+      // single "logged out" notice and throw an auth error. The catch block below
+      // recognises it via isClaudeRuntimeAuthError, closes the query (halting
+      // further retries), reports the runtime auth failure, and emits a decorated
+      // error event that renders the inline re-login card on every chat surface.
+      let claudeAuthStopNoticeEmitted = false;
+      const failClaudeTurnUnauthenticated = (): never => {
+        if (!claudeAuthStopNoticeEmitted) {
+          claudeAuthStopNoticeEmitted = true;
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "auth",
+            severity: "warning",
+            message: CLAUDE_AUTH_STOPPED_NOTICE,
+            turnId,
+          });
+        }
+        throw new Error(CLAUDE_RUNTIME_AUTH_ERROR);
+      };
+
       while (true) {
         const nextMessage = await readNextClaudeTurnMessage();
         if (!nextMessage) {
@@ -12443,13 +12468,8 @@ export function createAgentChatService(args: {
         if (msg.type === "auth_status") {
           const authMsg = msg as any;
           if (authMsg.error) {
-            reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
-            emitChatEvent(managed, {
-              type: "system_notice",
-              noticeKind: "auth",
-              message: CLAUDE_RUNTIME_AUTH_ERROR,
-              turnId,
-            });
+            // Definitive logged-out signal — fast-fail into the re-login card.
+            failClaudeTurnUnauthenticated();
           } else if (authMsg.isAuthenticating) {
             emitChatEvent(managed, {
               type: "system_notice",
@@ -12516,6 +12536,18 @@ export function createAgentChatService(args: {
         if (msg.type === "system" && (msg as any).subtype === "api_retry") {
           const retryMsg = msg as any;
           const error = typeof retryMsg.error === "string" ? retryMsg.error : "transient_error";
+          // A logged-out/auth retry will never recover on its own. Stop the retry
+          // storm on the first auth attempt instead of surfacing
+          // "retry 1/10 … 10/10" — rate-limit/overloaded retries still proceed.
+          // Do not treat every bare 403 as logout: Anthropic can use 403 for
+          // org/model access restrictions, which should not render a login card.
+          if (
+            retryMsg.error_status === 401
+            || error === "authentication_failed"
+            || isClaudeRuntimeAuthError(error)
+          ) {
+            failClaudeTurnUnauthenticated();
+          }
           const retryDelayMs = typeof retryMsg.retry_delay_ms === "number" ? retryMsg.retry_delay_ms : null;
           const retryDelay = retryDelayMs != null ? Math.max(0, Math.round(retryDelayMs / 1000)) : null;
           emitChatEvent(managed, {
@@ -12873,6 +12905,12 @@ export function createAgentChatService(args: {
         // assistant message — process content blocks
         if (msg.type === "assistant") {
           const assistantMsg = msg as any;
+          // The SDK reports a logged-out turn as an assistant message carrying
+          // error="authentication_failed" (its text otherwise renders as a plain
+          // bubble with no recovery affordance). Fast-fail into the re-login card.
+          if (assistantMsg.error === "authentication_failed") {
+            failClaudeTurnUnauthenticated();
+          }
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
           // If the snapshot has no id, advance the id-less boundary once the
@@ -13227,6 +13265,12 @@ export function createAgentChatService(args: {
             costUsd = resultMsg.total_cost_usd;
           }
           if (resultMsg.is_error && resultMsg.errors?.length) {
+            // A logged-out result surfaces here as 401 / "invalid authentication
+            // credentials" errors — route them into the re-login card rather than
+            // dumping raw API error text.
+            if (isClaudeRuntimeAuthError(resultMsg.errors.map(String).join(" "))) {
+              failClaudeTurnUnauthenticated();
+            }
             for (const err of resultMsg.errors) {
               emitChatEvent(managed, {
                 type: "error",
@@ -20100,27 +20144,51 @@ export function createAgentChatService(args: {
     const inheritedGoal = trimLine(sourceSession.goal)
       ?? trimLine(sourceSession.summary)
       ?? trimLine(sourceSession.title);
-    if (inheritedGoal) {
+    const applyInheritedGoal = (): void => {
+      if (!inheritedGoal) return;
       createdManaged.session.goal = inheritedGoal;
       sessionService.updateMeta({
         sessionId: created.id,
         goal: inheritedGoal,
       });
+    };
+    const deferInheritedGoalUntilHandoffDispatch =
+      handoffMode === "brief" && createdManaged.session.provider === "codex";
+    if (!deferInheritedGoalUntilHandoffDispatch) {
+      applyInheritedGoal();
     }
     persistChatState(createdManaged);
 
     if (handoffMode === "brief") {
-      await sendMessage({
-        sessionId: created.id,
-        text: buildHandoffPrompt(brief),
-        displayText: "Chat handoff from previous session",
-        metadata: { kind: "handoff", hideFullPrompt: true },
-        reasoningEffort: targetReasoningEffort,
-        executionMode: createdManaged.session.executionMode ?? null,
-        interactionMode: createdManaged.session.interactionMode ?? null,
-      }, {
-        awaitDispatch: true,
-      });
+      try {
+        await sendMessage({
+          sessionId: created.id,
+          text: buildHandoffPrompt(brief),
+          displayText: "Chat handoff from previous session",
+          metadata: { kind: "handoff", hideFullPrompt: true },
+          reasoningEffort: targetReasoningEffort,
+          executionMode: createdManaged.session.executionMode ?? null,
+          interactionMode: createdManaged.session.interactionMode ?? null,
+        }, {
+          awaitDispatch: true,
+        });
+      } finally {
+        if (deferInheritedGoalUntilHandoffDispatch) {
+          applyInheritedGoal();
+          persistChatState(createdManaged);
+          if (createdManaged.runtime?.kind === "codex") {
+            try {
+              await seedCodexThreadGoalFromSessionGoal(createdManaged, createdManaged.runtime);
+            } catch (error) {
+              logger.warn("agent_chat.codex_goal_seed_after_handoff_failed", {
+                sessionId: createdManaged.session.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              persistChatState(createdManaged);
+            }
+          }
+        }
+      }
     }
 
     return {
@@ -28109,10 +28177,14 @@ export function createAgentChatService(args: {
     limit?: number,
     since?: string,
   ): Promise<AgentChatTranscriptEntry[]> => {
-    const managed = managedSessions.get(sessionId);
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) return [];
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return [];
+    const managed = managedSessions.get(trimmedId);
     const entries = managed
       ? readTranscriptEntries(managed)
-      : transcriptEntriesFromEnvelopes(sessionId, readFullTranscriptEnvelopesForSessionId(sessionId));
+      : transcriptEntriesFromEnvelopes(trimmedId, readFullTranscriptEnvelopesForSessionId(trimmedId));
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {
       filtered = filtered.filter((entry) => entry.timestamp >= since);

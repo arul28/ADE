@@ -2,11 +2,8 @@ import type {
   MergeMethod,
   PrCheck,
   PrCommit,
-  PrComment,
-  PrDetail,
   PrReview,
   PrStatus,
-  PrUser,
   PrWithConflicts,
 } from "../../../../shared/types/prs";
 import { summarizeChecks } from "./prCheckList";
@@ -142,29 +139,6 @@ export function reviewStateForLogin(reviews: PrReview[], login: string): PrRevie
     if (matches.some((review) => review.state === state)) return state;
   }
   return matches[matches.length - 1]?.state ?? null;
-}
-
-export function deriveParticipants(args: {
-  detail: PrDetail | null;
-  reviews: PrReview[];
-  comments: PrComment[];
-}): PrUser[] {
-  const byLogin = new Map<string, PrUser>();
-  const add = (user: { login?: string | null; avatarUrl?: string | null } | null | undefined) => {
-    const login = user?.login?.trim();
-    if (!login) return;
-    if (!byLogin.has(login)) {
-      byLogin.set(login, { login, avatarUrl: user?.avatarUrl ?? null });
-    }
-  };
-
-  add(args.detail?.author);
-  for (const assignee of args.detail?.assignees ?? []) add(assignee);
-  for (const reviewer of args.detail?.requestedReviewers ?? []) add(reviewer);
-  for (const review of args.reviews) add({ login: review.reviewer, avatarUrl: review.reviewerAvatarUrl });
-  for (const comment of args.comments) add({ login: comment.author, avatarUrl: comment.authorAvatarUrl });
-
-  return [...byLogin.values()].sort((a, b) => a.login.localeCompare(b.login));
 }
 
 export function canAttemptMerge(args: {

@@ -54,10 +54,11 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // camo, objects), plus `github.com/user-attachments/...` (served under
   // github.com, which then 302s to private-user-images.githubusercontent.com).
   // The `*.githubusercontent.com` wildcard already covers the subdomain family;
-  // we list the common ones explicitly for clarity/self-documentation. We keep
-  // the allowlist host-scoped (no blanket `https:`) to preserve the existing
-  // posture of not allowing arbitrary public image beacons.
-  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev`;
+  // we list the common ones explicitly for clarity/self-documentation. Review
+  // comments also embed known bot/badge assets from CodeRabbit, Dependabot,
+  // and Cursor.
+  // We keep the allowlist scoped (no blanket `https:` or GCS host).
+  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev`;
   const cspFrameSources = `${cspSources}${cspLocalSources} about: https://www.youtube-nocookie.com https://www.youtube.com`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [

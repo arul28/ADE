@@ -51,14 +51,16 @@ machinery layered on top.
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Shared renderer helper for Work draft-launch job DTOs and pruning. Owns `NativeControlState`, `DraftLaunchSnapshot`, `PreparedDraftLaunch`, `DraftLaunchJobStatus`, `DraftLaunchJob`, `isDraftLaunchJobTerminal`, `isDraftLaunchJobStale`, and `pruneDraftLaunchJobs`; active jobs are kept ahead of terminal rows, with terminal rows filling the remaining retained slots and at least one terminal row retained alongside active jobs. Also owns the launch durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout(promise, label)` (rejects a launch step whose runtime call never settles; the underlying IPC is not cancellable, so on timeout it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
 | `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Shared renderer helper for in-flight chat handoff placeholders. Defines the handoff job DTO, scope keying, status labels (`preparing-summary` -> `creating-chat` -> `sending-handoff`), search matching, and the stable placeholder id used by the Work session sidebar. |
 | `apps/desktop/src/renderer/state/appStore.ts` | Shared renderer state store. Besides project/lane/work selection, it persists user preferences such as `launchPromptClipboardEnabled` and `launchPromptClipboardNoticeEnabled`, mirrors them into per-project stores, and owns `draftLaunchJobsByScope` (+ `setDraftLaunchJobs`) for Work draft launch status strips plus `handoffLaunchJobsByScope` (+ `setHandoffLaunchJobs`) for Work sidebar handoff placeholders. These live in the **root** store (not the per-project store) on purpose: in-flight launches must survive a remote project switch that destroys the originating per-project store; `AgentChatPane` reads them via `useRootAppStore` / `rootAppStoreApi.getState()`. |
-| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` | Virtualized transcript renderer. Coalesces resize / measurement updates and, while sticky-to-bottom is active, follows height changes across multiple animation frames so streamed output and late row measurements do not leave the user above the newest message. Programmatic scroll writes are tracked by target scroll position, not a stale counter, so browser-coalesced scroll events do not swallow the next real user gesture. Codex goal lifecycle events render as compact user-facing rows (`Goal set`, `Goal paused`, `Goal cleared`) instead of raw JSON-RPC/status wording. Handoff brief user messages with `metadata.hideFullPrompt` show only their `displayText` breadcrumb and do not expose or copy the internal prompt body. |
+| `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx` | Virtualized transcript renderer. Coalesces resize / measurement updates and, while sticky-to-bottom is active, follows height changes across multiple animation frames so streamed output and late row measurements do not leave the user above the newest message. Programmatic scroll writes are tracked by target scroll position, not a stale counter, so browser-coalesced scroll events do not swallow the next real user gesture. Codex goal lifecycle events render as compact user-facing rows (`Goal set`, `Goal paused`, `Goal cleared`) instead of raw JSON-RPC/status wording. Handoff brief user messages with `metadata.hideFullPrompt` show only their `displayText` breadcrumb and do not expose or copy the internal prompt body. Error events whose `errorInfo.agentCli.category` is `"unauthenticated"` render as the calm `AgentCliAuthCard` (raw 401 behind a `Details` disclosure) rather than the red error block, so a recoverable logout reads as a re-login prompt, not a crash. |
 | `apps/desktop/src/renderer/components/chat/ChatGitToolbar.tsx` | Git / PR quick-action toolbar above the composer. If the lane already has a linked PR, the PR button opens or toggles that PR; otherwise it routes to the PR workspace with a create-PR handoff (`create=1&sourceLaneId=<lane>&target=primary`). When the chat PR pane or compact PR menu opens, it asks `prReadCache.refreshLinkedPrCoalesced` for a targeted `prs.refresh({ prIds })` so the badge picks up merged/closed/check transitions without broad GitHub polling. |
 | `apps/desktop/src/renderer/components/chat/ChatPrPane.tsx` | Left floating PR pane for Work chat. Renders cached lane PR details immediately, then performs the same cooldown-bound targeted PR refresh as the toolbar before settling the state. Terminal PRs hide stale running-check labels so merged/closed PRs do not keep showing in-progress CI from an old cache row. |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Serializes iOS, App Control, built-in browser, and attachment context into prompt text. |
 | `apps/desktop/src/renderer/components/chat/RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Claude file-rewind confirmation surface. `rewindFilesPreview.ts` maps the selected user message to turn diff summaries and per-file SHA ranges; the dialog lists every restored file, expands rows into `AdeDiffViewer`, and confirms the SDK `rewindFiles` call without using browser-native confirm UI. |
 | `apps/desktop/src/renderer/components/chat/ChatSubagentsPanel.tsx`, `codex/CodexGoalCard.tsx` | Subagent drawer content plus the Codex chat goal card. The goal card sits above the plan/subagent roster, exposes edit/clear affordances through typed ADE goal APIs, and shows usage context as tokens/time only; provider token budgets are hidden and cleared so ADE goals stay unlimited. |
 | `apps/desktop/src/renderer/components/chat/ChatBuiltInBrowserPanel.tsx` | Renderer panel for the in-app browser. Renders the address bar, tabs strip, navigation controls, an inspect/select toolbar, and a `BuiltInBrowserStatus`-derived empty/error state, then asks the main process to position the underlying `WebContentsView` over the panel's bounding rect through `ade.builtInBrowser.setBounds`. Because native `WebContentsView` content sits above the renderer, the panel hides it while ADE overlays, dialogs, menus, or popovers overlap the browser surface so ADE chrome remains reachable. Mounted by `WorkSidebar` under the `browser` tab and (indirectly) by any renderer code that calls `openUrlInAdeBrowser()` — the helper opens the sidebar Browser tab and dispatches the URL into a fresh tab. Selections committed through inspect-mode hit-testing fan out via the `onAddContext` callback as `BuiltInBrowserContextItem` payloads. |
-| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome for chat and CLI surfaces: title, lane chip, Claude cache badge, git toolbar, caller-provided trailing actions, and the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. |
+| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome for chat and CLI surfaces: title, lane chip, Claude cache badge, git toolbar, caller-provided trailing actions, and the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out, but only when the chat header pill is absent so the two never double up. |
+| `apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx` | Inline install / re-login card for missing or unauthenticated agent CLIs, rendered in the transcript from a decorated `error` event's `errorInfo.agentCli` payload. Copy chips + a tracked-PTY Run button (`window.ade.pty.create`) for the install / auth command. The logged-out (`category: "unauthenticated"`) variant is terracotta-toned for Claude (amber for other agents), retitles to "&lt;Provider&gt; is logged out", and adds an always-on **Retry turn** button that resends the last user message via the `CHAT_RETRY_AUTH_TURN_EVENT` (`ade:chat:retry-auth-turn`) window event; it collapses to a "Reconnected" confirmation when `AgentChatPane` fires `CHAT_AUTH_RECOVERED_EVENT` (`ade:chat:auth-recovered`) after a later turn succeeds. The "missing CLI" variant keeps the red-free amber install card. |
+| `apps/desktop/src/renderer/lib/claudeAuthPrompt.ts` | Renderer-side classifier for Claude logged-out / `/login`-required error text. Drives the header and sticky login CTAs; matches both Claude-first wording and ADE's own "Authentication failed for &lt;model&gt;" classified message. |
 | `apps/desktop/src/renderer/lib/openExternal.ts` | Renderer-side router for outbound URLs. Defines the `ADE_OPEN_BUILT_IN_BROWSER_EVENT` window event plus `openUrlInAdeBrowser(url)` and `openExternalUrl(url)`. `openUrlInAdeBrowser` dispatches the event (so any open `WorkSidebar` can flip to its Browser tab), then calls `window.ade.builtInBrowser.navigate({ url, newTab: true })`. Anything that is not a normal `http`/`https`/`about:blank` URL falls through to `window.ade.app.openExternal` (system browser). All in-renderer URL clicks (markdown links, lane-runtime open buttons, etc.) go through this helper so the user stays inside ADE. |
 | `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Composer UI: single-session prompt entry, attachments, model/permission controls, slash commands, pending input answering, and parallel launch slot configuration. Pasted/dropped image attachments show pending thumbnails while temp files save, and native Electron clipboard images read bytes through `ade.app.readClipboardImage` then write them through `ade.agentChat.saveTempAttachment` so remote-bound chats receive a runtime-readable attachment path. The launch-prompt clipboard helper is gated separately from prompt copying: `launchPromptClipboardEnabled` controls copying and `launchPromptClipboardNoticeEnabled` controls whether composer reminder text is shown. Orchestration model-selection pending inputs decode the full agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) so the picker can show what the lead is spawning without preselecting a recommended model. |
 | `apps/desktop/src/renderer/components/chat/ChatModelSelectionPendingCard.tsx` | Pending-input card used when ADE asks the user to choose a model for a new or rerouted agent. It renders the agent briefing, touched files, run-after dependencies, provider/model controls, cancel/confirm states, and leaves the model unset until the user chooses one. |
@@ -188,6 +190,36 @@ render them, but neither one *runs* them.
   chat terminal drawer and runs `claude auth login` in the same
   lane/chat context. See
   [Agents](../agents/README.md#agent-cli-install--auth-from-chat).
+- **Claude logged-out (401) fast-fail and recovery.** A 401 is not a
+  transient error, so the Claude adapter does **not** let the SDK grind
+  through its retry budget ("retry 1/10 … 10/10"). On the first
+  definitive auth signal — an `auth_status` error, an `assistant`
+  message with `error: "authentication_failed"`, an `api_retry` whose
+  `error_status` is 401 (or whose error reads as auth), or a
+  `result` whose errors look like invalid credentials
+  (`isClaudeRuntimeAuthError`) — `failClaudeTurnUnauthenticated()`
+  emits one terse `system_notice` (`noticeKind: "auth"`, "Claude is
+  logged out — stopped retrying.") and throws `CLAUDE_RUNTIME_AUTH_ERROR`.
+  The catch path recognises it, closes the query (halting further
+  retries), reports the runtime auth failure, and emits a decorated
+  `error` event carrying `errorInfo.agentCli` (category
+  `"unauthenticated"`). Rate-limit / overloaded retries still proceed
+  normally. `AgentChatMessageList` renders that decorated error as the
+  calm `AgentCliAuthCard` (terracotta-toned for Claude) instead of the
+  red error block, tucking the raw 401 text behind a `Details`
+  disclosure. The card is always-on recoverable: a **Retry turn** button
+  resends the last user message (via the `ade:chat:retry-auth-turn`
+  window event that `AgentChatPane` listens for and dispatches into
+  `ade.agentChat.send`); if Claude is still logged out the new turn
+  fast-fails again and a fresh card appears. When a later turn succeeds,
+  `AgentChatPane` dispatches `ade:chat:auth-recovered` and the card
+  collapses into a quiet "Reconnected" confirmation. While the session
+  stays logged out, the pane also pins a sticky `ClaudeLoginPromptButton`
+  bar just above the composer when the chat header login pill is absent,
+  so the re-login affordance
+  stays reachable after the inline card scrolls away. The renderer-side
+  classifier `claudeAuthPrompt.ts` matches the logged-out wording
+  (including ADE's own "Authentication failed for &lt;model&gt;" message).
 - **Work draft launches.** From an empty embedded Work composer, the
   user can auto-create a lane for a single foreground/background chat
   or CLI session, or enable parallel mode, select two or more
@@ -352,11 +384,15 @@ See the detail docs for the specifics:
    dispatch and event streaming continue asynchronously. `ade chat create
    --prompt` uses this same follow-up send after the session is created, and
    `ade chat read <session>` calls `chat.readTranscript` to inspect recent
-   transcript messages. Interactive chat sends are not wall-clock bounded by
-   the service; the turn runs until the provider completes or the user/app
-   interrupts it. The blocking `runSessionTurn` helper used by automation has
-   a 5 min default RPC timeout unless the caller passes `timeoutMs: null`;
-   background/headless chat launches opt out.
+   transcript messages for chat sessions only; shell/terminal transcript reads
+   stay on the terminal/session surfaces. When invoked through the generic ADE
+   action bridge by a session-bound non-CTO caller, `chat.sendMessage` and
+   `chat.readTranscript` are scoped to that caller's own chat session.
+   Interactive chat sends are not wall-clock bounded by the service; the turn
+   runs until the provider
+   completes or the user/app interrupts it. The blocking `runSessionTurn`
+   helper used by automation has a 5 min default RPC timeout unless the caller
+   passes `timeoutMs: null`; background/headless chat launches opt out.
 4. The runtime streams events through the main-process event emitter and
    into the renderer via `ade.agentChat.event` (a push channel owned by
    `registerIpc.ts`).

@@ -8,7 +8,8 @@ type Entry = {
 };
 
 /**
- * Per-workbench cache of Monaco text models keyed by workspace-relative path.
+ * Per-workbench cache of Monaco text models keyed by tab model id
+ * (`editorTabId(workspaceId, path)`).
  *
  * A model is created once per file and reused across tab switches, so switching
  * tabs is `editor.setModel(existing)` instead of dispose → recreate → re-tokenize.
@@ -16,8 +17,8 @@ type Entry = {
  * preserves each file's undo stack. The renderer keeps owning the
  * content-in-state contract; this registry only owns model *lifetime*.
  *
- * Callers must `dispose(path)` when a tab closes and `disposeAll()` on workspace
- * switch / unmount, otherwise detached models leak.
+ * Callers must `dispose(modelKey)` when a tab closes everywhere and `disposeAll()`
+ * on unmount, otherwise detached models leak.
  */
 export function createMonacoModelRegistry() {
   const models = new Map<string, Entry>();
@@ -39,23 +40,23 @@ export function createMonacoModelRegistry() {
 
   return {
     /**
-     * Return the cached model for `path`, creating it from `content` on first
+     * Return the cached model for `modelKey`, creating it from `content` on first
      * use. An already-cached model is returned untouched (it holds the live
      * edited buffer); only its language is re-applied in place when it changes.
      */
     getOrCreate(
       monaco: typeof Monaco,
-      path: string,
+      modelKey: string,
       content: string,
       languageId: string,
     ): Monaco.editor.ITextModel {
-      const existing = models.get(path);
+      const existing = models.get(modelKey);
       if (existing && !existing.model.isDisposed()) {
         setLanguage(monaco, existing, languageId);
         return existing.model;
       }
       const model = monaco.editor.createModel(content, languageId);
-      models.set(path, { model, languageId, baseVersionId: model.getAlternativeVersionId() });
+      models.set(modelKey, { model, languageId, baseVersionId: model.getAlternativeVersionId() });
       return model;
     },
 
@@ -65,11 +66,11 @@ export function createMonacoModelRegistry() {
      */
     refreshClean(
       monaco: typeof Monaco,
-      path: string,
+      modelKey: string,
       content: string,
       languageId: string,
     ): boolean {
-      const entry = models.get(path);
+      const entry = models.get(modelKey);
       if (!entry || entry.model.isDisposed()) return false;
       setLanguage(monaco, entry, languageId);
       if (entry.model.getAlternativeVersionId() !== entry.baseVersionId) return false;
@@ -81,36 +82,36 @@ export function createMonacoModelRegistry() {
     },
 
     /** Mark the current buffer as the clean baseline (after load or save). */
-    markSaved(path: string): void {
-      const entry = models.get(path);
+    markSaved(modelKey: string): void {
+      const entry = models.get(modelKey);
       if (entry && !entry.model.isDisposed()) {
         entry.baseVersionId = entry.model.getAlternativeVersionId();
       }
     },
 
     /** True when the buffer has unsaved edits relative to the last save baseline. */
-    isDirty(path: string): boolean {
-      const entry = models.get(path);
+    isDirty(modelKey: string): boolean {
+      const entry = models.get(modelKey);
       if (!entry || entry.model.isDisposed()) return false;
       return entry.model.getAlternativeVersionId() !== entry.baseVersionId;
     },
 
-    /** Current buffer text, or null when no model exists for the path. */
-    getValue(path: string): string | null {
-      const entry = models.get(path);
+    /** Current buffer text, or null when no model exists for the key. */
+    getValue(modelKey: string): string | null {
+      const entry = models.get(modelKey);
       if (!entry || entry.model.isDisposed()) return null;
       return entry.model.getValue();
     },
 
-    has(path: string): boolean {
-      const entry = models.get(path);
+    has(modelKey: string): boolean {
+      const entry = models.get(modelKey);
       return Boolean(entry && !entry.model.isDisposed());
     },
 
-    dispose(path: string): void {
-      const entry = models.get(path);
+    dispose(modelKey: string): void {
+      const entry = models.get(modelKey);
       if (!entry) return;
-      models.delete(path);
+      models.delete(modelKey);
       safeDispose(entry.model);
     },
 
