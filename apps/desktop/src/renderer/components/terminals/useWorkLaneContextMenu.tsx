@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, selectActiveProjectRoot } from "../../state/appStore";
+import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
 
 type MenuState = { laneId: string; x: number; y: number };
@@ -18,6 +19,8 @@ export function useWorkLaneContextMenu(): {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const selectLane = useAppStore((s) => s.selectLane);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
 
@@ -57,6 +60,13 @@ export function useWorkLaneContextMenu(): {
     [navigate, selectLane],
   );
 
+  const startChatInLane = useStartChatInLane({
+    projectRoot,
+    setWorkViewState,
+    selectLane,
+    navigate,
+  });
+
   const menu = menuState
     ? createPortal(
         <LaneContextMenu
@@ -84,6 +94,7 @@ export function useWorkLaneContextMenu(): {
             if (!laneIds.length) return;
             goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
           }}
+          onStartChatInLane={startChatInLane}
         />,
         document.body,
       )

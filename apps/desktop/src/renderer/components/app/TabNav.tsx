@@ -14,6 +14,7 @@ import {
   GearSix,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { openExternalUrl } from "../../lib/openExternal";
@@ -106,6 +107,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
   const hasActiveProject = Boolean(activeProjectRoot);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const { ref: sidebarMenuRef, position: sidebarMenuPosition } = useClampedFixedPosition(contextMenu);
   const [avatarBroken, setAvatarBroken] = useState(false);
   const [isPackaged, setIsPackaged] = useState(false);
   const githubLogin = githubStatus?.userLogin || null;
@@ -329,8 +331,13 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       {/* Context menu */}
       {contextMenu && activeProjectRoot ? (
         <div
+          ref={sidebarMenuRef}
           className="ade-shell-sidebar-menu fixed z-40 min-w-[170px] p-1 shadow-float"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={{
+            left: sidebarMenuPosition?.left ?? contextMenu.x,
+            top: sidebarMenuPosition?.top ?? contextMenu.y,
+            visibility: sidebarMenuPosition ? "visible" : "hidden",
+          }}
           onPointerDown={(e) => e.stopPropagation()}
         >
           <button

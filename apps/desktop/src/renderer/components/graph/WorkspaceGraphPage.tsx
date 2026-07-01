@@ -60,6 +60,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useLaneAgents, type LaneAgent } from "../lanes/laneAgents";
 import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
 import {
@@ -342,6 +343,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const [loadingRisk, setLoadingRisk] = React.useState(true);
   const [errorBanner, setErrorBanner] = React.useState<string | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{ laneId: string; x: number; y: number } | null>(null);
+  const { ref: graphContextMenuRef, position: graphContextMenuPosition } = useClampedFixedPosition(
+    contextMenu ? { x: contextMenu.x, y: contextMenu.y } : null,
+    contextMenu?.laneId ?? null,
+  );
   const [selectedLaneIds, setSelectedLaneIds] = React.useState<string[]>([]);
   const [batchStatus, setBatchStatus] = React.useState<{
     operation: string;
@@ -3531,8 +3536,13 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
       {contextMenu ? (
         <div
+          ref={graphContextMenuRef}
           className="fixed z-[90] min-w-[190px] rounded-xl border border-white/[0.06] bg-white/[0.03] backdrop-blur-xl p-1 shadow-float"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          style={{
+            left: graphContextMenuPosition?.left ?? contextMenu.x,
+            top: graphContextMenuPosition?.top ?? contextMenu.y,
+            visibility: graphContextMenuPosition ? "visible" : "hidden",
+          }}
           onMouseLeave={() => setContextMenu(null)}
         >
           {(() => {

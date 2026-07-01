@@ -1,5 +1,6 @@
 import React from "react";
 import type { LaneSummary } from "../../../shared/types";
+import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { revealLabel } from "../../lib/platform";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
@@ -83,6 +84,7 @@ export function LaneContextMenu({
   onSelectAll,
   onBatchManage,
   onAppearanceChanged,
+  onStartChatInLane,
 }: {
   laneContextMenu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
@@ -97,6 +99,7 @@ export function LaneContextMenu({
   onSelectAll: () => void;
   onBatchManage: (laneIds: string[]) => void;
   onAppearanceChanged?: () => void | Promise<void>;
+  onStartChatInLane?: (laneId: string) => void;
 }) {
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const ctxLane = lanesById.get(laneContextMenu.laneId) ?? null;
@@ -108,7 +111,10 @@ export function LaneContextMenu({
     return lane && lane.laneType !== "primary";
   });
 
-  const menuRef = React.useRef<HTMLDivElement>(null);
+  const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(
+    { x: laneContextMenu.x, y: laneContextMenu.y },
+    `${laneContextMenu.laneId}:${ctxLane?.id ?? ""}`,
+  );
 
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -139,8 +145,9 @@ export function LaneContextMenu({
         overflowY: "auto",
         border: `1px solid ${COLORS.outlineBorder}`,
         padding: "4px 0",
-        left: laneContextMenu.x,
-        top: Math.min(laneContextMenu.y, window.innerHeight - 20),
+        left: menuPosition?.left ?? laneContextMenu.x,
+        top: menuPosition?.top ?? laneContextMenu.y,
+        visibility: menuPosition ? "visible" : "hidden",
       }}
       onPointerDown={(e) => e.stopPropagation()}
     >
@@ -231,6 +238,23 @@ export function LaneContextMenu({
               Copy Linear Issue Link
             </HoverButton>
           ) : null}
+        </>
+      ) : null}
+
+      {ctxLane && onStartChatInLane ? (
+        <>
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+          <HoverButton
+            style={menuItemStyle}
+            dataTour="lanes.startChatInLane"
+            onClick={() => {
+              const ctxLaneId = laneContextMenu.laneId;
+              onClose();
+              onStartChatInLane(ctxLaneId);
+            }}
+          >
+            Start chat in lane
+          </HoverButton>
         </>
       ) : null}
 
