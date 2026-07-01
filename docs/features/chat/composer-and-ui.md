@@ -582,7 +582,7 @@ meaningful content rather than a generic label.
 The card's data contract (`PendingInputRequest` / `PendingInputQuestion`
 / `PendingInputOption` in `shared/types/chat.ts`) is the single source of
 truth: the TUI (`apps/ade-cli/src/tuiClient/components/ApprovalPrompt.tsx`)
-and iOS (`WorkStructuredQuestionCard` / `WorkPlanReviewCard`) render the
+and iOS (`WorkStructuredQuestionCard` / `WorkPlanComposerStrip`) render the
 same header verb, dedup, monospace preview, and per-provider accent. The
 verb/name helpers live in `shared/pendingInputLabels.ts` so desktop and
 TUI share them; iOS mirrors them in Swift. A blocking pending input also
