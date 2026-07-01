@@ -270,6 +270,16 @@ describe("webhook relay", () => {
     });
   }
 
+  // A valid GitHub token whose access to the repo is denied by GitHub
+  // (403 forbidden / 404 not-found-to-this-token). The relay must refuse
+  // and must not leak stored webhook events.
+  function stubRepoAccessDenied(githubStatus: 403 | 404 = 403) {
+    return vi.fn(async () => new Response(
+      JSON.stringify({ message: "Not Found" }),
+      { status: githubStatus, headers: { "content-type": "application/json" } },
+    ));
+  }
+
   it("rejects unsigned GitHub webhook deliveries", async () => {
     const env = makeEnv();
     const response = await handleRequest(
@@ -413,6 +423,51 @@ describe("webhook relay", () => {
     const payload = await response.json() as { events: Array<{ eventId: string }>; nextCursor: string };
     expect(payload.events.map((event) => event.eventId)).toEqual(["delivery-2"]);
     expect(payload.nextCursor).toBe("seq:3");
+  });
+
+  it("refuses repo events when the token is valid but denied access to the repo", async () => {
+    const env = makeEnv();
+    await handleRequest(
+      await signedWebhookRequest(
+        { repository: { full_name: "owner/repo" }, pull_request: { number: 42, title: "Secret" } },
+        { "x-github-delivery": "delivery-1" },
+      ),
+      env,
+    );
+    const fetchMock = stubRepoAccessDenied(403);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events", {
+        headers: githubAuthHeaders("ghp_unauthorized_token"),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = await response.json() as { ok: boolean; events?: unknown };
+    expect(body.ok).toBe(false);
+    // The denied caller must never receive the stored webhook stream.
+    expect(body.events).toBeUndefined();
+  });
+
+  it("refuses repo status when the token is valid but denied access to the repo", async () => {
+    const env = makeEnv();
+    const fetchMock = stubRepoAccessDenied(404);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/status", {
+        headers: githubAuthHeaders("ghp_unauthorized_token"),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(404);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = await response.json() as { ok: boolean };
+    expect(body.ok).toBe(false);
   });
 
   it("uses a monotonic cursor so same-timestamp delivery ids cannot be skipped", async () => {

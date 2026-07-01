@@ -539,13 +539,14 @@ first fetch instead of returning an empty passive cache.
   It writes atomically to the lane worktree and that is all.
   Services that care about post-write side effects (lint,
   formatters) watch the filesystem independently.
-- **Mobile file mutations respect `mobileReadOnly`.** The iOS app
-  gates mutating file envelopes locally via
-  `ensureMobileFileMutationsAllowed`, checking
-  `FilesWorkspace.mobileReadOnly` before sending a `writeText`,
-  `createFile`, `createDirectory`, `rename`, or `deletePath` request.
-  The brain's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
-  a hostile controller cannot bypass it.
+- **Mobile file mutations are no longer read-only-gated.** Files are
+  freely editable from the phone: the old `mobileReadOnly` /
+  edit-protection write gate was removed on both sides (the iOS
+  `ensureMobileFileMutationsAllowed` check and the brain's
+  `assertWriteAllowed` / `MOBILE_MUTATING_FILE_ACTIONS` enforcement),
+  matching the desktop edit-protection removal. The `mobileReadOnly`
+  field still rides the workspace payload but no longer blocks writes.
+  Path-safety and the external-workspace block below are unchanged.
 - **External desktop file opens are not mobile-visible.** Desktop
   `files.openExternalPath` workspaces use `kind: "external"` and
   `external-local:*` ids. The sync host filters them from mobile

@@ -524,7 +524,7 @@ and uses macOS `sips` as the conversion fallback for SVG / ICO / WebP
 sources that `nativeImage` cannot decode. The ADE CLI brain uses the
 same helper for its headless mobile project catalog. The resulting
 PNG data URL is sent to iOS as `MobileProjectSummary.iconDataUrl`; the iOS
-`ProjectHomeView` renders that string as the project tile artwork.
+Hub (`HubScreen`) renders that string as the project card artwork.
 
 ## Data model
 

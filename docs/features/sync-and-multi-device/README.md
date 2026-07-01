@@ -185,7 +185,22 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   limiter, and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
-  `desktop`, `daemon`, or `remote`.
+  `desktop`, `daemon`, or `remote`. It also owns the all-projects chat
+  roster push for the mobile Hub: per subscribed peer it tracks
+  `rosterSubscribed` / `rosterSeq` / a `rosterBaseline` map, debounces
+  rebuilds (trailing-edge with a hard cadence ceiling), and forces a
+  coalesced flush after a remote command adds/removes a roster-visible
+  lane or chat. The snapshot itself comes from an optional injected
+  `SyncRosterProvider.buildSnapshot()`; a host without one (single-project
+  desktop) never answers `roster_subscribe`.
+- `rosterBuilder.ts` — builds the machine-wide all-projects chat roster
+  (`SyncRosterProject[]`) consumed by the Hub. Opens each project's
+  `<root>/.ade/ade.db` **read-only** with `node:sqlite` (no cr-sqlite, no
+  runtime boot — the same cheap cross-project read pattern as
+  `recentProjectSummary.ts`) and merges cached `chat-sessions/*.json`, so an
+  all-projects feed never activates every project. Live running/awaiting
+  status is overlaid only for scopes already booted on the runtime; previews
+  are hard-truncated (~120 chars).
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared
   across per-project host services. Binds once (preferred-port retry:
   ~8 attempts over ~3.2 s on the saved port before falling back to a
@@ -193,8 +208,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   and is handed between hosts on project switch: the new host adopts
   the open sockets — peer metadata carried over, pairing auth
   re-validated against the pairing store, changeset cursors recomputed
-  from the peer's per-site cursor map, chat/terminal subscriptions and
-  transcript offsets riding the handoff snapshot, and frames buffered
+  from the peer's per-site cursor map, chat/terminal/roster subscriptions
+  and transcript offsets riding the handoff snapshot, and frames buffered
   during the handoff window replayed — so phones survive project
   switches without reconnecting. Sockets left unowned park with
   buffered frames and close with code 4002 after a 30 s grace. A
@@ -541,6 +556,8 @@ Envelopes are JSON with fields:
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
         "terminal_input" | "terminal_resize" | "terminal_history" |
         "chat_subscribe" | "chat_unsubscribe" | "chat_event" |
+        "roster_subscribe" | "roster_unsubscribe" |
+        "roster_snapshot" | "roster_delta" |
         "brain_status" |
         "project_catalog_request" | "project_catalog" |
         "project_catalog_chunk" |
@@ -618,7 +635,8 @@ payload.
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
-| Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session, 64-session LRU). `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The ack also carries `turnActive` from the live agent chat service — snapshots are byte-capped tails, so a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint) | iOS Work tab, controller chat |
+| Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session); per-session history is evicted with a 64-session LRU so a phone that has opened many chats cannot pin unbounded host memory. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint) | iOS Work tab, controller chat |
+| Chat roster | Machine-wide all-projects projection of every project's lanes + chats-grouped-by-lane, so the mobile Hub renders every project's chats at once **without activating each project**. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their chat status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime. Transcripts are excluded (they load on demand when a chat opens, which activates that project's full sync). Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
@@ -711,6 +729,7 @@ project scope split.
 | File access sub-protocol | Implemented |
 | Terminal stream sub-protocol | Implemented |
 | Chat stream sub-protocol | Implemented |
+| All-projects chat roster sub-protocol (`roster_subscribe`/`snapshot`/`delta`, mobile Hub) | Implemented |
 | Device registry table | Implemented |
 | Desktop peer client + manual connect | Implemented |
 | Sync authority transfer | Implemented |

@@ -175,9 +175,10 @@ Registered through the global keybinding service
 - **External change plus dirty tab.** File watcher events must not overwrite
   unsaved Monaco models. Surface the external change and require an explicit
   user choice.
-- **Primary checkout writes.** Read-only and primary-workspace policy is
-  enforced by the file service and preload boundary; renderer affordances are
-  only presentation.
+- **Primary checkout writes.** The primary repo root and lane worktrees are
+  freely editable — there is no edit-protection gate on file writes. Path-safety
+  and trust policy is still enforced by the file service and preload boundary;
+  renderer affordances are only presentation.
 - **Large files.** Oversized text opens as read-only streamed content. Do not
   force large files through the editable Monaco viewer. Media playback has a
   fixed byte cap so large videos are handed off instead of loaded into
