@@ -18,6 +18,7 @@ type AutomationIngressServiceArgs = {
 };
 
 const GITHUB_WEBHOOK_SECRET_REF = "automations.githubWebhook.secret";
+const GITHUB_RELAY_POLL_TIMEOUT_MS = 20_000;
 
 function safeCompareSignature(expected: string, actual: string): boolean {
   const a = Buffer.from(expected, "utf8");
@@ -228,6 +229,7 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
 export function createAutomationIngressService(args: AutomationIngressServiceArgs) {
   let server: http.Server | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
+  let pollInFlight: Promise<void> | null = null;
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
     args.automationService.updateIngressStatus({
@@ -429,6 +431,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       if (!authToken) {
         throw new Error("GitHub relay access token is not configured.");
       }
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), GITHUB_RELAY_POLL_TIMEOUT_MS);
       const response = await fetch(
         eventsUrl.toString(),
         {
@@ -436,8 +440,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             accept: "application/json",
             authorization: `Bearer ${authToken}`,
           },
+          signal: controller.signal,
         }
-      );
+      ).finally(() => clearTimeout(timeout));
       if (!response.ok) {
         throw new Error(`GitHub relay poll failed (${response.status})`);
       }
@@ -508,6 +513,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     }
   };
 
+  const pollGithubRelayOnce = async () => {
+    if (pollInFlight) return await pollInFlight;
+    pollInFlight = pollGithubRelay().finally(() => {
+      pollInFlight = null;
+    });
+    return await pollInFlight;
+  };
+
   return {
     async start() {
       if (!server) {
@@ -533,10 +546,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       }
       if (!pollTimer) {
         pollTimer = setInterval(() => {
-          void pollGithubRelay();
+          void pollGithubRelayOnce();
         }, Math.max(30_000, Math.floor(args.pollIntervalMs ?? 60_000)));
       }
-      await pollGithubRelay();
+      await pollGithubRelayOnce();
     },
 
     getStatus() {
@@ -548,7 +561,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     },
 
     async pollNow() {
-      await pollGithubRelay();
+      await pollGithubRelayOnce();
     },
 
     dispose() {

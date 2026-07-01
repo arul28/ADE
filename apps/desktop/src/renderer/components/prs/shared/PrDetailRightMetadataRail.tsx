@@ -35,7 +35,6 @@ export type PrDetailRightMetadataRailProps = {
   detail: PrDetail | null;
   status: PrStatus | null;
   reviews: PrReview[];
-  participants: PrUser[];
   checks: PrCheck[];
   actionRuns: PrActionRun[];
   files: RightRailFile[];
@@ -97,6 +96,23 @@ function RightCard({
       <div className={padded ? "px-3 pb-3 pt-1" : undefined}>{children}</div>
     </section>
   );
+}
+
+/** Header row for a sub-section nested inside a shared metadata box. */
+function MetaSectionHeader({ title, action }: { title: string; action?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between px-3 pt-2.5 pb-1">
+      <span className="text-[11px] font-medium" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
+        {title}
+      </span>
+      {action}
+    </div>
+  );
+}
+
+/** Hairline divider separating sub-sections inside a shared metadata box. */
+function MetaSectionDivider() {
+  return <div style={{ height: 1, background: COLORS.border, opacity: 0.6 }} />;
 }
 
 function EmptyValue({ children }: { children: ReactNode }) {
@@ -271,7 +287,6 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
   lane,
   detail,
   reviews,
-  participants,
   checks,
   actionRuns,
   files,
@@ -315,6 +330,149 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
       data-testid="pr-detail-right-metadata-rail"
       className="flex h-full min-h-0 w-full flex-col gap-2 overflow-y-auto p-2"
     >
+      {/* Combined people box: Reviewers, Labels, Assignees — one card, three
+          headers separated by hairline dividers. */}
+      <section
+        style={floatingPane({ padding: 0, overflow: "hidden" })}
+        data-testid="pr-metadata-section-people"
+      >
+        {/* Reviewers */}
+        <MetaSectionHeader
+          title="Reviewers"
+          action={pr.laneId ? <EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} /> : undefined}
+        />
+        <div className="px-3 pb-3 pt-1">
+          {requestedReviewers.length || requestedTeams.length ? (
+            <>
+              {requestedReviewers.map((reviewer) => (
+                <ReviewerRow key={reviewer.login} reviewer={reviewer} reviews={reviews} />
+              ))}
+              {requestedTeams.map((team) => (
+                <TeamReviewerRow key={team.slug || team.name} team={team} />
+              ))}
+            </>
+          ) : (
+            <EmptyValue>None yet</EmptyValue>
+          )}
+          {showReviewerEditor ? (
+            <div className="mt-2">
+              <input
+                value={reviewerInput}
+                onChange={(event) => setReviewerInput(event.target.value)}
+                placeholder="alice, bob, team:platform"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") requestReviewers();
+                }}
+                className="h-7 w-full px-2 text-[11px] outline-none"
+                style={{
+                  fontFamily: MONO_FONT,
+                  color: COLORS.textPrimary,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <MetaSectionDivider />
+
+        {/* Labels */}
+        <MetaSectionHeader
+          title="Labels"
+          action={pr.laneId ? <EditLink active={showLabelEditor} label="Edit" onClick={() => setShowLabelEditor(!showLabelEditor)} /> : undefined}
+        />
+        <div className="px-3 pb-3 pt-1">
+          {detail?.labels?.length ? (
+            <div className="flex flex-wrap gap-1.5">
+              {detail.labels.map((label) => (
+                <span
+                  key={label.name}
+                  className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold"
+                  style={{
+                    fontFamily: SANS_FONT,
+                    color: `#${label.color}`,
+                    background: `#${label.color}18`,
+                    border: `1px solid #${label.color}35`,
+                  }}
+                >
+                  <span
+                    className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
+                    style={{ background: `#${label.color}` }}
+                  />
+                  {label.name}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <EmptyValue>None yet</EmptyValue>
+          )}
+          {showLabelEditor ? (
+            <div className="mt-2">
+              <input
+                value={labelInput}
+                onChange={(event) => setLabelInput(event.target.value)}
+                placeholder="bug, enhancement"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") setLabels();
+                }}
+                className="h-7 w-full px-2 text-[11px] outline-none"
+                style={{
+                  fontFamily: MONO_FONT,
+                  color: COLORS.textPrimary,
+                  background: COLORS.recessedBg,
+                  border: `1px solid ${COLORS.border}`,
+                  borderRadius: 6,
+                }}
+              />
+            </div>
+          ) : null}
+        </div>
+
+        <MetaSectionDivider />
+
+        {/* Assignees */}
+        <MetaSectionHeader title="Assignees" />
+        <div className="px-3 pb-3 pt-1">
+          {detail?.assignees?.length ? (
+            detail.assignees.map((assignee) => (
+              <div key={assignee.login} className="flex items-center gap-2 py-1">
+                <PrUserAvatar user={assignee} size={22} />
+                <span className="text-[12px] font-medium" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                  {assignee.login}
+                </span>
+              </div>
+            ))
+          ) : (
+            <EmptyValue>None yet</EmptyValue>
+          )}
+        </div>
+      </section>
+
+      <PrChecksCard
+        checks={checks}
+        actionRuns={actionRuns}
+        onSelectCheck={onSelectCheck}
+        onOpenChecksTab={onOpenChecksTab}
+        onRerunChecks={onRerunChecks}
+        actionBusy={actionBusy}
+      />
+
+      <FilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} />
+
+      {detail?.linkedIssues?.length ? (
+        <RightCard title="Development">
+          <div className="flex flex-col gap-1">
+            {detail.linkedIssues.map((issue) => (
+              <span key={issue.number} className="text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
+                #{issue.number} {issue.title}
+              </span>
+            ))}
+          </div>
+        </RightCard>
+      ) : null}
+
       {isOpenOrDraft ? (
         <RightCard testId="pr-detail-metadata-actions">
           <div className="flex flex-col gap-2 pt-2">
@@ -353,146 +511,6 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
           </div>
         </RightCard>
       ) : null}
-
-      <RightCard
-        title="Reviewers"
-        action={pr.laneId ? <EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} /> : undefined}
-      >
-        {requestedReviewers.length || requestedTeams.length ? (
-          <>
-            {requestedReviewers.map((reviewer) => (
-              <ReviewerRow key={reviewer.login} reviewer={reviewer} reviews={reviews} />
-            ))}
-            {requestedTeams.map((team) => (
-              <TeamReviewerRow key={team.slug || team.name} team={team} />
-            ))}
-          </>
-        ) : (
-          <EmptyValue>None yet</EmptyValue>
-        )}
-        {showReviewerEditor ? (
-          <div className="mt-2">
-            <input
-              value={reviewerInput}
-              onChange={(event) => setReviewerInput(event.target.value)}
-              placeholder="alice, bob, team:platform"
-              onKeyDown={(event) => {
-                if (event.key === "Enter") requestReviewers();
-              }}
-              className="h-7 w-full px-2 text-[11px] outline-none"
-              style={{
-                fontFamily: MONO_FONT,
-                color: COLORS.textPrimary,
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 6,
-              }}
-            />
-          </div>
-        ) : null}
-      </RightCard>
-
-      <PrChecksCard
-        checks={checks}
-        actionRuns={actionRuns}
-        onSelectCheck={onSelectCheck}
-        onOpenChecksTab={onOpenChecksTab}
-        onRerunChecks={onRerunChecks}
-        actionBusy={actionBusy}
-      />
-
-      <FilesChangedCard files={files} onOpenFilesTab={onOpenFilesTab} />
-
-      <RightCard
-        title="Labels"
-        action={pr.laneId ? <EditLink active={showLabelEditor} label="Edit" onClick={() => setShowLabelEditor(!showLabelEditor)} /> : undefined}
-      >
-        {detail?.labels?.length ? (
-          <div className="flex flex-wrap gap-1.5">
-            {detail.labels.map((label) => (
-              <span
-                key={label.name}
-                className="inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold"
-                style={{
-                  fontFamily: SANS_FONT,
-                  color: `#${label.color}`,
-                  background: `#${label.color}18`,
-                  border: `1px solid #${label.color}35`,
-                }}
-              >
-                <span
-                  className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full"
-                  style={{ background: `#${label.color}` }}
-                />
-                {label.name}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <EmptyValue>None yet</EmptyValue>
-        )}
-        {showLabelEditor ? (
-          <div className="mt-2">
-            <input
-              value={labelInput}
-              onChange={(event) => setLabelInput(event.target.value)}
-              placeholder="bug, enhancement"
-              onKeyDown={(event) => {
-                if (event.key === "Enter") setLabels();
-              }}
-              className="h-7 w-full px-2 text-[11px] outline-none"
-              style={{
-                fontFamily: MONO_FONT,
-                color: COLORS.textPrimary,
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 6,
-              }}
-            />
-          </div>
-        ) : null}
-      </RightCard>
-
-      <RightCard title="Assignees">
-        {detail?.assignees?.length ? (
-          detail.assignees.map((assignee) => (
-            <div key={assignee.login} className="flex items-center gap-2 py-1">
-              <PrUserAvatar user={assignee} size={22} />
-              <span className="text-[12px] font-medium" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                {assignee.login}
-              </span>
-            </div>
-          ))
-        ) : (
-          <EmptyValue>None yet</EmptyValue>
-        )}
-      </RightCard>
-
-      {detail?.linkedIssues?.length ? (
-        <RightCard title="Development">
-          <div className="flex flex-col gap-1">
-            {detail.linkedIssues.map((issue) => (
-              <span key={issue.number} className="text-[12px]" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                #{issue.number} {issue.title}
-              </span>
-            ))}
-          </div>
-        </RightCard>
-      ) : null}
-
-      <RightCard title="Participants">
-        {participants.length ? (
-          <div className="flex flex-wrap gap-1.5">
-            {participants.map((participant) => (
-              <span key={participant.login} title={participant.login}>
-                <PrUserAvatar user={participant} size={24} />
-              </span>
-            ))}
-          </div>
-        ) : (
-          <EmptyValue>None yet</EmptyValue>
-        )}
-      </RightCard>
 
       <PrReviewSubmitModal
         open={submitReviewOpen}

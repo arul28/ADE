@@ -180,6 +180,25 @@ describe("PrMarkdown", () => {
     expect(img.getAttribute("src")).toBe("https://example.test/thumb.png");
   });
 
+  it("renders Cursor linked action images as compact badges", () => {
+    const markdown = [
+      "[![Open in Web](https://cursor.com/assets/images/open-in-web-dark.png)](https://cursor.com/agents/bc-123)",
+      "[![Open in Cursor](https://cursor.com/assets/images/open-in-cursor-dark.png)](https://cursor.com/background-agent?bcId=bc-123)",
+    ].join(" ");
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    expect(screen.queryByRole("img", { name: /open in web/i })).toBeNull();
+    expect(screen.queryByRole("img", { name: /open in cursor/i })).toBeNull();
+
+    const webBadge = screen.getByText("Open in Web");
+    const cursorBadge = screen.getByText("Open in Cursor");
+    expect(webBadge.getAttribute("data-pr-action-badge")).toBe("true");
+    expect(cursorBadge.getAttribute("data-pr-action-badge")).toBe("true");
+    expect(webBadge.closest("a")?.getAttribute("href")).toBe("https://cursor.com/agents/bc-123");
+    expect(cursorBadge.closest("a")?.getAttribute("href")).toBe("https://cursor.com/background-agent?bcId=bc-123");
+  });
+
   it("routes fenced diff blocks through the shared CodeHighlighter", () => {
     const markdown = [
       "```diff",

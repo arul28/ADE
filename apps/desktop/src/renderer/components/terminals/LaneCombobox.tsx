@@ -276,7 +276,8 @@ export function LaneCombobox({
           cursor: "pointer",
           minWidth: 0,
           width: fullWidth ? "100%" : undefined,
-          maxWidth: 320,
+          // fullWidth means "fill the container" — don't cap it below the parent.
+          maxWidth: fullWidth ? undefined : 320,
           transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
         }
       : {
@@ -311,7 +312,8 @@ export function LaneCombobox({
           cursor: "pointer",
           minWidth: 0,
           width: fullWidth ? "100%" : undefined,
-          maxWidth: 200,
+          // fullWidth means "fill the container" — don't cap it below the parent.
+          maxWidth: fullWidth ? undefined : 200,
           transition: "border-color 100ms ease, background 100ms ease, box-shadow 100ms ease",
         };
 

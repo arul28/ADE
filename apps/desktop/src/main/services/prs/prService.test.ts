@@ -650,6 +650,13 @@ describe("prService.getGithubSnapshot", () => {
       if (text.includes("from github_pr_projections")) return [projectionRow];
       return [];
     });
+    db.get.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("open_count")) {
+        return { open_count: 1, closed_count: 2, merged_count: 3 };
+      }
+      return null;
+    });
     const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
 
     const snapshot = await service.getGithubSnapshot();
@@ -663,6 +670,11 @@ describe("prService.getGithubSnapshot", () => {
         commentCount: 3,
       }),
     ]);
+    expect(snapshot.history?.repoPullRequestCounts).toEqual({
+      open: 1,
+      closed: 2,
+      merged: 3,
+    });
     await flushMicrotasks();
     expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
       path: `/repos/${REPO.owner}/${REPO.name}/pulls`,

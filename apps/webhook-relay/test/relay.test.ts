@@ -256,6 +256,45 @@ describe("webhook relay", () => {
     expect(env.DB.events).toHaveLength(0);
   });
 
+  it("rejects malformed GitHub webhook signatures before storing events", async () => {
+    const env = makeEnv();
+    const response = await handleRequest(
+      await signedWebhookRequest({ repository: { full_name: "owner/repo" } }, {
+        "x-hub-signature-256": "not-a-github-signature",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(env.DB.events).toHaveLength(0);
+  });
+
+  it("rejects oversized GitHub webhook deliveries before storing events", async () => {
+    const env = makeEnv();
+    const response = await handleRequest(
+      await signedWebhookRequest({ repository: { full_name: "owner/repo" } }, {
+        "content-length": String(25 * 1024 * 1024 + 1),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(413);
+    expect(env.DB.events).toHaveLength(0);
+  });
+
+  it("rejects oversized GitHub webhook content-length values that exceed safe integers", async () => {
+    const env = makeEnv();
+    const response = await handleRequest(
+      await signedWebhookRequest({ repository: { full_name: "owner/repo" } }, {
+        "content-length": "999999999999999999999999",
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(413);
+    expect(env.DB.events).toHaveLength(0);
+  });
+
   it("stores signed GitHub deliveries and deduplicates delivery ids", async () => {
     const env = makeEnv();
     const body = {

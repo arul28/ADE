@@ -243,10 +243,25 @@ function openExternalUrl(url: string | undefined) {
 
 /* ── Image with click-to-open ──────────────────────────────────────── */
 
-// Anchored to the start (after an optional leading emoji) and limited to the
-// real CodeRabbit/bot action labels, so legitimate screenshots whose alt merely
+// Anchored to the start (after an optional leading emoji) and limited to real
+// CodeRabbit/bot action labels, so legitimate screenshots whose alt merely
 // contains words like "open in" or "resolve" are NOT replaced by a chip.
 const AI_ACTION_BADGE_RE = /^\s*[^\w\s]*\s*(fix (in|all)|prompt (for|to))\b/i;
+
+function isCursorActionImage(src: string | undefined, altText: string): boolean {
+  if (!src) return false;
+  try {
+    const url = new URL(src);
+    return (
+      url.protocol === "https:" &&
+      url.hostname === "cursor.com" &&
+      url.pathname.startsWith("/assets/images/") &&
+      /^open in (web|cursor)$/i.test(altText)
+    );
+  } catch {
+    return false;
+  }
+}
 
 function PrImage({
   src,
@@ -286,14 +301,26 @@ function PrImage({
     );
   }
   const altText = (alt ?? "").trim();
-  // Bot "AI action" badges (CodeRabbit's "Fix in Claude", "Prompt for AI Agents",
-  // etc.) ship as bright remote badge images whose baked-in text is unreadable.
-  // Render the alt text as a clean, legible chip; an enclosing link still fires.
+  // Bot/agent action badges ship as remote images whose baked-in text often
+  // renders too large or low-contrast in ADE's PR thread. Render the alt text
+  // as a compact, legible chip; an enclosing link still fires.
   if (altText && AI_ACTION_BADGE_RE.test(altText)) {
     return (
       <span
+        data-pr-action-badge="true"
         className="my-1 inline-flex items-center rounded-[6px] px-2 py-0.5 align-middle text-[11px] font-medium"
         style={{ color: COLORS.accent, background: COLORS.accentSubtle, border: `1px solid ${COLORS.accentBorder}` }}
+      >
+        {altText}
+      </span>
+    );
+  }
+  if (altText && isCursorActionImage(src, altText)) {
+    return (
+      <span
+        data-pr-action-badge="true"
+        className="my-1 inline-flex items-center rounded-[6px] px-2 py-0.5 align-middle text-[11px] font-medium"
+        style={{ color: COLORS.textPrimary, background: COLORS.recessedBg, border: `1px solid ${COLORS.border}` }}
       >
         {altText}
       </span>

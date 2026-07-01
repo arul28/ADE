@@ -12,8 +12,6 @@ import type {
   LaneSummary, MergeMethod, LandResult,
   FilePatch,
   PrSnapshotHydration,
-  PrChecksStatus,
-  PrReviewStatus,
   PrGithubCoords,
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
@@ -21,16 +19,14 @@ import type { PaletteKind } from "../shared/PrCommandPalettes";
 import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef } from "./PrDetailTimelineRails";
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
-import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
-import { PrCiRunningIndicator, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
-import { modifierKeyLabel } from "../../../lib/platform";
 import {
   buildUnifiedChecks,
   findUnifiedCheckId,
   formatCheckDuration,
-  unifiedChecksToPrChecks,
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
@@ -39,6 +35,97 @@ import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 type DetailTab = PrDetailRouteTab;
 const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
 const DETAIL_BACKGROUND_ACTIVITY_DELAY_MS = 250;
+const DETAIL_PANE_WARM_CACHE_TTL_MS = 5 * 60_000;
+const DETAIL_PANE_WARM_CACHE_MAX_ENTRIES = 50;
+
+type PrDetailPaneWarmCache = {
+  prId: string;
+  cachedAt: number;
+  detail: PrDetail | null;
+  files: PrFile[];
+  commits: PrCommit[];
+  status: PrStatus | null;
+  checks: PrCheck[];
+  reviews: PrReview[];
+  comments: PrComment[];
+  actionRuns: PrActionRun[];
+  activity: PrActivityEvent[];
+  reviewThreads: PrReviewThread[];
+};
+
+type PrDetailPaneWarmCachePatch = Partial<Omit<PrDetailPaneWarmCache, "prId" | "cachedAt">>;
+
+const detailPaneWarmCacheByPrId = new Map<string, PrDetailPaneWarmCache>();
+
+function readDetailPaneWarmCache(prId: string): PrDetailPaneWarmCache | null {
+  const cached = detailPaneWarmCacheByPrId.get(prId) ?? null;
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > DETAIL_PANE_WARM_CACHE_TTL_MS) {
+    detailPaneWarmCacheByPrId.delete(prId);
+    return null;
+  }
+  return cached;
+}
+
+function hasDetailPaneWarmCacheData(cache: PrDetailPaneWarmCache): boolean {
+  return Boolean(cache.detail)
+    || cache.files.length > 0
+    || cache.commits.length > 0
+    || Boolean(cache.status)
+    || cache.checks.length > 0
+    || cache.reviews.length > 0
+    || cache.comments.length > 0
+    || cache.actionRuns.length > 0
+    || cache.activity.length > 0
+    || cache.reviewThreads.length > 0;
+}
+
+function hasSnapshotHydrationData(snapshot: PrSnapshotHydration | null): boolean {
+  return Boolean(snapshot?.detail)
+    || (snapshot?.files.length ?? 0) > 0
+    || (snapshot?.commits.length ?? 0) > 0
+    || Boolean(snapshot?.status)
+    || (snapshot?.checks.length ?? 0) > 0
+    || (snapshot?.reviews.length ?? 0) > 0
+    || (snapshot?.comments.length ?? 0) > 0;
+}
+
+function writeDetailPaneWarmCache(prId: string, patch: PrDetailPaneWarmCachePatch): void {
+  const previous = readDetailPaneWarmCache(prId);
+  const next: PrDetailPaneWarmCache = {
+    detail: null,
+    files: [],
+    commits: [],
+    status: null,
+    checks: [],
+    reviews: [],
+    comments: [],
+    actionRuns: [],
+    activity: [],
+    reviewThreads: [],
+    ...(previous ?? {}),
+    ...patch,
+    prId,
+    cachedAt: Date.now(),
+  };
+  if (hasDetailPaneWarmCacheData(next)) {
+    detailPaneWarmCacheByPrId.set(prId, next);
+    while (detailPaneWarmCacheByPrId.size > DETAIL_PANE_WARM_CACHE_MAX_ENTRIES) {
+      let oldestPrId: string | null = null;
+      let oldestCachedAt = Number.POSITIVE_INFINITY;
+      for (const [cachedPrId, cachedEntry] of detailPaneWarmCacheByPrId) {
+        if (cachedEntry.cachedAt < oldestCachedAt) {
+          oldestPrId = cachedPrId;
+          oldestCachedAt = cachedEntry.cachedAt;
+        }
+      }
+      if (!oldestPrId) break;
+      detailPaneWarmCacheByPrId.delete(oldestPrId);
+    }
+  } else {
+    detailPaneWarmCacheByPrId.delete(prId);
+  }
+}
 
 function isDetailTab(value: unknown): value is DetailTab {
   return value === "overview" || value === "files" || value === "checks";
@@ -79,6 +166,39 @@ function writeStoredDetailTab(prId: string, tab: DetailTab): void {
   } catch {
     // localStorage can be unavailable in private/test environments.
   }
+}
+
+function PrDetailLoadingPill() {
+  return (
+    <div
+      role="status"
+      aria-label="Loading pull request details"
+      title="Loading pull request details"
+      style={{
+        position: "absolute",
+        top: 14,
+        left: "50%",
+        transform: "translateX(-50%)",
+        zIndex: 2,
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        height: 30,
+        padding: "0 12px",
+        borderRadius: 999,
+        border: `1px solid ${COLORS.border}`,
+        background: "rgba(24, 20, 36, 0.88)",
+        boxShadow: "0 10px 30px rgba(0,0,0,0.32)",
+        color: COLORS.textSecondary,
+        fontFamily: SANS_FONT,
+        fontSize: 12,
+        pointerEvents: "none",
+      }}
+    >
+      <CircleNotch size={14} className="animate-spin" weight="bold" style={{ color: COLORS.accent }} />
+      <span>Loading PR details</span>
+    </div>
+  );
 }
 
 // ---- Shared activity event helpers for the overview thread ----
@@ -231,83 +351,85 @@ export type UnmappedAffordance = {
 };
 
 /**
- * In-pane banner shown for unmapped PRs. Replaces the legacy read-only gate:
- * the full detail view renders as usual and this banner offers the create-lane
- * / map-to-lane actions instead.
+ * Compact unmapped-PR affordance, surfaced in the top-right of the detail
+ * header (directly above the refresh / GitHub action buttons) rather than as a
+ * full-width banner. The full detail view renders as usual; this cluster offers
+ * the create-lane / map-to-lane actions, with the "not mapped" reason kept as a
+ * concise tinted label (full sentence on hover).
  */
 function UnmappedPrBanner({ affordance }: { affordance: UnmappedAffordance }) {
+  const notMappedLabel =
+    affordance.scope === "external"
+      ? "This pull request comes from a fork and is not mapped to an ADE lane."
+      : "This pull request is not mapped to an ADE lane.";
   return (
     <div
       data-testid="pr-unmapped-affordance"
       style={{
         display: "flex",
         alignItems: "center",
+        justifyContent: "flex-end",
         flexWrap: "wrap",
-        gap: 10,
-        padding: "10px 20px",
-        background: "color-mix(in srgb, var(--color-warning) 6%, transparent)",
-        borderBottom: "1px solid color-mix(in srgb, var(--color-warning) 18%, transparent)",
+        flexShrink: 0,
+        gap: 8,
         fontFamily: SANS_FONT,
         fontSize: 12,
       }}
     >
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "#FBBF24", flex: "1 1 240px", minWidth: 0 }}>
-        <GithubLogo size={15} weight="fill" style={{ flexShrink: 0 }} />
-        <span>
-          {affordance.scope === "external"
-            ? "This pull request comes from a fork and is not mapped to an ADE lane."
-            : "This pull request is not mapped to an ADE lane."}
-        </span>
+      <span
+        title={notMappedLabel}
+        style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#FBBF24", whiteSpace: "nowrap" }}
+      >
+        <GithubLogo size={14} weight="fill" style={{ flexShrink: 0 }} />
+        <span>Not mapped to a lane</span>
       </span>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        {affordance.canCreateLane ? (
+      {affordance.canCreateLane ? (
+        <button
+          type="button"
+          onClick={affordance.onCreateLane}
+          style={primaryButton({ height: 30, padding: "0 10px", borderRadius: 8, whiteSpace: "nowrap" })}
+        >
+          <BranchIcon size={14} /> Create lane from PR branch
+        </button>
+      ) : null}
+      {affordance.linkableLanes.length > 0 ? (
+        <>
+          <select
+            value={affordance.selectedLaneId}
+            onChange={(event) => affordance.onSelectLane(event.target.value)}
+            aria-label="Select lane to map"
+            style={{
+              height: 30,
+              background: COLORS.recessedBg,
+              border: `1px solid ${COLORS.border}`,
+              color: COLORS.textPrimary,
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              padding: "0 8px",
+              borderRadius: 8,
+            }}
+          >
+            <option value="">Map to lane…</option>
+            {affordance.linkableLanes.map((lane) => (
+              <option key={lane.id} value={lane.id}>{lane.name}</option>
+            ))}
+          </select>
           <button
             type="button"
-            onClick={affordance.onCreateLane}
-            style={primaryButton({ height: 30, padding: "0 10px", borderRadius: 8, whiteSpace: "nowrap" })}
+            disabled={!affordance.selectedLaneId || affordance.linkBusy}
+            onClick={affordance.onLink}
+            aria-label={affordance.linkBusy ? "Mapping lane to pull request" : "Map selected lane to pull request"}
+            style={primaryButton({
+              height: 30,
+              padding: "0 10px",
+              borderRadius: 8,
+              opacity: !affordance.selectedLaneId || affordance.linkBusy ? 0.5 : 1,
+            })}
           >
-            <BranchIcon size={14} /> Create lane from PR branch
+            {affordance.linkBusy ? "Mapping…" : "Map"}
           </button>
-        ) : null}
-        {affordance.linkableLanes.length > 0 ? (
-          <>
-            <select
-              value={affordance.selectedLaneId}
-              onChange={(event) => affordance.onSelectLane(event.target.value)}
-              aria-label="Select lane to map"
-              style={{
-                height: 30,
-                background: COLORS.recessedBg,
-                border: `1px solid ${COLORS.border}`,
-                color: COLORS.textPrimary,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                padding: "0 8px",
-                borderRadius: 8,
-              }}
-            >
-              <option value="">Map to lane…</option>
-              {affordance.linkableLanes.map((lane) => (
-                <option key={lane.id} value={lane.id}>{lane.name}</option>
-              ))}
-            </select>
-            <button
-              type="button"
-              disabled={!affordance.selectedLaneId || affordance.linkBusy}
-              onClick={affordance.onLink}
-              aria-label={affordance.linkBusy ? "Mapping lane to pull request" : "Map selected lane to pull request"}
-              style={primaryButton({
-                height: 30,
-                padding: "0 10px",
-                borderRadius: 8,
-                opacity: !affordance.selectedLaneId || affordance.linkBusy ? 0.5 : 1,
-              })}
-            >
-              {affordance.linkBusy ? "Mapping…" : "Map"}
-            </button>
-          </>
-        ) : null}
-      </div>
+        </>
+      ) : null}
     </div>
   );
 }
@@ -319,13 +441,13 @@ export function PrDetailPane({
   reviews: liveReviews,
   comments: liveComments,
   snapshotHydration = null,
-  snapshotHydrationOwnedByContext = false,
+  snapshotHydrationOwnedByContext: _snapshotHydrationOwnedByContext = false,
   liveDetailReady = false,
   detailBusy,
   lanes,
   mergeMethod,
   onRefresh,
-  onNavigate,
+  onNavigate: _onNavigate,
   onShowInGraph,
   onOpenRebaseTab,
   queueContext,
@@ -351,31 +473,47 @@ export function PrDetailPane({
     regeneratePrAiSummary,
   } = usePrs();
   const initialSnapshotHydration = snapshotHydration?.prId === pr.id ? snapshotHydration : null;
+  const initialPaneWarmCache = readDetailPaneWarmCache(pr.id);
   const [activeTab, setActiveTabState] = React.useState<DetailTab>(
     () => normalizeDetailTab(initialDetailTab ?? readStoredDetailTab(pr.id)),
   );
   const [focusedCheckId, setFocusedCheckId] = React.useState<string | null>(null);
-  const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? null);
-  const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? []);
-  const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? []);
-  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? null);
+  const [detail, setDetail] = React.useState<PrDetail | null>(() => initialSnapshotHydration?.detail ?? initialPaneWarmCache?.detail ?? null);
+  const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? initialPaneWarmCache?.files ?? []);
+  const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? initialPaneWarmCache?.commits ?? []);
+  const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? initialPaneWarmCache?.status ?? null);
   // Latest direct mergeability re-poll for the selected PR. Used to resolve the
   // "Checking mergeability…" spinner promptly for BOTH mapped (live-backed) and
   // unmapped PRs — it only overrides while the base status is still computing,
   // so it never shadows a fresher live status once GitHub settles.
   const [polledStatus, setPolledStatus] = React.useState<PrStatus | null>(null);
-  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>(() => initialSnapshotHydration?.checks ?? []);
-  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>(() => initialSnapshotHydration?.reviews ?? []);
-  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>(() => initialSnapshotHydration?.comments ?? []);
-  const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>([]);
-  const [activity, setActivity] = React.useState<PrActivityEvent[]>([]);
-  const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>([]);
+  const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>(() => initialSnapshotHydration?.checks ?? initialPaneWarmCache?.checks ?? []);
+  const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>(() => initialSnapshotHydration?.reviews ?? initialPaneWarmCache?.reviews ?? []);
+  const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>(() => initialSnapshotHydration?.comments ?? initialPaneWarmCache?.comments ?? []);
+  const [actionRuns, setActionRuns] = React.useState<PrActionRun[]>(() => initialPaneWarmCache?.actionRuns ?? []);
+  const [activity, setActivity] = React.useState<PrActivityEvent[]>(() => initialPaneWarmCache?.activity ?? []);
+  const [reviewThreads, setReviewThreads] = React.useState<PrReviewThread[]>(() => initialPaneWarmCache?.reviewThreads ?? []);
+  const [detailLoading, setDetailLoading] = React.useState(
+    () => !(hasSnapshotHydrationData(initialSnapshotHydration) || Boolean(initialPaneWarmCache && hasDetailPaneWarmCacheData(initialPaneWarmCache))),
+  );
   const timelineRailsRef = React.useRef<PrDetailTimelineRailsRef | null>(null);
   const hasSnapshotDetail =
     snapshotStatus !== null
     || snapshotChecks.length > 0
     || snapshotReviews.length > 0
     || snapshotComments.length > 0;
+  const hasVisibleDetailData =
+    Boolean(detail)
+    || files.length > 0
+    || commits.length > 0
+    || hasSnapshotDetail
+    || actionRuns.length > 0
+    || activity.length > 0
+    || reviewThreads.length > 0;
+  const hasVisibleDetailDataRef = React.useRef(hasVisibleDetailData);
+  React.useEffect(() => {
+    hasVisibleDetailDataRef.current = hasVisibleDetailData;
+  }, [hasVisibleDetailData]);
   const baseStatus = liveDetailReady ? liveStatus : (hasSnapshotDetail ? snapshotStatus : liveStatus);
   // While the base (live/snapshot) status still reports GitHub computing
   // mergeability, prefer the latest direct re-poll result for this PR.
@@ -441,6 +579,7 @@ export function PrDetailPane({
   React.useEffect(() => {
     if (ctxDetailPrId === pr.id && (ctxReviewThreads?.length ?? 0) > 0) {
       setReviewThreads(ctxReviewThreads);
+      writeDetailPaneWarmCache(pr.id, { reviewThreads: ctxReviewThreads ?? [] });
     }
   }, [ctxDetailPrId, ctxReviewThreads, pr.id]);
   const deploymentsForTimeline = React.useMemo(
@@ -533,20 +672,56 @@ export function PrDetailPane({
   const liveFilesLoadedForPrRef = React.useRef<string | null>(null);
   const liveCommitsLoadedForPrRef = React.useRef<string | null>(null);
 
+  const updateDetailPaneWarmCache = React.useCallback((patch: PrDetailPaneWarmCachePatch) => {
+    writeDetailPaneWarmCache(pr.id, patch);
+  }, [pr.id]);
+
+  const applyDetailPaneWarmCache = React.useCallback((cached: PrDetailPaneWarmCache) => {
+    if (cached.detail) {
+      liveDetailLoadedForPrRef.current = cached.prId;
+    }
+    if (cached.files.length > 0) {
+      liveFilesLoadedForPrRef.current = cached.prId;
+    }
+    if (cached.commits.length > 0) {
+      liveCommitsLoadedForPrRef.current = cached.prId;
+    }
+    setDetail(cached.detail);
+    setFiles(cached.files);
+    setCommits(cached.commits);
+    setSnapshotStatus(cached.status);
+    setSnapshotChecks(cached.checks);
+    setSnapshotReviews(cached.reviews);
+    setSnapshotComments(cached.comments);
+    setActionRuns(cached.actionRuns);
+    setActivity(cached.activity);
+    setReviewThreads(cached.reviewThreads);
+  }, []);
+
   const applySnapshotHydration = React.useCallback((cachedSnapshot: PrSnapshotHydration) => {
+    const cachePatch: PrDetailPaneWarmCachePatch = {
+      status: cachedSnapshot.status,
+      checks: cachedSnapshot.checks,
+      reviews: cachedSnapshot.reviews,
+      comments: cachedSnapshot.comments,
+    };
     setSnapshotStatus(cachedSnapshot.status);
     setSnapshotChecks(cachedSnapshot.checks);
     setSnapshotReviews(cachedSnapshot.reviews);
     setSnapshotComments(cachedSnapshot.comments);
     if (liveDetailLoadedForPrRef.current !== cachedSnapshot.prId) {
       setDetail(cachedSnapshot.detail);
+      cachePatch.detail = cachedSnapshot.detail;
     }
     if (liveFilesLoadedForPrRef.current !== cachedSnapshot.prId) {
       setFiles(cachedSnapshot.files);
+      cachePatch.files = cachedSnapshot.files;
     }
     if (liveCommitsLoadedForPrRef.current !== cachedSnapshot.prId) {
       setCommits(cachedSnapshot.commits);
+      cachePatch.commits = cachedSnapshot.commits;
     }
+    writeDetailPaneWarmCache(cachedSnapshot.prId, cachePatch);
   }, []);
 
   React.useEffect(() => {
@@ -595,8 +770,9 @@ export function PrDetailPane({
       : window.ade.prs.getReviewThreads(pr.id),
   [isUnmapped, pr.id]);
 
-  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean } = {}) => {
+  const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean; showLoading?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
+    setDetailLoading(options.showLoading ?? !hasVisibleDetailDataRef.current);
     try {
       if (options.hydrateSnapshot && !options.forceLive) {
         const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
@@ -606,6 +782,10 @@ export function PrDetailPane({
         if (requestId !== detailLoadSeqRef.current) return;
         if (cachedSnapshot) {
           applySnapshotHydration(cachedSnapshot);
+          if (hasSnapshotHydrationData(cachedSnapshot)) {
+            hasVisibleDetailDataRef.current = true;
+            setDetailLoading(false);
+          }
         }
       }
       const applyIfCurrent = <T,>(apply: (value: T) => void) => (value: T) => {
@@ -616,29 +796,40 @@ export function PrDetailPane({
         .then(applyIfCurrent((value) => {
           liveDetailLoadedForPrRef.current = pr.id;
           setDetail(value);
+          updateDetailPaneWarmCache({ detail: value });
         }))
         .catch(() => null);
       const filesPromise = fetchFiles()
         .then(applyIfCurrent((value) => {
           liveFilesLoadedForPrRef.current = pr.id;
           setFiles(value);
+          updateDetailPaneWarmCache({ files: value });
         }))
         .catch(() => []);
       const commitsPromise = fetchCommits()
         .then(applyIfCurrent((value) => {
           liveCommitsLoadedForPrRef.current = pr.id;
           setCommits(value);
+          updateDetailPaneWarmCache({ commits: value });
         }))
         .catch(() => []);
       const actionRunsPromise = fetchActionRuns()
-        .then(applyIfCurrent((value) => setActionRuns(value)))
+        .then(applyIfCurrent((value) => {
+          setActionRuns(value);
+          updateDetailPaneWarmCache({ actionRuns: value });
+        }))
         .catch(() => []);
       // Unmapped GitHub-tab PRs have no DB row and no PrsContext live status, so
       // fetch the live merge box by coords and feed it into snapshotStatus (which
       // `status` falls back to). Mapped PRs get their live status from PrsContext.
       const statusPromise = (isUnmapped && coordsRef.current && typeof window.ade.prs.getStatusByGithub === "function")
         ? window.ade.prs.getStatusByGithub(coordsRef.current)
-            .then(applyIfCurrent((value) => { if (value) setSnapshotStatus(value); }))
+            .then(applyIfCurrent((value) => {
+              if (value) {
+                setSnapshotStatus(value);
+                updateDetailPaneWarmCache({ status: value });
+              }
+            }))
             .catch(() => null)
         : Promise.resolve(null);
       await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise, statusPromise]);
@@ -647,18 +838,20 @@ export function PrDetailPane({
     } finally {
       if (requestId === detailLoadSeqRef.current) {
         snapshotPrefillPendingRef.current = false;
+        setDetailLoading(false);
       }
     }
-  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, pr.id]);
+  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, pr.id, updateDetailPaneWarmCache]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
     const threads = await fetchReviewThreadsApi().catch(() => null);
     if (threads && requestId === detailLoadSeqRef.current) {
       setReviewThreads(threads);
+      updateDetailPaneWarmCache({ reviewThreads: threads });
     }
     return threads;
-  }, [fetchReviewThreadsApi]);
+  }, [fetchReviewThreadsApi, updateDetailPaneWarmCache]);
 
   // Load detail on PR change
   React.useEffect(() => {
@@ -674,9 +867,16 @@ export function PrDetailPane({
     liveCommitsLoadedForPrRef.current = null;
     setPolledStatus(null); // transient re-poll value is per-PR
     const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
+    const paneWarmCache = readDetailPaneWarmCache(pr.id);
+    const hasPrefill = hasSnapshotHydrationData(contextSnapshot) || Boolean(paneWarmCache && hasDetailPaneWarmCacheData(paneWarmCache));
+    hasVisibleDetailDataRef.current = hasPrefill;
+    setDetailLoading(!hasPrefill);
+    if (paneWarmCache) {
+      applyDetailPaneWarmCache(paneWarmCache);
+    }
     if (contextSnapshot) {
       applySnapshotHydration(contextSnapshot);
-    } else {
+    } else if (!paneWarmCache) {
       setDetail(null);
       setFiles([]);
       setCommits([]);
@@ -685,16 +885,18 @@ export function PrDetailPane({
       setSnapshotReviews([]);
       setSnapshotComments([]);
     }
-    setActionRuns([]);
-    setReviewThreads([]);
+    if (!paneWarmCache) {
+      setActionRuns([]);
+      setReviewThreads([]);
+    }
 
     snapshotPrefillPendingRef.current = true;
-    void loadDetail({ hydrateSnapshot: true });
+    void loadDetail({ hydrateSnapshot: true, showLoading: !hasPrefill });
     void refreshReviewThreads();
     return () => {
       detailLoadSeqRef.current += 1;
     };
-  }, [applySnapshotHydration, loadDetail, pr.id, refreshReviewThreads]);
+  }, [applyDetailPaneWarmCache, applySnapshotHydration, loadDetail, pr.id, refreshReviewThreads]);
 
   React.useEffect(() => {
     const key = [
@@ -737,14 +939,17 @@ export function PrDetailPane({
       : 0;
     const timeoutId = window.setTimeout(() => {
       fetchActivity().then((events) => {
-        if (!cancelled) setActivity(events);
+        if (!cancelled) {
+          setActivity(events);
+          updateDetailPaneWarmCache({ activity: events });
+        }
       }).catch(() => {});
     }, delay);
     return () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id]);
+  }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id, updateDetailPaneWarmCache]);
 
   // Poll checks + actionRuns + reviewThreads every 60s so the PR detail
   // readiness signals stay fresh without requiring a manual refresh.
@@ -762,16 +967,25 @@ export function PrDetailPane({
         activityPromise,
       ]).then(([arResult, thrResult, actResult]) => {
         if (cancelled) return;
-        if (arResult.status === "fulfilled") setActionRuns(arResult.value);
-        if (thrResult.status === "fulfilled") setReviewThreads(thrResult.value);
-        if (actResult.status === "fulfilled" && actResult.value) setActivity(actResult.value);
+        if (arResult.status === "fulfilled") {
+          setActionRuns(arResult.value);
+          updateDetailPaneWarmCache({ actionRuns: arResult.value });
+        }
+        if (thrResult.status === "fulfilled") {
+          setReviewThreads(thrResult.value);
+          updateDetailPaneWarmCache({ reviewThreads: thrResult.value });
+        }
+        if (actResult.status === "fulfilled" && actResult.value) {
+          setActivity(actResult.value);
+          updateDetailPaneWarmCache({ activity: actResult.value });
+        }
       });
     }, 60_000);
     return () => {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [activeTab, fetchActionRuns, fetchActivity, fetchReviewThreadsApi, pr.id]);
+  }, [activeTab, fetchActionRuns, fetchActivity, fetchReviewThreadsApi, pr.id, updateDetailPaneWarmCache]);
 
   // While GitHub is still computing mergeability for the selected PR, re-poll
   // its status every ~2.5s until it resolves so the merge checklist stops
@@ -806,6 +1020,7 @@ export function PrDetailPane({
           // Drop if cancelled, empty, or a newer detail load superseded us.
           if (cancelled || !next || seqAtStart !== detailLoadSeqRef.current) return;
           setPolledStatus(next);
+          updateDetailPaneWarmCache({ status: next });
           if (!next.mergeabilityComputing) {
             window.clearInterval(id);
           }
@@ -816,7 +1031,7 @@ export function PrDetailPane({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [mergeabilityComputing, isUnmapped, pr.id]);
+  }, [mergeabilityComputing, isUnmapped, pr.id, updateDetailPaneWarmCache]);
 
   // ---- Action helper to reduce repetitive try/catch/finally ----
   const runAction = async (fn: () => Promise<void>) => {
@@ -1007,6 +1222,7 @@ export function PrDetailPane({
     files: COLORS.info,
     checks: COLORS.checkPass,
   };
+  const showDetailLoadingPill = (detailLoading || detailBusy) && !hasVisibleDetailData;
 
   const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
   const headerCi = React.useMemo(() => {
@@ -1118,6 +1334,11 @@ export function PrDetailPane({
               ) : null}
             </div>
           </div>
+          {/* Unmapped-PR affordance: top-right of the header, above the
+              refresh / GitHub action buttons. */}
+          {!pr.laneId && unmappedAffordance ? (
+            <UnmappedPrBanner affordance={unmappedAffordance} />
+          ) : null}
         </div>
 
         {/* Sub-tab bar */}
@@ -1217,11 +1438,6 @@ export function PrDetailPane({
         </div>
       </div>
 
-      {/* ===== UNMAPPED PR AFFORDANCE ===== */}
-      {!pr.laneId && unmappedAffordance ? (
-        <UnmappedPrBanner affordance={unmappedAffordance} />
-      ) : null}
-
       {/* ===== ERROR BAR ===== */}
       {actionError && (
         <div style={{ padding: "10px 20px", background: "color-mix(in srgb, var(--color-error) 5%, transparent)", borderBottom: "1px solid color-mix(in srgb, var(--color-error) 20%, transparent)", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1250,7 +1466,8 @@ export function PrDetailPane({
       )}
 
       {/* ===== TAB CONTENT ===== */}
-      <div style={{ flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
+      <div style={{ position: "relative", flex: 1, minHeight: 0, overflow: overviewRailsActive ? "hidden" : "auto" }}>
+        {showDetailLoadingPill ? <PrDetailLoadingPill /> : null}
         {activeTab === "overview" && (
           <TimelineRailsOverview
             ref={timelineRailsRef}

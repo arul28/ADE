@@ -283,4 +283,42 @@ describe("automationIngressService", () => {
       else process.env.ADE_GITHUB_RELAY_ACCESS_TOKEN = previousToken;
     }
   });
+
+  it("deduplicates overlapping GitHub relay polls", async () => {
+    let resolveFetch!: (response: Response) => void;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: () => "seq:2",
+        setIngressCursor: vi.fn(),
+        getIngressStatus: () => ({}),
+      } as never,
+      secretService: {
+        getSecret: (ref: string) => {
+          if (ref === "automations.githubRelay.apiBaseUrl") return "https://relay.example.com/";
+          if (ref === "automations.githubRelay.remoteProjectId") return "project 1";
+          if (ref === "automations.githubRelay.accessToken") return "relay-token";
+          return null;
+        },
+      } as never,
+      listRules: () => [],
+    });
+
+    const firstPoll = service.pollNow();
+    const secondPoll = service.pollNow();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    resolveFetch(new Response(JSON.stringify({
+      events: [],
+      nextCursor: "seq:2",
+    }), { headers: { "content-type": "application/json" } }));
+    await Promise.all([firstPoll, secondPoll]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 });

@@ -204,6 +204,7 @@ type PullRequestRow = {
   deletions: number | null;
   merge_conflicts?: number | null;
   behind_base_by?: number | null;
+  head_sha?: string | null;
   last_synced_at: string | null;
   created_at: string;
   updated_at: string;
@@ -245,6 +246,12 @@ type GitHubPrProjectionRow = {
   synced_at: string;
   last_event_name: string | null;
   last_delivery_id: string | null;
+};
+
+type GitHubPrProjectionStateCounts = {
+  open: number;
+  closed: number;
+  merged: number;
 };
 
 type LanePrLookupRow = {
@@ -1027,6 +1034,7 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     deletions: Number(row.deletions ?? 0),
     mergeConflicts: rowMergeConflicts(row),
     behindBaseBy: normalizeBehindBaseBy(row.behind_base_by),
+    headSha: row.head_sha ?? null,
     lastSyncedAt: row.last_synced_at ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -1399,7 +1407,7 @@ export function createPrService({
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
-    created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by`;
+    created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by, head_sha`;
   let agentChatService: ReturnType<typeof createAgentChatService> | null = null;
   // Late-bound PR event emitter. main.ts constructs `emitPrEvent` after the PR
   // service (the polling service needs the service first), so it is injected via
@@ -3117,6 +3125,31 @@ export function createPrService({
       `,
       [projectId, repo.owner, repo.name, limit],
     );
+  };
+
+  const countGithubPrProjectionRows = (repo: GitHubRepoRef): GitHubPrProjectionStateCounts => {
+    const row = db.get<{
+      open_count: number | null;
+      closed_count: number | null;
+      merged_count: number | null;
+    }>(
+      `
+        select
+          sum(case when state in ('open', 'draft') then 1 else 0 end) as open_count,
+          sum(case when state = 'closed' then 1 else 0 end) as closed_count,
+          sum(case when state = 'merged' then 1 else 0 end) as merged_count
+          from github_pr_projections
+         where project_id = ?
+           and lower(repo_owner) = lower(?)
+           and lower(repo_name) = lower(?)
+      `,
+      [projectId, repo.owner, repo.name],
+    );
+    return {
+      open: Number(row?.open_count ?? 0),
+      closed: Number(row?.closed_count ?? 0),
+      merged: Number(row?.merged_count ?? 0),
+    };
   };
 
   const fetchMissingSameRepoLanePulls = async (
@@ -8015,6 +8048,7 @@ export function createPrService({
       projectionRows = listGithubPrProjectionRows(repo, options);
     }
     if (projectionRows.length === 0) return null;
+    const repoPullRequestCounts = countGithubPrProjectionRows(repo);
     const historyPageLimit = normalizeGithubHistoryPageLimit(options);
     return {
       repo,
@@ -8031,6 +8065,7 @@ export function createPrService({
             GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT,
             Math.max(250, historyPageLimit * 100),
           ),
+        repoPullRequestCounts,
       },
     };
   };
@@ -8142,6 +8177,7 @@ export function createPrService({
     const projectedRepoPullRequests = listGithubPrProjectionRows(repo, options)
       .map((row) => gitHubItemFromProjection(row, metadata, "repo"));
     const repoPullRequests = mergeGithubPrItems(liveRepoPullRequests, projectedRepoPullRequests);
+    const repoPullRequestCounts = countGithubPrProjectionRows(repo);
     const syncedAt = nowIso();
 
     return {
@@ -8156,6 +8192,7 @@ export function createPrService({
         repoPullRequestsLoaded: repoPullRequestsFetchedBeforeLaneBackfill,
         repoPullRequestsMayHaveMore: options.includeExternalClosed === true
           && repoPullRequestsFetchedBeforeLaneBackfill >= historyPageLimit * 100,
+        repoPullRequestCounts,
       },
     };
   };

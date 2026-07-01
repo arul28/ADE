@@ -63,6 +63,8 @@ export type PrSummary = {
   deletions: number;
   mergeConflicts?: boolean | null;
   behindBaseBy?: number | null;
+  /** Head commit SHA at last sync. Lets the renderer detect new-commit pushes. */
+  headSha?: string | null;
   lastSyncedAt: string | null;
   createdAt: string;
   updatedAt: string;
@@ -205,6 +207,11 @@ export type GitHubPrSnapshot = {
     pageLimit: number;
     repoPullRequestsLoaded: number;
     repoPullRequestsMayHaveMore: boolean;
+    repoPullRequestCounts?: {
+      open: number;
+      closed: number;
+      merged: number;
+    } | null;
   } | null;
 };
 

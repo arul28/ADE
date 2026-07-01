@@ -3,35 +3,105 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import type { PrEventPayload, PrSummary } from "../../../shared/types";
+
+// Render framer-motion elements as plain DOM so assertions don't depend on
+// animation timing / requestAnimationFrame in jsdom.
+vi.mock("framer-motion", () => {
+  const React = require("react");
+  const strip = (props: Record<string, unknown>) => {
+    const { initial: _initial, animate: _animate, exit: _exit, transition: _transition, ...rest } = props;
+    return rest;
+  };
+  const motion = new Proxy(
+    {},
+    {
+      get: (_t, tag: string) =>
+        React.forwardRef((props: Record<string, unknown>, ref: unknown) => {
+          const { children, ...rest } = strip(props);
+          return React.createElement(tag, { ...rest, ref }, children as React.ReactNode);
+        }),
+    },
+  );
+  return {
+    motion,
+    AnimatePresence: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+  };
+});
+
+import {
+  ChatPrPane,
+  chatPrSignature,
+  detectChatPrDelta,
+  type ChatPrSignature,
+} from "./ChatPrPane";
+import type { PrCheck, PrEventPayload, PrReview, PrStatus, PrSummary } from "../../../shared/types";
 import { clearPrReadInFlightForTest } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
-import { ChatPrPane } from "./ChatPrPane";
 
-const originalAde = globalThis.window.ade;
-
-function buildPr(overrides: Partial<PrSummary> = {}): PrSummary {
+function makePr(over: Partial<PrSummary> = {}): PrSummary {
   return {
-    id: "pr-333",
-    laneId: "lane-1",
-    projectId: "project-1",
-    repoOwner: "arul28",
-    repoName: "ADE",
-    githubPrNumber: 333,
-    githubUrl: "https://github.com/arul28/ADE/pull/333",
-    githubNodeId: "PR_node333",
-    title: "Fix stale PR pane",
+    id: "pr1",
+    laneId: "lane1",
+    projectId: "proj",
+    repoOwner: "o",
+    repoName: "r",
+    githubPrNumber: 42,
+    githubUrl: "https://github.com/o/r/pull/42",
+    githubNodeId: null,
+    title: "Add webhook relay for PR sync",
     state: "open",
     baseBranch: "main",
-    headBranch: "feature/pr-pane",
-    checksStatus: "pending",
-    reviewStatus: "approved",
-    additions: 248,
-    deletions: 50,
-    lastSyncedAt: null,
-    createdAt: "2026-06-29T13:00:00.000Z",
-    updatedAt: "2026-06-29T13:00:00.000Z",
-    ...overrides,
+    headBranch: "feat",
+    checksStatus: "none",
+    reviewStatus: "none",
+    additions: 420,
+    deletions: 38,
+    mergeConflicts: null,
+    behindBaseBy: null,
+    headSha: "aaa111",
+    lastSyncedAt: new Date().toISOString(),
+    createdAt: "2026-06-30T00:00:00Z",
+    updatedAt: "rev-1",
+    creationStrategy: null,
+    ...over,
+  };
+}
+
+const sig = (over: Partial<ChatPrSignature> = {}): ChatPrSignature => ({
+  exists: true,
+  state: "open",
+  headSha: "aaa111",
+  ...over,
+});
+
+const originalAde = (globalThis.window as { ade?: unknown }).ade;
+
+function installAde(over?: {
+  getForLane?: unknown;
+  refresh?: unknown;
+  getChecks?: PrCheck[];
+  getReviews?: PrReview[];
+  getStatus?: PrStatus | null;
+  relayConfigured?: boolean;
+  webhookState?: string;
+}) {
+  (globalThis.window as { ade?: unknown }).ade = {
+    prs: {
+      getForLane: over?.getForLane ?? vi.fn().mockResolvedValue(makePr()),
+      refresh: over?.refresh ?? vi.fn().mockResolvedValue([makePr()]),
+      onEvent: vi.fn().mockImplementation(() => () => undefined),
+      getChecks: vi.fn().mockResolvedValue(over?.getChecks ?? []),
+      getReviews: vi.fn().mockResolvedValue(over?.getReviews ?? []),
+      getStatus: vi.fn().mockResolvedValue(over?.getStatus ?? null),
+    },
+    github: {
+      getAppInstallationStatus: vi.fn().mockResolvedValue({
+        relayConfigured: over?.relayConfigured ?? true,
+        webhookState: over?.webhookState ?? "active",
+      }),
+    },
+    app: { openExternal: vi.fn().mockResolvedValue(undefined) },
   };
 }
 
@@ -43,9 +113,9 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function installAdeMocks(stalePr: PrSummary, freshPr: PrSummary) {
+function installAdeWithEvents(stalePr: PrSummary, freshPr: PrSummary) {
   let prEventListener: ((event: PrEventPayload) => void) | null = null;
-  globalThis.window.ade = {
+  (globalThis.window as { ade?: unknown }).ade = {
     prs: {
       getForLane: vi.fn().mockResolvedValue(stalePr),
       refresh: vi.fn().mockResolvedValue([freshPr]),
@@ -55,11 +125,18 @@ function installAdeMocks(stalePr: PrSummary, freshPr: PrSummary) {
           if (prEventListener === listener) prEventListener = null;
         };
       }),
+      getChecks: vi.fn().mockResolvedValue([]),
+      getReviews: vi.fn().mockResolvedValue([]),
+      getStatus: vi.fn().mockResolvedValue(null),
     },
-    app: {
-      openExternal: vi.fn().mockResolvedValue(undefined),
+    github: {
+      getAppInstallationStatus: vi.fn().mockResolvedValue({
+        relayConfigured: true,
+        webhookState: "active",
+      }),
     },
-  } as any;
+    app: { openExternal: vi.fn().mockResolvedValue(undefined) },
+  };
 
   return {
     emitPrEvent: (event: PrEventPayload) => {
@@ -68,39 +145,91 @@ function installAdeMocks(stalePr: PrSummary, freshPr: PrSummary) {
   };
 }
 
-describe("ChatPrPane", () => {
-  beforeEach(() => {
-    clearPrReadInFlightForTest();
-    useAppStore.setState({
-      project: { rootPath: "/Users/admin/Projects/ADE", displayName: "ADE" } as any,
-      projectBinding: {
-        kind: "local",
-        key: "local:/Users/admin/Projects/ADE",
-        rootPath: "/Users/admin/Projects/ADE",
-        displayName: "ADE",
-      } as any,
+function renderPane(props: Record<string, unknown> = {}) {
+  return render(
+    <MemoryRouter>
+      <ChatPrPane laneId="lane1" {...props} />
+    </MemoryRouter>,
+  );
+}
+
+beforeEach(() => {
+  clearPrReadInFlightForTest();
+  useAppStore.setState({
+    project: { rootPath: "/Users/admin/Projects/ADE", displayName: "ADE" } as any,
+    projectBinding: {
+      kind: "local",
+      key: "local:/Users/admin/Projects/ADE",
+      rootPath: "/Users/admin/Projects/ADE",
+      displayName: "ADE",
+    } as any,
+  });
+});
+
+afterEach(() => {
+  cleanup();
+  clearPrReadInFlightForTest();
+  (globalThis.window as { ade?: unknown }).ade = originalAde;
+  vi.clearAllMocks();
+});
+
+describe("detectChatPrDelta", () => {
+  it("pops for a newly created / first-linked PR", () => {
+    expect(detectChatPrDelta(sig({ exists: false, state: null, headSha: null }), makePr())?.kind).toBe("created");
+  });
+
+  it("pops for lifecycle transitions", () => {
+    expect(detectChatPrDelta(sig(), makePr({ state: "merged" }))?.kind).toBe("merged");
+    expect(detectChatPrDelta(sig(), makePr({ state: "closed" }))?.kind).toBe("closed");
+    expect(detectChatPrDelta(sig({ state: "draft" }), makePr({ state: "open" }))?.kind).toBe("ready");
+    expect(detectChatPrDelta(sig({ state: "closed" }), makePr({ state: "open" }))?.kind).toBe("reopened");
+    expect(detectChatPrDelta(sig(), makePr({ state: "draft" }))?.kind).toBe("draft");
+  });
+
+  it("pops for a new commit (head sha change)", () => {
+    expect(detectChatPrDelta(sig({ headSha: "aaa111" }), makePr({ headSha: "bbb222" }))?.kind).toBe("commit");
+  });
+
+  it("does NOT pop for checks/review-only changes", () => {
+    // Same state + same head sha, only checks/review changed.
+    const next = makePr({ checksStatus: "failing", reviewStatus: "changes_requested" });
+    expect(detectChatPrDelta(sig(), next)).toBeNull();
+  });
+
+  it("does NOT pop when the PR was unlinked / removed", () => {
+    expect(detectChatPrDelta(sig(), null)).toBeNull();
+  });
+});
+
+describe("chatPrSignature", () => {
+  it("captures existence, state, and head sha", () => {
+    expect(chatPrSignature(makePr({ state: "merged", headSha: "zzz" }))).toEqual({
+      exists: true,
+      state: "merged",
+      headSha: "zzz",
     });
+    expect(chatPrSignature(null)).toEqual({ exists: false, state: null, headSha: null });
   });
+});
 
-  afterEach(() => {
-    cleanup();
-    vi.unstubAllGlobals();
-    if (originalAde === undefined) {
-      delete (globalThis.window as any).ade;
-    } else {
-      globalThis.window.ade = originalAde;
-    }
-  });
-
+describe("ChatPrPane", () => {
   it("refreshes a linked PR on mount and hides stale running checks once merged", async () => {
-    const stalePr = buildPr({ state: "open", checksStatus: "pending" });
-    const freshPr = buildPr({
+    const stalePr = makePr({
+      id: "pr-333",
+      laneId: "lane-1",
+      githubPrNumber: 333,
+      title: "Fix stale PR pane",
+      state: "open",
+      checksStatus: "pending",
+    });
+    const freshPr = makePr({
+      ...stalePr,
       state: "merged",
       checksStatus: "pending",
       title: "Fix stale PR pane after merge",
       updatedAt: "2026-06-29T14:00:00.000Z",
     });
-    const { emitPrEvent } = installAdeMocks(stalePr, freshPr);
+    const { emitPrEvent } = installAdeWithEvents(stalePr, freshPr);
 
     render(
       <MemoryRouter>
@@ -108,12 +237,12 @@ describe("ChatPrPane", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("MERGED #333")).toBeTruthy();
+    expect(await screen.findByText("Merged")).toBeTruthy();
     expect(screen.getByText("Fix stale PR pane after merge")).toBeTruthy();
     expect(screen.queryByText("Checks running")).toBeNull();
 
     await waitFor(() => {
-      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-333"] });
+      expect((window.ade.prs.refresh as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ prIds: ["pr-333"] });
     });
     expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
 
@@ -121,29 +250,29 @@ describe("ChatPrPane", () => {
       emitPrEvent({
         type: "prs-updated",
         polledAt: "2026-06-29T14:01:00.000Z",
-        prs: [buildPr({ id: "other-pr", laneId: "other-lane", githubPrNumber: 444 })],
+        prs: [makePr({ id: "other-pr", laneId: "other-lane", githubPrNumber: 444 })],
       });
     });
 
     await waitFor(() => {
-      expect(screen.queryByText("MERGED #333")).toBeNull();
+      expect(screen.queryByText("Fix stale PR pane after merge")).toBeNull();
     });
     expect(window.ade.prs.onEvent).toHaveBeenCalledTimes(1);
   });
 
   it("ignores stale live refresh results after switching lanes", async () => {
-    const laneOnePr = buildPr({
+    const laneOnePr = makePr({
       id: "pr-lane-1",
       laneId: "lane-1",
       githubPrNumber: 111,
       title: "Lane one stale PR",
     });
-    const laneOneFreshPr = buildPr({
+    const laneOneFreshPr = makePr({
       ...laneOnePr,
       title: "Lane one refreshed PR",
       updatedAt: "2026-06-29T14:00:00.000Z",
     });
-    const laneTwoPr = buildPr({
+    const laneTwoPr = makePr({
       id: "pr-lane-2",
       laneId: "lane-2",
       githubPrNumber: 222,
@@ -152,18 +281,12 @@ describe("ChatPrPane", () => {
     const laneOneLive = deferred<PrSummary[]>();
     const laneTwoLive = deferred<PrSummary[]>();
 
-    globalThis.window.ade = {
-      prs: {
-        getForLane: vi.fn(async (requestedLaneId: string) => (requestedLaneId === "lane-1" ? laneOnePr : laneTwoPr)),
-        refresh: vi.fn((args?: { prIds?: string[] }) => (
-          args?.prIds?.[0] === "pr-lane-1" ? laneOneLive.promise : laneTwoLive.promise
-        )),
-        onEvent: vi.fn().mockImplementation(() => () => undefined),
-      },
-      app: {
-        openExternal: vi.fn().mockResolvedValue(undefined),
-      },
-    } as any;
+    installAde({
+      getForLane: vi.fn(async (requestedLaneId: string) => (requestedLaneId === "lane-1" ? laneOnePr : laneTwoPr)),
+      refresh: vi.fn((args?: { prIds?: string[] }) => (
+        args?.prIds?.[0] === "pr-lane-1" ? laneOneLive.promise : laneTwoLive.promise
+      )),
+    });
 
     const { rerender } = render(
       <MemoryRouter>
@@ -193,5 +316,67 @@ describe("ChatPrPane", () => {
       laneTwoLive.resolve([laneTwoPr]);
       await laneTwoLive.promise;
     });
+  });
+
+  it("renders the linked PR's state, title, and diff", async () => {
+    installAde();
+    renderPane();
+    expect(await screen.findByText("Add webhook relay for PR sync")).toBeTruthy();
+    expect(screen.getByText("Open")).toBeTruthy();
+    expect(screen.getByText("+420")).toBeTruthy();
+    expect(screen.getByText("−38")).toBeTruthy();
+  });
+
+  it("shows the delta line describing what just changed", async () => {
+    installAde();
+    renderPane({ delta: { kind: "merged", label: "Merged", tone: "good", nonce: 1 } });
+    // Title still says the PR is open; "Merged" here is the delta line.
+    expect(await screen.findByText("Merged")).toBeTruthy();
+    expect(screen.getByText("just now")).toBeTruthy();
+  });
+
+  it("renders enriched check counts from getChecks", async () => {
+    installAde({
+      getChecks: [
+        { name: "build", status: "completed", conclusion: "failure", detailsUrl: null, startedAt: null, completedAt: null },
+        { name: "test", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null },
+      ],
+    });
+    renderPane();
+    expect(await screen.findByText("1/2 checks failing")).toBeTruthy();
+  });
+
+  it("shows the reviewer next to an approved review", async () => {
+    installAde({
+      getReviews: [
+        { reviewer: "arul", reviewerAvatarUrl: null, state: "approved", body: null, submittedAt: null },
+      ],
+    });
+    renderPane();
+    expect(await screen.findByText("Approved")).toBeTruthy();
+    expect(await screen.findByText("· arul")).toBeTruthy();
+  });
+
+  it("surfaces a 'Ready to merge' state when everything is green", async () => {
+    installAde({
+      getStatus: {
+        prId: "pr1",
+        state: "open",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        isMergeable: true,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+        reviewDecision: "approved",
+      },
+    });
+    renderPane();
+    expect(await screen.findByText("Ready to merge")).toBeTruthy();
+  });
+
+  it("falls back to a 'polling' dot when the webhook relay is not connected", async () => {
+    installAde({ relayConfigured: false });
+    renderPane();
+    expect(await screen.findByText("polling")).toBeTruthy();
   });
 });

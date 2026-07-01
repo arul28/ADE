@@ -67,6 +67,7 @@ type GitHubAppApiStatus =
 const DEFAULT_EVENT_LIMIT = 100;
 const MAX_EVENT_LIMIT = 500;
 const DEFAULT_RETENTION_DAYS = 30;
+const MAX_GITHUB_WEBHOOK_BODY_BYTES = 25 * 1024 * 1024;
 const PROJECT_RELAY_TOKEN_PREFIX = "ade_proj_";
 const PROJECT_RELAY_TOKEN_CONTEXT = "ade-github-relay-project";
 const encoder = new TextEncoder();
@@ -90,6 +91,20 @@ function text(value: string, status = 200): Response {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function contentLengthExceedsLimit(headers: Headers, limit: number): boolean {
+  const value = headers.get("content-length")?.trim();
+  if (!value || !/^\d+$/.test(value)) return false;
+  try {
+    return BigInt(value) > BigInt(limit);
+  } catch {
+    return true;
+  }
+}
+
+function hasValidGitHubSignatureShape(signature: string): boolean {
+  return /^sha256=[0-9a-f]{64}$/i.test(signature);
 }
 
 function readString(source: Record<string, unknown> | null | undefined, key: string): string {
@@ -688,13 +703,19 @@ async function handleGitHubWebhook(request: Request, env: RelayEnv, projectId: s
   const githubEvent = request.headers.get("x-github-event")?.trim() || "";
   const githubDelivery = request.headers.get("x-github-delivery")?.trim() || "";
   if (!githubEvent) return json({ ok: false, error: "missing x-github-event" }, { status: 400 });
+  const signature = request.headers.get("x-hub-signature-256")?.trim() || "";
+  if (!hasValidGitHubSignatureShape(signature)) {
+    return json({ ok: false, error: "missing or invalid signature" }, { status: 401 });
+  }
+  if (contentLengthExceedsLimit(request.headers, MAX_GITHUB_WEBHOOK_BODY_BYTES)) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
 
   const body = await request.arrayBuffer();
-  const verified = await verifyGitHubSignature(
-    webhookSecret,
-    body,
-    request.headers.get("x-hub-signature-256")?.trim() || "",
-  );
+  if (body.byteLength > MAX_GITHUB_WEBHOOK_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+  const verified = await verifyGitHubSignature(webhookSecret, body, signature);
   if (!verified) return json({ ok: false, error: "signature mismatch" }, { status: 401 });
 
   let payload: Record<string, unknown>;
