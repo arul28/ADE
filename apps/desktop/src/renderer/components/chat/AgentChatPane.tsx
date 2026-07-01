@@ -6280,9 +6280,10 @@ export function AgentChatPane({
   ]);
 
   // Resend the most recent user message for a session that fast-failed on a
-  // Claude logout — fired by the inline re-login card's "Retry turn" button. The
-  // re-check is implicit: if Claude is still logged out the new turn fast-fails
-  // again and a fresh card appears.
+  // Claude logout — fired by the inline re-login card's "Retry turn" button. A
+  // forced provider refresh clears cached auth-failed runtime health first; if
+  // Claude is still logged out the new turn fast-fails again and a fresh card
+  // appears.
   const rejectAuthRetry = useCallback((sessionId: string) => {
     window.dispatchEvent(new CustomEvent(CHAT_AUTH_RETRY_REJECTED_EVENT, { detail: { sessionId } }));
   }, []);
@@ -6320,6 +6321,7 @@ export function AgentChatPane({
       setBusy(true);
       setError(null);
       touchSession(sessionId);
+      await refreshAvailableModels({ force: true });
       try {
         await window.ade.agentChat.send({ sessionId, text, displayText, ...replayContext });
       } catch (sendError) {
@@ -6334,7 +6336,7 @@ export function AgentChatPane({
       submitInFlightRef.current = false;
       setBusy(false);
     }
-  }, [refreshSessions, rejectAuthRetry, touchSession]);
+  }, [refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
 
   // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
   // turn"; only the pane that owns the session resends.

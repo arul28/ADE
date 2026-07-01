@@ -1445,11 +1445,40 @@ describe("AgentChatPane submit recovery", () => {
       transcript,
       includeClaudeModel: true,
     });
+    const getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: true, source: "path", path: "/usr/local/bin/claude" },
+          auth: { ready: true, mode: "subscription", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      detectedAuth: [
+        { type: "cli-subscription", cli: "claude", authenticated: true },
+      ],
+      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+    });
+    window.ade.ai.getStatus = getStatus as any;
     seedDrawerStore();
 
     renderPane(session);
 
     expect(await screen.findByText("Retry this exact prompt")).toBeTruthy();
+    await waitFor(() => {
+      expect(getStatus).toHaveBeenCalled();
+    });
+    getStatus.mockClear();
+    send.mockImplementationOnce(async () => {
+      expect(getStatus).toHaveBeenCalledWith({
+        force: true,
+        refreshOpenCodeInventory: false,
+      });
+    });
 
     fireEvent(window, new CustomEvent(CHAT_RETRY_AUTH_TURN_EVENT, {
       detail: { sessionId: session.sessionId },
