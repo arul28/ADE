@@ -37,6 +37,7 @@ import type {
   CreateProjectInput,
   SyncEnvelope,
   SyncChatEventPayload,
+  SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
   SyncFileBlob,
@@ -216,14 +217,6 @@ export type NativeLanDiscoveryProcess = {
   ppid: number;
   command: string;
 };
-const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
-  "writeText",
-  "createFile",
-  "createDirectory",
-  "rename",
-  "deletePath",
-]);
-
 export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
   switch (payload.action) {
     case "listTree":
@@ -3379,32 +3372,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       .find((entry) => entry.id === workspaceId) ?? null;
   }
 
-  function assertWriteAllowed(peer: PeerState, workspace: FilesWorkspace | null): void {
-    if (!isMobilePeer(peer)) return;
-    if (!workspace || workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
-      throw new Error("Mobile file access is read-only for this workspace.");
-    }
-  }
-
   function assertMobileExternalWorkspaceBlocked(peer: PeerState, payload: SyncFileRequest): void {
     assertFileRequestWorkspaceVisibleToPeer({
       isMobile: isMobilePeer(peer),
       workspace: workspaceForId(syncFileRequestWorkspaceId(payload)),
     });
-  }
-
-  function assertFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
-    if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
-    const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
-    assertWriteAllowed(peer, workspaceForId(workspaceId));
-  }
-
-  function assertLaneFileMutationAllowed(peer: PeerState, payload: SyncCommandPayload): void {
-    const laneId = toOptionalString((payload.args as Record<string, unknown> | null | undefined)?.laneId);
-    if (!laneId) return;
-    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
-      .find((entry) => entry.laneId === laneId) ?? null;
-    assertWriteAllowed(peer, workspace);
   }
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
@@ -3414,7 +3386,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     try {
       assertMobileExternalWorkspaceBlocked(peer, payload);
-      assertFileMutationAllowed(peer, payload);
       let result:
         | FilesWorkspace[]
         | FileTreeNode[]
@@ -3675,14 +3646,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!policy.viewerAllowed) {
       reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
       return;
-    }
-    if (payload.action === "files.writeTextAtomic") {
-      try {
-        assertLaneFileMutationAllowed(peer, payload);
-      } catch (error) {
-        reject(error instanceof Error ? error.message : String(error), "mobile_read_only");
-        return;
-      }
     }
     if (policy.localOnly || policy.requiresApproval) {
       reject(`Remote command ${payload.action} requires approval on this machine.`, "approval_required");
@@ -4322,7 +4285,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "chat_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceSeq?: number } | null;
+        const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         peer.subscribedChatSessionIds.add(sessionId);
@@ -4378,6 +4341,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         );
         const history: AgentChatEventHistorySnapshot | null = args.agentChatService?.getChatEventHistory(sessionId, {
           maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
+          maxBytes,
         }) ?? null;
         const events = history?.events ?? [];
         const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
@@ -4392,6 +4356,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
+        for (const event of events) {
+          rememberChatEventSent(peer, event);
+        }
         break;
       }
       case "chat_unsubscribe": {

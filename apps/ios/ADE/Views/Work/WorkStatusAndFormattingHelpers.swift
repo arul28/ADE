@@ -602,7 +602,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "default", title: "Agent"),
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
       WorkRuntimeModeOption(id: "edit", title: "Ask"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Force"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
     ]
   case "droid", "factory":
     return [
@@ -647,7 +647,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     switch mode {
     case "plan": return "Plan"
     case "edit", "ask": return "Ask"
-    case "full-auto": return "Force"
+    case "full-auto": return "Full auto"
     default: return "Agent"
     }
   case "droid", "factory":

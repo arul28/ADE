@@ -87,8 +87,12 @@ class FakeD1Database {
       return (this.events.find((event) => event.project_id === projectId && event.event_id === eventId) ?? null) as T | null;
     }
     if (sql.includes("select rowid as event_seq, event_id from github_events")) {
-      const [projectId, eventId] = values;
-      const event = this.events.find((entry) => entry.project_id === projectId && entry.event_id === eventId);
+      const [scope, eventId] = values;
+      const scopeValue = String(scope);
+      const repoScoped = sql.includes("repository_full_name") && !sql.includes("project_id = ?");
+      const event = repoScoped
+        ? this.events.find((entry) => entry.repository_full_name?.toLowerCase() === scopeValue && entry.event_id === eventId)
+        : this.events.find((entry) => entry.project_id === scope && entry.event_id === eventId);
       return event ? ({ event_seq: event.event_seq, event_id: event.event_id } as T) : null;
     }
     if (sql.includes("from github_app_repositories")) {
@@ -110,8 +114,11 @@ class FakeD1Database {
 
   all<T>(sql: string, values: unknown[]): T[] {
     if (!sql.includes("from github_events")) return [];
-    const [projectId] = values;
-    let rows = this.events.filter((event) => event.project_id === projectId);
+    const [scope] = values;
+    const repoScoped = sql.includes("repository_full_name") && !sql.includes("project_id = ?");
+    let rows = repoScoped
+      ? this.events.filter((event) => event.repository_full_name?.toLowerCase() === String(scope))
+      : this.events.filter((event) => event.project_id === scope);
     let limit = Number(values[1]);
     if (sql.includes("rowid >")) {
       const [, eventSeq, requestedLimit] = values;
@@ -200,6 +207,12 @@ async function projectAuthHeaders(projectId = "project-1"): Promise<Record<strin
   };
 }
 
+function githubAuthHeaders(token = "ghp_repo_token"): Record<string, string> {
+  return {
+    authorization: `Bearer ${token}`,
+  };
+}
+
 function makeEnv(): RelayEnv & { DB: FakeD1Database } {
   return {
     DB: new FakeD1Database(),
@@ -243,6 +256,20 @@ async function signedWebhookRequest(body: Record<string, unknown>, headers: Reco
 }
 
 describe("webhook relay", () => {
+  function stubRepoAccess(token = "ghp_repo_token") {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://api.github.com/repos/owner/repo");
+      expect(init?.headers).toEqual(expect.objectContaining({
+        authorization: `Bearer ${token}`,
+        "user-agent": "ADE GitHub Webhook Relay",
+      }));
+      return new Response(JSON.stringify({ full_name: "owner/repo" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+  }
+
   it("rejects unsigned GitHub webhook deliveries", async () => {
     const env = makeEnv();
     const response = await handleRequest(
@@ -348,6 +375,46 @@ describe("webhook relay", () => {
     expect(payload.events[0]?.payload.pull_request).toEqual(expect.objectContaining({ number: 43 }));
   });
 
+  it("lists repo events with the user's GitHub token", async () => {
+    const env = makeEnv();
+    await handleRequest(
+      await signedWebhookRequest(
+        { repository: { full_name: "owner/repo" }, pull_request: { number: 42, title: "First" } },
+        { "x-github-delivery": "delivery-1" },
+      ),
+      env,
+    );
+    await handleRequest(
+      await signedWebhookRequest(
+        { repository: { full_name: "other/repo" }, pull_request: { number: 99, title: "Other" } },
+        { "x-github-delivery": "delivery-other" },
+      ),
+      env,
+    );
+    await handleRequest(
+      await signedWebhookRequest(
+        { repository: { full_name: "owner/repo" }, pull_request: { number: 43, title: "Second" } },
+        { "x-github-delivery": "delivery-2" },
+      ),
+      env,
+    );
+    const fetchMock = stubRepoAccess();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events?after=seq:1", {
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const payload = await response.json() as { events: Array<{ eventId: string }>; nextCursor: string };
+    expect(payload.events.map((event) => event.eventId)).toEqual(["delivery-2"]);
+    expect(payload.nextCursor).toBe("seq:3");
+  });
+
   it("uses a monotonic cursor so same-timestamp delivery ids cannot be skipped", async () => {
     const env = makeEnv();
     await handleRequest(
@@ -405,6 +472,15 @@ describe("webhook relay", () => {
     expect(response.status).toBe(401);
   });
 
+  it("requires GitHub repo access for repo-scoped event polling", async () => {
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events"),
+      makeEnv(),
+    );
+
+    expect(response.status).toBe(401);
+  });
+
   it("tracks GitHub App installation state per repository", async () => {
     const env = makeEnv();
     const missing = await handleRequest(
@@ -450,6 +526,40 @@ describe("webhook relay", () => {
       state: "configured",
       installationId: 123,
       repositorySelection: "all",
+    }));
+  });
+
+  it("reports repo installation status through GitHub-token auth", async () => {
+    const env = makeEnv();
+    env.DB.appRepositories.push({
+      repository_key: "owner/repo",
+      repository_full_name: "owner/repo",
+      owner: "owner",
+      name: "repo",
+      installation_id: 123,
+      repository_selection: "selected",
+      installed: 1,
+      last_seen_at: "2026-06-30T00:00:00.000Z",
+      removed_at: null,
+      source_event: "installation",
+    });
+    const fetchMock = stubRepoAccess();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const status = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/status", {
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(status.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await status.json()).toEqual(expect.objectContaining({
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "selected",
     }));
   });
 

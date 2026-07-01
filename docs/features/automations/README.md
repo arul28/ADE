@@ -123,7 +123,7 @@ Automations accept inbound events from four sources (`AutomationIngressSource`):
 - `local-webhook` — `automationIngressService` opens an HTTP endpoint.
   - `github-webhook` events verify HMAC-SHA256 via `safeCompareSignature` (timing-safe). Secret read from `automations.githubWebhook.secret`.
   - `webhook` events are custom inbound webhooks with optional shared-secret verification.
-- `github-relay` — polls a GitHub relay (`automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken`) for out-of-band delivery when the desktop app is behind NAT.
+- `github-relay` — polls the hosted ADE GitHub relay by repo using the user's existing GitHub token, with the legacy `automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken` project-token route still available for self-hosted relays.
 - `linear-relay` — Linear event relay (shared with CTO intake; Linear triggers here are context-only).
 - `github-polling` — `githubPollingService` polls the GitHub REST API directly for the origin repo and any `extraRepos`, diffing per-poll snapshots to synthesize `github.issue_*` / `github.pr_*` events (opened / edited / labeled / closed / commented, and PR merged). No relay or webhook infra required. Cursor is a `<slug>=<iso>|<slug>=<iso>` string stored via `automationService.setIngressCursor({ source: "github-polling" })`; default interval is 30s.
 
@@ -169,7 +169,7 @@ Automations route outputs based on `outputs.disposition`:
 - **Polling cursor format is sticky.** `githubPollingService.readCursor` must handle three historical shapes: bare `<iso>` (first-ever poll, legacy), single `<slug>=<iso>` (new single-repo), and multi-repo `<slug>=<iso>|<slug>=<iso>`. Don't simplify the parser without a migration path.
 - **Cron sanity-check before installing.** `cron.validate(expr)` plus the 5-field split is the safety net; otherwise `node-cron` throws.
 - **Webhook secret verification is timing-safe.** Don't refactor `safeCompareSignature` into a plain string compare.
-- **Relay polling must respect the access token ref.** `automations.githubRelay.accessToken` is an env ref; resolve via `automationSecretService`, never hard-coded.
+- **Legacy relay polling must respect the access token ref.** `automations.githubRelay.accessToken` is an env ref for self-hosted/project-token relays; resolve via `automationSecretService`, never hard-coded.
 - **Confidence threshold is `0.65` baseline.** Rules that explicitly raise the threshold penalize confidence proportionally — document this in rule descriptions so operators understand scoring.
 ## Cross-links
 

@@ -118,9 +118,16 @@ struct LaneDetailScreen: View {
         return
       }
       guard detail != nil else { return }
-      let now = Date()
-      guard now.timeIntervalSince(lastLaneDetailLocalReload) >= 0.35 else { return }
-      lastLaneDetailLocalReload = now
+      let revision = laneDetailProjectionReloadKey
+      let elapsed = Date().timeIntervalSince(lastLaneDetailLocalReload)
+      if elapsed < 0.35 {
+        // Defer (don't drop) a bump that lands inside the throttle window: sleep
+        // out the remainder, then re-check. A newer bump cancels/restarts this
+        // task, so only the trailing reload proceeds.
+        try? await Task.sleep(for: .milliseconds(max(1, Int((0.35 - elapsed) * 1_000))))
+        guard !Task.isCancelled, laneDetailProjectionReloadKey == revision else { return }
+      }
+      lastLaneDetailLocalReload = Date()
       await loadDetail(refreshRemote: false)
     }
     .refreshable { await loadDetail(refreshRemote: true) }

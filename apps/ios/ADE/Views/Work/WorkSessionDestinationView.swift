@@ -85,7 +85,9 @@ func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
   return nil
 }
 
-func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steerId: String) -> Bool {
+func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steer: WorkPendingSteerModel) -> Bool {
+  let steerId = steer.id
+  let normalizedSteerText = normalizedQueuedSteerText(steer.text)
   for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
     switch envelope.event {
     case .userMessage(_, _, _, let candidate, let deliveryState, _):
@@ -97,6 +99,13 @@ func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steerId: 
     default:
       continue
     }
+  }
+  guard !normalizedSteerText.isEmpty else { return false }
+  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
+    guard case .userMessage(let text, _, _, let candidate, let deliveryState, _) = envelope.event,
+          normalizedQueuedSteerText(text) == normalizedSteerText
+    else { continue }
+    return candidate != steerId || deliveryState != "queued"
   }
   return false
 }
@@ -254,6 +263,23 @@ struct WorkLiveTranscriptCache {
   }
 }
 
+private struct WorkChatTranscriptPresentationCacheEntry {
+  var transcript: [WorkChatEnvelope]
+  var fallbackEntries: [AgentChatTranscriptEntry]
+  var olderTranscriptCursor: Int?
+  var olderChatEventHistoryCursor: Int?
+  var storedAt: Date
+
+  var hasVisibleTranscript: Bool {
+    !transcript.isEmpty || !fallbackEntries.isEmpty
+  }
+}
+
+@MainActor
+private var workChatTranscriptPresentationCacheBySession: [String: WorkChatTranscriptPresentationCacheEntry] = [:]
+
+private let workChatTranscriptPresentationCacheLimit = 8
+
 private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
   guard !raw.isEmpty else { return nil }
@@ -277,6 +303,7 @@ struct WorkSessionDestinationView: View {
   let transitionNamespace: Namespace.ID?
   let isLive: Bool
   let navigationChrome: WorkSessionNavigationChrome
+  var forceFreshTranscriptOnOpen = false
   var showsLaneActions = true
   var navigationTitleOverride: String?
   /// Lanes forwarded to the chat composer for `@`-mention autocomplete.
@@ -333,6 +360,9 @@ struct WorkSessionDestinationView: View {
   @State var laneOpenPr: PullRequestListItem?
   @State var lanePrSummary: PrSummary?
   @State var lanePrTag: LanePrTag?
+  /// Lane the last completed PR resolve ran for; lets same-lane re-resolves
+  /// keep showing the current PR instead of clearing it first.
+  @State var lastResolvedPrLaneId: String?
   @State var prCreateCapabilities: PrCreateCapabilities?
   @State var createPrPresented = false
   @State var createPrAfterDetailsDismiss = false
@@ -351,6 +381,7 @@ struct WorkSessionDestinationView: View {
   @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
   @State var lastArtifactRefreshAt = Date.distantPast
   @State var initialTranscriptTailHydrated = false
+  @State var openingLoadInFlight = false
   @State var emptyTranscriptHydrationInFlight = false
   @State var canonicalTranscriptRefreshInFlight = false
   @State var handledOpeningPromptKey: String?
@@ -363,6 +394,7 @@ struct WorkSessionDestinationView: View {
     }
     transcript = next
     transcriptRenderSignature = workChatEnvelopeListRenderSignature(next)
+    cacheCurrentTranscriptPresentationIfNeeded()
   }
 
   @MainActor
@@ -372,6 +404,7 @@ struct WorkSessionDestinationView: View {
     }
     fallbackEntries = next
     fallbackEntriesRenderSignature = workFallbackEntriesRenderSignature(next)
+    cacheCurrentTranscriptPresentationIfNeeded()
   }
 
   @MainActor
@@ -380,6 +413,47 @@ struct WorkSessionDestinationView: View {
     olderTranscriptCursor = nil
     olderChatEventHistoryCursor = nil
     initialTranscriptTailHydrated = false
+  }
+
+  @MainActor
+  func cacheCurrentTranscriptPresentationIfNeeded() {
+    guard !transcript.isEmpty || !fallbackEntries.isEmpty else { return }
+    workChatTranscriptPresentationCacheBySession[sessionId] = WorkChatTranscriptPresentationCacheEntry(
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      olderTranscriptCursor: olderTranscriptCursor,
+      olderChatEventHistoryCursor: olderChatEventHistoryCursor,
+      storedAt: Date()
+    )
+    guard workChatTranscriptPresentationCacheBySession.count > workChatTranscriptPresentationCacheLimit else { return }
+    let overflow = workChatTranscriptPresentationCacheBySession.count - workChatTranscriptPresentationCacheLimit
+    let expiredSessionIds = workChatTranscriptPresentationCacheBySession
+      .sorted { $0.value.storedAt < $1.value.storedAt }
+      .prefix(overflow)
+      .map(\.key)
+    for expiredSessionId in expiredSessionIds {
+      workChatTranscriptPresentationCacheBySession.removeValue(forKey: expiredSessionId)
+    }
+  }
+
+  @MainActor
+  func seedTranscriptFromPresentationCacheIfNeeded() {
+    guard !forceFreshTranscriptOnOpen else { return }
+    guard transcript.isEmpty,
+          fallbackEntries.isEmpty,
+          let cached = workChatTranscriptPresentationCacheBySession[sessionId],
+          cached.hasVisibleTranscript
+    else { return }
+
+    olderTranscriptCursor = cached.olderTranscriptCursor
+    olderChatEventHistoryCursor = cached.olderChatEventHistoryCursor
+    if !cached.transcript.isEmpty {
+      setTranscript(cached.transcript)
+    }
+    if !cached.fallbackEntries.isEmpty {
+      setFallbackEntries(cached.fallbackEntries)
+    }
+    initialTranscriptTailHydrated = true
   }
 
   @MainActor
@@ -529,117 +603,43 @@ struct WorkSessionDestinationView: View {
           .accessibilityLabel("Back to main chat")
         }
 
-        Menu {
-          Button {
-            Task { await prepareSubagentDrawerPresentation() }
-          } label: {
-            if subagentSnapshots.isEmpty {
-              Label("Subagents", systemImage: "person.2")
-            } else {
-              Label("Subagents (\(subagentSnapshots.count))", systemImage: "person.2")
-            }
-          }
-
-          Divider()
-
-          Button {
-            artifactDrawerPresented = true
-          } label: {
-            if artifacts.isEmpty {
-              Label("Proof", systemImage: "cube.transparent")
-            } else {
-              Label("Proof (\(artifacts.count))", systemImage: "cube.transparent")
-            }
-          }
-          .accessibilityHint("Opens the proof drawer")
-
-          if showsLaneActions {
-            Divider()
-
-            chatPullRequestMenuItems
-          }
-
-          Divider()
-
-          chatSessionDesktopMenuItems(session)
-        } label: {
-          Image(systemName: "ellipsis")
-            .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(ADEColor.textSecondary)
-            .frame(width: 34, height: 34)
-            .background(ADEColor.surfaceBackground.opacity(0.9), in: Circle())
-            .overlay(
-              Circle()
-                .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.5)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Chat actions")
+        WorkChatHeaderMenu(
+          model: headerMenuModel(session),
+          onShowSubagents: { Task { await prepareSubagentDrawerPresentation() } },
+          onShowProof: { artifactDrawerPresented = true },
+          onViewPrDetails: { presentChatPrDetails() },
+          onOpenPrsTab: { openLaneOpenPr() },
+          onOpenGitHub: { openLanePrOnGitHub() },
+          onCopyPrLink: { copyLanePrLink() },
+          onOpenPrCreation: { openPrCreationInPrsTab() },
+          onOpenLane: { openSessionLane() },
+          onRename: { presentSessionRename() },
+          onDelete: { Task { await deleteCurrentChatSession() } },
+          onCopySessionId: { copyCurrentSessionId() },
+          onCopySessionDeepLink: { copyCurrentSessionDeepLink() },
+          onTogglePinned: { Task { await toggleCurrentSessionPinned() } }
+        )
+        .equatable()
       }
     } else {
       EmptyView()
     }
   }
 
-  @ViewBuilder
-  private var chatPullRequestMenuItems: some View {
-    Menu {
-      Button {
-        presentChatPrDetails()
-      } label: {
-        Label("View PR details", systemImage: "sidebar.trailing")
-      }
-
-      if let tag = lanePrTag {
-        Button {
-          openLaneOpenPr()
-        } label: {
-          Label("PRs tab", systemImage: "rectangle.grid.1x2")
-        }
-        .accessibilityHint("Opens \(formatLanePrBadgeLabel(tag)) in the PRs tab")
-
-        Button {
-          openLanePrOnGitHub()
-        } label: {
-          Label("Open on GitHub", systemImage: "link")
-        }
-        .disabled(lanePrGitHubUrlString.isEmpty)
-
-        Button {
-          copyLanePrLink()
-        } label: {
-          if prLinkCopied {
-            Label("Copied link", systemImage: "checkmark")
-          } else {
-            Label("Copy link", systemImage: "doc.on.doc")
-          }
-        }
-        .disabled(lanePrGitHubUrlString.isEmpty)
-      } else {
-        Button {
-          openPrCreationInPrsTab()
-        } label: {
-          Label("Open PR in PRs tab", systemImage: "rectangle.grid.1x2")
-        }
-        .disabled(headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-        if let blockedReason = createPullRequestBlockedReason {
-          Button {} label: {
-            Label(blockedReason, systemImage: "info.circle")
-          }
-          .disabled(true)
-        }
-      }
-    } label: {
-      Label("Pull request", systemImage: "arrow.triangle.pull")
-    }
-
-    Button {
-      openSessionLane()
-    } label: {
-      Label("Open lane", systemImage: "arrow.triangle.branch")
-    }
+  private func headerMenuModel(_ session: TerminalSessionSummary) -> WorkChatHeaderMenuModel {
+    WorkChatHeaderMenuModel(
+      subagentCount: subagentSnapshots.count,
+      artifactCount: artifacts.count,
+      showsLaneActions: showsLaneActions,
+      prTag: lanePrTag,
+      prGitHubUrlAvailable: !lanePrGitHubUrlString.isEmpty,
+      prLinkCopied: prLinkCopied,
+      laneAvailable: !headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      createPrBlockedReason: createPullRequestBlockedReason,
+      sessionPinned: session.pinned,
+      sessionIdCopied: sessionIdCopied,
+      sessionDeepLinkCopied: sessionDeepLinkCopied
+    )
   }
 
   var lanePrGitHubUrlString: String {
@@ -647,47 +647,12 @@ struct WorkSessionDestinationView: View {
       .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  @ViewBuilder
-  private func chatSessionDesktopMenuItems(_ session: TerminalSessionSummary) -> some View {
-    Button {
-      presentSessionRename()
-    } label: {
-      Label("Rename", systemImage: "pencil")
-    }
-
-    Button(role: .destructive) {
-      Task { await deleteCurrentChatSession() }
-    } label: {
-      Label("Delete chat", systemImage: "trash")
-    }
-
-    Button {
-      openSessionLane()
-    } label: {
-      Label("Go to lane", systemImage: "arrow.triangle.branch")
-    }
-    .disabled(headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-    Button {
-      copyCurrentSessionId()
-    } label: {
-      Label(sessionIdCopied ? "Copied session ID" : "Copy session ID",
-            systemImage: sessionIdCopied ? "checkmark" : "doc.on.doc")
-    }
-
-    Button {
-      copyCurrentSessionDeepLink()
-    } label: {
-      Label(sessionDeepLinkCopied ? "Copied session deep link" : "Copy session deep link",
-            systemImage: sessionDeepLinkCopied ? "checkmark" : "link")
-    }
-
-    Button {
-      Task { await toggleCurrentSessionPinned() }
-    } label: {
-      Label(session.pinned ? "Unpin from front" : "Pin to front",
-            systemImage: session.pinned ? "pin.slash" : "pin")
-    }
+  private var headerMenuLaneColor: Color? {
+    let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !laneId.isEmpty,
+          let lane = lanes.first(where: { $0.id == laneId })
+    else { return nil }
+    return LaneColorPalette.color(forHex: lane.color)
   }
 
   private var canCreatePullRequestForHeaderLane: Bool {
@@ -785,11 +750,11 @@ struct WorkSessionDestinationView: View {
           pr: laneOpenPr,
           summary: lanePrSummary,
           snapshot: prDetailsSnapshot,
+          laneColor: headerMenuLaneColor,
           canCreate: canCreatePullRequestForHeaderLane,
           createBlockedReason: createPullRequestBlockedReason,
           isRefreshing: prDetailsRefreshing,
           errorMessage: prDetailsError,
-          copiedLink: prLinkCopied,
           onRefresh: {
             Task { await refreshChatPrDetails(force: true) }
           },
@@ -803,10 +768,9 @@ struct WorkSessionDestinationView: View {
               openLaneOpenPr()
             }
           },
-          onOpenGitHub: openLanePrOnGitHub,
-          onCopyLink: copyLanePrLink
+          onOpenGitHub: openLanePrOnGitHub
         )
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.height(500), .large])
         .presentationDragIndicator(.visible)
         .presentationContentInteraction(.scrolls)
       }
@@ -829,6 +793,7 @@ struct WorkSessionDestinationView: View {
         session = initialSession
         chatSummary = initialChatSummary
         setTranscript(initialTranscript ?? [])
+        seedTranscriptFromPresentationCacheIfNeeded()
         stageInitialOpeningPromptEchoIfNeeded()
         await load()
         await sendInitialOpeningPromptIfNeeded()
@@ -1092,6 +1057,10 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func load() async {
+    guard !openingLoadInFlight else { return }
+    openingLoadInFlight = true
+    defer { openingLoadInFlight = false }
+
     do {
       if let fetchedSession = try await syncService.fetchSession(id: sessionId) {
         session = fetchedSession
@@ -1102,7 +1071,7 @@ struct WorkSessionDestinationView: View {
         await refreshArtifacts(force: true)
       }
       await loadTranscript(forceRemote: shouldHydrateTranscriptFromHost, preferLightweight: syncService.prefersReducedSyncLoad)
-      await hydrateEmptyTranscriptFromHostIfNeeded(force: true)
+      await hydrateEmptyTranscriptFromHostIfNeeded()
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription
@@ -1150,7 +1119,8 @@ struct WorkSessionDestinationView: View {
     guard transcript.isEmpty,
           fallbackEntries.isEmpty,
           shouldHydrateTranscriptFromHost,
-          !emptyTranscriptHydrationInFlight
+          !emptyTranscriptHydrationInFlight,
+          force || !openingLoadInFlight
     else { return }
 
     let now = Date()
@@ -1166,6 +1136,9 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func loadTranscript(forceRemote: Bool, preferLightweight: Bool = false) async {
+    seedTranscriptFromPresentationCacheIfNeeded()
+    let forceOpeningTranscriptRefresh = forceFreshTranscriptOnOpen && !initialTranscriptTailHydrated
+
     let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
     let transcriptStatus = workChatTranscriptPreferenceStatus(
       sessionStatus: status,
@@ -1174,7 +1147,10 @@ struct WorkSessionDestinationView: View {
 
     if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       let alreadySubscribed = syncService.subscribedChatSessionIds.contains(sessionId)
-      let needsOpeningSnapshot = transcript.isEmpty && fallbackEntries.isEmpty
+      let hasReusablePresentation = workChatTranscriptPresentationCacheBySession[sessionId]?.hasVisibleTranscript == true
+      let hasCachedEventHistory = !syncService.chatEventHistory(sessionId: sessionId).isEmpty
+      let needsOpeningSnapshot = forceOpeningTranscriptRefresh
+        || (transcript.isEmpty && fallbackEntries.isEmpty && !hasReusablePresentation && !hasCachedEventHistory)
       if status == "active" {
         // First visit subscribes (the host answers with a snapshot or a
         // sinceSeq replay). Once subscribed, live chat_event push plus the
@@ -1185,7 +1161,7 @@ struct WorkSessionDestinationView: View {
           sessionId: sessionId,
           requestSnapshot: !alreadySubscribed || needsOpeningSnapshot
         )
-      } else if !alreadySubscribed || needsOpeningSnapshot {
+      } else if needsOpeningSnapshot {
         // Active streaming stays on reduced snapshots for performance, but an
         // idle detail view must reconcile against a full event snapshot. A
         // reduced JSONL tail can start mid-message and render as a broken
@@ -1197,6 +1173,7 @@ struct WorkSessionDestinationView: View {
         || transcript.isEmpty
         || transcriptStatus != "active"
         || !initialTranscriptTailHydrated
+        || forceOpeningTranscriptRefresh
       if shouldHydrateCanonicalEventTail {
         do {
           if syncService.supportsRemoteAction("chat.getChatEventHistory") {
@@ -1244,7 +1221,8 @@ struct WorkSessionDestinationView: View {
     // answer, which are useful while streaming but not enough for final copy
     // or history.
     let needsInitialTailHydration = forceRemote && !initialTranscriptTailHydrated
-    let shouldFetchFallback = needsInitialTailHydration
+    let shouldFetchFallback = forceOpeningTranscriptRefresh
+      || needsInitialTailHydration
       || !preferLightweight
       || (liveTranscript.isEmpty && transcript.isEmpty)
       || (!liveTranscript.isEmpty && transcriptStatus != "active")
@@ -1735,7 +1713,7 @@ struct WorkSessionDestinationView: View {
     guard !optimisticPendingSteers.isEmpty else { return }
     let pendingIds = Set(derivePendingWorkSteers(from: transcript).map(\.id))
     optimisticPendingSteers.removeAll { steer in
-      transcriptContainsResolvedSteer(transcript, steerId: steer.id) || pendingIds.contains(steer.id)
+      transcriptContainsResolvedSteer(transcript, steer: steer) || pendingIds.contains(steer.id)
     }
   }
 

@@ -152,6 +152,7 @@ struct FilesProofArtifactRow: View {
 }
 
 struct FilesTreeNodeRow: View {
+  let workspaceId: String
   let node: FileTreeNode
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
@@ -166,13 +167,13 @@ struct FilesTreeNodeRow: View {
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(node.type == "directory" ? ADEColor.accent : fileTint(for: node.name))
           .frame(width: 18)
-          .adeMatchedGeometry(id: canTransition ? "files-icon-\(node.path)" : nil, in: transitionNamespace)
+          .adeMatchedGeometry(id: canTransition ? filesTransitionId(kind: "icon", workspaceId: workspaceId, path: node.path) : nil, in: transitionNamespace)
 
         Text(node.name)
           .font(.subheadline.weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-          .adeMatchedGeometry(id: canTransition ? "files-title-\(node.path)" : nil, in: transitionNamespace)
+          .adeMatchedGeometry(id: canTransition ? filesTransitionId(kind: "title", workspaceId: workspaceId, path: node.path) : nil, in: transitionNamespace)
 
         if let changeStatus = node.changeStatus {
           ADEStatusPill(text: changeStatus.uppercased(), tint: changeStatusTint(changeStatus))
@@ -216,7 +217,7 @@ struct FilesTreeNodeRow: View {
         "role": "row"
       ]
     )
-    .adeMatchedTransitionSource(id: canTransition ? "files-container-\(node.path)" : nil, in: transitionNamespace)
+    .adeMatchedTransitionSource(id: canTransition ? filesTransitionId(kind: "container", workspaceId: workspaceId, path: node.path) : nil, in: transitionNamespace)
   }
 
   private var canTransition: Bool {
@@ -232,6 +233,7 @@ struct FilesTreeNodeRow: View {
 }
 
 struct FilesResultRow: View {
+  let workspaceId: String
   let path: String
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
@@ -240,14 +242,14 @@ struct FilesResultRow: View {
     HStack(spacing: 10) {
       Image(systemName: fileIcon(for: path))
         .foregroundStyle(fileTint(for: path))
-        .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-icon-\(path)" : nil, in: transitionNamespace)
+        .adeMatchedGeometry(id: isSelectedTransitionSource ? filesTransitionId(kind: "icon", workspaceId: workspaceId, path: path) : nil, in: transitionNamespace)
       VStack(alignment: .leading, spacing: 3) {
         Text(lastPathComponent(path))
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.tail)
-          .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-title-\(path)" : nil, in: transitionNamespace)
+          .adeMatchedGeometry(id: isSelectedTransitionSource ? filesTransitionId(kind: "title", workspaceId: workspaceId, path: path) : nil, in: transitionNamespace)
         Text(path)
           .font(.caption.monospaced())
           .foregroundStyle(ADEColor.textSecondary)
@@ -260,7 +262,7 @@ struct FilesResultRow: View {
         .foregroundStyle(ADEColor.textMuted)
     }
     .adeListCard(cornerRadius: 16)
-    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(path)" : nil, in: transitionNamespace)
+    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? filesTransitionId(kind: "container", workspaceId: workspaceId, path: path) : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(lastPathComponent(path)), file")
     .adeInspectable(

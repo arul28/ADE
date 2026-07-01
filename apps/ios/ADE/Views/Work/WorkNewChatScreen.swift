@@ -84,24 +84,6 @@ struct WorkSessionTypeSwitcher: View {
   }
 }
 
-/// Serializes the single allowed resume of the auto-create lane-naming race so
-/// the naming call and the 10s timeout can both attempt to finish it: the first
-/// to arrive resumes the continuation, and any later arrival is a no-op. This
-/// lets the timeout proceed without waiting on a stuck host naming command.
-private actor AutoLaneNameResolver {
-  private var continuation: CheckedContinuation<String, Never>?
-
-  init(_ continuation: CheckedContinuation<String, Never>) {
-    self.continuation = continuation
-  }
-
-  func resume(with value: String) {
-    guard let continuation else { return }
-    self.continuation = nil
-    continuation.resume(returning: value)
-  }
-}
-
 /// `yyyyMMdd-HHmmss` stamp for generic auto-created lane fallback names.
 private let workAutoLaneNameFormatter: DateFormatter = {
   let formatter = DateFormatter()
@@ -326,8 +308,8 @@ struct WorkNewChatScreen: View {
   /// advertised fast model and wrongly hide the toggle.
   @State private var selectedModelOption: WorkModelOption?
   @State private var sessionMode: WorkNewSessionMode = .chat
-  /// Status banner shown above the composer during auto-create lane naming,
-  /// mirroring desktop's "Naming lane with <model>… → Creating lane…" flow.
+  /// Status banner shown above the composer while an auto-created lane is being
+  /// minted before the chat/CLI session starts.
   @State private var autoCreateStatus: String?
 
   init(
@@ -630,49 +612,12 @@ struct WorkNewChatScreen: View {
     let targetLaneId: String
     var createdLaneId: String?
     if isAutoCreateLane {
-      // Resolve the lane name first (desktop parity): try the host's small
-      // naming model, but never let naming block or fail lane creation. Any
-      // error / timeout / offline / host-disabled falls back to the same
-      // deterministic name mobile already used.
-      let deterministicName = autoCreatedLaneName(opener: opener)
-      var resolvedName = deterministicName
-      if let contextLaneId = defaultNewSessionLane?.id, !contextLaneId.isEmpty {
-        withAnimation(.snappy(duration: 0.16)) {
-          autoCreateStatus = "Naming lane with \(prettyNewChatModelName(modelId))…"
-        }
-        // Race the naming call against a 10s deadline (mirrors desktop's
-        // Promise.race([suggestLaneName, timeout])). A Swift task group would
-        // await BOTH children on scope exit, and the sync request continuation
-        // is not cancellation-aware, so a slow/stuck host naming command could
-        // keep the banner and lane creation blocked well past 10s. Using a
-        // continuation lets us proceed the instant the timeout wins; the losing
-        // task keeps running detached and its result is harmlessly discarded.
-        // The naming task swallows its own errors into the deterministic
-        // fallback so a host/offline failure never throws here.
-        resolvedName = await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
-          let resolver = AutoLaneNameResolver(continuation)
-          Task {
-            let name = (try? await syncService.suggestLaneName(
-              laneId: contextLaneId,
-              prompt: opener,
-              modelId: modelId,
-              fallbackName: deterministicName
-            )) ?? deterministicName
-            await resolver.resume(with: name)
-          }
-          Task {
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            await resolver.resume(with: deterministicName)
-          }
-        }
-      }
-
       withAnimation(.snappy(duration: 0.16)) {
         autoCreateStatus = "Creating lane…"
       }
       do {
         let lane = try await syncService.createLane(
-          name: resolvedName,
+          name: autoCreatedLaneName(opener: opener),
           description: opener.isEmpty ? "" : String(opener.prefix(280))
         )
         targetLaneId = lane.id

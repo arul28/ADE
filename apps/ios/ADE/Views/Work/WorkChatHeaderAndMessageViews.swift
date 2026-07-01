@@ -79,6 +79,176 @@ struct WorkSessionHeader: View {
   }
 }
 
+/// Menu-relevant values for the chat header overflow menu, split out so the
+/// menu view can be `Equatable`-gated on exactly this data.
+struct WorkChatHeaderMenuModel: Equatable {
+  var subagentCount: Int
+  var artifactCount: Int
+  var showsLaneActions: Bool
+  var prTag: LanePrTag?
+  var prGitHubUrlAvailable: Bool
+  var prLinkCopied: Bool
+  var laneAvailable: Bool
+  var createPrBlockedReason: String?
+  var sessionPinned: Bool
+  var sessionIdCopied: Bool
+  var sessionDeepLinkCopied: Bool
+}
+
+/// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
+/// compared via `.equatable()` on `model` only.
+///
+/// The destination view re-renders continuously while a chat streams
+/// (transcript signatures, artifact/subagent refreshes, PR lookup keys). Every
+/// re-evaluation of an open `Menu` rebuilds the presented UIMenu, which makes
+/// the liquid-glass menu flicker and instantly dismisses any open nested
+/// submenu. Gating on `model` means the presented menu is only rebuilt when
+/// something the menu actually displays has changed.
+struct WorkChatHeaderMenu: View, Equatable {
+  var model: WorkChatHeaderMenuModel
+  var onShowSubagents: () -> Void
+  var onShowProof: () -> Void
+  var onViewPrDetails: () -> Void
+  var onOpenPrsTab: () -> Void
+  var onOpenGitHub: () -> Void
+  var onCopyPrLink: () -> Void
+  var onOpenPrCreation: () -> Void
+  var onOpenLane: () -> Void
+  var onRename: () -> Void
+  var onDelete: () -> Void
+  var onCopySessionId: () -> Void
+  var onCopySessionDeepLink: () -> Void
+  var onTogglePinned: () -> Void
+
+  static func == (lhs: WorkChatHeaderMenu, rhs: WorkChatHeaderMenu) -> Bool {
+    lhs.model == rhs.model
+  }
+
+  var body: some View {
+    Menu {
+      Button(action: onShowSubagents) {
+        if model.subagentCount == 0 {
+          Label("Subagents", systemImage: "person.2")
+        } else {
+          Label("Subagents (\(model.subagentCount))", systemImage: "person.2")
+        }
+      }
+
+      Divider()
+
+      Button(action: onShowProof) {
+        if model.artifactCount == 0 {
+          Label("Proof", systemImage: "cube.transparent")
+        } else {
+          Label("Proof (\(model.artifactCount))", systemImage: "cube.transparent")
+        }
+      }
+      .accessibilityHint("Opens the proof drawer")
+
+      if model.showsLaneActions {
+        Divider()
+
+        pullRequestItems
+      }
+
+      Divider()
+
+      sessionItems
+    } label: {
+      Image(systemName: "ellipsis")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(width: 34, height: 34)
+        .background(ADEColor.surfaceBackground.opacity(0.9), in: Circle())
+        .overlay(
+          Circle()
+            .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.5)
+        )
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Chat actions")
+  }
+
+  @ViewBuilder
+  private var pullRequestItems: some View {
+    if let tag = model.prTag {
+      Menu {
+        Button(action: onViewPrDetails) {
+          Label("View PR details", systemImage: "sidebar.trailing")
+        }
+
+        Button(action: onOpenPrsTab) {
+          Label("PRs tab", systemImage: "rectangle.grid.1x2")
+        }
+        .accessibilityHint("Opens \(formatLanePrBadgeLabel(tag)) in the PRs tab")
+
+        Button(action: onOpenGitHub) {
+          Label("Open on GitHub", systemImage: "link")
+        }
+        .disabled(!model.prGitHubUrlAvailable)
+      } label: {
+        Label(formatLanePrBadgeLabel(tag), systemImage: "arrow.triangle.pull")
+      }
+
+      Button(action: onCopyPrLink) {
+        if model.prLinkCopied {
+          Label("Copied link", systemImage: "checkmark")
+        } else {
+          Label("Copy link", systemImage: "doc.on.doc")
+        }
+      }
+      .disabled(!model.prGitHubUrlAvailable)
+    } else {
+      Button(action: onViewPrDetails) {
+        Label("View PR details", systemImage: "sidebar.trailing")
+      }
+
+      Button(action: onOpenPrCreation) {
+        Label("Open PR in PRs tab", systemImage: "rectangle.grid.1x2")
+      }
+      .disabled(!model.laneAvailable)
+
+      if let blockedReason = model.createPrBlockedReason {
+        Button {} label: {
+          Label(blockedReason, systemImage: "info.circle")
+        }
+        .disabled(true)
+      }
+    }
+
+    Button(action: onOpenLane) {
+      Label("Open lane", systemImage: "arrow.triangle.branch")
+    }
+  }
+
+  @ViewBuilder
+  private var sessionItems: some View {
+    Button(action: onRename) {
+      Label("Rename", systemImage: "pencil")
+    }
+
+    Button(role: .destructive, action: onDelete) {
+      Label("Delete chat", systemImage: "trash")
+    }
+
+    Button(action: onCopySessionId) {
+      Label(model.sessionIdCopied ? "Copied session ID" : "Copy session ID",
+            systemImage: model.sessionIdCopied ? "checkmark" : "doc.on.doc")
+    }
+
+    Button(action: onCopySessionDeepLink) {
+      Label(model.sessionDeepLinkCopied ? "Copied session deep link" : "Copy session deep link",
+            systemImage: model.sessionDeepLinkCopied ? "checkmark" : "link")
+    }
+
+    Button(action: onTogglePinned) {
+      Label(model.sessionPinned ? "Unpin from front" : "Pin to front",
+            systemImage: model.sessionPinned ? "pin.slash" : "pin")
+    }
+  }
+}
+
 /// Desktop-shaped message row.
 ///
 /// Assistant messages live inside a dark rounded card with only a small
@@ -522,7 +692,7 @@ func workAssistantMessagePreview(
   )
   let clampedCharacterBudget = max(
     usesMonospacedPreview
-      ? min(characterBudget, workAssistantMessageWideCharacterBudget(forLineBudget: clampedLineBudget))
+      ? max(characterBudget, workAssistantMessageWideCharacterBudget(forLineBudget: clampedLineBudget))
       : characterBudget,
     256
   )
@@ -672,7 +842,8 @@ private func workAssistantMessageEffectiveLineBudget(
 
 private func workAssistantMessageWideCharacterBudget(forLineBudget lineBudget: Int) -> Int {
   let extraSteps = max((lineBudget - workAssistantMessageWideInitialLineBudget) / workAssistantMessageLineBudgetStep, 0)
-  return workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+  let steppedBudget = workAssistantMessageInitialCharacterBudget + (extraSteps * workAssistantMessageCharacterBudgetStep)
+  return max(steppedBudget, lineBudget * 96)
 }
 
 func workAssistantMessageLineCount(_ text: String) -> Int {

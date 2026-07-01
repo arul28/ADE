@@ -88,20 +88,19 @@ struct WorkChatPrDetailsSheet: View {
   let pr: PullRequestListItem?
   let summary: PrSummary?
   let snapshot: PullRequestSnapshot?
+  let laneColor: Color?
   let canCreate: Bool
   let createBlockedReason: String?
   let isRefreshing: Bool
   let errorMessage: String?
-  let copiedLink: Bool
   let onRefresh: () -> Void
   let onCreate: () -> Void
   let onOpenPrsTab: () -> Void
   let onOpenGitHub: () -> Void
-  let onCopyLink: () -> Void
 
-  private var prNumberLabel: String {
+  private var sheetTitle: String {
     guard let tag else { return "Pull request" }
-    return formatLanePrBadgeLabel(tag)
+    return "PR #\(tag.githubPrNumber) \(lanePrStateLabel(tag.state))"
   }
 
   private var githubUrl: String {
@@ -110,10 +109,6 @@ struct WorkChatPrDetailsSheet: View {
 
   private var checksStatus: String? {
     snapshot?.status?.checksStatus ?? pr?.checksStatus ?? summary?.checksStatus
-  }
-
-  private var reviewStatus: String? {
-    snapshot?.status?.reviewStatus ?? pr?.reviewStatus ?? summary?.reviewStatus
   }
 
   private var additions: Int {
@@ -125,87 +120,75 @@ struct WorkChatPrDetailsSheet: View {
   }
 
   var body: some View {
-    NavigationStack {
+    VStack(spacing: 0) {
+      topBar
+
       ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          if let tag {
-            existingPrContent(tag)
-          } else {
-            emptyPrContent
-          }
+        if let tag {
+          existingPrContent(tag)
+        } else {
+          emptyPrContent
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 22)
       }
-      .background(ADEColor.pageBackground.ignoresSafeArea())
-      .navigationTitle(prNumberLabel)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button(action: onRefresh) {
-            if isRefreshing {
-              ProgressView()
-                .controlSize(.small)
-            } else {
-              Image(systemName: "arrow.clockwise")
-            }
+      .scrollIndicators(.hidden)
+    }
+    .background(ADEColor.pageBackground.ignoresSafeArea())
+  }
+
+  private var topBar: some View {
+    ZStack {
+      Text(sheetTitle)
+        .font(.headline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .padding(.horizontal, 58)
+
+      HStack {
+        Spacer()
+        Button(action: onRefresh) {
+          if isRefreshing {
+            ProgressView()
+              .controlSize(.small)
+          } else {
+            Image(systemName: "arrow.clockwise")
+              .font(.system(size: 16, weight: .bold))
           }
-          .disabled(isRefreshing)
-          .accessibilityLabel("Refresh pull request details")
         }
+        .foregroundStyle(ADEColor.accent)
+        .frame(width: 36, height: 36)
+        .background(ADEColor.surfaceBackground.opacity(0.86), in: Circle())
+        .overlay(Circle().stroke(ADEColor.glassBorder.opacity(0.8), lineWidth: 0.7))
+        .disabled(isRefreshing)
+        .accessibilityLabel("Refresh pull request details")
       }
     }
+    .padding(.horizontal, 18)
+    .padding(.top, 18)
+    .padding(.bottom, 8)
   }
 
   private func existingPrContent(_ tag: LanePrTag) -> some View {
-    VStack(alignment: .leading, spacing: 18) {
-      VStack(alignment: .leading, spacing: 10) {
-        HStack(spacing: 10) {
-          Image(systemName: "arrow.triangle.pull")
-            .font(.system(size: 16, weight: .bold))
-            .foregroundStyle(lanePullRequestTint(tag.state))
-            .frame(width: 34, height: 34)
-            .background(lanePullRequestTint(tag.state).opacity(0.12), in: Circle())
+    let branches = workChatPrBranches(pr: pr, summary: summary, tag: tag)
+    let stateTint = workChatPrStateTint(tag.state)
+    let branchTint = laneColor ?? stateTint
 
-          VStack(alignment: .leading, spacing: 3) {
-            Text(formatLanePrBadgeLabel(tag))
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(lanePullRequestTint(tag.state))
-            Text(lanePrStateLabel(tag.state))
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          Spacer(minLength: 0)
-        }
+    return VStack(alignment: .leading, spacing: 12) {
+      WorkChatPrSummaryHeader(
+        title: tag.title,
+        updatedText: "Updated \(prRelativeTime(tag.updatedAt))",
+        symbol: workChatPrStateSymbol(tag.state),
+        tint: stateTint
+      )
 
-        Text(tag.title)
-          .font(.headline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .fixedSize(horizontal: false, vertical: true)
+      WorkChatPrBranchFlowCard(
+        headBranch: branches.head,
+        baseBranch: branches.base,
+        tint: branchTint
+      )
 
-        Text("Updated \(prRelativeTime(tag.updatedAt))")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-
-      VStack(alignment: .leading, spacing: 10) {
-        if let branchLine = workChatPrBranchLine(pr: pr, summary: summary, tag: tag) {
-          WorkChatPrDetailRow(label: "Branch", value: branchLine, symbol: "arrow.triangle.branch")
-          if pr != nil || summary != nil {
-            WorkChatPrDetailRow(label: "Changes", value: "+\(additions) / -\(deletions)", symbol: "plus.forwardslash.minus")
-          }
-        } else if !tag.headBranch.isEmpty {
-          WorkChatPrDetailRow(label: "Branch", value: tag.headBranch, symbol: "arrow.triangle.branch")
-        }
-        if let checksStatus, !checksStatus.isEmpty {
-          WorkChatPrDetailRow(label: "Checks", value: workChatPrStatusLabel(checksStatus), symbol: workChatPrChecksSymbol(checksStatus))
-        }
-        if let reviewStatus, !reviewStatus.isEmpty, reviewStatus != "none" {
-          WorkChatPrDetailRow(label: "Review", value: workChatPrStatusLabel(reviewStatus), symbol: "person.crop.circle.badge.checkmark")
-        }
-        if let mergeLine = workChatPrMergeLine(snapshot?.status) {
-          WorkChatPrDetailRow(label: "Merge", value: mergeLine, symbol: "arrow.merge")
-        }
+      HStack(spacing: 10) {
+        WorkChatPrChangesMetricCard(additions: additions, deletions: deletions)
+        WorkChatPrChecksMetricCard(status: checksStatus)
       }
 
       if let errorMessage, !errorMessage.isEmpty {
@@ -214,50 +197,37 @@ struct WorkChatPrDetailsSheet: View {
           .foregroundStyle(ADEColor.danger)
       }
 
-      VStack(spacing: 10) {
-        Button(action: onOpenPrsTab) {
-          Label("PRs tab", systemImage: "rectangle.grid.1x2")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
+      HStack(spacing: 10) {
+        WorkChatPrActionButton(
+          title: "Open in ADE",
+          symbol: "rectangle.grid.1x2",
+          tint: ADEColor.accent,
+          prominent: true,
+          action: onOpenPrsTab
+        )
 
-        HStack(spacing: 10) {
-          Button(action: onOpenGitHub) {
-            Label("GitHub", systemImage: "link")
-              .frame(maxWidth: .infinity)
-          }
-          .buttonStyle(.bordered)
-          .disabled(githubUrl.isEmpty)
-
-          Button(action: onCopyLink) {
-            Label(copiedLink ? "Copied" : "Copy", systemImage: copiedLink ? "checkmark" : "doc.on.doc")
-              .frame(maxWidth: .infinity)
-          }
-          .buttonStyle(.bordered)
-          .disabled(githubUrl.isEmpty)
-        }
+        WorkChatPrActionButton(
+          title: "Open in GitHub",
+          symbol: "link",
+          tint: ADEColor.accent,
+          disabled: githubUrl.isEmpty,
+          action: onOpenGitHub
+        )
       }
     }
+    .padding(.horizontal, 18)
+    .padding(.top, 6)
+    .padding(.bottom, 18)
   }
 
   private var emptyPrContent: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      VStack(alignment: .leading, spacing: 10) {
-        Image(systemName: "arrow.triangle.pull")
-          .font(.system(size: 20, weight: .bold))
-          .foregroundStyle(ADEColor.accent)
-          .frame(width: 42, height: 42)
-          .background(ADEColor.accent.opacity(0.12), in: Circle())
-
-        Text("No pull request yet")
-          .font(.headline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-
-        Text("Create one from this lane or open the PRs tab with the lane preselected.")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
+    VStack(alignment: .leading, spacing: 12) {
+      WorkChatPrSummaryHeader(
+        title: "No pull request yet",
+        updatedText: "Create one from this lane or open PRs with the lane preselected.",
+        symbol: "arrow.triangle.pull",
+        tint: ADEColor.accent
+      )
 
       if let createBlockedReason, !createBlockedReason.isEmpty {
         Text(createBlockedReason)
@@ -265,19 +235,22 @@ struct WorkChatPrDetailsSheet: View {
           .foregroundStyle(ADEColor.warning)
       }
 
-      VStack(spacing: 10) {
-        Button(action: onCreate) {
-          Label("Create pull request", systemImage: "plus")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.borderedProminent)
-        .disabled(!canCreate)
+      HStack(spacing: 10) {
+        WorkChatPrActionButton(
+          title: "Create PR",
+          symbol: "plus",
+          tint: ADEColor.accent,
+          prominent: true,
+          disabled: !canCreate,
+          action: onCreate
+        )
 
-        Button(action: onOpenPrsTab) {
-          Label("Open PR in PRs tab", systemImage: "rectangle.grid.1x2")
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
+        WorkChatPrActionButton(
+          title: "Open in ADE",
+          symbol: "rectangle.grid.1x2",
+          tint: ADEColor.accent,
+          action: onOpenPrsTab
+        )
       }
 
       if let errorMessage, !errorMessage.isEmpty {
@@ -286,86 +259,269 @@ struct WorkChatPrDetailsSheet: View {
           .foregroundStyle(ADEColor.danger)
       }
     }
+    .padding(.horizontal, 18)
+    .padding(.top, 6)
+    .padding(.bottom, 18)
   }
 }
 
-private struct WorkChatPrDetailRow: View {
-  let label: String
-  let value: String
+private struct WorkChatPrSummaryHeader: View {
+  let title: String
+  let updatedText: String
   let symbol: String
+  let tint: Color
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
+    HStack(alignment: .top, spacing: 12) {
       Image(systemName: symbol)
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 18, height: 18)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(label)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Text(value)
-          .font(.subheadline)
+        .font(.system(size: 18, weight: .bold))
+        .foregroundStyle(tint)
+        .frame(width: 38, height: 38)
+        .background(tint.opacity(0.14), in: Circle())
+
+      VStack(alignment: .leading, spacing: 4) {
+        Text(title)
+          .font(.headline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
           .fixedSize(horizontal: false, vertical: true)
+        Text(updatedText)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
       }
+
       Spacer(minLength: 0)
     }
+  }
+}
+
+private struct WorkChatPrBranchFlowCard: View {
+  let headBranch: String
+  let baseBranch: String?
+  let tint: Color
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Label("Branch", systemImage: "arrow.triangle.branch")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+
+      HStack(spacing: 8) {
+        branchPill(headBranch, tint: tint, emphasized: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        if let baseBranch, !baseBranch.isEmpty {
+          Image(systemName: "arrow.right")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(tint)
+          branchPill(baseBranch, tint: ADEColor.textSecondary, emphasized: false)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+    .padding(12)
+    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(tint.opacity(0.2), lineWidth: 0.8)
+    )
+  }
+
+  private func branchPill(_ branch: String, tint: Color, emphasized: Bool) -> some View {
+    Text(branch)
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(emphasized ? tint : ADEColor.textPrimary)
+      .lineLimit(1)
+      .truncationMode(.middle)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background(tint.opacity(emphasized ? 0.16 : 0.08), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(tint.opacity(emphasized ? 0.34 : 0.16), lineWidth: 0.7)
+      )
+  }
+}
+
+private struct WorkChatPrChangesMetricCard: View {
+  let additions: Int
+  let deletions: Int
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Label("Changes", systemImage: "plus.forwardslash.minus")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+
+      HStack(spacing: 8) {
+        Text("+\(additions)")
+          .foregroundStyle(ADEColor.success)
+        Text("/").foregroundStyle(ADEColor.textMuted)
+        Text("-\(deletions)")
+          .foregroundStyle(ADEColor.danger)
+      }
+      .font(.headline.weight(.semibold))
+      .lineLimit(1)
+      .minimumScaleFactor(0.78)
+    }
+    .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
     .padding(12)
     .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
   }
 }
 
-private func workChatPrStatusLabel(_ status: String) -> String {
-  status
-    .replacingOccurrences(of: "_", with: " ")
-    .split(separator: " ")
-    .map { word in
-      word.prefix(1).uppercased() + String(word.dropFirst())
+private struct WorkChatPrChecksMetricCard: View {
+  let status: String?
+
+  private var normalized: String {
+    status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  }
+
+  private var tint: Color {
+    workChatPrChecksTint(normalized)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Label("Checks", systemImage: workChatPrChecksSymbol(normalized))
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+
+      Text(workChatPrChecksLabel(normalized))
+        .font(.headline.weight(.semibold))
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .minimumScaleFactor(0.78)
     }
-    .joined(separator: " ")
+    .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
+    .padding(12)
+    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(tint.opacity(0.16), lineWidth: 0.8)
+    )
+  }
 }
 
-private func workChatPrBranchLine(pr: PullRequestListItem?, summary: PrSummary?, tag: LanePrTag) -> String? {
+private struct WorkChatPrActionButton: View {
+  let title: String
+  let symbol: String
+  let tint: Color
+  var prominent = false
+  var disabled = false
+  let action: () -> Void
+
+  var body: some View {
+    Button {
+      guard !disabled else { return }
+      action()
+    } label: {
+      Label(title, systemImage: symbol)
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(disabled ? ADEColor.textSecondary.opacity(0.45) : (prominent ? Color.white : tint))
+        .lineLimit(1)
+        .minimumScaleFactor(0.82)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 11)
+        .background(buttonBackground, in: Capsule(style: .continuous))
+        .overlay(
+          Capsule(style: .continuous)
+            .stroke(disabled ? ADEColor.glassBorder.opacity(0.55) : tint.opacity(prominent ? 0 : 0.28), lineWidth: 0.8)
+        )
+    }
+    .buttonStyle(.plain)
+    .disabled(disabled)
+  }
+
+  private var buttonBackground: Color {
+    if disabled {
+      return ADEColor.surfaceBackground.opacity(0.45)
+    }
+    return prominent ? tint : tint.opacity(0.13)
+  }
+}
+
+private func workChatPrBranches(pr: PullRequestListItem?, summary: PrSummary?, tag: LanePrTag) -> (head: String, base: String?) {
   if let pr {
-    return "\(pr.headBranch) -> \(pr.baseBranch)"
+    return (pr.headBranch, pr.baseBranch)
   }
   if let summary {
-    return "\(summary.headBranch) -> \(summary.baseBranch)"
+    return (summary.headBranch, summary.baseBranch)
   }
   let head = tag.headBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-  return head.isEmpty ? nil : head
+  return (head.isEmpty ? "Branch unavailable" : head, nil)
+}
+
+private func workChatPrStateSymbol(_ state: String) -> String {
+  switch state {
+  case "merged":
+    return "arrow.merge"
+  case "closed":
+    return "xmark.circle"
+  default:
+    return "arrow.triangle.pull"
+  }
+}
+
+private func workChatPrStateTint(_ state: String) -> Color {
+  switch state {
+  case "open":
+    return Color(red: 0x60 / 255, green: 0xA5 / 255, blue: 0xFA / 255)
+  case "merged":
+    return Color(red: 0x4A / 255, green: 0xDE / 255, blue: 0x80 / 255)
+  case "draft":
+    return ADEColor.warning
+  case "closed":
+    return Color(red: 0xA1 / 255, green: 0xA1 / 255, blue: 0xAA / 255)
+  default:
+    return ADEColor.textSecondary
+  }
 }
 
 private func workChatPrChecksSymbol(_ status: String) -> String {
   switch status {
-  case "passing":
+  case "passing", "passed", "success":
     return "checkmark.circle.fill"
-  case "failing":
+  case "failing", "failed", "failure", "error":
     return "xmark.circle.fill"
-  case "pending":
+  case "pending", "queued", "running", "in_progress":
     return "clock.fill"
   default:
     return "circle"
   }
 }
 
-private func workChatPrMergeLine(_ status: PrStatus?) -> String? {
-  guard let status else { return nil }
-  if status.mergeConflicts {
-    return "Merge conflicts"
+private func workChatPrChecksTint(_ status: String) -> Color {
+  switch status {
+  case "passing", "passed", "success":
+    return ADEColor.success
+  case "failing", "failed", "failure", "error":
+    return ADEColor.danger
+  case "pending", "queued", "running", "in_progress":
+    return ADEColor.warning
+  default:
+    return ADEColor.textSecondary
   }
-  if status.behindBaseBy > 0 {
-    return "\(status.behindBaseBy) behind base"
+}
+
+private func workChatPrChecksLabel(_ status: String) -> String {
+  switch status {
+  case "", "none", "unknown":
+    return "None"
+  case "passing", "passed", "success":
+    return "Passing"
+  case "failing", "failed", "failure", "error":
+    return "Failing"
+  case "pending", "queued", "running", "in_progress":
+    return "Pending"
+  default:
+    return status
+      .replacingOccurrences(of: "_", with: " ")
+      .split(separator: " ")
+      .map { word in
+        word.prefix(1).uppercased() + String(word.dropFirst())
+      }
+      .joined(separator: " ")
   }
-  if status.mergeStateStatus == .draft {
-    return "Draft"
-  }
-  if status.mergeabilityComputing == true {
-    return "Computing"
-  }
-  if status.isMergeable {
-    return "Mergeable"
-  }
-  return "Blocked"
 }

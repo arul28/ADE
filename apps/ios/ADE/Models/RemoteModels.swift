@@ -2665,11 +2665,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
   var branchRef: String? = nil
   var rootPath: String
   var isReadOnlyByDefault: Bool
-  var mobileReadOnly: Bool
-
-  var readOnlyOnMobile: Bool {
-    mobileReadOnly || isReadOnlyByDefault
-  }
 
   init(
     id: String,
@@ -2678,8 +2673,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     name: String,
     branchRef: String? = nil,
     rootPath: String,
-    isReadOnlyByDefault: Bool,
-    mobileReadOnly: Bool = true
+    isReadOnlyByDefault: Bool
   ) {
     self.id = id
     self.kind = kind
@@ -2688,7 +2682,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     self.branchRef = branchRef
     self.rootPath = rootPath
     self.isReadOnlyByDefault = isReadOnlyByDefault
-    self.mobileReadOnly = mobileReadOnly
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2699,7 +2692,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     case branchRef
     case rootPath
     case isReadOnlyByDefault
-    case mobileReadOnly
   }
 
   init(from decoder: Decoder) throws {
@@ -2711,7 +2703,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     branchRef = try container.decodeIfPresent(String.self, forKey: .branchRef)
     rootPath = try container.decode(String.self, forKey: .rootPath)
     isReadOnlyByDefault = try container.decode(Bool.self, forKey: .isReadOnlyByDefault)
-    mobileReadOnly = try container.decodeIfPresent(Bool.self, forKey: .mobileReadOnly) ?? true
   }
 }
 

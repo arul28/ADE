@@ -16,7 +16,7 @@ struct FilesDetailScreen: View {
   @State var mode: FilesEditorMode = .preview
   @State var markdownViewMode: FilesMarkdownViewMode = .preview
   @State var diffMode: FilesDiffMode = .unstaged
-  @State var diff: FileDiff?
+  @State var diffRenderState: FilesDiffRenderState?
   @State var diffErrorMessage: String?
   @State var historyEntries: [GitFileHistoryEntry] = []
   @State var historyErrorMessage: String?
@@ -149,7 +149,7 @@ struct FilesDetailScreen: View {
       .padding(.bottom, 6)
       .background(ADEColor.pageBackground.opacity(0.94))
     }
-    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "files-container-\(relativePath)", in: transitionNamespace)
+    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "container", workspaceId: workspace.id, path: relativePath), in: transitionNamespace)
     .sheet(isPresented: $isDetailsSheetPresented) {
       FilesDetailsSheet(
         relativePath: relativePath,
@@ -240,7 +240,7 @@ struct FilesDetailScreen: View {
         FilesContentFallback(
           symbol: binaryKind?.symbol ?? "doc.fill",
           title: binaryKind.map { "\($0.label) file" } ?? "Binary file",
-          message: "iPhone keeps this read-only. Use ADE on the machine to preview or open it with a local tool."
+          message: "iPhone cannot preview this binary inline. Use ADE on the machine to preview it or open it with a local tool."
         )
         .padding(16)
       }
@@ -297,31 +297,31 @@ struct FilesDetailScreen: View {
         onAction: { Task { await loadDiff() } }
       )
       .padding(16)
-    } else if let diff, diff.isBinary == true {
+    } else if let diffRenderState, diffRenderState.diff.isBinary == true {
       FilesContentFallback(
         symbol: "doc.badge.gearshape",
         title: "Binary diff",
         message: "The machine reported a binary diff that cannot be rendered inline."
       )
       .padding(16)
-    } else if let diff, !filesDiffHasChanges(diff) {
+    } else if let diffRenderState, !diffRenderState.hasVisibleChanges {
       FilesContentFallback(
         symbol: "checkmark.circle",
         title: "No \(diffMode.title.lowercased()) changes",
         message: "This file matches the selected \(diffMode.title.lowercased()) diff scope."
       )
       .padding(16)
-    } else if let diff, let limit = filesDiffPreviewLimit(diff: diff) {
+    } else if let diffRenderState, let limit = diffRenderState.previewLimit {
       FilesContentFallback(
         symbol: "arrow.left.arrow.right",
         title: limit.title,
         message: limit.message
       )
       .padding(16)
-    } else if let diff {
+    } else if let diffRenderState {
       FilesInlineDiffView(
-        lines: buildInlineDiffLines(original: diff.original.text, modified: diff.modified.text),
-        language: FilesLanguage.detect(languageId: diff.language, filePath: relativePath),
+        lines: diffRenderState.inlineLines,
+        language: FilesLanguage.detect(languageId: diffRenderState.diff.language, filePath: relativePath),
         layoutMode: codeLayoutMode,
         fillsContainer: true
       )

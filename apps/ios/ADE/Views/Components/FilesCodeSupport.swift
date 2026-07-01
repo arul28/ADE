@@ -330,10 +330,7 @@ enum FilesInlineDiffKind: Equatable {
 }
 
 struct FilesInlineDiffLine: Identifiable, Equatable {
-  var id: String {
-    "\(kind)-\(originalLineNumber ?? -1)-\(modifiedLineNumber ?? -1)-\(text)"
-  }
-
+  let id: String
   let kind: FilesInlineDiffKind
   let text: String
   let originalLineNumber: Int?
@@ -348,33 +345,62 @@ func buildInlineDiffLines(original: String, modified: String) -> [FilesInlineDif
     return []
   }
 
-  var lcs = Array(
-    repeating: Array(repeating: 0, count: modifiedLines.count + 1),
-    count: originalLines.count + 1
-  )
-
-  if !originalLines.isEmpty && !modifiedLines.isEmpty {
-    for originalIndex in stride(from: originalLines.count - 1, through: 0, by: -1) {
-      for modifiedIndex in stride(from: modifiedLines.count - 1, through: 0, by: -1) {
-        if originalLines[originalIndex] == modifiedLines[modifiedIndex] {
-          lcs[originalIndex][modifiedIndex] = lcs[originalIndex + 1][modifiedIndex + 1] + 1
-        } else {
-          lcs[originalIndex][modifiedIndex] = max(lcs[originalIndex + 1][modifiedIndex], lcs[originalIndex][modifiedIndex + 1])
-        }
-      }
-    }
-  }
-
+  let difference = modifiedLines.difference(from: originalLines)
+  let removedOffsets = Set(difference.compactMap { change -> Int? in
+    if case .remove(let offset, _, _) = change { return offset }
+    return nil
+  })
+  let insertedOffsets = Set(difference.compactMap { change -> Int? in
+    if case .insert(let offset, _, _) = change { return offset }
+    return nil
+  })
   var diffLines: [FilesInlineDiffLine] = []
   var originalIndex = 0
   var modifiedIndex = 0
   var originalLineNumber = 1
   var modifiedLineNumber = 1
 
-  while originalIndex < originalLines.count && modifiedIndex < modifiedLines.count {
-    if originalLines[originalIndex] == modifiedLines[modifiedIndex] {
+  func appendLine(kind: FilesInlineDiffKind, text: String, originalLineNumber: Int?, modifiedLineNumber: Int?) {
+    diffLines.append(
+      FilesInlineDiffLine(
+        id: "line-\(diffLines.count)-\(kind)-\(originalLineNumber ?? -1)-\(modifiedLineNumber ?? -1)",
+        kind: kind,
+        text: text,
+        originalLineNumber: originalLineNumber,
+        modifiedLineNumber: modifiedLineNumber
+      )
+    )
+  }
+
+  while originalIndex < originalLines.count || modifiedIndex < modifiedLines.count {
+    while originalIndex < originalLines.count && removedOffsets.contains(originalIndex) {
+      appendLine(
+        kind: .removed,
+        text: originalLines[originalIndex],
+        originalLineNumber: originalLineNumber,
+        modifiedLineNumber: nil
+      )
+      originalIndex += 1
+      originalLineNumber += 1
+    }
+
+    while modifiedIndex < modifiedLines.count && insertedOffsets.contains(modifiedIndex) {
+      appendLine(
+        kind: .added,
+        text: modifiedLines[modifiedIndex],
+        originalLineNumber: nil,
+        modifiedLineNumber: modifiedLineNumber
+      )
+      modifiedIndex += 1
+      modifiedLineNumber += 1
+    }
+
+    if originalIndex < originalLines.count,
+       modifiedIndex < modifiedLines.count,
+       originalLines[originalIndex] == modifiedLines[modifiedIndex] {
       diffLines.append(
         FilesInlineDiffLine(
+          id: "line-\(diffLines.count)-unchanged-\(originalLineNumber)-\(modifiedLineNumber)",
           kind: .unchanged,
           text: originalLines[originalIndex],
           originalLineNumber: originalLineNumber,
@@ -385,55 +411,28 @@ func buildInlineDiffLines(original: String, modified: String) -> [FilesInlineDif
       modifiedIndex += 1
       originalLineNumber += 1
       modifiedLineNumber += 1
-    } else if lcs[originalIndex + 1][modifiedIndex] >= lcs[originalIndex][modifiedIndex + 1] {
-      diffLines.append(
-        FilesInlineDiffLine(
+    } else {
+      if originalIndex < originalLines.count {
+        appendLine(
           kind: .removed,
           text: originalLines[originalIndex],
           originalLineNumber: originalLineNumber,
           modifiedLineNumber: nil
         )
-      )
-      originalIndex += 1
-      originalLineNumber += 1
-    } else {
-      diffLines.append(
-        FilesInlineDiffLine(
+        originalIndex += 1
+        originalLineNumber += 1
+      }
+      if modifiedIndex < modifiedLines.count {
+        appendLine(
           kind: .added,
           text: modifiedLines[modifiedIndex],
           originalLineNumber: nil,
           modifiedLineNumber: modifiedLineNumber
         )
-      )
-      modifiedIndex += 1
-      modifiedLineNumber += 1
+        modifiedIndex += 1
+        modifiedLineNumber += 1
+      }
     }
-  }
-
-  while originalIndex < originalLines.count {
-    diffLines.append(
-      FilesInlineDiffLine(
-        kind: .removed,
-        text: originalLines[originalIndex],
-        originalLineNumber: originalLineNumber,
-        modifiedLineNumber: nil
-      )
-    )
-    originalIndex += 1
-    originalLineNumber += 1
-  }
-
-  while modifiedIndex < modifiedLines.count {
-    diffLines.append(
-      FilesInlineDiffLine(
-        kind: .added,
-        text: modifiedLines[modifiedIndex],
-        originalLineNumber: nil,
-        modifiedLineNumber: modifiedLineNumber
-      )
-    )
-    modifiedIndex += 1
-    modifiedLineNumber += 1
   }
 
   return diffLines

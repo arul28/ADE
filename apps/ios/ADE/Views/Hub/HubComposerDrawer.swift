@@ -746,6 +746,7 @@ struct HubComposerDrawer: View {
           targetProjectRootPath: targetProjectRootPath
         )
         sessionId = summary.sessionId
+        try await syncService.sendChatMessage(sessionId: summary.sessionId, text: opener)
       }
 
       // Persist the composer + destination so the next New Chat restores both.

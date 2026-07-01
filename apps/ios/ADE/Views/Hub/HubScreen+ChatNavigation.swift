@@ -45,6 +45,7 @@ private struct HubChatCover: View {
             transitionNamespace: nil,
             isLive: true,
             navigationChrome: .pushedDetail,
+            forceFreshTranscriptOnOpen: true,
             lanes: target.lane.map { [$0.asLaneSummary()] } ?? []
           )
           .id(target.id)

@@ -4,7 +4,7 @@ import AVKit
 
 
 let workDateFormatter = ISO8601DateFormatter()
-private let workRootBottomTabBarScrollMargin: CGFloat = 150
+private let workRootBottomTabBarScrollMargin: CGFloat = 24
 
 func resolvedWorkArchivedSessionIds(
   localStorage: String,
@@ -244,6 +244,10 @@ struct WorkRootScreen: View {
     syncService.requestedWorkSessionNavigation?.id
   }
 
+  var workLaneNavigationRequestKey: String? {
+    syncService.requestedWorkLaneNavigation?.id
+  }
+
   var body: some View {
     NavigationStack(path: $path) {
       ScrollViewReader { proxy in
@@ -348,6 +352,7 @@ struct WorkRootScreen: View {
                   }
                 }
               )
+              .id(group.id)
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
               .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 2, trailing: 16))
@@ -425,12 +430,6 @@ struct WorkRootScreen: View {
             }
           }
         }
-
-        Color.clear
-          .frame(height: workRootBottomTabBarScrollMargin)
-          .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
-          .listRowBackground(Color.clear)
-          .listRowSeparator(.hidden)
       }
       .listStyle(.plain)
       .listSectionSpacing(.compact)
@@ -558,17 +557,35 @@ struct WorkRootScreen: View {
         guard isTabActive, workSessionNavigationRequestKey != nil else { return }
         await handleRequestedWorkSessionNavigation()
       }
+      .task(id: workLaneNavigationRequestKey) {
+        guard isTabActive, workLaneNavigationRequestKey != nil else { return }
+        await handleRequestedWorkLaneNavigation(proxy: proxy)
+      }
       .onAppear {
-        guard isTabActive, syncService.requestedWorkSessionNavigation != nil else { return }
-        Task { await handleRequestedWorkSessionNavigation() }
+        guard isTabActive else { return }
+        if syncService.requestedWorkLaneNavigation != nil {
+          Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
+        }
+        if syncService.requestedWorkSessionNavigation != nil {
+          Task { await handleRequestedWorkSessionNavigation() }
+        }
       }
       .onChange(of: isTabActive) { _, active in
-        guard active, syncService.requestedWorkSessionNavigation != nil else { return }
-        Task { await handleRequestedWorkSessionNavigation() }
+        guard active else { return }
+        if syncService.requestedWorkLaneNavigation != nil {
+          Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
+        }
+        if syncService.requestedWorkSessionNavigation != nil {
+          Task { await handleRequestedWorkSessionNavigation() }
+        }
       }
       .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
         guard isTabActive, requestId != nil else { return }
         Task { await handleRequestedWorkSessionNavigation() }
+      }
+      .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
+        guard isTabActive, requestId != nil else { return }
+        Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
       }
       .navigationDestination(for: WorkSessionRoute.self) { route in
         let routeTransitionNamespace = route.openingPrompt == nil && selectedSessionTransitionId == route.sessionId

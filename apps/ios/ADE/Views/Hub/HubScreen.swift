@@ -126,6 +126,18 @@ struct HubScreen: View {
                 onOpenChat: { chat, lane in
                   openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
                 },
+                onViewLaneInWork: { lane in
+                  Task { @MainActor in
+                    await syncService.openProjectForHubChat(project)
+                    syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: lane.id)
+                  }
+                },
+                onViewLaneInLanes: { lane in
+                  Task { @MainActor in
+                    await syncService.openProjectForHubChat(project)
+                    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: lane.id)
+                  }
+                },
                 onArchiveChat: { chat in runRosterChatAction("chat.archive", chat: chat, project: project) },
                 onDeleteChat: { chat in runRosterChatAction("chat.delete", chat: chat, project: project) },
                 onForget: { syncService.forgetProject(project) }
@@ -148,25 +160,27 @@ struct HubScreen: View {
       }
       .scrollIndicators(.hidden)
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        VStack(spacing: 0) {
-          LinearGradient(
-            colors: [
-              ADEColor.pageBackground.opacity(0),
-              ADEColor.pageBackground.opacity(0.96)
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-          )
-          .frame(height: 14)
-          .allowsHitTesting(false)
+        if canShowProjects {
+          VStack(spacing: 0) {
+            LinearGradient(
+              colors: [
+                ADEColor.pageBackground.opacity(0),
+                ADEColor.pageBackground.opacity(0.96)
+              ],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+            .frame(height: 14)
+            .allowsHitTesting(false)
 
-          HubComposerBar { composerPresented = true }
+            HubComposerBar { composerPresented = true }
+          }
+          .background(
+            ADEColor.pageBackground
+              .opacity(0.96)
+              .ignoresSafeArea(edges: .bottom)
+          )
         }
-        .background(
-          ADEColor.pageBackground
-            .opacity(0.96)
-            .ignoresSafeArea(edges: .bottom)
-        )
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

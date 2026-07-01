@@ -257,6 +257,27 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
                 toolType: "codex-chat",
               },
               {
+                id: "chat-idle",
+                laneId: "lane-1",
+                title: "Idle worker chat",
+                status: "running",
+                toolType: "cursor",
+              },
+              {
+                id: "chat-droid",
+                laneId: "lane-1",
+                title: "Droid worker chat",
+                status: "running",
+                toolType: "droid-chat",
+              },
+              {
+                id: "chat-orphan",
+                laneId: "lane-1",
+                title: "Orphaned worker chat",
+                status: "running",
+                toolType: "cursor",
+              },
+              {
                 id: "term-1",
                 laneId: "lane-1",
                 title: "Build shell",
@@ -276,18 +297,24 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
             sessionId: "chat-1",
             title: "CTO delegation thread",
             identityKey: "cto",
-            status: "idle",
+            status: "active",
           },
           {
-            sessionId: "chat-2",
+            sessionId: "chat-idle",
             title: "Idle worker chat",
             identityKey: "agent:worker-1",
             status: "idle",
           },
           {
+            sessionId: "chat-droid",
+            title: "Droid worker chat",
+            identityKey: "agent:worker-2",
+            status: "active",
+          },
+          {
             sessionId: "chat-3",
             title: "Finished worker chat",
-            identityKey: "agent:worker-2",
+            identityKey: "agent:worker-3",
             status: "ended",
           },
         ],
@@ -315,11 +342,26 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
           id: "chat-1",
           label: "CTO delegation thread",
         }),
+        expect.objectContaining({
+          kind: "chat_runtime",
+          id: "chat-droid",
+          label: "Droid worker chat",
+        }),
+        expect.objectContaining({
+          kind: "chat_runtime",
+          id: "chat-orphan",
+          label: "Orphaned worker chat",
+        }),
         expect.objectContaining({ kind: "terminal_session", id: "term-1" }),
         expect.objectContaining({
           kind: "managed_process",
           id: "lane-1:dev-server",
         }),
+      ]),
+    );
+    expect(readiness.blockers).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "chat-idle" }),
       ]),
     );
     expect(readiness.survivableState).toEqual(

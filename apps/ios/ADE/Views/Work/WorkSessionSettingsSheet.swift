@@ -341,7 +341,7 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
     switch mode {
     case "plan": return "Read-only planning mode."
     case "edit": return "Read-only Q&A mode."
-    case "full-auto": return "Cursor force mode."
+    case "full-auto": return "Cursor full auto mode."
     default: return "Cursor Agent's normal approval flow."
     }
   case "droid", "factory":

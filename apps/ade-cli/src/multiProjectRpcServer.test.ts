@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -48,6 +49,45 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("reports a build hash for manually-started CLI entrypoints", async () => {
+    const { registry, root } = createRegistry();
+    const cliPath = path.join(root, "manual-cli.cjs");
+    fs.writeFileSync(cliPath, "console.log('manual runtime');\n");
+    const expectedHash = createHash("sha256").update(fs.readFileSync(cliPath)).digest("hex");
+    const originalArgv = process.argv;
+    const originalBuildHash = process.env.ADE_RUNTIME_BUILD_HASH;
+    process.argv = [originalArgv[0] ?? "node", cliPath];
+    delete process.env.ADE_RUNTIME_BUILD_HASH;
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+      });
+
+      const init = await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {},
+      });
+
+      expect(init).toMatchObject({
+        runtimeInfo: {
+          buildHash: expectedHash,
+          multiProject: true,
+        },
+      });
+      handler.dispose();
+    } finally {
+      process.argv = originalArgv;
+      if (originalBuildHash === undefined) {
+        delete process.env.ADE_RUNTIME_BUILD_HASH;
+      } else {
+        process.env.ADE_RUNTIME_BUILD_HASH = originalBuildHash;
+      }
+    }
+  });
+
   it("exposes runtime-scoped project registry methods", async () => {
     const { projectRoot, expectedProjectRoot, registry } = createRegistry();
     const handler = createMultiProjectRpcRequestHandler({

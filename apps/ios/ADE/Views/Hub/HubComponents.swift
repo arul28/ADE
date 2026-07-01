@@ -418,11 +418,14 @@ struct HubProjectCard: View, Equatable {
   let onToggleCollapse: () -> Void
   let onOpenProject: () -> Void
   let onOpenChat: (RemoteRosterChat, RemoteRosterLane?) -> Void
+  let onViewLaneInWork: (RemoteRosterLane) -> Void
+  let onViewLaneInLanes: (RemoteRosterLane) -> Void
   let onArchiveChat: (RemoteRosterChat) -> Void
   let onDeleteChat: (RemoteRosterChat) -> Void
   let onForget: () -> Void
 
   private var project: MobileProjectSummary { presentation.project }
+  private var hasExpandableContent: Bool { !presentation.lanes.isEmpty }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -439,51 +442,48 @@ struct HubProjectCard: View, Equatable {
         .zIndex(1)
 
       // Expanded lanes + chats hang below the card, indented and unboundaried.
-      if !isCollapsed {
-        Group {
-          if presentation.lanes.isEmpty {
-            HubProjectEmptyChats(isLoading: presentation.isLoading)
-          } else {
-            LazyVStack(alignment: .leading, spacing: 10) {
-              ForEach(presentation.lanes) { lanePresentation in
-                HubLaneSection(
-                  project: project,
-                  presentation: lanePresentation,
-                  isCollapsed: collapsedLaneKeysSnapshot.contains(laneKey(lanePresentation.lane)),
-                  onToggle: { toggleLane(lanePresentation.lane) },
-                  onOpenChat: { chat in onOpenChat(chat, lanePresentation.lane) },
-                  onArchiveChat: onArchiveChat,
-                  onDeleteChat: onDeleteChat
-                )
-                .equatable()
-              }
-            }
-            .padding(.top, 10)
+      if hasExpandableContent && !isCollapsed {
+        VStack(alignment: .leading, spacing: 10) {
+          ForEach(presentation.lanes) { lanePresentation in
+            HubLaneSection(
+              project: project,
+              presentation: lanePresentation,
+              isCollapsed: collapsedLaneKeysSnapshot.contains(laneKey(lanePresentation.lane)),
+              onToggle: { toggleLane(lanePresentation.lane) },
+              onOpenChat: { chat in onOpenChat(chat, lanePresentation.lane) },
+              onViewInWork: { onViewLaneInWork(lanePresentation.lane) },
+              onViewInLanes: { onViewLaneInLanes(lanePresentation.lane) },
+              onArchiveChat: onArchiveChat,
+              onDeleteChat: onDeleteChat
+            )
+            .equatable()
           }
         }
+        .padding(.top, 10)
         .padding(.leading, 16)
         .padding(.trailing, 4)
         .zIndex(0)
-        // Pure vertical slide (no cross-fade). The parent `.clipped()` masks the
-        // rows to the card's animating bounds, so on collapse they roll up
-        // behind the card instead of lingering over the cards below.
-        .transition(.move(edge: .top))
       }
     }
-    .clipped()
   }
 
   private var header: some View {
     HStack(spacing: 11) {
-      Button(action: onToggleCollapse) {
-        Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
+      if hasExpandableContent {
+        Button(action: onToggleCollapse) {
+          Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isCollapsed ? "Expand project" : "Collapse project")
+      } else {
+        Color.clear
           .frame(width: 22, height: 22)
-          .contentShape(Rectangle())
+          .accessibilityHidden(true)
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel(isCollapsed ? "Expand project" : "Collapse project")
 
       HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: presentation.isActive, size: 44)
 
@@ -585,6 +585,8 @@ struct HubLaneSection: View, Equatable {
   let isCollapsed: Bool
   let onToggle: () -> Void
   let onOpenChat: (RemoteRosterChat) -> Void
+  let onViewInWork: () -> Void
+  let onViewInLanes: () -> Void
   let onArchiveChat: (RemoteRosterChat) -> Void
   let onDeleteChat: (RemoteRosterChat) -> Void
 
@@ -623,13 +625,14 @@ struct HubLaneSection: View, Equatable {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      // Opaque backing + zIndex so chat rows slide up behind the lane header on
-      // collapse instead of showing through it.
-      .background(ADEColor.pageBackground)
+      .contextMenu {
+        Button { onViewInWork() } label: { Label("View in Work tab", systemImage: "terminal") }
+        Button { onViewInLanes() } label: { Label("View in Lanes tab", systemImage: "square.stack.3d.up") }
+      }
       .zIndex(1)
 
       if !isCollapsed {
-        LazyVStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 2) {
           ForEach(presentation.rows) { row in
             HubChatRow(
               row: row,
@@ -643,10 +646,8 @@ struct HubLaneSection: View, Equatable {
         }
         .padding(.leading, 6)
         .zIndex(0)
-        .transition(.move(edge: .top))
       }
     }
-    .clipped()
   }
 
   static func == (lhs: HubLaneSection, rhs: HubLaneSection) -> Bool {
@@ -669,34 +670,29 @@ struct HubChatRow: View, Equatable {
   var body: some View {
     // Deliberately minimal: provider logo, chat name, and the relative
     // timestamp. Nothing else competes for the eye at the hub's glance level.
-    HStack(spacing: 10) {
-      WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal.fill", tint: ADEColor.textSecondary, size: compact ? 16 : 20)
+    Button(action: onOpen) {
+      HStack(spacing: 10) {
+        WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal.fill", tint: ADEColor.textSecondary, size: compact ? 16 : 20)
 
-      Text(row.title)
-        .font(.system(.footnote, design: .rounded).weight(.medium))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        Text(row.title)
+          .font(.system(.footnote, design: .rounded).weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .frame(maxWidth: .infinity, alignment: .leading)
 
-      if let activity = row.activityLabel {
-        Text(activity)
-          .font(.system(.caption2, design: .rounded))
-          .foregroundStyle(ADEColor.textMuted)
+        if let activity = row.activityLabel {
+          Text(activity)
+            .font(.system(.caption2, design: .rounded))
+            .foregroundStyle(ADEColor.textMuted)
+        }
       }
+      .padding(.horizontal, 8)
+      .padding(.vertical, compact ? 5 : 7)
+      .contentShape(Rectangle())
     }
-    .padding(.horizontal, 8)
-    .padding(.vertical, compact ? 5 : 7)
-    .contentShape(Rectangle())
-    .accessibilityHidden(true)
-    .overlay {
-      Button(action: onOpen) {
-        Color.black.opacity(0.001)
-          .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(row.title)
-      .accessibilityHint("Opens chat.")
-    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(row.title)
+    .accessibilityHint("Opens chat.")
     // The hub uses a scrolling LazyVStack (not a List), where SwiftUI
     // `.swipeActions` are unavailable — so pin/archive/close are offered through
     // a long-press context menu instead, routed to the chat's project.
@@ -790,27 +786,6 @@ struct HubComposerBar: View {
 }
 
 // MARK: - State cards
-
-struct HubProjectEmptyChats: View {
-  let isLoading: Bool
-  var body: some View {
-    HStack(spacing: 8) {
-      if isLoading {
-        ProgressView().controlSize(.small)
-        Text("Loading chats…")
-      } else {
-        Image(systemName: "tray")
-          .foregroundStyle(ADEColor.textMuted)
-        Text("No chats yet")
-      }
-    }
-    .font(.system(.caption, design: .rounded))
-    .foregroundStyle(ADEColor.textMuted)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
-    .padding(.bottom, 12)
-  }
-}
 
 struct HubConnectingCard: View {
   var body: some View {

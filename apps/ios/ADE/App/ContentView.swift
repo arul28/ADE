@@ -89,6 +89,13 @@ struct ContentView: View {
           selectedTab = .lanes
         }
       }
+      .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        syncService.closeProjectHome()
+        if selectedTab != .work {
+          selectedTab = .work
+        }
+      }
       .onChange(of: syncService.requestedPrNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
         syncService.closeProjectHome()

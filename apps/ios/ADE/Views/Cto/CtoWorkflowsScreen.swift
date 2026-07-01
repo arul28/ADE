@@ -974,10 +974,9 @@ private struct EditOnMachineSheet: View {
 
 private enum CtoWorkflowsRelativeTime {
   static func format(iso: String) -> String? {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let date = formatter.date(from: iso) ?? ISO8601DateFormatter().date(from: iso)
-    guard let date else { return nil }
+    // Reuse the shared cached ISO8601 parser (fractional then fallback) instead of
+    // allocating formatters per row/render.
+    guard let date = prParsedDate(iso) else { return nil }
     let seconds = Int(Date().timeIntervalSince(date))
     if seconds < 60 { return "\(max(seconds, 0))s" }
     let minutes = seconds / 60

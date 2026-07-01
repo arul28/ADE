@@ -586,7 +586,6 @@ create table if not exists files_workspaces (
       name text not null,
       root_path text not null,
       is_read_only_by_default integer not null default 1,
-      mobile_read_only integer not null default 1,
       updated_at text not null
     );
 

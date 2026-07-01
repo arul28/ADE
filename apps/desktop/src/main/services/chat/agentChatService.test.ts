@@ -12696,6 +12696,31 @@ describe("createAgentChatService", () => {
       expect(history.events).toHaveLength(1);
     });
 
+    it("drops an oversized newest event when a strict mobile byte budget is requested", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const giant: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "giant-".concat("y".repeat(16_000)) },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
+
+      const history = service.getChatEventHistory(session.id, { maxBytes: 8_192 });
+
+      expect(history.events).toHaveLength(0);
+      expect(history.windowTruncated).toBe(true);
+      expect(history.truncated).toBe(true);
+    });
+
     it("marks window truncation when the service response cap removes events", async () => {
       const { service } = createService();
       const session = await service.createSession({

@@ -709,7 +709,7 @@ func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {
 }
 
 func workRegexMatches(pattern: String, in text: String) -> [String] {
-  guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+  guard let regex = ADECodeRenderingCache.shared.regex(for: pattern) else { return [] }
   let range = NSRange(location: 0, length: (text as NSString).length)
   return regex.matches(in: text, range: range).compactMap { match in
     Range(match.range, in: text).map { String(text[$0]) }

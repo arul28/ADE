@@ -896,11 +896,23 @@ private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) ->
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
   var resolvedSteerIds = Set<String>()
+  var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
-    case .userMessage(_, _, _, let steerId, let deliveryState, _):
-      if let steerId, deliveryState != "queued" {
-        resolvedSteerIds.insert(steerId)
+    case .userMessage(let text, _, _, let steerId, let deliveryState, _):
+      if let steerId, deliveryState == "queued" {
+        let normalizedText = normalizedQueuedSteerText(text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
+        }
+      } else {
+        if let steerId {
+          resolvedSteerIds.insert(steerId)
+        }
+        let normalizedText = normalizedQueuedSteerText(text)
+        if !normalizedText.isEmpty, let matchingQueuedSteerIds = queuedSteerIdsByText[normalizedText] {
+          resolvedSteerIds.formUnion(matchingQueuedSteerIds)
+        }
       }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
@@ -1449,16 +1461,29 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var queue: [String: WorkPendingSteerModel] = [:]
   var order: [String] = []
   var resolved = Set<String>()
+  var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .userMessage(let text, _, let turnId, let steerId, let deliveryState, _):
-      guard let steerId, !resolved.contains(steerId) else { continue }
-      if deliveryState == "queued" {
+      if let steerId, deliveryState == "queued", !resolved.contains(steerId) {
         if queue[steerId] == nil { order.append(steerId) }
         queue[steerId] = WorkPendingSteerModel(id: steerId, text: text, turnId: turnId, timestamp: envelope.timestamp)
-      } else if deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
-        queue.removeValue(forKey: steerId)
-        resolved.insert(steerId)
+        let normalizedText = normalizedQueuedSteerText(text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
+        }
+      } else {
+        if let steerId, deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
+          queue.removeValue(forKey: steerId)
+          resolved.insert(steerId)
+        }
+        let normalizedText = normalizedQueuedSteerText(text)
+        if !normalizedText.isEmpty, let matchingQueuedSteerIds = queuedSteerIdsByText[normalizedText] {
+          for queuedSteerId in matchingQueuedSteerIds {
+            queue.removeValue(forKey: queuedSteerId)
+            resolved.insert(queuedSteerId)
+          }
+        }
       }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
@@ -1470,6 +1495,13 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+func normalizedQueuedSteerText(_ text: String) -> String {
+  text
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    .lowercased()
 }
 
 func workSystemNoticeResolvesQueuedSteer(_ message: String) -> Bool {

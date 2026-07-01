@@ -1052,6 +1052,7 @@ export function createGithubService({
       repo,
       secretReader: githubRelaySecretReader,
       forceRefresh: args.forceRefresh === true,
+      githubToken: readAuthToken().token,
     });
   };
 

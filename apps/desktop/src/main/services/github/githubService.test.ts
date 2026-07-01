@@ -69,6 +69,8 @@ function resetMocks() {
   mockFetch.mockReset();
   runGitMock.mockReset();
   delete process.env.GH_TOKEN;
+  delete process.env.GITHUB_TOKEN;
+  delete process.env.ADE_GITHUB_TOKEN;
   delete process.env.ADE_GITHUB_RELAY_API_BASE_URL;
   delete process.env.ADE_GITHUB_RELAY_ACCESS_TOKEN;
   delete process.env.ADE_GITHUB_RELAY_REMOTE_PROJECT_ID;
@@ -1312,19 +1314,53 @@ describe("githubService.getAppInstallationStatus", () => {
     resetMocks();
   });
 
-  it("returns an unconfigured status without calling the relay when relay config is missing", async () => {
+  it("reports that GitHub auth is required before checking the hosted relay", async () => {
     const status = await makeService().getAppInstallationStatus({ owner: "acme", name: "repo" });
 
     expect(status).toMatchObject({
       repo: { owner: "acme", name: "repo" },
-      relayConfigured: false,
+      relayConfigured: true,
       installed: false,
-      state: "unconfigured",
+      state: "error",
+      error: "GitHub auth is required to check the ADE GitHub App installation.",
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("checks the relay for a repo-scoped GitHub App installation", async () => {
+  it("checks the hosted relay with the user's existing GitHub token", async () => {
+    process.env.ADE_GITHUB_TOKEN = "ghp_user_token";
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, {
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "selected",
+      lastSeenAt: "2026-06-30T00:00:00.000Z",
+      checkedAt: "2026-06-30T00:00:01.000Z",
+    }));
+
+    const status = await makeService().getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status).toMatchObject({
+      repo: { owner: "acme", name: "repo" },
+      relayConfigured: true,
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "selected",
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/acme/repo/status",
+      expect.objectContaining({
+        method: "GET",
+        headers: expect.objectContaining({
+          authorization: "Bearer ghp_user_token",
+        }),
+      }),
+    );
+  });
+
+  it("keeps supporting legacy project-token relay installation checks", async () => {
+    process.env.ADE_GITHUB_TOKEN = "ghp_user_token";
     mockFetch.mockResolvedValueOnce(jsonResponse(200, {
       installed: true,
       state: "configured",
@@ -1364,7 +1400,7 @@ describe("githubService.getAppInstallationStatus", () => {
     );
   });
 
-  it("asks the relay for a live GitHub App status refresh when forced", async () => {
+  it("asks the legacy relay for a live GitHub App status refresh when forced", async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse(200, {
       installed: false,
       state: "not_installed",

@@ -1509,6 +1509,120 @@ describe("sync host handoff over a shared listener", () => {
   });
 });
 
+describe("chat_subscribe snapshots", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  it("passes the peer byte cap to chat history and does not replay snapshot events from the transcript pump", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-1.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const event: AgentChatEventEnvelope = {
+      sessionId: "chat-1",
+      timestamp: "2026-04-23T10:00:00.000Z",
+      sequence: 1,
+      event: { type: "text", text: "in-flight text" },
+    };
+    const laterEvent: AgentChatEventEnvelope = {
+      sessionId: "chat-1",
+      timestamp: "2026-04-23T10:00:01.000Z",
+      sequence: 2,
+      event: { type: "text", text: "later transcript text" },
+    };
+    const session = {
+      id: "chat-1",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const getChatEventHistory = vi.fn().mockReturnValue({
+      sessionId: "chat-1",
+      events: [event],
+      truncated: false,
+      transcriptTruncated: false,
+      windowTruncated: false,
+      sessionFound: true,
+    });
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 100,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-chat-subscribe",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === "chat-1" ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory,
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-subscribe");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-subscribe-1",
+        payload: { sessionId: "chat-1", maxBytes: 4_096 },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-subscribe-1");
+      expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", {
+        maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
+        maxBytes: 4_096,
+      });
+      expect((ack.payload as { events?: AgentChatEventEnvelope[] }).events).toEqual([event]);
+      expect(ack.payload).toMatchObject({ turnActive: true });
+
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(event)}\n${JSON.stringify(laterEvent)}\n`, "utf8");
+      const delivered = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "chat_event"),
+        "later chat event",
+      );
+      expect(delivered.payload).toMatchObject({
+        sessionId: "chat-1",
+        event: { type: "text", text: "later transcript text" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(peer.envelopes.filter((envelope) => envelope.type === "chat_event")).toHaveLength(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 
 describe("chat event replay buffer (resumable chat streams)", () => {
   const sessionId = "session-replay";

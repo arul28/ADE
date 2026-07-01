@@ -357,6 +357,40 @@ extension WorkRootScreen {
     syncService.requestedWorkSessionNavigation = nil
   }
 
+  @MainActor
+  func handleRequestedWorkLaneNavigation(proxy: ScrollViewProxy) async {
+    guard let request = syncService.requestedWorkLaneNavigation else { return }
+    let sectionId = "lane:\(request.laneId)"
+
+    navigationMutationPending = false
+    selectedSessionTransitionId = nil
+    path = NavigationPath()
+    searchText = ""
+    selectedLaneId = "all"
+    selectedStatus = .all
+    sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
+
+    var collapsed = collapsedSectionIds
+    if collapsed.remove(sectionId) != nil {
+      collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(collapsed)
+    }
+
+    if lanes.isEmpty || !lanes.contains(where: { $0.id == request.laneId }) {
+      await reload(refreshRemote: isLive)
+    }
+    scheduleSessionPresentationRebuild()
+
+    // Let the context menu dismiss, the tab switch complete, and the by-lane
+    // presentation render before asking the List to reveal the lane header.
+    try? await Task.sleep(for: .milliseconds(650))
+    guard syncService.requestedWorkLaneNavigation?.id == request.id else { return }
+
+    withAnimation(.snappy) {
+      proxy.scrollTo(sectionId, anchor: .top)
+    }
+    syncService.requestedWorkLaneNavigation = nil
+  }
+
   func deleteChatSession(_ session: TerminalSessionSummary) {
     Task {
       do {

@@ -101,7 +101,10 @@ func rosterApplyDelta(
   guard let currentSeq else { return .needsSnapshot }
   if delta.seq <= currentSeq { return .dropped }
   if delta.seq > currentSeq + 1 { return .needsSnapshot }
-  var byId = Dictionary(uniqueKeysWithValues: current.map { ($0.projectId, $0) })
+  var byId = [String: RemoteRosterProject]()
+  for project in current {
+    byId[project.projectId] = project
+  }
   for projectId in delta.removed ?? [] { byId.removeValue(forKey: projectId) }
   for project in delta.changed ?? [] { byId[project.projectId] = project }
   return .applied(projects: Array(byId.values), seq: delta.seq)

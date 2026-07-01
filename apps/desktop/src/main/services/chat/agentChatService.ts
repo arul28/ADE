@@ -5462,18 +5462,27 @@ export function createAgentChatService(args: {
     }
   };
 
-  // Keep the newest items whose cumulative serialized size fits the budget
-  // (always at least the newest one, even when it alone exceeds it).
+  // Keep the newest items whose cumulative serialized size fits the budget.
+  // Desktop history keeps the newest item even when it alone exceeds the
+  // budget so a local pane can still show the latest event; mobile callers can
+  // request a hard cap to avoid sending an oversized snapshot over sync.
   const keepNewestWithinCharBudget = <T>(
     items: T[],
     maxChars: number,
     sizeOf: (item: T) => number,
+    options?: { keepOversizeNewest?: boolean },
   ): T[] => {
+    const keepOversizeNewest = options?.keepOversizeNewest ?? true;
     let total = 0;
     let start = items.length;
     while (start > 0) {
       const next = total + sizeOf(items[start - 1]!);
-      if (start < items.length && next > maxChars) break;
+      if (next > maxChars) {
+        if (start === items.length && keepOversizeNewest) {
+          start -= 1;
+        }
+        break;
+      }
       total = next;
       start -= 1;
     }
@@ -5496,7 +5505,9 @@ export function createAgentChatService(args: {
   const trimEnvelopesToByteBudget = (
     envelopes: AgentChatEventEnvelope[],
     maxChars: number,
-  ): AgentChatEventEnvelope[] => keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars);
+    options?: { keepOversizeNewest?: boolean },
+  ): AgentChatEventEnvelope[] =>
+    keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars, options);
 
   const STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES = 4 * 1024;
   const STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES = 16 * 1024;
@@ -7228,7 +7239,7 @@ export function createAgentChatService(args: {
    */
   const getChatEventHistory = (
     sessionId: string,
-    options?: { maxEvents?: number },
+    options?: { maxEvents?: number; maxBytes?: number },
   ): AgentChatEventHistorySnapshot => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) {
@@ -7255,6 +7266,12 @@ export function createAgentChatService(args: {
         Math.floor(options?.maxEvents ?? CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION),
       ),
     );
+    const requestedMaxBytes = typeof options?.maxBytes === "number" && Number.isFinite(options.maxBytes)
+      ? Math.floor(options.maxBytes)
+      : null;
+    const responseMaxChars = requestedMaxBytes == null
+      ? CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS
+      : Math.max(1_024, Math.min(CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS, requestedMaxBytes));
 
     // Stat the transcript on every snapshot; actual I/O is skipped when the
     // file size and mtime are unchanged (cached). A long-running background
@@ -7282,7 +7299,9 @@ export function createAgentChatService(args: {
     // trimmed events sit AFTER tailStartOffset and are not reachable through
     // getChatEventHistoryPage (which pages strictly older) — an accepted
     // seam, the alternative being a response the client must discard.
-    const windowed = trimEnvelopesToByteBudget(countWindowed, CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS);
+    const windowed = trimEnvelopesToByteBudget(countWindowed, responseMaxChars, {
+      keepOversizeNewest: requestedMaxBytes == null,
+    });
     const windowTruncated =
       mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
       || parentVisibleLength > maxEvents

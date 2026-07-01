@@ -138,25 +138,25 @@ function statusView(status: GitHubAppInstallationStatus | null, loading: boolean
       color: COLORS.success,
       description: (repoLabel) =>
         repoLabel
-          ? `The ADE GitHub App is installed for ${repoLabel}. PR updates can use the webhook relay with GitHub auth as fallback.`
-          : "The ADE GitHub App is installed. PR updates can use the webhook relay with GitHub auth as fallback.",
+          ? `The ADE GitHub App is installed for ${repoLabel}. PR updates can arrive instantly, with GitHub polling as fallback.`
+          : "The ADE GitHub App is installed. PR updates can arrive instantly, with GitHub polling as fallback.",
     };
   }
   if (status?.installed && !status.relayConfigured) {
     return {
-      label: "Relay off",
+      label: "Installed",
       color: COLORS.warning,
       description: (repoLabel) =>
         repoLabel
-          ? `The ADE GitHub App is installed for ${repoLabel}, but this runtime is missing relay polling config. Existing GitHub auth remains the fallback.`
-          : "The ADE GitHub App is installed, but this runtime is missing relay polling config. Existing GitHub auth remains the fallback.",
+          ? `The ADE GitHub App is installed for ${repoLabel}. ADE will use GitHub polling until realtime delivery is available.`
+          : "The ADE GitHub App is installed. ADE will use GitHub polling until realtime delivery is available.",
     };
   }
   if (status?.state === "unconfigured" || (status && !status.relayConfigured && status.state !== "error")) {
     return {
-      label: "Relay off",
+      label: "Checking",
       color: COLORS.warning,
-      description: () => "The GitHub App relay is not configured in this runtime yet. ADE will keep using the existing GitHub auth path.",
+      description: () => "ADE could not confirm realtime delivery yet. GitHub polling remains available as fallback.",
     };
   }
   if (status?.state === "error") {
@@ -171,8 +171,8 @@ function statusView(status: GitHubAppInstallationStatus | null, loading: boolean
     color: COLORS.warning,
     description: (repoLabel) =>
       repoLabel
-        ? `Install the ADE GitHub App for ${repoLabel} to enable instant PR updates. If you just installed it, change the repository selection once in GitHub or check Recent deliveries. Existing GitHub auth remains the fallback.`
-        : "Install the ADE GitHub App for instant PR updates. Existing GitHub auth remains the fallback.",
+        ? `Install the ADE GitHub App for ${repoLabel} to enable instant PR updates. If the App is installed for selected repositories, make sure this repo is selected.`
+        : "Install the ADE GitHub App for instant PR updates. If the App is installed for selected repositories, make sure this repo is selected.",
   };
 }
 

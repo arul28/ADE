@@ -279,6 +279,7 @@ private let syncChatHistoryTailPageMaxBytes = 600_000
 private let syncReducedLoadChatSubscriptionMaxBytes = 512_000
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
+private let chatEventHistoryMaxSessions = 64
 /// Coalescing window for chat-event UI notifications. The coalescer fires on
 /// the leading edge (first event after a quiet period surfaces immediately)
 /// and then at most once per window during a sustained burst. Was a 420 ms
@@ -416,7 +417,7 @@ func syncConnectPortCandidates(
     .filter { seen.insert($0).inserted }
 }
 
-struct SyncConnectionEndpointAttempt: Equatable {
+struct SyncConnectionEndpointAttempt: Equatable, Hashable {
   var address: String
   var port: Int
 }
@@ -435,6 +436,23 @@ func syncConnectionEndpointAttempts(
     }
   }
   return primaryAttempts + fallbackAttempts
+}
+
+func syncStalePortRecoveryEndpointAttempts(
+  addresses: [String],
+  ports: [Int]
+) -> [SyncConnectionEndpointAttempt] {
+  guard !addresses.isEmpty, !ports.isEmpty else { return [] }
+  let priorityAddresses = Array(addresses.prefix(2))
+  let fallbackAddresses = Array(addresses.dropFirst(2))
+  let prioritySweep = priorityAddresses.flatMap { address in
+    ports.map { port in SyncConnectionEndpointAttempt(address: address, port: port) }
+  }
+  let fallbackSweep = syncConnectionEndpointAttempts(addresses: fallbackAddresses, ports: ports)
+  var seen = Set<SyncConnectionEndpointAttempt>()
+  return (prioritySweep + fallbackSweep).filter { attempt in
+    seen.insert(attempt).inserted
+  }
 }
 
 func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> String? {
@@ -492,6 +510,7 @@ struct SyncPreprocessedEnvelope {
 }
 
 private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
+private let maxChunkedSyncEnvelopeBytes = 32 * 1024 * 1024
 
 func syncPreprocessIncoming(
   _ text: String,
@@ -580,18 +599,38 @@ func syncRaceAddressCandidates(
 /// in `index` order into the original envelope JSON. Bounded so a broken host
 /// cannot grow the buffer without limit.
 struct SyncEnvelopeChunkAssembler {
+  private struct Part {
+    let data: Data
+    let encodedBytes: Int
+  }
+
   private struct PartialChunk {
     let total: Int
-    var parts: [Int: String] = [:]
+    var parts: [Int: Part] = [:]
+    var decodedBytes = 0
+    var encodedBytes = 0
   }
 
   private var buffers: [String: PartialChunk] = [:]
   private var arrivalOrder: [String] = []
   private let maxConcurrentChunks = 8
   private let maxTotalParts = 512
+  private let maxEnvelopeBytes: Int
+
+  init(maxEnvelopeBytes: Int = maxChunkedSyncEnvelopeBytes) {
+    self.maxEnvelopeBytes = max(1, maxEnvelopeBytes)
+  }
 
   mutating func add(chunkId: String, index: Int, total: Int, part: String) -> String? {
     guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
+    let encodedBytes = part.utf8.count
+    let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
+    guard decodedUpperBound <= maxEnvelopeBytes,
+          let decodedPart = Data(base64Encoded: part) else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
     if buffers[chunkId] == nil {
       while arrivalOrder.count >= maxConcurrentChunks, let oldest = arrivalOrder.first {
         arrivalOrder.removeFirst()
@@ -605,7 +644,20 @@ struct SyncEnvelopeChunkAssembler {
       arrivalOrder.removeAll { $0 == chunkId }
       return nil
     }
-    buffer.parts[index] = part
+    if let existing = buffer.parts[index] {
+      buffer.decodedBytes -= existing.data.count
+      buffer.encodedBytes -= existing.encodedBytes
+    }
+    let nextDecodedBytes = buffer.decodedBytes + decodedPart.count
+    let nextEncodedBytes = buffer.encodedBytes + encodedBytes
+    guard nextDecodedBytes <= maxEnvelopeBytes, nextEncodedBytes <= maxEnvelopeBytes * 2 else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
+    buffer.parts[index] = Part(data: decodedPart, encodedBytes: encodedBytes)
+    buffer.decodedBytes = nextDecodedBytes
+    buffer.encodedBytes = nextEncodedBytes
     guard buffer.parts.count == buffer.total else {
       buffers[chunkId] = buffer
       return nil
@@ -613,9 +665,10 @@ struct SyncEnvelopeChunkAssembler {
     buffers.removeValue(forKey: chunkId)
     arrivalOrder.removeAll { $0 == chunkId }
     var data = Data()
+    data.reserveCapacity(buffer.decodedBytes)
     for partIndex in 0..<buffer.total {
-      guard let encoded = buffer.parts[partIndex], let decoded = Data(base64Encoded: encoded) else { return nil }
-      data.append(decoded)
+      guard let part = buffer.parts[partIndex] else { return nil }
+      data.append(part.data)
     }
     return String(data: data, encoding: .utf8)
   }
@@ -1015,6 +1068,16 @@ struct LaneNavigationRequest: Equatable, Identifiable {
   }
 }
 
+struct WorkLaneNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let laneId: String
+
+  init(laneId: String) {
+    self.id = UUID().uuidString
+    self.laneId = laneId
+  }
+}
+
 struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let id: String
   let sessionId: String
@@ -1249,6 +1312,7 @@ final class SyncService: ObservableObject {
   @Published var settingsPresented = false
   @Published var projectHomePresented = true
   @Published var attentionDrawerPresented = false
+  @Published var requestedWorkLaneNavigation: WorkLaneNavigationRequest?
   @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
@@ -1445,6 +1509,7 @@ final class SyncService: ObservableObject {
   private var autoReconnectAwaitingLiveDiscovery = false
   /// Prevents overlapping `reconnectIfPossible` runs from stacking TCP/WebSocket attempts.
   private var reconnectConnectInFlight = false
+  private var reconnectConnectInFlightGeneration: UInt64?
   private var bonjourDiscoveredHosts: [DiscoveredSyncHost] = []
   private var tailnetDiscoveredHosts: [DiscoveredSyncHost] = []
   private var lastNetworkPathSnapshot: SyncNetworkPathSnapshot?
@@ -3117,7 +3182,7 @@ final class SyncService: ObservableObject {
         syncConnectLog.info("ADE_SYNC_TRACE reconnect user override cancels in-flight attempt")
         beginConnectAttempt()
         teardownSocket(reason: "Reconnect restarted.")
-        reconnectConnectInFlight = false
+        clearReconnectConnectInFlight()
       }
     }
     // Background retries (slow heartbeat, network-path task, discovery
@@ -3157,12 +3222,10 @@ final class SyncService: ObservableObject {
       syncConnectLog.info("reconnect skipped: connect already in flight")
       return
     }
-    reconnectConnectInFlight = true
     let connectAttemptGeneration = beginConnectAttempt()
+    markReconnectConnectInFlight(connectAttemptGeneration)
     defer {
-      if self.connectAttemptGeneration == connectAttemptGeneration {
-        reconnectConnectInFlight = false
-      }
+      clearReconnectConnectInFlight(connectAttemptGeneration)
     }
     publishReconnectStarted(profile: profile)
     do {
@@ -3574,7 +3637,7 @@ final class SyncService: ObservableObject {
       setAutoReconnectPausedByUser(true)
     }
     allowAutoReconnect = false
-    reconnectConnectInFlight = false
+    clearReconnectConnectInFlight()
     cancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
@@ -4273,9 +4336,20 @@ final class SyncService: ObservableObject {
 
   // MARK: - PR detail warm cache
 
+  /// Bounds the warm cache; full PR detail snapshots would otherwise grow
+  /// insert-only for the process lifetime.
+  private static let prDetailCacheMaxEntries = 24
+
   /// Store a fully-loaded detail entry for `prId`. Stamps `loadedAt` so the
   /// freshness gate can decide whether a later revision bump should refetch.
   func storePrDetailWarmEntry(_ entry: PrDetailWarmEntry, for prId: String) {
+    // Bounded-growth insurance: evict the oldest entry (by loadedAt) before a
+    // brand-new key pushes the cache past the cap.
+    if prDetailCache[prId] == nil,
+       prDetailCache.count >= Self.prDetailCacheMaxEntries,
+       let oldest = prDetailCache.min(by: { $0.value.loadedAt < $1.value.loadedAt })?.key {
+      prDetailCache.removeValue(forKey: oldest)
+    }
     prDetailCache[prId] = entry
   }
 
@@ -4330,13 +4404,9 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func ensureMobileFileMutationsAllowed(workspaceId: String) throws {
-    let workspace = database.listWorkspaces().first { $0.id == workspaceId }
-    guard let workspace else {
+  private func ensureFilesWorkspaceAvailable(workspaceId: String) throws {
+    guard database.listWorkspaces().contains(where: { $0.id == workspaceId }) else {
       throw NSError(domain: "ADE", code: 118, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
-    }
-    guard !workspace.readOnlyOnMobile else {
-      throw NSError(domain: "ADE", code: 119, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this workspace."])
     }
   }
 
@@ -4386,7 +4456,7 @@ final class SyncService: ObservableObject {
   }
 
   func writeText(workspaceId: String, path: String, text: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "writeText", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4395,7 +4465,7 @@ final class SyncService: ObservableObject {
   }
 
   func createFile(workspaceId: String, path: String, content: String = "") async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "createFile", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4404,7 +4474,7 @@ final class SyncService: ObservableObject {
   }
 
   func createDirectory(workspaceId: String, path: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "createDirectory", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4412,7 +4482,7 @@ final class SyncService: ObservableObject {
   }
 
   func renamePath(workspaceId: String, oldPath: String, newPath: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "rename", args: [
       "workspaceId": workspaceId,
       "oldPath": oldPath,
@@ -4421,7 +4491,7 @@ final class SyncService: ObservableObject {
   }
 
   func deletePath(workspaceId: String, path: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "deletePath", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -5393,9 +5463,16 @@ final class SyncService: ObservableObject {
   @MainActor
   func getChatModelCatalog(
     mode: String = "refresh-stale",
-    refreshProvider: String? = nil
+    refreshProvider: String? = nil,
+    cursorSource: String? = nil
   ) async throws -> AgentChatModelCatalog {
-    let cacheKey = chatModelsCacheKey(provider: "catalog:\(mode):\(refreshProvider ?? "")")
+    let normalizedCursorSource = cursorSource?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    let cursorSourceKeySuffix = normalizedCursorSource.map { ":\($0)" } ?? ""
+    let cacheKey = chatModelsCacheKey(
+      provider: "catalog:\(mode):\(refreshProvider ?? "")\(cursorSourceKeySuffix)"
+    )
     let now = Date()
 
     if mode != "force",
@@ -5424,6 +5501,9 @@ final class SyncService: ObservableObject {
       if let refreshProvider {
         args["refreshProvider"] = refreshProvider
       }
+      if let normalizedCursorSource, !normalizedCursorSource.isEmpty {
+        args["cursorSource"] = normalizedCursorSource
+      }
       let response = try await self.sendCommand(
         action: "chat.modelCatalog",
         args: args,
@@ -5439,7 +5519,9 @@ final class SyncService: ObservableObject {
       let catalog = try await task.value
       chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       if mode == "force", let refreshProvider {
-        let refreshStaleKey = chatModelsCacheKey(provider: "catalog:refresh-stale:\(refreshProvider)")
+        let refreshStaleKey = chatModelsCacheKey(
+          provider: "catalog:refresh-stale:\(refreshProvider)\(cursorSourceKeySuffix)"
+        )
         chatModelCatalogCache[refreshStaleKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       }
       chatModelCatalogInFlight[cacheKey] = nil
@@ -6842,6 +6924,19 @@ final class SyncService: ObservableObject {
     return connectAttemptGeneration
   }
 
+  private func markReconnectConnectInFlight(_ generation: UInt64) {
+    reconnectConnectInFlight = true
+    reconnectConnectInFlightGeneration = generation
+  }
+
+  private func clearReconnectConnectInFlight(_ generation: UInt64? = nil) {
+    if let generation, reconnectConnectInFlightGeneration != generation {
+      return
+    }
+    reconnectConnectInFlight = false
+    reconnectConnectInFlightGeneration = nil
+  }
+
   private func isCurrentConnectAttempt(_ generation: UInt64) -> Bool {
     connectAttemptGeneration == generation
   }
@@ -7202,14 +7297,22 @@ final class SyncService: ObservableObject {
     publishConnecting: Bool
   ) async throws -> (host: String, port: Int) {
     var lastFailure: Error?
+    let matchingDiscovery = discoveredHosts.filter { host in
+      matchesDiscoveredHost(host, profile: profile)
+    }
+    var seenLivePorts = Set<Int>()
+    let livePorts = matchingDiscovery
+      .map(\.port)
+      .filter { $0 > 0 && seenLivePorts.insert($0).inserted }
+    let primaryPort = livePorts.first ?? profile.port
     let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
     let addresses = connectableAddresses(from: rawAddresses)
     let portCandidates = syncConnectPortCandidates(
-      primaryPort: profile.port,
+      primaryPort: primaryPort,
       addresses: addresses,
-      allowFallbackSweep: !preferLiveCandidatesOnly
+      allowFallbackSweep: !preferLiveCandidatesOnly || livePorts.isEmpty
     )
     syncConnectLog.info(
       "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)]"
@@ -7231,7 +7334,11 @@ final class SyncService: ObservableObject {
       )
     }
 
-    for attempt in syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates) {
+    let endpointAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
+      ? syncStalePortRecoveryEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
+      : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
+
+    for attempt in endpointAttempts {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }
@@ -7357,7 +7464,7 @@ final class SyncService: ObservableObject {
     reconnectTask = nil
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = nil
-    reconnectConnectInFlight = false
+    clearReconnectConnectInFlight()
     autoReconnectAwaitingLiveDiscovery = false
     let machineName = syncTrimmedNonEmptyName(profile?.hostName)
       ?? syncTrimmedNonEmptyName(hostName)
@@ -9295,20 +9402,28 @@ final class SyncService: ObservableObject {
   }
 
   func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
-    var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
-    if let last = events.last {
+    let sessionId = envelope.sessionId
+    if let last = chatEventEnvelopesBySession[sessionId]?.last {
       if canAppendChatEvent(envelope, after: last) {
-        events.append(envelope)
-        events = trimChatEventHistory(events)
+        // Hot streaming path: append + cap in place via the Dictionary `_modify`
+        // accessor so the up-to-chatEventHistoryMaxEvents array isn't copied on
+        // every chat_event. Semantics match trimChatEventHistory (keep the last
+        // chatEventHistoryMaxEvents, drop the overflow from the front).
+        chatEventEnvelopesBySession[sessionId, default: []].append(envelope)
+        let overflow = (chatEventEnvelopesBySession[sessionId]?.count ?? 0) - chatEventHistoryMaxEvents
+        if overflow > 0 {
+          chatEventEnvelopesBySession[sessionId, default: []].removeFirst(overflow)
+        }
       } else {
+        let events = chatEventEnvelopesBySession[sessionId] ?? []
         guard !chatEventHistoryContainsDuplicate(envelope, in: events) else { return }
-        events = insertChatEventEnvelope(envelope, into: events)
+        chatEventEnvelopesBySession[sessionId] = insertChatEventEnvelope(envelope, into: events)
       }
     } else {
-      events.append(envelope)
+      chatEventEnvelopesBySession[sessionId, default: []].append(envelope)
     }
-    chatEventEnvelopesBySession[envelope.sessionId] = events
-    chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
+    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
     markSyncActivity()
     updateChatTurnActiveHintFromEvent(envelope)
     markChatEventsChanged()
@@ -9318,6 +9433,7 @@ final class SyncService: ObservableObject {
     let next = deduplicatedChatEventHistory(events)
     guard chatEventEnvelopesBySession[sessionId] != next else { return }
     chatEventEnvelopesBySession[sessionId] = next
+    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
     chatEventRevisionsBySession[sessionId, default: 0] += 1
     markSyncActivity()
     markChatEventsChanged(immediate: true)
@@ -9328,6 +9444,7 @@ final class SyncService: ObservableObject {
     let next = deduplicatedChatEventHistory(current + events)
     guard current != next else { return }
     chatEventEnvelopesBySession[sessionId] = next
+    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
     chatEventRevisionsBySession[sessionId, default: 0] += 1
     markSyncActivity()
     markChatEventsChanged(immediate: true)
@@ -9504,6 +9621,37 @@ final class SyncService: ObservableObject {
     return Array(events.suffix(chatEventHistoryMaxEvents))
   }
 
+  private func pruneChatEventHistoryCacheIfNeeded(preserving additionalSessionIds: Set<String> = []) {
+    let targetCount = max(chatEventHistoryMaxSessions, subscribedChatSessionIds.count + additionalSessionIds.count)
+    guard chatEventEnvelopesBySession.count > targetCount else { return }
+
+    let protectedSessionIds = subscribedChatSessionIds.union(additionalSessionIds)
+    let staleSessionIds = chatEventEnvelopesBySession.keys
+      .filter { !protectedSessionIds.contains($0) }
+      .sorted { lhs, rhs in
+        let leftEvent = chatEventEnvelopesBySession[lhs]?.last
+        let rightEvent = chatEventEnvelopesBySession[rhs]?.last
+        switch (leftEvent, rightEvent) {
+        case let (left?, right?):
+          let order = compareChatEvents(left, right)
+          return order == .orderedSame ? lhs < rhs : order == .orderedAscending
+        case (nil, nil):
+          return lhs < rhs
+        case (nil, _):
+          return true
+        case (_, nil):
+          return false
+        }
+      }
+    let dropCount = max(0, chatEventEnvelopesBySession.count - targetCount)
+    for sessionId in staleSessionIds.prefix(dropCount) {
+      chatEventEnvelopesBySession.removeValue(forKey: sessionId)
+      chatEventRevisionsBySession.removeValue(forKey: sessionId)
+      chatEventLastSeqBySession.removeValue(forKey: sessionId)
+      chatTurnActiveHintBySession.removeValue(forKey: sessionId)
+    }
+  }
+
   private func trimmedTerminalBuffer(_ buffer: String) -> String {
     guard buffer.count > syncTerminalBufferMaxCharacters else { return buffer }
     return String(buffer.suffix(syncTerminalBufferMaxCharacters))
@@ -9589,6 +9737,8 @@ final class SyncService: ObservableObject {
       // Watermarks are only meaningful while the applied history is retained;
       // resuming from a seq after dropping history would skip those events.
       chatEventLastSeqBySession.removeAll()
+    } else {
+      pruneChatEventHistoryCacheIfNeeded()
     }
     markChatEventsChanged(immediate: true)
     localStateRevision += 1
@@ -10633,33 +10783,33 @@ private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvel
   var output = Data()
   let chunkSize = 16_384
 
-  data.withUnsafeBytes { rawBuffer in
-    stream.next_in = UnsafeMutablePointer<Bytef>(mutating: rawBuffer.bindMemory(to: Bytef.self).baseAddress)
-    stream.avail_in = uint(data.count)
-  }
-
   status = inflateInit2_(&stream, MAX_WBITS + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
   guard status == Z_OK else {
     throw NSError(domain: "ADE", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unable to start gzip decoder."])
   }
   defer { inflateEnd(&stream) }
 
-  repeat {
-    var chunk = [UInt8](repeating: 0, count: chunkSize)
-    chunk.withUnsafeMutableBytes { chunkBuffer in
-      stream.next_out = chunkBuffer.bindMemory(to: Bytef.self).baseAddress
-      stream.avail_out = uint(chunkSize)
-      status = inflate(&stream, Z_SYNC_FLUSH)
-      let produced = chunkSize - Int(stream.avail_out)
-      if produced > 0, let baseAddress = chunkBuffer.bindMemory(to: UInt8.self).baseAddress {
-        if output.count + produced > maxOutputBytes {
-          status = Z_MEM_ERROR
-          return
+  data.withUnsafeBytes { rawBuffer in
+    stream.next_in = UnsafeMutablePointer<Bytef>(mutating: rawBuffer.bindMemory(to: Bytef.self).baseAddress)
+    stream.avail_in = uint(data.count)
+
+    repeat {
+      var chunk = [UInt8](repeating: 0, count: chunkSize)
+      chunk.withUnsafeMutableBytes { chunkBuffer in
+        stream.next_out = chunkBuffer.bindMemory(to: Bytef.self).baseAddress
+        stream.avail_out = uint(chunkSize)
+        status = inflate(&stream, Z_SYNC_FLUSH)
+        let produced = chunkSize - Int(stream.avail_out)
+        if produced > 0, let baseAddress = chunkBuffer.bindMemory(to: UInt8.self).baseAddress {
+          if output.count + produced > maxOutputBytes {
+            status = Z_MEM_ERROR
+            return
+          }
+          output.append(baseAddress, count: produced)
         }
-        output.append(baseAddress, count: produced)
       }
-    }
-  } while status == Z_OK
+    } while status == Z_OK
+  }
 
   guard status == Z_STREAM_END else {
     let message: String

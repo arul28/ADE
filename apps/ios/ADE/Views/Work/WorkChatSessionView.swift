@@ -768,7 +768,7 @@ struct WorkChatSessionView: View {
     ScrollViewReader { proxy in
       VStack(spacing: 0) {
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: 14) {
+          VStack(alignment: .leading, spacing: 14) {
             sessionOverviewSection
             timelineSection(proxy: proxy)
             streamingStatusSection

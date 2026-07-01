@@ -1332,7 +1332,7 @@ final class DatabaseService {
     if tableExists("files_workspaces") {
       let cached = query(
         """
-        select id, kind, lane_id, name, root_path, is_read_only_by_default, mobile_read_only
+        select id, kind, lane_id, name, root_path, is_read_only_by_default
           from files_workspaces
          order by case when kind = 'primary' then 0 else 1 end, name collate nocase asc
         """
@@ -1343,8 +1343,7 @@ final class DatabaseService {
           laneId: stringValue(statement, index: 2),
           name: stringValue(statement, index: 3) ?? "",
           rootPath: stringValue(statement, index: 4) ?? "",
-          isReadOnlyByDefault: sqlite3_column_int(statement, 5) == 1,
-          mobileReadOnly: sqlite3_column_int(statement, 6) != 0
+          isReadOnlyByDefault: sqlite3_column_int(statement, 5) == 1
         )
       }
       let scoped = cached.filter { workspace in
@@ -1367,8 +1366,7 @@ final class DatabaseService {
         laneId: lane.id,
         name: lane.name,
         rootPath: lane.attachedRootPath ?? lane.worktreePath,
-        isReadOnlyByDefault: lane.isEditProtected,
-        mobileReadOnly: true
+        isReadOnlyByDefault: lane.isEditProtected
       )
     }
   }
@@ -1438,15 +1436,14 @@ final class DatabaseService {
         _ = try execute(
           """
           insert into files_workspaces(
-            id, kind, lane_id, name, root_path, is_read_only_by_default, mobile_read_only, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+            id, kind, lane_id, name, root_path, is_read_only_by_default, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             kind = excluded.kind,
             lane_id = excluded.lane_id,
             name = excluded.name,
             root_path = excluded.root_path,
             is_read_only_by_default = excluded.is_read_only_by_default,
-            mobile_read_only = excluded.mobile_read_only,
             updated_at = excluded.updated_at
           """
         ) { statement in
@@ -1460,8 +1457,7 @@ final class DatabaseService {
           try bindText(workspace.name, to: statement, index: 4)
           try bindText(workspace.rootPath, to: statement, index: 5)
           sqlite3_bind_int(statement, 6, workspace.isReadOnlyByDefault ? 1 : 0)
-          sqlite3_bind_int(statement, 7, workspace.mobileReadOnly ? 1 : 0)
-          try bindText(timestamp, to: statement, index: 8)
+          try bindText(timestamp, to: statement, index: 7)
         }
       }
       try exec("commit")
@@ -1694,6 +1690,7 @@ final class DatabaseService {
   private func fetchSessionLocked(id sessionId: String) -> TerminalSessionSummary? {
     let trimmedId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedId.isEmpty else { return nil }
+    guard let projectId = currentProjectIdLocked() else { return nil }
     let sql = """
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
@@ -1701,11 +1698,12 @@ final class DatabaseService {
              s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
-       where s.id = ?
+       where s.id = ? and (l.project_id = ? or l.id is null)
        limit 1
     """
     return query(sql, bind: { [self] statement in
       try self.bindText(trimmedId, to: statement, index: 1)
+      try self.bindText(projectId, to: statement, index: 2)
     }) { statement in
       terminalSessionSummary(from: sessionRow(from: statement))
     }.first
@@ -3546,8 +3544,8 @@ final class DatabaseService {
     case .string(let stringValue):
       try bindText(stringValue, to: statement, index: index)
     case .number(let numberValue):
-      if numberValue.rounded(.towardZero) == numberValue {
-        sqlite3_bind_int64(statement, index, sqlite3_int64(numberValue))
+      if let integerValue = safeInt64Value(from: numberValue) {
+        sqlite3_bind_int64(statement, index, sqlite3_int64(integerValue))
       } else {
         sqlite3_bind_double(statement, index, numberValue)
       }
@@ -3562,6 +3560,16 @@ final class DatabaseService {
     case .null:
       sqlite3_bind_null(statement, index)
     }
+  }
+
+  private func safeInt64Value(from numberValue: Double) -> Int64? {
+    guard numberValue.isFinite,
+          numberValue.rounded(.towardZero) == numberValue,
+          numberValue >= Double(Int64.min),
+          numberValue < Double(Int64.max) else {
+      return nil
+    }
+    return Int64(numberValue)
   }
 
   private func scalarValue(_ statement: OpaquePointer, index: Int32) -> SyncScalarValue {
@@ -4178,9 +4186,7 @@ final class DatabaseService {
       bytes.append(UInt8(utf8.count))
       bytes.append(contentsOf: utf8)
     case .number(let numberValue):
-      guard numberValue.rounded(.towardZero) == numberValue else { return nil }
-      guard numberValue >= Double(Int64.min), numberValue <= Double(Int64.max) else { return nil }
-      let integer = Int64(numberValue)
+      guard let integer = safeInt64Value(from: numberValue) else { return nil }
       if integer == 0 {
         bytes.append(0x08)
       } else if integer == 1 {

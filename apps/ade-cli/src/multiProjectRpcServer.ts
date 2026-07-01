@@ -1,4 +1,6 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
+import { createHash } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -282,6 +284,11 @@ function readLimit(value: unknown): number {
     : 100;
 }
 
+// The entrypoint cannot change during the process lifetime, so hash it once and
+// reuse the result. `undefined` means "not computed yet"; `null` is a cached
+// failure (missing/unreadable entrypoint) that must not retry on every call.
+let cachedRuntimeBuildHash: string | null | undefined;
+
 export function createMultiProjectRpcRequestHandler(
   options: MultiProjectRpcHandlerOptions,
 ): JsonRpcHandler & {
@@ -450,11 +457,35 @@ export function createMultiProjectRpcRequestHandler(
     return typeof value === "string" && value.trim() ? value.trim() : null;
   };
 
+  const computeRuntimeBuildHash = (): string | null => {
+    if (cachedRuntimeBuildHash !== undefined) return cachedRuntimeBuildHash;
+    const entrypoint = process.argv[1];
+    if (typeof entrypoint !== "string" || !entrypoint.trim()) {
+      cachedRuntimeBuildHash = null;
+      return null;
+    }
+    try {
+      const resolved = path.resolve(entrypoint);
+      const stat = fs.statSync(resolved);
+      if (!stat.isFile()) {
+        cachedRuntimeBuildHash = null;
+        return null;
+      }
+      cachedRuntimeBuildHash = createHash("sha256")
+        .update(fs.readFileSync(resolved))
+        .digest("hex");
+      return cachedRuntimeBuildHash;
+    } catch {
+      cachedRuntimeBuildHash = null;
+      return null;
+    }
+  };
+
   const resolveRuntimeEnvInfo = () => {
     const projectRoot = trimmedEnvOrNull("ADE_PROJECT_ROOT");
     const packageChannel = trimmedEnvOrNull("ADE_PACKAGE_CHANNEL");
     return {
-      buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH"),
+      buildHash: trimmedEnvOrNull("ADE_RUNTIME_BUILD_HASH") ?? computeRuntimeBuildHash(),
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
       packageChannel,
       projectRoot: projectRoot ? path.resolve(projectRoot) : null,

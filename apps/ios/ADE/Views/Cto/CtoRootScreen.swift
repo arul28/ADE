@@ -77,7 +77,7 @@ struct CtoRootScreen: View {
   private var tabBody: some View {
     switch selectedTab {
     case .team:
-      CtoTeamScreen(path: $path)
+      CtoTeamScreen(path: $path, isTabActive: isTabActive)
         .environmentObject(syncService)
     case .workflows:
       CtoWorkflowsScreen()

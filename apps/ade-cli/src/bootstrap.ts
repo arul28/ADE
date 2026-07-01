@@ -1079,6 +1079,7 @@ export async function createAdeRuntime(args: {
         automationService,
         prService: headlessLinearServices.prService,
         secretService: automationSecretService,
+        githubService: headlessLinearServices.githubService,
         listRules: () => projectConfigService.get().effective.automations ?? [],
       })
     : null;

@@ -296,8 +296,7 @@ final class ADETests: XCTestCase {
 
     DeepLinkRouter.shared.handleNotificationUserInfo(["prNumber": 9876])
 
-    XCTAssertEqual(service.requestedPrNavigation?.prNumber, 9876)
-    XCTAssertEqual(service.requestedPrNavigation?.prId, "github-pr-number:9876")
+    XCTAssertEqual(service.requestedPrNavigation?.target, .githubNumber(9876))
   }
 
   @MainActor
@@ -315,8 +314,10 @@ final class ADETests: XCTestCase {
       "prNumber": "42",
     ])
 
-    XCTAssertEqual(service.requestedPrNavigation?.prId, "pr_123")
-    XCTAssertEqual(service.requestedPrNavigation?.prNumber, 42)
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .detail(prId: "pr_123", prNumber: 42, laneId: nil)
+    )
   }
 
   @MainActor
@@ -430,6 +431,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["default", "plan", "edit", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.title), ["Agent", "Plan", "Ask", "Full auto"])
+    XCTAssertEqual(workRuntimeModeLabel(provider: "cursor", mode: "full-auto"), "Full auto")
     XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
 
     let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
@@ -445,6 +448,10 @@ final class ADETests: XCTestCase {
     let cursorAsk = workRuntimeWireFields(provider: "cursor", mode: "edit")
     XCTAssertEqual(cursorAsk.permissionMode, "edit")
     XCTAssertEqual(cursorAsk.cursorModeId, "ask")
+
+    let cursorFullAuto = workRuntimeWireFields(provider: "cursor", mode: "full-auto")
+    XCTAssertEqual(cursorFullAuto.permissionMode, "full-auto")
+    XCTAssertEqual(cursorFullAuto.cursorModeId, "full-auto")
 
     let opencodeLegacyDefault = workRuntimeWireFields(provider: "opencode", mode: "default")
     XCTAssertEqual(opencodeLegacyDefault.permissionMode, "edit")
@@ -2260,6 +2267,33 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testChatEventHistoryEvictsOldUnsubscribedSessionsButKeepsSubscribedHistory() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try await service.subscribeToChatEvents(sessionId: "session-0")
+
+    for index in 0..<70 {
+      service.recordChatEventEnvelope(AgentChatEventEnvelope(
+        sessionId: "session-\(index)",
+        timestamp: String(format: "2026-03-17T00:00:00.%03dZ", index),
+        event: .text(
+          text: "event-\(index)",
+          messageId: "msg-\(index)",
+          turnId: "turn-\(index)",
+          itemId: "item-\(index)"
+        ),
+        sequence: index,
+        provenance: nil
+      ))
+    }
+
+    XCTAssertFalse(service.chatEventHistory(sessionId: "session-0").isEmpty)
+    XCTAssertTrue(service.chatEventHistory(sessionId: "session-1").isEmpty)
+    XCTAssertTrue(service.chatEventHistory(sessionId: "session-6").isEmpty)
+    XCTAssertFalse(service.chatEventHistory(sessionId: "session-7").isEmpty)
+    XCTAssertFalse(service.chatEventHistory(sessionId: "session-69").isEmpty)
+  }
+
+  @MainActor
   func testTruncatedChatSubscribeSnapshotMergesWithExistingHistory() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let original = AgentChatEventEnvelope(
@@ -2663,7 +2697,6 @@ final class ADETests: XCTestCase {
         name text not null,
         root_path text not null,
         is_read_only_by_default integer not null default 1,
-        mobile_read_only integer not null default 1,
         updated_at text not null
       );
     """)
@@ -2691,8 +2724,7 @@ final class ADETests: XCTestCase {
         laneId: "lane-one",
         name: "One",
         rootPath: "/tmp/project-one/.ade/worktrees/one",
-        isReadOnlyByDefault: false,
-        mobileReadOnly: true
+        isReadOnlyByDefault: false
       ),
     ])
 
@@ -2713,8 +2745,7 @@ final class ADETests: XCTestCase {
         laneId: "lane-two",
         name: "Two",
         rootPath: "/tmp/project-two/.ade/worktrees/two",
-        isReadOnlyByDefault: false,
-        mobileReadOnly: true
+        isReadOnlyByDefault: false
       ),
     ])
 
@@ -3197,7 +3228,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.activeProjectRootPath, "/tmp/project-one")
     XCTAssertEqual(database.currentProjectId(), "runtime-project")
     XCTAssertEqual(service.projects.map(\.id), ["runtime-project"])
-    XCTAssertFalse(service.shouldShowProjectHome)
+    XCTAssertTrue(service.shouldShowProjectHome)
 
     database.close()
   }
@@ -3559,6 +3590,46 @@ final class ADETests: XCTestCase {
     target.close()
   }
 
+  func testDatabaseApplyChangesDoesNotTrapOnOutOfRangeIntegralDouble() throws {
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    let poison = Double(Int64.max)
+    XCTAssertNoThrow(try database.applyChanges([
+      CrsqlChangeRow(
+        table: "lanes",
+        pk: .number(poison),
+        cid: "name",
+        val: .number(poison),
+        colVersion: 1,
+        dbVersion: 2,
+        siteId: "b00e9b92c864a27958669c1595fcb2c3",
+        cl: 1,
+        seq: 0
+      )
+    ]))
+
+    database.close()
+  }
+
+  func testDatabaseExportDoesNotTrapOnMaxIntegerPrimaryKey() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory(), bootstrapSQL: """
+      create table if not exists numeric_rows (
+        id integer primary key,
+        value text not null
+      );
+    """)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into numeric_rows (id, value) values (9223372036854775807, 'max-int')
+    """)
+
+    let changes = database.exportChangesSince(version: 0)
+    XCTAssertFalse(changes.filter { $0.table == "numeric_rows" }.isEmpty)
+    database.close()
+  }
+
   func testSyncChangesetBatchPayloadDecodesLegacyBatchWithoutBatchId() throws {
     let data = """
     {
@@ -3813,6 +3884,39 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sessions.first?.id, "session-1")
     XCTAssertEqual(sessions.first?.laneId, "lane-1")
     XCTAssertEqual(sessions.first?.title, "Mobile sync test")
+    database.close()
+  }
+
+  func testDatabaseFetchSessionIsScopedToActiveProject() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeTerminalSessionSyncDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('project-1', '/tmp/project-one', 'One', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z'),
+        ('project-2', '/tmp/project-two', 'Two', 'main', '2026-04-20T00:00:00.000Z', '2026-04-20T00:00:00.000Z');
+
+      insert into lanes (
+        id, project_id, name, lane_type, base_ref, branch_ref, worktree_path, status, created_at
+      ) values
+        ('lane-1', 'project-1', 'Project one lane', 'worktree', 'main', 'main', '/tmp/project-one', 'active', '2026-04-20T00:00:00.000Z'),
+        ('lane-2', 'project-2', 'Project two lane', 'worktree', 'main', 'main', '/tmp/project-two', 'active', '2026-04-20T00:00:00.000Z');
+
+      insert into terminal_sessions (
+        id, lane_id, title, started_at, transcript_path, status, tool_type
+      ) values
+        ('session-active', 'lane-1', 'Active project chat', '2026-04-20T00:01:00.000Z', '', 'running', 'codex-chat'),
+        ('session-foreign', 'lane-2', 'Foreign project chat', '2026-04-20T00:02:00.000Z', '', 'running', 'codex-chat');
+    """)
+
+    database.setActiveProjectId("project-1")
+
+    XCTAssertEqual(database.fetchSession(id: "session-active")?.id, "session-active")
+    XCTAssertNil(database.fetchSession(id: "session-foreign"))
+    XCTAssertEqual(database.fetchSessions().map(\.id), ["session-active"])
     database.close()
   }
 
@@ -7410,6 +7514,38 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(lines.contains(where: { $0.kind == .added && $0.text == "let value = 2" }))
     XCTAssertTrue(lines.contains(where: { $0.kind == .unchanged && $0.text == "print(value)" }))
     XCTAssertTrue(lines.contains(where: { $0.kind == .added && $0.text == "print(\"done\")" }))
+    XCTAssertFalse(lines.contains(where: { $0.id.contains("let value") }))
+  }
+
+  func testFilesDiffPreviewLimitPausesDenseLinePairComparisons() {
+    let original = (0..<1_501).map { "old\($0)" }.joined(separator: "\n")
+    let modified = (0..<1_000).map { "new\($0)" }.joined(separator: "\n")
+    let diff = FileDiff(
+      path: "Sources/App.swift",
+      mode: "unstaged",
+      original: DiffSide(exists: true, text: original),
+      modified: DiffSide(exists: true, text: modified),
+      isBinary: false,
+      language: "swift"
+    )
+
+    let limit = filesDiffPreviewLimit(diff: diff)
+
+    XCTAssertEqual(limit?.title, "Diff preview paused")
+    XCTAssertTrue(limit?.message.contains("1501 original lines") == true)
+    XCTAssertTrue(limit?.message.contains("1000 modified lines") == true)
+  }
+
+  func testFilesRoutesAndTransitionIdsKeepSamePathDistinctAcrossWorkspaces() {
+    let path = "Sources/App.swift"
+    let firstRoute = FilesRoute.editor(workspaceId: "workspace-a", relativePath: path, focusLine: nil)
+    let secondRoute = FilesRoute.editor(workspaceId: "workspace-b", relativePath: path, focusLine: nil)
+
+    XCTAssertNotEqual(firstRoute, secondRoute)
+    XCTAssertNotEqual(
+      filesTransitionId(kind: "container", workspaceId: "workspace-a", path: path),
+      filesTransitionId(kind: "container", workspaceId: "workspace-b", path: path)
+    )
   }
 
   func testFileIconMapsCommonExtensionsToSfSymbols() {
@@ -7427,7 +7563,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(formattedFileSize(1_572_864), "1.5 MB")
   }
 
-  func testFilesWorkspaceDefaultsToMobileReadOnlyWhenHostOmitsFlag() throws {
+  func testFilesWorkspaceIgnoresLegacyMobileReadOnlyFlag() throws {
     let data = try JSONSerialization.data(withJSONObject: [
       "id": "workspace-1",
       "kind": "primary",
@@ -7435,12 +7571,13 @@ final class ADETests: XCTestCase {
       "name": "Repo",
       "rootPath": "/repo",
       "isReadOnlyByDefault": false,
+      "mobileReadOnly": true,
     ])
 
     let workspace = try JSONDecoder().decode(FilesWorkspace.self, from: data)
 
-    XCTAssertTrue(workspace.mobileReadOnly)
-    XCTAssertTrue(workspace.readOnlyOnMobile)
+    XCTAssertEqual(workspace.id, "workspace-1")
+    XCTAssertFalse(workspace.isReadOnlyByDefault)
   }
 
   func testResolveFilesWorkspaceFallsBackToLaneMatchWhenWorkspaceIdIsStale() {
@@ -7565,8 +7702,7 @@ final class ADETests: XCTestCase {
         laneId: "lane-1",
         name: "Feature",
         rootPath: "/repo/.ade/worktrees/feature",
-        isReadOnlyByDefault: false,
-        mobileReadOnly: true
+        isReadOnlyByDefault: false
       )
     ])
     try database.cacheDirectorySnapshot(
@@ -7611,11 +7747,135 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(database.listWorkspaces().first?.id, "workspace-lane-1")
-    XCTAssertTrue(database.listWorkspaces().first?.mobileReadOnly == true)
+    XCTAssertEqual(database.listWorkspaces().first?.isReadOnlyByDefault, false)
     XCTAssertEqual(database.fetchDirectorySnapshot(workspaceId: "workspace-lane-1", parentPath: "Sources", includeHidden: false)?.first?.path, "Sources/App.swift")
     XCTAssertEqual(database.fetchFileContentSnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift")?.content, "print(\"hi\")")
     XCTAssertEqual(database.fetchFileDiffSnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift", mode: "unstaged")?.modified.text, "print(\"hi\")")
     XCTAssertEqual(database.fetchFileHistorySnapshot(workspaceId: "workspace-lane-1", path: "Sources/App.swift")?.first?.subject, "Update app")
+    database.close()
+  }
+
+  func testDatabaseFileSnapshotsAreScopedByWorkspaceForSamePath() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+    let sharedPath = "Sources/App.swift"
+
+    try database.replaceFilesWorkspaces([
+      FilesWorkspace(
+        id: "workspace-a",
+        kind: "worktree",
+        laneId: "lane-a",
+        name: "A",
+        rootPath: "/repo/.ade/worktrees/a",
+        isReadOnlyByDefault: false
+      ),
+      FilesWorkspace(
+        id: "workspace-b",
+        kind: "worktree",
+        laneId: "lane-b",
+        name: "B",
+        rootPath: "/repo/.ade/worktrees/b",
+        isReadOnlyByDefault: false
+      ),
+    ])
+
+    try database.cacheFileContentSnapshot(
+      workspaceId: "workspace-a",
+      path: sharedPath,
+      blob: SyncFileBlob(
+        path: sharedPath,
+        size: 1,
+        mimeType: nil,
+        encoding: "utf-8",
+        isBinary: false,
+        content: "a",
+        languageId: "swift"
+      )
+    )
+    try database.cacheFileContentSnapshot(
+      workspaceId: "workspace-b",
+      path: sharedPath,
+      blob: SyncFileBlob(
+        path: sharedPath,
+        size: 1,
+        mimeType: nil,
+        encoding: "utf-8",
+        isBinary: false,
+        content: "b",
+        languageId: "swift"
+      )
+    )
+    try database.cacheFileDiffSnapshot(
+      workspaceId: "workspace-a",
+      path: sharedPath,
+      mode: "unstaged",
+      diff: FileDiff(
+        path: sharedPath,
+        mode: "unstaged",
+        original: DiffSide(exists: true, text: "old-a"),
+        modified: DiffSide(exists: true, text: "new-a"),
+        isBinary: false,
+        language: "swift"
+      )
+    )
+    try database.cacheFileDiffSnapshot(
+      workspaceId: "workspace-b",
+      path: sharedPath,
+      mode: "unstaged",
+      diff: FileDiff(
+        path: sharedPath,
+        mode: "unstaged",
+        original: DiffSide(exists: true, text: "old-b"),
+        modified: DiffSide(exists: true, text: "new-b"),
+        isBinary: false,
+        language: "swift"
+      )
+    )
+    try database.cacheFileHistorySnapshot(
+      workspaceId: "workspace-a",
+      path: sharedPath,
+      entries: [
+        GitFileHistoryEntry(
+          commitSha: "aaa",
+          shortSha: "aaa",
+          authorName: "A",
+          authoredAt: "2026-04-11T21:00:00.000Z",
+          subject: "Change A",
+          path: sharedPath,
+          previousPath: nil,
+          changeType: "modified"
+        )
+      ]
+    )
+    try database.cacheFileHistorySnapshot(
+      workspaceId: "workspace-b",
+      path: sharedPath,
+      entries: [
+        GitFileHistoryEntry(
+          commitSha: "bbb",
+          shortSha: "bbb",
+          authorName: "B",
+          authoredAt: "2026-04-12T21:00:00.000Z",
+          subject: "Change B",
+          path: sharedPath,
+          previousPath: nil,
+          changeType: "modified"
+        )
+      ]
+    )
+
+    XCTAssertEqual(database.fetchFileContentSnapshot(workspaceId: "workspace-a", path: sharedPath)?.content, "a")
+    XCTAssertEqual(database.fetchFileContentSnapshot(workspaceId: "workspace-b", path: sharedPath)?.content, "b")
+    XCTAssertEqual(
+      database.fetchFileDiffSnapshot(workspaceId: "workspace-a", path: sharedPath, mode: "unstaged")?.modified.text,
+      "new-a"
+    )
+    XCTAssertEqual(
+      database.fetchFileDiffSnapshot(workspaceId: "workspace-b", path: sharedPath, mode: "unstaged")?.modified.text,
+      "new-b"
+    )
+    XCTAssertEqual(database.fetchFileHistorySnapshot(workspaceId: "workspace-a", path: sharedPath)?.first?.subject, "Change A")
+    XCTAssertEqual(database.fetchFileHistorySnapshot(workspaceId: "workspace-b", path: sharedPath)?.first?.subject, "Change B")
     database.close()
   }
 
@@ -9879,7 +10139,11 @@ final class ADETests: XCTestCase {
       payload: .message(message)
     )
 
-    let rendered = workTimelineRenderEntries(from: [entry], streamingAssistantMessageId: nil)
+    let rendered = workTimelineRenderEntries(
+      from: [entry],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id
+    )
 
     XCTAssertEqual(rendered.count, 3)
     XCTAssertTrue(rendered.allSatisfy { $0.sourceEntryId == entry.id })
@@ -9936,7 +10200,11 @@ final class ADETests: XCTestCase {
       payload: .message(message)
     )
 
-    let rendered = workTimelineRenderEntries(from: [entry], streamingAssistantMessageId: nil)
+    let rendered = workTimelineRenderEntries(
+      from: [entry],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id
+    )
     guard case .assistantControls(let controls) = rendered.last?.payload else {
       return XCTFail("Expected a controls row after the truncated assistant preview.")
     }
@@ -11425,6 +11693,13 @@ final class ADETests: XCTestCase {
       dataUrl: "data:image/png;base64,\(tinyPngBase64)"
     )
     XCTAssertNotNil(filesImageData(from: blob))
+  }
+
+  func testWorkChatImagePreviewHelpersCapAndDownsampleAttachmentData() {
+    let tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+    XCTAssertNil(WorkChatAttachmentImagePreview.base64DecodedImageData(Data(repeating: 7, count: 8).base64EncodedString(), maxBytes: 4))
+    XCTAssertNotNil(WorkChatAttachmentImagePreview.image(fromDataUrl: "data:image/png;base64,\(tinyPngBase64)", maxPixelSize: 32))
   }
 
   func testWorkDisplayLeavesCleanRepeatedLettersAloneEvenWithManyDoubles() {
@@ -13114,7 +13389,7 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkPreviewIsWireframeMatchesDesktopIndentationHeuristic() {
-    XCTAssertTrue(workPreviewIsWireframe("Home\n  Primary action\n  Secondary action"))
+    XCTAssertTrue(workPreviewIsWireframe("Name    Status\nADE     Active"))
     XCTAssertFalse(workPreviewIsWireframe("Line one\nLine two"))
   }
 
@@ -13949,6 +14224,18 @@ final class RosterDeltaTests: XCTestCase {
     XCTAssertEqual(seq, 5)
     XCTAssertEqual(projects.first { $0.projectId == "a" }?.runningCount, 2)
     XCTAssertEqual(projects.count, 2)
+  }
+
+  func testRosterDeltaToleratesDuplicateCurrentProjectIds() {
+    let current = [project("a", running: 0), project("a", running: 1), project("b")]
+    let delta = RemoteRosterDeltaPayload(seq: 5, changed: [project("a", running: 2)], removed: nil)
+    guard case let .applied(projects, seq) = rosterApplyDelta(current: current, currentSeq: 4, delta: delta) else {
+      return XCTFail("expected applied")
+    }
+
+    XCTAssertEqual(seq, 5)
+    XCTAssertEqual(projects.map(\.projectId).sorted(), ["a", "b"])
+    XCTAssertEqual(projects.first { $0.projectId == "a" }?.runningCount, 2)
   }
 
   func testRosterDeltaRemovesProjects() {
