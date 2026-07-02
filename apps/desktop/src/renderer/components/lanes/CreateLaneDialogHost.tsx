@@ -50,12 +50,25 @@ type DetachedSetupParams = {
   laneId: string;
   laneName: string;
   templateId: string;
+  projectRoot: string | null;
 };
 
 async function applyLaneEnvSetup(laneId: string, templateId: string): Promise<LaneEnvInitProgress> {
   return templateId
     ? await window.ade.lanes.applyTemplate({ laneId, templateId })
     : await window.ade.lanes.initEnv({ laneId });
+}
+
+function normalizedProjectRoot(root: string | null | undefined): string | null {
+  return root?.trim() || null;
+}
+
+function getActiveProjectRoot(): string | null {
+  return selectActiveProjectRoot(useAppStore.getState());
+}
+
+function isDetachedSetupProjectActive(params: DetachedSetupParams): boolean {
+  return normalizedProjectRoot(getActiveProjectRoot()) === normalizedProjectRoot(params.projectRoot);
 }
 
 function setupFailureToastId(laneId: string): string {
@@ -81,6 +94,10 @@ function showSetupFailureToast(params: DetachedSetupParams, detail?: string): vo
 function runDetachedLaneSetup(params: DetachedSetupParams): void {
   void (async () => {
     try {
+      if (!isDetachedSetupProjectActive(params)) {
+        showSetupFailureToast(params, "Open the original project to retry this lane setup.");
+        return;
+      }
       const progress = await applyLaneEnvSetup(params.laneId, params.templateId);
       if (progress.overallStatus === "failed") {
         showSetupFailureToast(params, "Environment setup failed. Retry to finish setting up this lane.");
@@ -581,6 +598,7 @@ export function CreateLaneDialogHost({
           laneId: lane.id,
           laneName: lane.name,
           templateId: selectedTemplateId,
+          projectRoot: activeProjectRoot,
         };
         resetCreateDialogState();
         onOpenChange(false);
@@ -617,6 +635,7 @@ export function CreateLaneDialogHost({
     templates,
     createSelectedColor,
     createSelectedLinearIssue,
+    activeProjectRoot,
   ]);
 
   const handleDialogOpenChange = useCallback((next: boolean) => {
