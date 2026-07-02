@@ -79,21 +79,24 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
-      if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
+      const isCurrentRequest = () => mountedRef.current && statusRequestSeqRef.current === requestSeq;
       // Read auth state AFTER the status call (success or failure): an
       // expired stored token can be cleared during the status check, and the
       // panel must reflect that immediately.
-      const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
-      if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
-      setAppAuth(authStatus ?? null);
-      if (opts.retryAfterAuthorization) {
-        setDeviceMessage(
-          latestStatus && isGitHubAppRepoAccessPending(latestStatus)
-            ? "GitHub authorization is complete. Repository access is still warming up; use Refresh again in a moment."
-            : null,
-        );
+      if (isCurrentRequest()) {
+        const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
+        if (isCurrentRequest()) {
+          setAppAuth(authStatus ?? null);
+          if (opts.retryAfterAuthorization) {
+            setDeviceMessage(
+              latestStatus && isGitHubAppRepoAccessPending(latestStatus)
+                ? "GitHub authorization is complete. Repository access is still warming up; use Refresh again in a moment."
+                : null,
+            );
+          }
+          setLoading(false);
+        }
       }
-      setLoading(false);
     }
   }, []);
 

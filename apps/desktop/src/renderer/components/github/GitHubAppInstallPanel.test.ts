@@ -44,4 +44,15 @@ describe("GitHubAppInstallPanel status helpers", () => {
     expect(view.label).toBe("Check failed");
     expect(view.description("arul28/ADE")).toBe("GitHub App relay status check failed (500)");
   });
+
+  it("detects repository-not-found error variants as pending repo access", () => {
+    expect(isGitHubAppRepoAccessPending(makeStatus({ error: "Repository not found." }))).toBe(true);
+    expect(isGitHubAppRepoAccessPending(makeStatus({ error: "Could not resolve to a Repository." }))).toBe(true);
+  });
+
+  it("ignores repo access errors when status guards do not match", () => {
+    expect(isGitHubAppRepoAccessPending(makeStatus({ relayConfigured: false }))).toBe(false);
+    expect(isGitHubAppRepoAccessPending(makeStatus({ installed: true }))).toBe(false);
+    expect(isGitHubAppRepoAccessPending(makeStatus({ state: "not_installed" }))).toBe(false);
+  });
 });
