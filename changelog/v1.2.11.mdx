@@ -1,0 +1,25 @@
+---
+title: "v1.2.11"
+description: "Release notes for ADE v1.2.11 - July 2, 2026"
+---
+
+v1.2.11 ships the new unified ADE chat/CLI launch command, hardens GitHub PR sync through the webhook relay, and tightens Work, Files, onboarding, browser, and mobile sync flows. iOS stays on its current marketing version and gets a build-number-only TestFlight update for the same release train.
+
+---
+
+## Desktop
+
+- **Unified work launch command.** `ade new chat --mode chat|cli` now mirrors the desktop New Chat toggle, with lane auto-creation, provider/model/reasoning controls, fast-mode selection, dry-run previews, and prompt kickoff for persistent Work chats or tracked provider CLI sessions.
+- **GitHub PR sync hardening.** The webhook relay now supports GitHub App device-flow auth, repository permission gates, durable repository/event records, and stronger relay tests so PR state refreshes without depending on broad user tokens.
+- **Work and chat recovery.** Start-chat-in-lane, tracked CLI session naming, chat PR live refresh, compact Claude hook errors, Claude logout recovery, Codex continuation recovery, and no-op prompt handling are all tightened.
+- **Files and project trust.** Files can keep multi-lane editor tabs open, remove the old edit-trust friction, clamp context menus to the viewport, and preserve safer remote file and markdown viewer behavior.
+- **Onboarding and web polish.** The welcome card has sharper visuals, mobile TestFlight links are available from desktop and web surfaces, the ADE browser handles popups and renderer crashes more defensively, and project secrets are available to agent-facing flows.
+
+---
+
+## iOS
+
+- **Build-number-only TestFlight update.** The mobile app keeps its existing marketing version for this train; this release only bumps the iOS build number for TestFlight.
+- **More reliable mobile sync.** Remote-project sync control, iPhone handoff, chunk assembly, roster hydration, and mobile command routing have stronger recovery paths and regression coverage.
+- **Work launch parity.** The iOS Work and Hub new-session flows pass fast-mode and reasoning settings through the runtime, so phone-started CLI sessions match desktop launch behavior.
+- **Mobile review surfaces.** PR, Files, CTO, Settings, and Work screens pick up the latest rendering, navigation, and status fixes from the desktop/runtime sync model.
