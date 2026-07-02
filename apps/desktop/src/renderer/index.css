@@ -2059,6 +2059,7 @@ button:active, [role="button"]:active {
   }
   .ade-streaming-shimmer,
   .ade-streaming-shimmer::after,
+  .ade-update-installed-card,
   .ade-tool-bounce,
   .ade-fade-in,
   .ade-glow-pulse,
@@ -3975,6 +3976,15 @@ button:active, [role="button"]:active {
 
 .ade-fade-in {
   animation: ade-fade-slide-up 0.3s ease-out both;
+}
+
+.ade-update-installed-card[data-state="open"] {
+  animation: ade-update-installed-card-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes ade-update-installed-card-in {
+  from { opacity: 0; transform: translate(-50%, -48%) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
 }
 
 /*

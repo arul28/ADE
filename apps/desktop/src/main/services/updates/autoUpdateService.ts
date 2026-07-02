@@ -132,7 +132,7 @@ export function buildReleaseNotesUrl(
   const normalizedVersion = version.trim().replace(/^v/i, "");
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
   if (!normalizedVersion || !normalizedBaseUrl) return null;
-  return `${normalizedBaseUrl}/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
+  return `${normalizedBaseUrl}/docs/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
 
 function cloneRecentlyInstalledUpdate(
@@ -219,10 +219,8 @@ function reconcilePersistedUpdateState(args: {
       nextState.recentlyInstalledUpdate = {
         version: args.currentVersion,
         installedAt: args.now,
-        releaseNotesUrl:
-          pendingInstall.targetVersion === args.currentVersion
-            ? pendingInstall.releaseNotesUrl
-            : buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl),
+        releaseNotesUrl: buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl)
+          ?? pendingInstall.releaseNotesUrl,
       };
       cacheCleanupReason = "installed";
     } else {
