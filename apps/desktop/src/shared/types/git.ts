@@ -347,6 +347,32 @@ export type GitHubAppInstallationStatus = {
   error: string | null;
 };
 
+export type GitHubAppUserAuthStatus = {
+  configured: boolean;
+  tokenStored: boolean;
+  userLogin: string | null;
+  expiresAt: string | null;
+  refreshTokenExpiresAt: string | null;
+  checkedAt: string;
+  error: string | null;
+};
+
+export type GitHubAppDeviceAuthStartResult = {
+  sessionId: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string | null;
+  expiresAt: string;
+  intervalSec: number;
+};
+
+export type GitHubAppDeviceAuthPollResult = {
+  status: "pending" | "slow_down" | "authorized" | "expired" | "denied" | "error";
+  intervalSec: number | null;
+  message: string | null;
+  authStatus: GitHubAppUserAuthStatus | null;
+};
+
 export type ListOperationsArgs = {
   laneId?: string;
   kind?: string;

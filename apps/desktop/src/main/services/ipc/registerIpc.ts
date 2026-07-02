@@ -165,6 +165,9 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitHubAppDeviceAuthPollResult,
+  GitHubAppDeviceAuthStartResult,
+  GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
@@ -7899,6 +7902,38 @@ export function registerIpc({
     const status = await ctx.githubService.getStatus();
     broadcastGithubStatus(status);
     return status;
+  });
+
+  ipcMain.handle(IPC.githubGetAppUserAuthStatus, async (): Promise<GitHubAppUserAuthStatus> => {
+    const ctx = getCtx();
+    return ctx.githubService.getAppUserAuthStatus();
+  });
+
+  ipcMain.handle(IPC.githubStartAppUserDeviceAuth, async (): Promise<GitHubAppDeviceAuthStartResult> => {
+    const ctx = getCtx();
+    return await ctx.githubService.startAppUserDeviceAuth();
+  });
+
+  ipcMain.handle(
+    IPC.githubPollAppUserDeviceAuth,
+    async (_event, arg: { sessionId?: string }): Promise<GitHubAppDeviceAuthPollResult> => {
+      const ctx = getCtx();
+      const sessionId = arg?.sessionId?.trim() ?? "";
+      if (!sessionId) {
+        return {
+          status: "error",
+          intervalSec: null,
+          message: "GitHub device authorization session id is required.",
+          authStatus: ctx.githubService.getAppUserAuthStatus(),
+        };
+      }
+      return await ctx.githubService.pollAppUserDeviceAuth({ sessionId });
+    },
+  );
+
+  ipcMain.handle(IPC.githubClearAppUserAuth, async (): Promise<GitHubAppUserAuthStatus> => {
+    const ctx = getCtx();
+    return ctx.githubService.clearAppUserAuth();
   });
 
   const resolveGithubRepoRef = async (

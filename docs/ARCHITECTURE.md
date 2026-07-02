@@ -425,7 +425,12 @@ ade.github.*                 # PR list, review, merge, checks. Also exposes
                              # repo-scoped helpers used by the Linear setup flow:
                              # listRepoAutolinks / createRepoAutolink (autolink
                              # references like ADE-* -> Linear), listRepoLabels,
-                             # listRepoCollaborators, listRepoIssues.
+                             # listRepoCollaborators, listRepoIssues. Plus the
+                             # ADE-GitHub-App user authorization device flow that
+                             # backs hosted webhook-relay reads:
+                             # getAppUserAuthStatus / startAppUserDeviceAuth /
+                             # pollAppUserDeviceAuth / clearAppUserAuth (start/poll/
+                             # clear are CTO-only actions in the ADE Actions registry).
 ade.prs.*                    # stacked PR queue, integration, rebase/issue
                              # resolver sessions, and merge readiness
 ade.conflicts.*              # risk matrix, simulation, proposals

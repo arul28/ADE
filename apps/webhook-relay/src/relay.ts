@@ -33,6 +33,12 @@ type GitHubRepoAccessStatus =
       response: Response;
     };
 
+type GitHubApiJsonResponse = {
+  status: number;
+  ok: boolean;
+  payload: Record<string, unknown>;
+};
+
 type AppRepositoryRow = {
   repository_full_name: string;
   installation_id: number | null;
@@ -124,6 +130,11 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
   const value = source?.[key];
   return isRecord(value) ? value : null;
+}
+
+function readBoolean(source: Record<string, unknown> | null | undefined, key: string): boolean | null {
+  const value = source?.[key];
+  return typeof value === "boolean" ? value : null;
 }
 
 function toHex(bytes: ArrayBuffer): string {
@@ -343,25 +354,90 @@ async function assertGitHubRepoAuthorized(
   }
 
   const apiBaseUrl = (env.GITHUB_API_BASE_URL?.trim() || "https://api.github.com").replace(/\/+$/, "");
-  const response = await fetch(
-    `${apiBaseUrl}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
-    {
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
-        "user-agent": "ADE GitHub Webhook Relay",
-        "x-github-api-version": "2022-11-28",
-      },
-    },
+  const repoResponse = await fetchGitHubApiJson(
+    apiBaseUrl,
+    `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+    token,
   );
-  if (response.ok) return { authorized: true };
+  if (repoResponse.ok) {
+    const permissions = readNested(repoResponse.payload, "permissions");
+    if (permissions) {
+      if (repoPermissionsAllowWebhookRead(permissions)) return { authorized: true };
+      return {
+        authorized: false,
+        response: insufficientRepoPermissionResponse(),
+      };
+    }
 
-  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  const message = readString(payload, "message") || `GitHub repo access check failed with HTTP ${response.status}.`;
+    const fallback = await fetchAuthenticatedUserRepoPermission(apiBaseUrl, token, repo);
+    if (fallback === "authorized") return { authorized: true };
+    return {
+      authorized: false,
+      response: insufficientRepoPermissionResponse(),
+    };
+  }
+
+  const message = readString(repoResponse.payload, "message")
+    || `GitHub repo access check failed with HTTP ${repoResponse.status}.`;
   return {
     authorized: false,
-    response: json({ ok: false, error: message }, { status: response.status === 404 ? 404 : 403 }),
+    response: json({ ok: false, error: message }, { status: repoResponse.status === 404 ? 404 : 403 }),
   };
+}
+
+async function fetchGitHubApiJson(apiBaseUrl: string, path: string, token: string): Promise<GitHubApiJsonResponse> {
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${token}`,
+      "user-agent": "ADE GitHub Webhook Relay",
+      "x-github-api-version": "2022-11-28",
+    },
+  });
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  return {
+    status: response.status,
+    ok: response.ok,
+    payload: isRecord(payload) ? payload : {},
+  };
+}
+
+function repoPermissionsAllowWebhookRead(permissions: Record<string, unknown>): boolean {
+  return readBoolean(permissions, "admin") === true
+    || readBoolean(permissions, "push") === true
+    || readBoolean(permissions, "maintain") === true;
+}
+
+function collaboratorPermissionAllowsWebhookRead(permission: string): boolean {
+  const normalized = permission.trim().toLowerCase();
+  return normalized === "admin" || normalized === "write" || normalized === "maintain";
+}
+
+function insufficientRepoPermissionResponse(): Response {
+  return json(
+    { ok: false, error: "GitHub token must have push/write, maintain, or admin access to read ADE webhook deliveries for this repository." },
+    { status: 403 },
+  );
+}
+
+async function fetchAuthenticatedUserRepoPermission(
+  apiBaseUrl: string,
+  token: string,
+  repo: { owner: string; name: string },
+): Promise<"authorized" | "denied"> {
+  const userResponse = await fetchGitHubApiJson(apiBaseUrl, "/user", token);
+  const login = readString(userResponse.payload, "login");
+  if (!userResponse.ok || !login) return "denied";
+
+  const permissionResponse = await fetchGitHubApiJson(
+    apiBaseUrl,
+    `/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/collaborators/${encodeURIComponent(login)}/permission`,
+    token,
+  );
+  if (!permissionResponse.ok) return "denied";
+
+  const permission = readString(permissionResponse.payload, "permission");
+  return permission && collaboratorPermissionAllowsWebhookRead(permission) ? "authorized" : "denied";
 }
 
 function repositoryFullName(payload: Record<string, unknown>): string | null {

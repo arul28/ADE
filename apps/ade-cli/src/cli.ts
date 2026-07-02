@@ -207,7 +207,8 @@ type CliPlan =
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] }
-  | { kind: "skill"; rest: string[] };
+  | { kind: "skill"; rest: string[] }
+  | { kind: "github-app-login"; maxWaitSec: number | null };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -481,6 +482,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
     $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
@@ -970,6 +972,30 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --app-name <name>       macOS app name to open. Defaults to ADE, ADE Beta,
                             or ADE Alpha based on the installed CLI wrapper.
+`,
+  github: `${ADE_BANNER}
+  ADE GitHub
+
+  Authorize the machine-scoped ADE GitHub App so headless / brain setups (which
+  have no Settings panel) can use the hosted PR-sync webhook relay. Uses GitHub's
+  device flow: ADE prints a short user code and a verification URL, you approve
+  in a browser, and ADE stores the resulting user token in the machine credential
+  store. The token itself is never printed.
+
+    $ ade --role cto github app-auth login     Start device flow and wait for approval
+    $ ade github app-auth status --text        Show whether a token is stored (login, expiry)
+    $ ade --role cto github app-auth clear      Remove the stored authorization
+    $ ade github actions --text                 List raw github service actions
+
+  Notes:
+    - login, clear (and the raw start/poll actions) require --role cto.
+    - login keeps one connection open for the whole device flow because the
+      device-auth session lives in runtime memory; do not split start and poll
+      across separate invocations in headless mode.
+
+  Flags (login):
+    --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
+                            device-code expiry, ~15 min).
 `,
   open: `${ADE_BANNER}
   ADE Open
@@ -10046,6 +10072,7 @@ function buildCliPlan(
     quota: "usage",
     quotas: "usage",
     skills: "skill",
+    gh: "github",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -10289,7 +10316,53 @@ function buildCliPlan(
   )
     return buildUpdatePlan(args);
   if (primary === "cursor") return buildCursorPlan(args);
+  if (primary === "github" || primary === "gh") return buildGithubPlan(args);
   throw new CliUsageError(`Unknown command '${primary}'. Run 'ade help'.`);
+}
+
+function buildGithubPlan(args: string[]): CliPlan {
+  const sub = firstPositional(args) ?? "app-auth";
+  if (sub === "help") {
+    return { kind: "help", text: HELP_BY_COMMAND.github ?? topLevelHelpText() };
+  }
+  if (sub === "actions") {
+    return {
+      kind: "execute",
+      label: "github actions",
+      formatter: "actions-list",
+      steps: [listActionsStep("actions", "github")],
+    };
+  }
+  if (sub === "app-auth" || sub === "app" || sub === "auth") {
+    const mode = firstPositional(args) ?? "status";
+    if (mode === "status" || mode === "show") {
+      return {
+        kind: "execute",
+        label: "github app-auth status",
+        steps: [actionStep("result", "github", "getAppUserAuthStatus")],
+      };
+    }
+    if (mode === "login" || mode === "authorize" || mode === "start") {
+      const maxWaitSec = readIntOption(args, ["--max-wait", "--timeout-sec"]);
+      return {
+        kind: "github-app-login",
+        maxWaitSec: typeof maxWaitSec === "number" ? maxWaitSec : null,
+      };
+    }
+    if (mode === "clear" || mode === "logout" || mode === "sign-out") {
+      return {
+        kind: "execute",
+        label: "github app-auth clear",
+        steps: [actionStep("result", "github", "clearAppUserAuth")],
+      };
+    }
+    throw new CliUsageError(
+      "github app-auth supports status, login, or clear.",
+    );
+  }
+  throw new CliUsageError(
+    "github supports app-auth (status | login | clear) and actions.",
+  );
 }
 
 function buildCursorPlan(args: string[]): CliPlan {
@@ -15464,6 +15537,136 @@ function graphWaitState(value: unknown): {
   };
 }
 
+/**
+ * Interactive GitHub App (device-flow) authorization for headless / brain
+ * setups that have no Settings panel. Device-auth session state lives in the
+ * runtime process memory, so start-then-poll must happen over a single live
+ * connection — a two-process `start` + `poll` split cannot share the session in
+ * headless mode. start/poll are CTO-only, so run this with `--role cto`.
+ * Progress is written to stderr; only the final auth status (never the token)
+ * is emitted on stdout.
+ */
+async function runGithubAppLogin(
+  plan: CliPlan & { kind: "github-app-login" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(options);
+  } catch (error) {
+    throw new CliExecutionError(
+      "Failed to initialize ADE CLI connection for github app-auth login.",
+      {
+        cause: error instanceof Error ? error.message : String(error),
+        nextAction:
+          "Verify --project-root points at an ADE project and run ade doctor --json.",
+      },
+    );
+  }
+  const runGithubAction = async (
+    action: string,
+    actionArgs: JsonObject = {},
+  ): Promise<JsonObject> => {
+    let result: unknown;
+    try {
+      const raw = await connection.request("ade/actions/call", {
+        name: "run_ade_action",
+        arguments: { domain: "github", action, args: actionArgs },
+      });
+      // `ade/actions/call` returns an `{ ok: false, error }` envelope on the
+      // CTO gate rather than throwing; unwrapToolResult converts that to a throw.
+      result = unwrapActionEnvelope(unwrapToolResult(raw));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/elevated role/i.test(message)) {
+        throw new CliUsageError(
+          "github app-auth login authorizes the machine GitHub App and requires --role cto (e.g. `ade --role cto github app-auth login`).",
+        );
+      }
+      throw error;
+    }
+    if (!isRecord(result)) {
+      throw new CliExecutionError(
+        `github.${action} returned an unexpected result.`,
+        { action },
+      );
+    }
+    return result;
+  };
+  try {
+    const start = await runGithubAction("startAppUserDeviceAuth");
+    const sessionId = asString(start.sessionId);
+    const userCode = asString(start.userCode);
+    const verificationUri = asString(start.verificationUri);
+    const verificationUriComplete = asString(start.verificationUriComplete);
+    const expiresAt = asString(start.expiresAt);
+    if (!sessionId || !userCode || !verificationUri) {
+      throw new CliExecutionError(
+        "GitHub device authorization did not start.",
+        { start },
+      );
+    }
+    let intervalSec =
+      typeof start.intervalSec === "number" && start.intervalSec > 0
+        ? start.intervalSec
+        : 5;
+    const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
+    const maxWaitDeadlineMs =
+      plan.maxWaitSec != null ? Date.now() + plan.maxWaitSec * 1000 : Number.NaN;
+    const deadlineMs = Math.min(
+      Number.isFinite(expiresAtMs) ? expiresAtMs : Number.POSITIVE_INFINITY,
+      Number.isFinite(maxWaitDeadlineMs)
+        ? maxWaitDeadlineMs
+        : Number.POSITIVE_INFINITY,
+    );
+    process.stderr.write(
+      `\nAuthorize the ADE GitHub App:\n` +
+        `  1. Open ${verificationUri}\n` +
+        `  2. Enter code: ${userCode}\n` +
+        (verificationUriComplete
+          ? `  (or open ${verificationUriComplete} to skip step 2)\n`
+          : "") +
+        `\nWaiting for authorization…\n`,
+    );
+
+    while (true) {
+      if (Number.isFinite(deadlineMs) && Date.now() >= deadlineMs) {
+        process.stderr.write("GitHub device authorization timed out.\n");
+        const status = await runGithubAction("getAppUserAuthStatus");
+        return {
+          output: formatOutput(
+            { ...status, status: "expired", error: "timed_out" },
+            options,
+          ),
+          exitCode: 1,
+        };
+      }
+      await sleep(Math.max(1, intervalSec) * 1000);
+      const poll = await runGithubAction("pollAppUserDeviceAuth", { sessionId });
+      const status = asString(poll.status);
+      const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;
+      if (status === "authorized") {
+        process.stderr.write("GitHub App authorized.\n");
+        return { output: formatOutput(authStatus, options), exitCode: 0 };
+      }
+      if (status === "pending" || status === "slow_down") {
+        if (typeof poll.intervalSec === "number" && poll.intervalSec > 0) {
+          intervalSec = poll.intervalSec;
+        }
+        continue;
+      }
+      // expired | denied | error
+      const message =
+        asString(poll.message) ??
+        `GitHub device authorization ${status ?? "failed"}.`;
+      process.stderr.write(`${message}\n`);
+      return { output: formatOutput(authStatus, options), exitCode: 1 };
+    }
+  } finally {
+    await connection.close();
+  }
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -15699,6 +15902,9 @@ async function runCli(
     }
     if (plan.kind === "ade-code") {
       return await runAdeCode(plan.rest, parsed.options);
+    }
+    if (plan.kind === "github-app-login") {
+      return await runGithubAppLogin(plan, parsed.options);
     }
     const result = await executePlan(plan, parsed.options);
     if (plan.writeResultPath) {

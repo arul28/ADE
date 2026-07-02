@@ -1,6 +1,11 @@
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import type { GitHubAppInstallationStatus } from "../../../shared/types";
-import { ArrowClockwise, ArrowSquareOut, CheckCircle, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import type {
+  GitHubAppDeviceAuthPollResult,
+  GitHubAppDeviceAuthStartResult,
+  GitHubAppInstallationStatus,
+  GitHubAppUserAuthStatus,
+} from "../../../shared/types";
+import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
@@ -15,12 +20,23 @@ type GitHubAppInstallPanelProps = {
 export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstallPanelProps) {
   const compact = variant === "onboarding";
   const [status, setStatus] = useState<GitHubAppInstallationStatus | null>(null);
+  const [appAuth, setAppAuth] = useState<GitHubAppUserAuthStatus | null>(null);
+  const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
+  const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
+  const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
+  const autoRenewCountRef = useRef(0);
+  const copyFeedbackTimeoutRef = useRef<number | null>(null);
+  const appAuthRef = useRef<GitHubAppUserAuthStatus | null>(null);
+  appAuthRef.current = appAuth;
 
   const loadStatus = useCallback(async (forceRefresh = false) => {
     if (!window.ade?.github?.getAppInstallationStatus) return;
     setLoading(true);
     try {
+      const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
+      setAppAuth(authStatus ?? null);
       setStatus(await window.ade.github.getAppInstallationStatus({ forceRefresh }));
     } catch (error) {
       setStatus({
@@ -47,11 +63,112 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     }
   }, []);
 
+  const startAppAuthorization = useCallback(async () => {
+    autoRenewCountRef.current = 0;
+    if (!window.ade?.github?.startAppUserDeviceAuth) return;
+    setAuthLoading(true);
+    setDeviceMessage(null);
+    setDeviceCodeCopied(false);
+    try {
+      const session = await window.ade.github.startAppUserDeviceAuth();
+      setDeviceSession(session);
+      openExternalUrl(session.verificationUriComplete ?? session.verificationUri);
+    } catch (error) {
+      setDeviceMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  }, []);
+
+  const copyDeviceCode = useCallback(async () => {
+    if (!deviceSession) return;
+    try {
+      await navigator.clipboard.writeText(deviceSession.userCode);
+      setDeviceCodeCopied(true);
+      if (copyFeedbackTimeoutRef.current != null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+      copyFeedbackTimeoutRef.current = window.setTimeout(() => {
+        setDeviceCodeCopied(false);
+        copyFeedbackTimeoutRef.current = null;
+      }, 1500);
+    } catch (error) {
+      setDeviceMessage(error instanceof Error ? error.message : String(error));
+    }
+  }, [deviceSession]);
+
+  useEffect(() => {
+    if (!deviceSession || !window.ade?.github?.pollAppUserDeviceAuth) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(async () => {
+      let result: GitHubAppDeviceAuthPollResult | null = null;
+      try {
+        result = await window.ade.github.pollAppUserDeviceAuth({ sessionId: deviceSession.sessionId });
+      } catch (error) {
+        result = {
+          status: "error",
+          intervalSec: null,
+          message: error instanceof Error ? error.message : String(error),
+          authStatus: appAuthRef.current,
+        };
+      }
+      if (cancelled || !result) return;
+      setAppAuth(result.authStatus);
+      if (result.status === "pending" || result.status === "slow_down") {
+        setDeviceMessage(result.message);
+        setDeviceSession({ ...deviceSession, intervalSec: result.intervalSec ?? deviceSession.intervalSec });
+        return;
+      }
+      if (result.status === "expired") {
+        if (autoRenewCountRef.current >= 3 || !window.ade?.github?.startAppUserDeviceAuth) {
+          setDeviceSession(null);
+          setDeviceMessage("Code expired. Click Authorize ADE to get a new code.");
+          return;
+        }
+        try {
+          const nextSession = await window.ade.github.startAppUserDeviceAuth();
+          if (cancelled) return;
+          autoRenewCountRef.current += 1;
+          setDeviceSession(nextSession);
+          setDeviceMessage("Previous code expired — use this new code.");
+        } catch (error) {
+          if (cancelled) return;
+          setDeviceSession(null);
+          setDeviceMessage(error instanceof Error ? error.message : String(error));
+        }
+        return;
+      }
+      setDeviceSession(null);
+      setDeviceMessage(result.message);
+      if (result.status === "authorized") {
+        autoRenewCountRef.current = 0;
+        await loadStatus(true);
+      }
+    }, Math.max(1, deviceSession.intervalSec) * 1000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [deviceSession, loadStatus]);
+
+  useEffect(() => {
+    setDeviceCodeCopied(false);
+  }, [deviceSession?.sessionId]);
+
+  useEffect(() => {
+    return () => {
+      if (copyFeedbackTimeoutRef.current != null) {
+        window.clearTimeout(copyFeedbackTimeoutRef.current);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     void loadStatus(false);
   }, [loadStatus]);
 
-  const view = statusView(status, loading);
+  const appAuthorized = appAuth?.tokenStored === true;
+  const view = statusView(status, loading, appAuthorized);
   const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
 
   return (
@@ -78,11 +195,44 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         ))}
       </div>
 
+      {deviceSession ? (
+        <div style={deviceAuthBlockStyle}>
+          <p style={deviceInstructionStyle}>
+            Enter this code at{" "}
+            <button type="button" style={deviceLinkButtonStyle} onClick={() => openExternalUrl(deviceSession.verificationUri)}>
+              github.com/login/device
+            </button>
+          </p>
+          <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()}>
+            <span style={deviceLabelStyle}>GitHub code</span>
+            <span style={deviceValueStyle}>{deviceSession.userCode}</span>
+            <span style={deviceCopyIconStyle} aria-hidden="true">
+              {deviceCodeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
+            </span>
+          </button>
+          {deviceMessage ? null : <p style={authMessageStyle}>Waiting for GitHub authorization…</p>}
+        </div>
+      ) : null}
+      {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
+
+      {!appAuthorized && !deviceSession ? <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p> : null}
+
       <div style={actionRowStyle}>
-        {status?.installed ? null : (
+        {!appAuthorized ? (
           <button
             type="button"
             style={primaryButton(compact ? compactPrimaryButtonStyle : undefined)}
+            onClick={() => void startAppAuthorization()}
+            disabled={authLoading || Boolean(deviceSession)}
+          >
+            <ArrowSquareOut size={12} weight="bold" />
+            {authLoading || deviceSession ? "Authorizing" : "Authorize ADE"}
+          </button>
+        ) : null}
+        {status?.installed ? null : (
+          <button
+            type="button"
+            style={appAuthorized ? primaryButton(compact ? compactPrimaryButtonStyle : undefined) : outlineButton(compact ? compactSecondaryButtonStyle : undefined)}
             onClick={() => openExternalUrl(status?.installUrl ?? ADE_GITHUB_APP_INSTALL_URL)}
           >
             <ArrowSquareOut size={12} weight="bold" />
@@ -110,7 +260,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   );
 }
 
-function statusView(status: GitHubAppInstallationStatus | null, loading: boolean): {
+function statusView(status: GitHubAppInstallationStatus | null, loading: boolean, appAuthorized: boolean): {
   label: string;
   color: string;
   description: (repoLabel: string | null) => string;
@@ -160,6 +310,13 @@ function statusView(status: GitHubAppInstallationStatus | null, loading: boolean
     };
   }
   if (status?.state === "error") {
+    if (!appAuthorized) {
+      return {
+        label: "Authorize GitHub",
+        color: COLORS.warning,
+        description: () => "Authorize ADE with GitHub to enable instant PR updates for this repo.",
+      };
+    }
     return {
       label: "Check failed",
       color: COLORS.danger,
@@ -248,6 +405,72 @@ const chipStyle: CSSProperties = {
   color: COLORS.success,
   background: "color-mix(in srgb, var(--color-success) 9%, transparent)",
   border: "1px solid color-mix(in srgb, var(--color-success) 18%, transparent)",
+};
+
+const deviceAuthBlockStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "flex-start",
+};
+
+const deviceInstructionStyle: CSSProperties = {
+  margin: "12px 0 0",
+  fontSize: 11,
+  fontFamily: SANS_FONT,
+  color: COLORS.textMuted,
+  lineHeight: 1.35,
+};
+
+const deviceLinkButtonStyle: CSSProperties = {
+  display: "inline",
+  padding: 0,
+  border: "none",
+  background: "transparent",
+  color: COLORS.accent,
+  font: "inherit",
+  cursor: "pointer",
+  textDecoration: "underline",
+  textUnderlineOffset: 2,
+};
+
+const deviceCodeStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  marginTop: 6,
+  padding: "6px 8px",
+  borderRadius: 6,
+  border: `1px solid ${COLORS.borderMuted}`,
+  background: "color-mix(in srgb, var(--color-bg-panel) 86%, transparent)",
+  cursor: "pointer",
+};
+
+const deviceLabelStyle: CSSProperties = {
+  fontSize: 10,
+  fontFamily: SANS_FONT,
+  color: COLORS.textMuted,
+};
+
+const deviceValueStyle: CSSProperties = {
+  fontSize: 12,
+  fontFamily: MONO_FONT,
+  color: COLORS.textPrimary,
+  letterSpacing: 0,
+  fontWeight: 700,
+};
+
+const deviceCopyIconStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  color: COLORS.textMuted,
+};
+
+const authMessageStyle: CSSProperties = {
+  margin: "8px 0 0",
+  fontSize: 11,
+  fontFamily: SANS_FONT,
+  color: COLORS.textMuted,
+  lineHeight: 1.35,
 };
 
 const actionRowStyle: CSSProperties = {

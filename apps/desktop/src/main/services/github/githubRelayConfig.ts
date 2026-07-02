@@ -31,6 +31,28 @@ export type GitHubRelayConfig = {
   configured: boolean;
 };
 
+export type GitHubRelayHostedAuthTokenResolution =
+  | {
+      ok: true;
+      token: string;
+    }
+  | {
+      ok: false;
+      error: string;
+    };
+
+export type GitHubRelayAuthAuditLog = (event: string, metadata: Record<string, unknown>) => void;
+
+export function createGitHubRelayAuthAuditLog(emit: (event: string, metadata: Record<string, unknown>) => void): GitHubRelayAuthAuditLog {
+  const seen = new Set<string>();
+  return (event, metadata) => {
+    const key = event + ":" + String(metadata.route ?? "") + ":" + String(metadata.repo ?? "") + ":" + String(metadata.tokenSource ?? "");
+    if (seen.has(key)) return;
+    seen.add(key);
+    emit(event, metadata);
+  };
+}
+
 function firstEnvValue(keys: readonly string[]): string | null {
   for (const key of keys) {
     const value = process.env[key]?.trim();
@@ -83,6 +105,22 @@ export function shouldUseLegacyGitHubRelayProjectRoute(
 ): boolean {
   if (!config.remoteProjectId || !config.accessToken) return false;
   return !config.usesHostedDefault;
+}
+
+export function resolveHostedGitHubRelayAuthToken(args: {
+  githubAppUserToken?: string | null;
+}): GitHubRelayHostedAuthTokenResolution {
+  const githubAppUserToken = args.githubAppUserToken?.trim();
+  if (!githubAppUserToken) {
+    return {
+      ok: false,
+      error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+    };
+  }
+  return {
+    ok: true,
+    token: githubAppUserToken,
+  };
 }
 
 function baseStatus(repo: GitHubRepoRef | null, patch: Partial<GitHubAppInstallationStatus>): GitHubAppInstallationStatus {
@@ -161,7 +199,8 @@ export async function fetchGitHubAppInstallationStatus(args: {
   secretReader?: GitHubRelaySecretReader | null;
   fetchImpl?: typeof fetch;
   forceRefresh?: boolean;
-  githubToken?: string | null;
+  githubAppUserToken?: string | null;
+  auditLog?: GitHubRelayAuthAuditLog | null;
 }): Promise<GitHubAppInstallationStatus> {
   const config = readGitHubRelayConfig(args.secretReader);
   if (!args.repo) {
@@ -181,18 +220,36 @@ export async function fetchGitHubAppInstallationStatus(args: {
 
   try {
     const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
-    const githubToken = args.githubToken?.trim();
+    const githubAppUserToken = args.githubAppUserToken?.trim();
     const legacyAuthToken = gitHubRelayAuthorizationToken(config);
     const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
     const url = useLegacyProjectRoute
       ? `${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/status${args.forceRefresh ? "?refresh=1" : ""}`
       : `${baseUrl}/github/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/status${args.forceRefresh ? "?refresh=1" : ""}`;
-    const authToken = useLegacyProjectRoute ? legacyAuthToken : githubToken;
+    const hostedAuth = useLegacyProjectRoute
+      ? null
+      : resolveHostedGitHubRelayAuthToken({ githubAppUserToken });
+    if (hostedAuth && !hostedAuth.ok) {
+      return baseStatus(args.repo, {
+        relayConfigured: true,
+        state: "error",
+        error: hostedAuth.error,
+      });
+    }
+    const authToken = useLegacyProjectRoute ? legacyAuthToken : hostedAuth?.token ?? null;
     if (!authToken) {
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
         error: "GitHub auth is required to check the ADE GitHub App installation.",
+      });
+    }
+    if (hostedAuth?.ok) {
+      args.auditLog?.("github.hosted_relay_auth_token_used", {
+        origin: new URL(baseUrl).origin,
+        repo: `${args.repo.owner}/${args.repo.name}`,
+        tokenSource: "github-app-user-token",
+        route: "status",
       });
     }
     const response = await (args.fetchImpl ?? fetch)(url, {

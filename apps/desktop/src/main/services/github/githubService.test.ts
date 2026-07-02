@@ -1314,7 +1314,7 @@ describe("githubService.getAppInstallationStatus", () => {
     resetMocks();
   });
 
-  it("reports that GitHub auth is required before checking the hosted relay", async () => {
+  it("reports that GitHub App user authorization is required before checking the hosted relay", async () => {
     const status = await makeService().getAppInstallationStatus({ owner: "acme", name: "repo" });
 
     expect(status).toMatchObject({
@@ -1322,13 +1322,39 @@ describe("githubService.getAppInstallationStatus", () => {
       relayConfigured: true,
       installed: false,
       state: "error",
-      error: "GitHub auth is required to check the ADE GitHub App installation.",
+      error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
     });
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("checks the hosted relay with the user's existing GitHub token", async () => {
+  it("does not use the user's existing GitHub token for hosted relay checks", async () => {
     process.env.ADE_GITHUB_TOKEN = "ghp_user_token";
+
+    const status = await makeService().getAppInstallationStatus({ owner: "acme", name: "repo" });
+
+    expect(status).toMatchObject({
+      repo: { owner: "acme", name: "repo" },
+      relayConfigured: true,
+      installed: false,
+      state: "error",
+      error: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("checks the hosted relay with a GitHub App user token", async () => {
+    process.env.ADE_GITHUB_TOKEN = "ghp_user_token";
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: "2999-01-01T00:00:00.000Z",
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: "2999-06-01T00:00:00.000Z",
+      userLogin: "octocat",
+      updatedAt: "2026-06-30T00:00:00.000Z",
+    }));
     mockFetch.mockResolvedValueOnce(jsonResponse(200, {
       installed: true,
       state: "configured",
@@ -1338,7 +1364,9 @@ describe("githubService.getAppInstallationStatus", () => {
       checkedAt: "2026-06-30T00:00:01.000Z",
     }));
 
-    const status = await makeService().getAppInstallationStatus({ owner: "acme", name: "repo" });
+    const status = await makeService({
+      credentialStore,
+    }).getAppInstallationStatus({ owner: "acme", name: "repo" });
 
     expect(status).toMatchObject({
       repo: { owner: "acme", name: "repo" },
@@ -1353,7 +1381,7 @@ describe("githubService.getAppInstallationStatus", () => {
       expect.objectContaining({
         method: "GET",
         headers: expect.objectContaining({
-          authorization: "Bearer ghp_user_token",
+          authorization: "Bearer ghu_app_user_token",
         }),
       }),
     );
@@ -1426,6 +1454,162 @@ describe("githubService.getAppInstallationStatus", () => {
         }),
       }),
     );
+  });
+});
+
+describe("githubService GitHub App user authorization", () => {
+  beforeEach(() => {
+    resetMocks();
+  });
+
+  it("stores the GitHub App user token returned by device flow polling", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    const service = makeService({ credentialStore });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, {
+        device_code: "device-code",
+        user_code: "ADE-CODE",
+        verification_uri: "https://github.com/login/device",
+        verification_uri_complete: "https://github.com/login/device?user_code=ADE-CODE",
+        expires_in: 900,
+        interval: 1,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        access_token: "ghu_app_user_token",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_refresh_token",
+        refresh_token_expires_in: 15_552_000,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { login: "octocat" }));
+
+    const start = await service.startAppUserDeviceAuth();
+    const poll = await service.pollAppUserDeviceAuth({ sessionId: start.sessionId });
+
+    expect(start).toMatchObject({
+      userCode: "ADE-CODE",
+      verificationUri: "https://github.com/login/device",
+      intervalSec: 1,
+    });
+    expect(poll).toMatchObject({
+      status: "authorized",
+      authStatus: {
+        tokenStored: true,
+        userLogin: "octocat",
+      },
+    });
+    expect(JSON.parse(credentialStore.getSync("github.appUserToken.v1") ?? "{}")).toMatchObject({
+      accessToken: "ghu_app_user_token",
+      refreshToken: "ghr_refresh_token",
+      userLogin: "octocat",
+    });
+  });
+
+  it("refreshes an expiring GitHub App user token before using it for the relay", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_old_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, {
+        access_token: "ghu_new_token",
+        token_type: "bearer",
+        expires_in: 28_800,
+        refresh_token: "ghr_new_refresh_token",
+        refresh_token_expires_in: 15_552_000,
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { login: "octocat" }));
+
+    await expect(makeService({ credentialStore }).getAppUserTokenForRelay()).resolves.toBe("ghu_new_token");
+    expect(JSON.parse(credentialStore.getSync("github.appUserToken.v1") ?? "{}")).toMatchObject({
+      accessToken: "ghu_new_token",
+      refreshToken: "ghr_new_refresh_token",
+    });
+  });
+
+  it("shares a single refresh across concurrent relay token requests", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_old_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    let refreshCalls = 0;
+    mockFetch.mockImplementation(async (input: unknown) => {
+      if (String(input) === "https://github.com/login/oauth/access_token") {
+        refreshCalls += 1;
+        return jsonResponse(200, {
+          access_token: "ghu_new_token",
+          token_type: "bearer",
+          expires_in: 28_800,
+          refresh_token: "ghr_new_refresh_token",
+          refresh_token_expires_in: 15_552_000,
+        });
+      }
+      return jsonResponse(200, { login: "octocat" });
+    });
+
+    const service = makeService({ credentialStore });
+    const [first, second] = await Promise.all([
+      service.getAppUserTokenForRelay(),
+      service.getAppUserTokenForRelay(),
+    ]);
+
+    expect(first).toBe("ghu_new_token");
+    expect(second).toBe("ghu_new_token");
+    expect(refreshCalls).toBe(1);
+    expect(JSON.parse(credentialStore.getSync("github.appUserToken.v1") ?? "{}")).toMatchObject({
+      accessToken: "ghu_new_token",
+    });
+  });
+
+  it("does not re-persist a refreshed token after the user clears authorization", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_old_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    let resolveRefresh!: (response: Response) => void;
+    const pendingRefresh = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    mockFetch.mockImplementation((input: unknown) => {
+      if (String(input) === "https://github.com/login/oauth/access_token") return pendingRefresh;
+      return Promise.resolve(jsonResponse(200, { login: "octocat" }));
+    });
+
+    const service = makeService({ credentialStore });
+    const tokenPromise = service.getAppUserTokenForRelay();
+    service.clearAppUserAuth();
+    resolveRefresh(jsonResponse(200, {
+      access_token: "ghu_new_token",
+      token_type: "bearer",
+      expires_in: 28_800,
+      refresh_token: "ghr_new_refresh_token",
+      refresh_token_expires_in: 15_552_000,
+    }));
+
+    await expect(tokenPromise).resolves.toBe("ghu_new_token");
+    expect(credentialStore.getSync("github.appUserToken.v1")).toBeNull();
+    expect(service.getAppUserAuthStatus()).toMatchObject({ tokenStored: false, userLogin: null });
   });
 });
 
