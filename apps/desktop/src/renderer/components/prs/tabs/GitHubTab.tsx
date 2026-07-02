@@ -992,12 +992,19 @@ export function GitHubTab({
   const filterCounts = React.useMemo(() => {
     const listedCounts = countGitHubItemsByState(displayedItems);
     const snapshotCounts = snapshot?.history?.repoPullRequestCounts;
+    // Snapshot totals were computed server-side from the raw snapshot, so a
+    // row that reconciliation moved between states (stale open → merged)
+    // must move in the badge totals too — otherwise the item changes tabs
+    // while the counts still bucket it under its stale state.
+    const rawCounts = countGitHubItemsByState(allItems);
+    const withReconcileDelta = (base: number | null | undefined, key: keyof GitHubFilterCounts, fallback: number): number =>
+      base == null ? fallback : Math.max(0, base + listedCounts[key] - rawCounts[key]);
     return {
-      open: snapshotCounts?.open ?? listedCounts.open,
-      closed: snapshotCounts?.closed ?? listedCounts.closed,
-      merged: snapshotCounts?.merged ?? listedCounts.merged,
+      open: withReconcileDelta(snapshotCounts?.open, "open", listedCounts.open),
+      closed: withReconcileDelta(snapshotCounts?.closed, "closed", listedCounts.closed),
+      merged: withReconcileDelta(snapshotCounts?.merged, "merged", listedCounts.merged),
     };
-  }, [displayedItems, snapshot?.history?.repoPullRequestCounts]);
+  }, [allItems, displayedItems, snapshot?.history?.repoPullRequestCounts]);
   const canLoadOlderHistory =
     filter !== "open"
     && Boolean(snapshot?.history?.repoPullRequestsMayHaveMore)

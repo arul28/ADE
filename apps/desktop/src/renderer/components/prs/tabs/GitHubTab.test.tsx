@@ -980,6 +980,19 @@ describe("GitHubTab", () => {
         }),
       ],
       externalPullRequests: [],
+      history: {
+        includeExternalClosed: false,
+        pageLimit: 0,
+        repoPullRequestsLoaded: 1,
+        repoPullRequestsMayHaveMore: false,
+        // Server-side totals still bucket the stale row under "open"; the
+        // badge counts must follow the reconciled state instead.
+        repoPullRequestCounts: {
+          open: 5,
+          merged: 3,
+          closed: 2,
+        },
+      },
     };
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(staleOpenSnapshot);
 
@@ -989,6 +1002,11 @@ describe("GitHubTab", () => {
       expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     });
     expect(screen.queryByText("Stale open snapshot")).toBeNull();
+
+    // The reconciled row moves from open to merged in the badge totals too.
+    expect(within(screen.getByRole("button", { name: /^open/i })).getByText("4")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /^merged/i })).getByText("4")).toBeTruthy();
+    expect(within(screen.getByRole("button", { name: /^closed/i })).getByText("2")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: /^merged/i }));
 
