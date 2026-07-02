@@ -15,6 +15,7 @@ export function LaneDialogShell({
   busy = false,
   onCloseAutoFocus,
   children,
+  footer,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -27,6 +28,7 @@ export function LaneDialogShell({
   busy?: boolean;
   onCloseAutoFocus?: (event: Event) => void;
   children: ReactNode;
+  footer?: ReactNode;
 }) {
   const width = widthClassName ?? "w-[min(720px,calc(100vw-1rem))]";
   const maxHeight = "max-h-[min(92dvh,calc(100vh-1rem))]";
@@ -79,6 +81,14 @@ export function LaneDialogShell({
                 <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-4 py-3 sm:px-5 sm:py-4">
                   {children}
                 </div>
+                {footer ? (
+                  <div
+                    className="shrink-0 border-t border-white/[0.06] px-4 py-3 sm:px-5"
+                    style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
+                  >
+                    {footer}
+                  </div>
+                ) : null}
               </div>
             </div>
           </BorderBeam>

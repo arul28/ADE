@@ -250,7 +250,11 @@ Renderer surfaces:
   auto-fit grid and the embedded lane selector can fill its parent.
   Lane group headers expose the same lane context menu used by the Work
   tab so color, manage, split, and batch actions stay reachable without
-  leaving the session list.
+  leaving the session list. The bottom Add Lane button opens
+  `CreateLaneDialogHost` in `close-on-create` mode, so a new lane can
+  be created from Work without navigating away; once the lane record
+  exists, env setup continues detached and failures surface as a sticky
+  retry toast.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
   delta chips). Surfaces a small amber warning pip next to the title

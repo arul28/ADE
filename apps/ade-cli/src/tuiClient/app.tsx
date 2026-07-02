@@ -85,6 +85,7 @@ import {
   resizeTerminal,
   reloadClaudePlugins,
   respondToInput,
+  runDefaultLaneSetup,
   saveRuntimeTempAttachment,
   sendChatMessage,
   sendToTerminalSession,
@@ -5300,6 +5301,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     ]);
   }, []);
 
+  const runLaneSetupAfterCreate = useCallback((conn: AdeCodeConnection, lane: LaneSummary) => {
+    void runDefaultLaneSetup(conn, lane.id)
+      .then(({ progress }) => {
+        if (progress.overallStatus !== "failed") return;
+        const failedStep = progress.steps.find((step) => step.status === "failed");
+        const detail = failedStep?.error?.trim()
+          || (failedStep ? `${failedStep.label} failed.` : "Environment setup failed.");
+        addNotice(`Lane setup failed for ${lane.name}: ${detail}`, "error");
+      })
+      .catch((err) => {
+        addNotice(`Lane setup failed for ${lane.name}: ${err instanceof Error ? err.message : String(err)}`, "error");
+      });
+  }, [addNotice]);
+
   const activateLaneWithLastChat = useCallback((lane: LaneSummary, options: { notify?: boolean } = {}) => {
     const laneSessions = displaySessions.filter((entry) => entry.laneId === lane.id);
     const lastSessionId = lastChatByLaneRef.current.get(lane.id);
@@ -8225,6 +8240,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
       setSelectedDrawerLaneAction(null);
+      runLaneSetupAfterCreate(conn, created);
       return;
     }
     if (name === "/rename" || name === "/chat rename") {
@@ -8874,7 +8890,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : result;
       setRightPane({ kind: "details", title: `ADE ${domain}.${action}`, body: renderObject(body, 24) });
     }
-  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, archiveChat, archiveLane, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
+  }, [activateLaneWithLastChat, activeCommandProvider, activeLane?.name, activeSession?.provider, activeSession?.sessionId, activeSession?.title, addNotice, applyDrawerChatSelection, archiveChat, archiveLane, ensureActiveSession, focusDetails, lanes, mode, modelState.modelId, modelState.reasoningEffort, models, openChatDeleteForm, openChatRenameForm, openFeedbackForm, openForm, openLaneDeleteForm, openLaneRenameForm, openModelPicker, openNewChatSetup, openNewLaneForm, openSubagentsPane, pendingSteers, project, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, sendOrSteerChatMessage, sessions, setChatScrollOffset, subagentPaneCommandAvailable, unarchiveChat, unarchiveLane]);
 
   const runInlineCommand = useCallback(async (name: string, args: string) => {
     if (name === "/quit") {
@@ -9196,6 +9212,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       lastUserOpenedPaneRef.current = null;
       focusAfterDetails();
       addNotice(`Created lane ${created.name}.`, "success");
+      runLaneSetupAfterCreate(conn, created);
       await refreshState();
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
@@ -9457,7 +9474,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`Feedback failed: ${message}`, "error");
       }
     }
-  }, [activeLaneId, addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
+  }, [activeLaneId, addNotice, focusAfterDetails, lanes, refreshState, renameLane, runLaneSetupAfterCreate, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
 
   const openLatestImage = useCallback(() => {
     const target = latestOpenableImageTarget(events);

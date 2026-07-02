@@ -69,6 +69,9 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
+import { ToastStack } from "./toast/ToastStack";
+import { useToasts } from "./toast/toastStore";
+import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 
 type PrToast = {
   id: string;
@@ -302,6 +305,7 @@ function cleanRemoteConnectionError(message: string | null): string {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
+  useLaneEventToasts(navigate);
   const setProject = useAppStore((s) => s.setProject);
   const setProjectHydrated = useAppStore((s) => s.setProjectHydrated);
   const setProjectBinding = useAppStore((s) => s.setProjectBinding);
@@ -326,6 +330,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
+  const storeToasts = useToasts();
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
   const toastTimersRef = useRef<Map<string, number>>(new Map());
   const dismissPrToast = (id: string) => {
@@ -1444,7 +1449,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {visibleRemoteConnectionNotice || staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 ? (
+          {visibleRemoteConnectionNotice || staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 || storeToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {visibleRemoteConnectionNotice ? (
                 <div
@@ -1879,6 +1884,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   </div>
                 );
               })}
+              <ToastStack />
             </div>
           ) : null}
 

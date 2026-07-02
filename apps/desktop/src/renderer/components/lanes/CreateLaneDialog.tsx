@@ -302,7 +302,6 @@ export function CreateLaneDialog({
           : "Create a lane from Primary, an existing branch, or another lane."}
       icon={Plus}
       widthClassName="w-[min(560px,calc(100vw-24px))]"
-      heightClassName="h-[min(760px,calc(100vh-24px))]"
       busy={busy}
       onCloseAutoFocus={(event) => {
         event.preventDefault();
@@ -311,6 +310,27 @@ export function CreateLaneDialog({
         );
         target?.focus?.();
       }}
+      footer={pickerOpen ? undefined : (
+        <div className="space-y-3">
+          {error ? (
+            <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+              {error}
+            </div>
+          ) : null}
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="outline"
+              disabled={busy}
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button variant="primary" data-tour="lanes.createDialog.create" disabled={isSubmitDisabled} onClick={onSubmit}>
+              {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
+            </Button>
+          </div>
+        </div>
+      )}
     >
       {pickerOpen ? (
         <BranchPickerView
@@ -728,38 +748,6 @@ export function CreateLaneDialog({
             ) : null}
           </section>
         ) : null}
-
-        {error ? (
-          <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-200">
-            {error}
-          </div>
-        ) : null}
-
-        <div
-          className="sticky bottom-0 z-10 -mx-4 flex items-center justify-end gap-2 border-t border-white/[0.06] px-4 pb-1 pt-3 backdrop-blur"
-          style={{ background: "color-mix(in srgb, var(--color-modal-bg, var(--color-card, #1A1830)) 92%, transparent)" }}
-        >
-          <Button
-            variant="outline"
-            disabled={busy}
-            onClick={() => {
-              onOpenChange(false);
-              handleSetCreateLaneName("");
-              setCreateParentLaneId("");
-              setCreateMode("primary");
-              setCreateBaseBranch("");
-              setCreateImportBranch("");
-              setCreateChildBaseBranch("");
-              setSelectedColor(null);
-              setSelectedLinearIssue(null);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button variant="primary" data-tour="lanes.createDialog.create" disabled={isSubmitDisabled} onClick={onSubmit}>
-            {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
-          </Button>
-        </div>
 
         {envInitProgress ? <LaneEnvInitProgressPanel progress={envInitProgress} /> : null}
       </div>

@@ -40,7 +40,12 @@ import type {
   AgentChatSubagentTranscriptMessage,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
-import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
+import type {
+  AiSettingsStatus,
+  LaneEnvInitProgress,
+  LaneTemplate,
+  OpenCodeRuntimeSnapshot,
+} from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
@@ -64,6 +69,29 @@ export async function listLanes(
     includeArchived: options.includeArchived ?? false,
     includeStatus: true,
   });
+}
+
+export type DefaultLaneSetupResult = {
+  progress: LaneEnvInitProgress;
+  templateId: string | null;
+};
+
+export async function runDefaultLaneSetup(
+  connection: AdeCodeConnection,
+  laneId: string,
+): Promise<DefaultLaneSetupResult> {
+  const [templates, defaultTemplateId] = await Promise.all([
+    connection.action<LaneTemplate[]>("lane", "listTemplates").catch(() => []),
+    connection.action<string | null>("lane", "getDefaultTemplate").catch(() => null),
+  ]);
+  const trimmedTemplateId = typeof defaultTemplateId === "string" ? defaultTemplateId.trim() : "";
+  const templateId = trimmedTemplateId && templates.some((template) => template.id === trimmedTemplateId)
+    ? trimmedTemplateId
+    : null;
+  const progress = templateId
+    ? await connection.action<LaneEnvInitProgress>("lane", "applyTemplate", { laneId, templateId })
+    : await connection.action<LaneEnvInitProgress>("lane", "initEnv", { laneId });
+  return { progress, templateId };
 }
 
 export async function listGitBranches(

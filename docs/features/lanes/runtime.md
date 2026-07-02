@@ -76,8 +76,12 @@ steps in order:
 
 Each step is reported through `LaneEnvInitProgress` IPC events with
 status (`pending | running | done | failed`) and a duration.
-`CreateLaneDialog` renders `LaneEnvInitProgress` inline so the user
-can watch the lane bootstrap.
+`CreateLaneDialogHost` decides how that progress is surfaced. In the
+Lanes tab it keeps `CreateLaneDialog` open and renders
+`LaneEnvInitProgress` inline so the user can watch or retry setup in the
+modal. In the Work tab it closes as soon as the lane row exists and runs
+setup detached; failures create a sticky toast with a Retry action so
+the session sidebar does not need to stay mounted.
 
 Config types live in `src/shared/types/config.ts`:
 

@@ -8,6 +8,7 @@ import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
+import { CreateLaneDialogHost } from "../lanes/CreateLaneDialogHost";
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization } from "../../state/appStore";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { iconGlyph } from "../graph/graphHelpers";
@@ -320,6 +321,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   handoffJobs?: HandoffLaunchJob[];
 }) {
   const navigate = useNavigate();
+  const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
 
@@ -942,23 +944,32 @@ export const SessionListPane = React.memo(function SessionListPane({
 
       {/* Add Lane button */}
       <div className="shrink-0 px-2 pb-2 pt-1" style={{ borderTop: "1px solid var(--work-pane-border)" }}>
-        <SmartTooltip content={{ label: "Add Lane", description: "Navigate to the Lanes tab to create a new lane." }}>
+        <SmartTooltip content={{ label: "Add Lane", description: "Create a new lane without leaving Work." }}>
           <button
             type="button"
-            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-medium transition-colors hover:bg-white/[0.06]"
+            className="inline-flex w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors hover:bg-white/[0.06]"
             style={{
               color: "var(--color-muted-fg)",
               border: "1px solid rgba(255,255,255,0.06)",
               background: "rgba(255,255,255,0.02)",
               cursor: "pointer",
             }}
-            onClick={() => navigate("/lanes?action=create")}
+            onClick={() => setCreateLaneOpen(true)}
           >
             <Plus size={11} weight="bold" />
             Add Lane
           </button>
         </SmartTooltip>
       </div>
+      {createLaneOpen ? (
+        <CreateLaneDialogHost
+          open={createLaneOpen}
+          onOpenChange={setCreateLaneOpen}
+          behavior="close-on-create"
+          onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
+          onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
+        />
+      ) : null}
       {laneContextMenuPortal}
     </div>
   );

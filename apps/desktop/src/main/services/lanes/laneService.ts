@@ -28,6 +28,7 @@ import type {
   CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   LaneDeleteEvent,
+  LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
   LaneDeleteStep,
@@ -931,6 +932,7 @@ export function createLaneService({
   onHeadChanged,
   onRebaseEvent,
   onDeleteEvent,
+  onLifecycleEvent,
   onLinearIssueLinked,
   onLinearIssueSessionLinked,
   teardownDeps,
@@ -945,6 +947,7 @@ export function createLaneService({
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
   onRebaseEvent?: (event: RebaseRunEventPayload) => void;
   onDeleteEvent?: (event: LaneDeleteEvent) => void;
+  onLifecycleEvent?: (event: LaneLifecycleEvent) => void;
   onLinearIssueLinked?: (args: { lane: LaneSummary; issue: LaneLinearIssue; linkedAt: string }) => void | Promise<void>;
   onLinearIssueSessionLinked?: (args: {
     laneId: string;
@@ -2697,6 +2700,14 @@ export function createLaneService({
         });
     }
 
+    broadcastLifecycleEvent({
+      type: "lane-created",
+      laneId: summary.id,
+      laneName: summary.name,
+      color: summary.color,
+      lane: summary,
+    });
+
     return summary;
   };
 
@@ -2808,6 +2819,19 @@ export function createLaneService({
       onDeleteEvent({ type: "lane-delete", progress: cloneLaneDeleteProgress(progress) });
     } catch (err) {
       logger.warn("lane.delete.broadcast_failed", { laneId: progress.laneId, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
+
+  const broadcastLifecycleEvent = (event: LaneLifecycleEvent): void => {
+    if (!onLifecycleEvent) return;
+    try {
+      onLifecycleEvent(event);
+    } catch (err) {
+      logger.warn("lane.lifecycle.broadcast_failed", {
+        laneId: event.laneId,
+        type: event.type,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   };
 
@@ -3781,7 +3805,7 @@ export function createLaneService({
           }
         }
 
-        return toLaneSummary({
+        const summary = toLaneSummary({
           row,
           status,
           parentStatus,
@@ -3789,6 +3813,14 @@ export function createLaneService({
           stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() }),
           activeBranchProfile: ensureBranchProfileForRow(row)
         });
+        broadcastLifecycleEvent({
+          type: "lane-created",
+          laneId: summary.id,
+          laneName: summary.name,
+          color: summary.color,
+          lane: summary,
+        });
+        return summary;
       } catch (error) {
         if (laneInserted) {
           const persistedRow = getLaneRow(laneId);
@@ -4880,6 +4912,12 @@ export function createLaneService({
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
       invalidateLaneListCache();
+      broadcastLifecycleEvent({
+        type: "lane-archived",
+        laneId,
+        laneName: row.name,
+        color: row.color,
+      });
     },
 
     unarchive({ laneId }: { laneId: string }): void {
@@ -5273,6 +5311,12 @@ export function createLaneService({
 
         invalidateLaneListCache();
         finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
+        broadcastLifecycleEvent({
+          type: "lane-deleted",
+          laneId,
+          laneName: row.name,
+          color: row.color,
+        });
         finishDeleteOperation("succeeded", {
           overallStatus: progress.overallStatus,
           warnings: nonFatalFailures,

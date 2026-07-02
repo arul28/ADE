@@ -4231,6 +4231,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         envInitialized: false,
       }),
       onDeleteEvent: noop,
+      onLifecycleEvent: noop,
       getStackChain: resolvedArg([]),
       getChildren: resolvedArg([]),
       rebaseStart: resolvedArg({
@@ -5167,6 +5168,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       undoLastHeadChange: resolvedArg({ ok: true }),
       redoLastHeadChange: resolvedArg({ ok: true }),
       getSyncStatus: resolvedArg({ ahead: 0, behind: 0 }),
+      getUserIdentity: resolvedArg({ name: "Mock User", email: "mock@example.com" }),
       sync: resolvedArg({ ok: true }),
       push: resolvedArg({ ok: true }),
       getConflictState: resolvedArg({ hasConflicts: false }),

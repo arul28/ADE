@@ -60,6 +60,7 @@ import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
+import { showToast } from "../app/toast/toastStore";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useLaneAgents, type LaneAgent } from "../lanes/laneAgents";
 import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
@@ -2190,6 +2191,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
           mode: plan.mode,
           baseRef: plan.baseRef
         });
+        showToast({ title: `Synced ${laneById.get(plan.laneId)?.name ?? plan.laneId}`, tone: "success" });
         setReparentDialog(null);
         await refreshLanes().catch(() => {});
       } catch (error) {
@@ -2585,17 +2587,21 @@ function GraphInner({ active = true }: { active?: boolean }) {
           const outcome = await runRebaseAndPublishLane(lane.id, { confirmPublish: true, recursive: false });
           if (outcome.status === "skipped") {
             setErrorBanner(`Rebase + push skipped for '${lane.name}': ${outcome.message}`);
+          } else {
+            showToast({ title: `Rebased & pushed ${lane.name}`, tone: "success" });
           }
           await refreshLanes();
           shouldRefreshSync = true;
         } else if (action === "push") {
           await window.ade.git.push({ laneId: lane.id });
+          showToast({ title: `Pushed ${lane.name}`, tone: "success" });
           shouldRefreshSync = true;
         } else if (action === "fetch") {
           await window.ade.git.fetch({ laneId: lane.id });
           shouldRefreshSync = true;
         } else if (action === "sync") {
           await runPullFromUpstream(lane.id, "rebase");
+          showToast({ title: `Synced ${lane.name}`, tone: "success" });
           await refreshLanes();
           shouldRefreshSync = true;
         } else if (action === "reparent") {
@@ -4169,6 +4175,10 @@ function GraphInner({ active = true }: { active?: boolean }) {
                         });
                       }
                       setIntegrationDialog((prev) => (prev ? { ...prev, step: "Done." } : prev));
+                      showToast({
+                        title: `Integrated ${ordered.length} lane${ordered.length === 1 ? "" : "s"} into ${newLane.name}`,
+                        tone: "success",
+                      });
                       window.setTimeout(() => setIntegrationDialog(null), 300);
                       await refreshLanes();
                       await refreshIntegrationProposals();

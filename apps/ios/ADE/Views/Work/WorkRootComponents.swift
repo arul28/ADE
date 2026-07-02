@@ -18,6 +18,7 @@ struct WorkFiltersSection: View {
   let isLive: Bool
   let onClear: () -> Void
   let onNewChat: () -> Void
+  let onAddLane: () -> Void
 
   private var selectedLaneName: String {
     if selectedLaneId == "all" { return "All lanes" }
@@ -85,27 +86,51 @@ struct WorkFiltersSection: View {
         .accessibilityLabel("Toggle filter panel")
       }
 
-      Button(action: onNewChat) {
-        HStack(spacing: 8) {
-          Image(systemName: "plus")
-            .font(.system(size: 13, weight: .bold))
-          Text("Start new chat")
-            .font(.subheadline.weight(.semibold))
+      HStack(spacing: 8) {
+        Button(action: onNewChat) {
+          HStack(spacing: 8) {
+            Image(systemName: "plus")
+              .font(.system(size: 13, weight: .bold))
+            Text("Start new chat")
+              .font(.subheadline.weight(.semibold))
+          }
+          .foregroundStyle(.white)
+          .frame(maxWidth: .infinity, minHeight: 44)
+          .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .stroke(.white.opacity(0.18), lineWidth: 0.6)
+          )
+          .shadow(color: ADEColor.accent.opacity(0.18), radius: 6, x: 0, y: 2)
         }
-        .foregroundStyle(.white)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 11)
-        .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .stroke(.white.opacity(0.18), lineWidth: 0.6)
-        )
-        .shadow(color: ADEColor.accent.opacity(0.18), radius: 6, x: 0, y: 2)
+        .buttonStyle(.plain)
+        .disabled(!isLive)
+        .opacity(isLive ? 1 : 0.55)
+        .accessibilityLabel("Start new chat")
+
+        Button(action: onAddLane) {
+          HStack(spacing: 7) {
+            Image(systemName: "plus.square.on.square")
+              .font(.system(size: 13, weight: .semibold))
+            Text("Add lane")
+              .font(.subheadline.weight(.semibold))
+              .lineLimit(1)
+          }
+          .foregroundStyle(isLive ? ADEColor.accent : ADEColor.textMuted)
+          .frame(minWidth: 116, minHeight: 44)
+          .padding(.horizontal, 12)
+          .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+              .stroke(isLive ? ADEColor.accent.opacity(0.3) : ADEColor.glassBorder, lineWidth: 0.6)
+          )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isLive)
+        .opacity(isLive ? 1 : 0.55)
+        .accessibilityLabel("Add lane")
+        .accessibilityHint(isLive ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
       }
-      .buttonStyle(.plain)
-      .disabled(!isLive)
-      .opacity(isLive ? 1 : 0.55)
-      .accessibilityLabel("Start new chat")
 
       if needsInputCount > 0 || hasActiveFilters {
         HStack(spacing: 6) {

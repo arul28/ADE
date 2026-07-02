@@ -107,6 +107,7 @@ export const IPC = {
   lanesDelete: "ade.lanes.delete",
   lanesDeleteCancel: "ade.lanes.delete.cancel",
   lanesDeleteEvent: "ade.lanes.delete.event",
+  lanesLifecycleEvent: "ade.lanes.lifecycle.event",
   lanesListDeleteProgress: "ade.lanes.delete.progress.list",
   lanesGetDeleteRisk: "ade.lanes.delete.risk",
   lanesGetStackChain: "ade.lanes.getStackChain",

@@ -498,6 +498,7 @@ import type {
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
   LaneDeleteEvent,
+  LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
   LaneEnvInitProgress,
@@ -1159,6 +1160,7 @@ declare global {
         listDeleteProgress: () => Promise<LaneDeleteProgress[]>;
         getDeleteRisk: (args: { laneId: string }) => Promise<LaneDeleteRisk>;
         onDeleteEvent: (cb: (ev: LaneDeleteEvent) => void) => () => void;
+        onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => () => void;
         getStackChain: (laneId: string) => Promise<StackChainItem[]>;
         getChildren: (laneId: string) => Promise<LaneSummary[]>;
         attachLinearIssueToSession: (args: {
