@@ -916,7 +916,19 @@ export function LaneGitActionsPane({
       } else if (actionName === "force push") {
         showToast({ title: `Force-pushed ${laneLabel}`, tone: "success" });
       } else if (actionName === "pull") {
-        showToast({ title: `Pulled ${laneLabel}`, tone: "success" });
+        // A pull that stops on merge/rebase conflicts still resolves (the git
+        // service treats detected conflicts as a completed operation), so check
+        // conflict state before claiming success.
+        const postPullConflicts = await window.ade.git.getConflictState(actionLaneId).catch(() => null);
+        if (postPullConflicts?.inProgress) {
+          showToast({
+            title: laneLabel,
+            message: `Pull stopped on ${postPullConflicts.kind === "merge" ? "merge" : "rebase"} conflicts — resolve them to finish.`,
+            tone: "error",
+          });
+        } else {
+          showToast({ title: `Pulled ${laneLabel}`, tone: "success" });
+        }
       } else if (actionName === "rebase and push") {
         showToast({ title: `Rebased & pushed ${laneLabel}`, tone: "success" });
       }
