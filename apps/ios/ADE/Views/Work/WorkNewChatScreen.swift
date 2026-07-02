@@ -652,6 +652,7 @@ struct WorkNewChatScreen: View {
           initialInput: opener,
           modelId: modelId,
           reasoningEffort: cliReasoningEffort,
+          fastMode: fastModeSupported ? codexFastMode : nil,
           cols: 48,
           rows: 24
         )

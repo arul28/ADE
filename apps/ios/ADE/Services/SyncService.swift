@@ -4907,6 +4907,7 @@ final class SyncService: ObservableObject {
     initialInput: String? = nil,
     modelId: String? = nil,
     reasoningEffort: String? = nil,
+    fastMode: Bool? = nil,
     cols: Int? = nil,
     rows: Int? = nil,
     targetProjectId: String? = nil,
@@ -4930,6 +4931,9 @@ final class SyncService: ObservableObject {
     }
     if let reasoningEffort, !reasoningEffort.isEmpty {
       args["reasoningEffort"] = reasoningEffort
+    }
+    if let fastMode {
+      args["fastMode"] = fastMode
     }
     if let cols, cols > 0 {
       args["cols"] = cols

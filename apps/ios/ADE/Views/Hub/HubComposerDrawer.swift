@@ -718,6 +718,7 @@ struct HubComposerDrawer: View {
           initialInput: opener,
           modelId: modelId,
           reasoningEffort: cliReasoning,
+          fastMode: fastModeSupported ? codexFastMode : nil,
           cols: 48,
           rows: 24,
           targetProjectId: targetProjectId,

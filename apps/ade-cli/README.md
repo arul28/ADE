@@ -291,15 +291,12 @@ ade prs comments pr-id --text
 ade run defs --text
 ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
-ade shell start-cli codex --lane lane-id --permission-mode edit --message "fix failing tests"
-ade shell start-cli claude --lane lane-id --model anthropic/claude-opus-4-8 --reasoning-effort ultracode --prompt "fix failing tests"
-ade shell start-cli --provider claude --lane lane-id --permission-mode default
+ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
+ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
+ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
 ade chat list --lane lane-id --include-automation --no-archived --text
-ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
-ade chat create --lane lane-id --provider claude --model anthropic/claude-opus-4-8 --prompt "fix failing tests"
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --print-config --json
 ade chat read session-id --limit 20 --text
-ade agent spawn --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --prompt "fix failing tests"
 ade code
 ade code --embedded
 ade tests run --lane lane-id --suite unit --wait

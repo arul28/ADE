@@ -290,7 +290,10 @@ A handful have more logic:
   `claude | codex | cursor | droid | opencode | shell` (any other
   value throws `"work.startCliSession requires provider."`), clamps
   `cols` to `[20, 240]` and `rows` to `[4, 120]`, and truncates
-  `initialInput` at 20 KB. Provider-specific argv, env, and shell
+  `initialInput` at 20 KB. `model` / `modelId`, `reasoningEffort`,
+  and `fastMode` flow into the same launch builder as desktop; the
+  older `codexFastMode` wire name is accepted only as a compatibility
+  alias. Provider-specific argv, env, and shell
   preambles come from `buildTrackedCliLaunchCommand` in
   `apps/desktop/src/shared/cliLaunch.ts`
   — the same module the desktop Work tab uses — so the runtime owns the
