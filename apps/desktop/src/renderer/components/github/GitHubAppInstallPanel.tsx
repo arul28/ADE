@@ -35,8 +35,6 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     if (!window.ade?.github?.getAppInstallationStatus) return;
     setLoading(true);
     try {
-      const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
-      setAppAuth(authStatus ?? null);
       setStatus(await window.ade.github.getAppInstallationStatus({ forceRefresh }));
     } catch (error) {
       setStatus({
@@ -59,6 +57,11 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      // Read auth state AFTER the status call (success or failure): an
+      // expired stored token can be cleared during the status check, and the
+      // panel must reflect that immediately.
+      const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
+      setAppAuth(authStatus ?? null);
       setLoading(false);
     }
   }, []);
