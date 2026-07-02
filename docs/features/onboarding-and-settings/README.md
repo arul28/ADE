@@ -156,9 +156,13 @@ Renderer — settings:
   `startAppUserDeviceAuth` surfaces the user code as a copyable chip plus a
   waiting state and the verification URL, `pollAppUserDeviceAuth` drives the
   poll loop and auto-renews an expired code up to 3 times, a pre-auth status
-  pill reflects `getAppUserAuthStatus` (stored token, signed-in login, expiry),
-  and `clearAppUserAuth` revokes the local token. Offers a Refresh. Rendered in
-  Settings and, in a compact `onboarding` variant, during setup. The
+  pill reflects `getAppUserAuthStatus` (stored token, signed-in login, expiry).
+  After device authorization succeeds, the panel force-refreshes the hosted
+  relay status with a short retry window and treats GitHub repo-access 404s as a
+  temporary "Checking access" state so GitHub App installation propagation does
+  not look like failed authorization. `clearAppUserAuth` revokes the local token.
+  Offers a Refresh. Rendered in Settings and, in a compact `onboarding` variant,
+  during setup. The
   device-flow, token store, and single-flight refresh are backed by
   `githubAppUserAuthService` in the main process (see the automations feature
   doc's Source file map).
