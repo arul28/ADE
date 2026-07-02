@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.11] - 2026-07-02
+
+### Added
+
+- Added `ade new chat --mode chat|cli` as the unified command for persistent Work chats and tracked provider CLI sessions, including auto-created lanes, provider/model/reasoning controls, fast-mode selection, dry-run previews, and prompt kickoff.
+- Added GitHub App device-flow auth, repository permission gates, durable repository/event storage, and relay tests for webhook-backed PR sync.
+
+### Changed
+
+- Improved Work and chat launch reliability across start-chat-in-lane, tracked CLI naming, chat PR live refresh, Claude logout recovery, compact Claude hook errors, Codex continuation recovery, and no-op prompt handling.
+- Improved Files, onboarding, browser, project secrets, and web download surfaces, including multi-lane editor tabs, removed edit-trust friction, clamped context menus, welcome-card polish, and mobile TestFlight links.
+- Improved iOS Work, Hub, PR, Files, CTO, Settings, and sync flows while keeping the current mobile marketing version for a build-number-only TestFlight update.
+
+### Removed
+
+- Removed the old edit-trust gate from the Files workflow.
+
+### Fixed
+
+- Fixed mobile sync control on remote projects, iPhone handoff recovery, chunk assembly, roster hydration, and phone-started CLI session launch parity for fast-mode and reasoning settings.
+
 ## [1.2.10] - 2026-06-28
 
 ### Added
@@ -488,7 +509,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.10...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.11...HEAD
+[1.2.11]: https://github.com/arul28/ADE/compare/v1.2.10...v1.2.11
 [1.2.10]: https://github.com/arul28/ADE/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/arul28/ADE/compare/v1.2.8...v1.2.9
 [1.2.8]: https://github.com/arul28/ADE/compare/v1.2.7...v1.2.8
