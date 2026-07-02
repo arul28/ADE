@@ -83,30 +83,41 @@ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
 Start work from an issue:
 
 ```
+ade new chat --mode chat --lane <lane> --provider codex --model <m> --prompt "Work this issue"
 ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <m>
-ade chat create --from-linear-issue ENG-431            # chat with the issue attached + kickoff
+ade chat create --from-linear-issue ENG-431            # compatibility path: chat with the issue attached + kickoff
 ```
 
 ## Chat vs. CLI sessions
 
-Use `ade chat create` for persistent ADE Work chats. `--prompt` creates the
-chat and then sends that text as the first message; use `--print-config` /
-`--dry-run` to verify both the create payload and the follow-up send before
-launching. Use `ade chat send <session> --text ...` for later messages and
-`ade chat read <session> --text` to confirm recent transcript messages.
-
-Use `ade shell start-cli <provider>` for tracked provider CLI sessions in a
-terminal. This is the reasoning-aware CLI path, for example:
+Use `ade new chat` as the canonical launch command. It mirrors the desktop New
+Chat mode toggle:
 
 ```
-ade shell start-cli claude --lane <lane> --model anthropic/claude-opus-4-8 --reasoning-effort ultracode --permissions full-auto --prompt "Fix the issue"
+ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
+ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
+ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"
+```
+
+`--mode chat` creates a persistent ADE Work chat. `--mode cli` starts a tracked
+provider CLI terminal. Both accept lane, provider, model, reasoning effort,
+permission mode, fast/no-fast, and prompt flags. Use `--lane auto` or
+`--auto-create-lane` when the desktop UI would use the auto-create lane row.
+
+Use `ade chat send <session> --text ...` for later messages and
+`ade chat read <session> --text` to confirm recent transcript messages.
+
+Compatibility commands still exist, but do not teach them as the first choice:
+
+```
+ade chat create --lane <lane> --provider codex --model <m> --prompt "Fix"      # persistent Work chat
+ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             # tracked provider CLI terminal
 ```
 
 `ade agent spawn` is the older CLI-session launcher and rejects
-`--reasoning-effort`; choose it only when you do not need to pin a reasoning
-tier. Common reasoning tiers include `minimal`, `low`, `medium`, `high`,
-`xhigh`, `max`, and `ultracode`; confirm model-specific support with
-`ade actions run chat.modelCatalog --json`.
+`--reasoning-effort`; avoid it for new flows. Common reasoning tiers include
+`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
+model-specific support with `ade actions run chat.modelCatalog --json`.
 
 Report what you actually did back to the issue with `ade linear comment` as you progress — that comment is how reviewers and the issue's watchers see status. Use `ade help linear` for the full flag set.
 

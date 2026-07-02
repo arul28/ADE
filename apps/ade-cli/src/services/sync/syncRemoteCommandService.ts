@@ -661,6 +661,7 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     model: asTrimmedString(value.model),
     modelId: asTrimmedString(value.modelId),
     reasoningEffort: asTrimmedString(value.reasoningEffort),
+    fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
   };
 }
 
@@ -2201,6 +2202,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
         reasoningEffort: parsed.reasoningEffort ?? undefined,
+        fastMode: parsed.fastMode ?? undefined,
         initialPrompt: parsed.initialInput,
         laneWorktreePath: resolveLaneWorktreePathForSync(args, parsed.laneId),
       });

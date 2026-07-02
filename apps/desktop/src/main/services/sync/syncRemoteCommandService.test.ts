@@ -2282,6 +2282,7 @@ describe("createSyncRemoteCommandService", () => {
         initialInput: "fix the tests",
         modelId: "openai/gpt-5.5",
         reasoningEffort: "xhigh",
+        fastMode: false,
         cols: 70,
         rows: 24,
       }));
@@ -2298,7 +2299,7 @@ describe("createSyncRemoteCommandService", () => {
         }),
       );
       const createCall = ptyService.create.mock.calls.at(-1)?.[0];
-      expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\""]));
+      expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\"", "-c", "service_tier=\"default\""]));
       expect(createCall?.args).not.toContain(expect.stringContaining("fix the tests"));
       expect(createCall?.initialInput).toContain("fix the tests");
       expect(createCall?.initialInputDelayMs).toBe(750);

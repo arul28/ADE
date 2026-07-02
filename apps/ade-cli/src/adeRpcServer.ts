@@ -313,6 +313,8 @@ const TOOL_SPECS: ToolSpec[] = [
         model: { type: "string" },
         modelId: { type: "string" },
         reasoningEffort: { type: "string" },
+        fastMode: { type: "boolean" },
+        codexFastMode: { type: "boolean", deprecated: true },
         cwd: { type: "string" },
         chatSessionId: { type: "string" },
         tracked: { type: "boolean", default: true }
@@ -1661,6 +1663,10 @@ function asOptionalTrimmedString(value: unknown): string | null {
 
 function asBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function asOptionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
 }
 
 function asPositiveInteger(value: unknown): number | null {
@@ -3473,6 +3479,7 @@ async function runTool(args: {
     const initialInput = asOptionalTrimmedString(toolArgs.initialInput)?.slice(0, 20_000) ?? null;
     const model = asOptionalTrimmedString(toolArgs.model) ?? asOptionalTrimmedString(toolArgs.modelId);
     const reasoningEffort = asOptionalTrimmedString(toolArgs.reasoningEffort);
+    const fastMode = asOptionalBoolean(toolArgs.fastMode) ?? asOptionalBoolean(toolArgs.codexFastMode);
     const initialInputMeta = deriveTrackedCliInitialInputSessionMeta({
       provider,
       title: asOptionalTrimmedString(toolArgs.title),
@@ -3498,6 +3505,7 @@ async function runTool(args: {
         sessionId: preassignedSessionId,
         model,
         reasoningEffort,
+        fastMode,
         initialPrompt: initialInput,
         laneWorktreePath,
       });

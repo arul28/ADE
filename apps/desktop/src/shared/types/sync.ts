@@ -764,6 +764,9 @@ export type SyncStartCliSessionArgs = {
   model?: string | null;
   modelId?: string | null;
   reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+  /** @deprecated Use fastMode. Accepted for older callers. */
+  codexFastMode?: boolean | null;
 };
 
 export type SyncStartCliSessionResult = {

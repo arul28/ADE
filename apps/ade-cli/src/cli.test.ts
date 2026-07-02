@@ -1132,6 +1132,161 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds new chat mode with auto-created lane and kickoff prompt", () => {
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "chat",
+      "--lane",
+      "auto",
+      "--lane-name",
+      "fix-login",
+      "--base",
+      "origin/main",
+      "--provider",
+      "codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--reasoning-effort",
+      "xhigh",
+      "--permissions",
+      "full-auto",
+      "--no-fast",
+      "--prompt",
+      "Fix login",
+      "--arg",
+      "openInUi=true",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    expect(executePlan.steps).toHaveLength(3);
+    expect(executePlan.steps[0]?.params).toEqual({
+      name: "create_lane",
+      arguments: {
+        name: "fix-login",
+        baseBranch: "origin/main",
+      },
+    });
+
+    const createParams = (executePlan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      lane: { id: "lane-new" },
+    });
+    expect(createParams).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "createSession",
+        args: {
+          laneId: "lane-new",
+          provider: "codex",
+          model: "openai/gpt-5.5",
+          modelId: "openai/gpt-5.5",
+          reasoningEffort: "xhigh",
+          permissionMode: "full-auto",
+          fastMode: false,
+          codexFastMode: false,
+          openInUi: true,
+        },
+      },
+    });
+
+    const sendParams = (executePlan.steps[2]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
+    });
+    expect(sendParams).toMatchObject({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "sendMessage",
+        args: {
+          sessionId: "chat-new",
+          text: "Fix login",
+        },
+      },
+    });
+  });
+
+  it("builds new chat CLI mode with the same launch controls", () => {
+    const plan = buildCliPlan([
+      "new",
+      "chat",
+      "--mode",
+      "cli",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "Codex",
+      "--model",
+      "openai/gpt-5.5",
+      "--reasoning-effort",
+      "xhigh",
+      "--permissions",
+      "full-auto",
+      "--no-fast",
+      "--prompt",
+      "Fix the tests",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    expect(executePlan.label).toBe("new chat cli");
+    expect(executePlan.steps).toHaveLength(1);
+    const launchParams = (executePlan.steps[0]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({});
+    expect(launchParams).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+          laneId: "lane-1",
+          provider: "codex",
+        model: "openai/gpt-5.5",
+        modelId: "openai/gpt-5.5",
+        reasoningEffort: "xhigh",
+        permissionMode: "full-auto",
+        fastMode: false,
+        codexFastMode: false,
+        initialInput: "Fix the tests",
+        cols: 120,
+        rows: 36,
+        tracked: true,
+      },
+    });
+  });
+
+  it("rejects unknown providers for new chat before launching", () => {
+    expect(() =>
+      buildCliPlan([
+        "new",
+        "chat",
+        "--lane",
+        "lane-1",
+        "--provider",
+        "mystery",
+      ]),
+    ).toThrow(/Provider must be claude, codex, cursor, droid, opencode, or shell/);
+  });
+
+  it("does not treat new --mode values as subcommands", () => {
+    const plan = buildCliPlan([
+      "new",
+      "--mode",
+      "cli",
+      "--lane",
+      "lane-1",
+      "--prompt",
+      "Fix the tests",
+    ]);
+
+    const executePlan = expectExecutePlan(plan);
+    const launchParams = (executePlan.steps[0]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({});
+    expect(launchParams).toMatchObject({
+      name: "start_cli_session",
+      arguments: {
+        laneId: "lane-1",
+        provider: "codex",
+        initialInput: "Fix the tests",
+      },
+    });
+  });
+
   it("prints chat create config without launching a session", () => {
     const plan = buildCliPlan([
       "chat",
@@ -1588,6 +1743,30 @@ describe("ADE CLI", () => {
       } as any);
       expect(chatCreateWithKickoff).toEqual({
         ok: true,
+        session: { sessionId: "chat-new" },
+        kickoff: { ok: true, accepted: true, sessionId: "chat-new" },
+      });
+
+      const newChatWithLaneAndKickoff = summarizeExecution({
+        plan: { kind: "execute", label: "new chat", steps: [] },
+        connection: chatConnection,
+        values: {
+          lane: { id: "lane-new", name: "fix-login" },
+          session: {
+            domain: "chat",
+            action: "createSession",
+            result: { sessionId: "chat-new" },
+          },
+          result: {
+            domain: "chat",
+            action: "sendMessage",
+            result: { ok: true, accepted: true, sessionId: "chat-new" },
+          },
+        },
+      } as any);
+      expect(newChatWithLaneAndKickoff).toEqual({
+        ok: true,
+        lane: { id: "lane-new", name: "fix-login" },
         session: { sessionId: "chat-new" },
         kickoff: { ok: true, accepted: true, sessionId: "chat-new" },
       });
@@ -2667,13 +2846,14 @@ describe("ADE CLI", () => {
     expect(chatCreateHelp.text).toContain("--reasoning-effort");
     expect(chatCreateHelp.text).toContain("ultracode");
     expect(chatCreateHelp.text).toContain("--prompt <text>");
-    expect(chatCreateHelp.text).toContain("ade shell start-cli claude");
+    expect(chatCreateHelp.text).toContain("ade new chat --mode cli");
     expect(chatCreateHelp.text).toContain("codexSandbox=danger-full-access");
 
     const chatHelp = buildCliPlan(["help", "chat"]);
     expect(chatHelp.kind).toBe("help");
     if (chatHelp.kind !== "help") return;
     expect(chatHelp.text).toContain("ade chat read <session>");
+    expect(chatHelp.text).toContain("ade new chat --mode cli");
 
     const agentSpawnHelp = buildCliPlan(["agent", "spawn", "--help"]);
     expect(agentSpawnHelp.kind).toBe("help");
@@ -3539,6 +3719,7 @@ describe("ADE CLI", () => {
       "gpt-5.4",
       "--reasoning",
       "high",
+      "--no-fast",
       "--message",
       "fix the tests",
     ]);
@@ -3551,6 +3732,7 @@ describe("ADE CLI", () => {
         provider: "codex",
         model: "gpt-5.4",
         reasoningEffort: "high",
+        fastMode: false,
         initialInput: "fix the tests",
       }),
     });

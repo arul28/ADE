@@ -22,6 +22,7 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
   readAutomationsEnvOverride,
@@ -455,6 +456,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
     $ ade code                                      Open ADE Work chat in the terminal
+    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | branch | pr | linear-issue
@@ -479,7 +481,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade terminal list | read | write | signal     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade agent spawn --lane <id> --prompt <text>   Launch an agent session in ADE
     $ ade cto state | chats                         Operate CTO state and Work chats
     $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -526,6 +527,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -576,6 +579,7 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   const normalizedSubcommand = subcommand.toLowerCase();
   if (primaryKey === "chat" && normalizedSubcommand === "spawn") return "chat create";
   if (primaryKey === "agent" && normalizedSubcommand === "start") return "agent spawn";
+  if (primaryKey === "new" && normalizedSubcommand === "cli") return "new chat";
   return `${primaryKey} ${normalizedSubcommand}`;
 }
 
@@ -1166,6 +1170,50 @@ const HELP_BY_COMMAND: Record<string, string> = {
     ?             Help when it is the first prompt character
     /             Command palette
   `,
+  new: `${ADE_BANNER}
+  New ADE work session
+
+  Start either a persistent ADE Work chat or a tracked provider CLI session
+  with one command. This mirrors the desktop New Chat mode toggle.
+
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
+    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort ultracode --prompt "Review the diff"
+
+  Flags:
+    --mode <chat|cli>      Select a persistent ADE chat or tracked provider CLI session.
+    --lane <lane|auto>     Target lane. "auto" is the same as --auto-create-lane.
+    --auto-create-lane     Create a new lane first, then launch there.
+    --lane-name <name>     Explicit name for an auto-created lane.
+    --base <branch>        Optional base branch for an auto-created lane.
+    --provider <name>      claude | codex | cursor | droid | opencode. CLI mode also accepts shell.
+    --model <id>           Runtime model id.
+    --reasoning-effort <v> Reasoning tier. Alias: --effort.
+    --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
+    --fast                 Request fast service tier when supported.
+    --no-fast, --standard  Disable fast service tier explicitly.
+    --prompt <text>        First chat message or CLI initial input.
+
+  Compatibility:
+    ade chat create still creates persistent Work chats.
+    ade shell start-cli still starts tracked provider CLI sessions.
+    ade agent spawn is the older agent launcher and should not be used for new flows.
+`,
+  "new chat": `${ADE_BANNER}
+  New chat / CLI session
+
+  One entry point for ADE's desktop New Chat toggle:
+    --mode chat creates a persistent ADE Work chat.
+    --mode cli starts a tracked provider CLI terminal.
+
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
+
+  The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
+  --auto-create-lane or --lane auto to create a lane before launching.
+`,
   lanes: `${ADE_BANNER}
   Lanes
 
@@ -1319,6 +1367,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
+    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
     $ ade shell start-cli codex --lane <lane> --permission-mode edit
     $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
@@ -1330,8 +1379,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
-  Use start-cli for tracked provider CLI sessions. It supports --reasoning-effort
-  for reasoning-aware providers; ade agent spawn is the legacy CLI-session path.
+  Prefer ade new chat --mode cli for new tracked provider CLI sessions. start-cli
+  remains as the compatibility command behind that mode.
 `,
   terminal: `${ADE_BANNER}
   Attached terminal
@@ -1376,8 +1425,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix"
-                                                    Start a tracked Claude Code CLI session
+    $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
+                                                    Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
     $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
@@ -1385,7 +1434,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat linear-issues <session> --text       List issues attached to a session
     $ ade chat interrupt <session>                  Stop an active turn
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade agent spawn --lane <lane> --prompt "fix"  Start a new agent work session
+    $ ade new chat --mode cli --lane <lane> --prompt "fix"
+                                                    Start a tracked provider CLI session
 
   Create flags:
     --provider <name>       claude | codex | cursor | droid | opencode.
@@ -1449,11 +1499,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade actions run chat.getAvailableModels --input-json '{"provider":"codex"}' --json
 
   CLI sessions:
-    Use ade shell start-cli claude ... --reasoning-effort <tier> when you want
-    a tracked Claude Code terminal session instead of a persistent Work chat.
+    Use ade new chat --mode cli ... when you want a tracked provider CLI terminal
+    instead of a persistent Work chat.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
+
+  Compatibility path for older agent launches. Prefer:
+    $ ade new chat --mode cli --lane <lane> --provider codex --prompt "Fix the failing test"
 
     $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
     $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto
@@ -1471,16 +1524,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Reasoning effort:
     ade agent spawn launches the older CLI-session agent tool and does not
-    support reasoning effort. Use ade chat create for persistent Work chats,
-    or ade shell start-cli ... --reasoning-effort <tier> for tracked CLI
-    sessions that support reasoning tiers.
+    support reasoning effort. Use ade new chat --mode chat for persistent Work
+    chats or ade new chat --mode cli for tracked CLI sessions.
 `,
   "agent spawn": `${ADE_BANNER}
   Agent spawn
 
-  Launch a Codex or Claude CLI-session agent in a lane-scoped tracked terminal.
-  This is not the same as chat.createSession; it does not persist chat runtime
-  settings such as reasoning effort.
+  Compatibility path for older Codex or Claude CLI-session agents. Prefer
+  ade new chat --mode cli, which supports the desktop New Chat CLI mode and
+  reasoning/fast launch settings. This command does not support reasoning effort.
 
     $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.5 --permissions full-auto --prompt "Fix the failing test"
     $ ade agent spawn --lane <lane> --provider claude --model claude-opus-4-8 --permissions plan --prompt "Review the diff"
@@ -3548,13 +3600,7 @@ function buildLanePlan(args: string[]): CliPlan {
  */
 function readChatLaunchConfig(args: string[]): JsonObject {
   const modelArg = readValue(args, ["--model", "--model-id"]);
-  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
-  const standardRequested = readFlag(args, ["--standard", "--no-fast", "--no-codex-fast"]);
-  if (fastRequested && standardRequested) {
-    throw new CliUsageError(
-      "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
-    );
-  }
+  const fastMode = readFastModeFlag(args);
   const config: JsonObject = {};
   maybePut(config, "provider", readValue(args, ["--provider"]));
   maybePut(config, "model", modelArg);
@@ -3565,16 +3611,279 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     "permissionMode",
     readValue(args, ["--permission-mode", "--permissions"]),
   );
-  if (fastRequested) {
-    config.fastMode = true;
-    // Mirror to the deprecated alias so older daemons (pre-rename) still see --fast.
-    config.codexFastMode = true;
-  }
-  if (standardRequested) {
-    config.fastMode = false;
-    config.codexFastMode = false;
+  if (fastMode !== undefined) {
+    config.fastMode = fastMode;
+    // Mirror to the deprecated alias so older daemons (pre-rename) still see the selection.
+    config.codexFastMode = fastMode;
   }
   return config;
+}
+
+function readFastModeFlag(args: string[]): boolean | undefined {
+  const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
+  const standardRequested = readFlag(args, [
+    "--standard",
+    "--no-fast",
+    "--no-codex-fast",
+  ]);
+  if (fastRequested && standardRequested) {
+    throw new CliUsageError(
+      "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
+    );
+  }
+  return fastRequested ? true : standardRequested ? false : undefined;
+}
+
+function autoLaneGenericSuffix(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("") + "-" + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("");
+}
+
+function readNewChatPrompt(args: string[]): string | null {
+  const promptArgs = takeArgsAfterTerminator(args);
+  const prompt = promptArgs
+    ? promptArgs.join(" ").trim()
+    : readValue(args, ["--prompt", "--message", "--initial-input", "--kickoff"]);
+  return prompt?.trim() || null;
+}
+
+function isAutoLaneSelector(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "auto" ||
+    normalized === "new" ||
+    normalized === "auto-create" ||
+    normalized === "__ade_auto_create_lane__"
+  );
+}
+
+function readNewChatMode(args: string[], defaultMode: "chat" | "cli"): "chat" | "cli" {
+  const explicitMode = readValue(args, ["--mode", "--kind"])?.trim().toLowerCase();
+  const chatFlag = readFlag(args, ["--chat"]);
+  const cliFlag = readFlag(args, ["--cli", "--terminal"]);
+  const requested = explicitMode ?? (chatFlag ? "chat" : cliFlag ? "cli" : defaultMode);
+  if (chatFlag && cliFlag) {
+    throw new CliUsageError("Use either --chat or --cli, not both.");
+  }
+  if (explicitMode && (chatFlag || cliFlag)) {
+    const flagMode = chatFlag ? "chat" : "cli";
+    if (explicitMode !== flagMode) {
+      throw new CliUsageError("Use one mode selector: --mode chat|cli, --chat, or --cli.");
+    }
+  }
+  if (requested !== "chat" && requested !== "cli") {
+    throw new CliUsageError("--mode must be either chat or cli.");
+  }
+  return requested;
+}
+
+function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
+  laneId: string | null;
+  autoCreateLane: boolean;
+  createLaneArgs: JsonObject | null;
+} {
+  const laneValue = readLaneId(args);
+  const autoCreateLane =
+    readFlag(args, ["--auto-create-lane", "--create-lane", "--new-lane"]) ||
+    isAutoLaneSelector(laneValue);
+  if (!autoCreateLane) {
+    const laneId = laneValue ?? process.env.ADE_LANE_ID ?? null;
+    if (!laneId) {
+      throw new CliUsageError("Provide --lane <lane> or --auto-create-lane.");
+    }
+    return { laneId, autoCreateLane: false, createLaneArgs: null };
+  }
+
+  const explicitName = readValue(args, ["--lane-name", "--name"]);
+  const namingSeed = prompt || explicitName || "New chat task";
+  const laneName =
+    explicitName?.trim() ||
+    deriveDeterministicLaneNameFromPrompt(namingSeed, {
+      genericSuffix: autoLaneGenericSuffix(),
+    });
+  const createLaneArgs: JsonObject = { name: laneName };
+  maybePut(createLaneArgs, "description", readValue(args, ["--description", "--desc"]));
+  maybePut(createLaneArgs, "baseBranch", readValue(args, ["--base", "--base-branch"]));
+  maybePut(createLaneArgs, "branchName", readValue(args, ["--branch-name"]));
+  maybePut(createLaneArgs, "parentLaneId", readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]));
+  return { laneId: null, autoCreateLane: true, createLaneArgs };
+}
+
+function buildNewPlan(args: string[]): CliPlan {
+  const surface = firstStandalonePositional(args) ?? "chat";
+  if (surface !== "chat" && surface !== "cli") {
+    throw new CliUsageError("ade new supports `chat` or `cli`. Try `ade new chat --mode chat|cli ...`.");
+  }
+  return buildNewChatPlan(args, surface === "cli" ? "cli" : "chat");
+}
+
+function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan {
+  const mode = readNewChatMode(args, defaultMode);
+  const prompt = readNewChatPrompt(args);
+  const lane = resolveNewChatLaneArgs(args, prompt);
+  const provider = readValue(args, ["--provider"])?.trim().toLowerCase() || "codex";
+  const modelArg = readValue(args, ["--model", "--model-id"]);
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
+  const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+  const fastMode = readFastModeFlag(args);
+  const title = readValue(args, ["--title"]);
+  const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
+
+  if (!isLaunchProfile(provider)) {
+    throw new CliUsageError("Provider must be claude, codex, cursor, droid, opencode, or shell.");
+  }
+  if (mode === "chat" && provider === "shell") {
+    throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, or opencode.");
+  }
+  if (mode === "cli") {
+    const effectivePermissionMode = permissionMode ?? "default";
+    if (!isTrackedCliPermissionMode(effectivePermissionMode)) {
+      throw new CliUsageError(
+        "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml.",
+      );
+    }
+    validateLaunchProfilePermissionMode(provider, effectivePermissionMode);
+  }
+
+  const laneIdFor = (values: JsonObject): string => {
+    if (!lane.autoCreateLane && lane.laneId) return lane.laneId;
+    const createdLaneId = laneIdFromCreateLaneValue(values.lane);
+    if (!createdLaneId) {
+      throw new CliUsageError("ade new chat could not resolve the auto-created lane id.");
+    }
+    return createdLaneId;
+  };
+
+  const launchArgs = mode === "chat"
+    ? collectGenericObjectArgs(args, {
+        provider,
+        model: modelArg,
+        modelId: modelArg,
+        reasoningEffort,
+        permissionMode,
+        droidPermissionMode: readValue(args, [
+          "--droid-permission-mode",
+          "--droid-autonomy",
+          "--autonomy",
+        ]),
+        title,
+        surface: readValue(args, ["--surface"]) ?? "work",
+        ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+      })
+    : collectGenericObjectArgs(args, {
+        provider,
+        permissionMode: permissionMode ?? "default",
+        title,
+        initialInput: prompt,
+        model: modelArg,
+        modelId: modelArg,
+        reasoningEffort,
+        ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        cols: readIntOption(args, ["--cols"], 120),
+        rows: readIntOption(args, ["--rows"], 36),
+        cwd: readValue(args, ["--cwd"]),
+        tracked: !readFlag(args, ["--untracked"]),
+      });
+
+  if (printConfig) {
+    return {
+      kind: "static",
+      formatter: "action-result",
+      value: {
+        ok: true,
+        dryRun: true,
+        action: "new.chat",
+        mode,
+        autoCreateLane: lane.autoCreateLane,
+        ...(lane.createLaneArgs ? { createLane: lane.createLaneArgs } : { laneId: lane.laneId }),
+        launch: compactPreviewObject(launchArgs),
+        ...(mode === "chat" && prompt ? { afterCreate: [{ action: "chat.sendMessage", text: prompt }] } : {}),
+      },
+    };
+  }
+
+  const steps: InvocationStep[] = [];
+  if (lane.autoCreateLane) {
+    steps.push(actionCallStep("lane", "create_lane", lane.createLaneArgs ?? {}));
+  }
+
+  if (mode === "cli") {
+    steps.push({
+      key: "result",
+      method: "ade/actions/call",
+      params: (values) => ({
+        name: "start_cli_session",
+        arguments: {
+          ...launchArgs,
+          laneId: laneIdFor(values),
+        },
+      }),
+      unwrapToolResult: true,
+    });
+    return {
+      kind: "execute",
+      label: "new chat cli",
+      formatter: "pty-create",
+      steps,
+    };
+  }
+
+  steps.push({
+    key: prompt ? "session" : "result",
+    method: "ade/actions/call",
+    params: (values) => ({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "createSession",
+        args: {
+          ...launchArgs,
+          laneId: laneIdFor(values),
+        },
+      },
+    }),
+    unwrapToolResult: true,
+  });
+
+  if (prompt) {
+    steps.push({
+      key: "result",
+      method: "ade/actions/call",
+      params: (values) => {
+        const targetSession = sessionIdFromCreateChatValue(values.session);
+        if (!targetSession) {
+          throw new CliUsageError("ade new chat could not resolve the new session id to send the prompt.");
+        }
+        return {
+          name: "run_ade_action",
+          arguments: {
+            domain: "chat",
+            action: "sendMessage",
+            args: {
+              sessionId: targetSession,
+              text: prompt,
+            },
+          },
+        };
+      },
+      unwrapToolResult: true,
+    });
+  }
+
+  return {
+    kind: "execute",
+    label: "new chat",
+    steps,
+  };
 }
 
 function codexPermissionPreview(permissionMode: string): JsonObject | null {
@@ -5467,6 +5776,7 @@ function buildCliSessionStartPlan(
     model: readValue(args, ["--model"]),
     modelId: readValue(args, ["--model-id"]),
     reasoningEffort: readValue(args, ["--reasoning", "--reasoning-effort"]),
+    fastMode: readFastModeFlag(args),
     cols: readIntOption(args, ["--cols"], 120),
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
@@ -5905,22 +6215,7 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "create" || sub === "spawn") {
     const modelArg = readValue(args, ["--model", "--model-id"]);
     const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
-    const fastRequested = readFlag(args, ["--fast", "--codex-fast"]);
-    const standardRequested = readFlag(args, [
-      "--standard",
-      "--no-fast",
-      "--no-codex-fast",
-    ]);
-    if (fastRequested && standardRequested) {
-      throw new CliUsageError(
-        "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
-      );
-    }
-    const fastMode: boolean | undefined = fastRequested
-      ? true
-      : standardRequested
-        ? false
-        : undefined;
+    const fastMode = readFastModeFlag(args);
     // `--print` opts the session's app-server initialize handshake into
     // print-mode (suppresses delta notification streams). Must be set at create
     // time because the handshake runs once when the runtime starts.
@@ -10073,6 +10368,7 @@ function buildCliPlan(
     quotas: "usage",
     skills: "skill",
     gh: "github",
+    create: "new",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -10190,6 +10486,9 @@ function buildCliPlan(
   }
   if (primary === "projects" || primary === "project") {
     return buildProjectsPlan(args);
+  }
+  if (primary === "new" || primary === "create") {
+    return buildNewPlan(args);
   }
   if (primary === "sync") {
     return buildSyncPlan(args);
@@ -15436,6 +15735,21 @@ function summarizeExecution(args: {
   }
 
   if (
+    plan.label === "new chat" &&
+    (values.session !== undefined || values.result !== undefined)
+  ) {
+    const session = values.session ?? values.result;
+    return {
+      ok: true,
+      ...(values.lane !== undefined ? { lane: unwrapActionEnvelope(values.lane) } : {}),
+      session: unwrapActionEnvelope(session),
+      ...(values.session !== undefined && values.result !== undefined
+        ? { kickoff: unwrapActionEnvelope(values.result) }
+        : {}),
+    };
+  }
+
+  if (
     (plan.label === "chat create" ||
       plan.label === "chat create from Linear issue") &&
     values.session !== undefined
@@ -15795,7 +16109,7 @@ async function runCli(
     plan.kind === "runtime" ||
     plan.kind === "serve" ||
     (plan.kind === "execute" &&
-      /^(agent spawn|chat create|shell start cli)\b/.test(plan.label))
+      /^(agent spawn|chat create|new chat|shell start cli)\b/.test(plan.label))
   ) {
     reseedBundledAdeSkillsForCli();
   }
