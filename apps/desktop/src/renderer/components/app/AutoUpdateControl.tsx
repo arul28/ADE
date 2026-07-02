@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowSquareOut, ArrowsClockwise, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, ArrowsClockwise, CheckCircle, X } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -118,6 +118,8 @@ export function AutoUpdateControl() {
     || isReadyOrInstalling;
   const downloadProgress = progressLabel(snapshot.progressPercent);
   const releaseNotesUrl = snapshot.recentlyInstalled?.releaseNotesUrl ?? null;
+  const installedVersion = snapshot.recentlyInstalled?.version ?? null;
+  const releaseNotesDisplayUrl = releaseNotesUrl?.replace(/^https?:\/\//, "") ?? null;
 
   function indicatorTitle(): string {
     switch (effectiveStatus) {
@@ -189,57 +191,84 @@ export function AutoUpdateControl() {
           <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/55 backdrop-blur-sm" />
           <Dialog.Content
             className={cn(
-              "fixed left-1/2 top-1/2 z-[121] w-[min(92vw,440px)] -translate-x-1/2 -translate-y-1/2",
-              "border border-border bg-card p-5 shadow-2xl outline-none",
+              "ade-update-installed-card fixed left-1/2 top-1/2 z-[121] w-[min(92vw,480px)] -translate-x-1/2 -translate-y-1/2",
+              "overflow-hidden rounded-xl border border-white/[0.12] bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/55 outline-none",
             )}
           >
-            <div className="flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <Dialog.Title className="font-mono text-[12px] font-semibold uppercase tracking-[1px] text-fg">
-                  ADE updated
-                </Dialog.Title>
-                <Dialog.Description className="text-sm text-muted-fg">
-                  {snapshot.recentlyInstalled
-                    ? `ADE restarted on v${snapshot.recentlyInstalled.version}.`
-                    : "ADE finished installing the latest version."}
-                </Dialog.Description>
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-300/60 to-transparent" />
+            <div className="p-5 sm:p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-emerald-300/25 bg-emerald-400/10 text-emerald-200 shadow-[0_0_24px_rgba(16,185,129,0.18)]">
+                    <CheckCircle size={20} weight="fill" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Dialog.Title className="text-sm font-semibold text-fg">
+                        ADE is up to date
+                      </Dialog.Title>
+                      {installedVersion ? (
+                        <span className="rounded-full border border-white/[0.10] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] font-semibold text-muted-fg">
+                          v{installedVersion}
+                        </span>
+                      ) : null}
+                    </div>
+                    <Dialog.Description className="mt-1 text-sm text-muted-fg">
+                      {installedVersion
+                        ? `Restarted on v${installedVersion}.`
+                        : "ADE finished installing the latest version."}
+                    </Dialog.Description>
+                  </div>
+                </div>
+                <Dialog.Close asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg"
+                    aria-label="Close update details"
+                  >
+                    <X size={14} weight="bold" />
+                  </button>
+                </Dialog.Close>
               </div>
-              <Dialog.Close asChild>
-                <button
-                  type="button"
-                  className="inline-flex h-7 w-7 items-center justify-center text-muted-fg transition-colors hover:text-fg"
-                  aria-label="Close update details"
-                >
-                  <X size={14} weight="bold" />
-                </button>
-              </Dialog.Close>
-            </div>
 
-            <div className="mt-3 text-[13px] leading-6 text-muted-fg">
-              The update is installed. You can reopen the release notes to see what changed in this build.
-            </div>
+              <p className="mt-4 text-[13px] leading-6 text-muted-fg">
+                The update is installed and ADE is ready again.
+                {releaseNotesUrl ? " Review what changed in this release." : null}
+              </p>
 
-            <div className="mt-5 flex items-center justify-end gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={dismissInstalledNotice}
-              >
-                Close
-              </Button>
-              {releaseNotesUrl ? (
+              {releaseNotesDisplayUrl ? (
+                <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-white/[0.08] pt-3 text-[11px] text-muted-fg">
+                  <ArrowSquareOut size={12} weight="bold" className="shrink-0 text-emerald-200/80" aria-hidden="true" />
+                  <span className="truncate" title={releaseNotesUrl ?? undefined}>
+                    {releaseNotesDisplayUrl}
+                  </span>
+                </div>
+              ) : null}
+
+              <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
                 <Button
                   type="button"
-                  variant="primary"
-                  onClick={() => {
-                    void window.ade.app.openExternal(releaseNotesUrl);
-                    dismissInstalledNotice();
-                  }}
+                  variant="outline"
+                  className="w-full sm:w-auto"
+                  onClick={dismissInstalledNotice}
                 >
-                  <ArrowSquareOut size={12} weight="bold" />
-                  Open release notes
+                  Close
                 </Button>
-              ) : null}
+                {releaseNotesUrl ? (
+                  <Button
+                    type="button"
+                    variant="primary"
+                    className="w-full sm:w-auto"
+                    onClick={() => {
+                      void window.ade.app.openExternal(releaseNotesUrl);
+                      dismissInstalledNotice();
+                    }}
+                  >
+                    <ArrowSquareOut size={12} weight="bold" />
+                    Open release notes
+                  </Button>
+                ) : null}
+              </div>
             </div>
           </Dialog.Content>
         </Dialog.Portal>

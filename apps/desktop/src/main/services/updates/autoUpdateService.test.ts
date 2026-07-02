@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
+import { buildReleaseNotesUrl, compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
 import type { Logger } from "../logging/logger";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
@@ -55,6 +55,14 @@ function readState(globalStatePath: string): Record<string, unknown> {
 function expectCacheEmpty(updaterCacheDir: string): void {
   expect(fs.readdirSync(updaterCacheDir)).toEqual([]);
 }
+
+describe("buildReleaseNotesUrl", () => {
+  it("points release notes at the docs changelog route", () => {
+    expect(buildReleaseNotesUrl("v1.2.11")).toBe("https://www.ade-app.dev/docs/changelog/v1.2.11");
+    expect(buildReleaseNotesUrl("1.2.11", "https://staging.ade-app.dev/")).toBe("https://staging.ade-app.dev/docs/changelog/v1.2.11");
+    expect(buildReleaseNotesUrl(" ", "https://www.ade-app.dev")).toBeNull();
+  });
+});
 
 describe("createAutoUpdateService", () => {
   afterEach(() => {
@@ -179,14 +187,14 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot().recentlyInstalled).toEqual({
       version: "1.2.3",
       installedAt: "2026-04-06T15:21:00.000Z",
-      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
     });
 
     expect(JSON.parse(fs.readFileSync(globalStatePath, "utf8"))).toEqual({
       recentlyInstalledUpdate: {
         version: "1.2.3",
         installedAt: "2026-04-06T15:21:00.000Z",
-        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
       },
     });
     expectCacheEmpty(updaterCacheDir);
@@ -206,7 +214,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:20:00.000Z",
       },
     }), "utf8");
@@ -262,7 +270,7 @@ describe("createAutoUpdateService", () => {
       bytesPerSecond: 128_000,
       transferredBytes: 6_240_000,
       totalBytes: 10_000_000,
-      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
     });
 
     updater.emit("update-downloaded", {
@@ -273,7 +281,7 @@ describe("createAutoUpdateService", () => {
       status: "ready",
       version: "1.2.3",
       progressPercent: 100,
-      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
     });
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
@@ -283,7 +291,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
     });
@@ -336,7 +344,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.4",
-        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.4",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
     });
@@ -424,7 +432,7 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
       version: "1.2.4",
-      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.4",
+      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
     });
 
     service.dispose();
@@ -624,7 +632,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:20:00.000Z",
       },
     }), "utf8");
@@ -643,7 +651,7 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot().recentlyInstalled).toEqual({
       version: "1.2.4",
       installedAt: "2026-04-06T15:21:00.000Z",
-      releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.4",
+      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
     });
     expectCacheEmpty(updaterCacheDir);
 
