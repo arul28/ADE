@@ -1107,6 +1107,8 @@ describe("webhook relay", () => {
           { id: 1, guid: "g-1", event: "pull_request", action: "closed", status: "Invalid HTTP Response: 401", status_code: 401, delivered_at: "2026-07-02T00:00:00Z", redelivery: false, repository_id: 4242, installation_id: 123 },
           { id: 2, guid: "g-2", event: "pull_request", action: "opened", status: "OK", status_code: 202, delivered_at: "2026-07-02T00:01:00Z", redelivery: false, repository_id: 999, installation_id: 456 },
           { id: 3, guid: "g-3", event: "ping", action: null, status: "OK", status_code: 202, delivered_at: "2026-06-30T00:00:00Z", redelivery: false, repository_id: null, installation_id: null },
+          // Repo-scoped but with an unprovable repo id — must fail closed.
+          { id: 4, guid: "g-4", event: "pull_request", action: "closed", status: "OK", status_code: 202, delivered_at: "2026-07-02T00:02:00Z", redelivery: false, repository_id: "not-a-number", installation_id: 789 },
         ]), {
           status: 200,
           headers: { "content-type": "application/json" },
