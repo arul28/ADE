@@ -27,7 +27,7 @@ import {
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { QuickRunMenu } from "../run/QuickRunMenu";
-import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
+import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection } from "./ManageLaneDialog";
@@ -36,13 +36,6 @@ import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { LinearIssueBadge } from "./LinearIssueBadge";
 import { LanePrBadgePopover } from "./LanePrBadgePopover";
-import {
-  DEFAULT_NEW_LANE_BASE_SOURCE,
-  effectiveNewLaneBaseSource,
-  fetchNewLaneBaseBranches,
-  listNewLaneBaseOptions,
-  selectDefaultNewLaneBaseRef,
-} from "./newLaneBaseSource";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
@@ -51,7 +44,6 @@ import {
   parseLaneIdsParam,
   laneHasAncestor,
   planLaneDeleteBatches,
-  resolveCreateLaneRequest,
   resolveLaneDeleteStartSelection,
   resolveLaneIdsDeepLinkSelection,
   resolveVisibleLaneIds,
@@ -85,14 +77,10 @@ import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
-import { linearIssueBranchName, linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import type {
-  BranchPullRequest,
   DeleteLaneArgs,
   GitCommitSummary,
   GitHubPrListItem,
-  LaneEnvInitEvent,
-  LaneEnvInitProgress,
   LaneBranchActiveWorkItem,
   LaneListSnapshot,
   LaneLinearIssue,
@@ -102,8 +90,6 @@ import type {
   RebaseScope,
   IntegrationProposal,
   LaneDeleteProgress,
-  LaneTemplate,
-  NewLaneBaseSource,
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -116,11 +102,6 @@ type RebaseScopePromptState = {
 };
 
 type LanePaneSurface = "inline" | "git-actions-fullscreen" | "lane-fullscreen";
-type CreateSetupPhase =
-  | "creating"
-  | "appearance"
-  | "refreshing"
-  | "environment";
 
 export function shouldMountGitActionsPane({
   laneId,
@@ -450,36 +431,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [gridResetKey, setGridResetKey] = useState(0);
   const [laneFilter, setLaneFilter] = useState("");
   const [manageOpen, setManageOpen] = useState(false);
+  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns all of the
+  // form + submit + env-setup state. LanesPage only tracks whether it is open,
+  // the prefill to seed it with, and (via a ref) whether a create is in flight
+  // so a forced close (dialog bus) can be blocked.
   const [createOpen, setCreateOpen] = useState(false);
-  const [createLaneName, setCreateLaneName] = useState("");
-  const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
-  const [createMode, setCreateMode] = useState<CreateLaneMode>("primary");
-  const [createBaseSource, setCreateBaseSource] = useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
-  const createBaseSourceRef = useRef<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
-  const createBaseSourceUserPickedRef = useRef(false);
-  const createBaseBranchesLoadSeqRef = useRef(0);
-  const createBaseSourceSaveInFlightRef = useRef(false);
-  const createBaseSourceSavePendingRef = useRef<NewLaneBaseSource | null>(null);
-  const [createBaseBranch, setCreateBaseBranch] = useState("");
-  const [createImportBranch, setCreateImportBranch] = useState("");
-  const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
-  const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
-  const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
-  const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
-  const [createBranchPullRequestsLoading, setCreateBranchPullRequestsLoading] = useState(false);
-  const [createGitUserName, setCreateGitUserName] = useState<string>("");
-  const [createBusy, setCreateBusy] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
-  const [createEnvInitProgress, setCreateEnvInitProgress] = useState<LaneEnvInitProgress | null>(null);
-  const [laneCreated, setLaneCreated] = useState(false);
-  const [createSetupPhase, setCreateSetupPhase] = useState<CreateSetupPhase | null>(null);
-  const createEnvInitLaneIdRef = useRef<string | null>(null);
-  const createBaseBranchUserPickedRef = useRef(false);
-  const [templates, setTemplates] = useState<LaneTemplate[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState("");
-  const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
-  const [createSelectedLinearIssue, setCreateSelectedLinearIssue] = useState<LaneLinearIssue | null>(null);
-  const createLinearIssueAutoNameRef = useRef<string | null>(null);
+  const [createPrefill, setCreatePrefill] = useState<CreateLanePrefill | null>(null);
+  const createBusyRef = useRef(false);
   const [multiAttachOpen, setMultiAttachOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [attachName, setAttachName] = useState("");
@@ -698,13 +656,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     sortedLanes.forEach((lane, index) => map.set(lane.id, index));
     return map;
   }, [sortedLanes]);
-
-  useEffect(() => {
-    return window.ade.lanes.onEnvEvent((event: LaneEnvInitEvent) => {
-      if (event.progress.laneId !== createEnvInitLaneIdRef.current) return;
-      setCreateEnvInitProgress(event.progress);
-    });
-  }, []);
 
   const filteredLanes = useMemo(() => {
     return sortLaneListRows({
@@ -2132,109 +2083,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Create/Attach lane submit handlers ---- */
 
-  const resetCreateDialogState = useCallback(() => {
-    createEnvInitLaneIdRef.current = null;
-    createBaseBranchUserPickedRef.current = false;
-    createBaseBranchesLoadSeqRef.current += 1;
-    setLaneCreated(false);
-    setCreateLaneName("");
-    setCreateParentLaneId("");
-    setCreateMode("primary");
-    setCreateBaseBranch("");
-    setCreateImportBranch("");
-    setCreateChildBaseBranch("");
-    setCreateBusy(false);
-    setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase(null);
-    setSelectedTemplateId("");
-    setCreateSelectedColor(null);
-    setCreateSelectedLinearIssue(null);
-    createLinearIssueAutoNameRef.current = null;
-  }, []);
-
-  const prepareCreateDialog = useCallback(() => {
-    setCreateLaneName("");
-    setCreateParentLaneId("");
-    setCreateMode("primary");
-    setCreateBaseSource(DEFAULT_NEW_LANE_BASE_SOURCE);
-    createBaseSourceRef.current = DEFAULT_NEW_LANE_BASE_SOURCE;
-    createBaseSourceUserPickedRef.current = false;
-    setCreateBaseBranch("");
-    setCreateImportBranch("");
-    setCreateChildBaseBranch("");
-    setCreateBranches([]);
-    setCreateBranchPullRequests([]);
-    setCreateGitUserName("");
-    setCreateSelectedLinearIssue(null);
-    createLinearIssueAutoNameRef.current = null;
-    setCreateBranchesLoading(false);
-    setCreateBranchPullRequestsLoading(false);
-    setLaneCreated(false);
-    createBaseBranchUserPickedRef.current = false;
-    const primary = lanes.find((l) => l.laneType === "primary");
-    if (primary) {
-      const loadSeq = ++createBaseBranchesLoadSeqRef.current;
-      setCreateBranchesLoading(true);
-      window.ade.projectConfig.get()
-        .catch(() => null)
-        .then(async (snapshot) => {
-          const baseSource = effectiveNewLaneBaseSource(snapshot);
-          const selectedBaseSource = createBaseSourceUserPickedRef.current
-            ? createBaseSourceRef.current
-            : baseSource;
-          if (!createBaseSourceUserPickedRef.current) {
-            createBaseSourceRef.current = baseSource;
-            setCreateBaseSource(baseSource);
-          }
-          const branches = await fetchNewLaneBaseBranches({
-            source: selectedBaseSource,
-            fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primary.id }),
-            listBranches: () => window.ade.git.listBranches({ laneId: primary.id }),
-          });
-          if (createBaseBranchesLoadSeqRef.current !== loadSeq) return;
-          setCreateBranches(branches);
-          if (!createBaseBranchUserPickedRef.current) {
-            const defaultBaseRef = selectDefaultNewLaneBaseRef({
-              branches,
-              source: createBaseSourceUserPickedRef.current
-                ? createBaseSourceRef.current
-                : selectedBaseSource,
-              primaryBaseRef: primary.baseRef,
-            });
-            if (defaultBaseRef) setCreateBaseBranch(defaultBaseRef);
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (createBaseBranchesLoadSeqRef.current === loadSeq) setCreateBranchesLoading(false);
-        });
-
-      // Capture git user.name so the picker can resolve `mine` / `author:me`.
-      window.ade.git.getUserIdentity({ laneId: primary.id })
-        .then((identity) => setCreateGitUserName(identity?.name ?? ""))
-        .catch(() => setCreateGitUserName(""));
-
-      // Lazily attach open-PR metadata. Fail-soft — picker degrades gracefully.
-      setCreateBranchPullRequestsLoading(true);
-      window.ade.prs.listOpenForRepo()
-        .then(setCreateBranchPullRequests)
-        .catch(() => setCreateBranchPullRequests([]))
-        .finally(() => setCreateBranchPullRequestsLoading(false));
-    }
-    Promise.all([
-      window.ade.lanes.listTemplates().catch(() => [] as LaneTemplate[]),
-      window.ade.lanes.getDefaultTemplate().catch(() => null),
-    ]).then(([nextTemplates, defaultTemplateId]) => {
-      setTemplates(nextTemplates);
-      setSelectedTemplateId(
-        defaultTemplateId && nextTemplates.some((template) => template.id === defaultTemplateId)
-          ? defaultTemplateId
-          : ""
-      );
-    });
+  // Open the create-lane host with an optional prefill. The host seeds itself
+  // (branch loading, templates, defaults) when `open` flips true, so LanesPage
+  // only tracks the open flag + prefill.
+  const openCreateDialog = useCallback((prefill?: CreateLanePrefill | null) => {
+    setCreatePrefill(prefill ?? null);
     setCreateOpen(true);
-  }, [lanes]);
+  }, []);
 
   // Deep link handling: must not re-run on lane list refreshes, or a stale
   // ?laneId / focus=single from the URL overwrites the user's current tab/split
@@ -2242,7 +2097,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   useEffect(() => {
     if (urlLaneDeeplinks.action !== "create") return;
-    prepareCreateDialog();
+    openCreateDialog();
     const next = new URLSearchParams(location.search);
     next.delete("action");
     const search = next.toString();
@@ -2251,7 +2106,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     location.pathname,
     location.search,
     navigate,
-    prepareCreateDialog,
+    openCreateDialog,
     urlLaneDeeplinks.action,
   ]);
 
@@ -2554,303 +2409,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [creatingIssues, laneIdByLinearIssueId]);
 
   const handleCreateDialogOpenChange = useCallback((open: boolean) => {
-    if (!open && createBusy) return;
-    if (!open) resetCreateDialogState();
     setCreateOpen(open);
-  }, [createBusy, resetCreateDialogState]);
-
-  const createSetupStatus = useMemo(() => {
-    switch (createSetupPhase) {
-      case "creating":
-        return createMode === "existing"
-          ? "Importing branch and creating the lane worktree..."
-          : "Creating the lane branch and worktree...";
-      case "appearance":
-        return "Saving lane appearance...";
-      case "refreshing":
-        return "Refreshing the lane list...";
-      case "environment":
-        return selectedTemplateId ? "Applying the lane template..." : "Running lane environment setup...";
-      default:
-        return laneCreated ? "Lane exists. Finish setup or retry the failed step." : null;
-    }
-  }, [createMode, createSetupPhase, laneCreated, selectedTemplateId]);
-  const createSetupSteps = useMemo<CreateLaneSetupStep[]>(() => {
-    if (!createBusy && !laneCreated) return [];
-    let laneLabel: string;
-    if (createMode === "child") laneLabel = "Create child lane";
-    else if (createMode === "existing") laneLabel = "Import branch";
-    else laneLabel = "Create lane";
-    let laneState: CreateLaneSetupStep["state"];
-    if (createSetupPhase === "creating") laneState = "active";
-    else if (laneCreated) laneState = "done";
-    else laneState = "pending";
-    const steps: CreateLaneSetupStep[] = [{
-      label: laneLabel,
-      detail: "Create the branch metadata and worktree on disk.",
-      state: laneState,
-    }];
-    steps.push({
-      label: selectedTemplateId ? "Apply template" : "Initialize environment",
-      detail: selectedTemplateId
-        ? "Run the selected lane template setup."
-        : "Run the default lane setup checks.",
-      state: createSetupPhase === "environment" ? "active" : "pending",
-    });
-    return steps;
-  }, [createBusy, createMode, createSetupPhase, laneCreated, selectedTemplateId]);
-
-  /** Wraps setCreateBaseBranch so we can track user-driven selections and avoid
-   *  the async branch-list fetch from overwriting a value the user already picked. */
-  const handleSetCreateBaseBranch = useCallback((v: string) => {
-    createBaseBranchUserPickedRef.current = true;
-    setCreateBaseBranch(v);
   }, []);
 
-  const persistCreateBaseSourceConfig = useCallback(() => {
-    if (createBaseSourceSaveInFlightRef.current) return;
-    if (!createBaseSourceSavePendingRef.current) return;
-    createBaseSourceSaveInFlightRef.current = true;
-    let failed = false;
-
-    void (async () => {
-      try {
-        while (createBaseSourceSavePendingRef.current) {
-          const source: NewLaneBaseSource = createBaseSourceSavePendingRef.current;
-          const snapshot = await window.ade.projectConfig.get();
-          const currentGit = snapshot.local.git ?? {};
-          await window.ade.projectConfig.save({
-            shared: snapshot.shared,
-            local: {
-              ...snapshot.local,
-              git: {
-                ...currentGit,
-                newLaneBaseSource: source,
-              },
-            },
-          });
-          if (createBaseSourceSavePendingRef.current === source) {
-            createBaseSourceSavePendingRef.current = null;
-          }
-        }
-      } catch (saveError) {
-        failed = true;
-        setCreateError(saveError instanceof Error ? saveError.message : String(saveError));
-      } finally {
-        createBaseSourceSaveInFlightRef.current = false;
-        if (!failed && createBaseSourceSavePendingRef.current) {
-          persistCreateBaseSourceConfig();
-        }
-      }
-    })();
+  // Blocked by the dialog bus while a create/setup is in flight (parity with the
+  // old busy guard); the host owns the busy state and mirrors it into the ref.
+  const handleCreateDialogBusClose = useCallback(() => {
+    if (createBusyRef.current) return;
+    setCreateOpen(false);
   }, []);
 
-  const handleSetCreateBaseSource = useCallback((source: NewLaneBaseSource) => {
-    createBaseSourceRef.current = source;
-    createBaseSourceUserPickedRef.current = true;
-    createBaseBranchUserPickedRef.current = false;
-    const loadSeq = ++createBaseBranchesLoadSeqRef.current;
-    setCreateBaseSource(source);
-    setCreateBaseBranch("");
-    setCreateBranches([]);
-    const primary = lanes.find((l) => l.laneType === "primary");
-    if (primary) {
-      setCreateBranchesLoading(true);
-      fetchNewLaneBaseBranches({
-        source,
-        fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primary.id }),
-        listBranches: () => window.ade.git.listBranches({ laneId: primary.id }),
-        })
-        .then((branches) => {
-          if (createBaseSourceRef.current !== source || createBaseBranchesLoadSeqRef.current !== loadSeq) return;
-          setCreateBranches(branches);
-          if (!createBaseBranchUserPickedRef.current) {
-            setCreateBaseBranch(selectDefaultNewLaneBaseRef({
-              branches,
-              source,
-              primaryBaseRef: primary.baseRef,
-            }));
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (createBaseSourceRef.current === source && createBaseBranchesLoadSeqRef.current === loadSeq) {
-            setCreateBranchesLoading(false);
-          }
-        });
-    } else {
-      setCreateBranchesLoading(false);
-    }
-    createBaseSourceSavePendingRef.current = source;
-    persistCreateBaseSourceConfig();
-  }, [lanes, persistCreateBaseSourceConfig]);
-
-  const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
-    setCreateSelectedLinearIssue(issue);
-    if (!issue) return;
-
-    const nextName = linearIssueLaneName(issue);
-    setCreateLaneName((current) => {
-      const trimmed = current.trim();
-      const previousAutoName = createLinearIssueAutoNameRef.current;
-      if (!trimmed || (previousAutoName && trimmed === previousAutoName)) {
-        createLinearIssueAutoNameRef.current = nextName;
-        return nextName;
-      }
-      createLinearIssueAutoNameRef.current = nextName;
-      return current;
-    });
-    setCreateImportBranch("");
-    setCreateMode((mode) => mode === "existing" ? "primary" : mode);
-  }, []);
-
-  /** Run post-create setup for a lane that already exists. Used as the retry path
-   *  when environment setup fails. */
-  const runSetupForCreatedLane = useCallback(async (laneId: string) => {
-    setCreateBusy(true);
-    setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase("environment");
-
-    try {
-      const envProgress = selectedTemplateId
-        ? await window.ade.lanes.applyTemplate({ laneId, templateId: selectedTemplateId })
-        : await window.ade.lanes.initEnv({ laneId });
-      setCreateEnvInitProgress(envProgress);
-
-      if (envProgress.overallStatus === "failed") {
-        setCreateError("Environment setup failed. Review the progress log and retry.");
-        return;
-      }
-
-      resetCreateDialogState();
-      setCreateOpen(false);
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreateSetupPhase(null);
-      setCreateBusy(false);
-    }
-  }, [selectedTemplateId, resetCreateDialogState]);
-
-  const handleCreateSubmit = useCallback(async () => {
-    // If the lane was already created (e.g. env setup failed on a previous
-    // attempt), retry setup only — never re-run creation.
-    if (createEnvInitLaneIdRef.current) {
-      await runSetupForCreatedLane(createEnvInitLaneIdRef.current);
-      return;
-    }
-
-    const name = createLaneName.trim();
-    if (!name || createBusy) return;
-    if (createMode === "child" && !createParentLaneId) return;
-    if (createMode === "primary") {
-      const validBaseBranch = listNewLaneBaseOptions(createBranches, createBaseSource)
-        .some((option) => option.ref === createBaseBranch);
-      if (createBranchesLoading || !validBaseBranch) {
-        setCreateError(createBranchesLoading
-          ? "Still loading base branches. Try again in a moment."
-          : "Choose a valid base branch for the selected source.");
-        return;
-      }
-    }
-    if (createMode === "existing" && !createImportBranch) return;
-    if (createSelectedLinearIssue && createMode === "existing") {
-      setCreateError("Detach the Linear issue before importing an existing branch.");
-      return;
-    }
-    if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
-      setCreateError("The selected lane template no longer exists. Refresh templates or choose a different option.");
-      return;
-    }
-
-    setCreateBusy(true);
-    setCreateError(null);
-    setCreateEnvInitProgress(null);
-    setCreateSetupPhase("creating");
-
-    try {
-      const request = resolveCreateLaneRequest({
-        name,
-        createMode,
-        createParentLaneId,
-        createBaseBranch,
-        createImportBranch,
-      });
-      const linearIssueArgs = createSelectedLinearIssue
-        ? {
-          linearIssue: {
-            ...createSelectedLinearIssue,
-            branchName: linearIssueBranchName(createSelectedLinearIssue),
-          },
-          branchName: linearIssueBranchName(createSelectedLinearIssue),
-        }
-        : {};
-      let lane: LaneSummary;
-      if (request.kind === "import") {
-        lane = await window.ade.lanes.importBranch(request.args);
-      } else if (request.kind === "child") {
-        const trimmedBase = createChildBaseBranch.trim();
-        const parentLane = lanes.find((l) => l.id === request.args.parentLaneId);
-        if (!parentLane) {
-          setCreateError("Parent lane no longer exists. Please close and reopen the dialog.");
-          setCreateBusy(false);
-          setCreateSetupPhase(null);
-          return;
-        }
-        const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
-          ? { ...request.args, baseBranchRef: trimmedBase, ...linearIssueArgs }
-          : { ...request.args, ...linearIssueArgs };
-        lane = await window.ade.lanes.createChild(childArgs);
-      } else {
-        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs });
-      }
-
-      // Lane created successfully — record its id so retries skip creation.
-      createEnvInitLaneIdRef.current = lane.id;
-      setLaneCreated(true);
-
-      if (createSelectedColor) {
-        try {
-          setCreateSetupPhase("appearance");
-          await window.ade.lanes.updateAppearance({ laneId: lane.id, color: createSelectedColor });
-        } catch {
-          // Color collisions or transient errors shouldn't block lane creation.
-        }
-      }
-
-      setCreateSetupPhase("refreshing");
-      await refreshLanes();
-      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
-
-      // Now run environment setup as a separate phase.
-      await runSetupForCreatedLane(lane.id);
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : String(err));
-      setCreateSetupPhase(null);
-      setCreateBusy(false);
-    }
-  }, [
-    createLaneName,
-    createMode,
-    createParentLaneId,
-    createBaseSource,
-    createBaseBranch,
-    createBranches,
-    createBranchesLoading,
-    createImportBranch,
-    createChildBaseBranch,
-    lanes,
-    createBusy,
-    navigate,
-    refreshLanes,
-    resetCreateDialogState,
-    runSetupForCreatedLane,
-    selectedTemplateId,
-    templates,
-    createSelectedColor,
-    createSelectedLinearIssue,
-  ]);
+  // After the lane record exists + list is refreshed, focus the new lane (the
+  // host still streams env-setup progress in the dialog in stay-open mode).
+  const handleLaneCreated = useCallback((lane: LaneSummary) => {
+    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
+  }, [navigate]);
 
   const handleAttachSubmit = useCallback(async () => {
     const name = attachName.trim();
@@ -2889,10 +2462,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
     setAddLaneDropdownOpen(false);
     setStackGraphHeaderOpen(false);
-    prepareCreateDialog();
     const name = typeof props?.name === "string" ? props.name.trim() : "";
-    if (name) setCreateLaneName(name);
-  }, [prepareCreateDialog]);
+    openCreateDialog(name ? { name } : null);
+  }, [openCreateDialog]);
 
   const handleManageDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
     const requestedLaneId = typeof props?.laneId === "string" ? props.laneId : null;
@@ -2911,7 +2483,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   useDialogBus("lanes.create", {
     onOpen: handleCreateDialogBusOpen,
-    onClose: () => handleCreateDialogOpenChange(false),
+    onClose: handleCreateDialogBusClose,
   });
 
   useDialogBus("lanes.manage", {
@@ -3431,7 +3003,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
                 onClick={() => {
                   setAddLaneDropdownOpen(false);
-                  prepareCreateDialog();
+                  openCreateDialog();
                 }}
               >
                 <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-accent">
@@ -4081,7 +3653,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                     variant="primary"
                     disabled={!canCreateLane}
                     onClick={() => {
-                      prepareCreateDialog();
+                      openCreateDialog();
                     }}
                   >
                     Create Lane
@@ -4254,52 +3826,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
 
       {/* Create Lane dialog */}
-      <CreateLaneDialog
+      <CreateLaneDialogHost
         open={createOpen}
         onOpenChange={handleCreateDialogOpenChange}
-        createLaneName={createLaneName}
-        setCreateLaneName={setCreateLaneName}
-        createMode={createMode}
-        setCreateMode={setCreateMode}
-        createParentLaneId={createParentLaneId}
-        setCreateParentLaneId={setCreateParentLaneId}
-        createBaseSource={createBaseSource}
-        setCreateBaseSource={handleSetCreateBaseSource}
-        createBaseBranch={createBaseBranch}
-        setCreateBaseBranch={handleSetCreateBaseBranch}
-        createImportBranch={createImportBranch}
-        setCreateImportBranch={setCreateImportBranch}
-        createChildBaseBranch={createChildBaseBranch}
-        setCreateChildBaseBranch={setCreateChildBaseBranch}
-        projectRoot={activeProjectRoot}
-        createBranches={createBranches}
-        lanes={lanes}
-        onSubmit={handleCreateSubmit}
-        busy={createBusy}
-        error={createError}
-        envInitProgress={createEnvInitProgress}
-        laneCreated={laneCreated}
-        setupStatus={createSetupStatus}
-        setupSteps={createSetupSteps}
-        templates={templates}
-        selectedTemplateId={selectedTemplateId}
-        setSelectedTemplateId={setSelectedTemplateId}
-        selectedColor={createSelectedColor}
-        setSelectedColor={setCreateSelectedColor}
-        selectedLinearIssue={createSelectedLinearIssue}
-        setSelectedLinearIssue={handleSetCreateLinearIssue}
-        branchPullRequests={createBranchPullRequests}
-        currentGitUserName={createGitUserName}
-        loadingBranches={createBranchesLoading}
-        loadingBranchPullRequests={createBranchPullRequestsLoading}
+        behavior="stay-open-setup"
+        prefill={createPrefill}
+        onCreated={handleLaneCreated}
+        onBusyChange={(busy) => { createBusyRef.current = busy; }}
         onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
-        importBranchWarning={
-          createMode === "existing" && createImportBranch && primaryLane?.status.dirty
-            && createBranches.find((b) => b.name === createImportBranch && !b.isRemote)?.isCurrent
-            ? `This branch is currently checked out and has uncommitted changes. The new lane will only include committed changes\u2009—\u2009uncommitted work will not carry over.`
-            : null
-        }
       />
 
       {/* Attach Lane dialog */}

@@ -4068,3 +4068,17 @@ button:active, [role="button"]:active {
   .ade-welcome-card__qr:hover { transform: none; }
   .ade-welcome-card__poster:hover .ade-welcome-card__play { transform: translate(-50%, -50%); }
 }
+
+/* Shared toast primitive (ToastStack): slide-up + fade-in on entrance. */
+@keyframes ade-toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ade-toast-enter {
+  animation: ade-toast-in 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-toast-enter { animation: none; }
+}

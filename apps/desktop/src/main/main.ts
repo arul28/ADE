@@ -2274,6 +2274,7 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
+      onLifecycleEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event),
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;

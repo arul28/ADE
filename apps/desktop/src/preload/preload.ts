@@ -492,6 +492,7 @@ import type {
   GetLaneEnvStatusArgs,
   GetLaneOverlayArgs,
   LaneDeleteEvent,
+  LaneLifecycleEvent,
   LaneDeleteProgress,
   LaneDeleteRisk,
   LaneEnvInitProgress,
@@ -1497,6 +1498,9 @@ const remoteSessionChangedCallbacks = new Set<
 const remoteLaneDeleteEventCallbacks = new Set<
   (payload: LaneDeleteEvent) => void
 >();
+const remoteLaneLifecycleEventCallbacks = new Set<
+  (payload: LaneLifecycleEvent) => void
+>();
 const remoteLaneRebaseEventCallbacks = new Set<
   (payload: RebaseRunEventPayload) => void
 >();
@@ -1695,6 +1699,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteReviewEventCallbacks.size > 0 ||
     remoteSessionChangedCallbacks.size > 0 ||
     remoteLaneDeleteEventCallbacks.size > 0 ||
+    remoteLaneLifecycleEventCallbacks.size > 0 ||
     remoteLaneRebaseEventCallbacks.size > 0 ||
     remoteLaneRebaseSuggestionsEventCallbacks.size > 0 ||
     remoteLaneAutoRebaseEventCallbacks.size > 0 ||
@@ -2210,6 +2215,21 @@ function dispatchRemoteRuntimeEventPayload(
     }
   }
 
+  const laneLifecycleEvent = toWrappedEvent<LaneLifecycleEvent>(
+    payload,
+    "lane_lifecycle_event",
+  );
+  if (laneLifecycleEvent) {
+    clearGitReadCaches();
+    for (const cb of [...remoteLaneLifecycleEventCallbacks]) {
+      try {
+        cb(laneLifecycleEvent);
+      } catch (error) {
+        console.error("preload remote lane lifecycle listener failed", error);
+      }
+    }
+  }
+
   const laneRebaseEvent = toWrappedEvent<RebaseRunEventPayload>(
     payload,
     "lane_rebase_event",
@@ -2475,6 +2495,16 @@ function subscribeRemoteLaneDeleteEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remoteLaneDeleteEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteLaneLifecycleEvents(
+  cb: (payload: LaneLifecycleEvent) => void,
+): () => void {
+  remoteLaneLifecycleEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteLaneLifecycleEventCallbacks.delete(cb);
   };
 }
 
@@ -4437,6 +4467,18 @@ contextBridge.exposeInMainWorld("ade", {
       return () => {
         removeRemote();
         ipcRenderer.removeListener(IPC.lanesDeleteEvent, listener);
+      };
+    },
+    onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: LaneLifecycleEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.lanesLifecycleEvent, listener);
+      const removeRemote = subscribeRemoteLaneLifecycleEvents(cb);
+      return () => {
+        removeRemote();
+        ipcRenderer.removeListener(IPC.lanesLifecycleEvent, listener);
       };
     },
     getStackChain: async (laneId: string): Promise<StackChainItem[]> =>

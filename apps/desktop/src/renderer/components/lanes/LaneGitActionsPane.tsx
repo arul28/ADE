@@ -5,6 +5,7 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
+import { showToast } from "../app/toast/toastStore";
 import { BranchIcon } from "../ui/vcsIcons";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
@@ -906,6 +907,19 @@ export function LaneGitActionsPane({
         notice: `${actionName} completed`,
         error: null,
       });
+      // Global success toast for remote push/sync completion (the inline notice
+      // above is subtle and auto-clears in 3s). Errors keep the persistent
+      // inline banner below and are intentionally not re-toasted.
+      const laneLabel = lane?.name ?? actionLaneId;
+      if (actionName === "push") {
+        showToast({ title: `Pushed ${laneLabel}`, tone: "success" });
+      } else if (actionName === "force push") {
+        showToast({ title: `Force-pushed ${laneLabel}`, tone: "success" });
+      } else if (actionName === "pull") {
+        showToast({ title: `Pulled ${laneLabel}`, tone: "success" });
+      } else if (actionName === "rebase and push") {
+        showToast({ title: `Rebased & pushed ${laneLabel}`, tone: "success" });
+      }
       scheduleLaneGitActionRuntimeClear(actionLaneId, actionVersion, 3_000, {
         notice: null,
       });

@@ -611,7 +611,8 @@ private struct WorkRootPreviewHarness: View {
             needsInputCount: presentation.globalNeedsInputCount,
             isLive: true,
             onClear: clearFilters,
-            onNewChat: {}
+            onNewChat: {},
+            onAddLane: {}
           )
           .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
           .listRowBackground(Color.clear)

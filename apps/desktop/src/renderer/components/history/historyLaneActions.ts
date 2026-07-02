@@ -1,4 +1,5 @@
 import type { GitConflictState, GitStashSummary } from "../../../shared/types";
+import { showToast } from "../app/toast/toastStore";
 
 export type HistoryLaneActionId =
   | "fetch"
@@ -358,6 +359,7 @@ export async function runHistoryLaneAction(args: {
   const { actionId, laneId, laneName, onNotice, onError, onComplete, navigate } =
     args;
   const target = laneName ? ` for ${laneName}` : "";
+  const laneLabel = laneName?.trim() || laneId;
 
   try {
     switch (actionId) {
@@ -418,6 +420,7 @@ export async function runHistoryLaneAction(args: {
         }
         await window.ade.git.push({ laneId });
         onNotice?.("Pushed to upstream");
+        showToast({ title: `Pushed ${laneLabel}`, tone: "success" });
         onComplete?.();
         return;
       case "force_push_lease":
@@ -426,6 +429,7 @@ export async function runHistoryLaneAction(args: {
         }
         await window.ade.git.push({ laneId, forceWithLease: true });
         onNotice?.("Force-pushed with lease");
+        showToast({ title: `Force-pushed ${laneLabel}`, tone: "success" });
         onComplete?.();
         return;
       case "copy_branch_name": {
@@ -528,6 +532,7 @@ export async function runHistoryLaneAction(args: {
         }
         await window.ade.git.sync({ laneId, mode: "merge" });
         onNotice?.("Merged lane base");
+        showToast({ title: `Merged base into ${laneLabel}`, tone: "success" });
         onComplete?.();
         return;
       case "rebase_upstream":
@@ -536,6 +541,7 @@ export async function runHistoryLaneAction(args: {
         }
         await window.ade.git.sync({ laneId, mode: "rebase" });
         onNotice?.("Rebased onto lane base");
+        showToast({ title: `Rebased ${laneLabel}`, tone: "success" });
         onComplete?.();
         return;
       case "stash": {
@@ -622,6 +628,20 @@ export async function runHistoryLaneAction(args: {
         return;
     }
   } catch (err) {
-    onError?.(stripIpcError(err));
+    const message = stripIpcError(err);
+    // Global error toast for remote push/sync failures; the inline toolbar
+    // error surface is transient (auto-clears) and easy to miss, and these
+    // actions are typically fired from a context menu that closes on click.
+    const pushSyncFailTitle: Partial<Record<HistoryLaneActionId, string>> = {
+      push: "Push failed",
+      force_push_lease: "Force push failed",
+      merge_upstream: "Merge failed",
+      rebase_upstream: "Rebase failed",
+    };
+    const failTitle = pushSyncFailTitle[actionId];
+    if (failTitle) {
+      showToast({ title: `${failTitle}: ${laneLabel}`, message, tone: "error" });
+    }
+    onError?.(message);
   }
 }

@@ -93,6 +93,7 @@ struct WorkRootScreen: View {
   @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
   @State var filterPanelOpen = false
+  @State var addLaneSheetPresented = false
 
   var selectedStatus: WorkSessionStatusFilter {
     get { WorkSessionStatusFilter(rawValue: selectedStatusRawValue) ?? .all }
@@ -210,6 +211,11 @@ struct WorkRootScreen: View {
     }
   }
 
+  func presentAddLaneSheet() {
+    guard isLive else { return }
+    addLaneSheetPresented = true
+  }
+
   var sessionGroups: [WorkSessionGroup] {
     sessionPresentation.sessionGroups
   }
@@ -290,7 +296,8 @@ struct WorkRootScreen: View {
             needsInputCount: globalNeedsInputCount,
             isLive: isLive,
             onClear: clearWorkFilters,
-            onNewChat: pushNewChatRoute
+            onNewChat: pushNewChatRoute,
+            onAddLane: presentAddLaneSheet
           )
           .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 8, trailing: 16))
           .listRowBackground(Color.clear)
@@ -503,6 +510,17 @@ struct WorkRootScreen: View {
       }
       .sheet(item: $bulkExportShare) { share in
         WorkActivityViewController(items: share.items)
+      }
+      .sheet(isPresented: $addLaneSheetPresented) {
+        AddLaneSheet(
+          primaryLane: lanes.first(where: { $0.laneType == "primary" }),
+          lanes: lanes,
+          onLaneCreated: { createdLaneId in
+            addLaneSheetPresented = false
+            selectedLaneId = createdLaneId
+            await reload(refreshRemote: true)
+          }
+        )
       }
       .alert("Delete \(bulkSelectedDeletableCount) chat\(bulkSelectedDeletableCount == 1 ? "" : "s")?",
              isPresented: $bulkDeleteConfirmPresented) {

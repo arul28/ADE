@@ -131,6 +131,8 @@ describe("AppShell AI provider status", () => {
         lanes: {
           list: vi.fn(async () => []),
           listSnapshots: vi.fn(async () => []),
+          onLifecycleEvent: vi.fn(() => () => {}),
+          rebaseSubscribe: vi.fn(() => () => {}),
         },
         onboarding: {
           getStatus: vi.fn(async () => ({ freshProject: false, completedAt: null, dismissedAt: null })),

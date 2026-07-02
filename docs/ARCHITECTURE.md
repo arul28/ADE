@@ -397,6 +397,7 @@ Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/age
 - `contextBridge.exposeInMainWorld("ade", { ... })` — the only cross-isolated-world surface.
 - Methods are typed via TypeScript imports from `apps/desktop/src/shared/types/`.
 - Two categories: **invoke methods** (`ipcRenderer.invoke(channel, args)` returning `Promise<T>`) and **event subscriptions** (`ipcRenderer.on(channel, handler)`).
+- Runtime-backed event subscriptions can merge local Electron IPC and the runtime event stream behind one renderer API. For example, `window.ade.lanes.onLifecycleEvent` listens to `ade.lanes.lifecycle.event` for desktop-local fallback paths and to runtime `lane_lifecycle_event` payloads for local-brain or SSH-bound windows.
 - `contextIsolation: true`, `nodeIntegration: false`, `sandbox: false` (required for preload functionality).
 - Global window type: `apps/desktop/src/preload/global.d.ts`.
 - `window.ade.project.getDroppedPath(file)` wraps Electron's `webUtils.getPathForFile()` so renderer drag-drop handlers can resolve the absolute path of a `File` payload without the renderer needing Node APIs. Used by the Command Palette project browser to accept dropped folders.
@@ -412,6 +413,9 @@ ade.onboarding.*
 ade.lanes.*                  # lane list/create/delete/stack/template/env/port/proxy/rebase
                              # delete pipeline: ade.lanes.delete + ade.lanes.delete.cancel
                              # + ade.lanes.delete.risk preflight + ade.lanes.delete.event push
+                             # one-shot create/archive/delete notifications:
+                             # ade.lanes.lifecycle.event push, mirrored from
+                             # runtime event type lane_lifecycle_event
                              # Linear linkage: ade.lanes.linkLinearIssues / unlinkLinearIssues
                              # (lane-scoped) + attachLinearIssueToSession /
                              # detachLinearIssueFromSession / listLinearIssuesForSession /
@@ -502,7 +506,8 @@ High-frequency events flow from main → renderer via `webContents.send(channel,
 | `ade.conflicts.event` | conflictService | Conflicts page, Graph overlay |
 | `ade.prs.event` | prPollingService | PRs page, stacked queue |
 | `ade.agents.event` | CTO/worker services | CTO tab feed |
-| `ade.lanes.rebaseSuggestions.event` / `ade.lanes.autoRebase.event` / `ade.lanes.rebase.event` | rebase services | Lanes + Graph |
+| `ade.lanes.lifecycle.event` | laneService / runtime `lane_lifecycle_event` | AppShell toast stack |
+| `ade.lanes.rebaseSuggestions.event` / `ade.lanes.autoRebase.event` / `ade.lanes.rebase.event` | rebase services | Lanes + Graph; automated terminal-state rebase outcomes also feed AppShell toasts |
 | `ade.project.missing` | projectService | Shell banner |
 | `ade.project.state.event` | projectState | Startup flow |
 | `ade.sync.*` events | syncService | Settings → Sync |
@@ -668,6 +673,7 @@ Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, 
 ### 7.6 Renderer primitives
 
 - `renderer/lib/dialogBus.ts` — tiny pub/sub that lets shared UI open/close dialogs by a stable id (`lanes.create`, `settings.ai`, etc.) without prop-drilling. Dialogs subscribe by id; a `subscribeAll` channel exists for devtools. Default singleton export `dialogBus`.
+- `renderer/components/app/toast/` - shared renderer-only toast primitive. `toastStore.ts` owns stack order, timers, hover pause/resume, sticky toasts, and in-place replacement; `ToastStack.tsx` renders inside AppShell's existing bottom-right notice container. Lane lifecycle and automated rebase terminal events subscribe through `useLaneEventToasts.ts`.
 - `renderer/onboarding/docsLinks.ts` — typed registry of internal/public doc URLs (`docs.lanes`, `docs.cto`, …) used by `DidYouKnow`, glossary/help surfaces, and the `HelpMenu`.
 - `renderer/components/onboarding/WelcomeVideoGate.tsx` — app-level one-time welcome card overlay with sanitized bundled screenshots/assets, a lazy intro video, and an ADE Mobile TestFlight QR/download/copy panel. Seen/dismissed state is stored in the global app state file, separate from per-project setup onboarding.
 

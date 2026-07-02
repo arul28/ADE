@@ -392,6 +392,22 @@ export type LaneDeleteEvent = {
   progress: LaneDeleteProgress;
 };
 
+/**
+ * Fired once when a lane reaches a terminal lifecycle transition, so the
+ * renderer can surface a toast without polling. Distinct from
+ * {@link LaneDeleteEvent}, which streams per-step delete progress; this fires a
+ * single time on successful completion. `lane` carries the full summary for
+ * created lanes (the create paths already have it); archive/delete only need
+ * name + color for the notice.
+ */
+export type LaneLifecycleEvent = {
+  type: "lane-created" | "lane-archived" | "lane-deleted";
+  laneId: string;
+  laneName: string;
+  color?: string | null;
+  lane?: LaneSummary;
+};
+
 export type LaneDeleteRisk = {
   laneId: string;
   branchRef: string | null;

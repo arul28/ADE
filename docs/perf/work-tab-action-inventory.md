@@ -104,7 +104,7 @@ Coverage states:
 | work.sessions.bulk.export | Export selected session bundle | external-skip | `SessionListPane.tsx` |
 | work.sessions.bulk.delete | Delete selected ended sessions | prompt-only | `SessionListPane.tsx` |
 | work.sessions.bulk.clear | Clear current multi-selection | measured | `SessionListPane.tsx` |
-| work.sessions.add-lane | Click Add Lane navigation | external-skip | `SessionListPane.tsx` |
+| work.sessions.add-lane | Open Add Lane modal | measured | `SessionListPane.tsx` |
 
 ## Start surfaces
 

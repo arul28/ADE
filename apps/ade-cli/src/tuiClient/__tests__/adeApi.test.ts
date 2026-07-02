@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage, unarchiveChatSession } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -53,6 +53,58 @@ describe("listLaneDiffStats", () => {
       },
     ]);
     expect(result["lane-1"]).toEqual({ additions: 12, deletions: 4, files: 3 });
+  });
+});
+
+describe("runDefaultLaneSetup", () => {
+  it("applies the configured default template when it still exists", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        if (action === "listTemplates") return [{ id: "tpl-1", name: "Default" }];
+        if (action === "getDefaultTemplate") return "tpl-1";
+        if (action === "applyTemplate") {
+          return { laneId: "lane-1", steps: [], startedAt: "2026-01-01T00:00:00.000Z", overallStatus: "completed" };
+        }
+        throw new Error(`unexpected action ${action}`);
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await runDefaultLaneSetup(connection, "lane-1");
+
+    expect(result.templateId).toBe("tpl-1");
+    expect(result.progress.overallStatus).toBe("completed");
+    expect(calls).toEqual([
+      { domain: "lane", action: "listTemplates", args: undefined },
+      { domain: "lane", action: "getDefaultTemplate", args: undefined },
+      { domain: "lane", action: "applyTemplate", args: { laneId: "lane-1", templateId: "tpl-1" } },
+    ]);
+  });
+
+  it("falls back to lane init when the saved default template is gone", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        if (action === "listTemplates") return [{ id: "other", name: "Other" }];
+        if (action === "getDefaultTemplate") return "missing";
+        if (action === "initEnv") {
+          return { laneId: "lane-1", steps: [], startedAt: "2026-01-01T00:00:00.000Z", overallStatus: "completed" };
+        }
+        throw new Error(`unexpected action ${action}`);
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await runDefaultLaneSetup(connection, "lane-1");
+
+    expect(result.templateId).toBeNull();
+    expect(result.progress.overallStatus).toBe("completed");
+    expect(calls).toEqual([
+      { domain: "lane", action: "listTemplates", args: undefined },
+      { domain: "lane", action: "getDefaultTemplate", args: undefined },
+      { domain: "lane", action: "initEnv", args: { laneId: "lane-1" } },
+    ]);
   });
 });
 

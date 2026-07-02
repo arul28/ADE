@@ -125,6 +125,11 @@ Also renders:
 - the actual list of `SessionCard` rows (memoized)
 - an "Open new" button that sets `draftKind` and routes to
   `WorkStartSurface`
+- an Add Lane button that opens `CreateLaneDialogHost` in-place. The
+  Work flow uses the host's `close-on-create` behavior: it closes as
+  soon as the lane row is created, then runs lane environment setup
+  detached from the sidebar component and leaves a sticky retry toast if
+  setup fails.
 - a bulk-action footer that appears when `selectedSessionIds` is
   non-empty: "Close N running", "Archive N" (chats only), "Restore N"
   (archived chats), "Export" (any selection, opens a markdown bundle

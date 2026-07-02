@@ -496,6 +496,7 @@ export async function createAdeRuntime(args: {
       }
     },
     onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
+    onLifecycleEvent: (event) => pushEvent("runtime", { type: "lane_lifecycle_event", event }),
     onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
       const tracker = linearIssueTrackerRef;
       if (!tracker) return;
