@@ -221,15 +221,19 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       {!appAuthorized && !deviceSession ? <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p> : null}
 
       <div style={actionRowStyle}>
-        {!appAuthorized ? (
+        {!appAuthorized || status?.state === "error" ? (
           <button
             type="button"
-            style={primaryButton(compact ? compactPrimaryButtonStyle : undefined)}
+            style={
+              appAuthorized
+                ? outlineButton(compact ? compactSecondaryButtonStyle : undefined)
+                : primaryButton(compact ? compactPrimaryButtonStyle : undefined)
+            }
             onClick={() => void startAppAuthorization()}
             disabled={authLoading || Boolean(deviceSession)}
           >
             <ArrowSquareOut size={12} weight="bold" />
-            {authLoading || deviceSession ? "Authorizing" : "Authorize ADE"}
+            {authLoading || deviceSession ? "Authorizing" : appAuthorized ? "Re-authorize" : "Authorize ADE"}
           </button>
         ) : null}
         {status?.installed ? null : (
