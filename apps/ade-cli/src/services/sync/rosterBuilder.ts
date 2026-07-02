@@ -15,11 +15,22 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 // cross-project read in recentProjectSummary.ts. The roster opens each
 // project's `.ade/ade.db` read-only with `node:sqlite` — NO cr-sqlite, NO
 // runtime boot — so an all-projects feed never has to activate every project.
-type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
+type DatabaseSyncConstructor = new (
+  dbPath: string,
+  options?: { allowExtension?: boolean; readOnly?: boolean },
+) => DatabaseSyncType;
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 const PREVIEW_MAX_CHARS = 120;
+
+// getIfBooted may return a promise that is still pending for a mid-boot scope
+// (its JSDoc allows "currently-booting"). The roster runs on the brain event
+// loop (~1Hz) and fans out across every project with Promise.all, so an
+// unbounded await on one slow/stuck boot would stall the whole snapshot for
+// every subscribed phone. Cap the overlay wait and degrade to disk-only
+// fidelity for that project this cycle.
+const ROSTER_BOOT_OVERLAY_TIMEOUT_MS = 250;
 
 // --- Narrow structural inputs (the concrete ProjectRegistry / ----------------
 // ProjectScopeRegistry satisfy these; keeping them structural lets the unit
@@ -192,7 +203,7 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
 
   let db: DatabaseSyncType | null = null;
   try {
-    db = new DatabaseSync(dbPath);
+    db = new DatabaseSync(dbPath, { readOnly: true });
     db.exec("PRAGMA busy_timeout = 2000");
     if (!hasTable(db, "lanes")) return empty;
 
@@ -314,7 +325,15 @@ async function buildRosterProject(
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
   try {
-    const scope = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+    const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
+    const scope = bootedPromise
+      ? await Promise.race([
+          bootedPromise.catch(() => null),
+          new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), ROSTER_BOOT_OVERLAY_TIMEOUT_MS),
+          ),
+        ])
+      : null;
     const agentChatService = scope?.runtime.agentChatService;
     if (agentChatService) {
       booted = true;

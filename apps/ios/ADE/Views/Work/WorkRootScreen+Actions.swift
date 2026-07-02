@@ -383,6 +383,9 @@ extension WorkRootScreen {
     // Let the context menu dismiss, the tab switch complete, and the by-lane
     // presentation render before asking the List to reveal the lane header.
     try? await Task.sleep(for: .milliseconds(650))
+    // `try? await Task.sleep` returns (not throws) on cancellation, so a cancelled
+    // handler could still scroll and clear the request — bail out explicitly.
+    guard !Task.isCancelled else { return }
     guard syncService.requestedWorkLaneNavigation?.id == request.id else { return }
 
     withAnimation(.snappy) {

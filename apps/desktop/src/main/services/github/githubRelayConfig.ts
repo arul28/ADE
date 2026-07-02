@@ -5,6 +5,11 @@ export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
 export const ADE_GITHUB_APP_INSTALL_URL = `https://github.com/apps/${ADE_GITHUB_APP_SLUG}/installations/new`;
 export const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
+// Default hosted GitHub App webhook relay. This is a project-operated Cloudflare
+// Worker used for the ADE GitHub App integration during beta; it can be pointed
+// at a self-hosted relay via GITHUB_RELAY_API_BASE_REF or the *_API_BASE_ENV_KEYS
+// env vars. Replacing this personal default with a first-party/self-hostable
+// endpoint is a tracked pre-external-launch item.
 export const DEFAULT_GITHUB_RELAY_API_BASE_URL = "https://ade-github-webhook-relay.arulsharma1028.workers.dev";
 
 export const GITHUB_RELAY_API_BASE_REF = "automations.githubRelay.apiBaseUrl";

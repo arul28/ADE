@@ -2852,6 +2852,7 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.resumeMetadata?.targetKind == rhs.resumeMetadata?.targetKind
       && lhs.resumeMetadata?.targetId == rhs.resumeMetadata?.targetId
       && lhs.resumeMetadata?.target == rhs.resumeMetadata?.target
+      && lhs.resumeMetadata?.launch == rhs.resumeMetadata?.launch
       && lhs.resumeMetadata?.permissionMode == rhs.resumeMetadata?.permissionMode
       && lhs.chatIdleSinceAt == rhs.chatIdleSinceAt
       && lhs.chatSessionId == rhs.chatSessionId

@@ -906,12 +906,24 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
           queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
         }
       } else {
+        // A delivered/inline/failed row graduates at most ONE queued steer.
+        // Prefer the exact steerId match; only fall back to text (consuming a
+        // single queued id) so duplicate prompts don't clear multiple pending
+        // steers at once.
+        let normalizedText = normalizedQueuedSteerText(text)
         if let steerId {
           resolvedSteerIds.insert(steerId)
-        }
-        let normalizedText = normalizedQueuedSteerText(text)
-        if !normalizedText.isEmpty, let matchingQueuedSteerIds = queuedSteerIdsByText[normalizedText] {
-          resolvedSteerIds.formUnion(matchingQueuedSteerIds)
+          if !normalizedText.isEmpty {
+            if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
+              queuedSteerIdsByText[normalizedText]?.remove(steerId)
+            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+              resolvedSteerIds.insert(consumed)
+              queuedSteerIdsByText[normalizedText]?.remove(consumed)
+            }
+          }
+        } else if !normalizedText.isEmpty, let consumed = queuedSteerIdsByText[normalizedText]?.first {
+          resolvedSteerIds.insert(consumed)
+          queuedSteerIdsByText[normalizedText]?.remove(consumed)
         }
       }
     case .systemNotice(_, let message, _, _, let steerId):
@@ -1010,10 +1022,14 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
     .assistantText(let existingText, let existingTurnId, let existingItemId),
     .assistantText(let incomingText, let incomingTurnId, let incomingItemId)
   ):
+    // Keep the earlier envelope's ordering key so a stable-key assistant message
+    // doesn't jump to the latest fragment position when the transcript is sorted,
+    // which would reorder the visible timeline around tool/status events.
+    let keepExistingOrder = workChatEnvelopeSortPrecedesOrMatches(existing, incoming)
     return WorkChatEnvelope(
       sessionId: incoming.sessionId,
-      timestamp: incoming.timestamp,
-      sequence: incoming.sequence,
+      timestamp: keepExistingOrder ? existing.timestamp : incoming.timestamp,
+      sequence: keepExistingOrder ? existing.sequence : incoming.sequence,
       event: .assistantText(
         text: mergeWorkStreamingText(existingText, incomingText),
         turnId: incomingTurnId ?? existingTurnId,
@@ -1473,16 +1489,26 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
           queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
         }
       } else {
+        // Graduate at most ONE queued steer per delivered row: prefer the exact
+        // steerId, then fall back to consuming a single text-matched queued id so
+        // a duplicate prompt doesn't clear multiple pending steers at once.
+        let normalizedText = normalizedQueuedSteerText(text)
         if let steerId, deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
           queue.removeValue(forKey: steerId)
           resolved.insert(steerId)
-        }
-        let normalizedText = normalizedQueuedSteerText(text)
-        if !normalizedText.isEmpty, let matchingQueuedSteerIds = queuedSteerIdsByText[normalizedText] {
-          for queuedSteerId in matchingQueuedSteerIds {
-            queue.removeValue(forKey: queuedSteerId)
-            resolved.insert(queuedSteerId)
+          if !normalizedText.isEmpty {
+            if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
+              queuedSteerIdsByText[normalizedText]?.remove(steerId)
+            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+              queue.removeValue(forKey: consumed)
+              resolved.insert(consumed)
+              queuedSteerIdsByText[normalizedText]?.remove(consumed)
+            }
           }
+        } else if !normalizedText.isEmpty, let consumed = queuedSteerIdsByText[normalizedText]?.first {
+          queue.removeValue(forKey: consumed)
+          resolved.insert(consumed)
+          queuedSteerIdsByText[normalizedText]?.remove(consumed)
         }
       }
     case .systemNotice(_, let message, _, _, let steerId):

@@ -126,6 +126,11 @@ private func workSnapshotByApplyingAssistantTextTail(
   nextSnapshot.latestMessageAssistantId = workIncrementalLatestAssistantId(timeline)
   nextSnapshot.transcriptIndicatesActiveTurn = true
   nextSnapshot.transcriptLatestTurnEnded = false
+  // Keep interruptibility consistent with the full-rebuild path (which derives
+  // it from the transcript). Otherwise the Stop control can stay hidden while a
+  // newly-streaming assistant response begins over a previously-idle snapshot.
+  nextSnapshot.transcriptHasInterruptibleActivity =
+    WorkActivityIndicator.derivePresentation(from: transcript) != nil
   nextSnapshot.signature = workIncrementalSnapshotSignature(
     base: snapshot.signature,
     transcript: transcript,
@@ -391,12 +396,16 @@ private func workIncrementalEchoCount(in timeline: [WorkTimelineEntry]) -> Int {
 private func workIncrementalRemoveDuplicateEchoes(matching text: String, from timeline: inout [WorkTimelineEntry]) {
   let normalized = normalizedWorkLocalEchoText(text)
   guard !normalized.isEmpty else { return }
-  timeline.removeAll { entry in
+  // Remove only ONE matching echo: if the user sent the same text twice before
+  // canonical sync caught up, confirming the first must not drop the second echo.
+  if let duplicateIndex = timeline.firstIndex(where: { entry in
     guard entry.id.hasPrefix("echo-"),
           case .message(let message) = entry.payload,
           message.role == "user"
     else { return false }
     return normalizedWorkLocalEchoText(message.markdown) == normalized
+  }) {
+    timeline.remove(at: duplicateIndex)
   }
 }
 

@@ -33,6 +33,10 @@ struct HubScreen: View {
   // local DB (authoritative + instant), independent of the cross-project roster
   // feed — so the active card is never stuck on "Loading chats…".
   @State private var activeRoster: RemoteRosterProject?
+  // The project id `activeRoster` was built for. `hubPresentationKey` can rebuild
+  // before `rebuildKey` refreshes `activeRoster` after a project switch, so we
+  // only overlay the local roster when it still matches the project being rendered.
+  @State private var activeRosterProjectId: String?
   @State private var hubProjectPresentations: [HubProjectPresentation] = []
 
   private var isNoMachineBlankState: Bool {
@@ -189,6 +193,7 @@ struct HubScreen: View {
     .task(id: rebuildKey) {
       guard rebuildKey != nil else { return }
       activeRoster = syncService.buildActiveProjectLocalRoster()
+      activeRosterProjectId = syncService.activeProjectId
       rebuildHubProjectPresentations()
     }
     .task(id: hubPresentationKey) {
@@ -279,7 +284,10 @@ struct HubScreen: View {
   /// small subset has hydrated locally and makes ADE's rows appear to vanish.
   private func rosterEntry(for project: MobileProjectSummary) -> RemoteRosterProject? {
     let remoteRoster = syncService.rosterProject(for: project)
-    guard syncService.isActiveProject(project), let activeRoster else {
+    guard syncService.isActiveProject(project),
+          activeRosterProjectId == project.id,
+          let activeRoster
+    else {
       return remoteRoster
     }
     guard let remoteRoster else {

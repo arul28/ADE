@@ -62,6 +62,9 @@ private struct HubChatCover: View {
         return
       }
       await syncService.openProjectForHubChat(target.project)
+      // Only render the chat once the project switch actually landed; otherwise
+      // the cover would open against the wrong active project (failed/offline switch).
+      guard syncService.isActiveProject(target.project) else { return }
       ready = true
     }
   }

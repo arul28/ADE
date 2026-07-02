@@ -746,7 +746,12 @@ struct HubComposerDrawer: View {
           targetProjectRootPath: targetProjectRootPath
         )
         sessionId = summary.sessionId
-        try await syncService.sendChatMessage(sessionId: summary.sessionId, text: opener)
+        try await syncService.sendChatMessage(
+          sessionId: summary.sessionId,
+          text: opener,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        )
       }
 
       // Persist the composer + destination so the next New Chat restores both.
@@ -775,7 +780,11 @@ struct HubComposerDrawer: View {
       // The chat never launched into the lane we just minted — clean it up so
       // an auto-create failure doesn't leave an orphaned empty lane behind.
       if let createdLaneId {
-        try? await syncService.deleteLane(createdLaneId)
+        try? await syncService.deleteLane(
+          createdLaneId,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        )
       }
       busy = false
       return false

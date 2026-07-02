@@ -5154,7 +5154,9 @@ final class SyncService: ObservableObject {
     deleteBranch: Bool = true,
     deleteRemoteBranch: Bool = false,
     remoteName: String = "origin",
-    force: Bool = false
+    force: Bool = false,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws {
     _ = try await sendCommand(action: "lanes.delete", args: [
       "laneId": laneId,
@@ -5162,7 +5164,7 @@ final class SyncService: ObservableObject {
       "deleteRemoteBranch": deleteRemoteBranch,
       "remoteName": remoteName,
       "force": force,
-    ])
+    ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
   }
 
   func fetchLaneTemplates() async throws -> [LaneTemplate] {
@@ -5883,13 +5885,20 @@ final class SyncService: ObservableObject {
   }
 
   @discardableResult
-  func sendChatMessage(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
+  func sendChatMessage(
+    sessionId: String,
+    text: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> SyncChatMessageDelivery {
     let response = try await sendCommand(
       action: "chat.send",
       args: ["sessionId": sessionId, "text": text],
       disconnectOnTimeout: false,
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
-      timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds
+      timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
     )
     return syncChatMessageDelivery(from: response)
   }

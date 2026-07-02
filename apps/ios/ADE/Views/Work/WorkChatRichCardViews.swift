@@ -2071,7 +2071,7 @@ private struct WorkSubagentGlyph: View {
 
   private var color: Color {
     let palette: [Color] = [ADEColor.accent, ADEColor.success, ADEColor.warning, ADEColor.info, ADEColor.danger]
-    return palette[abs(workStableSubagentHash(id)) % palette.count]
+    return palette[Int(UInt(bitPattern: workStableSubagentHash(id)) % UInt(palette.count))]
   }
 
   var body: some View {
@@ -2108,7 +2108,7 @@ private func workStableSubagentHash(_ value: String) -> Int {
 }
 
 private func workSubagentGlyphBit(id: String, index: Int) -> Bool {
-  let hash = abs(workStableSubagentHash("\(id):\(index)"))
+  let hash = UInt(bitPattern: workStableSubagentHash("\(id):\(index)"))
   return hash % 3 != 0
 }
 

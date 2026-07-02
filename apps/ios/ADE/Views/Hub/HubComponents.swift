@@ -363,21 +363,25 @@ func buildHubProjectPresentation(
   let visibleChats = roster.chats.filter { chat in
     chat.archived != true && laneById[chat.laneId] != nil
   }
-  let topLevelChats = visibleChats.filter(\.isChatTool)
-  let topLevelChatIds = Set(topLevelChats.map(\.id))
-  let childRowsByParentId = Dictionary(grouping: visibleChats.filter { chat in
+  let chatToolIds = Set(visibleChats.filter(\.isChatTool).map(\.id))
+  // A row is a child only when it is a non-chat-tool row whose parent is a
+  // visible chat-tool row. Everything else (including standalone CLI rows that
+  // have no valid chat parent) must remain a top-level entry so it stays visible.
+  func isChildRow(_ chat: RemoteRosterChat) -> Bool {
     guard !chat.isChatTool,
           let parentId = chat.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
           !parentId.isEmpty,
           parentId != chat.id
     else { return false }
-    return topLevelChatIds.contains(parentId)
-  }, by: { $0.chatSessionId ?? "" })
+    return chatToolIds.contains(parentId)
+  }
+  let childRowsByParentId = Dictionary(grouping: visibleChats.filter(isChildRow), by: { $0.chatSessionId ?? "" })
     .mapValues { chats in
       chats
         .sorted { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
         .map { HubChatRowPresentation.make(chat: $0) }
     }
+  let topLevelChats = visibleChats.filter { !isChildRow($0) }
   let topLevelChatsByLane = Dictionary(grouping: topLevelChats, by: \.laneId)
 
   let lanes = roster.lanes.compactMap { lane -> HubLanePresentation? in

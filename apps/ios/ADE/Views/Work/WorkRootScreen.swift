@@ -602,7 +602,10 @@ struct WorkRootScreen: View {
           transitionNamespace: routeTransitionNamespace,
           isLive: isLive,
           navigationChrome: .pushedDetail,
-          lanes: workOrderedLanes
+          // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
+          // root, so `workOrderedLanes` stops refreshing here — fall back to the
+          // live `lanes` when the presentation-derived order isn't available.
+          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes
         )
         .equatable()
         .id(route.openId)
@@ -611,7 +614,7 @@ struct WorkRootScreen: View {
       }
       .navigationDestination(for: WorkNewChatRoute.self) { route in
         WorkNewChatScreen(
-          lanes: workOrderedLanes,
+          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
           preferredLaneId: route.preferredLaneId,
           onStarted: { summary, opener in
             let sessionId = summary.sessionId
