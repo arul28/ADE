@@ -1,3 +1,5 @@
+import { X } from "@phosphor-icons/react";
+
 import { cn } from "../../ui/cn";
 import {
   dismissToast,
@@ -94,7 +96,7 @@ export function ToastStack() {
                 aria-label="Dismiss notification"
                 title="Dismiss"
               >
-                x
+                <X size={12} weight="bold" aria-hidden />
               </button>
             </div>
           </div>
