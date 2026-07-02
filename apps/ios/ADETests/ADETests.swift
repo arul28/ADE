@@ -6742,6 +6742,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(terminalUpdate?.state, "merged")
     XCTAssertEqual(terminalUpdate?.prId, "pr-open")
 
+    // Inverse of the terminal-update case: the ADE row is already terminal
+    // (merged) while a stale GitHub snapshot still reports the SAME PR "open".
+    // The terminal ADE state must win — the stale non-terminal GitHub state
+    // must not override it.
+    let staleOpenSnapshot = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [adePr(id: "pr-merged", number: 561, state: "merged")],
+      githubPrs: [githubPr(number: 561, state: "open", headBranch: "ade/mobile-audit-34b23435", linkedLaneId: nil, linkedPrId: nil)]
+    )
+    XCTAssertEqual(staleOpenSnapshot?.source, .ade)
+    XCTAssertEqual(staleOpenSnapshot?.state, "merged")
+    XCTAssertEqual(staleOpenSnapshot?.prId, "pr-merged")
+
     // A GitHub PR on a different branch must not tag this lane.
     let unrelated = selectLaneTabPrTag(
       lane: lane,
