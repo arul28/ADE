@@ -365,8 +365,13 @@ function shouldPreferGithubPrTag(
   githubPr: GitHubPrListItem,
 ): boolean {
   const githubState = githubPr.isDraft ? "draft" : githubPr.state;
-  if (githubPrMatchesAdePr(pr, githubPr) && githubState !== pr.state) return true;
-  return isTerminalPrState(pr.state) && !isTerminalPrState(githubState);
+  if (!githubPrMatchesAdePr(pr, githubPr)) {
+    return isTerminalPrState(pr.state) && !isTerminalPrState(githubState);
+  }
+  if (isTerminalPrState(pr.state) && !isTerminalPrState(githubState)) {
+    return false;
+  }
+  return githubState !== pr.state;
 }
 
 export function selectLaneTabPrTag(

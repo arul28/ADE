@@ -232,9 +232,9 @@ describe("GitHubTab", () => {
   beforeEach(() => {
     mockUsePrs.mockReturnValue({
       prs: [
-        { id: "pr-open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3 },
-        { id: "pr-merged", checksStatus: "passing", reviewStatus: "approved", additions: 5, deletions: 1 },
-        { id: "pr-queue", checksStatus: "passing", reviewStatus: "approved", additions: 7, deletions: 2 },
+        { id: "pr-open", state: "open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3 },
+        { id: "pr-merged", state: "merged", checksStatus: "passing", reviewStatus: "approved", additions: 5, deletions: 1 },
+        { id: "pr-queue", state: "open", checksStatus: "passing", reviewStatus: "approved", additions: 7, deletions: 2 },
       ] satisfies Partial<PrWithConflicts>[],
       mergeContextByPrId: {
         "pr-queue": { groupType: "queue", groupId: "queue-group-1", members: [] },
@@ -960,6 +960,40 @@ describe("GitHubTab", () => {
         includeExternalClosed: true,
         historyPageLimit: 2,
       });
+    });
+  });
+
+  it("places a linked PR in merged when local state is terminal and the GitHub snapshot is stale open", async () => {
+    const user = userEvent.setup();
+    const staleOpenSnapshot: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-stale-open-merged",
+          githubPrNumber: 102,
+          githubUrl: "https://github.com/ade-dev/ade/pull/102",
+          title: "Stale open snapshot",
+          state: "open",
+          linkedPrId: "pr-merged",
+          linkedLaneId: "lane-merged",
+          linkedLaneName: "lane-merged",
+        }),
+      ],
+      externalPullRequests: [],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(staleOpenSnapshot);
+
+    renderTab();
+
+    await waitFor(() => {
+      expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
+    });
+    expect(screen.queryByText("Stale open snapshot")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /^merged/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Stale open snapshot")).toBeTruthy();
     });
   });
 
