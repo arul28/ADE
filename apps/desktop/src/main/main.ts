@@ -3189,16 +3189,21 @@ app.whenReady().then(async () => {
       prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });
-    const automationIngressService = automationService
-      ? createAutomationIngressService({
-          logger,
-          automationService,
-          prService,
-          secretService: automationSecretService,
-          githubService,
-          listRules: () => projectConfigService.get().effective.automations ?? [],
-        })
-      : null;
+    // Constructed even when automations are unavailable (packaged builds):
+    // the relay poll feeds prService.ingestGithubWebhook for PR freshness,
+    // while automation rule dispatch stays gated on automationService.
+    const automationIngressService = createAutomationIngressService({
+      logger,
+      automationService: automationService ?? null,
+      prService,
+      secretService: automationSecretService,
+      githubService,
+      listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+      ingressCursorStore: {
+        get: (source) => db.getJson<string>(`automations.ingress.cursor.${source}`),
+        set: ({ source, cursor }) => db.setJson(`automations.ingress.cursor.${source}`, cursor),
+      },
+    });
 
     const githubPollingService = automationService
       ? createGithubPollingService({

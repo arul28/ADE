@@ -27,11 +27,14 @@ type CursorRow = {
 type GitHubRepoAccessStatus =
   | {
       authorized: true;
+      repositoryId: number | null;
     }
   | {
       authorized: false;
       response: Response;
     };
+
+type GitHubRepoAccessLevel = "write" | "admin";
 
 type GitHubApiJsonResponse = {
   status: number;
@@ -297,6 +300,18 @@ function routeRepoEvents(pathname: string): { owner: string; name: string } | nu
   return null;
 }
 
+function routeRepoWebhookAdmin(pathname: string): { owner: string; name: string; action: "heal" | "deliveries" } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 6 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "webhook") {
+    const owner = decodeURIComponent(parts[2] ?? "").trim();
+    const name = decodeURIComponent(parts[3] ?? "").trim();
+    if (owner && name && (parts[5] === "heal" || parts[5] === "deliveries")) {
+      return { owner, name, action: parts[5] };
+    }
+  }
+  return null;
+}
+
 function routeRepoStatus(pathname: string): { projectId: string | null; owner: string; name: string } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length === 7 && parts[0] === "projects" && parts[2] === "github" && parts[3] === "repos" && parts[6] === "status") {
@@ -344,6 +359,7 @@ async function assertGitHubRepoAuthorized(
   request: Request,
   env: RelayEnv,
   repo: { owner: string; name: string },
+  level: GitHubRepoAccessLevel = "write",
 ): Promise<GitHubRepoAccessStatus> {
   const token = readBearerToken(request);
   if (!token) {
@@ -360,20 +376,21 @@ async function assertGitHubRepoAuthorized(
     token,
   );
   if (repoResponse.ok) {
+    const repositoryId = readRepositoryId(repoResponse.payload);
     const permissions = readNested(repoResponse.payload, "permissions");
     if (permissions) {
-      if (repoPermissionsAllowWebhookRead(permissions)) return { authorized: true };
+      if (repoPermissionsAllowAccess(permissions, level)) return { authorized: true, repositoryId };
       return {
         authorized: false,
-        response: insufficientRepoPermissionResponse(),
+        response: insufficientRepoPermissionResponse(level),
       };
     }
 
-    const fallback = await fetchAuthenticatedUserRepoPermission(apiBaseUrl, token, repo);
-    if (fallback === "authorized") return { authorized: true };
+    const fallback = await fetchAuthenticatedUserRepoPermission(apiBaseUrl, token, repo, level);
+    if (fallback === "authorized") return { authorized: true, repositoryId };
     return {
       authorized: false,
-      response: insufficientRepoPermissionResponse(),
+      response: insufficientRepoPermissionResponse(level),
     };
   }
 
@@ -402,28 +419,36 @@ async function fetchGitHubApiJson(apiBaseUrl: string, path: string, token: strin
   };
 }
 
-function repoPermissionsAllowWebhookRead(permissions: Record<string, unknown>): boolean {
+function readRepositoryId(payload: Record<string, unknown>): number | null {
+  const raw = Number(payload.id);
+  return Number.isFinite(raw) ? Math.trunc(raw) : null;
+}
+
+function repoPermissionsAllowAccess(permissions: Record<string, unknown>, level: GitHubRepoAccessLevel): boolean {
+  if (level === "admin") return readBoolean(permissions, "admin") === true;
   return readBoolean(permissions, "admin") === true
     || readBoolean(permissions, "push") === true
     || readBoolean(permissions, "maintain") === true;
 }
 
-function collaboratorPermissionAllowsWebhookRead(permission: string): boolean {
+function collaboratorPermissionAllowsAccess(permission: string, level: GitHubRepoAccessLevel): boolean {
   const normalized = permission.trim().toLowerCase();
+  if (level === "admin") return normalized === "admin";
   return normalized === "admin" || normalized === "write" || normalized === "maintain";
 }
 
-function insufficientRepoPermissionResponse(): Response {
-  return json(
-    { ok: false, error: "GitHub token must have push/write, maintain, or admin access to read ADE webhook deliveries for this repository." },
-    { status: 403 },
-  );
+function insufficientRepoPermissionResponse(level: GitHubRepoAccessLevel): Response {
+  const error = level === "admin"
+    ? "GitHub token must have admin access to manage the ADE webhook for this repository."
+    : "GitHub token must have push/write, maintain, or admin access to read ADE webhook deliveries for this repository.";
+  return json({ ok: false, error }, { status: 403 });
 }
 
 async function fetchAuthenticatedUserRepoPermission(
   apiBaseUrl: string,
   token: string,
   repo: { owner: string; name: string },
+  level: GitHubRepoAccessLevel,
 ): Promise<"authorized" | "denied"> {
   const userResponse = await fetchGitHubApiJson(apiBaseUrl, "/user", token);
   const login = readString(userResponse.payload, "login");
@@ -437,7 +462,7 @@ async function fetchAuthenticatedUserRepoPermission(
   if (!permissionResponse.ok) return "denied";
 
   const permission = readString(permissionResponse.payload, "permission");
-  return permission && collaboratorPermissionAllowsWebhookRead(permission) ? "authorized" : "denied";
+  return permission && collaboratorPermissionAllowsAccess(permission, level) ? "authorized" : "denied";
 }
 
 function repositoryFullName(payload: Record<string, unknown>): string | null {
@@ -1090,6 +1115,130 @@ async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { own
   });
 }
 
+function githubApiBaseUrl(env: RelayEnv): string {
+  return (env.GITHUB_API_BASE_URL?.trim() || "https://api.github.com").replace(/\/+$/, "");
+}
+
+async function createAppJwtOrErrorResponse(env: RelayEnv): Promise<{ jwt: string } | { response: Response }> {
+  const appId = env.GITHUB_APP_ID?.trim();
+  const privateKey = env.GITHUB_APP_PRIVATE_KEY?.trim();
+  if (!appId || !privateKey) {
+    return { response: json({ ok: false, error: "GitHub App credentials are not configured on the relay." }, { status: 503 }) };
+  }
+  try {
+    return { jwt: await createGitHubAppJwt(appId, privateKey) };
+  } catch (error) {
+    return {
+      response: json(
+        { ok: false, error: `GitHub App JWT could not be created: ${error instanceof Error ? error.message : String(error)}` },
+        { status: 502 },
+      ),
+    };
+  }
+}
+
+// Re-syncs the GitHub App's webhook secret to this worker's GITHUB_WEBHOOK_SECRET.
+// This is the recovery path for signature-mismatch drift (secret rotated on one
+// side only): it can only converge the pair onto the worker's current secret,
+// never set an arbitrary value, so repeated calls are idempotent.
+async function handleWebhookHeal(request: Request, env: RelayEnv, repo: { owner: string; name: string }): Promise<Response> {
+  if (request.method !== "POST") return text("method not allowed", 405);
+  const webhookSecret = String(env.GITHUB_WEBHOOK_SECRET ?? "").trim();
+  if (!webhookSecret) return json({ ok: false, error: "GitHub webhook secret is not configured" }, { status: 503 });
+
+  const auth = await assertGitHubRepoAuthorized(request, env, repo, "admin");
+  if (!auth.authorized) return auth.response;
+
+  const appAuth = await createAppJwtOrErrorResponse(env);
+  if ("response" in appAuth) return appAuth.response;
+
+  const appStatus = await fetchGitHubAppApiStatus(env, repo);
+  if (!appStatus.configured || !appStatus.installed) {
+    const error = appStatus.configured && !appStatus.installed && appStatus.error
+      ? appStatus.error
+      : "The ADE GitHub App is not installed on this repository.";
+    return json({ ok: false, error }, { status: 409 });
+  }
+
+  const response = await fetch(`${githubApiBaseUrl(env)}/app/hook/config`, {
+    method: "PATCH",
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${appAuth.jwt}`,
+      "content-type": "application/json",
+      "user-agent": "ADE GitHub Webhook Relay",
+      "x-github-api-version": "2022-11-28",
+    },
+    body: JSON.stringify({ secret: webhookSecret }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    const message = (isRecord(payload) && readString(payload, "message"))
+      || `GitHub App webhook config update failed with HTTP ${response.status}.`;
+    return json({ ok: false, error: message }, { status: 502 });
+  }
+  return json({
+    ok: true,
+    healed: true,
+    webhookUrl: isRecord(payload) ? readString(payload, "url") || null : null,
+    contentType: isRecord(payload) ? readString(payload, "content_type") || null : null,
+    checkedAt: new Date().toISOString(),
+  });
+}
+
+// Proxies the GitHub App's webhook delivery log, filtered to the requested
+// repository, so delivery failures (signature mismatch, timeouts) are
+// observable without access to the GitHub App settings UI.
+async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { owner: string; name: string }): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+
+  const auth = await assertGitHubRepoAuthorized(request, env, repo);
+  if (!auth.authorized) return auth.response;
+
+  const appAuth = await createAppJwtOrErrorResponse(env);
+  if ("response" in appAuth) return appAuth.response;
+
+  const limit = Math.min(100, parseLimit(new URL(request.url)));
+  const response = await fetch(`${githubApiBaseUrl(env)}/app/hook/deliveries?per_page=${limit}`, {
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: `Bearer ${appAuth.jwt}`,
+      "user-agent": "ADE GitHub Webhook Relay",
+      "x-github-api-version": "2022-11-28",
+    },
+  });
+  const payload = (await response.json().catch(() => null)) as unknown;
+  if (!response.ok || !Array.isArray(payload)) {
+    const message = (isRecord(payload) && readString(payload, "message"))
+      || `GitHub App delivery log fetch failed with HTTP ${response.status}.`;
+    return json({ ok: false, error: message }, { status: 502 });
+  }
+
+  const deliveries = payload
+    .filter(isRecord)
+    .filter((item) => {
+      // Keep app-level deliveries (ping/meta have no repository) so webhook
+      // config issues stay visible alongside repo-scoped deliveries.
+      if (item.repository_id == null) return true;
+      const repositoryId = Number(item.repository_id);
+      if (!Number.isFinite(repositoryId)) return true;
+      return auth.repositoryId == null || Math.trunc(repositoryId) === auth.repositoryId;
+    })
+    .map((item) => ({
+      id: Number.isFinite(Number(item.id)) ? Math.trunc(Number(item.id)) : null,
+      guid: readString(item, "guid") || null,
+      event: readString(item, "event") || null,
+      action: readString(item, "action") || null,
+      status: readString(item, "status") || null,
+      statusCode: Number.isFinite(Number(item.status_code)) ? Math.trunc(Number(item.status_code)) : null,
+      deliveredAt: readString(item, "delivered_at") || null,
+      redelivery: item.redelivery === true,
+      installationId: Number.isFinite(Number(item.installation_id)) ? Math.trunc(Number(item.installation_id)) : null,
+    }));
+
+  return json({ ok: true, deliveries, checkedAt: new Date().toISOString() });
+}
+
 async function handleRepoStatus(request: Request, env: RelayEnv, repo: { projectId: string | null; owner: string; name: string }): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
   if (repo.projectId) {
@@ -1241,6 +1390,10 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   if (url.pathname === "/health") {
     return json({ ok: true });
   }
+
+  const repoWebhookAdmin = routeRepoWebhookAdmin(url.pathname);
+  if (repoWebhookAdmin?.action === "heal") return await handleWebhookHeal(request, env, repoWebhookAdmin);
+  if (repoWebhookAdmin?.action === "deliveries") return await handleWebhookDeliveries(request, env, repoWebhookAdmin);
 
   const repoEvents = routeRepoEvents(url.pathname);
   if (repoEvents) return await handleListRepoEvents(request, env, repoEvents);

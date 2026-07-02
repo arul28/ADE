@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
-import type { AutomationIngressEventRecord, AutomationIngressStatus, AutomationRule, AutomationTriggerType, GitHubRepoRef } from "../../../shared/types";
+import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationIngressStatus, AutomationRule, AutomationTriggerType, GitHubRepoRef } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAutomationService } from "./automationService";
 import type { AutomationSecretService } from "./automationSecretService";
@@ -14,9 +14,19 @@ import {
   shouldUseLegacyGitHubRelayProjectRoute,
 } from "../github/githubRelayConfig";
 
+export type AutomationIngressCursorStore = {
+  get(source: AutomationIngressSource): string | null;
+  set(args: { source: AutomationIngressSource; cursor: string | null }): void;
+};
+
 type AutomationIngressServiceArgs = {
   logger: Logger;
-  automationService: ReturnType<typeof createAutomationService>;
+  // Null when the automations feature is unavailable (packaged builds,
+  // installed daemons). The ingress still polls the GitHub relay and feeds
+  // prService.ingestGithubWebhook so PR state stays fresh; only automation
+  // rule dispatch, the local webhook server, and ingress status reporting
+  // require the automation service.
+  automationService: ReturnType<typeof createAutomationService> | null;
   prService?: ReturnType<typeof createPrService> | null;
   secretService: AutomationSecretService;
   githubService?: {
@@ -24,6 +34,8 @@ type AutomationIngressServiceArgs = {
     getAppUserTokenForRelay: () => Promise<string>;
   } | null;
   listRules: () => AutomationRule[];
+  // Cursor persistence fallback used when automationService is null.
+  ingressCursorStore?: AutomationIngressCursorStore | null;
   pollIntervalMs?: number;
 };
 
@@ -245,15 +257,28 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   );
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
-    args.automationService.updateIngressStatus({
+    args.automationService?.updateIngressStatus({
       githubRelay: patch,
     });
   };
 
   const updateLocalWebhookStatus = (patch: Partial<AutomationIngressStatus["localWebhook"]>) => {
-    args.automationService.updateIngressStatus({
+    args.automationService?.updateIngressStatus({
       localWebhook: patch,
     });
+  };
+
+  const getIngressCursor = (source: AutomationIngressSource): string | null => {
+    if (args.automationService) return args.automationService.getIngressCursor(source);
+    return args.ingressCursorStore?.get(source) ?? null;
+  };
+
+  const setIngressCursor = (entry: { source: AutomationIngressSource; cursor: string | null }): void => {
+    if (args.automationService) {
+      args.automationService.setIngressCursor(entry);
+      return;
+    }
+    args.ingressCursorStore?.set(entry);
   };
 
   const buildGithubRelayConfig = () => {
@@ -296,6 +321,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       });
     });
 
+    if (!args.automationService) return null;
     const mapped = mapGithubWebhookToTrigger(githubEvent, payload);
     if (!mapped) {
       return await args.automationService.dispatchIngressTrigger({
@@ -327,6 +353,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   };
 
   const dispatchLocalWebhook = async (automationId: string, payload: Record<string, unknown>, rawBody: Buffer): Promise<AutomationIngressEventRecord | null> => {
+    if (!args.automationService) {
+      throw new Error("Automations are not available in this runtime.");
+    }
     const trigger = findTrigger(automationId, "webhook");
     if (!trigger?.secretRef?.trim()) {
       throw new Error(`Automation '${automationId}' is missing webhook secretRef.`);
@@ -434,7 +463,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
     if (!config.configured) return;
     try {
-      const cursor = args.automationService.getIngressCursor("github-relay");
+      const cursor = getIngressCursor("github-relay");
       const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
       const legacyAuthToken = gitHubRelayAuthorizationToken(config);
       const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
@@ -523,7 +552,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             error: error instanceof Error ? error.message : String(error),
           });
         });
-        await args.automationService.dispatchIngressTrigger({
+        await args.automationService?.dispatchIngressTrigger({
           source: "github-relay",
           eventKey: eventId,
           triggerType: "github-webhook",
@@ -540,7 +569,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         : null;
       if (responseCursor) lastSeenCursor = responseCursor;
       if (lastSeenCursor && lastSeenCursor !== cursor) {
-        args.automationService.setIngressCursor({ source: "github-relay", cursor: lastSeenCursor });
+        setIngressCursor({ source: "github-relay", cursor: lastSeenCursor });
       }
       updateGithubRelayStatus({
         healthy: true,
@@ -573,7 +602,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
 
   return {
     async start() {
-      if (!server) {
+      // The local webhook server exists to receive automation webhooks; in
+      // PR-freshness-only mode (no automation service) only the relay poll runs.
+      if (!server && args.automationService) {
         server = http.createServer((request, response) => {
           void handleWebhookRequest(request, response);
         });
@@ -603,11 +634,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     },
 
     getStatus() {
-      return args.automationService.getIngressStatus();
+      return args.automationService?.getIngressStatus() ?? null;
     },
 
     listRecentEvents(limit = 20) {
-      return args.automationService.listIngressEvents(limit);
+      return args.automationService?.listIngressEvents(limit) ?? [];
     },
 
     async pollNow() {

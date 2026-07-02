@@ -227,6 +227,77 @@ describe("automationIngressService", () => {
     }));
   });
 
+  it("still ingests relay PR webhooks when the automations feature is unavailable", async () => {
+    const cursors = new Map<string, string | null>();
+    const ingestGithubWebhook = vi.fn(async () => ({
+      processed: true,
+      duplicate: false,
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubPrNumber: 687,
+      linkedPrIds: [],
+      reason: null,
+    }));
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      events: [
+        {
+          cursor: "seq:3",
+          eventId: "delivery-3",
+          githubEvent: "pull_request",
+          summary: "GitHub pull_request · closed · arul28/ADE · #687",
+          createdAt: receivedAt,
+          payload: {
+            action: "closed",
+            repository: { full_name: "arul28/ADE" },
+            pull_request: { number: 687, title: "Github Auth Checks Failed", merged: true },
+          },
+        },
+      ],
+      nextCursor: "seq:3",
+    }), { headers: { "content-type": "application/json" } }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      prService: { ingestGithubWebhook } as never,
+      secretService: {
+        getSecret: () => null,
+      } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: {
+        get: (source) => cursors.get(source) ?? null,
+        set: ({ source, cursor }) => {
+          cursors.set(source, cursor);
+        },
+      },
+    });
+
+    // start() must not bind the local automation webhook server in this mode.
+    await service.start();
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: "Bearer ghu_app_user_token",
+        }),
+      }),
+    );
+    expect(ingestGithubWebhook).toHaveBeenCalledWith(expect.objectContaining({
+      eventName: "pull_request",
+      deliveryId: "delivery-3",
+      payload: expect.objectContaining({
+        pull_request: expect.objectContaining({ number: 687 }),
+      }),
+    }));
+    expect(cursors.get("github-relay")).toBe("seq:3");
+    expect(service.getStatus()).toBeNull();
+    expect(service.listRecentEvents()).toEqual([]);
+  });
+
   it("can read GitHub relay config from runtime environment variables", async () => {
     const previousApiBase = process.env.ADE_GITHUB_RELAY_API_BASE_URL;
     const previousProjectId = process.env.ADE_GITHUB_RELAY_REMOTE_PROJECT_ID;

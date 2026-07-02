@@ -44,6 +44,7 @@ import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
+import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
@@ -1067,22 +1068,31 @@ export async function createAdeRuntime(args: {
       })
     : null;
   automationServiceRef = automationService;
-  const automationSecretService = automationFeatureEnabled
-    ? createAutomationSecretService({
-        adeDir: paths.adeDir,
-        logger,
-      })
-    : null;
-  const automationIngressService = automationFeatureEnabled && automationService && automationSecretService
-    ? createAutomationIngressService({
-        logger,
-        automationService,
-        prService: headlessLinearServices.prService,
-        secretService: automationSecretService,
-        githubService: headlessLinearServices.githubService,
-        listRules: () => projectConfigService.get().effective.automations ?? [],
-      })
-    : null;
+  const automationSecretService = createAutomationSecretService({
+    adeDir: paths.adeDir,
+    logger,
+  });
+  // The ingress runs even when the automations feature is unavailable: its
+  // GitHub relay poll feeds prService.ingestGithubWebhook, which is how
+  // webhook-driven PR state updates reach installed (non-source) runtimes.
+  // Automation rule dispatch stays gated on automationService being present.
+  const automationIngressService = createAutomationIngressService({
+    logger,
+    automationService,
+    prService: headlessLinearServices.prService,
+    secretService: automationSecretService,
+    githubService: headlessLinearServices.githubService,
+    listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+    ingressCursorStore: {
+      get: (source) => db.getJson<string>(`automations.ingress.cursor.${source}`),
+      set: ({ source, cursor }) => db.setJson(`automations.ingress.cursor.${source}`, cursor),
+    },
+  });
+  void automationIngressService.start().catch((error) => {
+    logger.warn("automations.ingress_start_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   const configReloadService = createConfigReloadService({
     paths: {
       sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -1147,6 +1157,32 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     aiIntegrationService,
   });
+
+  // GitHub polling fallback. Runtime-bound desktop windows route PR reads to
+  // this daemon instead of the desktop main process, so the daemon must own
+  // the background polling loop that emits `prs-updated` — otherwise PR state
+  // only refreshes when a surface happens to issue a direct read.
+  const prPollingService = createPrPollingService({
+    logger,
+    prService: headlessLinearServices.prService,
+    projectConfigService,
+    db,
+    onEvent: emitPrEvent,
+    onPullRequestsChanged: async ({ changedPrs, changes }) => {
+      if (changedPrs.length > 0) {
+        headlessLinearServices.prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+      }
+      for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
+        automationService?.onPullRequestChanged?.({
+          pr,
+          previousState,
+          previousChecksStatus,
+          previousReviewStatus,
+        });
+      }
+    },
+  });
+  prPollingService.start();
 
   const usageTrackingService = createUsageTrackingService({
     logger,
@@ -1304,6 +1340,7 @@ export async function createAdeRuntime(args: {
         clearTimeout(staleSessionReconcileTimer);
       }
       void configReloadService.dispose().catch(() => {});
+      swallow(() => prPollingService.dispose());
       swallow(() => automationIngressService?.dispose());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
