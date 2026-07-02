@@ -754,6 +754,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.opencodePermissionMode == rhs.opencodePermissionMode
       && lhs.droidPermissionMode == rhs.droidPermissionMode
       && lhs.cursorModeId == rhs.cursorModeId
+      && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
+      && lhs.cursorConfigValues == rhs.cursorConfigValues
+      && lhs.computerUse == rhs.computerUse
+      && lhs.completion == rhs.completion
       && lhs.identityKey == rhs.identityKey
       && lhs.surface == rhs.surface
       && lhs.automationId == rhs.automationId
