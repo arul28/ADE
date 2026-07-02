@@ -29,6 +29,7 @@ import type { PrDetailRouteTab } from "../prsRouteState";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
+import { isTerminalPrState } from "../../../lib/prState";
 
 const VIRTUALIZE_AT = 50;
 const LINKED_HYDRATION_LIMIT = 8;
@@ -285,10 +286,6 @@ function upsertLaneSummary(lanes: LaneSummary[], lane: LaneSummary): LaneSummary
 
 function isKnownPrState(value: unknown): value is PrSummary["state"] {
   return value === "draft" || value === "open" || value === "merged" || value === "closed";
-}
-
-function isTerminalPrState(state: PrSummary["state"]): boolean {
-  return state === "merged" || state === "closed";
 }
 
 function reconcileLinkedPrState(item: GitHubPrListItem, linkedPr: PrSummary | null | undefined): GitHubPrListItem {

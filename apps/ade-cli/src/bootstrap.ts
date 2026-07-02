@@ -71,7 +71,7 @@ import type { createSyncService } from "./services/sync/syncService";
 import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
-import { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
+import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
@@ -1083,10 +1083,7 @@ export async function createAdeRuntime(args: {
     secretService: automationSecretService,
     githubService: headlessLinearServices.githubService,
     listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
-    ingressCursorStore: {
-      get: (source) => db.getJson<string>(`automations.ingress.cursor.${source}`),
-      set: ({ source, cursor }) => db.setJson(`automations.ingress.cursor.${source}`, cursor),
-    },
+    ingressCursorStore: createKvIngressCursorStore(db),
   });
   void automationIngressService.start().catch((error) => {
     logger.warn("automations.ingress_start_failed", {

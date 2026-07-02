@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/types";
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { mergeUnique } from "./laneUtils";
+import { isTerminalPrState } from "../../lib/prState";
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -332,10 +333,6 @@ function mergeLaneTabPrTags(base: LaneTabPrTag, secondary: LaneTabPrTag | null):
     labels: base.labels ?? secondary.labels,
     author: base.author ?? secondary.author,
   };
-}
-
-function isTerminalPrState(state: PrSummary["state"]): boolean {
-  return state === "merged" || state === "closed";
 }
 
 function githubPrMatchesAdePr(pr: PrSummary, githubPr: GitHubPrListItem): boolean {

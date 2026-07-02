@@ -146,7 +146,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
-import { createAutomationIngressService } from "./services/automations/automationIngressService";
+import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
@@ -3199,10 +3199,7 @@ app.whenReady().then(async () => {
       secretService: automationSecretService,
       githubService,
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
-      ingressCursorStore: {
-        get: (source) => db.getJson<string>(`automations.ingress.cursor.${source}`),
-        set: ({ source, cursor }) => db.setJson(`automations.ingress.cursor.${source}`, cursor),
-      },
+      ingressCursorStore: createKvIngressCursorStore(db),
     });
 
     const githubPollingService = automationService

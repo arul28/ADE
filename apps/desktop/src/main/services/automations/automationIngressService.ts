@@ -3,6 +3,7 @@ import http from "node:http";
 import { URL } from "node:url";
 import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationIngressStatus, AutomationRule, AutomationTriggerType, GitHubRepoRef } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import type { AdeDb } from "../state/kvDb";
 import type { createAutomationService } from "./automationService";
 import type { AutomationSecretService } from "./automationSecretService";
 import type { createPrService } from "../prs/prService";
@@ -18,6 +19,19 @@ export type AutomationIngressCursorStore = {
   get(source: AutomationIngressSource): string | null;
   set(args: { source: AutomationIngressSource; cursor: string | null }): void;
 };
+
+// Canonical kv-backed cursor store. The key template is a persistence
+// contract — keep it defined once here so desktop and daemon wiring cannot
+// drift apart (a drifted key silently resets the relay cursor).
+export function createKvIngressCursorStore(
+  db: Pick<AdeDb, "getJson" | "setJson">,
+): AutomationIngressCursorStore {
+  const key = (source: AutomationIngressSource) => `automations.ingress.cursor.${source}`;
+  return {
+    get: (source) => db.getJson<string>(key(source)),
+    set: ({ source, cursor }) => db.setJson(key(source), cursor),
+  };
+}
 
 type AutomationIngressServiceArgs = {
   logger: Logger;
@@ -462,6 +476,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
 
   const pollGithubRelay = async () => {
     const config = buildGithubRelayConfig();
+    const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
+    // Skip before the "polling" status write so the "disabled" + auth-error
+    // status reported at cooldown entry stays accurate for the whole window.
+    if (config.configured && !useLegacyProjectRoute && Date.now() < hostedAuthPendingUntilMs) return;
     updateGithubRelayStatus({
       configured: config.configured,
       apiBaseUrl: config.apiBaseUrl,
@@ -469,8 +487,6 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       status: config.configured ? "polling" : "disabled",
     });
     if (!config.configured) return;
-    const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
-    if (!useLegacyProjectRoute && Date.now() < hostedAuthPendingUntilMs) return;
     try {
       const cursor = getIngressCursor("github-relay");
       const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");

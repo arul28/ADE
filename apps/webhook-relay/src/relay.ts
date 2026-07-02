@@ -1218,11 +1218,13 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
     .filter(isRecord)
     .filter((item) => {
       // Keep app-level deliveries (ping/meta have no repository) so webhook
-      // config issues stay visible alongside repo-scoped deliveries.
+      // config issues stay visible alongside repo-scoped deliveries. When a
+      // delivery IS repo-scoped, fail closed: drop it unless it provably
+      // matches the repo the caller was authorized for.
       if (item.repository_id == null) return true;
       const repositoryId = Number(item.repository_id);
-      if (!Number.isFinite(repositoryId)) return true;
-      return auth.repositoryId == null || Math.trunc(repositoryId) === auth.repositoryId;
+      if (!Number.isFinite(repositoryId)) return false;
+      return auth.repositoryId != null && Math.trunc(repositoryId) === auth.repositoryId;
     })
     .map((item) => ({
       id: Number.isFinite(Number(item.id)) ? Math.trunc(Number(item.id)) : null,
