@@ -298,6 +298,49 @@ describe("automationIngressService", () => {
     expect(service.listRecentEvents()).toEqual([]);
   });
 
+  it("treats missing GitHub App authorization as quiet auth-pending, not a per-tick error", async () => {
+    const logger = makeLogger();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const getAppUserTokenForRelay = vi.fn(async () => {
+      throw new Error("Authorize the ADE GitHub App with GitHub before using the hosted relay.");
+    });
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: null,
+      prService: { ingestGithubWebhook: vi.fn() } as never,
+      secretService: {
+        getSecret: () => null,
+      } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay,
+      },
+      listRules: () => [],
+    });
+
+    await service.start();
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
+    expect(logger.info).toHaveBeenCalledWith("automations.github_relay_auth_pending", expect.objectContaining({
+      error: expect.stringContaining("Authorize the ADE GitHub App"),
+    }));
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Scheduled re-entry inside the cooldown window skips the token attempt.
+    await service.start();
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
+
+    // Explicit pollNow (e.g. right after authorizing) bypasses the cooldown
+    // and the transition log fires only once.
+    await service.pollNow();
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(2);
+    const authPendingLogs = (logger.info.mock.calls as unknown[][])
+      .filter((call) => call[0] === "automations.github_relay_auth_pending");
+    expect(authPendingLogs).toHaveLength(1);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it("can read GitHub relay config from runtime environment variables", async () => {
     const previousApiBase = process.env.ADE_GITHUB_RELAY_API_BASE_URL;
     const previousProjectId = process.env.ADE_GITHUB_RELAY_REMOTE_PROJECT_ID;
@@ -386,10 +429,12 @@ describe("automationIngressService", () => {
     await service.pollNow();
 
     expect(fetchSpy).not.toHaveBeenCalled();
+    // Missing authorization is an idle "disabled" state (quiet auth-pending
+    // cooldown), not a recurring error.
     expect(updates).toContainEqual(expect.objectContaining({
       githubRelay: expect.objectContaining({
         healthy: false,
-        status: "error",
+        status: "disabled",
         lastError: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
       }),
     }));

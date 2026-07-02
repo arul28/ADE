@@ -248,10 +248,17 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
   return null;
 }
 
+const HOSTED_RELAY_AUTH_PENDING_RETRY_MS = 5 * 60_000;
+
 export function createAutomationIngressService(args: AutomationIngressServiceArgs) {
   let server: http.Server | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInFlight: Promise<void> | null = null;
+  // When the hosted relay needs a GitHub App user token that the user has not
+  // granted yet, that is an idle state, not an error: skip polling for a
+  // while and log the transition once instead of warning every tick.
+  let hostedAuthPendingUntilMs = 0;
+  let hostedAuthPendingLogged = false;
   const auditHostedRelayAuthTokenUse = createGitHubRelayAuthAuditLog(
     (event, metadata) => args.logger.info(event, metadata),
   );
@@ -462,11 +469,12 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       status: config.configured ? "polling" : "disabled",
     });
     if (!config.configured) return;
+    const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
+    if (!useLegacyProjectRoute && Date.now() < hostedAuthPendingUntilMs) return;
     try {
       const cursor = getIngressCursor("github-relay");
       const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
       const legacyAuthToken = gitHubRelayAuthorizationToken(config);
-      const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
       const repo = useLegacyProjectRoute ? null : await args.githubService?.detectRepo();
       const eventsUrl = useLegacyProjectRoute
         ? new URL(`${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`)
@@ -485,13 +493,34 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         return;
       }
       if (cursor) eventsUrl.searchParams.set("after", cursor);
-      const githubAppUserToken = useLegacyProjectRoute ? null : await args.githubService?.getAppUserTokenForRelay();
+      let githubAppUserToken: string | null = null;
+      if (!useLegacyProjectRoute) {
+        try {
+          githubAppUserToken = (await args.githubService?.getAppUserTokenForRelay()) ?? null;
+        } catch (error) {
+          hostedAuthPendingUntilMs = Date.now() + HOSTED_RELAY_AUTH_PENDING_RETRY_MS;
+          const message = error instanceof Error ? error.message : String(error);
+          if (!hostedAuthPendingLogged) {
+            hostedAuthPendingLogged = true;
+            args.logger.info("automations.github_relay_auth_pending", { error: message });
+          }
+          updateGithubRelayStatus({
+            healthy: false,
+            status: "disabled",
+            lastPolledAt: new Date().toISOString(),
+            lastError: message,
+          });
+          return;
+        }
+      }
       const hostedAuth = useLegacyProjectRoute
         ? null
         : resolveHostedGitHubRelayAuthToken({ githubAppUserToken });
       if (hostedAuth && !hostedAuth.ok) {
         throw new Error(hostedAuth.error);
       }
+      hostedAuthPendingUntilMs = 0;
+      hostedAuthPendingLogged = false;
       const authToken = useLegacyProjectRoute ? legacyAuthToken : hostedAuth?.token ?? null;
       if (!authToken) {
         throw new Error("GitHub auth is required for relay polling.");
@@ -642,6 +671,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     },
 
     async pollNow() {
+      // Explicit polls (e.g. right after the user authorizes the GitHub App)
+      // bypass the auth-pending cooldown.
+      hostedAuthPendingUntilMs = 0;
       await pollGithubRelayOnce();
     },
 
