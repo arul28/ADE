@@ -48,7 +48,9 @@ type AutomationIngressServiceArgs = {
     getAppUserTokenForRelay: () => Promise<string>;
   } | null;
   listRules: () => AutomationRule[];
-  // Cursor persistence fallback used when automationService is null.
+  // Cursor persistence fallback. REQUIRED when automationService is null —
+  // without it the relay cursor would silently reset on every restart
+  // (enforced at construction).
   ingressCursorStore?: AutomationIngressCursorStore | null;
   pollIntervalMs?: number;
 };
@@ -265,6 +267,11 @@ function mapGithubWebhookToTrigger(githubEvent: string, payload: Record<string, 
 const HOSTED_RELAY_AUTH_PENDING_RETRY_MS = 5 * 60_000;
 
 export function createAutomationIngressService(args: AutomationIngressServiceArgs) {
+  if (!args.automationService && !args.ingressCursorStore) {
+    throw new Error(
+      "automationIngressService requires an ingressCursorStore when automationService is unavailable — without one the relay cursor resets on every restart.",
+    );
+  }
   let server: http.Server | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
   let pollInFlight: Promise<void> | null = null;

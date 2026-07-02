@@ -1102,6 +1102,9 @@ describe("webhook relay", () => {
         });
       }
       if (url.startsWith("https://api.github.com/app/hook/deliveries")) {
+        // The GitHub fetch always pulls the max page; the caller's `limit`
+        // applies to the repo-filtered output instead.
+        expect(url).toBe("https://api.github.com/app/hook/deliveries?per_page=100");
         expect(String((init?.headers as Record<string, string>)?.authorization)).toMatch(/^Bearer eyJ/);
         return new Response(JSON.stringify([
           { id: 1, guid: "g-1", event: "pull_request", action: "closed", status: "Invalid HTTP Response: 401", status_code: 401, delivered_at: "2026-07-02T00:00:00Z", redelivery: false, repository_id: 4242, installation_id: 123 },
@@ -1136,5 +1139,16 @@ describe("webhook relay", () => {
       redelivery: false,
       installationId: 123,
     }));
+
+    // `limit` bounds the post-filter result, not the GitHub fetch.
+    const limited = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/deliveries?limit=1", {
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+    expect(limited.status).toBe(200);
+    const limitedBody = await limited.json() as { deliveries: Array<{ guid: string | null }> };
+    expect(limitedBody.deliveries.map((delivery) => delivery.guid)).toEqual(["g-1"]);
   });
 });

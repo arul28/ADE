@@ -1198,8 +1198,12 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
   const appAuth = await createAppJwtOrErrorResponse(env);
   if ("response" in appAuth) return appAuth.response;
 
+  // `limit` bounds the per-repo result, not the GitHub fetch: the delivery log
+  // is app-wide, so always pull the max page and apply the caller's limit
+  // after the repo filter — otherwise busy sibling repos could starve the
+  // requested repo out of a small page.
   const limit = Math.min(100, parseLimit(new URL(request.url)));
-  const response = await fetch(`${githubApiBaseUrl(env)}/app/hook/deliveries?per_page=${limit}`, {
+  const response = await fetch(`${githubApiBaseUrl(env)}/app/hook/deliveries?per_page=100`, {
     headers: {
       accept: "application/vnd.github+json",
       authorization: `Bearer ${appAuth.jwt}`,
@@ -1236,7 +1240,8 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
       deliveredAt: readString(item, "delivered_at") || null,
       redelivery: item.redelivery === true,
       installationId: Number.isFinite(Number(item.installation_id)) ? Math.trunc(Number(item.installation_id)) : null,
-    }));
+    }))
+    .slice(0, limit);
 
   return json({ ok: true, deliveries, checkedAt: new Date().toISOString() });
 }

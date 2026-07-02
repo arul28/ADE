@@ -298,6 +298,16 @@ describe("automationIngressService", () => {
     expect(service.listRecentEvents()).toEqual([]);
   });
 
+  it("refuses construction without cursor persistence when automations are unavailable", () => {
+    expect(() => createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      prService: { ingestGithubWebhook: vi.fn() } as never,
+      secretService: { getSecret: () => null } as never,
+      listRules: () => [],
+    })).toThrowError(/ingressCursorStore/);
+  });
+
   it("treats missing GitHub App authorization as quiet auth-pending, not a per-tick error", async () => {
     const logger = makeLogger();
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -317,6 +327,10 @@ describe("automationIngressService", () => {
         getAppUserTokenForRelay,
       },
       listRules: () => [],
+      ingressCursorStore: {
+        get: () => null,
+        set: () => {},
+      },
     });
 
     await service.start();
