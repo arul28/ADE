@@ -232,7 +232,8 @@ export function AutoUpdateControl() {
               </div>
 
               <p className="mt-4 text-[13px] leading-6 text-muted-fg">
-                The update is installed and ADE is ready again. Review what changed in this release.
+                The update is installed and ADE is ready again.
+                {releaseNotesUrl ? " Review what changed in this release." : null}
               </p>
 
               {releaseNotesDisplayUrl ? (
