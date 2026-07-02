@@ -15641,7 +15641,12 @@ async function runGithubAppLogin(
           exitCode: 1,
         };
       }
-      await sleep(Math.max(1, intervalSec) * 1000);
+      const sleepMs = Math.max(1, intervalSec) * 1000;
+      await sleep(
+        Number.isFinite(deadlineMs)
+          ? Math.min(sleepMs, Math.max(1, deadlineMs - Date.now()))
+          : sleepMs,
+      );
       const poll = await runGithubAction("pollAppUserDeviceAuth", { sessionId });
       const status = asString(poll.status);
       const authStatus = isRecord(poll.authStatus) ? poll.authStatus : poll;

@@ -43,11 +43,15 @@ export type GitHubRelayHostedAuthTokenResolution =
 
 export type GitHubRelayAuthAuditLog = (event: string, metadata: Record<string, unknown>) => void;
 
+const AUDIT_LOG_MAX_SEEN = 500;
+
 export function createGitHubRelayAuthAuditLog(emit: (event: string, metadata: Record<string, unknown>) => void): GitHubRelayAuthAuditLog {
   const seen = new Set<string>();
   return (event, metadata) => {
     const key = event + ":" + String(metadata.route ?? "") + ":" + String(metadata.repo ?? "") + ":" + String(metadata.tokenSource ?? "");
     if (seen.has(key)) return;
+    // Bound memory in long-lived multi-repo processes; occasional re-log is fine.
+    if (seen.size >= AUDIT_LOG_MAX_SEEN) seen.clear();
     seen.add(key);
     emit(event, metadata);
   };

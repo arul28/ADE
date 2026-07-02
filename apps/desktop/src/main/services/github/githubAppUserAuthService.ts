@@ -20,6 +20,7 @@ import { asString } from "../shared/utils";
 
 const GITHUB_APP_USER_TOKEN_KEY = "github.appUserToken.v1";
 const GITHUB_APP_USER_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
+const MAX_PENDING_DEVICE_AUTH_SESSIONS = 5;
 
 export type GitHubAppUserAuthCredentialStore = {
   getSync(key: string): string | null | undefined;
@@ -53,8 +54,8 @@ export function createGitHubAppUserAuthService(args: {
   const appDeviceAuthSessions = new Map<string, GitHubAppDeviceAuthSession>();
   let appUserTokenMemory: GitHubAppUserTokenRecord | null = null;
   let refreshInFlight: Promise<GitHubAppUserTokenRecord> | null = null;
-  // Bumped by clearAuth so an in-flight refresh cannot re-persist a credential
-  // the user just cleared.
+  // Bumped whenever stored auth is replaced or cleared outside the refresh
+  // path, so an in-flight refresh cannot overwrite the newer auth state.
   let authEpoch = 0;
 
   const auditLog = createGitHubRelayAuthAuditLog(args.logger.info.bind(args.logger));
@@ -157,12 +158,16 @@ export function createGitHubAppUserAuthService(args: {
     if (!record.expiresAt || isIsoAfter(record.expiresAt, refreshCutoff)) {
       return record.accessToken;
     }
-    if (!record.refreshToken || !isIsoAfter(record.refreshTokenExpiresAt, Date.now())) {
+    // A missing refreshTokenExpiresAt is unknown, not expired — attempt the
+    // refresh instead of deleting a possibly-valid credential.
+    const refreshTokenDead = record.refreshTokenExpiresAt != null
+      && !isIsoAfter(record.refreshTokenExpiresAt, Date.now());
+    if (!record.refreshToken || refreshTokenDead) {
       persistAppUserTokenRecord(null);
       throw new Error("ADE GitHub App authorization expired. Re-authorize ADE with GitHub.");
     }
+    const epochAtJoin = authEpoch;
     if (!refreshInFlight) {
-      const epochAtStart = authEpoch;
       refreshInFlight = refreshGitHubAppUserToken({
         clientId: ADE_GITHUB_APP_CLIENT_ID,
         refreshToken: record.refreshToken,
@@ -170,18 +175,30 @@ export function createGitHubAppUserAuthService(args: {
         userAgent: args.userAgent,
         fetchUserLogin: fetchAppUserLogin,
       }).then((refreshed) => {
-        if (authEpoch === epochAtStart) persistAppUserTokenRecord(refreshed);
+        if (authEpoch === epochAtJoin) persistAppUserTokenRecord(refreshed);
         return refreshed;
       }).finally(() => {
         refreshInFlight = null;
       });
     }
     const refreshed = await refreshInFlight;
+    if (authEpoch !== epochAtJoin) {
+      // Auth state changed while refreshing (cleared or re-authorized).
+      // Resolve against the current state instead of the stale refresh.
+      return getValidAppUserTokenForRelay();
+    }
     return refreshed.accessToken;
   };
 
   const startDeviceAuth = async (): Promise<GitHubAppDeviceAuthStartResult> => {
     pruneExpiredDeviceAuthSessions();
+    // Cap pending sessions so a runaway caller cannot grow the map or spam
+    // GitHub's device endpoint via ADE; evict oldest first.
+    while (appDeviceAuthSessions.size >= MAX_PENDING_DEVICE_AUTH_SESSIONS) {
+      const oldest = appDeviceAuthSessions.keys().next().value;
+      if (!oldest) break;
+      appDeviceAuthSessions.delete(oldest);
+    }
     const device = await startGitHubAppDeviceFlow({
       clientId: ADE_GITHUB_APP_CLIENT_ID,
       fetchImpl: (input, init) => args.fetchImpl(String(input), init),
@@ -218,15 +235,6 @@ export function createGitHubAppUserAuthService(args: {
         authStatus: appUserAuthStatus(),
       };
     }
-    if (Date.parse(session.expiresAt) <= Date.now()) {
-      appDeviceAuthSessions.delete(pollArgs.sessionId);
-      return {
-        status: "expired",
-        intervalSec: null,
-        message: "GitHub device authorization expired.",
-        authStatus: appUserAuthStatus(),
-      };
-    }
     const result = await pollGitHubAppDeviceFlow({
       clientId: ADE_GITHUB_APP_CLIENT_ID,
       deviceCode: session.deviceCode,
@@ -247,6 +255,7 @@ export function createGitHubAppUserAuthService(args: {
     }
     appDeviceAuthSessions.delete(pollArgs.sessionId);
     if (result.status === "authorized") {
+      authEpoch += 1;
       persistAppUserTokenRecord(result.token);
       return {
         status: "authorized",

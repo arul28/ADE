@@ -1575,7 +1575,7 @@ describe("githubService GitHub App user authorization", () => {
     });
   });
 
-  it("does not re-persist a refreshed token after the user clears authorization", async () => {
+  it("neither persists nor returns a refreshed token after the user clears authorization", async () => {
     const credentialStore = new MemoryCredentialStore();
     credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
       accessToken: "ghu_old_token",
@@ -1607,7 +1607,9 @@ describe("githubService GitHub App user authorization", () => {
       refresh_token_expires_in: 15_552_000,
     }));
 
-    await expect(tokenPromise).resolves.toBe("ghu_new_token");
+    await expect(tokenPromise).rejects.toThrow(
+      "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+    );
     expect(credentialStore.getSync("github.appUserToken.v1")).toBeNull();
     expect(service.getAppUserAuthStatus()).toMatchObject({ tokenStored: false, userLogin: null });
   });
