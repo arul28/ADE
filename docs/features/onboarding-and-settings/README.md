@@ -151,9 +151,17 @@ Renderer — settings:
   webhook-relay PR updates. Reads per-repo installation + webhook state via
   `window.ade.github.getAppInstallationStatus` (which the desktop resolves
   against the hosted relay's `/github/repos/:owner/:repo/status` route using
-  the user's existing GitHub token — no relay token needed), links out to the
-  App install / manage pages, and offers a Refresh. Rendered in Settings and,
-  in a compact `onboarding` variant, during setup.
+  a locally stored GitHub App user token from device flow), and links out to the
+  App install / manage pages. Hosts the "Authorize ADE" device-flow UI:
+  `startAppUserDeviceAuth` surfaces the user code as a copyable chip plus a
+  waiting state and the verification URL, `pollAppUserDeviceAuth` drives the
+  poll loop and auto-renews an expired code up to 3 times, a pre-auth status
+  pill reflects `getAppUserAuthStatus` (stored token, signed-in login, expiry),
+  and `clearAppUserAuth` revokes the local token. Offers a Refresh. Rendered in
+  Settings and, in a compact `onboarding` variant, during setup. The
+  device-flow, token store, and single-flight refresh are backed by
+  `githubAppUserAuthService` in the main process (see the automations feature
+  doc's Source file map).
 - `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.

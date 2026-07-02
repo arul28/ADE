@@ -44,6 +44,9 @@ import {
   parseGitHubScopeHeaders,
 } from "../../desktop/src/shared/githubScopes";
 import type {
+  GitHubAppDeviceAuthPollResult,
+  GitHubAppDeviceAuthStartResult,
+  GitHubAppUserAuthStatus,
   GitHubStatus,
   LinearIngressEventRecord,
   WorkerAgentRun,
@@ -61,6 +64,7 @@ import {
   fetchGitHubAppInstallationStatus,
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
+import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
@@ -457,6 +461,12 @@ export function createHeadlessGitHubService(
   } = {},
 ): HeadlessGitHubService {
   const credentialStore = new EncryptedFileCredentialStore();
+  const appUserAuth = createGitHubAppUserAuthService({
+    credentialStore,
+    logger,
+    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}),
+    userAgent: "ade-cli",
+  });
   const tokenKey = "github.token.v1";
   let cachedStatus: Awaited<
     ReturnType<HeadlessGitHubService["getStatus"]>
@@ -1006,12 +1016,26 @@ export function createHeadlessGitHubService(
       const owner = args.owner?.trim();
       const name = args.name?.trim();
       const repo = owner && name ? { owner, name } : detectGitHubRepo(projectRoot);
+      const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
       return fetchGitHubAppInstallationStatus({
         repo,
         secretReader: options.githubRelaySecretReader,
         forceRefresh: args.forceRefresh === true,
-        githubToken: getToken(),
+        githubAppUserToken,
+        auditLog: appUserAuth.auditLog,
       });
+    },
+    getAppUserAuthStatus(): GitHubAppUserAuthStatus {
+      return appUserAuth.getAuthStatus();
+    },
+    async startAppUserDeviceAuth(): Promise<GitHubAppDeviceAuthStartResult> {
+      return await appUserAuth.startDeviceAuth();
+    },
+    async pollAppUserDeviceAuth(args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> {
+      return await appUserAuth.pollDeviceAuth(args);
+    },
+    clearAppUserAuth(): GitHubAppUserAuthStatus {
+      return appUserAuth.clearAuth();
     },
     async getRepoOrThrow() {
       const repo = detectGitHubRepo(projectRoot);
@@ -1028,6 +1052,9 @@ export function createHeadlessGitHubService(
           "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
         );
       return token;
+    },
+    async getAppUserTokenForRelay() {
+      return await appUserAuth.getValidTokenForRelay();
     },
     parseGitHubRepoFromRemoteUrl,
     parseNextLink: parseNextGitHubLink,

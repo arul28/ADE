@@ -284,7 +284,7 @@ describe("automationIngressService", () => {
     }
   });
 
-  it("polls the hosted repo relay with the existing GitHub token when no relay secret is configured", async () => {
+  it("refuses to poll the hosted repo relay without GitHub App user authorization", async () => {
     const updates: Array<Record<string, unknown>> = [];
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       events: [],
@@ -305,7 +305,48 @@ describe("automationIngressService", () => {
       } as never,
       githubService: {
         detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
-        getTokenOrThrow: vi.fn(() => "ghp_user_token"),
+        getAppUserTokenForRelay: vi.fn(async () => {
+          throw new Error("Authorize the ADE GitHub App with GitHub before using the hosted relay.");
+        }),
+      },
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(updates).toContainEqual(expect.objectContaining({
+      githubRelay: expect.objectContaining({
+        healthy: false,
+        status: "error",
+        lastError: "Authorize the ADE GitHub App with GitHub before using the hosted relay.",
+      }),
+    }));
+  });
+
+  it("polls the hosted repo relay with a GitHub App user token", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      events: [],
+      nextCursor: null,
+    }), { headers: { "content-type": "application/json" } }));
+    const getAppUserTokenForRelay = vi.fn(async () => "ghu_app_user_token");
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: {
+        updateIngressStatus: (patch: Record<string, unknown>) => updates.push(patch),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: () => null,
+        setIngressCursor: vi.fn(),
+        getIngressStatus: () => ({}),
+      } as never,
+      secretService: {
+        getSecret: () => null,
+      } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay,
       },
       listRules: () => [],
     });
@@ -316,10 +357,11 @@ describe("automationIngressService", () => {
       "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events",
       expect.objectContaining({
         headers: expect.objectContaining({
-          authorization: "Bearer ghp_user_token",
+          authorization: "Bearer ghu_app_user_token",
         }),
       }),
     );
+    expect(getAppUserTokenForRelay).toHaveBeenCalledTimes(1);
     expect(updates).toContainEqual(expect.objectContaining({
       githubRelay: expect.objectContaining({
         configured: true,

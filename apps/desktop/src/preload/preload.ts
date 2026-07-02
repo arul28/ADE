@@ -226,7 +226,10 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubAppDeviceAuthPollResult,
+  GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
@@ -7075,6 +7078,34 @@ contextBridge.exposeInMainWorld("ade", {
         () =>
           callProjectRuntimeActionOr("github", "clearToken", {}, () =>
             ipcRenderer.invoke(IPC.githubClearToken),
+          ),
+      ),
+    getAppUserAuthStatus: async (): Promise<GitHubAppUserAuthStatus> =>
+      callProjectRuntimeActionOr("github", "getAppUserAuthStatus", {}, () =>
+        ipcRenderer.invoke(IPC.githubGetAppUserAuthStatus),
+      ),
+    startAppUserDeviceAuth: async (): Promise<GitHubAppDeviceAuthStartResult> =>
+      callProjectRuntimeActionOr("github", "startAppUserDeviceAuth", {}, () =>
+        ipcRenderer.invoke(IPC.githubStartAppUserDeviceAuth),
+      ),
+    pollAppUserDeviceAuth: async (args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> =>
+      clearAround(
+        () => {
+          githubAppInstallationStatusCache.clear();
+        },
+        () =>
+          callProjectRuntimeActionOr("github", "pollAppUserDeviceAuth", { args }, () =>
+            ipcRenderer.invoke(IPC.githubPollAppUserDeviceAuth, args),
+          ),
+      ),
+    clearAppUserAuth: async (): Promise<GitHubAppUserAuthStatus> =>
+      clearAround(
+        () => {
+          githubAppInstallationStatusCache.clear();
+        },
+        () =>
+          callProjectRuntimeActionOr("github", "clearAppUserAuth", {}, () =>
+            ipcRenderer.invoke(IPC.githubClearAppUserAuth),
           ),
       ),
     detectRepo: async (): Promise<{ owner: string; name: string } | null> => {

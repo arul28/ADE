@@ -257,13 +257,17 @@ async function signedWebhookRequest(body: Record<string, unknown>, headers: Reco
 
 describe("webhook relay", () => {
   function stubRepoAccess(token = "ghp_repo_token") {
+    return stubRepoAccessWithPermissions({ admin: false, push: true, pull: true }, token);
+  }
+
+  function stubRepoAccessWithPermissions(permissions: Record<string, boolean>, token = "ghp_repo_token") {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       expect(String(input)).toBe("https://api.github.com/repos/owner/repo");
       expect(init?.headers).toEqual(expect.objectContaining({
         authorization: `Bearer ${token}`,
         "user-agent": "ADE GitHub Webhook Relay",
       }));
-      return new Response(JSON.stringify({ full_name: "owner/repo" }), {
+      return new Response(JSON.stringify({ full_name: "owner/repo", permissions }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
@@ -452,6 +456,118 @@ describe("webhook relay", () => {
     expect(body.events).toBeUndefined();
   });
 
+  it("refuses repo events when the token only has read access to the repo", async () => {
+    const env = makeEnv();
+    await handleRequest(
+      await signedWebhookRequest(
+        { repository: { full_name: "owner/repo" }, pull_request: { number: 42, title: "Secret" } },
+        { "x-github-delivery": "delivery-1" },
+      ),
+      env,
+    );
+    const fetchMock = stubRepoAccessWithPermissions({ admin: false, push: false, pull: true }, "ghp_readonly_token");
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events", {
+        headers: githubAuthHeaders("ghp_readonly_token"),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = await response.json() as { ok: boolean; events?: unknown };
+    expect(body.ok).toBe(false);
+    expect(body.events).toBeUndefined();
+  });
+
+  it("authorizes repo events via the collaborator-permission fallback when the repo payload has no permissions field", async () => {
+    const env = makeEnv();
+    await handleRequest(
+      await signedWebhookRequest(
+        { repository: { full_name: "owner/repo" }, pull_request: { number: 42, title: "Visible" } },
+        { "x-github-delivery": "delivery-fallback-1" },
+      ),
+      env,
+    );
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://api.github.com/repos/owner/repo") {
+        return new Response(JSON.stringify({ full_name: "owner/repo" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/user") {
+        return new Response(JSON.stringify({ login: "collab-user" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/repos/owner/repo/collaborators/collab-user/permission") {
+        return new Response(JSON.stringify({ permission: "write" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events", {
+        headers: githubAuthHeaders("ghu_app_user_token"),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const body = await response.json() as { events: Array<{ summary: string }> };
+    expect(body.events).toHaveLength(1);
+  });
+
+  it("refuses repo events via the collaborator-permission fallback when the user only has read", async () => {
+    const env = makeEnv();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://api.github.com/repos/owner/repo") {
+        return new Response(JSON.stringify({ full_name: "owner/repo" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/user") {
+        return new Response(JSON.stringify({ login: "reader-user" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/repos/owner/repo/collaborators/reader-user/permission") {
+        return new Response(JSON.stringify({ permission: "read" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/events", {
+        headers: githubAuthHeaders("ghu_readonly_app_token"),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const body = await response.json() as { ok: boolean; events?: unknown };
+    expect(body.ok).toBe(false);
+    expect(body.events).toBeUndefined();
+  });
+
   it("refuses repo status when the token is valid but denied access to the repo", async () => {
     const env = makeEnv();
     const fetchMock = stubRepoAccessDenied(404);
@@ -468,6 +584,37 @@ describe("webhook relay", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = await response.json() as { ok: boolean };
     expect(body.ok).toBe(false);
+  });
+
+  it("refuses repo status when the token only has read access to the repo", async () => {
+    const env = makeEnv();
+    env.DB.appRepositories.push({
+      repository_key: "owner/repo",
+      repository_full_name: "owner/repo",
+      owner: "owner",
+      name: "repo",
+      installation_id: 123,
+      repository_selection: "selected",
+      installed: 1,
+      last_seen_at: "2026-06-30T00:00:00.000Z",
+      removed_at: null,
+      source_event: "installation",
+    });
+    const fetchMock = stubRepoAccessWithPermissions({ admin: false, push: false, pull: true }, "ghp_readonly_token");
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/status", {
+        headers: githubAuthHeaders("ghp_readonly_token"),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = await response.json() as { ok: boolean; installed?: unknown };
+    expect(body.ok).toBe(false);
+    expect(body.installed).toBeUndefined();
   });
 
   it("uses a monotonic cursor so same-timestamp delivery ids cannot be skipped", async () => {
@@ -604,6 +751,40 @@ describe("webhook relay", () => {
     const status = await handleRequest(
       new Request("https://relay.example.com/github/repos/owner/repo/status", {
         headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(status.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await status.json()).toEqual(expect.objectContaining({
+      installed: true,
+      state: "configured",
+      installationId: 123,
+      repositorySelection: "selected",
+    }));
+  });
+
+  it("reports repo installation status for an admin token", async () => {
+    const env = makeEnv();
+    env.DB.appRepositories.push({
+      repository_key: "owner/repo",
+      repository_full_name: "owner/repo",
+      owner: "owner",
+      name: "repo",
+      installation_id: 123,
+      repository_selection: "selected",
+      installed: 1,
+      last_seen_at: "2026-06-30T00:00:00.000Z",
+      removed_at: null,
+      source_event: "installation",
+    });
+    const fetchMock = stubRepoAccessWithPermissions({ admin: true, push: true, pull: true }, "ghp_admin_token");
+    vi.stubGlobal("fetch", fetchMock);
+
+    const status = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/status", {
+        headers: githubAuthHeaders("ghp_admin_token"),
       }),
       env,
     );

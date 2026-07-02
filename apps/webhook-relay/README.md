@@ -16,10 +16,11 @@ ADE GitHub App on the repositories the user wants ADE to track.
 - ADE polls with `after=<last-cursor>`, where new cursors are monotonic
   `seq:<n>` values. Legacy delivery-id cursors still work during migration.
 - ADE checks per-repo GitHub App status at
-  `GET /github/repos/:owner/:repo/status`, authenticated by the user's existing
-  GitHub token. If GitHub App API credentials are configured, it only calls
-  GitHub when D1 has no installed state yet or the user explicitly presses
-  Refresh.
+  `GET /github/repos/:owner/:repo/status`. Hosted ADE clients authenticate this
+  route with an expiring ADE GitHub App user access token from GitHub's device
+  flow, not the user's general PAT/OAuth token. If GitHub App API credentials
+  are configured, the relay only calls GitHub when D1 has no installed state
+  yet or the user explicitly presses Refresh.
 - If the hosted relay fails, ADE keeps using the current GitHub polling/snapshot
   path.
 - The event envelope is provider-neutral enough to add Linear later without
@@ -92,12 +93,26 @@ and `remoteProjectId`; if ADE is configured with an already-derived
 ## ADE project config
 
 Normal ADE users should not edit project files for realtime GitHub updates. ADE
-uses the hosted relay by default and authenticates relay reads with the GitHub
-token the user already configured in Settings. The user-facing setup is:
+uses the hosted relay by default. The hosted auth path is:
 
-1. Sign in to GitHub in ADE.
-2. Install the ADE GitHub App for all repositories, or for the selected
+1. Install the ADE GitHub App for all repositories, or for the selected
    repositories that should receive realtime updates.
+2. In ADE, authorize the ADE GitHub App. Desktop/headless ADE uses GitHub's
+   device flow and stores the returned GitHub App user access token locally.
+3. ADE sends that expiring app/user token, never the user's general ADE GitHub
+   PAT/OAuth/`gh auth` token, as `Authorization: Bearer <GitHub App user token>`
+   for:
+
+- `GET https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/status`
+- `GET https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/events`
+
+The relay forwards the token to GitHub's REST API only for authorization checks
+and does not store, log, or echo it. It rejects callers unless GitHub reports
+push/write, maintain, or admin access for the authenticated user, so public-repo
+webhook history is not readable by arbitrary GitHub accounts. Keep the ADE
+GitHub App's repository permissions read-only so the token the hosted relay sees
+cannot write repository data; it is app-limited and user-scoped, and ADE
+refreshes it locally when GitHub marks it near expiry.
 
 If the App is installed for all repositories, every GitHub project opened in ADE
 can use the relay automatically. If the App is installed for selected
@@ -118,6 +133,9 @@ automations:
 `remoteProjectId` is only a legacy relay partition key. It can be a generated
 UUID or a stable ADE project slug.
 
+Self-hosted legacy project-token routes do not use the hosted app-user token and
+continue to authenticate with the derived `ade_proj_...` relay token.
+
 For dev/runtime launches, ADE also accepts env vars instead of
 `local.secret.yaml`. Setting these opts the runtime into the legacy
 project-token route for self-hosted relays:
@@ -136,6 +154,11 @@ Create or edit a GitHub App. Use the user-facing name `ADE`:
   `https://ade-github-webhook-relay.<your-subdomain>.workers.dev/github/webhook`
 - Webhook secret: the same `GITHUB_WEBHOOK_SECRET` stored in Cloudflare.
 - SSL verification: enabled.
+- Device flow: enabled.
+- Expire user authorization tokens: enabled.
+- Request user authorization (OAuth) during installation: optional. ADE starts
+  device authorization itself, so this is not required for the hosted relay to
+  work; enabling it can reduce a later authorization step for some users.
 - Repository permissions:
   - Metadata: read-only
   - Pull requests: read-only

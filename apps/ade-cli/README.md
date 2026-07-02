@@ -335,6 +335,9 @@ ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
 ade cursor cloud agents list --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
+ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)
+ade github app-auth status --text                 # show whether a GitHub App user token is stored (login, expiry)
+ade --role cto github app-auth clear              # remove the stored GitHub App authorization
 ade open ade://lane/<lane-uuid>
 ade open --linear-issue ADE-123 --branch arul/ade-123-fix
 ade link lane <lane-uuid>

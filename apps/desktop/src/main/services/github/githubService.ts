@@ -5,12 +5,21 @@ import { spawnSync } from "node:child_process";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { runGit } from "../git/git";
-import type { GitHubAppInstallationStatus, GitHubAutolink, GitHubRepoRef, GitHubStatus } from "../../../shared/types";
+import type {
+  GitHubAppDeviceAuthPollResult,
+  GitHubAppDeviceAuthStartResult,
+  GitHubAppInstallationStatus,
+  GitHubAppUserAuthStatus,
+  GitHubAutolink,
+  GitHubRepoRef,
+  GitHubStatus,
+} from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
+import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -349,6 +358,12 @@ export function createGithubService({
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
   const githubStateDir = path.join(appDataDir, "secrets", "github");
   const tokenPath = path.join(githubStateDir, AUTH_STORE_FILE_NAME);
+  const appUserAuth = createGitHubAppUserAuthService({
+    credentialStore,
+    logger,
+    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}),
+    userAgent: "ade-desktop",
+  });
 
   let tokenDecryptionFailed = false;
   let machineTokenReadFailed = false;
@@ -1048,11 +1063,13 @@ export function createGithubService({
     const owner = args.owner?.trim();
     const name = args.name?.trim();
     const repo = owner && name ? { owner, name } : await detectRepo();
+    const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
     return fetchGitHubAppInstallationStatus({
       repo,
       secretReader: githubRelaySecretReader,
       forceRefresh: args.forceRefresh === true,
-      githubToken: readAuthToken().token,
+      githubAppUserToken,
+      auditLog: appUserAuth.auditLog,
     });
   };
 
@@ -1399,6 +1416,22 @@ export function createGithubService({
 
     getStatus,
 
+    getAppUserAuthStatus(): GitHubAppUserAuthStatus {
+      return appUserAuth.getAuthStatus();
+    },
+
+    async startAppUserDeviceAuth(): Promise<GitHubAppDeviceAuthStartResult> {
+      return await appUserAuth.startDeviceAuth();
+    },
+
+    async pollAppUserDeviceAuth(args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> {
+      return await appUserAuth.pollDeviceAuth(args);
+    },
+
+    clearAppUserAuth(): GitHubAppUserAuthStatus {
+      return appUserAuth.clearAuth();
+    },
+
     setToken(token: string): void {
       persistToken(token);
       tokenDecryptionFailed = false;
@@ -1425,6 +1458,10 @@ export function createGithubService({
       const token = readAuthToken().token;
       if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
+    },
+
+    async getAppUserTokenForRelay(): Promise<string> {
+      return await appUserAuth.getValidTokenForRelay();
     },
 
     detectRepo,

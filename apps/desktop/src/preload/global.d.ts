@@ -304,7 +304,10 @@ import type {
   GitStashSummary,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitHubAppDeviceAuthPollResult,
+  GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
+  GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
   GitHubStatus,
@@ -1790,6 +1793,12 @@ declare global {
         }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
         setToken: (token: string) => Promise<GitHubStatus>;
         clearToken: () => Promise<GitHubStatus>;
+        getAppUserAuthStatus: () => Promise<GitHubAppUserAuthStatus>;
+        startAppUserDeviceAuth: () => Promise<GitHubAppDeviceAuthStartResult>;
+        pollAppUserDeviceAuth: (args: {
+          sessionId: string;
+        }) => Promise<GitHubAppDeviceAuthPollResult>;
+        clearAppUserAuth: () => Promise<GitHubAppUserAuthStatus>;
         detectRepo: () => Promise<{ owner: string; name: string } | null>;
         listRepoAutolinks: (args?: {
           owner?: string;

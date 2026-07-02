@@ -144,7 +144,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "clearOAuthClientCredentials",
   ],
   linear_oauth: ["startSession"],
-  github: ["setToken", "clearToken"],
+  github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
   update: ["quitAndInstall"],
   flow_policy: ["savePolicy", "rollbackRevision"],
   linear_sync: ["runSyncNow", "resolveQueueItem"],
@@ -590,8 +590,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   linear_routing: ["simulateRoute"],
   github: [
     "clearToken",
+    "clearAppUserAuth",
     "detectRepo",
     "getAppInstallationStatus",
+    "getAppUserAuthStatus",
     "getRepoOrThrow",
     "getRemoteStatus",
     "getStatus",
@@ -599,8 +601,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRepoAutolinks",
     "listRepoCollaborators",
     "listRepoLabels",
+    "pollAppUserDeviceAuth",
     "publishCurrentProject",
     "setToken",
+    "startAppUserDeviceAuth",
   ],
   feedback: ["list", "prepareDraft", "submitPreparedDraft"],
   usage: ["forceRefresh", "getAdeUsageStats", "getUsageSnapshot", "poll", "start", "stop"],
@@ -2491,6 +2495,7 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
       return githubService.getAppInstallationStatus({
         owner: typeof actionArgs.owner === "string" ? actionArgs.owner : undefined,
         name: typeof actionArgs.name === "string" ? actionArgs.name : undefined,
+        forceRefresh: actionArgs.forceRefresh === true,
       });
     },
     async listRepoCollaborators(args?: unknown) {
