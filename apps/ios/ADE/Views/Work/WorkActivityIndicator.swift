@@ -14,7 +14,7 @@ struct WorkActivityIndicator: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// Anchors the "· Ns" elapsed label to when the streaming turn began. Held in
+  /// Anchors the elapsed label to when the streaming turn began. Held in
   /// `@State` so it survives transcript re-renders; only re-derived when the
   /// transcript actually changes (via `onAppear` / `onChange`), never per-frame.
   ///
@@ -77,16 +77,22 @@ struct WorkActivityIndicator: View {
     return max(0, Int(now.timeIntervalSince(turnStart)))
   }
 
-  /// "Thinking · 4s" / "Working · 42s · taking longer than usual".
+  /// "Thinking · 4s" / "Working · 1m 02s · taking longer than usual".
   private func tailLabel(for presentation: Presentation, elapsed: Int) -> String {
     var label = presentation.label
     if elapsed > 0 {
-      label += " · \(elapsed)s"
+      label += " · \(Self.formatElapsedSeconds(elapsed))"
     }
     if elapsed >= 30 {
       label += " · taking longer than usual"
     }
     return label
+  }
+
+  static func formatElapsedSeconds(_ totalSeconds: Int) -> String {
+    let safe = max(0, totalSeconds)
+    if safe < 60 { return "\(safe)s" }
+    return String(format: "%dm %02ds", safe / 60, safe % 60)
   }
 
   /// Anchor the elapsed clock to the most recent active-turn start. Falls back
@@ -137,9 +143,9 @@ struct WorkActivityIndicator: View {
 
   /// Walks the transcript tail looking for the most recent running/active
   /// event. Command > running tool call > file change > named activity >
-  /// subagent progress > fall back to "Thinking…".
+  /// subagent progress > fall back to "Working".
   static func derivePresentation(from transcript: [WorkChatEnvelope]) -> Presentation? {
-    let thinkingFallback = Presentation(label: "Thinking", detail: nil, tint: ADEColor.accent)
+    let workingFallback = Presentation(label: "Working", detail: nil, tint: ADEColor.accent)
     let endedTurnIds = Set(transcript.compactMap(Self.endedTurnId(from:)))
 
     for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
@@ -148,36 +154,38 @@ struct WorkActivityIndicator: View {
         return nil
 
       case .userMessage:
-        return thinkingFallback
+        return workingFallback
 
       case .assistantText(_, let turnId, _):
         if let turnId, endedTurnIds.contains(turnId) { continue }
-        return thinkingFallback
+        return workingFallback
 
       case .command(let command, _, _, let status, _, _, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(
-            label: "Running",
+            label: "Running command",
             detail: summarizeCommand(command),
             tint: ADEColor.accent
           )
         }
 
-      case .toolCall(let tool, _, _, _, let turnId):
+      case .toolCall(let tool, let argsText, _, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
+        let activity = workToolActivityPresentation(tool: tool, argsText: argsText)
         return Presentation(
-          label: labelForTool(tool),
-          detail: nil,
+          label: activity.label,
+          detail: activity.detail,
           tint: ADEColor.accent
         )
 
       case .toolResult(let tool, _, _, _, let turnId, let status):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
+          let activity = workToolActivityPresentation(tool: tool, argsText: nil)
           return Presentation(
-            label: labelForTool(tool),
-            detail: nil,
+            label: activity.label,
+            detail: activity.detail,
             tint: ADEColor.accent
           )
         }
@@ -194,8 +202,9 @@ struct WorkActivityIndicator: View {
 
       case .activity(let kind, let detail, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
+        let label = humanizeActivityKind(kind)
         return Presentation(
-          label: humanizeActivityKind(kind),
+          label: label.isEmpty ? "Working" : label,
           detail: detail?.isEmpty == false ? detail : nil,
           tint: ADEColor.accent
         )
@@ -210,7 +219,7 @@ struct WorkActivityIndicator: View {
           )
         }
 
-      case .subagentStarted(_, let description, _, let turnId):
+      case .subagentStarted(_, _, _, _, let description, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: "Agent",
@@ -218,7 +227,7 @@ struct WorkActivityIndicator: View {
           tint: ADEColor.accent
         )
 
-      case .subagentProgress(_, _, let summary, let toolName, let turnId):
+      case .subagentProgress(_, _, _, _, _, let summary, let toolName, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: toolName.map { "Agent · \($0)" } ?? "Agent",
@@ -231,7 +240,7 @@ struct WorkActivityIndicator: View {
           return nil
         }
         if Self.isActiveStatus(turnStatus) {
-          return thinkingFallback
+          return workingFallback
         }
         if let message, !message.isEmpty {
           return Presentation(
@@ -253,7 +262,7 @@ struct WorkActivityIndicator: View {
       }
     }
 
-    return thinkingFallback
+    return workingFallback
   }
 
   private static func endedTurnId(from envelope: WorkChatEnvelope) -> String? {
@@ -288,17 +297,6 @@ struct WorkActivityIndicator: View {
     default:
       return false
     }
-  }
-
-  private static func labelForTool(_ tool: String) -> String {
-    let normalized = tool.lowercased()
-    if normalized.contains("read") { return "Reading" }
-    if normalized.contains("write") { return "Writing" }
-    if normalized.contains("edit") { return "Editing" }
-    if normalized.contains("search") || normalized.contains("grep") { return "Searching" }
-    if normalized.contains("bash") || normalized.contains("shell") { return "Running" }
-    if normalized.contains("web") { return "Browsing" }
-    return "Using \(tool)"
   }
 
   private static func fileChangeLabel(kind: String) -> String {

@@ -5462,18 +5462,27 @@ export function createAgentChatService(args: {
     }
   };
 
-  // Keep the newest items whose cumulative serialized size fits the budget
-  // (always at least the newest one, even when it alone exceeds it).
+  // Keep the newest items whose cumulative serialized size fits the budget.
+  // Desktop history keeps the newest item even when it alone exceeds the
+  // budget so a local pane can still show the latest event; mobile callers can
+  // request a hard cap to avoid sending an oversized snapshot over sync.
   const keepNewestWithinCharBudget = <T>(
     items: T[],
     maxChars: number,
     sizeOf: (item: T) => number,
+    options?: { keepOversizeNewest?: boolean },
   ): T[] => {
+    const keepOversizeNewest = options?.keepOversizeNewest ?? true;
     let total = 0;
     let start = items.length;
     while (start > 0) {
       const next = total + sizeOf(items[start - 1]!);
-      if (start < items.length && next > maxChars) break;
+      if (next > maxChars) {
+        if (start === items.length && keepOversizeNewest) {
+          start -= 1;
+        }
+        break;
+      }
       total = next;
       start -= 1;
     }
@@ -5496,7 +5505,9 @@ export function createAgentChatService(args: {
   const trimEnvelopesToByteBudget = (
     envelopes: AgentChatEventEnvelope[],
     maxChars: number,
-  ): AgentChatEventEnvelope[] => keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars);
+    options?: { keepOversizeNewest?: boolean },
+  ): AgentChatEventEnvelope[] =>
+    keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars, options);
 
   const STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES = 4 * 1024;
   const STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES = 16 * 1024;
@@ -5695,6 +5706,13 @@ export function createAgentChatService(args: {
     envelopes: AgentChatEventEnvelope[];
   };
   const transcriptHistoryCacheBySession = new Map<string, Map<string, TranscriptHistoryCacheEntry>>();
+  type TranscriptSubagentSnapshotCacheEntry = {
+    transcriptPath: string;
+    size: number;
+    mtimeMs: number;
+    snapshots: AgentChatSubagentSnapshot[];
+  };
+  const transcriptSubagentSnapshotCacheBySession = new Map<string, TranscriptSubagentSnapshotCacheEntry>();
 
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
@@ -6434,9 +6452,16 @@ export function createAgentChatService(args: {
     return null;
   };
 
-  const trackSubagentEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    if (event.type !== "subagent_started" && event.type !== "subagent_progress" && event.type !== "subagent_result") return;
-    const map = ensureSubagentSnapshotMap(managed.session.id);
+  const isSubagentLifecycleEvent = (
+    event: AgentChatEvent,
+  ): event is Extract<AgentChatEvent, { type: "subagent_started" | "subagent_progress" | "subagent_result" }> =>
+    event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result";
+
+  const trackSubagentEventInMap = (
+    map: Map<string, AgentChatSubagentSnapshot>,
+    event: Extract<AgentChatEvent, { type: "subagent_started" | "subagent_progress" | "subagent_result" }>,
+    timestamp: string,
+  ): void => {
     if (event.type === "subagent_started") {
       const key = event.agentId ?? event.taskId;
       const parentMatch = findSubagentSnapshotByParent(map, event.parentToolUseId);
@@ -6451,7 +6476,7 @@ export function createAgentChatService(args: {
         description: event.description,
         status: "running",
         turnId: event.turnId ?? undefined,
-        startTimestamp: previous?.startTimestamp ?? nowIso(),
+        startTimestamp: previous?.startTimestamp ?? timestamp,
         background: event.background ?? false,
       });
       return;
@@ -6471,7 +6496,7 @@ export function createAgentChatService(args: {
         description: event.description?.trim() || previous?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? previous?.turnId,
-        startTimestamp: previous?.startTimestamp ?? nowIso(),
+        startTimestamp: previous?.startTimestamp ?? timestamp,
         summary: event.summary.trim() || previous?.summary,
         lastToolName: event.lastToolName ?? previous?.lastToolName,
         background: previous?.background,
@@ -6499,7 +6524,7 @@ export function createAgentChatService(args: {
       status,
       turnId: event.turnId ?? previous?.turnId,
       startTimestamp: previous?.startTimestamp,
-      endTimestamp: nowIso(),
+      endTimestamp: timestamp,
       summary: event.summary ?? previous?.summary,
       finalSummary: event.finalSummary ?? event.summary ?? previous?.finalSummary,
       lastToolName: previous?.lastToolName,
@@ -6508,10 +6533,10 @@ export function createAgentChatService(args: {
     });
   };
 
-  const getTrackedSubagents = (sessionId: string): AgentChatSubagentSnapshot[] => {
-    const snapshots = subagentStates.get(sessionId);
-    if (!snapshots) return [];
-    return Array.from(snapshots.values());
+  const trackSubagentEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    if (!isSubagentLifecycleEvent(event)) return;
+    const map = ensureSubagentSnapshotMap(managed.session.id);
+    trackSubagentEventInMap(map, event, nowIso());
   };
 
   const previewSessionToolNames = ({
@@ -6688,6 +6713,7 @@ export function createAgentChatService(args: {
     const entries: TranscriptDraftEntry[] = [];
     const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
     let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
+    let lastAssistantTranscriptMergeKey: string | null = null;
     const flushAssistantDraft = (): void => {
       if (!assistantDraft) return;
       const text = assistantDraft.text.trim();
@@ -6697,6 +6723,8 @@ export function createAgentChatService(args: {
           text,
           timestamp: assistantDraft.timestamp,
           ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
+          ...(assistantDraft.messageId ? { messageId: assistantDraft.messageId } : {}),
+          ...(assistantDraft.itemId ? { itemId: assistantDraft.itemId } : {}),
         });
       }
       assistantDraft = null;
@@ -6708,11 +6736,19 @@ export function createAgentChatService(args: {
       if (turnId) return `turn:${turnId}`;
       return null;
     };
+    const mergeAssistantTranscriptText = (existing: string, incoming: string, contiguous: boolean): string => {
+      if (contiguous) return `${existing}${incoming}`;
+      if (!existing.trim().length) return incoming;
+      if (!incoming.trim().length) return existing;
+      if (existing.endsWith("\n") || incoming.startsWith("\n")) return `${existing}${incoming}`;
+      return `${existing.trimEnd()}\n\n${incoming.trimStart()}`;
+    };
 
     for (const entry of envelopes) {
       if (entry.sessionId !== sessionId) continue;
       if (entry.event.type === "user_message") {
         flushAssistantDraft();
+        lastAssistantTranscriptMergeKey = null;
         const text = entry.event.text.trim();
         if (!text.length) continue;
         const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
@@ -6734,7 +6770,12 @@ export function createAgentChatService(args: {
           flushAssistantDraft();
           const existing = assistantDraftsByKey.get(mergeKey);
           if (existing) {
-            existing.text = `${existing.text}${entry.event.text}`;
+            existing.text = mergeAssistantTranscriptText(
+              existing.text,
+              entry.event.text,
+              lastAssistantTranscriptMergeKey === mergeKey,
+            );
+            lastAssistantTranscriptMergeKey = mergeKey;
             continue;
           }
           const draft: TranscriptDraftEntry = {
@@ -6747,10 +6788,12 @@ export function createAgentChatService(args: {
           };
           assistantDraftsByKey.set(mergeKey, draft);
           entries.push(draft);
+          lastAssistantTranscriptMergeKey = mergeKey;
           continue;
         }
         if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
           assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
+          lastAssistantTranscriptMergeKey = null;
           continue;
         }
         flushAssistantDraft();
@@ -6762,9 +6805,11 @@ export function createAgentChatService(args: {
           ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
           ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
         };
+        lastAssistantTranscriptMergeKey = null;
         continue;
       }
       flushAssistantDraft();
+      lastAssistantTranscriptMergeKey = null;
     }
     flushAssistantDraft();
     return entries
@@ -6774,6 +6819,8 @@ export function createAgentChatService(args: {
         ...(entry.displayText ? { displayText: entry.displayText } : {}),
         timestamp: entry.timestamp,
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
+        ...(entry.messageId ? { messageId: entry.messageId } : {}),
+        ...(entry.itemId ? { itemId: entry.itemId } : {}),
       }))
       .filter((entry) => entry.text.length > 0);
   };
@@ -7042,6 +7089,100 @@ export function createAgentChatService(args: {
     }
   };
 
+  const readSubagentSnapshotsFromTranscript = (sessionId: string): AgentChatSubagentSnapshot[] => {
+    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
+    if (!transcriptPath) return [];
+    try {
+      const stat = fs.statSync(transcriptPath);
+      const cached = transcriptSubagentSnapshotCacheBySession.get(sessionId);
+      if (
+        cached
+        && cached.transcriptPath === transcriptPath
+        && cached.size === stat.size
+        && cached.mtimeMs === stat.mtimeMs
+      ) {
+        return cached.snapshots.slice();
+      }
+
+      const map = new Map<string, AgentChatSubagentSnapshot>();
+      const raw = fs.readFileSync(transcriptPath, "utf8");
+      for (const line of raw.split(/\r?\n/)) {
+        if (!line.includes("subagent_")) continue;
+        let envelope: AgentChatEventEnvelope | null = null;
+        try {
+          const parsed = JSON.parse(line) as AgentChatEventEnvelope;
+          envelope = parsed && typeof parsed === "object" ? parsed : null;
+        } catch {
+          envelope = null;
+        }
+        if (!envelope || envelope.sessionId !== sessionId || isCodexSubagentTranscriptEnvelope(envelope)) continue;
+        const event = envelope.event;
+        if (!event || typeof event !== "object" || !isSubagentLifecycleEvent(event)) continue;
+        trackSubagentEventInMap(map, event, envelope.timestamp || nowIso());
+      }
+      const snapshots = Array.from(map.values());
+      transcriptSubagentSnapshotCacheBySession.set(sessionId, {
+        transcriptPath,
+        size: stat.size,
+        mtimeMs: stat.mtimeMs,
+        snapshots,
+      });
+      while (transcriptSubagentSnapshotCacheBySession.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS) {
+        const oldestSessionId = transcriptSubagentSnapshotCacheBySession.keys().next().value;
+        if (typeof oldestSessionId !== "string") break;
+        transcriptSubagentSnapshotCacheBySession.delete(oldestSessionId);
+      }
+      return snapshots.slice();
+    } catch {
+      return [];
+    }
+  };
+
+  const subagentSnapshotKey = (snapshot: AgentChatSubagentSnapshot): string =>
+    snapshot.agentId?.trim() || snapshot.taskId;
+
+  const mergeSubagentSnapshots = (
+    historical: AgentChatSubagentSnapshot[],
+    live: AgentChatSubagentSnapshot[],
+  ): AgentChatSubagentSnapshot[] => {
+    if (!historical.length) return live.slice();
+    if (!live.length) return historical.slice();
+    const order: string[] = [];
+    const byKey = new Map<string, AgentChatSubagentSnapshot>();
+    const put = (snapshot: AgentChatSubagentSnapshot): void => {
+      const key = subagentSnapshotKey(snapshot);
+      if (!byKey.has(key)) order.push(key);
+      byKey.set(key, { ...byKey.get(key), ...snapshot });
+    };
+    historical.forEach(put);
+    live.forEach(put);
+    return order.flatMap((key) => {
+      const snapshot = byKey.get(key);
+      return snapshot ? [snapshot] : [];
+    });
+  };
+
+  const compareSubagentSnapshotsNewestFirst = (
+    left: AgentChatSubagentSnapshot,
+    right: AgentChatSubagentSnapshot,
+  ): number => {
+    const leftTime = Date.parse(left.startTimestamp ?? left.endTimestamp ?? "");
+    const rightTime = Date.parse(right.startTimestamp ?? right.endTimestamp ?? "");
+    const leftValue = Number.isFinite(leftTime) ? leftTime : 0;
+    const rightValue = Number.isFinite(rightTime) ? rightTime : 0;
+    return rightValue - leftValue;
+  };
+
+  const getTrackedSubagents = (sessionId: string): AgentChatSubagentSnapshot[] => {
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) return [];
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return [];
+    const live = Array.from(subagentStates.get(trimmedId)?.values() ?? []);
+    const historical = readSubagentSnapshotsFromTranscript(trimmedId);
+    return mergeSubagentSnapshots(historical, live).sort(compareSubagentSnapshotsNewestFirst);
+  };
+
   const envelopeDedupKey = (entry: AgentChatEventEnvelope): string => {
     // Cross-run-safe key: two envelopes are true duplicates iff timestamp,
     // type, AND payload all match. Sequence numbers can't be trusted (they
@@ -7098,7 +7239,7 @@ export function createAgentChatService(args: {
    */
   const getChatEventHistory = (
     sessionId: string,
-    options?: { maxEvents?: number },
+    options?: { maxEvents?: number; maxBytes?: number },
   ): AgentChatEventHistorySnapshot => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) {
@@ -7125,6 +7266,12 @@ export function createAgentChatService(args: {
         Math.floor(options?.maxEvents ?? CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION),
       ),
     );
+    const requestedMaxBytes = typeof options?.maxBytes === "number" && Number.isFinite(options.maxBytes)
+      ? Math.floor(options.maxBytes)
+      : null;
+    const responseMaxChars = requestedMaxBytes == null
+      ? CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS
+      : Math.max(1_024, Math.min(CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS, requestedMaxBytes));
 
     // Stat the transcript on every snapshot; actual I/O is skipped when the
     // file size and mtime are unchanged (cached). A long-running background
@@ -7152,7 +7299,9 @@ export function createAgentChatService(args: {
     // trimmed events sit AFTER tailStartOffset and are not reachable through
     // getChatEventHistoryPage (which pages strictly older) — an accepted
     // seam, the alternative being a response the client must discard.
-    const windowed = trimEnvelopesToByteBudget(countWindowed, CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS);
+    const windowed = trimEnvelopesToByteBudget(countWindowed, responseMaxChars, {
+      keepOversizeNewest: requestedMaxBytes == null,
+    });
     const windowTruncated =
       mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
       || parentVisibleLength > maxEvents

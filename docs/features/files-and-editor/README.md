@@ -111,7 +111,7 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
   Files tab shell: workspace chrome, activity bar, explorer, editor
   groups, Monaco edit host, diff/conflict surfaces, quick open, text
-  search, trust warnings, read-only workspace gating, persisted recent-file
+  search, trust warnings, persisted recent-file
   pruning, project-level open-tab state across lane/workspace switches,
   dirty-buffer publishing for agent reads, optional Git-decoration
   fallback, and file-type viewers. Accepts optional
@@ -119,7 +119,7 @@ Renderer:
   the Work right-edge sidebar.
 - `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
   virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
-  explorer search, mutation-disabled create buttons for read-only workspaces,
+  explorer search, create/rename/delete controls,
   and context-menu wiring; git status coloring uses helpers from
   `filePresentation.tsx`.
 - `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
@@ -366,9 +366,13 @@ For deeper detail on the watcher + trust boundary, see
   from a bound local/remote runtime surfaces to the tab instead of
   retrying against the desktop main process, which could point at a
   different host or workspace.
-- `FilesWorkspace.isReadOnlyByDefault` is enforced in the renderer as well as
-  the service layer: Monaco opens read-only, create / rename / delete controls
-  are disabled, and mutation attempts surface `This workspace is read-only.`
+- Files are freely editable. There is no "Enable editing" step and no
+  per-workspace edit-protection gate: every resolved workspace — including the
+  primary repo root and lanes whose `is_edit_protected = 1` — opens Monaco in
+  read/write mode with create / rename / delete controls enabled on desktop and
+  mobile. The `is_edit_protected` flag still exists but only governs lane
+  lifecycle (delete / reparent / auto-rebase exclusion), not file editing;
+  `FilesWorkspace.isReadOnlyByDefault` is now derived as constant `false`.
 - Workspace switching is navigation, not a discard action. Dirty tabs remain
   open and published to the dirty-buffer map under their own workspace root
   until the user saves, closes, renames, deletes, or unloads the tab.

@@ -17,6 +17,10 @@ struct FilesBreadcrumbItem: Equatable {
   let isDirectory: Bool
 }
 
+func filesTransitionId(kind: String, workspaceId: String, path: String) -> String {
+  "files-\(kind)-\(workspaceId)::\(path)"
+}
+
 enum FilesEditorMode: String, CaseIterable, Identifiable {
   case preview
   case diff
@@ -124,6 +128,25 @@ struct FilesPreviewLimit: Equatable {
   let message: String
 }
 
+struct FilesDiffRenderState {
+  let diff: FileDiff
+  let hasVisibleChanges: Bool
+  let previewLimit: FilesPreviewLimit?
+  let inlineLines: [FilesInlineDiffLine]
+
+  init(diff: FileDiff) {
+    let hasVisibleChanges = filesDiffHasChanges(diff)
+    let previewLimit = filesDiffPreviewLimit(diff: diff)
+
+    self.diff = diff
+    self.hasVisibleChanges = hasVisibleChanges
+    self.previewLimit = previewLimit
+    self.inlineLines = diff.isBinary == true || !hasVisibleChanges || previewLimit != nil
+      ? []
+      : buildInlineDiffLines(original: diff.original.text, modified: diff.modified.text)
+  }
+}
+
 let filesDetailRefreshMinimumInterval: TimeInterval = 0.75
 
 func filesDetailRefreshDelay(
@@ -139,6 +162,7 @@ private let filesTextPreviewByteLimit = 300 * 1024
 private let filesTextPreviewLineLimit = 4_000
 private let filesDiffPreviewByteLimit = 400 * 1024
 private let filesDiffPreviewLineLimit = 6_000
+private let filesDiffPreviewLinePairLimit = 1_500_000
 
 func filesTextPreviewLimit(blob: SyncFileBlob) -> FilesPreviewLimit? {
   guard !blob.isBinary else { return nil }
@@ -257,10 +281,19 @@ func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {
     )
   }
 
+  let originalLineCount = filesEstimatedLineCount(diff.original.text)
+  let modifiedLineCount = filesEstimatedLineCount(diff.modified.text)
+  if filesLinePairCountExceedsLimit(originalLineCount: originalLineCount, modifiedLineCount: modifiedLineCount) {
+    return FilesPreviewLimit(
+      title: "Diff preview paused",
+      message: "This diff compares \(originalLineCount) original lines against \(modifiedLineCount) modified lines. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
+    )
+  }
+
   let combinedText = "\(diff.original.text)\n\(diff.modified.text)"
   return filesTextLimit(
     byteCount: combinedText.utf8.count,
-    lineCount: filesEstimatedLineCount(combinedText),
+    lineCount: originalLineCount + modifiedLineCount,
     lineLimit: filesDiffPreviewLineLimit,
     byteLimit: filesDiffPreviewByteLimit,
     title: "Diff preview paused",
@@ -301,6 +334,11 @@ private func filesEstimatedLineCount(_ text: String) -> Int {
   return text.reduce(1) { count, character in
     character == "\n" ? count + 1 : count
   }
+}
+
+private func filesLinePairCountExceedsLimit(originalLineCount: Int, modifiedLineCount: Int, limit: Int = filesDiffPreviewLinePairLimit) -> Bool {
+  guard originalLineCount > 0, modifiedLineCount > 0 else { return false }
+  return originalLineCount > limit / modifiedLineCount
 }
 
 func resolveFilesWorkspace(for request: FilesNavigationRequest, in workspaces: [FilesWorkspace]) -> FilesWorkspace? {

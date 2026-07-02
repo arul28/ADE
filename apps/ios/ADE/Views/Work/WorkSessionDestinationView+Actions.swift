@@ -85,9 +85,15 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func approveRequest(itemId: String, decision: AgentChatApprovalDecision) async {
+  func approveRequest(itemId: String, decision: AgentChatApprovalDecision, responseText: String? = nil) async {
     do {
-      try await syncService.approveChatSession(sessionId: sessionId, itemId: itemId, decision: decision)
+      let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
+      try await syncService.approveChatSession(
+        sessionId: sessionId,
+        itemId: itemId,
+        decision: decision,
+        responseText: responseValue?.isEmpty == true ? nil : responseValue
+      )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
     } catch {
@@ -391,17 +397,17 @@ extension WorkSessionDestinationView {
     let cacheKey = "work-artifact::\(artifact.id)::\(artifact.uri)"
 
     if artifact.artifactKind != "video_recording", let cachedImage = ADEImageCache.shared.cachedImage(for: cacheKey) {
-      artifactContent[artifact.id] = .image(cachedImage)
+      setArtifactContent(.image(cachedImage), for: artifact.id)
       return
     }
 
     if let directURL = URL(string: artifact.uri), directURL.scheme?.hasPrefix("http") == true {
       if artifact.artifactKind == "video_recording" || (artifact.mimeType?.contains("video") == true) {
-        artifactContent[artifact.id] = .remoteURL(directURL)
+        setArtifactContent(.remoteURL(directURL), for: artifact.id)
       } else if let image = try? await ADEImageCache.shared.loadRemoteImage(from: directURL, cacheKey: cacheKey) {
-        artifactContent[artifact.id] = .image(image)
+        setArtifactContent(.image(image), for: artifact.id)
       } else {
-        artifactContent[artifact.id] = .error("The machine returned an unreadable image preview.")
+        setArtifactContent(.error("The machine returned an unreadable image preview."), for: artifact.id)
       }
       return
     }
@@ -416,7 +422,7 @@ extension WorkSessionDestinationView {
       }
 
       guard let data else {
-        artifactContent[artifact.id] = .error("The machine returned an artifact payload that could not be decoded.")
+        setArtifactContent(.error("The machine returned an artifact payload that could not be decoded."), for: artifact.id)
         return
       }
 
@@ -425,15 +431,15 @@ extension WorkSessionDestinationView {
           .appendingPathComponent("ade-work-artifact-\(artifact.id)")
           .appendingPathExtension(fileExtension(for: artifact.mimeType, fallback: "mp4"))
         try data.write(to: url, options: .atomic)
-        artifactContent[artifact.id] = .video(url)
+        setArtifactContent(.video(url), for: artifact.id)
       } else if let image = UIImage(data: data) {
         ADEImageCache.shared.store(data, for: cacheKey)
-        artifactContent[artifact.id] = .image(image)
+        setArtifactContent(.image(image), for: artifact.id)
       } else {
-        artifactContent[artifact.id] = .text(blob.content)
+        setArtifactContent(.text(blob.content), for: artifact.id)
       }
     } catch {
-      artifactContent[artifact.id] = .error(error.localizedDescription)
+      setArtifactContent(.error(error.localizedDescription), for: artifact.id)
     }
   }
 
@@ -593,52 +599,137 @@ extension WorkSessionDestinationView {
   }
 
   /// Resolve the lane's primary cached PR for the header overflow menu. Runs
-  /// inside a `.task(id: headerMenuLaneId)`, so SwiftUI cancels and replaces it
-  /// whenever the lane changes. We clear any stale PR up front and re-check the
-  /// task identity (cancellation + still-current lane) after the await so a
-  /// slow lookup for a previous lane can never surface its PR on a new lane.
+  /// inside a `.task(id: headerMenuPrLookupKey)`, so SwiftUI cancels and
+  /// replaces it whenever the lane or the PR projection changes. Re-resolves
+  /// are stale-while-revalidate: the current PR is only cleared up front when
+  /// the *lane* changed (so a slow lookup for a previous lane can never surface
+  /// its PR on a new lane), never on same-lane projection refreshes — clearing
+  /// there collapses the header menu's PR section to the "no PR" branch for a
+  /// frame and rebuilds the open liquid-glass menu mid-interaction. Final
+  /// assignments are equality-guarded for the same reason.
   @MainActor
-  func resolveLaneOpenPr(for laneId: String) async {
-    laneOpenPr = nil
+  func resolveLaneOpenPr(
+    for laneId: String,
+    forceGithubRefresh: Bool = false,
+    clearBeforeLoad: Bool = true
+  ) async {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
-
-    let resolved: PullRequestListItem?
-    do {
-      let items = try await syncService.fetchPullRequestListItems(laneId: trimmed)
-      // Prefer an open PR over a closed/merged one when a lane has several.
-      resolved = items.first { $0.state.lowercased() == "open" } ?? items.first
-    } catch {
-      resolved = nil
+    let laneChanged = trimmed != lastResolvedPrLaneId
+    if clearBeforeLoad, laneChanged {
+      laneOpenPr = nil
+      lanePrSummary = nil
+      lanePrTag = nil
     }
+    guard !trimmed.isEmpty else {
+      lastResolvedPrLaneId = trimmed
+      laneOpenPr = nil
+      lanePrSummary = nil
+      lanePrTag = nil
+      return
+    }
+
+    let items = (try? await syncService.fetchPullRequestListItems(laneId: trimmed)) ?? []
+    let remoteSummary: PrSummary?
+    if hostReachable && syncService.supportsRemoteAction("prs.getForLane") {
+      remoteSummary = try? await syncService.fetchPullRequestForLane(laneId: trimmed)
+    } else {
+      remoteSummary = nil
+    }
+
+    if hostReachable {
+      await syncService.refreshLaneGithubPrItems(force: forceGithubRefresh)
+    }
+
+    let resolution = workChatResolveLanePr(
+      lane: lanes.first(where: { $0.id == trimmed }),
+      pullRequests: items,
+      remoteSummary: remoteSummary,
+      githubPrs: syncService.laneGithubPrItems
+    )
 
     let stillCurrent = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
     guard !Task.isCancelled, stillCurrent else { return }
-    laneOpenPr = resolved
+    lastResolvedPrLaneId = trimmed
+    if lanePrSummary != resolution.summary { lanePrSummary = resolution.summary }
+    if lanePrTag != resolution.tag { lanePrTag = resolution.tag }
+    if laneOpenPr != resolution.mappedPr { laneOpenPr = resolution.mappedPr }
   }
 
   /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was
   /// cleared between menu render and tap.
   func openLaneOpenPr() {
-    guard let pr = laneOpenPr else { return }
-    syncService.requestedPrNavigation = PrNavigationRequest(
-      prId: pr.id,
-      prNumber: pr.githubPrNumber,
-      laneId: pr.laneId
-    )
+    guard let tag = lanePrTag else { return }
+    prDetailsPresented = false
+    if let prId = tag.prId ?? laneOpenPr?.id, !prId.isEmpty {
+      let laneId = (laneOpenPr?.laneId ?? headerMenuLaneId).trimmingCharacters(in: .whitespacesAndNewlines)
+      syncService.requestedPrNavigation = PrNavigationRequest(
+        prId: prId,
+        prNumber: tag.githubPrNumber,
+        laneId: laneId.isEmpty ? nil : laneId
+      )
+    } else {
+      syncService.requestedPrNavigation = PrNavigationRequest(prNumber: tag.githubPrNumber)
+    }
   }
 
   func openLanePrOnGitHub() {
-    guard let urlString = laneOpenPr?.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines),
-          !urlString.isEmpty,
-          let url = URL(string: urlString) else { return }
+    guard !lanePrGitHubUrlString.isEmpty,
+          let url = URL(string: lanePrGitHubUrlString) else { return }
     UIApplication.shared.open(url)
   }
 
   @MainActor
+  func openPrCreationInPrsTab() {
+    let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !laneId.isEmpty else { return }
+    prDetailsPresented = false
+    createPrPresented = false
+    syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
+  }
+
+  @MainActor
+  func presentChatPrDetails() {
+    prDetailsPresented = true
+    Task { await refreshChatPrDetails(force: true) }
+  }
+
+  @MainActor
+  func refreshChatPrDetails(force: Bool = false) async {
+    guard force || !prDetailsRefreshing else { return }
+    prDetailsRefreshing = true
+    prDetailsError = nil
+    defer { prDetailsRefreshing = false }
+
+    await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: force, clearBeforeLoad: false)
+
+    guard let prId = laneOpenPr?.id ?? lanePrSummary?.id else {
+      prDetailsSnapshot = nil
+      await loadPrCreateCapabilitiesIfNeeded()
+      return
+    }
+
+    if hostReachable {
+      do {
+        try await syncService.refreshPullRequestSnapshots(prId: prId)
+        let items = (try? await syncService.fetchPullRequestListItems(laneId: headerMenuLaneId)) ?? []
+        laneOpenPr = workChatMappedPullRequest(for: lanePrTag, in: items)
+      } catch {
+        prDetailsError = SyncUserFacingError.message(for: error)
+      }
+    }
+
+    do {
+      prDetailsSnapshot = try await syncService.fetchPullRequestSnapshot(prId: prId)
+    } catch {
+      prDetailsSnapshot = nil
+      prDetailsError = SyncUserFacingError.message(for: error)
+    }
+  }
+
+  @MainActor
   func copyLanePrLink() {
-    guard let urlString = laneOpenPr?.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines),
-          !urlString.isEmpty else { return }
+    let urlString = lanePrGitHubUrlString
+    guard !urlString.isEmpty else { return }
     UIPasteboard.general.string = urlString
     prLinkCopied = true
     Task {
@@ -656,6 +747,11 @@ extension WorkSessionDestinationView {
   }
 
   func presentCreateLanePr() {
+    if prDetailsPresented {
+      createPrAfterDetailsDismiss = true
+      prDetailsPresented = false
+      return
+    }
     createPrPresented = true
   }
 
@@ -668,7 +764,9 @@ extension WorkSessionDestinationView {
     do {
       let snapshot = try await syncService.fetchPrMobileSnapshot()
       guard !Task.isCancelled else { return }
-      prCreateCapabilities = snapshot.createCapabilities
+      if prCreateCapabilities != snapshot.createCapabilities {
+        prCreateCapabilities = snapshot.createCapabilities
+      }
     } catch {
       guard !Task.isCancelled else { return }
       prCreateCapabilities = nil
@@ -702,12 +800,86 @@ extension WorkSessionDestinationView {
         strategy: strategy
       )
       createPrPresented = false
-      await resolveLaneOpenPr(for: headerMenuLaneId)
+      try? await syncService.refreshPullRequestSnapshots()
+      await syncService.refreshLaneGithubPrItems(force: true)
+      await resolveLaneOpenPr(for: headerMenuLaneId, forceGithubRefresh: true)
+      if prDetailsPresented {
+        await refreshChatPrDetails(force: false)
+      }
       await loadPrCreateCapabilitiesIfNeeded()
       return true
     } catch {
       errorMessage = error.localizedDescription
       return false
     }
+  }
+}
+
+struct WorkChatPrResolution {
+  var tag: LanePrTag?
+  var mappedPr: PullRequestListItem?
+  var summary: PrSummary?
+}
+
+func workChatResolveLanePr(
+  lane: LaneSummary?,
+  pullRequests: [PullRequestListItem],
+  remoteSummary: PrSummary?,
+  githubPrs: [GitHubPrListItem]
+) -> WorkChatPrResolution {
+  let tag: LanePrTag?
+  if let remoteSummary {
+    tag = workChatLanePrTag(from: remoteSummary)
+  } else if let lane {
+    tag = selectLaneTabPrTag(lane: lane, pullRequests: pullRequests, githubPrs: githubPrs)
+  } else if let pr = pullRequests.sorted(by: lanePrTagPrecedes).first {
+    tag = workChatLanePrTag(from: pr)
+  } else {
+    tag = nil
+  }
+  return WorkChatPrResolution(
+    tag: tag,
+    mappedPr: workChatMappedPullRequest(for: tag, in: pullRequests),
+    summary: remoteSummary
+  )
+}
+
+func workChatLanePrTag(from pr: PullRequestListItem) -> LanePrTag {
+  LanePrTag(
+    source: .ade,
+    prId: pr.id,
+    githubPrNumber: pr.githubPrNumber,
+    githubUrl: pr.githubUrl,
+    title: pr.title,
+    state: pr.state,
+    headBranch: pr.headBranch,
+    updatedAt: pr.updatedAt
+  )
+}
+
+func workChatLanePrTag(from pr: PrSummary) -> LanePrTag {
+  LanePrTag(
+    source: .ade,
+    prId: pr.id,
+    githubPrNumber: pr.githubPrNumber,
+    githubUrl: pr.githubUrl,
+    title: pr.title,
+    state: pr.state,
+    headBranch: pr.headBranch,
+    updatedAt: pr.updatedAt
+  )
+}
+
+func workChatMappedPullRequest(
+  for tag: LanePrTag?,
+  in pullRequests: [PullRequestListItem]
+) -> PullRequestListItem? {
+  guard let tag else { return nil }
+  if let prId = tag.prId,
+     let match = pullRequests.first(where: { $0.id == prId }) {
+    return match
+  }
+  return pullRequests.first { pr in
+    pr.githubPrNumber == tag.githubPrNumber || pr.githubUrl == tag.githubUrl
   }
 }

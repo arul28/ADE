@@ -115,6 +115,7 @@ struct FilesViewerControlStrip: View {
 struct FilesHeaderStrip: View {
   @EnvironmentObject private var syncService: SyncService
 
+  let workspaceId: String
   let relativePath: String
   let fileKindLabel: String
   let fileSize: Int
@@ -144,7 +145,7 @@ struct FilesHeaderStrip: View {
         .frame(width: 38, height: 38)
         .background(ADEColor.surfaceBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .glassEffect(in: .rect(cornerRadius: 12))
-        .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-icon-\(relativePath)", in: transitionNamespace)
+        .adeMatchedGeometry(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "icon", workspaceId: workspaceId, path: relativePath), in: transitionNamespace)
 
       VStack(alignment: .leading, spacing: 3) {
         Text(lastPathComponent(relativePath))
@@ -152,7 +153,7 @@ struct FilesHeaderStrip: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.middle)
-          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "files-title-\(relativePath)", in: transitionNamespace)
+          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : filesTransitionId(kind: "title", workspaceId: workspaceId, path: relativePath), in: transitionNamespace)
 
         HStack(spacing: 6) {
           Text(fileKindLabel.uppercased())
@@ -161,10 +162,6 @@ struct FilesHeaderStrip: View {
           Text("·").foregroundStyle(ADEColor.textMuted)
           Text(formattedFileSize(fileSize))
             .font(.caption2.monospaced())
-            .foregroundStyle(ADEColor.textSecondary)
-          Text("·").foregroundStyle(ADEColor.textMuted)
-          Text("Read only")
-            .font(.caption2.weight(.medium))
             .foregroundStyle(ADEColor.textSecondary)
           if let filesBrowserStatusSuffix {
             Text("·").foregroundStyle(ADEColor.textMuted)

@@ -10,6 +10,7 @@ struct WorkInlineMarkdownText: View {
       .foregroundStyle(ADEColor.textPrimary)
       .tint(ADEColor.accent)
       .frame(maxWidth: .infinity, alignment: .leading)
+      .textSelection(.enabled)
   }
 }
 
@@ -32,57 +33,65 @@ struct WorkMarkdownRenderer: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       ForEach(blocks) { block in
-        switch block.kind {
-        case .paragraph(let text):
-          WorkInlineMarkdownText(text: text)
-        case .heading(let level, let text):
-          WorkInlineMarkdownText(text: text)
-            .font(headingFont(level: level))
-        case .unorderedList(let items):
-          VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-              HStack(alignment: .top, spacing: 8) {
-                Text("•")
-                  .foregroundStyle(ADEColor.accent)
-                WorkInlineMarkdownText(text: item)
-              }
-            }
-          }
-        case .orderedList(let items):
-          VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-              HStack(alignment: .top, spacing: 8) {
-                Text("\(index + 1).")
-                  .foregroundStyle(ADEColor.accent)
-                WorkInlineMarkdownText(text: item)
-              }
-            }
-          }
-        case .blockquote(let lines):
-          HStack(alignment: .top, spacing: 10) {
-            Rectangle()
-              .fill(ADEColor.accent.opacity(0.55))
-              .frame(width: 3)
-            VStack(alignment: .leading, spacing: 4) {
-              ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                WorkInlineMarkdownText(text: line)
-              }
-            }
-          }
-          .padding(10)
-          .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        case .table(let headers, let rows):
-          WorkMarkdownTable(headers: headers, rows: rows)
-        case .code(let language, let code):
-          WorkCodeBlockView(language: language, code: code)
-        case .rule:
-          Divider()
-        }
+        WorkMarkdownBlockView(block: block)
       }
     }
   }
+}
 
-  func headingFont(level: Int) -> Font {
+struct WorkMarkdownBlockView: View {
+  let block: WorkMarkdownBlock
+
+  var body: some View {
+    switch block.kind {
+    case .paragraph(let text):
+      WorkInlineMarkdownText(text: text)
+    case .heading(let level, let text):
+      WorkInlineMarkdownText(text: text)
+        .font(headingFont(level: level))
+    case .unorderedList(let items):
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+          HStack(alignment: .top, spacing: 8) {
+            Text("•")
+              .foregroundStyle(ADEColor.accent)
+            WorkInlineMarkdownText(text: item)
+          }
+        }
+      }
+    case .orderedList(let start, let items):
+      VStack(alignment: .leading, spacing: 6) {
+        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+          HStack(alignment: .top, spacing: 8) {
+            Text("\(start + index).")
+              .foregroundStyle(ADEColor.accent)
+            WorkInlineMarkdownText(text: item)
+          }
+        }
+      }
+    case .blockquote(let lines):
+      HStack(alignment: .top, spacing: 10) {
+        Rectangle()
+          .fill(ADEColor.accent.opacity(0.55))
+          .frame(width: 3)
+        VStack(alignment: .leading, spacing: 4) {
+          ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+            WorkInlineMarkdownText(text: line)
+          }
+        }
+      }
+      .padding(10)
+      .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    case .table(let headers, let rows):
+      WorkMarkdownTable(headers: headers, rows: rows)
+    case .code(let language, let code):
+      WorkCodeBlockView(language: language, code: code)
+    case .rule:
+      Divider()
+    }
+  }
+
+  private func headingFont(level: Int) -> Font {
     switch level {
     case 1: return .title3.weight(.bold)
     case 2: return .headline.weight(.bold)

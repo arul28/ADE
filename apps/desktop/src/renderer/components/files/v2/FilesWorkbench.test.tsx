@@ -165,24 +165,18 @@ describe("FilesWorkbench", () => {
     await waitFor(() => expect(screen.getByTestId("dirty-count").textContent).toBe("1"));
   });
 
-  it("lets read-only-by-default workspaces opt into editing for the session", async () => {
-    const { rerender } = render(<FilesWorkbench active />);
+  it("makes edit-protected workspaces editable immediately with no enable step", async () => {
+    render(<FilesWorkbench active />);
 
+    // workspace-b is isReadOnlyByDefault: true — it must still be freely editable.
     fireEvent.click(await screen.findByTestId("switch-workspace"));
 
-    await waitFor(() => expect(screen.getByTestId("explorer-can-mutate").textContent).toBe("false"));
-    fireEvent.click(screen.getByTestId("open-file"));
-    await waitFor(() => expect(screen.getByTestId("can-edit").textContent).toBe("false"));
-
-    fireEvent.click(screen.getByRole("button", { name: /enable editing/i }));
-
     await waitFor(() => expect(screen.getByTestId("explorer-can-mutate").textContent).toBe("true"));
-    expect(screen.getByTestId("can-edit").textContent).toBe("true");
+    fireEvent.click(screen.getByTestId("open-file"));
+    await waitFor(() => expect(screen.getByTestId("can-edit").textContent).toBe("true"));
 
-    testState.appState.project = { rootPath: "/other-repo" };
-    rerender(<FilesWorkbench active />);
-
-    await waitFor(() => expect(screen.getByTestId("explorer-can-mutate").textContent).toBe("false"));
+    // There is no longer any "Enable editing" affordance.
+    expect(screen.queryByRole("button", { name: /enable editing/i })).toBeNull();
   });
 
   it("keeps recent files scoped to the selected lane workspace", async () => {

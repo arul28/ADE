@@ -709,7 +709,7 @@ func extractWorkNavigationTargets(from text: String) -> WorkNavigationTargets {
 }
 
 func workRegexMatches(pattern: String, in text: String) -> [String] {
-  guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+  guard let regex = ADECodeRenderingCache.shared.regex(for: pattern) else { return [] }
   let range = NSRange(location: 0, length: (text as NSString).length)
   return regex.matches(in: text, range: range).compactMap { match in
     Range(match.range, in: text).map { String(text[$0]) }
@@ -858,6 +858,51 @@ func buildWorkToolCards(
         completedAt: status == .running ? nil : envelope.timestamp,
         argsText: nonEmpty(query),
         resultText: action.flatMap(nonEmpty) ?? existing?.resultText
+      )
+    default:
+      continue
+    }
+  }
+
+  return orderedIds.compactMap { cards[$0] }
+}
+
+func buildWorkMobileTimelineToolCards(
+  from transcript: [WorkChatEnvelope],
+  suppressedPendingItemIds: Set<String> = []
+) -> [WorkToolCardModel] {
+  var cards: [String: WorkToolCardModel] = [:]
+  var orderedIds: [String] = []
+
+  for envelope in transcript {
+    switch envelope.event {
+    case .toolCall(let tool, let argsText, let itemId, _, _):
+      guard isQuestionInputToolName(tool),
+            !suppressedPendingItemIds.contains(itemId),
+            pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) == nil
+      else { continue }
+      if cards[itemId] == nil {
+        orderedIds.append(itemId)
+      }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: tool,
+        status: .running,
+        startedAt: envelope.timestamp,
+        completedAt: nil,
+        argsText: nonEmpty(argsText),
+        resultText: cards[itemId]?.resultText
+      )
+    case .toolResult(let tool, let resultText, let itemId, _, _, let status):
+      guard isQuestionInputToolName(tool), let existing = cards[itemId] else { continue }
+      cards[itemId] = WorkToolCardModel(
+        id: itemId,
+        toolName: existing.toolName,
+        status: status,
+        startedAt: existing.startedAt,
+        completedAt: envelope.timestamp,
+        argsText: existing.argsText,
+        resultText: nonEmpty(resultText)
       )
     default:
       continue

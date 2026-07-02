@@ -48,6 +48,26 @@ final class SyncEnvelopeChunkAssemblerTests: XCTestCase {
     XCTAssertNil(assembler.add(chunkId: "", index: 0, total: 1, part: base64("x")))
   }
 
+  func testDropsOversizedSinglePartAndAllowsChunkIdReuse() {
+    var assembler = SyncEnvelopeChunkAssembler(maxEnvelopeBytes: 4)
+    XCTAssertNil(assembler.add(chunkId: "oversized", index: 0, total: 1, part: base64("12345")))
+    XCTAssertEqual(assembler.add(chunkId: "oversized", index: 0, total: 1, part: base64("ok")), "ok")
+  }
+
+  func testDropsChunkSetWhenCumulativeBytesExceedLimit() {
+    var assembler = SyncEnvelopeChunkAssembler(maxEnvelopeBytes: 6)
+    XCTAssertNil(assembler.add(chunkId: "bytes", index: 0, total: 2, part: base64("abc")))
+    XCTAssertNil(assembler.add(chunkId: "bytes", index: 1, total: 2, part: base64("defg")))
+    XCTAssertEqual(assembler.add(chunkId: "bytes", index: 0, total: 1, part: base64("fresh")), "fresh")
+  }
+
+  func testReplacingPartDoesNotDoubleCountByteBudget() {
+    var assembler = SyncEnvelopeChunkAssembler(maxEnvelopeBytes: 6)
+    XCTAssertNil(assembler.add(chunkId: "replace", index: 0, total: 2, part: base64("abcde")))
+    XCTAssertNil(assembler.add(chunkId: "replace", index: 0, total: 2, part: base64("a")))
+    XCTAssertEqual(assembler.add(chunkId: "replace", index: 1, total: 2, part: base64("bcde")), "abcde")
+  }
+
   func testResetClearsPartialChunks() {
     var assembler = SyncEnvelopeChunkAssembler()
     XCTAssertNil(assembler.add(chunkId: "e", index: 0, total: 2, part: base64("1")))

@@ -100,20 +100,26 @@ extension FilesDetailScreen {
   @MainActor
   func loadDiff() async {
     guard let laneId = workspace.laneId else {
-      diff = nil
+      clearDiffState()
       diffErrorMessage = nil
       hasLoadedDiff = true
       return
     }
     hasLoadedDiff = false
     do {
-      diff = try await syncService.fetchFileDiff(workspaceId: workspace.id, laneId: laneId, path: relativePath, mode: diffMode.rawValue)
+      let loaded = try await syncService.fetchFileDiff(workspaceId: workspace.id, laneId: laneId, path: relativePath, mode: diffMode.rawValue)
+      diffRenderState = FilesDiffRenderState(diff: loaded)
       diffErrorMessage = nil
     } catch {
-      diff = nil
+      clearDiffState()
       diffErrorMessage = error.localizedDescription
     }
     hasLoadedDiff = true
+  }
+
+  @MainActor
+  private func clearDiffState() {
+    diffRenderState = nil
   }
 
 }

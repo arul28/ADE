@@ -2,33 +2,6 @@ import SwiftUI
 import UIKit
 import AVKit
 
-private struct WorkRootLiveTranscriptBuildInput {
-  let sessionId: String
-  let streamedEvents: [AgentChatEventEnvelope]
-  let terminalTail: String
-}
-
-func workRootLiveTranscriptFingerprint(
-  chatEventRevision: Int,
-  streamedEventCount: Int,
-  terminalBufferRevision: Int?,
-  terminalTail: String?
-) -> String {
-  guard streamedEventCount == 0 else {
-    return "events:\(chatEventRevision):\(streamedEventCount)"
-  }
-  guard let terminalTail, !terminalTail.isEmpty else {
-    return "empty"
-  }
-  if let terminalBufferRevision {
-    return "terminal:\(terminalBufferRevision):\(terminalTail.utf8.count)"
-  }
-
-  var hasher = Hasher()
-  hasher.combine(terminalTail)
-  return "terminal:\(terminalTail.utf8.count):\(hasher.finalize())"
-}
-
 extension WorkRootScreen {
   @MainActor
   func scheduleSessionPresentationRebuild() {
@@ -38,6 +11,8 @@ extension WorkRootScreen {
     let sessionsSnapshot = sessions
     let chatSummariesSnapshot = chatSummaries
     let lanesSnapshot = lanes
+    let pullRequestsSnapshot = pullRequests
+    let githubPrsSnapshot = syncService.laneGithubPrItems
     let optimisticSessionsSnapshot = optimisticSessions
     let archivedSessionIdsSnapshot = archivedSessionIds
     let selectedStatusSnapshot = selectedStatus
@@ -61,7 +36,9 @@ extension WorkRootScreen {
         searchText: searchTextSnapshot,
         outputSearchBySessionId: outputSearchBySessionId,
         organization: organization,
-        orderedLanes: lanesSnapshot
+        orderedLanes: lanesSnapshot,
+        pullRequests: pullRequestsSnapshot,
+        githubPrs: githubPrsSnapshot
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }
@@ -254,59 +231,6 @@ extension WorkRootScreen {
     syncService.cacheChatSummaries(nextSummaries)
   }
 
-  @MainActor
-  func pollRunningChats() async {
-    guard isLive, isWorkRootActive else { return }
-    guard !liveChatSessions.isEmpty else { return }
-
-    var lastTranscriptFingerprint: [String: String] = [:]
-    while !Task.isCancelled && isLive && isWorkRootActive && !liveChatSessions.isEmpty {
-      let liveSessions = liveChatSessions
-      let liveSessionIds = Set(liveSessions.map(\.id))
-      transcriptCache.prune(keeping: liveSessionIds)
-
-      var buildInputs: [WorkRootLiveTranscriptBuildInput] = []
-      buildInputs.reserveCapacity(liveSessions.count)
-      for session in liveSessions {
-        try? await syncService.subscribeToChatEvents(sessionId: session.id)
-        let streamed = syncService.chatEventHistory(sessionId: session.id)
-        let revision = syncService.chatEventRevision(for: session.id)
-        let terminalTail = streamed.isEmpty ? (syncService.terminalBuffers[session.id] ?? "") : ""
-        let fingerprint = workRootLiveTranscriptFingerprint(
-          chatEventRevision: revision,
-          streamedEventCount: streamed.count,
-          terminalBufferRevision: streamed.isEmpty ? syncService.terminalBufferRevisionsBySessionId[session.id] : nil,
-          terminalTail: streamed.isEmpty ? terminalTail : nil
-        )
-        if lastTranscriptFingerprint[session.id] == fingerprint {
-          continue
-        }
-        lastTranscriptFingerprint[session.id] = fingerprint
-        buildInputs.append(WorkRootLiveTranscriptBuildInput(
-          sessionId: session.id,
-          streamedEvents: streamed,
-          terminalTail: terminalTail
-        ))
-      }
-
-      if !buildInputs.isEmpty {
-        let builtTranscripts = await Task.detached(priority: .utility) {
-          buildInputs.map { input -> (String, [WorkChatEnvelope]) in
-            let transcript = input.streamedEvents.isEmpty
-              ? parseWorkChatTranscript(input.terminalTail)
-              : makeWorkChatTranscript(from: input.streamedEvents)
-            return (input.sessionId, transcript)
-          }
-        }.value
-        guard !Task.isCancelled, isLive, isWorkRootActive else { return }
-        for (sessionId, transcript) in builtTranscripts where liveSessionIds.contains(sessionId) {
-          transcriptCache[sessionId] = transcript
-        }
-      }
-      try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 1_800_000_000 : 900_000_000)
-    }
-  }
-
   func toggleArchive(_ session: TerminalSessionSummary) {
     Task {
       do {
@@ -431,6 +355,43 @@ extension WorkRootScreen {
     fresh.append(WorkSessionRoute(sessionId: request.sessionId))
     path = fresh
     syncService.requestedWorkSessionNavigation = nil
+  }
+
+  @MainActor
+  func handleRequestedWorkLaneNavigation(proxy: ScrollViewProxy) async {
+    guard let request = syncService.requestedWorkLaneNavigation else { return }
+    let sectionId = "lane:\(request.laneId)"
+
+    navigationMutationPending = false
+    selectedSessionTransitionId = nil
+    path = NavigationPath()
+    searchText = ""
+    selectedLaneId = "all"
+    selectedStatus = .all
+    sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
+
+    var collapsed = collapsedSectionIds
+    if collapsed.remove(sectionId) != nil {
+      collapsedSectionIdsStorage = workSerializeCollapsedSectionIds(collapsed)
+    }
+
+    if lanes.isEmpty || !lanes.contains(where: { $0.id == request.laneId }) {
+      await reload(refreshRemote: isLive)
+    }
+    scheduleSessionPresentationRebuild()
+
+    // Let the context menu dismiss, the tab switch complete, and the by-lane
+    // presentation render before asking the List to reveal the lane header.
+    try? await Task.sleep(for: .milliseconds(650))
+    // `try? await Task.sleep` returns (not throws) on cancellation, so a cancelled
+    // handler could still scroll and clear the request — bail out explicitly.
+    guard !Task.isCancelled else { return }
+    guard syncService.requestedWorkLaneNavigation?.id == request.id else { return }
+
+    withAnimation(.snappy) {
+      proxy.scrollTo(sectionId, anchor: .top)
+    }
+    syncService.requestedWorkLaneNavigation = nil
   }
 
   func deleteChatSession(_ session: TerminalSessionSummary) {

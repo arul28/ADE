@@ -284,6 +284,52 @@ describe("automationIngressService", () => {
     }
   });
 
+  it("polls the hosted repo relay with the existing GitHub token when no relay secret is configured", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      events: [],
+      nextCursor: null,
+    }), { headers: { "content-type": "application/json" } }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: {
+        updateIngressStatus: (patch: Record<string, unknown>) => updates.push(patch),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: () => null,
+        setIngressCursor: vi.fn(),
+        getIngressStatus: () => ({}),
+      } as never,
+      secretService: {
+        getSecret: () => null,
+      } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getTokenOrThrow: vi.fn(() => "ghp_user_token"),
+      },
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/arul28/ADE/events",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: "Bearer ghp_user_token",
+        }),
+      }),
+    );
+    expect(updates).toContainEqual(expect.objectContaining({
+      githubRelay: expect.objectContaining({
+        configured: true,
+        apiBaseUrl: "https://ade-github-webhook-relay.arulsharma1028.workers.dev",
+        remoteProjectId: "arul28/ADE",
+        status: "polling",
+      }),
+    }));
+  });
+
   it("deduplicates overlapping GitHub relay polls", async () => {
     let resolveFetch!: (response: Response) => void;
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>((resolve) => {

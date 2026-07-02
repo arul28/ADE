@@ -1,7 +1,7 @@
 export type RelayEnv = {
   DB: D1Database;
   GITHUB_WEBHOOK_SECRET: string;
-  RELAY_ACCESS_TOKEN: string;
+  RELAY_ACCESS_TOKEN?: string;
   EVENT_RETENTION_DAYS?: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
@@ -23,6 +23,15 @@ type CursorRow = {
   event_seq: number;
   event_id: string;
 };
+
+type GitHubRepoAccessStatus =
+  | {
+      authorized: true;
+    }
+  | {
+      authorized: false;
+      response: Response;
+    };
 
 type AppRepositoryRow = {
   repository_full_name: string;
@@ -258,8 +267,21 @@ function routeProject(pathname: string): { projectId: string; action: "webhook" 
     if (parts[3] === "webhook") return { projectId: decodeURIComponent(parts[1] ?? ""), action: "webhook" };
     if (parts[3] === "events") return { projectId: decodeURIComponent(parts[1] ?? ""), action: "events" };
   }
+  if (parts.length === 2 && parts[0] === "github" && parts[1] === "webhook") {
+    return { projectId: "github-app", action: "webhook" };
+  }
   if (parts.length === 3 && parts[0] === "github" && parts[1] === "webhook") {
     return { projectId: decodeURIComponent(parts[2] ?? ""), action: "webhook" };
+  }
+  return null;
+}
+
+function routeRepoEvents(pathname: string): { owner: string; name: string } | null {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length === 5 && parts[0] === "github" && parts[1] === "repos" && parts[4] === "events") {
+    const owner = decodeURIComponent(parts[2] ?? "").trim();
+    const name = decodeURIComponent(parts[3] ?? "").trim();
+    if (owner && name) return { owner, name };
   }
   return null;
 }
@@ -305,6 +327,41 @@ async function assertProjectRelayAuthorized(request: Request, env: RelayEnv, pro
     return json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
   return null;
+}
+
+async function assertGitHubRepoAuthorized(
+  request: Request,
+  env: RelayEnv,
+  repo: { owner: string; name: string },
+): Promise<GitHubRepoAccessStatus> {
+  const token = readBearerToken(request);
+  if (!token) {
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "GitHub auth token is required" }, { status: 401 }),
+    };
+  }
+
+  const apiBaseUrl = (env.GITHUB_API_BASE_URL?.trim() || "https://api.github.com").replace(/\/+$/, "");
+  const response = await fetch(
+    `${apiBaseUrl}/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+    {
+      headers: {
+        accept: "application/vnd.github+json",
+        authorization: `Bearer ${token}`,
+        "user-agent": "ADE GitHub Webhook Relay",
+        "x-github-api-version": "2022-11-28",
+      },
+    },
+  );
+  if (response.ok) return { authorized: true };
+
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  const message = readString(payload, "message") || `GitHub repo access check failed with HTTP ${response.status}.`;
+  return {
+    authorized: false,
+    response: json({ ok: false, error: message }, { status: response.status === 404 ? 404 : 403 }),
+  };
 }
 
 function repositoryFullName(payload: Record<string, unknown>): string | null {
@@ -876,12 +933,96 @@ async function handleListEvents(request: Request, env: RelayEnv, projectId: stri
   });
 }
 
+async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { owner: string; name: string }): Promise<Response> {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const auth = await assertGitHubRepoAuthorized(request, env, repo);
+  if (!auth.authorized) return auth.response;
+
+  const url = new URL(request.url);
+  const limit = parseLimit(url);
+  const after = url.searchParams.get("after")?.trim() || "";
+  const repoFullName = `${repo.owner}/${repo.name}`.toLowerCase();
+  let rows: GitHubEventRow[];
+  let cursorExpired = false;
+
+  if (after) {
+    const sequenceCursor = parseSequenceCursor(after);
+    if (sequenceCursor != null) {
+      rows = (await env.DB
+        .prepare(`
+          select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+                 summary, payload_json, received_at
+            from github_events
+           where repository_full_name = ? collate nocase
+             and rowid > ?
+           order by rowid desc
+           limit ?
+        `)
+        .bind(repoFullName, sequenceCursor, limit)
+        .all<GitHubEventRow>()).results ?? [];
+    } else {
+      const cursor = await env.DB
+        .prepare("select rowid as event_seq, event_id from github_events where repository_full_name = ? collate nocase and event_id = ? limit 1")
+        .bind(repoFullName, after)
+        .first<CursorRow>();
+      if (cursor) {
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+                   summary, payload_json, received_at
+              from github_events
+             where repository_full_name = ? collate nocase
+               and rowid > ?
+             order by rowid desc
+             limit ?
+          `)
+          .bind(repoFullName, cursor.event_seq, limit)
+          .all<GitHubEventRow>()).results ?? [];
+      } else {
+        cursorExpired = true;
+        rows = (await env.DB
+          .prepare(`
+            select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+                   summary, payload_json, received_at
+              from github_events
+             where repository_full_name = ? collate nocase
+             order by rowid desc
+             limit ?
+          `)
+          .bind(repoFullName, limit)
+          .all<GitHubEventRow>()).results ?? [];
+      }
+    }
+  } else {
+    rows = (await env.DB
+      .prepare(`
+        select rowid as event_seq, event_id, github_event, github_delivery, repository_full_name,
+               summary, payload_json, received_at
+          from github_events
+         where repository_full_name = ? collate nocase
+         order by rowid desc
+         limit ?
+      `)
+      .bind(repoFullName, limit)
+      .all<GitHubEventRow>()).results ?? [];
+  }
+
+  return json({
+    events: rows.map(rowToEvent),
+    nextCursor: nextCursorForRows(rows, after),
+    cursorExpired,
+  });
+}
+
 async function handleRepoStatus(request: Request, env: RelayEnv, repo: { projectId: string | null; owner: string; name: string }): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
-  const authError = repo.projectId
-    ? await assertProjectRelayAuthorized(request, env, repo.projectId)
-    : assertRelayAuthorized(request, env);
-  if (authError) return authError;
+  if (repo.projectId) {
+    const authError = await assertProjectRelayAuthorized(request, env, repo.projectId);
+    if (authError) return authError;
+  } else {
+    const auth = await assertGitHubRepoAuthorized(request, env, repo);
+    if (!auth.authorized) return auth.response;
+  }
 
   const forceRefresh = new URL(request.url).searchParams.get("refresh") === "1";
   const key = `${repo.owner}/${repo.name}`.toLowerCase();
@@ -1024,6 +1165,9 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   if (url.pathname === "/health") {
     return json({ ok: true });
   }
+
+  const repoEvents = routeRepoEvents(url.pathname);
+  if (repoEvents) return await handleListRepoEvents(request, env, repoEvents);
 
   const repoStatus = routeRepoStatus(url.pathname);
   if (repoStatus) return await handleRepoStatus(request, env, repoStatus);

@@ -384,6 +384,74 @@ enum WorkTimelinePayload: Equatable {
   case pendingModelSelection(WorkPendingModelSelectionModel)
 }
 
+struct WorkAssistantMarkdownBlockRenderModel: Identifiable, Equatable {
+  let id: String
+  let messageId: String
+  let turnId: String?
+  let itemId: String?
+  let block: WorkMarkdownBlock
+
+  static func == (lhs: WorkAssistantMarkdownBlockRenderModel, rhs: WorkAssistantMarkdownBlockRenderModel) -> Bool {
+    lhs.id == rhs.id
+      && lhs.messageId == rhs.messageId
+      && lhs.turnId == rhs.turnId
+      && lhs.itemId == rhs.itemId
+      && lhs.block == rhs.block
+  }
+}
+
+struct WorkAssistantMonospacedRenderModel: Identifiable, Equatable {
+  let id: String
+  let messageId: String
+  let turnId: String?
+  let itemId: String?
+  let text: String
+  let accessibilityLabel: String
+
+  static func == (lhs: WorkAssistantMonospacedRenderModel, rhs: WorkAssistantMonospacedRenderModel) -> Bool {
+    lhs.id == rhs.id
+      && lhs.messageId == rhs.messageId
+      && lhs.turnId == rhs.turnId
+      && lhs.itemId == rhs.itemId
+      && lhs.text == rhs.text
+      && lhs.accessibilityLabel == rhs.accessibilityLabel
+  }
+}
+
+struct WorkAssistantMessageControlsModel: Identifiable, Equatable {
+  let id: String
+  let messageId: String
+  let summaryText: String
+  let visibleLineCount: Int
+  let totalLineCount: Int
+  let canShowMore: Bool
+  let nextLineBudget: Int
+
+  static func == (lhs: WorkAssistantMessageControlsModel, rhs: WorkAssistantMessageControlsModel) -> Bool {
+    lhs.id == rhs.id
+      && lhs.messageId == rhs.messageId
+      && lhs.summaryText == rhs.summaryText
+      && lhs.visibleLineCount == rhs.visibleLineCount
+      && lhs.totalLineCount == rhs.totalLineCount
+      && lhs.canShowMore == rhs.canShowMore
+      && lhs.nextLineBudget == rhs.nextLineBudget
+  }
+}
+
+enum WorkTimelineRenderPayload: Equatable {
+  case entry(WorkTimelineEntry)
+  case assistantMarkdownBlock(WorkAssistantMarkdownBlockRenderModel)
+  case assistantMonospaced(WorkAssistantMonospacedRenderModel)
+  case assistantControls(WorkAssistantMessageControlsModel)
+}
+
+struct WorkTimelineRenderEntry: Identifiable, Equatable {
+  let id: String
+  let sourceEntryId: String
+  let timestamp: String
+  let payload: WorkTimelineRenderPayload
+}
+
 /// One member of a `WorkToolGroupModel`. Carries enough context for the
 /// collapsed mini-row (icon, title, status) and hands the full payload back
 /// when the group expands into per-entry cards.
@@ -461,6 +529,10 @@ struct WorkTurnEndMarker: Equatable {
   let turnId: String
   let time: String
   let workedDurationLabel: String
+  let status: String
+  let provider: String
+  let modelLabel: String
+  let modelId: String?
 }
 
 struct WorkTimelineEntry: Identifiable, Equatable {
@@ -471,20 +543,36 @@ struct WorkTimelineEntry: Identifiable, Equatable {
 }
 
 struct WorkSubagentSnapshot: Identifiable, Equatable {
-  enum Status: Equatable { case running, succeeded, failed }
+  enum Status: Equatable { case running, succeeded, failed, stopped }
 
   let taskId: String
+  let agentId: String?
+  let agentType: String?
+  let parentToolUseId: String?
   let description: String
   let background: Bool
   let status: Status
   let lastToolName: String?
   let latestSummary: String?
   let turnId: String?
+  let startedAt: String?
+  let updatedAt: String?
+
+  var id: String { taskId }
+}
+
+struct WorkSubagentSelection: Identifiable, Equatable {
+  let taskId: String
+  let agentId: String?
+  let name: String
+  let status: WorkSubagentSnapshot.Status
+  let background: Bool
 
   var id: String { taskId }
 }
 
 struct WorkChatTimelineSnapshot: Equatable {
+  var signature: Int
   var pendingInputs: [WorkPendingInputItem]
   var pendingSteers: [WorkPendingSteerModel]
   var toolCards: [WorkToolCardModel]
@@ -493,9 +581,14 @@ struct WorkChatTimelineSnapshot: Equatable {
   var fileChangeCards: [WorkFileChangeCardModel]
   var subagentSnapshots: [WorkSubagentSnapshot]
   var transcriptIndicatesActiveTurn: Bool
+  var transcriptLatestTurnEnded: Bool
+  var transcriptHasInterruptibleActivity: Bool
+  var latestTranscriptTimestamp: String?
+  var latestMessageAssistantId: String?
   var timeline: [WorkTimelineEntry]
 
   static let empty = WorkChatTimelineSnapshot(
+    signature: 0,
     pendingInputs: [],
     pendingSteers: [],
     toolCards: [],
@@ -504,8 +597,16 @@ struct WorkChatTimelineSnapshot: Equatable {
     fileChangeCards: [],
     subagentSnapshots: [],
     transcriptIndicatesActiveTurn: false,
+    transcriptLatestTurnEnded: false,
+    transcriptHasInterruptibleActivity: false,
+    latestTranscriptTimestamp: nil,
+    latestMessageAssistantId: nil,
     timeline: []
   )
+
+  static func == (lhs: WorkChatTimelineSnapshot, rhs: WorkChatTimelineSnapshot) -> Bool {
+    lhs.signature == rhs.signature
+  }
 }
 
 struct WorkPlanStep: Equatable, Hashable {
@@ -619,7 +720,23 @@ func workRemoveLoadedArtifactTempFile(_ content: WorkLoadedArtifactContent?) {
 }
 
 struct WorkChatEnvelope: Identifiable, Equatable {
-  var id: String { "\(sessionId):\(sequence ?? -1):\(timestamp):\(event.typeKey)" }
+  var id: String {
+    switch event {
+    case .assistantText(_, let turnId, let itemId):
+      let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      if !normalizedItemId.isEmpty {
+        return [
+          sessionId,
+          "assistant-text",
+          turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+          normalizedItemId,
+        ].joined(separator: ":")
+      }
+    default:
+      break
+    }
+    return "\(sessionId):\(sequence ?? -1):\(timestamp):\(event.typeKey)"
+  }
   let sessionId: String
   let timestamp: String
   let sequence: Int?
@@ -633,9 +750,9 @@ enum WorkChatEvent: Equatable {
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus)
   case activity(kind: String, detail: String?, turnId: String?)
   case plan(steps: [WorkPlanStep], explanation: String?, turnId: String?)
-  case subagentStarted(taskId: String, description: String, background: Bool, turnId: String?)
-  case subagentProgress(taskId: String, description: String?, summary: String, toolName: String?, turnId: String?)
-  case subagentResult(taskId: String, status: String, summary: String, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool, turnId: String?)
+  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, toolName: String?, turnId: String?)
+  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: String, summary: String, turnId: String?)
   case structuredQuestion(question: String, options: [WorkPendingQuestionOption], itemId: String, turnId: String?)
   case approvalRequest(description: String, detail: String?, itemId: String, turnId: String?)
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)

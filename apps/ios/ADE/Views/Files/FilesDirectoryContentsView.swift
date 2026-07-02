@@ -43,6 +43,7 @@ struct FilesDirectoryContentsView: View {
       } else {
         ForEach(filesSortedNodes(nodes)) { node in
           FilesTreeNodeRow(
+            workspaceId: workspace.id,
             node: node,
             transitionNamespace: transitionNamespace,
             isSelectedTransitionSource: selectedFilePath == node.path,

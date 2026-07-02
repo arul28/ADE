@@ -1,0 +1,206 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import {
+  buildRosterSnapshot,
+  type RosterBootedScope,
+  type RosterLiveSession,
+  type RosterScopeRegistry,
+} from "./rosterBuilder";
+
+const require = createRequire(import.meta.url);
+const { DatabaseSync } = require("node:sqlite") as {
+  DatabaseSync: new (p: string) => DatabaseSyncType;
+};
+
+const PROJECT_ID = "project_test_roster";
+
+let projectRoot: string;
+let worktreeDir: string;
+
+function seedDatabase(): void {
+  const adeDir = path.join(projectRoot, ".ade");
+  fs.mkdirSync(adeDir, { recursive: true });
+  worktreeDir = path.join(projectRoot, "worktree");
+  fs.mkdirSync(worktreeDir, { recursive: true });
+
+  const db = new DatabaseSync(path.join(adeDir, "ade.db"));
+  db.exec(`
+    create table lanes (
+      id text primary key,
+      name text not null,
+      color text,
+      icon text,
+      lane_type text,
+      branch_ref text,
+      worktree_path text,
+      attached_root_path text,
+      status text,
+      archived_at text,
+      created_at text
+    );
+      create table terminal_sessions (
+        id text primary key,
+        lane_id text not null,
+        chat_session_id text,
+        tool_type text,
+        title text,
+        status text,
+        last_output_preview text,
+        last_output_at text,
+        pinned integer,
+        exit_code integer,
+        started_at text,
+        archived_at text
+      );
+  `);
+
+  const insertLane = db.prepare(
+    `insert into lanes (id, name, color, icon, lane_type, branch_ref, worktree_path, attached_root_path, status, archived_at, created_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  // Primary lane (worktree == project root) — must sort first.
+  insertLane.run("lane-primary", "main", "#fff", "star", "primary", "main", null, null, "active", null, "2026-01-01T00:00:00Z");
+  // Worktree lane with an existing worktree dir.
+  insertLane.run("lane-work", "feature", null, null, "worktree", "feat", worktreeDir, null, "active", null, "2026-01-02T00:00:00Z");
+  // Archived lane — filtered out.
+  insertLane.run("lane-arch", "old", null, null, "worktree", "old", worktreeDir, null, "archived", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+  // Worktree lane whose path is gone — filtered out.
+  insertLane.run("lane-gone", "ghost", null, null, "worktree", "ghost", path.join(projectRoot, "missing"), null, "active", null, "2026-01-01T00:00:00Z");
+
+  const insertChat = db.prepare(
+    `insert into terminal_sessions (id, lane_id, chat_session_id, tool_type, title, status, last_output_preview, last_output_at, pinned, exit_code, started_at, archived_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const longPreview = "x".repeat(130);
+  // Chat in primary lane, DB says running but no live runtime → idle.
+  insertChat.run("chat-run", "lane-primary", null, "claude-chat", "Running chat", "running", longPreview, "2026-01-02T00:00:00Z", 1, null, "2026-01-02T00:00:00Z", null);
+  // Chat awaiting input (from sidecar) — attention.
+  insertChat.run("chat-await", "lane-primary", null, "cursor", "Awaiting chat", "running", "needs input", "2026-01-03T00:00:00Z", 0, null, "2026-01-03T00:00:00Z", null);
+  // Standalone CLI session without a parent chat — hidden from the hub roster.
+  insertChat.run("cli-fail", "lane-work", null, "shell", "Build", "ended", "boom", "2026-01-01T12:00:00Z", 0, 1, "2026-01-01T00:00:00Z", null);
+  // CLI session that exited cleanly → ended; owned by chat-run for child shell grouping.
+  insertChat.run("cli-end", "lane-work", "chat-run", "shell", "Lint", "ended", "ok", "2026-01-01T06:00:00Z", 0, 0, "2026-01-01T00:00:00Z", null);
+  // Legacy provider-name CLI row — desktop no longer treats raw providers as
+  // Work chat rows, so the mobile hub must not surface it as a chat either.
+  insertChat.run("legacy-codex", "lane-work", null, "codex", "Legacy Codex", "running", "legacy", "2026-01-04T00:00:00Z", 0, null, "2026-01-04T00:00:00Z", null);
+  // Archived chat — filtered out.
+  insertChat.run("chat-arch", "lane-primary", null, "claude-chat", "Old", "ended", null, "2026-01-01T00:00:00Z", 0, 0, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+  // Chat whose lane was filtered out — orphan, dropped.
+  insertChat.run("chat-orphan", "lane-gone", null, "claude-chat", "Orphan", "running", null, "2026-01-05T00:00:00Z", 0, null, "2026-01-05T00:00:00Z", null);
+
+  db.close();
+
+  // Sidecar: marks chat-await as awaiting + carries provider/model.
+  const sidecarDir = path.join(adeDir, "cache", "chat-sessions");
+  fs.mkdirSync(sidecarDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(sidecarDir, "chat-await.json"),
+    JSON.stringify({ provider: "cursor", model: "gpt-5", awaitingInput: true }),
+  );
+}
+
+const projectRegistry = {
+  list: () => [
+    { projectId: PROJECT_ID, rootPath: projectRoot, displayName: "Test", lastOpenedAt: 1_700_000_000_000 },
+  ],
+};
+
+const unbootedScopes: RosterScopeRegistry = { getIfBooted: () => null };
+
+function bootedScopes(liveSessions: RosterLiveSession[]): RosterScopeRegistry {
+  const scope: RosterBootedScope = {
+    runtime: {
+      agentChatService: { listSessions: async () => liveSessions },
+    },
+  };
+  return { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null) };
+}
+
+beforeEach(() => {
+  projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-roster-"));
+  seedDatabase();
+});
+
+afterEach(() => {
+  fs.rmSync(projectRoot, { recursive: true, force: true });
+});
+
+describe("buildRosterSnapshot", () => {
+  it("maps lanes and chats from disk for an un-booted project", async () => {
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    expect(projects).toHaveLength(1);
+    const project = projects[0]!;
+
+    expect(project.projectId).toBe(PROJECT_ID);
+    expect(project.booted).toBe(false);
+    expect(project.lastOpenedAt).toBe(new Date(1_700_000_000_000).toISOString());
+
+    // Archived + worktree-gone lanes are filtered; primary sorts first.
+    expect(project.lanes.map((lane) => lane.id)).toEqual(["lane-primary", "lane-work"]);
+
+    // Orphan, archived, standalone shell, and legacy provider CLI rows are
+    // dropped; child shells owned by a visible chat remain.
+    expect(project.chats.map((chat) => chat.id)).toEqual(["chat-await", "chat-run", "cli-end"]);
+  });
+
+  it("maps disk status truthfully (running→idle, awaiting, failed) when un-booted", async () => {
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
+
+    expect(byId.get("chat-run")!.status).toBe("idle"); // DB running, no live runtime
+    expect(byId.get("chat-await")!.status).toBe("awaiting");
+    expect(byId.get("chat-await")!.awaitingInput).toBe(true);
+    expect(byId.get("cli-end")!.status).toBe("ended");
+
+    expect(projects[0]!.runningCount).toBe(0);
+    expect(projects[0]!.attentionCount).toBe(1); // awaiting
+  });
+
+  it("hard-truncates the preview to ~120 chars and reads sidecar provider/model", async () => {
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
+
+    const preview = byId.get("chat-run")!.preview!;
+    expect(preview.length).toBe(120);
+    expect(preview.endsWith("…")).toBe(true);
+
+    expect(byId.get("chat-await")!.provider).toBe("cursor");
+    expect(byId.get("chat-await")!.model).toBe("gpt-5");
+    expect(byId.get("chat-await")!.toolType).toBe("cursor");
+    expect(byId.get("cli-end")!.chatSessionId).toBe("chat-run");
+  });
+
+  it("overlays live running/awaiting fidelity for a booted scope", async () => {
+    const scopeRegistry = bootedScopes([
+      { sessionId: "chat-run", status: "active", awaitingInput: false, provider: "claude", model: "opus" },
+    ]);
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+    const project = projects[0]!;
+    const byId = new Map(project.chats.map((chat) => [chat.id, chat]));
+
+    expect(project.booted).toBe(true);
+    expect(byId.get("chat-run")!.status).toBe("running");
+    expect(byId.get("chat-run")!.provider).toBe("claude");
+    expect(project.runningCount).toBe(1);
+  });
+
+  it("tolerates a project with no ADE database (empty lanes/chats)", async () => {
+    const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-roster-empty-"));
+    try {
+      const registry = {
+        list: () => [{ projectId: "project_empty", rootPath: emptyRoot, displayName: "Empty", lastOpenedAt: 0 }],
+      };
+      const projects = await buildRosterSnapshot({ projectRegistry: registry, scopeRegistry: unbootedScopes });
+      expect(projects).toHaveLength(1);
+      expect(projects[0]!.lanes).toEqual([]);
+      expect(projects[0]!.chats).toEqual([]);
+      expect(projects[0]!.lastOpenedAt).toBeNull();
+    } finally {
+      fs.rmSync(emptyRoot, { recursive: true, force: true });
+    }
+  });
+});

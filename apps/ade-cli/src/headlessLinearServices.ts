@@ -1009,6 +1009,8 @@ export function createHeadlessGitHubService(
       return fetchGitHubAppInstallationStatus({
         repo,
         secretReader: options.githubRelaySecretReader,
+        forceRefresh: args.forceRefresh === true,
+        githubToken: getToken(),
       });
     },
     async getRepoOrThrow() {

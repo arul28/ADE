@@ -51,6 +51,7 @@ import {
   SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
   type SyncHostService,
   type SyncProjectCatalogProvider,
+  type SyncRosterProvider,
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -127,6 +128,7 @@ type SyncServiceArgs = {
   forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
+  rosterProvider?: SyncRosterProvider;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
@@ -217,7 +219,11 @@ function migrateLegacySyncSecretFile(args: {
   }
 }
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
-const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
+function isChatToolType(toolType: string | null | undefined): boolean {
+  const normalized = toolType?.trim().toLowerCase();
+  if (!normalized) return false;
+  return normalized === "cursor" || normalized.endsWith("-chat");
+}
 const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 13;
 const SYNC_HOST_PORT_RETRY_WINDOW = 8999 - DEFAULT_SYNC_HOST_PORT;
 const LEGACY_SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + LEGACY_SYNC_HOST_PORT_RETRY_WINDOW;
@@ -722,6 +728,7 @@ export function createSyncService(args: SyncServiceArgs) {
       runtimeVersion: args.appVersion ?? "",
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
+      rosterProvider: args.rosterProvider,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
       onStateChanged: () => {
@@ -1006,8 +1013,11 @@ export function createSyncService(args: SyncServiceArgs) {
       status: "running",
       limit: 500,
     })) {
-      if (CHAT_TOOL_TYPES.has(session.toolType ?? "")) {
+      if (isChatToolType(session.toolType)) {
         const chat = chatSummaries.get(session.id);
+        if (chat && chat.status !== "active") {
+          continue;
+        }
         const isCto = chat?.identityKey === "cto";
         blockers.push({
           kind: "chat_runtime",

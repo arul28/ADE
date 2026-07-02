@@ -1055,6 +1055,8 @@ export type AgentChatTranscriptEntry = {
   displayText?: string;
   timestamp: string;
   turnId?: string;
+  messageId?: string;
+  itemId?: string;
 };
 
 export type AgentChatSubagentSnapshot = {

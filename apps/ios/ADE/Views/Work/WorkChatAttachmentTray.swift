@@ -1,8 +1,10 @@
 import SwiftUI
+import ImageIO
 import UIKit
 
 private let workChatRemoteImageMaxBytes = 5 * 1024 * 1024
 private let workChatRemoteImageTimeoutSeconds: TimeInterval = 12
+private let workChatAttachmentPreviewMinimumPixels: CGFloat = 96
 
 private let workChatRemoteImageSession: URLSession = {
   let configuration = URLSessionConfiguration.ephemeral
@@ -128,6 +130,7 @@ private struct WorkChatAttachmentChip: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
+  @Environment(\.displayScale) private var displayScale
 
   @State private var previewImage: UIImage?
   @State private var loadFailed = false
@@ -200,12 +203,13 @@ private struct WorkChatAttachmentChip: View {
   @MainActor
   private func loadPreviewIfNeeded() async {
     guard workChatAttachmentIsImage(attachment) else { return }
+    let maxPixelSize = max(workChatAttachmentPreviewMinimumPixels, ceil(size * displayScale))
     if attachment.type == "image-url", let urlString = attachment.url,
        let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),
        scheme == "http" || scheme == "https" {
       do {
         let data = try await workChatRemoteImageData(from: url)
-        if let image = UIImage(data: data) {
+        if let image = WorkChatAttachmentImagePreview.downsampledImage(data: data, maxPixelSize: maxPixelSize) {
           previewImage = image
           loadFailed = false
           return
@@ -237,15 +241,16 @@ private struct WorkChatAttachmentChip: View {
         return
       }
       let blob = try await syncService.readFile(workspaceId: workspace.id, path: relativePath)
-      if let dataUrl = blob.dataUrl, let image = workChatUIImage(fromDataUrl: dataUrl) {
+      if let dataUrl = blob.dataUrl,
+         let image = WorkChatAttachmentImagePreview.image(fromDataUrl: dataUrl, maxPixelSize: maxPixelSize) {
         previewImage = image
         loadFailed = false
         return
       }
       if blob.isBinary,
          !blob.content.isEmpty,
-         let data = Data(base64Encoded: blob.content),
-         let image = UIImage(data: data) {
+         let data = WorkChatAttachmentImagePreview.base64DecodedImageData(blob.content, maxBytes: workChatRemoteImageMaxBytes),
+         let image = WorkChatAttachmentImagePreview.downsampledImage(data: data, maxPixelSize: maxPixelSize) {
         previewImage = image
         loadFailed = false
         return
@@ -313,9 +318,38 @@ extension EnvironmentValues {
   }
 }
 
-private func workChatUIImage(fromDataUrl dataUrl: String) -> UIImage? {
-  guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
-  let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
-  guard let data = Data(base64Encoded: base64) else { return nil }
-  return UIImage(data: data)
+enum WorkChatAttachmentImagePreview {
+  static func base64DecodedImageData(_ base64: String, maxBytes: Int) -> Data? {
+    let encodedBytes = base64.utf8.count
+    let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
+    guard decodedUpperBound <= maxBytes,
+          let data = Data(base64Encoded: base64),
+          data.count <= maxBytes else {
+      return nil
+    }
+    return data
+  }
+
+  static func downsampledImage(data: Data, maxPixelSize: CGFloat) -> UIImage? {
+    guard !data.isEmpty, maxPixelSize > 0 else { return nil }
+    let sourceOptions = [
+      kCGImageSourceShouldCache: false
+    ] as CFDictionary
+    guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else { return nil }
+    let thumbnailOptions = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceShouldCacheImmediately: true,
+      kCGImageSourceThumbnailMaxPixelSize: Int(ceil(maxPixelSize))
+    ] as CFDictionary
+    guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else { return nil }
+    return UIImage(cgImage: cgImage)
+  }
+
+  static func image(fromDataUrl dataUrl: String, maxPixelSize: CGFloat) -> UIImage? {
+    guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
+    let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
+    guard let data = base64DecodedImageData(base64, maxBytes: workChatRemoteImageMaxBytes) else { return nil }
+    return downsampledImage(data: data, maxPixelSize: maxPixelSize)
+  }
 }

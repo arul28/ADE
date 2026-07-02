@@ -2,82 +2,788 @@ import SwiftUI
 import UIKit
 import AVKit
 
+struct WorkTimelineIncrementalCache {
+  fileprivate var transcriptCount = 0
+  fileprivate var transcriptHeadKey: String?
+  fileprivate var transcriptTailKey: String?
+  fileprivate var fallbackSignature = 0
+  fileprivate var artifactSignature = 0
+  fileprivate var localEchoSignature = 0
+  fileprivate var localEchoCount = 0
+  fileprivate var localEchoTailId: String?
+
+  mutating func reset() {
+    transcriptCount = 0
+    transcriptHeadKey = nil
+    transcriptTailKey = nil
+    fallbackSignature = 0
+    artifactSignature = 0
+    localEchoSignature = 0
+    localEchoCount = 0
+    localEchoTailId = nil
+  }
+
+  mutating func record(
+    transcript: [WorkChatEnvelope],
+    fallbackEntries: [AgentChatTranscriptEntry],
+    artifacts: [ComputerUseArtifactSummary],
+    localEchoMessages: [WorkLocalEchoMessage]
+  ) {
+    transcriptCount = transcript.count
+    transcriptHeadKey = transcript.first.map(workIncrementalEnvelopeKey)
+    transcriptTailKey = transcript.last.map(workIncrementalEnvelopeKey)
+    fallbackSignature = workIncrementalFallbackSignature(fallbackEntries, transcriptIsEmpty: transcript.isEmpty)
+    artifactSignature = workIncrementalArtifactSignature(artifacts)
+    localEchoSignature = workIncrementalLocalEchoSignature(localEchoMessages)
+    localEchoCount = localEchoMessages.count
+    localEchoTailId = localEchoMessages.last?.id
+  }
+}
+
+private actor WorkTimelineSnapshotBuildCoordinator {
+  static let shared = WorkTimelineSnapshotBuildCoordinator()
+
+  private var latestRequestIdsByScope: [String: Int] = [:]
+
+  func reserve(scope: String) -> Int {
+    let nextRequestId = (latestRequestIdsByScope[scope] ?? 0) + 1
+    latestRequestIdsByScope[scope] = nextRequestId
+    return nextRequestId
+  }
+
+  func build(
+    scope: String,
+    requestId: Int,
+    transcript: [WorkChatEnvelope],
+    fallbackEntries: [AgentChatTranscriptEntry],
+    artifacts: [ComputerUseArtifactSummary],
+    localEchoMessages: [WorkLocalEchoMessage]
+  ) -> WorkChatTimelineSnapshot? {
+    guard latestRequestIdsByScope[scope] == requestId, !Task.isCancelled else { return nil }
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    )
+    guard latestRequestIdsByScope[scope] == requestId, !Task.isCancelled else { return nil }
+    return snapshot
+  }
+}
+
+private func workSnapshotByApplyingAssistantTextTail(
+  to snapshot: WorkChatTimelineSnapshot,
+  cache: WorkTimelineIncrementalCache,
+  transcript: [WorkChatEnvelope],
+  fallbackEntries: [AgentChatTranscriptEntry],
+  artifacts: [ComputerUseArtifactSummary],
+  localEchoMessages: [WorkLocalEchoMessage]
+) -> WorkChatTimelineSnapshot? {
+  guard !snapshot.timeline.isEmpty,
+        cache.transcriptCount > 0,
+        !transcript.isEmpty,
+        cache.transcriptHeadKey == transcript.first.map(workIncrementalEnvelopeKey),
+        cache.fallbackSignature == workIncrementalFallbackSignature(fallbackEntries, transcriptIsEmpty: transcript.isEmpty),
+        cache.artifactSignature == workIncrementalArtifactSignature(artifacts),
+        cache.localEchoSignature == workIncrementalLocalEchoSignature(localEchoMessages)
+  else { return nil }
+
+  let candidateEnvelopes: ArraySlice<WorkChatEnvelope>
+  if transcript.count == cache.transcriptCount {
+    guard cache.transcriptTailKey == transcript.last.map(workIncrementalEnvelopeKey),
+          let last = transcript.last,
+          workIncrementalEnvelopeCanApplyWithoutFullRebuild(last)
+    else { return nil }
+    candidateEnvelopes = transcript[(transcript.count - 1)..<transcript.count]
+  } else if transcript.count > cache.transcriptCount {
+    let previousTailIndex = cache.transcriptCount - 1
+    guard transcript.indices.contains(previousTailIndex),
+          workIncrementalEnvelopeKey(transcript[previousTailIndex]) == cache.transcriptTailKey
+    else { return nil }
+    candidateEnvelopes = transcript[cache.transcriptCount..<transcript.count]
+    guard !candidateEnvelopes.isEmpty,
+          candidateEnvelopes.allSatisfy(workIncrementalEnvelopeCanApplyWithoutFullRebuild),
+          workIncrementalEnvelopeOrderIsAppendOnly(previous: transcript[previousTailIndex], suffix: candidateEnvelopes)
+    else { return nil }
+  } else {
+    return nil
+  }
+
+  var timeline = snapshot.timeline
+  for envelope in candidateEnvelopes {
+    guard workIncrementalApplyEnvelope(envelope, to: &timeline) else {
+      return nil
+    }
+  }
+  timeline = workIncrementalSortTimeline(timeline)
+
+  var nextSnapshot = snapshot
+  nextSnapshot.timeline = timeline
+  nextSnapshot.latestTranscriptTimestamp = workIncrementalLatestTimestamp(
+    existing: snapshot.latestTranscriptTimestamp,
+    envelopes: candidateEnvelopes
+  )
+  nextSnapshot.latestMessageAssistantId = workIncrementalLatestAssistantId(timeline)
+  nextSnapshot.transcriptIndicatesActiveTurn = true
+  nextSnapshot.transcriptLatestTurnEnded = false
+  // Keep interruptibility consistent with the full-rebuild path (which derives
+  // it from the transcript). Otherwise the Stop control can stay hidden while a
+  // newly-streaming assistant response begins over a previously-idle snapshot.
+  nextSnapshot.transcriptHasInterruptibleActivity =
+    WorkActivityIndicator.derivePresentation(from: transcript) != nil
+  nextSnapshot.signature = workIncrementalSnapshotSignature(
+    base: snapshot.signature,
+    transcript: transcript,
+    timeline: timeline
+  )
+  return nextSnapshot
+}
+
+private func workSnapshotByApplyingLocalEchoTail(
+  to snapshot: WorkChatTimelineSnapshot,
+  cache: WorkTimelineIncrementalCache,
+  transcript: [WorkChatEnvelope],
+  fallbackEntries: [AgentChatTranscriptEntry],
+  artifacts: [ComputerUseArtifactSummary],
+  localEchoMessages: [WorkLocalEchoMessage]
+) -> WorkChatTimelineSnapshot? {
+  guard !snapshot.timeline.isEmpty,
+        cache.transcriptCount == transcript.count,
+        cache.transcriptHeadKey == transcript.first.map(workIncrementalEnvelopeKey),
+        cache.transcriptTailKey == transcript.last.map(workIncrementalEnvelopeKey),
+        cache.fallbackSignature == workIncrementalFallbackSignature(fallbackEntries, transcriptIsEmpty: transcript.isEmpty),
+        cache.artifactSignature == workIncrementalArtifactSignature(artifacts),
+        localEchoMessages.count > cache.localEchoCount
+  else { return nil }
+
+  if cache.localEchoCount > 0 {
+    let previousEchoIndex = cache.localEchoCount - 1
+    guard localEchoMessages.indices.contains(previousEchoIndex),
+          localEchoMessages[previousEchoIndex].id == cache.localEchoTailId
+    else { return nil }
+  }
+
+  var timeline = snapshot.timeline
+  for echo in localEchoMessages[cache.localEchoCount..<localEchoMessages.count] {
+    let message = WorkChatMessage(
+      id: echo.id,
+      role: "user",
+      markdown: echo.text,
+      timestamp: echo.timestamp,
+      turnId: nil,
+      itemId: nil,
+      deliveryState: echo.deliveryState
+    )
+    timeline.append(WorkTimelineEntry(
+      id: "echo-\(echo.id)",
+      timestamp: echo.timestamp,
+      rank: 3_000 + workIncrementalEchoCount(in: timeline),
+      payload: .message(message)
+    ))
+  }
+  timeline = workIncrementalSortTimeline(timeline)
+
+  var nextSnapshot = snapshot
+  nextSnapshot.timeline = timeline
+  nextSnapshot.latestTranscriptTimestamp = workIncrementalLatestTimestamp(
+    existing: snapshot.latestTranscriptTimestamp,
+    localEchoMessages: localEchoMessages[cache.localEchoCount..<localEchoMessages.count]
+  )
+  nextSnapshot.signature = workIncrementalSnapshotSignature(
+    base: snapshot.signature,
+    transcript: transcript,
+    timeline: timeline
+  )
+  return nextSnapshot
+}
+
+private func workIncrementalApplyEnvelope(
+  _ envelope: WorkChatEnvelope,
+  to timeline: inout [WorkTimelineEntry]
+) -> Bool {
+  if workIncrementalEnvelopeIsLiveMetadata(envelope) {
+    return true
+  }
+  if case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed) = envelope.event {
+    guard deliveryState != "queued" || steerId == nil else { return false }
+    workIncrementalRemoveDuplicateEchoes(matching: text, from: &timeline)
+    let message = WorkChatMessage(
+      id: envelope.id,
+      role: "user",
+      markdown: text,
+      timestamp: envelope.timestamp,
+      turnId: turnId,
+      itemId: nil,
+      steerId: steerId,
+      deliveryState: deliveryState,
+      processed: processed,
+      attachments: attachments
+    )
+    timeline.append(WorkTimelineEntry(
+      id: "message-\(message.id)",
+      timestamp: envelope.timestamp,
+      rank: workIncrementalNextMessageRank(in: timeline),
+      payload: .message(message)
+    ))
+    return true
+  }
+
+  guard case .assistantText(let text, let turnId, let itemId) = envelope.event else {
+    return false
+  }
+
+  if let targetIndex = workIncrementalAssistantTargetIndex(
+    in: timeline,
+    turnId: turnId,
+    itemId: itemId,
+    envelopeId: envelope.id
+  ) {
+    guard case .message(var message) = timeline[targetIndex].payload else { return false }
+    message.markdown = mergeWorkStreamingText(message.markdown, text)
+    message.assistantPreview = nil
+    timeline[targetIndex] = WorkTimelineEntry(
+      id: timeline[targetIndex].id,
+      timestamp: timeline[targetIndex].timestamp,
+      rank: timeline[targetIndex].rank,
+      payload: .message(message)
+    )
+    return true
+  }
+
+  let message = WorkChatMessage(
+    id: envelope.id,
+    role: "assistant",
+    markdown: text,
+    timestamp: envelope.timestamp,
+    turnId: turnId,
+    itemId: itemId
+  )
+  timeline.append(WorkTimelineEntry(
+    id: "message-\(message.id)",
+    timestamp: envelope.timestamp,
+    rank: workIncrementalNextMessageRank(in: timeline),
+    payload: .message(message)
+  ))
+  return true
+}
+
+private func workIncrementalAssistantTargetIndex(
+  in timeline: [WorkTimelineEntry],
+  turnId: String?,
+  itemId: String?,
+  envelopeId: String
+) -> Int? {
+  let entryId = "message-\(envelopeId)"
+  if let exactIndex = timeline.indices.last(where: { timeline[$0].id == entryId }) {
+    return exactIndex
+  }
+
+  let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !normalizedItemId.isEmpty,
+     let itemIndex = timeline.indices.reversed().first(where: { index in
+       guard case .message(let message) = timeline[index].payload,
+             message.role == "assistant",
+             (message.itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "") == normalizedItemId
+       else { return false }
+       return workIncrementalStableItemTurnIdsMatch(message.turnId, turnId)
+     }) {
+    return itemIndex
+  }
+
+  guard normalizedItemId.isEmpty,
+        let lastMessageIndex = timeline.indices.reversed().first(where: { index in
+          if case .message = timeline[index].payload { return true }
+          return false
+        }),
+        case .message(let message) = timeline[lastMessageIndex].payload,
+        message.role == "assistant",
+        workIncrementalTurnIdsMatch(message.turnId, turnId)
+  else { return nil }
+  return lastMessageIndex
+}
+
+private func workIncrementalTurnIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return left == right
+}
+
+private func workIncrementalStableItemTurnIdsMatch(_ lhs: String?, _ rhs: String?) -> Bool {
+  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return left.isEmpty || right.isEmpty || left == right
+}
+
+private func workIncrementalEnvelopeIsAssistantText(_ envelope: WorkChatEnvelope) -> Bool {
+  if case .assistantText = envelope.event { return true }
+  return false
+}
+
+private func workIncrementalEnvelopeCanApplyWithoutFullRebuild(_ envelope: WorkChatEnvelope) -> Bool {
+  if workIncrementalEnvelopeIsAssistantText(envelope) { return true }
+  if workIncrementalEnvelopeIsLiveMetadata(envelope) { return true }
+  if case .userMessage(_, _, _, let steerId, let deliveryState, _) = envelope.event {
+    return deliveryState != "queued" || steerId == nil
+  }
+  return false
+}
+
+private func workIncrementalEnvelopeIsLiveMetadata(_ envelope: WorkChatEnvelope) -> Bool {
+  switch envelope.event {
+  case .activity, .tokens, .toolUseSummary:
+    return true
+  case .reasoning:
+    // Reasoning cards can be materialized by the terminal rebuild. Updating
+    // them for every live token is the same pathological full-scan shape as
+    // assistant text, but with less user value while the answer is still moving.
+    return true
+  case .status(let turnStatus, let message, _):
+    let normalizedStatus = turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let normalizedMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard normalizedMessage.isEmpty || normalizedMessage == normalizedStatus else {
+      return false
+    }
+    switch normalizedStatus {
+    case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+      return true
+    default:
+      return false
+    }
+  default:
+    return false
+  }
+}
+
+private func workIncrementalEnvelopeOrderIsAppendOnly(
+  previous: WorkChatEnvelope,
+  suffix: ArraySlice<WorkChatEnvelope>
+) -> Bool {
+  var last = previous
+  for envelope in suffix {
+    if envelope.timestamp < last.timestamp { return false }
+    if envelope.timestamp == last.timestamp,
+       (envelope.sequence ?? 0) < (last.sequence ?? 0) {
+      return false
+    }
+    last = envelope
+  }
+  return true
+}
+
+private func workIncrementalSortTimeline(_ timeline: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  timeline.sorted { lhs, rhs in
+    if lhs.timestamp == rhs.timestamp {
+      return lhs.rank < rhs.rank
+    }
+    return lhs.timestamp < rhs.timestamp
+  }
+}
+
+private func workIncrementalNextMessageRank(in timeline: [WorkTimelineEntry]) -> Int {
+  let messageCount = timeline.reduce(0) { count, entry in
+    if case .message = entry.payload { return count + 1 }
+    return count
+  }
+  return messageCount
+}
+
+private func workIncrementalEchoCount(in timeline: [WorkTimelineEntry]) -> Int {
+  timeline.reduce(0) { count, entry in
+    entry.id.hasPrefix("echo-") ? count + 1 : count
+  }
+}
+
+private func workIncrementalRemoveDuplicateEchoes(matching text: String, from timeline: inout [WorkTimelineEntry]) {
+  let normalized = normalizedWorkLocalEchoText(text)
+  guard !normalized.isEmpty else { return }
+  // Remove only ONE matching echo: if the user sent the same text twice before
+  // canonical sync caught up, confirming the first must not drop the second echo.
+  if let duplicateIndex = timeline.firstIndex(where: { entry in
+    guard entry.id.hasPrefix("echo-"),
+          case .message(let message) = entry.payload,
+          message.role == "user"
+    else { return false }
+    return normalizedWorkLocalEchoText(message.markdown) == normalized
+  }) {
+    timeline.remove(at: duplicateIndex)
+  }
+}
+
+private func workIncrementalLatestTimestamp(
+  existing: String?,
+  envelopes: ArraySlice<WorkChatEnvelope>
+) -> String? {
+  var latest = existing
+  for envelope in envelopes where !envelope.timestamp.isEmpty {
+    if latest.map({ envelope.timestamp > $0 }) ?? true {
+      latest = envelope.timestamp
+    }
+  }
+  return latest
+}
+
+private func workIncrementalLatestTimestamp(
+  existing: String?,
+  localEchoMessages: ArraySlice<WorkLocalEchoMessage>
+) -> String? {
+  var latest = existing
+  for echo in localEchoMessages where !echo.timestamp.isEmpty {
+    if latest.map({ echo.timestamp > $0 }) ?? true {
+      latest = echo.timestamp
+    }
+  }
+  return latest
+}
+
+private func workIncrementalLatestAssistantId(_ timeline: [WorkTimelineEntry]) -> String? {
+  for entry in timeline.reversed() {
+    guard case .message(let message) = entry.payload else { continue }
+    if message.role == "assistant" {
+      return message.id
+    }
+  }
+  return nil
+}
+
+private func workIncrementalEnvelopeKey(_ envelope: WorkChatEnvelope) -> String {
+  workChatEnvelopeMergeKey(envelope)
+}
+
+private func workIncrementalSnapshotSignature(
+  base: Int,
+  transcript: [WorkChatEnvelope],
+  timeline: [WorkTimelineEntry]
+) -> Int {
+  var hasher = Hasher()
+  hasher.combine("assistant-tail")
+  hasher.combine(base)
+  hasher.combine(transcript.count)
+  if let tail = transcript.last {
+    hasher.combine(workIncrementalEnvelopeKey(tail))
+    hasher.combine(tail.timestamp)
+    hasher.combine(tail.sequence)
+    if case .assistantText(let text, let turnId, let itemId) = tail.event {
+      hasher.combine(text.utf8.count)
+      hasher.combine(text.hashValue)
+      hasher.combine(turnId)
+      hasher.combine(itemId)
+    }
+  }
+  if let latestAssistantId = workIncrementalLatestAssistantId(timeline) {
+    hasher.combine(latestAssistantId)
+  }
+  return hasher.finalize()
+}
+
+private func workIncrementalFallbackSignature(_ fallbackEntries: [AgentChatTranscriptEntry], transcriptIsEmpty: Bool) -> Int {
+  guard transcriptIsEmpty else { return 0 }
+  var hasher = Hasher()
+  hasher.combine(fallbackEntries.count)
+  for entry in fallbackEntries {
+    hasher.combine(entry.id)
+    hasher.combine(entry.role)
+    hasher.combine(entry.timestamp)
+    hasher.combine(entry.text.utf8.count)
+    hasher.combine(entry.text.hashValue)
+    hasher.combine(entry.turnId)
+    hasher.combine(entry.messageId)
+    hasher.combine(entry.itemId)
+  }
+  return hasher.finalize()
+}
+
+private func workIncrementalArtifactSignature(_ artifacts: [ComputerUseArtifactSummary]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(artifacts.count)
+  for artifact in artifacts {
+    hasher.combine(artifact.id)
+    hasher.combine(artifact.artifactKind)
+    hasher.combine(artifact.title)
+    hasher.combine(artifact.uri)
+    hasher.combine(artifact.createdAt)
+    hasher.combine(artifact.reviewState)
+    hasher.combine(artifact.workflowState)
+  }
+  return hasher.finalize()
+}
+
+private func workIncrementalLocalEchoSignature(_ localEchoMessages: [WorkLocalEchoMessage]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(localEchoMessages.count)
+  for echo in localEchoMessages {
+    hasher.combine(echo.id)
+    hasher.combine(echo.text.utf8.count)
+    hasher.combine(echo.text.hashValue)
+    hasher.combine(echo.timestamp)
+    hasher.combine(echo.deliveryState)
+  }
+  return hasher.finalize()
+}
+
 extension WorkChatSessionView {
   @MainActor
+  func prepareScrollStateForCurrentSessionIfNeeded(reason: String) {
+    guard scrollStateSessionId != session.id else { return }
+    resetScrollStateForCurrentSession(reason: reason)
+  }
+
+  @MainActor
+  func resetScrollStateForCurrentSession(reason: String) {
+    scrollStateSessionId = session.id
+    visibleTimelineCount = workTimelinePageSize
+    isNearBottom = true
+    unreadBelowCount = 0
+    lastTimelineTailId = nil
+    scrollMetrics = WorkChatScrollMetrics()
+    timelineDragActive = false
+    bottomStickinessReleasedByUser = false
+    pendingInitialBottomPinSessionId = session.id
+    cancelLatestPinTask()
+    timelineIncrementalCache.reset()
+  }
+
+  @MainActor
+  func resolvePendingInitialBottomPinAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
+    guard pendingInitialBottomPinSessionId == session.id else { return }
+    guard let tailId = timeline.last?.id, !tailId.isEmpty else { return }
+    guard visibleTimeline.contains(where: { $0.id == tailId }) else {
+      return
+    }
+
+    pendingInitialBottomPinSessionId = nil
+    forcePinToLatestAfterLayout(proxy, reason: "initial-\(reason)")
+  }
+
+  @MainActor
   func scheduleTimelineSnapshotRebuild() {
-    timelineRebuildTask?.cancel()
+    resetTimelineSourceIfNeeded()
+    guard !clearTimelineSnapshotForEmptyInputsIfNeeded() else { return }
+
     timelineRebuildGeneration += 1
-    let generation = timelineRebuildGeneration
-    let transcriptSnapshot = transcript
-    let fallbackSnapshot = fallbackEntries
-    let artifactSnapshot = artifacts
-    let echoSnapshot = localEchoMessages
-    workChatScrollLog.notice(
-      "snapshot_rebuild_scheduled session=\(session.id, privacy: .public) generation=\(generation, privacy: .public) transcript=\(transcriptSnapshot.count, privacy: .public) fallback=\(fallbackSnapshot.count, privacy: .public) artifacts=\(artifactSnapshot.count, privacy: .public) localEcho=\(echoSnapshot.count, privacy: .public) currentTimeline=\(timelineSnapshot.timeline.count, privacy: .public) currentTail=\(timelineSnapshot.timeline.last?.id ?? "none", privacy: .public)"
-    )
+    timelineRebuildPending = true
+    guard timelineRebuildTask == nil else { return }
 
     // .userInitiated, not .utility: this rebuild feeds the visible streaming
     // transcript, and utility-priority tasks get starved while SwiftUI is
     // busy — which showed up as multi-second delta-to-screen latency.
     //
-    // One-frame debounce: fold the multiple onChange triggers from a single
-    // refresh, but don't let the transcript visibly outrun the bottom lock.
-    timelineRebuildTask = Task.detached(priority: .userInitiated) {
-      try? await Task.sleep(for: .milliseconds(16))
-      guard !Task.isCancelled else { return }
-      let nextSnapshot = buildWorkChatTimelineSnapshot(
-        transcript: transcriptSnapshot,
-        fallbackEntries: fallbackSnapshot,
-        artifacts: artifactSnapshot,
-        localEchoMessages: echoSnapshot
-      )
-      await MainActor.run {
-        guard generation == timelineRebuildGeneration, !Task.isCancelled else { return }
-        let previousTimelineCount = timelineSnapshot.timeline.count
-        let previousTailId = timelineSnapshot.timeline.last?.id
-        let snapshotChanged = nextSnapshot != timelineSnapshot
-        workChatScrollLog.notice(
-          "snapshot_rebuild_applied session=\(session.id, privacy: .public) generation=\(generation, privacy: .public) changed=\(snapshotChanged, privacy: .public) oldTimeline=\(previousTimelineCount, privacy: .public) newTimeline=\(nextSnapshot.timeline.count, privacy: .public) oldTail=\(previousTailId ?? "none", privacy: .public) newTail=\(nextSnapshot.timeline.last?.id ?? "none", privacy: .public) transcript=\(transcriptSnapshot.count, privacy: .public) fallback=\(fallbackSnapshot.count, privacy: .public)"
-        )
-        if nextSnapshot != timelineSnapshot {
+    // Coalesced worker: cancelling a detached task does not stop it once it is
+    // already inside the expensive transcript fold. Keep at most one fold
+    // running and loop only when a newer delta arrived while it was building.
+    timelineRebuildTask = Task { @MainActor in
+      while !Task.isCancelled {
+        try? await Task.sleep(for: .milliseconds(90))
+        guard !Task.isCancelled else { break }
+
+        timelineRebuildPending = false
+        let generation = timelineRebuildGeneration
+        let transcriptSnapshot = transcript
+        let fallbackSnapshot = fallbackEntries
+        let artifactSnapshot = artifacts
+        let echoSnapshot = localEchoMessages
+        let buildScope = timelineBuildScopeKey
+
+        if applyIncrementalTimelineSnapshotIfPossible(
+          transcript: transcriptSnapshot,
+          fallbackEntries: fallbackSnapshot,
+          artifacts: artifactSnapshot,
+          localEchoMessages: echoSnapshot
+        ) {
+          if timelineRebuildPending {
+            continue
+          }
+          timelineRebuildTask = nil
+          break
+        }
+
+        let requestId = await WorkTimelineSnapshotBuildCoordinator.shared.reserve(scope: buildScope)
+        guard let nextSnapshot = await WorkTimelineSnapshotBuildCoordinator.shared.build(
+          scope: buildScope,
+          requestId: requestId,
+          transcript: transcriptSnapshot,
+          fallbackEntries: fallbackSnapshot,
+          artifacts: artifactSnapshot,
+          localEchoMessages: echoSnapshot
+        ) else { continue }
+
+        guard !Task.isCancelled else { break }
+        guard generation == timelineRebuildGeneration else { continue }
+        if nextSnapshot != timelineSnapshot || (timelineSnapshot.timeline.isEmpty && !nextSnapshot.timeline.isEmpty) {
           timelineSnapshot = nextSnapshot
         }
+        timelineIncrementalCache.record(
+          transcript: transcriptSnapshot,
+          fallbackEntries: fallbackSnapshot,
+          artifacts: artifactSnapshot,
+          localEchoMessages: echoSnapshot
+        )
         refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
+        if isNearBottom, !timelineDragActive {
+          timelineLayoutPinToken &+= 1
+        }
+
+        if timelineRebuildPending {
+          continue
+        }
         timelineRebuildTask = nil
+        break
       }
     }
   }
 
+  var timelineBuildScopeKey: String {
+    [
+      timelineBuildScopeId,
+      session.id,
+      selectedSubagentTaskId ?? "main"
+    ].joined(separator: "|")
+  }
+
+  var timelineInputRecoveryKey: String {
+    [
+      session.id,
+      selectedSubagentTaskId ?? "main",
+      String(transcriptRenderSignature),
+      String(fallbackEntriesRenderSignature),
+      String(artifactsRenderSignature),
+      String(localEchoMessagesRenderSignature)
+    ].joined(separator: "|")
+  }
+
+  @MainActor
+  func recoverEmptyTimelineSnapshotIfNeeded() {
+    guard timelineSnapshot.timeline.isEmpty else { return }
+    guard !transcript.isEmpty || !fallbackEntries.isEmpty || !localEchoMessages.isEmpty || !artifacts.isEmpty else {
+      return
+    }
+
+    cancelScheduledTimelineSnapshotRebuild()
+    rebuildTimelineSnapshot()
+  }
+
   @MainActor
   func cancelScheduledTimelineSnapshotRebuild() {
-    if timelineRebuildTask != nil {
-      workChatScrollLog.notice(
-        "snapshot_rebuild_cancelled session=\(session.id, privacy: .public) generation=\(timelineRebuildGeneration, privacy: .public) timeline=\(timelineSnapshot.timeline.count, privacy: .public) tail=\(timelineSnapshot.timeline.last?.id ?? "none", privacy: .public)"
-      )
-    }
     timelineRebuildTask?.cancel()
     timelineRebuildTask = nil
+    timelineRebuildPending = false
+    cancelLatestPinTask()
+  }
+
+  @MainActor
+  func applyIncrementalTimelineSnapshotIfPossible(
+    transcript: [WorkChatEnvelope],
+    fallbackEntries: [AgentChatTranscriptEntry],
+    artifacts: [ComputerUseArtifactSummary],
+    localEchoMessages: [WorkLocalEchoMessage]
+  ) -> Bool {
+    let nextSnapshot = workSnapshotByApplyingLocalEchoTail(
+      to: timelineSnapshot,
+      cache: timelineIncrementalCache,
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    ) ?? workSnapshotByApplyingAssistantTextTail(
+      to: timelineSnapshot,
+      cache: timelineIncrementalCache,
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    )
+    guard let nextSnapshot else {
+      return false
+    }
+
+    timelineSnapshot = nextSnapshot
+    timelineIncrementalCache.record(
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    )
+    refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
+    if isNearBottom, !timelineDragActive {
+      timelineLayoutPinToken &+= 1
+    }
+    return true
   }
 
   @MainActor
   func rebuildTimelineSnapshot() {
+    resetTimelineSourceIfNeeded()
+    guard !clearTimelineSnapshotForEmptyInputsIfNeeded() else { return }
+
     let nextSnapshot = buildWorkChatTimelineSnapshot(
       transcript: transcript,
       fallbackEntries: fallbackEntries,
       artifacts: artifacts,
       localEchoMessages: localEchoMessages
     )
-    guard nextSnapshot != timelineSnapshot else {
-      workChatScrollLog.notice(
-        "snapshot_rebuild_sync_unchanged session=\(session.id, privacy: .public) timeline=\(timelineSnapshot.timeline.count, privacy: .public) tail=\(timelineSnapshot.timeline.last?.id ?? "none", privacy: .public)"
-      )
-      return
-    }
-    workChatScrollLog.notice(
-      "snapshot_rebuild_sync_applied session=\(session.id, privacy: .public) oldTimeline=\(timelineSnapshot.timeline.count, privacy: .public) newTimeline=\(nextSnapshot.timeline.count, privacy: .public) oldTail=\(timelineSnapshot.timeline.last?.id ?? "none", privacy: .public) newTail=\(nextSnapshot.timeline.last?.id ?? "none", privacy: .public)"
-    )
+    guard nextSnapshot != timelineSnapshot || (timelineSnapshot.timeline.isEmpty && !nextSnapshot.timeline.isEmpty) else { return }
     timelineSnapshot = nextSnapshot
+    timelineIncrementalCache.record(
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    )
     refreshTimelinePresentation(sourceTimeline: nextSnapshot.timeline)
+    if isNearBottom, !timelineDragActive {
+      timelineLayoutPinToken &+= 1
+    }
+  }
+
+  @MainActor
+  func resetTimelineSourceIfNeeded() {
+    let nextSourceKey = selectedSubagentTaskId ?? "main"
+    guard timelineSourceKey != nextSourceKey else { return }
+
+    timelineSourceKey = nextSourceKey
+    visibleTimelineCount = workTimelinePageSize
+    isNearBottom = true
+    unreadBelowCount = 0
+    lastTimelineTailId = nil
+    scrollMetrics = WorkChatScrollMetrics()
+    timelineDragActive = false
+    bottomStickinessReleasedByUser = false
+    pendingInitialBottomPinSessionId = session.id
+    cancelLatestPinTask()
+    timelineRebuildTask?.cancel()
+    timelineRebuildTask = nil
+    timelineRebuildPending = false
+    timelineIncrementalCache.reset()
+    timelineSnapshot = .empty
+    timelinePresentation = .empty
+  }
+
+  @MainActor
+  func clearTimelineSnapshotForEmptyInputsIfNeeded() -> Bool {
+    guard transcript.isEmpty,
+          fallbackEntries.isEmpty,
+          localEchoMessages.isEmpty,
+          artifacts.isEmpty
+    else {
+      return false
+    }
+
+    timelineRebuildTask?.cancel()
+    timelineRebuildTask = nil
+    timelineRebuildPending = false
+    timelineIncrementalCache.record(
+      transcript: transcript,
+      fallbackEntries: fallbackEntries,
+      artifacts: artifacts,
+      localEchoMessages: localEchoMessages
+    )
+
+    let alreadyEmpty = timelineSnapshot == .empty && timelinePresentation == .empty
+    if !alreadyEmpty {
+      timelineSnapshot = .empty
+      timelinePresentation = .empty
+      timelineLayoutPinToken &+= 1
+    }
+    return true
   }
 
   @MainActor
@@ -91,16 +797,10 @@ extension WorkChatSessionView {
 
   @MainActor
   func loadEarlierTimelineEntries() {
-    workChatScrollLog.notice(
-      "load_earlier_tapped session=\(session.id, privacy: .public) beforeLimit=\(visibleTimelineCount, privacy: .public) hidden=\(hiddenTimelineCount, privacy: .public) hasOlderHost=\(hasOlderTranscriptHistory, privacy: .public) timeline=\(timeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public)"
-    )
     withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
       visibleTimelineCount += workTimelinePageSize
       refreshTimelinePresentation()
     }
-    workChatScrollLog.notice(
-      "load_earlier_applied session=\(session.id, privacy: .public) afterLimit=\(visibleTimelineCount, privacy: .public) hidden=\(hiddenTimelineCount, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) firstVisible=\(visibleTimeline.first?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public)"
-    )
     // Once the locally-buffered timeline is nearly exhausted, pull the next
     // older transcript page from the host so scroll-back continues through
     // the full history instead of stopping at the initial tail fetch.
@@ -112,19 +812,29 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func updateBottomStickiness(distanceFromBottom rawDistance: CGFloat, proxy: ScrollViewProxy) {
+  func updateBottomStickiness(distanceFromBottom rawDistance: CGFloat, proxy _: ScrollViewProxy) {
     let distance = max(0, rawDistance)
-    let previousDistance = lastScrollDistanceFromBottom
-    lastScrollDistanceFromBottom = distance
+    scrollMetrics.distanceFromBottom = distance
+
+    if bottomStickinessReleasedByUser {
+      guard distance <= workChatStickResumeThreshold, !timelineDragActive else { return }
+      bottomStickinessReleasedByUser = false
+      if !isNearBottom {
+        isNearBottom = true
+      }
+      if unreadBelowCount > 0 {
+        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+          unreadBelowCount = 0
+        }
+      }
+      return
+    }
 
     let nextIsNearBottom = isNearBottom
       ? !timelineDragActive
       : (!timelineDragActive && distance <= workChatStickResumeThreshold)
 
     if nextIsNearBottom != isNearBottom {
-      workChatScrollLog.notice(
-        "bottom_lock_changed session=\(session.id, privacy: .public) locked=\(nextIsNearBottom, privacy: .public) distance=\(distance, privacy: .public) previousDistance=\(previousDistance, privacy: .public) dragActive=\(timelineDragActive, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
-      )
       isNearBottom = nextIsNearBottom
     }
 
@@ -135,33 +845,28 @@ extension WorkChatSessionView {
         unreadBelowCount = 0
       }
     }
-
-    // Desktop follows content-size changes, not just new row counts. The
-    // bottom geometry distance changes when a streaming row grows, so keep
-    // pinned users at the true bottom even when the timeline tail id is stable.
-    if distance > 1 {
-      workChatScrollLog.notice(
-        "bottom_lock_autoscroll session=\(session.id, privacy: .public) distance=\(distance, privacy: .public) previousDistance=\(previousDistance, privacy: .public) timeline=\(timeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public)"
-      )
-      pinToLatestAfterLayout(proxy, reason: "bottom-geometry")
-    }
   }
 
   @MainActor
   func releaseBottomStickinessForUserScroll(reason: String) {
+    if pendingInitialBottomPinSessionId == session.id {
+      pendingInitialBottomPinSessionId = nil
+    }
     guard isNearBottom else { return }
-    workChatScrollLog.notice(
-      "bottom_lock_released session=\(session.id, privacy: .public) reason=\(reason, privacy: .public) distance=\(lastScrollDistanceFromBottom, privacy: .public) timeline=\(timeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public)"
-    )
+    bottomStickinessReleasedByUser = true
     isNearBottom = false
   }
 
   @MainActor
+  func allowBottomStickinessResumeFromUserScroll(reason: String) {
+    guard bottomStickinessReleasedByUser else { return }
+    bottomStickinessReleasedByUser = false
+  }
+
+  @MainActor
   func scrollToLatest(_ proxy: ScrollViewProxy, animated: Bool) {
-    let targetId = "chat-end"
-    workChatScrollLog.notice(
-      "scroll_to_latest session=\(session.id, privacy: .public) target=\(targetId, privacy: .public) animated=\(animated, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
-    )
+    bottomStickinessReleasedByUser = false
+    let targetId = latestScrollTargetId
     if animated {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
         proxy.scrollTo(targetId, anchor: .bottom)
@@ -179,15 +884,55 @@ extension WorkChatSessionView {
   @MainActor
   func pinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
     guard isNearBottom, !timelineDragActive else { return }
-    workChatScrollLog.notice(
-      "pin_latest_after_layout session=\(session.id, privacy: .public) reason=\(reason, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) distance=\(lastScrollDistanceFromBottom, privacy: .public)"
-    )
-    scrollToLatest(proxy, animated: false)
-    Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(16))
-      guard isNearBottom, !timelineDragActive else { return }
+    latestPinGeneration &+= 1
+    let generation = latestPinGeneration
+    latestPinTask?.cancel()
+    latestPinTask = Task { @MainActor in
+      guard generation == latestPinGeneration, isNearBottom, !timelineDragActive else { return }
       scrollToLatest(proxy, animated: false)
+      try? await Task.sleep(for: .milliseconds(16))
+      guard !Task.isCancelled,
+            generation == latestPinGeneration,
+            isNearBottom,
+            !timelineDragActive else { return }
+      scrollToLatest(proxy, animated: false)
+      if generation == latestPinGeneration {
+        latestPinTask = nil
+      }
     }
+  }
+
+  @MainActor
+  func forcePinToLatestAfterLayout(_ proxy: ScrollViewProxy, reason: String) {
+    isNearBottom = true
+    if unreadBelowCount > 0 {
+      unreadBelowCount = 0
+    }
+    latestPinGeneration &+= 1
+    let generation = latestPinGeneration
+    latestPinTask?.cancel()
+    latestPinTask = Task { @MainActor in
+      guard generation == latestPinGeneration, isNearBottom, !timelineDragActive else { return }
+      scrollToLatest(proxy, animated: false)
+      for delay in [16, 80, 180, 320] {
+        try? await Task.sleep(for: .milliseconds(delay))
+        guard !Task.isCancelled,
+              generation == latestPinGeneration,
+              isNearBottom,
+              !timelineDragActive else { return }
+        scrollToLatest(proxy, animated: false)
+      }
+      if generation == latestPinGeneration {
+        latestPinTask = nil
+      }
+    }
+  }
+
+  @MainActor
+  func cancelLatestPinTask() {
+    latestPinGeneration &+= 1
+    latestPinTask?.cancel()
+    latestPinTask = nil
   }
 
   @MainActor

@@ -1,18 +1,22 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
-import type { AutomationIngressEventRecord, AutomationIngressStatus, AutomationRule, AutomationTriggerType } from "../../../shared/types";
+import type { AutomationIngressEventRecord, AutomationIngressStatus, AutomationRule, AutomationTriggerType, GitHubRepoRef } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createAutomationService } from "./automationService";
 import type { AutomationSecretService } from "./automationSecretService";
 import type { createPrService } from "../prs/prService";
-import { gitHubRelayAuthorizationToken, readGitHubRelayConfig } from "../github/githubRelayConfig";
+import { gitHubRelayAuthorizationToken, readGitHubRelayConfig, shouldUseLegacyGitHubRelayProjectRoute } from "../github/githubRelayConfig";
 
 type AutomationIngressServiceArgs = {
   logger: Logger;
   automationService: ReturnType<typeof createAutomationService>;
   prService?: ReturnType<typeof createPrService> | null;
   secretService: AutomationSecretService;
+  githubService?: {
+    detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
+    getTokenOrThrow: () => string;
+  } | null;
   listRules: () => AutomationRule[];
   pollIntervalMs?: number;
 };
@@ -423,14 +427,37 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     try {
       const cursor = args.automationService.getIngressCursor("github-relay");
       const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
-      const eventsUrl = new URL(
-        `${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`,
-      );
-      if (cursor) eventsUrl.searchParams.set("after", cursor);
-      const authToken = gitHubRelayAuthorizationToken(config);
-      if (!authToken) {
-        throw new Error("GitHub relay access token is not configured.");
+      const legacyAuthToken = gitHubRelayAuthorizationToken(config);
+      const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
+      const repo = useLegacyProjectRoute ? null : await args.githubService?.detectRepo();
+      const eventsUrl = useLegacyProjectRoute
+        ? new URL(`${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`)
+        : repo
+          ? new URL(`${baseUrl}/github/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/events`)
+          : null;
+      if (!eventsUrl) {
+        updateGithubRelayStatus({
+          configured: true,
+          apiBaseUrl: config.apiBaseUrl,
+          remoteProjectId: null,
+          healthy: false,
+          status: "disabled",
+          lastError: null,
+        });
+        return;
       }
+      if (cursor) eventsUrl.searchParams.set("after", cursor);
+      const githubToken = useLegacyProjectRoute ? null : args.githubService?.getTokenOrThrow();
+      const authToken = useLegacyProjectRoute ? legacyAuthToken : githubToken;
+      if (!authToken) {
+        throw new Error("GitHub auth is required for relay polling.");
+      }
+      updateGithubRelayStatus({
+        configured: true,
+        apiBaseUrl: config.apiBaseUrl,
+        remoteProjectId: useLegacyProjectRoute ? config.remoteProjectId : repo ? `${repo.owner}/${repo.name}` : null,
+        status: "polling",
+      });
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), GITHUB_RELAY_POLL_TIMEOUT_MS);
       const response = await fetch(

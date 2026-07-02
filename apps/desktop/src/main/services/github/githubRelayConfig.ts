@@ -5,6 +5,12 @@ export const ADE_GITHUB_APP_DISPLAY_NAME = "ADE";
 export const ADE_GITHUB_APP_SLUG = "ade-for-github";
 export const ADE_GITHUB_APP_INSTALL_URL = `https://github.com/apps/${ADE_GITHUB_APP_SLUG}/installations/new`;
 export const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
+// Default hosted GitHub App webhook relay. This is a project-operated Cloudflare
+// Worker used for the ADE GitHub App integration during beta; it can be pointed
+// at a self-hosted relay via GITHUB_RELAY_API_BASE_REF or the *_API_BASE_ENV_KEYS
+// env vars. Replacing this personal default with a first-party/self-hostable
+// endpoint is a tracked pre-external-launch item.
+export const DEFAULT_GITHUB_RELAY_API_BASE_URL = "https://ade-github-webhook-relay.arulsharma1028.workers.dev";
 
 export const GITHUB_RELAY_API_BASE_REF = "automations.githubRelay.apiBaseUrl";
 export const GITHUB_RELAY_PROJECT_REF = "automations.githubRelay.remoteProjectId";
@@ -21,8 +27,8 @@ export type GitHubRelayConfig = {
   apiBaseUrl: string | null;
   remoteProjectId: string | null;
   accessToken: string | null;
+  usesHostedDefault: boolean;
   configured: boolean;
-  repoStatusConfigured: boolean;
 };
 
 function firstEnvValue(keys: readonly string[]): string | null {
@@ -39,9 +45,10 @@ function readSecret(reader: GitHubRelaySecretReader | null | undefined, ref: str
 }
 
 export function readGitHubRelayConfig(secretReader?: GitHubRelaySecretReader | null): GitHubRelayConfig {
-  const apiBaseUrl =
+  const configuredApiBaseUrl =
     readSecret(secretReader, GITHUB_RELAY_API_BASE_REF)
     || firstEnvValue(GITHUB_RELAY_API_BASE_ENV_KEYS);
+  const apiBaseUrl = configuredApiBaseUrl || DEFAULT_GITHUB_RELAY_API_BASE_URL;
   const remoteProjectId =
     readSecret(secretReader, GITHUB_RELAY_PROJECT_REF)
     || firstEnvValue(GITHUB_RELAY_PROJECT_ENV_KEYS);
@@ -52,8 +59,8 @@ export function readGitHubRelayConfig(secretReader?: GitHubRelaySecretReader | n
     apiBaseUrl,
     remoteProjectId,
     accessToken,
-    configured: Boolean(apiBaseUrl && remoteProjectId && accessToken),
-    repoStatusConfigured: Boolean(apiBaseUrl && remoteProjectId && accessToken),
+    usesHostedDefault: !configuredApiBaseUrl,
+    configured: Boolean(apiBaseUrl && ((remoteProjectId && accessToken) || apiBaseUrl === DEFAULT_GITHUB_RELAY_API_BASE_URL)),
   };
 }
 
@@ -69,6 +76,13 @@ export function deriveGitHubRelayProjectToken(accessToken: string, projectId: st
 export function gitHubRelayAuthorizationToken(config: GitHubRelayConfig): string | null {
   if (!config.accessToken || !config.remoteProjectId) return null;
   return deriveGitHubRelayProjectToken(config.accessToken, config.remoteProjectId);
+}
+
+export function shouldUseLegacyGitHubRelayProjectRoute(
+  config: GitHubRelayConfig,
+): boolean {
+  if (!config.remoteProjectId || !config.accessToken) return false;
+  return !config.usesHostedDefault;
 }
 
 function baseStatus(repo: GitHubRepoRef | null, patch: Partial<GitHubAppInstallationStatus>): GitHubAppInstallationStatus {
@@ -147,6 +161,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
   secretReader?: GitHubRelaySecretReader | null;
   fetchImpl?: typeof fetch;
   forceRefresh?: boolean;
+  githubToken?: string | null;
 }): Promise<GitHubAppInstallationStatus> {
   const config = readGitHubRelayConfig(args.secretReader);
   if (!args.repo) {
@@ -156,7 +171,7 @@ export async function fetchGitHubAppInstallationStatus(args: {
       error: "No GitHub repository was detected for this project.",
     });
   }
-  if (!config.repoStatusConfigured) {
+  if (!config.apiBaseUrl) {
     return baseStatus(args.repo, {
       relayConfigured: false,
       state: "unconfigured",
@@ -166,14 +181,18 @@ export async function fetchGitHubAppInstallationStatus(args: {
 
   try {
     const baseUrl = config.apiBaseUrl!.replace(/\/+$/, "");
-    const projectId = encodeURIComponent(config.remoteProjectId!);
-    const url = `${baseUrl}/projects/${projectId}/github/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/status${args.forceRefresh ? "?refresh=1" : ""}`;
-    const authToken = gitHubRelayAuthorizationToken(config);
+    const githubToken = args.githubToken?.trim();
+    const legacyAuthToken = gitHubRelayAuthorizationToken(config);
+    const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
+    const url = useLegacyProjectRoute
+      ? `${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/status${args.forceRefresh ? "?refresh=1" : ""}`
+      : `${baseUrl}/github/repos/${encodeURIComponent(args.repo.owner)}/${encodeURIComponent(args.repo.name)}/status${args.forceRefresh ? "?refresh=1" : ""}`;
+    const authToken = useLegacyProjectRoute ? legacyAuthToken : githubToken;
     if (!authToken) {
       return baseStatus(args.repo, {
         relayConfigured: true,
         state: "error",
-        error: "GitHub App relay token is not configured for this ADE runtime.",
+        error: "GitHub auth is required to check the ADE GitHub App installation.",
       });
     }
     const response = await (args.fetchImpl ?? fetch)(url, {

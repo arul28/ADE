@@ -3193,6 +3193,7 @@ app.whenReady().then(async () => {
           automationService,
           prService,
           secretService: automationSecretService,
+          githubService,
           listRules: () => projectConfigService.get().effective.automations ?? [],
         })
       : null;

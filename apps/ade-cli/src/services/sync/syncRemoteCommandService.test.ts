@@ -118,6 +118,99 @@ describe("createSyncRemoteCommandService", () => {
       sessionFound: true,
     });
   });
+
+  it("routes the canonical chat history snapshot command to the chat service", async () => {
+    const getChatEventHistory = vi.fn().mockReturnValue({
+      sessionId: "chat-1",
+      events: [],
+      truncated: false,
+      sessionFound: true,
+      tailStartOffset: null,
+    });
+    const { service } = createService({
+      agentChatService: { getChatEventHistory },
+    });
+
+    expect(service.getDescriptor("chat.getChatEventHistory")).toEqual({
+      action: "chat.getChatEventHistory",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    const result = await service.execute(makePayload("chat.getChatEventHistory", {
+      sessionId: "chat-1",
+      maxEvents: 128,
+    }));
+
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", { maxEvents: 128 });
+    expect(result).toEqual({
+      sessionId: "chat-1",
+      events: [],
+      truncated: false,
+      sessionFound: true,
+      tailStartOffset: null,
+    });
+  });
+
+  it("routes subagent transcript fetches to the chat service", async () => {
+    const getSubagentTranscript = vi.fn().mockResolvedValue([
+      { type: "assistant", uuid: "msg-1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "done" },
+    ]);
+    const { service } = createService({
+      agentChatService: { getSubagentTranscript },
+    });
+
+    expect(service.getDescriptor("chat.getSubagentTranscript")).toEqual({
+      action: "chat.getSubagentTranscript",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+
+    const result = await service.execute(makePayload("chat.getSubagentTranscript", {
+      sessionId: "chat-1",
+      agentId: "agent-1",
+      taskId: "task-1",
+      laneId: "lane-1",
+      limit: 1,
+      offset: 2,
+    }));
+
+    expect(getSubagentTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      agentId: "agent-1",
+      taskId: "task-1",
+      laneId: "lane-1",
+      limit: 1,
+      offset: 2,
+    });
+    expect(result).toEqual([
+      { type: "assistant", uuid: "msg-1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "done" },
+    ]);
+  });
+
+  it("routes subagent roster fetches to the chat service", async () => {
+    const listSubagents = vi.fn().mockReturnValue([
+      { taskId: "agent-1", agentId: "agent-1", agentType: "Sagan", description: "Read files", status: "stopped" },
+    ]);
+    const { service } = createService({
+      agentChatService: { listSubagents },
+    });
+
+    expect(service.getDescriptor("chat.listSubagents")).toEqual({
+      action: "chat.listSubagents",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+
+    const result = await service.execute(makePayload("chat.listSubagents", {
+      sessionId: "chat-1",
+    }));
+
+    expect(listSubagents).toHaveBeenCalledWith({ sessionId: "chat-1" });
+    expect(result).toEqual([
+      { taskId: "agent-1", agentId: "agent-1", agentType: "Sagan", description: "Read files", status: "stopped" },
+    ]);
+  });
 });
 
 describe("prs.land", () => {

@@ -6001,6 +6001,75 @@ describe("createAgentChatService", () => {
       const subagents = service.listSubagents({ sessionId: "unknown-id" });
       expect(subagents).toEqual([]);
     });
+
+    it("hydrates stopped subagents from the persisted chat transcript", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.mkdirSync(path.dirname(transcriptFile), { recursive: true });
+      const placeholderStarted: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-30T01:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "call-spawn-1",
+          parentToolUseId: "call-spawn-1",
+          description: "Inspect the shared chat renderer",
+          turnId: "turn-1",
+        },
+      };
+      const agentStarted: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-30T01:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-thread-1",
+          agentId: "agent-thread-1",
+          agentType: "Sagan",
+          parentToolUseId: "call-spawn-1",
+          description: "Inspect the shared chat renderer",
+          turnId: "turn-1",
+        },
+      };
+      const stopped: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-30T01:02:00.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "agent-thread-1",
+          agentId: "agent-thread-1",
+          agentType: "Sagan",
+          parentToolUseId: "call-spawn-1",
+          status: "stopped",
+          summary: "Halted by parent turn.",
+          turnId: "turn-1",
+        },
+      };
+      fs.writeFileSync(
+        transcriptFile,
+        `${JSON.stringify(placeholderStarted)}\n${JSON.stringify(agentStarted)}\n${JSON.stringify(stopped)}\n`,
+        "utf8",
+      );
+
+      const subagents = service.listSubagents({ sessionId: session.id });
+
+      expect(subagents).toEqual([
+        expect.objectContaining({
+          taskId: "agent-thread-1",
+          agentId: "agent-thread-1",
+          agentType: "Sagan",
+          parentToolUseId: "call-spawn-1",
+          description: "Inspect the shared chat renderer",
+          status: "stopped",
+          summary: "Halted by parent turn.",
+          endTimestamp: "2026-06-30T01:02:00.000Z",
+        }),
+      ]);
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -12135,6 +12204,95 @@ describe("createAgentChatService", () => {
         turnId: "turn-other",
       });
     });
+
+    it("keeps paragraph boundaries when same-turn assistant text resumes after another event", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const events: AgentChatEventEnvelope[] = [
+        {
+          sessionId: session.id,
+          timestamp: "2026-05-18T23:40:00.000Z",
+          sequence: 1,
+          event: {
+            type: "text",
+            text: "The fake bottom row is now a 1-point sentinel.",
+            turnId: "turn-formatting",
+          },
+        },
+        {
+          sessionId: session.id,
+          timestamp: "2026-05-18T23:40:01.000Z",
+          sequence: 2,
+          event: {
+            type: "tool_call",
+            tool: "shell",
+            args: {},
+            itemId: "tool-1",
+            turnId: "turn-formatting",
+          },
+        },
+        {
+          sessionId: session.id,
+          timestamp: "2026-05-18T23:40:02.000Z",
+          sequence: 3,
+          event: {
+            type: "text",
+            text: "Next I am threading status through the end marker.",
+            turnId: "turn-formatting",
+          },
+        },
+      ];
+      fs.writeFileSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(events);
+
+      const transcript = await service.getChatTranscript({ sessionId: session.id });
+
+      expect(transcript.entries).toHaveLength(1);
+      expect(transcript.entries[0]).toMatchObject({
+        role: "assistant",
+        text: "The fake bottom row is now a 1-point sentinel.\n\nNext I am threading status through the end marker.",
+        turnId: "turn-formatting",
+      });
+    });
+
+    it("includes assistant message ids in transcript entries", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const events: AgentChatEventEnvelope[] = [
+        {
+          sessionId: session.id,
+          timestamp: "2026-05-18T23:40:00.000Z",
+          sequence: 1,
+          event: {
+            type: "text",
+            text: "Stable identified message.",
+            messageId: "message-1",
+            itemId: "item-1",
+            turnId: "turn-ids",
+          },
+        },
+      ];
+      fs.writeFileSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(events);
+
+      const transcript = await service.getChatTranscript({ sessionId: session.id });
+
+      expect(transcript.entries[0]).toMatchObject({
+        role: "assistant",
+        text: "Stable identified message.",
+        messageId: "message-1",
+        itemId: "item-1",
+        turnId: "turn-ids",
+      });
+    });
   });
 
   describe("readTranscript", () => {
@@ -12536,6 +12694,31 @@ describe("createAgentChatService", () => {
 
       const history = service.getChatEventHistory(session.id);
       expect(history.events).toHaveLength(1);
+    });
+
+    it("drops an oversized newest event when a strict mobile byte budget is requested", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const giant: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "giant-".concat("y".repeat(16_000)) },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
+
+      const history = service.getChatEventHistory(session.id, { maxBytes: 8_192 });
+
+      expect(history.events).toHaveLength(0);
+      expect(history.windowTruncated).toBe(true);
+      expect(history.truncated).toBe(true);
     });
 
     it("marks window truncation when the service response cap removes events", async () => {

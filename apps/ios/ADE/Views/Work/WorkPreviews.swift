@@ -428,13 +428,24 @@ private enum WorkPreviewData {
 #Preview("Work chat") {
   NavigationStack {
     WorkChatSessionView(
-      session: WorkPreviewData.terminalSession,
-      chatSummary: WorkPreviewData.chatSummary,
+      session: WorkChatSessionRenderContext(WorkPreviewData.terminalSession),
+      chatSummaryContext: WorkChatSummaryRenderContext(WorkPreviewData.chatSummary),
       transcript: WorkPreviewData.transcript,
+      transcriptRenderSignature: workChatEnvelopeListRenderSignature(WorkPreviewData.transcript),
       fallbackEntries: [],
+      fallbackEntriesRenderSignature: workFallbackEntriesRenderSignature([]),
       artifacts: [WorkPreviewData.artifact],
+      artifactsRenderSignature: workArtifactSummariesRenderSignature([WorkPreviewData.artifact]),
       optimisticPendingSteers: [],
+      optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature([]),
       localEchoMessages: [],
+      localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature([]),
+      expandedToolCardIdsSnapshot: ["cmd-1"],
+      expandedToolCardIdsRenderSignature: workExpandedToolCardIdsRenderSignature(["cmd-1"]),
+      artifactContentRenderSignature: workLoadedArtifactContentRenderSignature([:]),
+      artifactDrawerPresentedSnapshot: false,
+      sendingSnapshot: false,
+      errorMessageSnapshot: nil,
       expandedToolCardIds: Binding<Set<String>>.constant(["cmd-1"]),
       artifactContent: .constant([:]),
       fullscreenImage: Binding<WorkFullscreenImage?>.constant(nil),
@@ -444,14 +455,16 @@ private enum WorkPreviewData {
       sending: .constant(false),
       errorMessage: .constant(nil),
       isLive: true,
+      hostUnreachable: false,
       canComposeMessages: true,
       canSendMessages: true,
       sendWillQueue: false,
+      sendWillQueueIsReconnect: false,
       transitionNamespace: nil,
       onOpenLane: {},
       onSend: { _ in true },
       onInterrupt: {},
-      onApproveRequest: { _, _ in },
+      onApproveRequest: { _, _, _ in },
       onRespondToQuestion: { _, _, _, _ in },
       onSubmitQuestionAnswers: { _, _, _ in },
       onDeclineQuestion: { _ in },
@@ -468,7 +481,13 @@ private enum WorkPreviewData {
       onSelectModel: { _ in },
       onSelectRuntimeMode: { _ in true },
       onSelectEffort: { _ in },
-      onSelectCodexFastMode: { _ in true }
+      onSelectCodexFastMode: { _ in true },
+      resolvedSessionStatus: normalizedWorkChatSessionStatus(
+        session: WorkPreviewData.terminalSession,
+        summary: WorkPreviewData.chatSummary
+      ),
+      lanesRenderSignature: workLaneListRenderSignature([]),
+      subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([])
     )
   }
   .environmentObject(WorkPreviewData.syncService)

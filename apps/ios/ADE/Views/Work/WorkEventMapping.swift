@@ -71,12 +71,37 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .plan(let steps, let explanation, let turnId):
     let mapped = steps.map { WorkPlanStep(text: $0.text, status: $0.status) }
     return .plan(steps: mapped, explanation: explanation, turnId: turnId)
-  case .subagentStarted(let taskId, let description, let background, let turnId):
-    return .subagentStarted(taskId: taskId, description: description, background: background ?? false, turnId: turnId)
-  case .subagentProgress(let taskId, let description, let summary, _, let lastToolName, let turnId):
-    return .subagentProgress(taskId: taskId, description: description, summary: summary, toolName: lastToolName, turnId: turnId)
-  case .subagentResult(let taskId, let status, let summary, _, let turnId):
-    return .subagentResult(taskId: taskId, status: status.rawValue, summary: summary, turnId: turnId)
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+    return .subagentStarted(
+      taskId: taskId,
+      agentId: agentId,
+      agentType: agentType,
+      parentToolUseId: parentToolUseId,
+      description: description,
+      background: background ?? false,
+      turnId: turnId
+    )
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, _, let lastToolName, let turnId):
+    return .subagentProgress(
+      taskId: taskId,
+      agentId: agentId,
+      agentType: agentType,
+      parentToolUseId: parentToolUseId,
+      description: description,
+      summary: summary,
+      toolName: lastToolName,
+      turnId: turnId
+    )
+  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, _, let turnId):
+    return .subagentResult(
+      taskId: taskId,
+      agentId: agentId,
+      agentType: agentType,
+      parentToolUseId: parentToolUseId,
+      status: status.rawValue,
+      summary: summary,
+      turnId: turnId
+    )
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     let mapped = (options ?? []).map { opt in
       WorkPendingQuestionOption(

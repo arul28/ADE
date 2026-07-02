@@ -6,7 +6,7 @@ enum WorkMarkdownBlockKind: Equatable {
   case paragraph(String)
   case heading(Int, String)
   case unorderedList([String])
-  case orderedList([String])
+  case orderedList(start: Int, items: [String])
   case blockquote([String])
   case table(headers: [String], rows: [[String]])
   case code(language: String?, code: String)
@@ -20,8 +20,8 @@ enum WorkMarkdownBlockKind: Equatable {
       return "heading|\(level)|\(text)"
     case .unorderedList(let items):
       return "unorderedList|\(items.joined(separator: "\u{001F}"))"
-    case .orderedList(let items):
-      return "orderedList|\(items.joined(separator: "\u{001F}"))"
+    case .orderedList(let start, let items):
+      return "orderedList|\(start)|\(items.joined(separator: "\u{001F}"))"
     case .blockquote(let lines):
       return "blockquote|\(lines.joined(separator: "\u{001F}"))"
     case .table(let headers, let rows):
@@ -222,7 +222,7 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
     }
 
     if let ordered = parseList(startingAt: index, in: lines, ordered: true) {
-      appendBlock(.orderedList(ordered.items))
+      appendBlock(.orderedList(start: ordered.startNumber ?? 1, items: ordered.items))
       index = ordered.nextIndex
       continue
     }
@@ -248,18 +248,22 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
   return blocks
 }
 
-func parseList(startingAt index: Int, in lines: [String], ordered: Bool) -> (items: [String], nextIndex: Int)? {
+func parseList(startingAt index: Int, in lines: [String], ordered: Bool) -> (items: [String], nextIndex: Int, startNumber: Int?)? {
   guard index < lines.count else { return nil }
   guard let regex = workMarkdownListRegex(ordered: ordered) else { return nil }
   var cursor = index
   var items: [String] = []
+  var startNumber: Int?
   while cursor < lines.count {
     let line = lines[cursor].trimmingCharacters(in: .whitespaces)
     guard let item = markdownListItemText(line, regex: regex) else { break }
+    if ordered, startNumber == nil {
+      startNumber = markdownOrderedListItemNumber(line)
+    }
     items.append(item)
     cursor += 1
   }
-  return items.isEmpty ? nil : (items, cursor)
+  return items.isEmpty ? nil : (items, cursor, startNumber)
 }
 
 func isMarkdownListItem(_ line: String, ordered: Bool) -> Bool {
@@ -287,6 +291,16 @@ func markdownListItemText(_ line: String, regex: NSRegularExpression) -> String?
     text = "☑ " + text.dropFirst(4)
   }
   return text
+}
+
+func markdownOrderedListItemNumber(_ line: String) -> Int? {
+  guard let regex = ADECodeRenderingCache.shared.regex(for: #"^(\d+)\.\s+"#) else { return nil }
+  let range = NSRange(location: 0, length: (line as NSString).length)
+  guard let match = regex.firstMatch(in: line, options: [], range: range),
+        match.numberOfRanges > 1,
+        let numberRange = Range(match.range(at: 1), in: line)
+  else { return nil }
+  return Int(String(line[numberRange]))
 }
 
 func workMarkdownListRegex(ordered: Bool) -> NSRegularExpression? {

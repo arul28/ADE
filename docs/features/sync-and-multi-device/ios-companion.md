@@ -57,9 +57,12 @@ apps/ios/
 │   │   │                            # running-chat badge); the system tab
 │   │   │                            # strip is hidden and individual screens
 │   │   │                            # can hide the custom bar via
-│   │   │                            # `adeRootTabBarHidden()`; project
-│   │   │                            # home includes Add project when the
-│   │   │                            # runtime advertises projectActions
+│   │   │                            # `adeRootTabBarHidden()`. When no active
+│   │   │                            # project is selected the root shows the
+│   │   │                            # Hub (HubScreen, all-projects roster home)
+│   │   │                            # instead of the tabs; the Hub includes Add
+│   │   │                            # project when the runtime advertises
+│   │   │                            # projectActions
 │   │   ├── RemoteProjectAddSheet.swift # Open/create/clone project flow
 │   │   │                               # backed by runtime-scoped
 │   │   │                               # project action envelopes
@@ -107,6 +110,10 @@ apps/ios/
 │   │   │                            # dictation pill
 │   │   │                            # — `ADEStreamingShimmer.swift` was retired
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
+│   │   ├── Hub/                     # HubScreen (all-projects roster home),
+│   │   │                            # HubComponents (project/lane/chat cards,
+│   │   │                            #   HubNoMachineState), HubComposerDrawer
+│   │   │                            #   (in-place new-chat), HubScreen+ChatNavigation
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
 │   │   │                            # LaneDetailGitActionsPane (commit /
 │   │   │                            #   stage / stash / history / escape
@@ -191,8 +198,7 @@ that used to be tangled together:
   while the phone is happily disconnected or reconnecting.
 
 Tint mapping (resolved by `SettingsConnectionPresentation.statusTint`,
-`ADEConnectionDot`, `ProjectHomeView.attachedComputerTint`,
-`ADERootToolbarControls`, and `SettingsStatusDot`):
+`ADEConnectionDot`, `ADERootToolbarControls`, and `SettingsStatusDot`):
 
 | Transport | Load | Color |
 |---|---|---|
@@ -211,14 +217,14 @@ older `ADEConnectionPill` and the per-tab "connection notice" banner
 cards — controllers no longer ship duplicate offline / reconnect /
 hydrating cards inside each screen body.
 
-`ProjectHomeView` is the exception: with the navigation bar hidden
-(brand-mark hero only) it surfaces the same connection state through
-an inline "Attached to <machine>" banner above the open-project button.
-The banner uses the same `SyncConnectionHealth` mapping as
-`ADEConnectionDot` (success when connected and not strained, warning
-when connecting or strained, danger when unreachable, muted when
-disconnected) and routes taps through `syncService.settingsPresented`
-to the same Settings sheet the dot opens.
+The Hub is the exception: with the navigation bar hidden, its
+no-machine / connection-error state renders `HubNoMachineState`
+("No machine attached" / "Cannot reach machine") instead of project
+cards, using the same `SyncConnectionHealth` mapping as `ADEConnectionDot`
+(success when connected and not strained, warning when connecting or
+strained, danger when unreachable, muted when disconnected) and routing
+taps through `syncService.settingsPresented` to the same Settings sheet
+the dot opens.
 
 `SettingsConnectionHeader` distinguishes the four states explicitly:
 
@@ -335,8 +341,10 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
    `serverDbSiteId` and the runtime's current project catalog when the
    runtime supports project switching.
-4. If no active project is selected, show the native project home
-   instead of hydrating lane/file/PR surfaces against the wrong row.
+4. If no active project is selected, show the Hub (all-projects roster
+   home) instead of hydrating lane/file/PR surfaces against the wrong row.
+   The Hub subscribes to the roster feed (`roster_subscribe`) to render
+   every project's chats-by-lane without activating each project.
 5. After the active project row exists locally, receive catchup
    changesets and hydrate lane, file, Work, and PR projections scoped
    to that project.
@@ -386,7 +394,8 @@ Implemented envelope types on iOS:
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
 | `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly |
-| `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode |
+| `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects chat roster feed backing the Hub. Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only; transcripts load on demand when a chat opens |
+| `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode. `SyncEnvelopeChunkAssembler` enforces a 32 MiB reassembly byte cap (`maxChunkedSyncEnvelopeBytes`) and drops chunk sets with inconsistent `total`s so a malformed or oversized stream cannot grow phone memory unbounded |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
 
@@ -584,12 +593,28 @@ modifier. `ADEUIKitAppearance.configureTabBar()` (called from
 appearance so any system surface that still falls through (sheets,
 push-controllers built from UIKit) matches the SwiftUI chrome.
 
-Before the tabs render, `ProjectHomeView` can take over the root screen
-when no active project is selected or the user taps the Projects toolbar
-button. It merges the runtime-provided catalog with projects already present
-in the local replicated DB, marks cached/unavailable rows, and requests a
-fresh bootstrap connection for the selected machine project through
-`project_switch_request`. The runtime-provided catalog is local to the
+Before the tabs render, the **Hub** (`HubScreen`, in `Views/Hub/`) can take
+over the root screen when no active project is selected or the user taps the
+Projects toolbar button. The Hub is the app's home surface: it lists every
+project on the connected machine, each expandable to its chats grouped by lane
+(from the `roster_subscribe` feed — see the sub-protocol table). The active
+project's chats come straight from the phone's already-synced local DB
+(authoritative + instant) rather than the cross-project roster, so the active
+card is never stuck on "Loading chats…". Tapping a project card opens its
+detailed tabbed view; tapping a chat opens that chat directly over the Hub (the
+Hub stays mounted underneath so Back returns to it, and it keeps rebuilding
+roster cards while a chat is open). A bottom "type to vibecode" bar slides up a
+new-chat drawer (`HubComposerDrawer`) with a Project ▸ Lane destination picker;
+the chat is created in place and does **not** auto-open — a "Created in
+&lt;project&gt; · &lt;lane&gt;" toast offers an Open shortcut. Project cards are
+drag-reorderable (persisted per machine, mobile-only, never touching desktop
+ordering). Attention bubbles are driven by the roster's `attentionCount`
+(awaiting-input + failed sessions). The Hub replaces the old
+`ProjectHomeView`'s connected-state layout while preserving its
+no-machine / connecting blank states. It still merges the runtime-provided
+catalog with projects already present in the local replicated DB, marks
+cached/unavailable rows, and requests a fresh bootstrap connection for the
+selected machine project through `project_switch_request`. The runtime-provided catalog is local to the
 paired machine and excludes desktop SSH remote recents, so the phone never
 tries to switch into another machine's path. Each tile exposes a long-press "Remove from list"
 action that hides the project locally and sends `project_forget_request`
@@ -630,7 +655,7 @@ Opening or selecting the project again clears those hidden keys.
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle and an AI "Suggest message" button (gated by runtime capability, with a setup-hint when the runtime reports "AI commit messages are off"), pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase + descendants, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and a rescue sheet creates a new lane from uncommitted changes. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, now a tabbed manage dialog (delete / appearance / stack / archive) mirroring desktop's `ManageLaneDialog`. The previous `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneStashesScreen`, and `LaneCommitHistoryScreen` destinations were deleted in favor of this single pane. |
-| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/read, protected-workspace read-only parity. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `SearchOverlay` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. The inline `FilesQueryCard` quick-open / text-search cards (and their 40-row caps) were removed. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`. |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/read. Search is a single full-screen page (`FilesSearchScreen`) opened from the magnifying-glass button in the Files top bar (desktop `SearchOverlay` parity): one query searches file *names* (quick open) and file *contents* (text search) together — name matches surface first under "Files", content hits are grouped per file with collapsible line previews, and tapping a line opens the file at that line. The inline `FilesQueryCard` quick-open / text-search cards (and their 40-row caps) were removed. Files are freely editable — the mobile read-only file-mutation gate (`mobileReadOnly` / edit-protection) was removed on both the host and the phone, matching the desktop change. |
 | **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that collapses to a single tone-dot dropdown when space is tight and expands to segmented chips when wide, a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. The composer's last-used selection (model + access mode + reasoning effort + fast mode) persists across surfaces through `WorkComposerPreferences` (App Group `UserDefaults`, versioned key): the New Chat screen seeds its initial state from the saved selection instead of hardcoded defaults, and every change or send — from the New Chat composer, the in-session inline picker (`WorkSessionDestinationView`), or the session settings sheet — writes it back. Because the inline picker is cross-provider, the persisted provider is re-derived from the picked model, and a provider change resets the coupled access mode / sub-settings to that provider's defaults. Droid (Factory) is in the new-chat provider allowlist (`workNormalizedNewChatProvider`), so Droid Core models (GLM / Kimi / MiniMax) keep the `droid` provider instead of silently collapsing to the Claude runtime. The new-chat send button is the shared `ADEComposerSendButton` (an arrow-in-circle disc matching the in-session composer), replacing the earlier paperplane capsule. Each session row carries a minimal per-lane PR status indicator (`WorkLanePrIndicator`: a state-colored dot + `#num` + Open/Draft/Closed/Merged) beside the lane name. It and the Lanes tab chip both render the unified `LanePrTag` (`LaneHelpers.swift`, `selectLaneTabPrTag`, desktop parity), which merges ADE-mapped PRs (the synced `pull_requests` table) with GitHub PRs opened outside ADE — matched to a lane by branch and fetched into the shared `SyncService.laneGithubPrItems` cache (`refreshLaneGithubPrItems`, best-effort, throttled, reset on project switch / reconnect). CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `brain.head.profile` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
@@ -647,7 +672,7 @@ Opening or selecting the project again clears those hidden keys.
 All lane, file, Work, and PR projections are scoped through
 `Database.currentProjectId()`. The iOS app stores the active project id
 in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
-the project home if no selected project row has arrived yet. The
+the Hub if no selected project row has arrived yet. The
 machine runtime runs at most one active sync project at a time behind
 a single brain-level listener on a stable port. When the phone asks
 the runtime to switch projects, the runtime activates the requested
@@ -788,7 +813,7 @@ reflected in the phone's UI on the next descriptor read.
 | QR pairing payload (v2, address candidates + port) | Implemented |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
-| Files tab | Implemented with `mobileReadOnly` workspace gate and a unified full-screen name + content search page (`FilesSearchScreen`) |
+| Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
@@ -984,8 +1009,9 @@ reflected in the phone's UI on the next descriptor read.
   re-announces on a 30 s cadence; the runtime prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`
   will disappear from `devicesOpen` one cycle later, not instantly.
-- **`mobileReadOnly` is an additional gate on top of
-  `isReadOnlyByDefault`.** The iOS app checks both before allowing a
-  `files.*` mutating command. A workspace that is desktop-writable
-  may still be read-only from the phone to avoid accidental edits
-  on a lossy network.
+- **Phone file edits are no longer read-only-gated.** The old
+  `mobileReadOnly` / `isReadOnlyByDefault` write gate was removed on
+  both the phone and the host, matching the desktop edit-protection
+  removal, so a desktop-writable workspace is also editable from the
+  phone. The fields still ride the payload but no longer block `files.*`
+  mutating commands.

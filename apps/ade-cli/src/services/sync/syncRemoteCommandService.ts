@@ -3,6 +3,7 @@ import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
   AgentChatTranscriptEntry,
+  AgentChatEventHistorySnapshot,
   AgentChatApproveArgs,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
@@ -21,6 +22,8 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatSubagentListArgs,
+  AgentChatSubagentTranscriptArgs,
   AgentChatCancelSteerArgs,
   AgentChatEditSteerArgs,
   AgentChatDispatchSteerArgs,
@@ -939,6 +942,28 @@ function parseGetTranscriptArgs(value: Record<string, unknown>): {
   };
 }
 
+function parseAgentChatSubagentTranscriptArgs(value: Record<string, unknown>): AgentChatSubagentTranscriptArgs {
+  const parsed: AgentChatSubagentTranscriptArgs = {
+    sessionId: requireString(value.sessionId, "chat.getSubagentTranscript requires sessionId."),
+    agentId: requireString(value.agentId, "chat.getSubagentTranscript requires agentId."),
+  };
+  const taskId = asTrimmedString(value.taskId);
+  const laneId = asTrimmedString(value.laneId);
+  const limit = asOptionalNumber(value.limit);
+  const offset = asOptionalNumber(value.offset);
+  if (taskId) parsed.taskId = taskId;
+  if (laneId) parsed.laneId = laneId;
+  if (limit !== undefined) parsed.limit = limit;
+  if (offset !== undefined) parsed.offset = offset;
+  return parsed;
+}
+
+function parseAgentChatSubagentListArgs(value: Record<string, unknown>): AgentChatSubagentListArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.listSubagents requires sessionId."),
+  };
+}
+
 // Pagination cursor for chat.getTranscript. The cursor is the index (within
 // the session's full, append-only entry list) of the oldest entry returned by
 // the previous page; a request with `cursor` returns the page strictly BEFORE
@@ -1193,6 +1218,10 @@ function parseConflictLaneArgs(value: Record<string, unknown>, action: string): 
   return {
     laneId: requireString(value.laneId, `${action} requires laneId.`),
   };
+}
+
+function parseLaneIdArgs(value: Record<string, unknown>, action: string): { laneId: string } {
+  return parseConflictLaneArgs(value, action);
 }
 
 function parseCursorModelSource(value: unknown): "sdk" | "cli" | "all" | null {
@@ -2283,6 +2312,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
+  register("chat.getChatEventHistory", { viewerAllowed: true }, async (payload): Promise<AgentChatEventHistorySnapshot> => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
+    const maxEvents = asOptionalNumber(payload.maxEvents);
+    return agentChatService.getChatEventHistory(sessionId, maxEvents == null ? undefined : { maxEvents });
+  });
   register("chat.getTranscript", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseGetTranscriptArgs(payload);
@@ -2316,6 +2351,14 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       nextCursor: hasMore ? String(oldestReturnedIndex) : null,
     };
   });
+  register("chat.getSubagentTranscript", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getSubagentTranscript(
+      parseAgentChatSubagentTranscriptArgs(payload),
+    ));
+  register("chat.listSubagents", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").listSubagents(
+      parseAgentChatSubagentListArgs(payload),
+    ));
   const getChatEventHistoryPage = async (payload: Record<string, unknown>) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistoryPage requires sessionId.");
@@ -2892,6 +2935,8 @@ function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistr
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
+  register("prs.getForLane", { viewerAllowed: true }, async (payload) =>
+    args.prService.getForLane(parseLaneIdArgs(payload, "prs.getForLane").laneId));
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
     const prIds = asStringArray(payload.prIds);

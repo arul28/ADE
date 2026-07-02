@@ -11,7 +11,7 @@ final class ADECodeRenderingCache {
 
   private init() {
     tokenCache.countLimit = 64
-    attributedCache.countLimit = 24
+    attributedCache.countLimit = 160
     regexCache.countLimit = 64
   }
 

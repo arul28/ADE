@@ -5,9 +5,8 @@ Cloudflare Worker, the Worker verifies the GitHub HMAC signature, writes the
 event into D1, and ADE desktop/TUI/mobile sync paths poll the newest events with
 the existing `automations.githubRelay` cursor.
 
-No user repository needs ADE-specific code. The only repo-side step is installing
-the GitHub App, or configuring an equivalent GitHub webhook, on the repositories
-the user wants ADE to track.
+No user repository needs ADE-specific code. The repo-side step is installing the
+ADE GitHub App on the repositories the user wants ADE to track.
 
 ## Why this shape
 
@@ -16,12 +15,13 @@ the user wants ADE to track.
 - GitHub webhook writes are idempotent by delivery id.
 - ADE polls with `after=<last-cursor>`, where new cursors are monotonic
   `seq:<n>` values. Legacy delivery-id cursors still work during migration.
-- ADE checks per-repo GitHub App status with a cheap D1 lookup at
-  `GET /projects/:projectId/github/repos/:owner/:repo/status`. If GitHub App
-  API credentials are configured, it only calls GitHub when D1 has no installed
-  state yet or the user explicitly presses Refresh.
-- If relay config is missing or the relay fails, ADE keeps using the current
-  GitHub polling/snapshot path.
+- ADE checks per-repo GitHub App status at
+  `GET /github/repos/:owner/:repo/status`, authenticated by the user's existing
+  GitHub token. If GitHub App API credentials are configured, it only calls
+  GitHub when D1 has no installed state yet or the user explicitly presses
+  Refresh.
+- If the hosted relay fails, ADE keeps using the current GitHub polling/snapshot
+  path.
 - The event envelope is provider-neutral enough to add Linear later without
   replacing the ADE cache path.
 
@@ -66,26 +66,46 @@ Set Worker secrets. Do not commit these values:
 ```sh
 cd apps/webhook-relay
 printf '%s' "$GITHUB_WEBHOOK_SECRET" | npx wrangler secret put GITHUB_WEBHOOK_SECRET
-printf '%s' "$ADE_GITHUB_RELAY_TOKEN" | npx wrangler secret put RELAY_ACCESS_TOKEN
 printf '%s' "$GITHUB_APP_ID" | npx wrangler secret put GITHUB_APP_ID
 printf '%s' "$GITHUB_APP_PRIVATE_KEY" | npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 npm run deploy
 ```
 
 `GITHUB_WEBHOOK_SECRET` must match the GitHub App webhook secret.
-`ADE_GITHUB_RELAY_TOKEN` is the relay root secret stored in Cloudflare. ADE
-clients send a project-scoped `ade_proj_...` token derived from that secret and
-`remoteProjectId`; if ADE is configured with an already-derived `ade_proj_...`
-token it sends that value as-is.
 `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are optional but recommended. They
 let the relay verify a repository installation live through GitHub's App API
 when webhook state has not arrived yet or the user presses Refresh in Settings.
 `GITHUB_APP_PRIVATE_KEY` should be the private key PEM downloaded from the
 GitHub App settings.
 
+Only self-hosted legacy project-token routes need `RELAY_ACCESS_TOKEN`:
+
+```sh
+printf '%s' "$ADE_GITHUB_RELAY_TOKEN" | npx wrangler secret put RELAY_ACCESS_TOKEN
+```
+
+`ADE_GITHUB_RELAY_TOKEN` is the relay root secret stored in Cloudflare. Legacy
+ADE clients send a project-scoped `ade_proj_...` token derived from that secret
+and `remoteProjectId`; if ADE is configured with an already-derived
+`ade_proj_...` token it sends that value as-is.
+
 ## ADE project config
 
-Put the relay settings in the ADE project's local secret config, not in source:
+Normal ADE users should not edit project files for realtime GitHub updates. ADE
+uses the hosted relay by default and authenticates relay reads with the GitHub
+token the user already configured in Settings. The user-facing setup is:
+
+1. Sign in to GitHub in ADE.
+2. Install the ADE GitHub App for all repositories, or for the selected
+   repositories that should receive realtime updates.
+
+If the App is installed for all repositories, every GitHub project opened in ADE
+can use the relay automatically. If the App is installed for selected
+repositories, Settings shows whether the current repository is selected.
+
+For self-hosted relay development, or for legacy project-partitioned deployments,
+you can still put explicit relay settings in the ADE project's local secret
+config, not in source:
 
 ```yaml
 automations:
@@ -95,11 +115,12 @@ automations:
     accessToken: ${env:ADE_GITHUB_RELAY_TOKEN}
 ```
 
-`remoteProjectId` is only a relay partition key. It can be a generated UUID or a
-stable ADE project slug.
+`remoteProjectId` is only a legacy relay partition key. It can be a generated
+UUID or a stable ADE project slug.
 
 For dev/runtime launches, ADE also accepts env vars instead of
-`local.secret.yaml`:
+`local.secret.yaml`. Setting these opts the runtime into the legacy
+project-token route for self-hosted relays:
 
 ```sh
 ADE_GITHUB_RELAY_API_BASE_URL=https://ade-github-webhook-relay.<your-subdomain>.workers.dev
@@ -112,7 +133,7 @@ ADE_GITHUB_RELAY_ACCESS_TOKEN=<relay-token>
 Create or edit a GitHub App. Use the user-facing name `ADE`:
 
 - Webhook URL:
-  `https://ade-github-webhook-relay.<your-subdomain>.workers.dev/projects/<stable-project-id>/github/webhook`
+  `https://ade-github-webhook-relay.<your-subdomain>.workers.dev/github/webhook`
 - Webhook secret: the same `GITHUB_WEBHOOK_SECRET` stored in Cloudflare.
 - SSL verification: enabled.
 - Repository permissions:

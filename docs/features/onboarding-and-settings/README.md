@@ -144,7 +144,16 @@ Renderer — settings:
   `#pr-chat-transcripts`.
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — GitHub CLI / PAT auth, scope diagnostics,
-  and permission guidance. Embedded inside General.
+  and permission guidance. Embedded inside General. Also hosts the
+  `GitHubAppInstallPanel` (below) for installing "ADE for GitHub".
+- `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx`
+  — install / status card for the hosted ADE GitHub App that backs
+  webhook-relay PR updates. Reads per-repo installation + webhook state via
+  `window.ade.github.getAppInstallationStatus` (which the desktop resolves
+  against the hosted relay's `/github/repos/:owner/:repo/status` route using
+  the user's existing GitHub token — no relay token needed), links out to the
+  App install / manage pages, and offers a Refresh. Rendered in Settings and,
+  in a compact `onboarding` variant, during setup.
 - `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.

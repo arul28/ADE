@@ -19,28 +19,12 @@ struct WorkContextCompactDivider: View {
   }
 
   var body: some View {
-    HStack(spacing: 10) {
-      Rectangle()
-        .fill(
-          LinearGradient(
-            colors: [.clear, ADEColor.warning.opacity(0.22), .clear],
-            startPoint: .leading,
-            endPoint: .trailing
-          )
-        )
-        .frame(height: 0.6)
+    HStack(spacing: 8) {
+      dividerLine(startPoint: .leading, endPoint: .trailing)
 
       chip
 
-      Rectangle()
-        .fill(
-          LinearGradient(
-            colors: [.clear, ADEColor.warning.opacity(0.22), .clear],
-            startPoint: .trailing,
-            endPoint: .leading
-          )
-        )
-        .frame(height: 0.6)
+      dividerLine(startPoint: .trailing, endPoint: .leading)
     }
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
@@ -49,51 +33,97 @@ struct WorkContextCompactDivider: View {
 
   @ViewBuilder
   private var chip: some View {
+    ViewThatFits(in: .horizontal) {
+      chipContainer {
+        chipContent(
+          title: isInProgress ? "Compacting context..." : "Context compacted",
+          showsTokenCount: true,
+          showsTrigger: true
+        )
+      }
+      chipContainer {
+        chipContent(
+          title: isInProgress ? "Compacting..." : "Compacted",
+          showsTokenCount: false,
+          showsTrigger: true
+        )
+      }
+      chipContainer {
+        chipContent(
+          title: isInProgress ? "Compacting..." : "Compacted",
+          showsTokenCount: false,
+          showsTrigger: false
+        )
+      }
+    }
+    .layoutPriority(1)
+  }
+
+  private func dividerLine(startPoint: UnitPoint, endPoint: UnitPoint) -> some View {
+    Rectangle()
+      .fill(
+        LinearGradient(
+          colors: [.clear, ADEColor.warning.opacity(0.22), .clear],
+          startPoint: startPoint,
+          endPoint: endPoint
+        )
+      )
+      .frame(minWidth: 8, maxWidth: .infinity)
+      .frame(height: 0.6)
+      .layoutPriority(-1)
+  }
+
+  private func chipContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+    content()
+      .foregroundStyle(ADEColor.warning)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background(ADEColor.warning.opacity(0.08), in: Capsule())
+      .overlay(
+        Capsule().stroke(ADEColor.warning.opacity(0.2), lineWidth: 0.5)
+      )
+  }
+
+  @ViewBuilder
+  private func chipContent(title: String, showsTokenCount: Bool, showsTrigger: Bool) -> some View {
     HStack(spacing: 6) {
       if isInProgress {
         ProgressView()
           .controlSize(.mini)
           .tint(ADEColor.warning)
-        Text("Compacting context…")
+        Text(title)
           .font(.caption2.weight(.semibold))
           .tracking(0.3)
-        if let triggerLabel = parsed.triggerLabel {
-          Text(triggerLabel)
-            .font(.caption2.weight(.bold))
-            .tracking(0.3)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(ADEColor.warning.opacity(0.14), in: Capsule())
-        }
       } else {
         Image(systemName: "rectangle.compress.vertical")
           .font(.caption2.weight(.bold))
-        Text("Context compacted")
+        Text(title)
           .font(.caption2.weight(.semibold))
           .tracking(0.3)
-        if let tokensFreedLabel = parsed.tokensFreedLabel {
+      }
+
+      if showsTokenCount, let tokensFreedLabel = parsed.tokensFreedLabel {
+        Group {
           Text("·").foregroundStyle(ADEColor.warning.opacity(0.4))
           Text(tokensFreedLabel)
             .font(.caption2.monospaced())
             .foregroundStyle(ADEColor.warning.opacity(0.7))
         }
-        if let triggerLabel = parsed.triggerLabel {
-          Text(triggerLabel)
-            .font(.caption2.weight(.bold))
-            .tracking(0.3)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(ADEColor.warning.opacity(0.14), in: Capsule())
-        }
+      }
+
+      if showsTrigger, let triggerLabel = parsed.triggerLabel {
+        Text(triggerLabel)
+          .font(.caption2.weight(.bold))
+          .tracking(0.3)
+          .lineLimit(1)
+          .fixedSize(horizontal: true, vertical: false)
+          .padding(.horizontal, 5)
+          .padding(.vertical, 1)
+          .background(ADEColor.warning.opacity(0.14), in: Capsule())
       }
     }
-    .foregroundStyle(ADEColor.warning)
-    .padding(.horizontal, 10)
-    .padding(.vertical, 5)
-    .background(ADEColor.warning.opacity(0.08), in: Capsule())
-    .overlay(
-      Capsule().stroke(ADEColor.warning.opacity(0.2), lineWidth: 0.5)
-    )
+    .lineLimit(1)
+    .fixedSize(horizontal: true, vertical: false)
   }
 }
 

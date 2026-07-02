@@ -112,6 +112,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "subagent_started":
         event = .subagentStarted(
           taskId: stringValue(eventDict["taskId"]),
+          agentId: optionalString(eventDict["agentId"]),
+          agentType: optionalString(eventDict["agentType"]),
+          parentToolUseId: optionalString(eventDict["parentToolUseId"]),
           description: stringValue(eventDict["description"]),
           background: (eventDict["background"] as? Bool) ?? false,
           turnId: turnId
@@ -119,6 +122,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "subagent_progress":
         event = .subagentProgress(
           taskId: stringValue(eventDict["taskId"]),
+          agentId: optionalString(eventDict["agentId"]),
+          agentType: optionalString(eventDict["agentType"]),
+          parentToolUseId: optionalString(eventDict["parentToolUseId"]),
           description: optionalString(eventDict["description"]),
           summary: stringValue(eventDict["summary"]),
           toolName: optionalString(eventDict["lastToolName"]),
@@ -127,6 +133,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "subagent_result":
         event = .subagentResult(
           taskId: stringValue(eventDict["taskId"]),
+          agentId: optionalString(eventDict["agentId"]),
+          agentType: optionalString(eventDict["agentType"]),
+          parentToolUseId: optionalString(eventDict["parentToolUseId"]),
           status: stringValue(eventDict["status"]),
           summary: stringValue(eventDict["summary"]),
           turnId: turnId

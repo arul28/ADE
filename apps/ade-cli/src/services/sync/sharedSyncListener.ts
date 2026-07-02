@@ -76,6 +76,9 @@ export type SyncPeerHandoffSnapshot = {
   subscribedSessionIds?: string[];
   subscribedChatSessionIds?: string[];
   chatTranscriptOffsets?: Record<string, number>;
+  /** All-projects roster (mobile hub) subscription, restored on adoption so a
+   * hosted-project switch does not silently stop the hub feed. */
+  rosterSubscribed?: boolean;
   bufferedMessages?: Array<{ data: RawData; isBinary: boolean }>;
 };
 

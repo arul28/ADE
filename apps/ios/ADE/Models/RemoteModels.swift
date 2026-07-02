@@ -731,6 +731,57 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
+
+  static func == (lhs: AgentChatSessionSummary, rhs: AgentChatSessionSummary) -> Bool {
+    lhs.sessionId == rhs.sessionId
+      && lhs.laneId == rhs.laneId
+      && lhs.provider == rhs.provider
+      && lhs.model == rhs.model
+      && lhs.modelId == rhs.modelId
+      && lhs.sessionProfile == rhs.sessionProfile
+      && lhs.title == rhs.title
+      && lhs.goal == rhs.goal
+      && lhs.reasoningEffort == rhs.reasoningEffort
+      && lhs.codexFastMode == rhs.codexFastMode
+      && lhs.fastMode == rhs.fastMode
+      && lhs.executionMode == rhs.executionMode
+      && lhs.permissionMode == rhs.permissionMode
+      && lhs.interactionMode == rhs.interactionMode
+      && lhs.claudePermissionMode == rhs.claudePermissionMode
+      && lhs.codexApprovalPolicy == rhs.codexApprovalPolicy
+      && lhs.codexSandbox == rhs.codexSandbox
+      && lhs.codexConfigSource == rhs.codexConfigSource
+      && lhs.opencodePermissionMode == rhs.opencodePermissionMode
+      && lhs.droidPermissionMode == rhs.droidPermissionMode
+      && lhs.cursorModeId == rhs.cursorModeId
+      && lhs.cursorModeSnapshot == rhs.cursorModeSnapshot
+      && lhs.cursorConfigValues == rhs.cursorConfigValues
+      && lhs.computerUse == rhs.computerUse
+      && lhs.completion == rhs.completion
+      && lhs.identityKey == rhs.identityKey
+      && lhs.surface == rhs.surface
+      && lhs.automationId == rhs.automationId
+      && lhs.automationRunId == rhs.automationRunId
+      && lhs.capabilityMode == rhs.capabilityMode
+      && lhs.status == rhs.status
+      && lhs.idleSinceAt == rhs.idleSinceAt
+      && lhs.startedAt == rhs.startedAt
+      && lhs.endedAt == rhs.endedAt
+      && lhs.archivedAt == rhs.archivedAt
+      && lhs.lastActivityAt == rhs.lastActivityAt
+      && lhs.lastOutputPreview == rhs.lastOutputPreview
+      && lhs.summary == rhs.summary
+      && lhs.awaitingInput == rhs.awaitingInput
+      && lhs.pendingInputItemId == rhs.pendingInputItemId
+      && lhs.threadId == rhs.threadId
+      && lhs.requestedCwd == rhs.requestedCwd
+      && lhs.orchestrationRunId == rhs.orchestrationRunId
+      && lhs.orchestrationRole == rhs.orchestrationRole
+      && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.orchestrationTag == rhs.orchestrationTag
+      && lhs.orchestrationStepId == rhs.orchestrationStepId
+      && lhs.orchestrationBundlePath == rhs.orchestrationBundlePath
+  }
 }
 
 struct CtoWorkerEntry: Codable, Identifiable, Hashable {
@@ -1864,6 +1915,24 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var provenance: AgentChatEventProvenance?
 }
 
+struct AgentChatEventHistorySnapshot: Decodable, Equatable {
+  var sessionId: String
+  var events: [AgentChatEventEnvelope]
+  var truncated: Bool
+  var transcriptTruncated: Bool?
+  var windowTruncated: Bool?
+  var sessionFound: Bool?
+  var tailStartOffset: Int?
+}
+
+struct AgentChatEventHistoryPage: Decodable, Equatable {
+  var sessionId: String
+  var events: [AgentChatEventEnvelope]
+  var startOffset: Int
+  var hasMore: Bool
+  var sessionFound: Bool
+}
+
 struct AgentChatFileRef: Codable, Equatable {
   var path: String
   var type: String
@@ -1890,9 +1959,9 @@ enum AgentChatEvent: Decodable, Equatable {
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
-  case subagentStarted(taskId: String, description: String, background: Bool?, turnId: String?)
-  case subagentProgress(taskId: String, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, turnId: String?)
-  case subagentResult(taskId: String, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool?, turnId: String?)
+  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, turnId: String?)
+  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
   case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, state: AgentChatContextCompactState?, turnId: String?)
@@ -1955,6 +2024,9 @@ extension AgentChatEvent {
     case stepNumber
     case items
     case taskId
+    case agentId
+    case agentType
+    case parentToolUseId
     case background
     case lastToolName
     case question
@@ -2129,6 +2201,9 @@ extension AgentChatEvent {
     case "subagent_started":
       self = .subagentStarted(
         taskId: try container.decode(String.self, forKey: .taskId),
+        agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
+        agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decode(String.self, forKey: .description),
         background: try container.decodeIfPresent(Bool.self, forKey: .background),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
@@ -2136,6 +2211,9 @@ extension AgentChatEvent {
     case "subagent_progress":
       self = .subagentProgress(
         taskId: try container.decode(String.self, forKey: .taskId),
+        agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
+        agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decodeIfPresent(String.self, forKey: .description),
         summary: try container.decode(String.self, forKey: .summary),
         usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
@@ -2145,6 +2223,9 @@ extension AgentChatEvent {
     case "subagent_result":
       self = .subagentResult(
         taskId: try container.decode(String.self, forKey: .taskId),
+        agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
+        agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         status: try container.decode(AgentChatSubagentStatus.self, forKey: .status),
         summary: try container.decode(String.self, forKey: .summary),
         usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
@@ -2362,6 +2443,8 @@ struct AgentChatTranscriptEntry: Codable, Identifiable, Equatable {
   var text: String
   var timestamp: String
   var turnId: String?
+  var messageId: String? = nil
+  var itemId: String? = nil
 }
 
 struct AgentChatTranscriptResponse: Codable, Equatable {
@@ -2586,11 +2669,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
   var branchRef: String? = nil
   var rootPath: String
   var isReadOnlyByDefault: Bool
-  var mobileReadOnly: Bool
-
-  var readOnlyOnMobile: Bool {
-    mobileReadOnly || isReadOnlyByDefault
-  }
 
   init(
     id: String,
@@ -2599,8 +2677,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     name: String,
     branchRef: String? = nil,
     rootPath: String,
-    isReadOnlyByDefault: Bool,
-    mobileReadOnly: Bool = true
+    isReadOnlyByDefault: Bool
   ) {
     self.id = id
     self.kind = kind
@@ -2609,7 +2686,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     self.branchRef = branchRef
     self.rootPath = rootPath
     self.isReadOnlyByDefault = isReadOnlyByDefault
-    self.mobileReadOnly = mobileReadOnly
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2620,7 +2696,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     case branchRef
     case rootPath
     case isReadOnlyByDefault
-    case mobileReadOnly
   }
 
   init(from decoder: Decoder) throws {
@@ -2632,7 +2707,6 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     branchRef = try container.decodeIfPresent(String.self, forKey: .branchRef)
     rootPath = try container.decode(String.self, forKey: .rootPath)
     isReadOnlyByDefault = try container.decode(Bool.self, forKey: .isReadOnlyByDefault)
-    mobileReadOnly = try container.decodeIfPresent(Bool.self, forKey: .mobileReadOnly) ?? true
   }
 }
 
@@ -2754,6 +2828,43 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
   var orchestrationTag: String? = nil
+
+  static func == (lhs: TerminalSessionSummary, rhs: TerminalSessionSummary) -> Bool {
+    lhs.id == rhs.id
+      && lhs.laneId == rhs.laneId
+      && lhs.laneName == rhs.laneName
+      && lhs.ptyId == rhs.ptyId
+      && lhs.tracked == rhs.tracked
+      && lhs.pinned == rhs.pinned
+      && lhs.manuallyNamed == rhs.manuallyNamed
+      && lhs.goal == rhs.goal
+      && lhs.toolType == rhs.toolType
+      && lhs.title == rhs.title
+      && lhs.status == rhs.status
+      && lhs.startedAt == rhs.startedAt
+      && lhs.endedAt == rhs.endedAt
+      && lhs.archivedAt == rhs.archivedAt
+      && lhs.exitCode == rhs.exitCode
+      && lhs.transcriptPath == rhs.transcriptPath
+      && lhs.headShaStart == rhs.headShaStart
+      && lhs.headShaEnd == rhs.headShaEnd
+      && lhs.lastOutputPreview == rhs.lastOutputPreview
+      && lhs.summary == rhs.summary
+      && lhs.runtimeState == rhs.runtimeState
+      && lhs.resumeCommand == rhs.resumeCommand
+      && lhs.resumeMetadata?.provider == rhs.resumeMetadata?.provider
+      && lhs.resumeMetadata?.targetKind == rhs.resumeMetadata?.targetKind
+      && lhs.resumeMetadata?.targetId == rhs.resumeMetadata?.targetId
+      && lhs.resumeMetadata?.target == rhs.resumeMetadata?.target
+      && lhs.resumeMetadata?.launch == rhs.resumeMetadata?.launch
+      && lhs.resumeMetadata?.permissionMode == rhs.resumeMetadata?.permissionMode
+      && lhs.chatIdleSinceAt == rhs.chatIdleSinceAt
+      && lhs.chatSessionId == rhs.chatSessionId
+      && lhs.pendingInputItemId == rhs.pendingInputItemId
+      && lhs.orchestrationRunId == rhs.orchestrationRunId
+      && lhs.orchestrationRole == rhs.orchestrationRole
+      && lhs.orchestrationTag == rhs.orchestrationTag
+  }
 }
 
 struct ProcessReadinessConfig: Codable, Equatable {

@@ -66,28 +66,88 @@ struct WorkSessionGroup: Identifiable, Equatable {
   }
 }
 
+struct WorkSessionChildGroup: Equatable {
+  let parentId: String
+  let children: [TerminalSessionSummary]
+  let collapsedSectionId: String
+
+  var label: String {
+    children.count == 1 ? "1 shell" : "\(children.count) shells"
+  }
+}
+
 struct WorkRootSessionPresentation: Equatable {
   let mergedSessions: [TerminalSessionSummary]
   let displaySessions: [TerminalSessionSummary]
   let displaySessionIds: Set<String>
+  let topLevelDisplaySessionIds: Set<String>
+  let childGroupsByParentId: [String: WorkSessionChildGroup]
   let liveChatSessions: [TerminalSessionSummary]
   let sessionGroups: [WorkSessionGroup]
+  let workOrderedLanes: [LaneSummary]
+  let laneById: [String: LaneSummary]
+  let lanePrTagsByLaneId: [String: LanePrTag]
   let globalNeedsInputCount: Int
   let globalLiveSessionCount: Int
   let firstGlobalAttentionSessionId: String?
   let firstGlobalLiveSessionId: String?
+  private let renderSignature: Int
+
+  init(
+    mergedSessions: [TerminalSessionSummary],
+    displaySessions: [TerminalSessionSummary],
+    displaySessionIds: Set<String>,
+    topLevelDisplaySessionIds: Set<String>,
+    childGroupsByParentId: [String: WorkSessionChildGroup],
+    liveChatSessions: [TerminalSessionSummary],
+    sessionGroups: [WorkSessionGroup],
+    workOrderedLanes: [LaneSummary],
+    laneById: [String: LaneSummary],
+    lanePrTagsByLaneId: [String: LanePrTag],
+    globalNeedsInputCount: Int,
+    globalLiveSessionCount: Int,
+    firstGlobalAttentionSessionId: String?,
+    firstGlobalLiveSessionId: String?,
+    renderSignature: Int
+  ) {
+    self.mergedSessions = mergedSessions
+    self.displaySessions = displaySessions
+    self.displaySessionIds = displaySessionIds
+    self.topLevelDisplaySessionIds = topLevelDisplaySessionIds
+    self.childGroupsByParentId = childGroupsByParentId
+    self.liveChatSessions = liveChatSessions
+    self.sessionGroups = sessionGroups
+    self.workOrderedLanes = workOrderedLanes
+    self.laneById = laneById
+    self.lanePrTagsByLaneId = lanePrTagsByLaneId
+    self.globalNeedsInputCount = globalNeedsInputCount
+    self.globalLiveSessionCount = globalLiveSessionCount
+    self.firstGlobalAttentionSessionId = firstGlobalAttentionSessionId
+    self.firstGlobalLiveSessionId = firstGlobalLiveSessionId
+    self.renderSignature = renderSignature
+  }
 
   static let empty = WorkRootSessionPresentation(
     mergedSessions: [],
     displaySessions: [],
     displaySessionIds: [],
+    topLevelDisplaySessionIds: [],
+    childGroupsByParentId: [:],
     liveChatSessions: [],
     sessionGroups: [],
+    workOrderedLanes: [],
+    laneById: [:],
+    lanePrTagsByLaneId: [:],
     globalNeedsInputCount: 0,
     globalLiveSessionCount: 0,
     firstGlobalAttentionSessionId: nil,
-    firstGlobalLiveSessionId: nil
+    firstGlobalLiveSessionId: nil,
+    renderSignature: 0
   )
+
+  static func == (lhs: WorkRootSessionPresentation, rhs: WorkRootSessionPresentation) -> Bool {
+    lhs.renderSignature == rhs.renderSignature
+  }
 }
 
 func buildWorkRootSessionPresentation(
@@ -100,12 +160,26 @@ func buildWorkRootSessionPresentation(
   searchText: String,
   outputSearchBySessionId: [String: String] = [:],
   organization: WorkSessionOrganization,
-  orderedLanes: [LaneSummary]
+  orderedLanes: [LaneSummary],
+  pullRequests: [PullRequestListItem] = [],
+  githubPrs: [GitHubPrListItem] = []
 ) -> WorkRootSessionPresentation {
   let committedIds = Set(sessions.map(\.id))
   let draftValues = optimisticSessions.values.filter { !committedIds.contains($0.id) }
+  let workOrderedLanes = sortWorkLanesForTabs(orderedLanes)
+  let laneById = Dictionary(orderedLanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+  let lanePrTagsByLaneId = lanePrTagByLaneId(
+    lanes: orderedLanes,
+    pullRequests: pullRequests,
+    githubPrs: githubPrs
+  )
   let mergedSessions = (sessions + draftValues)
     .sorted { compareWorkSessionSortOrder($0, $1, chatSummaries: chatSummaries) }
+  let statusBySessionId = Dictionary(
+    uniqueKeysWithValues: mergedSessions.map { session in
+      (session.id, normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id]))
+    }
+  )
 
   let displaySessions = workFilteredSessions(
     mergedSessions,
@@ -116,6 +190,10 @@ func buildWorkRootSessionPresentation(
     searchText: searchText,
     outputSearchBySessionId: outputSearchBySessionId
   )
+  let displaySessionIds = Set(displaySessions.map(\.id))
+  let childGroupsByParentId = workSessionChildGroupsByParentId(sessions: displaySessions)
+  let childSessionIds = Set(childGroupsByParentId.values.flatMap { $0.children.map(\.id) })
+  let topLevelDisplaySessionIds = displaySessionIds.subtracting(childSessionIds)
 
   var liveChatSessions: [TerminalSessionSummary] = []
   liveChatSessions.reserveCapacity(mergedSessions.count)
@@ -126,7 +204,7 @@ func buildWorkRootSessionPresentation(
 
   for session in mergedSessions {
     let isArchived = archivedSessionIds.contains(session.id)
-    let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+    let status = statusBySessionId[session.id] ?? "ended"
 
     if isChatSession(session), status != "ended", !isArchived {
       liveChatSessions.append(session)
@@ -154,28 +232,211 @@ func buildWorkRootSessionPresentation(
     organization: organization,
     sessions: displaySessions,
     chatSummaries: chatSummaries,
+    statusBySessionId: statusBySessionId,
     archivedSessionIds: archivedSessionIds,
-    orderedLanes: orderedLanes
+    orderedLanes: workOrderedLanes
   )
 
   return WorkRootSessionPresentation(
     mergedSessions: mergedSessions,
     displaySessions: displaySessions,
-    displaySessionIds: Set(displaySessions.map(\.id)),
+    displaySessionIds: displaySessionIds,
+    topLevelDisplaySessionIds: topLevelDisplaySessionIds,
+    childGroupsByParentId: childGroupsByParentId,
     liveChatSessions: liveChatSessions,
     sessionGroups: sessionGroups,
+    workOrderedLanes: workOrderedLanes,
+    laneById: laneById,
+    lanePrTagsByLaneId: lanePrTagsByLaneId,
     globalNeedsInputCount: globalNeedsInputCount,
     globalLiveSessionCount: globalLiveSessionCount,
     firstGlobalAttentionSessionId: firstGlobalAttentionSessionId,
-    firstGlobalLiveSessionId: firstGlobalLiveSessionId
+    firstGlobalLiveSessionId: firstGlobalLiveSessionId,
+    renderSignature: workRootSessionPresentationRenderSignature(
+      mergedSessions: mergedSessions,
+      displaySessions: displaySessions,
+      topLevelDisplaySessionIds: topLevelDisplaySessionIds,
+      childGroupsByParentId: childGroupsByParentId,
+      liveChatSessions: liveChatSessions,
+      sessionGroups: sessionGroups,
+      workOrderedLanes: workOrderedLanes,
+      lanePrTagsByLaneId: lanePrTagsByLaneId,
+      chatSummaries: chatSummaries,
+      statusBySessionId: statusBySessionId,
+      globalNeedsInputCount: globalNeedsInputCount,
+      globalLiveSessionCount: globalLiveSessionCount,
+      firstGlobalAttentionSessionId: firstGlobalAttentionSessionId,
+      firstGlobalLiveSessionId: firstGlobalLiveSessionId
+    )
   )
 }
+
+private func workRootSessionPresentationRenderSignature(
+  mergedSessions: [TerminalSessionSummary],
+  displaySessions: [TerminalSessionSummary],
+  topLevelDisplaySessionIds: Set<String>,
+  childGroupsByParentId: [String: WorkSessionChildGroup],
+  liveChatSessions: [TerminalSessionSummary],
+  sessionGroups: [WorkSessionGroup],
+  workOrderedLanes: [LaneSummary],
+  lanePrTagsByLaneId: [String: LanePrTag],
+  chatSummaries: [String: AgentChatSessionSummary],
+  statusBySessionId: [String: String],
+  globalNeedsInputCount: Int,
+  globalLiveSessionCount: Int,
+  firstGlobalAttentionSessionId: String?,
+  firstGlobalLiveSessionId: String?
+) -> Int {
+  var hasher = Hasher()
+  hasher.combine(mergedSessions.count)
+  for session in mergedSessions {
+    hasher.combine(session.id)
+    hasher.combine(session.title)
+    hasher.combine(session.laneId)
+    hasher.combine(session.laneName)
+    hasher.combine(session.toolType)
+    hasher.combine(session.summary)
+    hasher.combine(session.lastOutputPreview)
+    hasher.combine(session.status)
+    hasher.combine(session.runtimeState)
+    hasher.combine(session.chatIdleSinceAt)
+    hasher.combine(session.pendingInputItemId)
+    hasher.combine(session.chatSessionId)
+    hasher.combine(session.archivedAt)
+    hasher.combine(session.endedAt)
+    hasher.combine(session.pinned)
+    hasher.combine(statusBySessionId[session.id])
+    if let summary = chatSummaries[session.id] {
+      hasher.combine(summary.title)
+      hasher.combine(summary.provider)
+      hasher.combine(summary.model)
+      hasher.combine(summary.summary)
+      hasher.combine(summary.lastOutputPreview)
+      hasher.combine(summary.status)
+      hasher.combine(summary.idleSinceAt)
+      hasher.combine(summary.endedAt)
+    }
+  }
+  hasher.combine(displaySessions.map(\.id))
+  hasher.combine(topLevelDisplaySessionIds.sorted())
+  hasher.combine(liveChatSessions.map(\.id))
+  for group in sessionGroups {
+    hasher.combine(group.id)
+    hasher.combine(group.label)
+    hasher.combine(group.sessions.map(\.id))
+  }
+  for key in childGroupsByParentId.keys.sorted() {
+    guard let group = childGroupsByParentId[key] else { continue }
+    hasher.combine(key)
+    hasher.combine(group.parentId)
+    hasher.combine(group.collapsedSectionId)
+    hasher.combine(group.children.map(\.id))
+  }
+  for lane in workOrderedLanes {
+    hasher.combine(lane.id)
+    hasher.combine(lane.name)
+    hasher.combine(lane.color)
+    hasher.combine(lane.status.dirty)
+    hasher.combine(lane.status.ahead)
+    hasher.combine(lane.status.behind)
+  }
+  for key in lanePrTagsByLaneId.keys.sorted() {
+    guard let tag = lanePrTagsByLaneId[key] else { continue }
+    hasher.combine(key)
+    hasher.combine(tag.githubPrNumber)
+    hasher.combine(lanePrStateLabel(tag.state))
+  }
+  hasher.combine(globalNeedsInputCount)
+  hasher.combine(globalLiveSessionCount)
+  hasher.combine(firstGlobalAttentionSessionId)
+  hasher.combine(firstGlobalLiveSessionId)
+  return hasher.finalize()
+}
+
+func sortWorkLanesForTabs(_ lanes: [LaneSummary]) -> [LaneSummary] {
+  lanes.enumerated().sorted { lhsPair, rhsPair in
+    let lhs = lhsPair.element
+    let rhs = rhsPair.element
+    let lhsPrimary = lhs.laneType == "primary"
+    let rhsPrimary = rhs.laneType == "primary"
+    if lhsPrimary != rhsPrimary { return lhsPrimary }
+
+    let lhsDate = parseWorkSessionTimestamp(lhs.createdAt)
+    let rhsDate = parseWorkSessionTimestamp(rhs.createdAt)
+    if let lhsDate, let rhsDate, lhsDate != rhsDate {
+      return lhsDate > rhsDate
+    }
+    return lhsPair.offset < rhsPair.offset
+  }.map(\.element)
+}
+
+func workSessionChildGroupsByParentId(sessions: [TerminalSessionSummary]) -> [String: WorkSessionChildGroup] {
+  let visibleIds = Set(sessions.map(\.id))
+  var childrenByParentId: [String: [TerminalSessionSummary]] = [:]
+  for session in sessions {
+    guard let parentId = normalizedWorkParentChatSessionId(session.chatSessionId),
+      parentId != session.id,
+      visibleIds.contains(parentId)
+    else {
+      continue
+    }
+    childrenByParentId[parentId, default: []].append(session)
+  }
+
+  return Dictionary(uniqueKeysWithValues: childrenByParentId.map { parentId, children in
+    let ordered = children.sorted { lhs, rhs in
+      let lhsDate = parseWorkSessionTimestamp(lhs.startedAt)
+      let rhsDate = parseWorkSessionTimestamp(rhs.startedAt)
+      if let lhsDate, let rhsDate, lhsDate != rhsDate {
+        return lhsDate < rhsDate
+      }
+      if lhs.startedAt != rhs.startedAt {
+        return lhs.startedAt < rhs.startedAt
+      }
+      return lhs.id < rhs.id
+    }
+    return (
+      parentId,
+      WorkSessionChildGroup(
+        parentId: parentId,
+        children: ordered,
+        collapsedSectionId: workSessionChildSectionId(parentId: parentId)
+      )
+    )
+  })
+}
+
+func workSessionChildSectionId(parentId: String) -> String {
+  "chat:\(parentId)"
+}
+
+private func normalizedWorkParentChatSessionId(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func parseWorkSessionTimestamp(_ rawValue: String) -> Date? {
+  workSessionISO8601Formatter.date(from: rawValue) ?? workSessionISO8601FormatterNoFractional.date(from: rawValue)
+}
+
+private let workSessionISO8601Formatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+
+private let workSessionISO8601FormatterNoFractional: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime]
+  return formatter
+}()
 
 /// Group session list by the user's chosen organization. Empty groups are filtered out.
 func workSessionGroups(
   organization: WorkSessionOrganization,
   sessions: [TerminalSessionSummary],
   chatSummaries: [String: AgentChatSessionSummary],
+  statusBySessionId: [String: String] = [:],
   archivedSessionIds: Set<String>,
   orderedLanes: [LaneSummary]
 ) -> [WorkSessionGroup] {
@@ -184,6 +445,7 @@ func workSessionGroups(
     return workSessionGroupsByStatus(
       sessions: sessions,
       chatSummaries: chatSummaries,
+      statusBySessionId: statusBySessionId,
       archivedSessionIds: archivedSessionIds
     )
   case .byLane:
@@ -199,6 +461,7 @@ func workSessionGroups(
 func workSessionGroupsByStatus(
   sessions: [TerminalSessionSummary],
   chatSummaries: [String: AgentChatSessionSummary],
+  statusBySessionId: [String: String] = [:],
   archivedSessionIds: Set<String>
 ) -> [WorkSessionGroup] {
   var needsInput: [TerminalSessionSummary] = []
@@ -212,7 +475,8 @@ func workSessionGroupsByStatus(
       archived.append(session)
       continue
     }
-    let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+    let status = statusBySessionId[session.id]
+      ?? normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
     if status == "awaiting-input" {
       needsInput.append(session)
     } else if session.pinned {
@@ -268,13 +532,9 @@ func workSessionGroupsByLane(
   }
   // Surface any sessions whose lane isn't in the ordered list (e.g., soft-deleted lanes)
   // as their own per-lane groups so users still recognize which branch each belongs to.
-  let iso = ISO8601DateFormatter()
-  iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  let isoFallback = ISO8601DateFormatter()
-  isoFallback.formatOptions = [.withInternetDateTime]
   func latestStartedAt(_ list: [TerminalSessionSummary]) -> Date {
     list.reduce(.distantPast) { acc, session in
-      let parsed = iso.date(from: session.startedAt) ?? isoFallback.date(from: session.startedAt) ?? .distantPast
+      let parsed = parseWorkSessionTimestamp(session.startedAt) ?? .distantPast
       return parsed > acc ? parsed : acc
     }
   }
@@ -309,13 +569,8 @@ func workSessionGroupsByTime(sessions: [TerminalSessionSummary]) -> [WorkSession
   var yesterday: [TerminalSessionSummary] = []
   var older: [TerminalSessionSummary] = []
 
-  let formatter = ISO8601DateFormatter()
-  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  let fallbackFormatter = ISO8601DateFormatter()
-  fallbackFormatter.formatOptions = [.withInternetDateTime]
-
   for session in sessions {
-    let parsed = formatter.date(from: session.startedAt) ?? fallbackFormatter.date(from: session.startedAt)
+    let parsed = parseWorkSessionTimestamp(session.startedAt)
     guard let started = parsed else {
       older.append(session)
       continue

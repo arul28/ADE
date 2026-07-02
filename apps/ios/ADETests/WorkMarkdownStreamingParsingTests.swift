@@ -64,6 +64,22 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
     """)
   }
 
+  func testOrderedListsSplitByBlankLinesKeepSourceNumbers() {
+    let blocks = parseMarkdownBlocks("""
+    1. first
+
+    2. second
+
+    3. third
+    """)
+
+    let starts = blocks.compactMap { block -> Int? in
+      guard case .orderedList(let start, _) = block.kind else { return nil }
+      return start
+    }
+    XCTAssertEqual(starts, [1, 2, 3])
+  }
+
   func testStreamingMatchesFullParseWhileCodeFenceOpensAndClosesAcrossDeltas() {
     // The fence opens in one snapshot and closes many deltas later; the blank
     // lines INSIDE the fence must never be picked as a split boundary.

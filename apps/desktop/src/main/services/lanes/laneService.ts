@@ -5417,7 +5417,8 @@ export function createLaneService({
         name: row.name,
         branchRef: row.branch_ref,
         rootPath: row.worktree_path,
-        isReadOnlyByDefault: row.is_edit_protected === 1
+        // Edit-protection no longer gates file editing; workspaces are always editable.
+        isReadOnlyByDefault: false
       }));
     },
 
@@ -5439,7 +5440,8 @@ export function createLaneService({
         name: row.name,
         branchRef: row.branch_ref,
         rootPath: row.worktree_path,
-        isReadOnlyByDefault: row.is_edit_protected === 1
+        // Edit-protection no longer gates file editing; workspaces are always editable.
+        isReadOnlyByDefault: false
       };
     },
 

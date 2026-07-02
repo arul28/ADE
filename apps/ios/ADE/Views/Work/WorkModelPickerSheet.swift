@@ -92,6 +92,18 @@ struct WorkModelPickerSheet: View {
     !catalog.isEmpty
   }
 
+  private var cursorCatalogSourceValue: String {
+    switch cursorAvailabilityMode {
+    case .chat: return "sdk"
+    case .cli: return "cli"
+    }
+  }
+
+  private func cursorCatalogSource(for refreshProvider: String? = nil) -> String? {
+    guard refreshProvider == nil || refreshProvider == "cursor" else { return nil }
+    return cursorCatalogSourceValue
+  }
+
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
@@ -438,7 +450,10 @@ struct WorkModelPickerSheet: View {
 	    }
 
 	    do {
-	      let hostCatalog = try await syncService.getChatModelCatalog(mode: "cached")
+	      let hostCatalog = try await syncService.getChatModelCatalog(
+	        mode: "cached",
+	        cursorSource: cursorCatalogSource()
+	      )
       guard !Task.isCancelled else { return }
 	      apply(hostCatalog: hostCatalog)
 	    } catch {
@@ -457,11 +472,19 @@ struct WorkModelPickerSheet: View {
 	    }
 		    guard let refreshProvider else { return }
 		    do {
-		      let hostCatalog = try await syncService.getChatModelCatalog(mode: "refresh-stale", refreshProvider: refreshProvider)
+		      let hostCatalog = try await syncService.getChatModelCatalog(
+		        mode: "refresh-stale",
+		        refreshProvider: refreshProvider,
+		        cursorSource: cursorCatalogSource(for: refreshProvider)
+		      )
 	      guard !Task.isCancelled else { return }
 	      apply(hostCatalog: hostCatalog)
 	      if hostCatalog.stale == true {
-	        let freshCatalog = try await syncService.getChatModelCatalog(mode: "force", refreshProvider: refreshProvider)
+	        let freshCatalog = try await syncService.getChatModelCatalog(
+	          mode: "force",
+	          refreshProvider: refreshProvider,
+	          cursorSource: cursorCatalogSource(for: refreshProvider)
+	        )
 	        guard !Task.isCancelled else { return }
 	        apply(hostCatalog: freshCatalog)
 	      }

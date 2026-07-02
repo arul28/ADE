@@ -404,7 +404,7 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("accepts a compatible TCP daemon without a build hash", async () => {
+  itUnix("accepts a compatible TCP daemon and computes a build hash when none is advertised", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-tcp-build-"));
@@ -447,11 +447,15 @@ describe("ade rpc --stdio daemon bridge", () => {
       expect(initialize).toMatchObject({
         runtimeInfo: {
           version: "2.0.0",
-          buildHash: null,
           multiProject: true,
           pid: tcpDaemon.pid,
         },
       });
+      // With no env-advertised build hash, the daemon computes a sha256 of its
+      // own entrypoint, so buildHash is a truthy string rather than null.
+      expect(
+        (initialize as { runtimeInfo?: { buildHash?: string | null } }).runtimeInfo?.buildHash,
+      ).toBeTruthy();
 
       await expect(proxy.request("shutdown")).resolves.toEqual({});
       proxy.closeInput();

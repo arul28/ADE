@@ -120,6 +120,7 @@ struct FilesSearchScreen: View {
               open(path: item.path, line: nil)
             } label: {
               FilesResultRow(
+                workspaceId: workspace.id,
                 path: item.path,
                 transitionNamespace: nil,
                 isSelectedTransitionSource: false

@@ -8,16 +8,27 @@ func buildWorkChatTimelineSnapshot(
   artifacts: [ComputerUseArtifactSummary],
   localEchoMessages: [WorkLocalEchoMessage]
 ) -> WorkChatTimelineSnapshot {
+  let signature = workChatTimelineSnapshotSignature(
+    transcript: transcript,
+    fallbackEntries: fallbackEntries,
+    artifacts: artifacts,
+    localEchoMessages: localEchoMessages
+  )
   let pendingInputs = derivePendingWorkInputs(from: transcript)
   let pendingSteers = derivePendingWorkSteers(from: transcript)
   let suppressedItemIds = Set(pendingInputs.map(\.itemId))
   let suppressedToolItemIds = Set(pendingInputs.map(\.itemId))
-  let toolCards = buildWorkToolCards(from: transcript, suppressedPendingItemIds: suppressedToolItemIds)
+  let toolCards = buildWorkMobileTimelineToolCards(from: transcript, suppressedPendingItemIds: suppressedToolItemIds)
+    .filter(workMobileShowsToolCardInTimeline)
   let eventCards = buildWorkEventCards(from: transcript, suppressedItemIds: suppressedItemIds)
-  let commandCards = buildWorkCommandCards(from: transcript)
-  let fileChangeCards = buildWorkFileChangeCards(from: transcript)
+    .filter { $0.kind != "toolUseSummary" }
+  let commandCards: [WorkCommandCardModel] = []
+  let fileChangeCards: [WorkFileChangeCardModel] = []
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
   let transcriptIndicatesActiveTurn = workTranscriptIndicatesActiveTurn(transcript)
+  let transcriptLatestTurnEnded = workTranscriptLatestTurnEnded(transcript)
+  let transcriptHasInterruptibleActivity = WorkActivityIndicator.derivePresentation(from: transcript) != nil
+  let latestTranscriptTimestamp = latestWorkTranscriptTimestamp(transcript)
   let timeline = buildWorkTimeline(
     transcript: transcript,
     fallbackEntries: fallbackEntries,
@@ -31,6 +42,7 @@ func buildWorkChatTimelineSnapshot(
   )
 
   return WorkChatTimelineSnapshot(
+    signature: signature,
     pendingInputs: pendingInputs,
     pendingSteers: pendingSteers,
     toolCards: toolCards,
@@ -39,8 +51,331 @@ func buildWorkChatTimelineSnapshot(
     fileChangeCards: fileChangeCards,
     subagentSnapshots: subagentSnapshots,
     transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
+    transcriptLatestTurnEnded: transcriptLatestTurnEnded,
+    transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
+    latestTranscriptTimestamp: latestTranscriptTimestamp,
+    latestMessageAssistantId: latestWorkTimelineMessageAssistantId(timeline),
     timeline: timeline
   )
+}
+
+private func workChatTimelineSnapshotSignature(
+  transcript: [WorkChatEnvelope],
+  fallbackEntries: [AgentChatTranscriptEntry],
+  artifacts: [ComputerUseArtifactSummary],
+  localEchoMessages: [WorkLocalEchoMessage]
+) -> Int {
+  var hasher = Hasher()
+  hasher.combine(transcript.count)
+  for envelope in transcript {
+    hasher.combine(envelope.sessionId)
+    hasher.combine(envelope.timestamp)
+    hasher.combine(envelope.sequence ?? Int.min)
+    combineWorkChatEventSignature(envelope.event, into: &hasher)
+  }
+
+  if transcript.isEmpty {
+    hasher.combine(fallbackEntries.count)
+    for entry in fallbackEntries {
+      hasher.combine(entry.role)
+      combineLongTextSignature(entry.text, into: &hasher)
+      hasher.combine(entry.timestamp)
+      combineOptional(entry.turnId, into: &hasher)
+      combineOptional(entry.messageId, into: &hasher)
+      combineOptional(entry.itemId, into: &hasher)
+    }
+  } else {
+    hasher.combine(0)
+  }
+
+  hasher.combine(artifacts.count)
+  for artifact in artifacts {
+    hasher.combine(artifact.id)
+    hasher.combine(artifact.artifactKind)
+    hasher.combine(artifact.backendStyle)
+    hasher.combine(artifact.backendName)
+    combineOptional(artifact.sourceToolName, into: &hasher)
+    combineOptional(artifact.originalType, into: &hasher)
+    hasher.combine(artifact.title)
+    combineOptional(artifact.description, into: &hasher)
+    hasher.combine(artifact.uri)
+    hasher.combine(artifact.storageKind)
+    combineOptional(artifact.mimeType, into: &hasher)
+    combineOptional(artifact.metadataJson, into: &hasher)
+    hasher.combine(artifact.createdAt)
+    hasher.combine(artifact.ownerKind)
+    hasher.combine(artifact.ownerId)
+    hasher.combine(artifact.relation)
+    combineOptional(artifact.reviewState, into: &hasher)
+    combineOptional(artifact.workflowState, into: &hasher)
+    combineOptional(artifact.reviewNote, into: &hasher)
+  }
+
+  hasher.combine(localEchoMessages.count)
+  for echo in localEchoMessages {
+    hasher.combine(echo.id)
+    combineLongTextSignature(echo.text, into: &hasher)
+    hasher.combine(echo.timestamp)
+    combineOptional(echo.deliveryState, into: &hasher)
+  }
+
+  return hasher.finalize()
+}
+
+private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: inout Hasher) {
+  hasher.combine(event.typeKey)
+  switch event {
+  case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed):
+    combineLongTextSignature(text, into: &hasher)
+    combineAgentChatFileRefs(attachments, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+    combineOptional(steerId, into: &hasher)
+    combineOptional(deliveryState, into: &hasher)
+    combineOptional(processed, into: &hasher)
+  case .assistantText(let text, let turnId, let itemId):
+    combineLongTextSignature(text, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+    combineOptional(itemId, into: &hasher)
+  case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):
+    hasher.combine(tool)
+    combineLongTextSignature(argsText, into: &hasher)
+    hasher.combine(itemId)
+    combineOptional(parentItemId, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status):
+    hasher.combine(tool)
+    combineLongTextSignature(resultText, into: &hasher)
+    hasher.combine(itemId)
+    combineOptional(parentItemId, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+    hasher.combine(status.rawValue)
+  case .activity(let kind, let detail, let turnId):
+    hasher.combine(kind)
+    combineOptionalText(detail, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .plan(let steps, let explanation, let turnId):
+    combinePlanSteps(steps, into: &hasher)
+    combineOptionalText(explanation, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+    hasher.combine(taskId)
+    combineOptional(agentId, into: &hasher)
+    combineOptional(agentType, into: &hasher)
+    combineOptional(parentToolUseId, into: &hasher)
+    hasher.combine(description)
+    hasher.combine(background)
+    combineOptional(turnId, into: &hasher)
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let turnId):
+    hasher.combine(taskId)
+    combineOptional(agentId, into: &hasher)
+    combineOptional(agentType, into: &hasher)
+    combineOptional(parentToolUseId, into: &hasher)
+    combineOptionalText(description, into: &hasher)
+    combineLongTextSignature(summary, into: &hasher)
+    combineOptional(toolName, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let turnId):
+    hasher.combine(taskId)
+    combineOptional(agentId, into: &hasher)
+    combineOptional(agentType, into: &hasher)
+    combineOptional(parentToolUseId, into: &hasher)
+    hasher.combine(status)
+    combineLongTextSignature(summary, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .structuredQuestion(let question, let options, let itemId, let turnId):
+    combineLongTextSignature(question, into: &hasher)
+    combineQuestionOptions(options, into: &hasher)
+    hasher.combine(itemId)
+    combineOptional(turnId, into: &hasher)
+  case .approvalRequest(let description, let detail, let itemId, let turnId):
+    combineLongTextSignature(description, into: &hasher)
+    combineOptionalText(detail, into: &hasher)
+    hasher.combine(itemId)
+    combineOptional(turnId, into: &hasher)
+  case .pendingInputResolved(let itemId, let resolution, let turnId):
+    hasher.combine(itemId)
+    combineLongTextSignature(resolution, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .todoUpdate(let items, let turnId):
+    hasher.combine(items.count)
+    for item in items {
+      combineLongTextSignature(item, into: &hasher)
+    }
+    combineOptional(turnId, into: &hasher)
+  case .systemNotice(let kind, let message, let detail, let turnId, let steerId):
+    hasher.combine(kind)
+    combineLongTextSignature(message, into: &hasher)
+    combineOptionalText(detail, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+    combineOptional(steerId, into: &hasher)
+  case .error(let message, let detail, let category, let turnId):
+    combineLongTextSignature(message, into: &hasher)
+    combineOptionalText(detail, into: &hasher)
+    hasher.combine(category)
+    combineOptional(turnId, into: &hasher)
+  case .done(let status, let summary, let usage, let turnId, let model, let modelId):
+    hasher.combine(status)
+    combineLongTextSignature(summary, into: &hasher)
+    combineUsageSummary(usage, into: &hasher)
+    hasher.combine(turnId)
+    combineOptional(model, into: &hasher)
+    combineOptional(modelId, into: &hasher)
+  case .tokens(let usage, let turnId, let itemId):
+    combineUsageSummary(usage, into: &hasher)
+    hasher.combine(turnId)
+    combineOptional(itemId, into: &hasher)
+  case .promptSuggestion(let text, let turnId):
+    combineLongTextSignature(text, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .contextCompact(let summary, let isInProgress, let turnId):
+    combineLongTextSignature(summary, into: &hasher)
+    hasher.combine(isInProgress)
+    combineOptional(turnId, into: &hasher)
+  case .autoApprovalReview(let summary, let turnId):
+    combineLongTextSignature(summary, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .webSearch(let query, let action, let status, let itemId, let turnId):
+    combineLongTextSignature(query, into: &hasher)
+    combineOptionalText(action, into: &hasher)
+    hasher.combine(status.rawValue)
+    hasher.combine(itemId)
+    combineOptional(turnId, into: &hasher)
+  case .planText(let text, let turnId):
+    combineLongTextSignature(text, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .toolUseSummary(let text, let turnId):
+    combineLongTextSignature(text, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .status(let turnStatus, let message, let turnId):
+    hasher.combine(turnStatus)
+    combineOptionalText(message, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .reasoning(let text, let turnId, let itemId, let summaryIndex):
+    combineLongTextSignature(text, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+    combineOptional(itemId, into: &hasher)
+    combineOptional(summaryIndex, into: &hasher)
+  case .completionReport(let summary, let status, let artifacts, let blockerDescription, let turnId):
+    combineLongTextSignature(summary, into: &hasher)
+    hasher.combine(status)
+    combineCompletionArtifacts(artifacts, into: &hasher)
+    combineOptionalText(blockerDescription, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId):
+    combineLongTextSignature(command, into: &hasher)
+    hasher.combine(cwd)
+    combineLongTextSignature(output, into: &hasher)
+    hasher.combine(status.rawValue)
+    hasher.combine(itemId)
+    combineOptional(exitCode, into: &hasher)
+    combineOptional(durationMs, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .fileChange(let path, let diff, let kind, let status, let itemId, let turnId):
+    hasher.combine(path)
+    combineLongTextSignature(diff, into: &hasher)
+    hasher.combine(kind)
+    hasher.combine(status.rawValue)
+    hasher.combine(itemId)
+    combineOptional(turnId, into: &hasher)
+  case .unknown(let type):
+    hasher.combine(type)
+  }
+}
+
+private func combineOptional<Value: Hashable>(_ value: Value?, into hasher: inout Hasher) {
+  hasher.combine(value != nil)
+  if let value {
+    hasher.combine(value)
+  }
+}
+
+private func combineOptionalText(_ value: String?, into hasher: inout Hasher) {
+  hasher.combine(value != nil)
+  if let value {
+    combineLongTextSignature(value, into: &hasher)
+  }
+}
+
+private func combineLongTextSignature(_ text: String, into hasher: inout Hasher) {
+  let utf8Count = text.utf8.count
+  hasher.combine(utf8Count)
+  guard utf8Count > 1_024 else {
+    hasher.combine(text)
+    return
+  }
+  hasher.combine(text.prefix(512))
+  hasher.combine(text.suffix(512))
+}
+
+private func combineAgentChatFileRefs(_ refs: [AgentChatFileRef]?, into hasher: inout Hasher) {
+  hasher.combine(refs?.count ?? -1)
+  for ref in refs ?? [] {
+    hasher.combine(ref.path)
+    hasher.combine(ref.type)
+    combineOptional(ref.url, into: &hasher)
+  }
+}
+
+private func combinePlanSteps(_ steps: [WorkPlanStep], into hasher: inout Hasher) {
+  hasher.combine(steps.count)
+  for step in steps {
+    combineLongTextSignature(step.text, into: &hasher)
+    hasher.combine(step.status)
+  }
+}
+
+private func combineQuestionOptions(_ options: [WorkPendingQuestionOption], into hasher: inout Hasher) {
+  hasher.combine(options.count)
+  for option in options {
+    combineLongTextSignature(option.label, into: &hasher)
+    combineLongTextSignature(option.value, into: &hasher)
+    combineOptionalText(option.description, into: &hasher)
+    hasher.combine(option.recommended)
+    combineOptionalText(option.preview, into: &hasher)
+    combineOptionalText(option.previewFormat, into: &hasher)
+  }
+}
+
+private func combineUsageSummary(_ usage: WorkUsageSummary?, into hasher: inout Hasher) {
+  hasher.combine(usage != nil)
+  guard let usage else { return }
+  hasher.combine(usage.turnCount)
+  hasher.combine(usage.inputTokens)
+  hasher.combine(usage.outputTokens)
+  hasher.combine(usage.cacheReadTokens)
+  hasher.combine(usage.cacheCreationTokens)
+  hasher.combine(usage.reasoningTokens)
+  hasher.combine(usage.totalTokens)
+  combineOptional(usage.contextWindow, into: &hasher)
+  hasher.combine(usage.costUsd)
+}
+
+private func combineCompletionArtifacts(_ artifacts: [WorkCompletionArtifactModel], into hasher: inout Hasher) {
+  hasher.combine(artifacts.count)
+  for artifact in artifacts {
+    hasher.combine(artifact.type)
+    combineLongTextSignature(artifact.description, into: &hasher)
+    combineOptional(artifact.reference, into: &hasher)
+  }
+}
+
+private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> String? {
+  var latest: String?
+  for envelope in transcript {
+    guard !envelope.timestamp.isEmpty else { continue }
+    if latest.map({ envelope.timestamp > $0 }) ?? true {
+      latest = envelope.timestamp
+    }
+  }
+  return latest
+}
+
+private func latestWorkTimelineMessageAssistantId(_ timeline: [WorkTimelineEntry]) -> String? {
+  for entry in timeline.reversed() {
+    guard case .message(let message) = entry.payload else { continue }
+    return message.role == "assistant" ? message.id : nil
+  }
+  return nil
 }
 
 func workTranscriptIndicatesActiveTurn(_ transcript: [WorkChatEnvelope]) -> Bool {
@@ -103,22 +438,24 @@ func workChatIsStreaming(
   sessionStatus: String,
   isLive: Bool,
   transcriptIndicatesActiveTurn: Bool,
-  liveTurnActiveHint: Bool = false,
+  liveTurnActiveHint: Bool? = nil,
   transcriptLatestTurnEnded: Bool = false,
   rowEndedAfterLatestTranscript: Bool = false
 ) -> Bool {
   guard isLive else { return false }
   if sessionStatus == "ended" { return false }
   if rowEndedAfterLatestTranscript { return false }
+  if liveTurnActiveHint == false { return false }
   if transcriptIndicatesActiveTurn { return true }
-  if liveTurnActiveHint { return true }
+  if liveTurnActiveHint == true { return true }
   if transcriptLatestTurnEnded { return false }
   return sessionStatus == "active"
 }
 
-/// Collapse `subagent_*` events into one snapshot per taskId. Preserves host
-/// order via a first-seen index so completed subagents don't jump around when
-/// a later progress event lands.
+/// Collapse `subagent_*` events into one snapshot per runtime subagent. Codex
+/// can first emit a parent-tool placeholder keyed by `parentToolUseId`, then a
+/// real agent row keyed by `agentId`; mirror desktop by adopting that placeholder
+/// into the real row instead of rendering both.
 func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSubagentSnapshot] {
   struct Entry {
     var snapshot: WorkSubagentSnapshot
@@ -127,55 +464,130 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
   var entries: [String: Entry] = [:]
   var next = 0
 
-  func place(_ taskId: String, _ snapshot: WorkSubagentSnapshot) {
-    if let existing = entries[taskId] {
-      entries[taskId] = Entry(snapshot: snapshot, order: existing.order)
+  func identityKey(taskId: String, agentId: String?) -> String {
+    normalizedWorkSubagentAgentId(agentId) ?? taskId
+  }
+
+  let resolvedKeysByParent = buildResolvedWorkSubagentKeysByParent(from: transcript)
+
+  func isParentPlaceholder(_ snapshot: WorkSubagentSnapshot, parentToolUseId: String) -> Bool {
+    snapshot.agentId == nil
+      && snapshot.taskId == parentToolUseId
+      && snapshot.parentToolUseId == parentToolUseId
+  }
+
+  func resolve(
+    taskId: String,
+    agentId: String?,
+    parentToolUseId rawParentToolUseId: String?
+  ) -> (key: String, existing: WorkSubagentSnapshot?, order: Int?, adoptedPlaceholder: Bool) {
+    let key = identityKey(taskId: taskId, agentId: agentId)
+    let direct = entries[key]
+    let parentToolUseId = normalizedWorkSubagentAgentId(rawParentToolUseId)
+    let parentEntry = parentToolUseId.flatMap { entries[$0] }
+    let parentResolvedKeys = parentToolUseId.flatMap { resolvedKeysByParent[$0] }
+    let canAdoptParentPlaceholder = parentToolUseId.flatMap { parent in
+      guard let parentEntry,
+            isParentPlaceholder(parentEntry.snapshot, parentToolUseId: parent),
+            parentResolvedKeys?.count == 1,
+            parentResolvedKeys?.contains(key) == true
+      else { return false }
+      return true
+    } ?? false
+
+    let taskAliasEntry = key != taskId ? entries[taskId] : nil
+    let taskAliasIsParentPlaceholder = taskAliasEntry.flatMap { entry in
+      parentToolUseId.flatMap { parent in
+        taskId == parent && isParentPlaceholder(entry.snapshot, parentToolUseId: parent)
+      }
+    } ?? false
+    let taskAlias = (taskAliasEntry != nil && (!taskAliasIsParentPlaceholder || canAdoptParentPlaceholder))
+      ? taskAliasEntry
+      : nil
+    let adoptParentEntry = taskAlias == nil && canAdoptParentPlaceholder ? parentEntry : nil
+    let adoptedPlaceholder = adoptParentEntry != nil || (taskAlias != nil && taskAliasIsParentPlaceholder)
+
+    if taskAlias != nil, key != taskId {
+      entries.removeValue(forKey: taskId)
+    }
+    if adoptParentEntry != nil, let parentToolUseId {
+      entries.removeValue(forKey: parentToolUseId)
+    } else if let parentToolUseId,
+              let parentEntry,
+              isParentPlaceholder(parentEntry.snapshot, parentToolUseId: parentToolUseId),
+              let parentResolvedKeys,
+              parentResolvedKeys.count > 1 {
+      entries.removeValue(forKey: parentToolUseId)
+    }
+
+    let adopted = direct ?? taskAlias ?? adoptParentEntry
+    return (key, adopted?.snapshot, adopted?.order, adoptedPlaceholder)
+  }
+
+  func place(_ key: String, _ snapshot: WorkSubagentSnapshot, order preferredOrder: Int? = nil) {
+    if let existing = entries[key] {
+      entries[key] = Entry(snapshot: snapshot, order: existing.order)
     } else {
-      entries[taskId] = Entry(snapshot: snapshot, order: next)
-      next += 1
+      entries[key] = Entry(snapshot: snapshot, order: preferredOrder ?? next)
+      if preferredOrder == nil {
+        next += 1
+      }
     }
   }
 
   for envelope in transcript {
     switch envelope.event {
-    case .subagentStarted(let taskId, let description, let background, let turnId):
-      place(taskId, WorkSubagentSnapshot(
+    case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+      let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
+      place(resolved.key, WorkSubagentSnapshot(
         taskId: taskId,
+        agentId: normalizedWorkSubagentAgentId(agentId) ?? resolved.existing?.agentId,
+        agentType: normalizedWorkSubagentAgentId(agentType) ?? resolved.existing?.agentType,
+        parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? resolved.existing?.parentToolUseId,
         description: description,
         background: background,
         status: .running,
-        lastToolName: entries[taskId]?.snapshot.lastToolName,
-        latestSummary: entries[taskId]?.snapshot.latestSummary,
-        turnId: turnId
-      ))
-    case .subagentProgress(let taskId, let description, let summary, let toolName, let turnId):
-      let existing = entries[taskId]?.snapshot
-      place(taskId, WorkSubagentSnapshot(
-        taskId: taskId,
+        lastToolName: resolved.existing?.lastToolName,
+        latestSummary: resolved.existing?.latestSummary,
+        turnId: turnId,
+        startedAt: resolved.existing?.startedAt ?? envelope.timestamp,
+        updatedAt: envelope.timestamp
+      ), order: resolved.order)
+    case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let turnId):
+      let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
+      let existing = resolved.existing
+      place(resolved.key, WorkSubagentSnapshot(
+        taskId: resolved.adoptedPlaceholder ? taskId : existing?.taskId ?? taskId,
+        agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
+        agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
+        parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
         description: description ?? existing?.description ?? "Subagent",
         background: existing?.background ?? false,
         status: .running,
         lastToolName: toolName ?? existing?.lastToolName,
         latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
-        turnId: turnId ?? existing?.turnId
-      ))
-    case .subagentResult(let taskId, let status, let summary, let turnId):
-      let normalized: WorkSubagentSnapshot.Status = {
-        switch status.lowercased() {
-        case "failed", "error", "cancelled", "canceled": return .failed
-        default: return .succeeded
-        }
-      }()
-      let existing = entries[taskId]?.snapshot
-      place(taskId, WorkSubagentSnapshot(
-        taskId: taskId,
+        turnId: turnId ?? existing?.turnId,
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        updatedAt: envelope.timestamp
+      ), order: resolved.order)
+    case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let turnId):
+      let normalized = workSubagentStatus(from: status)
+      let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
+      let existing = resolved.existing
+      place(resolved.key, WorkSubagentSnapshot(
+        taskId: resolved.adoptedPlaceholder ? taskId : existing?.taskId ?? taskId,
+        agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
+        agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
+        parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
         description: existing?.description ?? "Subagent",
         background: existing?.background ?? false,
         status: normalized,
         lastToolName: existing?.lastToolName,
         latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
-        turnId: turnId ?? existing?.turnId
-      ))
+        turnId: turnId ?? existing?.turnId,
+        startedAt: existing?.startedAt ?? envelope.timestamp,
+        updatedAt: envelope.timestamp
+      ), order: resolved.order)
     default:
       break
     }
@@ -184,6 +596,165 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
   return entries.values
     .sorted { $0.order < $1.order }
     .map { $0.snapshot }
+}
+
+private func buildResolvedWorkSubagentKeysByParent(from transcript: [WorkChatEnvelope]) -> [String: Set<String>] {
+  var keysByParent: [String: Set<String>] = [:]
+  for envelope in transcript {
+    let taskId: String
+    let agentId: String?
+    let parentToolUseId: String?
+    switch envelope.event {
+    case .subagentStarted(let value, let agent, _, let parent, _, _, _):
+      taskId = value
+      agentId = agent
+      parentToolUseId = parent
+    case .subagentProgress(let value, let agent, _, let parent, _, _, _, _):
+      taskId = value
+      agentId = agent
+      parentToolUseId = parent
+    case .subagentResult(let value, let agent, _, let parent, _, _, _):
+      taskId = value
+      agentId = agent
+      parentToolUseId = parent
+    default:
+      continue
+    }
+    guard let parent = normalizedWorkSubagentAgentId(parentToolUseId) else { continue }
+    let key = normalizedWorkSubagentAgentId(agentId) ?? taskId
+    guard key != parent else { continue }
+    keysByParent[parent, default: []].insert(key)
+  }
+  return keysByParent
+}
+
+private func normalizedWorkSubagentAgentId(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+func workSubagentStatus(from raw: String) -> WorkSubagentSnapshot.Status {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "running", "started", "in_progress": return .running
+  case "failed", "error", "cancelled", "canceled": return .failed
+  case "stopped", "halted", "interrupted": return .stopped
+  default: return .succeeded
+  }
+}
+
+func workSubagentSnapshot(from remote: SyncService.AgentChatSubagentSnapshot) -> WorkSubagentSnapshot {
+  let startedAt = remote.startTimestamp ?? remote.endTimestamp
+  let updatedAt = remote.endTimestamp ?? remote.startTimestamp
+  return WorkSubagentSnapshot(
+    taskId: remote.taskId,
+    agentId: normalizedWorkSubagentAgentId(remote.agentId),
+    agentType: normalizedWorkSubagentAgentId(remote.agentType),
+    parentToolUseId: normalizedWorkSubagentAgentId(remote.parentToolUseId),
+    description: remote.description,
+    background: remote.background ?? false,
+    status: workSubagentStatus(from: remote.status),
+    lastToolName: remote.lastToolName,
+    latestSummary: remote.finalSummary ?? remote.summary,
+    turnId: remote.turnId,
+    startedAt: startedAt,
+    updatedAt: updatedAt
+  )
+}
+
+func mergeWorkSubagentSnapshots(
+  local: [WorkSubagentSnapshot],
+  remote: [WorkSubagentSnapshot]
+) -> [WorkSubagentSnapshot] {
+  guard !remote.isEmpty else { return local }
+  guard !local.isEmpty else { return remote }
+
+  var merged = remote
+  var indexByKey: [String: Int] = [:]
+
+  func register(_ snapshot: WorkSubagentSnapshot, at index: Int) {
+    for key in workSubagentSnapshotLookupKeys(snapshot) {
+      indexByKey[key] = index
+    }
+  }
+
+  for (index, snapshot) in merged.enumerated() {
+    register(snapshot, at: index)
+  }
+
+  for snapshot in local {
+    let index = workSubagentSnapshotLookupKeys(snapshot)
+      .compactMap { indexByKey[$0] }
+      .first
+    if let index {
+      merged[index] = mergedWorkSubagentSnapshot(remote: merged[index], local: snapshot)
+      register(merged[index], at: index)
+    } else {
+      let index = merged.count
+      merged.append(snapshot)
+      register(snapshot, at: index)
+    }
+  }
+
+  return merged
+}
+
+private func workSubagentSnapshotLookupKeys(_ snapshot: WorkSubagentSnapshot) -> [String] {
+  var keys: [String] = []
+  for value in [snapshot.agentId, Optional(snapshot.taskId), snapshot.parentToolUseId] {
+    guard let key = normalizedWorkSubagentAgentId(value),
+          !keys.contains(key)
+    else { continue }
+    keys.append(key)
+  }
+  return keys
+}
+
+private func mergedWorkSubagentSnapshot(
+  remote: WorkSubagentSnapshot,
+  local: WorkSubagentSnapshot
+) -> WorkSubagentSnapshot {
+  WorkSubagentSnapshot(
+    taskId: remote.taskId,
+    agentId: remote.agentId ?? local.agentId,
+    agentType: local.agentType ?? remote.agentType,
+    parentToolUseId: remote.parentToolUseId ?? local.parentToolUseId,
+    description: preferredWorkSubagentText(remote.description, fallback: local.description) ?? "Subagent",
+    background: remote.background || local.background,
+    status: mergedWorkSubagentStatus(remote: remote.status, local: local.status),
+    lastToolName: local.lastToolName ?? remote.lastToolName,
+    latestSummary: preferredWorkSubagentText(remote.latestSummary, fallback: local.latestSummary),
+    turnId: remote.turnId ?? local.turnId,
+    startedAt: remote.startedAt ?? local.startedAt,
+    updatedAt: latestWorkSubagentTimestamp(remote.updatedAt, local.updatedAt)
+  )
+}
+
+private func mergedWorkSubagentStatus(
+  remote: WorkSubagentSnapshot.Status,
+  local: WorkSubagentSnapshot.Status
+) -> WorkSubagentSnapshot.Status {
+  if remote != .running { return remote }
+  if local != .running { return local }
+  return .running
+}
+
+private func preferredWorkSubagentText(_ primary: String?, fallback: String?) -> String? {
+  let primaryTrimmed = primary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !primaryTrimmed.isEmpty { return primary }
+  let fallbackTrimmed = fallback?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return fallbackTrimmed.isEmpty ? nil : fallback
+}
+
+private func preferredWorkSubagentText(_ primary: String, fallback: String) -> String? {
+  preferredWorkSubagentText(Optional(primary), fallback: Optional(fallback))
+}
+
+private func latestWorkSubagentTimestamp(_ lhs: String?, _ rhs: String?) -> String? {
+  guard let lhs else { return rhs }
+  guard let rhs else { return lhs }
+  let lhsDate = workParsedDate(lhs) ?? .distantPast
+  let rhsDate = workParsedDate(rhs) ?? .distantPast
+  return rhsDate >= lhsDate ? rhs : lhs
 }
 
 func buildWorkTimeline(
@@ -268,14 +839,8 @@ func buildWorkTimeline(
         rank: 1_600 + index,
         payload: .pendingPermission(model)
       )
-    case .planApproval(let model):
-      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
-      return WorkTimelineEntry(
-        id: "pending-plan-approval-\(model.id)",
-        timestamp: ts,
-        rank: 1_600 + index,
-        payload: .pendingPlanApproval(model)
-      )
+    case .planApproval:
+      return nil
     case .modelSelection(let model):
       let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
       return WorkTimelineEntry(
@@ -642,6 +1207,7 @@ func buildWorkEventCards(
 ) -> [WorkEventCardModel] {
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
+  let terminalDoneTurnIds = workTerminalDoneTurnIds(from: transcript)
   for envelope in transcript {
     if !suppressedItemIds.isEmpty {
       switch envelope.event {
@@ -653,6 +1219,9 @@ func buildWorkEventCards(
         break
       }
     }
+    if redundantWorkTerminalStatus(envelope.event, terminalDoneTurnIds: terminalDoneTurnIds) {
+      continue
+    }
     guard let card = eventCard(for: envelope) else { continue }
     if let existing = byId[card.id], let merged = mergedWorkEventCard(existing, with: card) {
       byId[card.id] = merged
@@ -662,6 +1231,29 @@ func buildWorkEventCards(
     }
   }
   return order.compactMap { byId[$0] }
+}
+
+private func workTerminalDoneTurnIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
+  Set(transcript.compactMap { envelope in
+    guard case .done(_, _, _, let turnId, _, _) = envelope.event else { return nil }
+    return normalizedWorkTurnId(turnId)
+  })
+}
+
+private func redundantWorkTerminalStatus(
+  _ event: WorkChatEvent,
+  terminalDoneTurnIds: Set<String>
+) -> Bool {
+  guard case .status(let turnStatus, let message, let turnId) = event,
+        let key = normalizedWorkTurnId(turnId),
+        terminalDoneTurnIds.contains(key)
+  else {
+    return false
+  }
+  let normalizedStatus = turnStatus.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let normalizedMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  return (normalizedMessage.isEmpty || normalizedMessage == normalizedStatus)
+    && (normalizedStatus == "interrupted" || normalizedStatus == "failed")
 }
 
 private func workReasoningCardId(
@@ -700,6 +1292,28 @@ private func workContextCompactCardId(
   return fallback
 }
 
+private func workPlanCardId(
+  sessionId: String,
+  turnId: String?,
+  fallback: String
+) -> String {
+  if let turnId, !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return ["plan", sessionId, "turn", turnId].joined(separator: ":")
+  }
+  return fallback
+}
+
+private func workPlanTextCardId(
+  sessionId: String,
+  turnId: String?,
+  fallback: String
+) -> String {
+  if let turnId, !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return ["plan-text", sessionId, "turn", turnId].joined(separator: ":")
+  }
+  return fallback
+}
+
 private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
   if existing.isEmpty { return incoming }
   if incoming.isEmpty { return existing }
@@ -713,13 +1327,8 @@ private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> Stri
 }
 
 private func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
-  let formatter = ISO8601DateFormatter()
-  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-  let fallbackFormatter = ISO8601DateFormatter()
-  fallbackFormatter.formatOptions = [.withInternetDateTime]
-
-  let lhsDate = formatter.date(from: lhs) ?? fallbackFormatter.date(from: lhs)
-  let rhsDate = formatter.date(from: rhs) ?? fallbackFormatter.date(from: rhs)
+  let lhsDate = workParsedDate(lhs)
+  let rhsDate = workParsedDate(rhs)
 
   if let lhsDate, let rhsDate {
     return rhsDate >= lhsDate ? rhs : lhs
@@ -879,6 +1488,34 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
     )
   }
+  if existing.kind == "plan" {
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: laterWorkTimestamp(existing.timestamp, incoming.timestamp),
+      body: nonEmptyWorkTimelineText(incoming.body) ?? existing.body,
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
+    )
+  }
+  if existing.kind == "planText" {
+    return WorkEventCardModel(
+      id: incoming.id,
+      kind: incoming.kind,
+      title: incoming.title,
+      icon: incoming.icon,
+      tint: incoming.tint,
+      timestamp: laterWorkTimestamp(existing.timestamp, incoming.timestamp),
+      body: mergeWorkInlineText(existing.body ?? "", incoming.body ?? ""),
+      bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
+      metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
+      planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
+    )
+  }
   return incoming
 }
 
@@ -912,15 +1549,18 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
       // redundant rows under each tool group. Live streaming hints come from
       // WorkActivityIndicator, not the persisted timeline.
       return nil
-    case .plan(let steps, let explanation, _):
+    case .plan(let steps, let explanation, let turnId):
+      guard !steps.isEmpty || nonEmptyWorkTimelineText(explanation) != nil else {
+        return nil
+      }
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workPlanCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "plan",
         title: "Plan",
         icon: "list.bullet.clipboard",
         tint: .accent,
         timestamp: envelope.timestamp,
-        body: explanation,
+        body: nonEmptyWorkTimelineText(explanation),
         bullets: steps.map { $0.text },
         metadata: [],
         planSteps: steps
@@ -1060,9 +1700,9 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
       // alongside Read/Bash/etc. instead of leaking out as standalone event
       // cards that break the surrounding tool group.
       return nil
-    case .planText(let text, _):
+    case .planText(let text, let turnId):
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workPlanTextCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "planText",
         title: "Plan detail",
         icon: "text.alignleft",
@@ -1143,7 +1783,7 @@ func isLowSignalWorkStatus(turnStatus: String, message: String?) -> Bool {
   return normalizedMessage.isEmpty && (normalizedStatus == "started" || normalizedStatus == "completed")
 }
 
-let workTimelinePageSize = 80
+let workTimelinePageSize = 36
 
 func visibleWorkTimelineEntries(from entries: [WorkTimelineEntry], visibleCount: Int) -> [WorkTimelineEntry] {
   let clampedCount = max(visibleCount, 0)
@@ -1178,18 +1818,44 @@ func injectWorkTurnSeparators(
   chatSummary: AgentChatSessionSummary?,
   transcript: [WorkChatEnvelope] = []
 ) -> [WorkTimelineEntry] {
+  injectWorkTurnSeparators(
+    into: entries,
+    provider: chatSummary?.provider ?? "",
+    model: chatSummary?.model ?? "",
+    modelId: chatSummary?.modelId,
+    transcript: transcript
+  )
+}
+
+func injectWorkTurnSeparators(
+  into entries: [WorkTimelineEntry],
+  provider: String,
+  model: String,
+  modelId: String?,
+  transcript: [WorkChatEnvelope] = []
+) -> [WorkTimelineEntry] {
   guard !entries.isEmpty else { return entries }
   var seenTurnIds = Set<String>()
   var output: [WorkTimelineEntry] = []
   output.reserveCapacity(entries.count + 4)
 
-  let fallbackModelId = chatSummary?.modelId ?? chatSummary?.model
+  let fallbackModelId = modelId ?? model
   let fallbackMetadata = WorkTurnModelMetadata(
-    provider: chatSummary?.provider ?? "",
-    modelLabel: prettyWorkChatModelName(chatSummary?.model ?? ""),
+    provider: provider,
+    modelLabel: prettyWorkChatModelName(model),
     modelId: fallbackModelId
   )
-  let metadataByTurn = workTurnModelMetadataByTurn(from: transcript, fallback: fallbackMetadata)
+  let visibleTurnIds = Set(entries.compactMap { entry -> String? in
+    guard case .message(let message) = entry.payload,
+          message.role.lowercased() == "user"
+    else { return nil }
+    return normalizedWorkTurnId(message.turnId)
+  })
+  let metadataByTurn = workTurnModelMetadataByTurn(
+    from: transcript,
+    fallback: fallbackMetadata,
+    matchingTurnIds: visibleTurnIds
+  )
 
   for entry in entries {
     if case .message(let message) = entry.payload, message.role.lowercased() == "user" {
@@ -1244,14 +1910,19 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
       default:
         continue
       }
-    case .done(_, _, _, let turnId, _, _):
+    case .done(let status, _, _, let turnId, let model, let modelId):
       guard let key = normalizedWorkTurnId(turnId) else { continue }
       guard !seenEndedTurns.contains(key), let start = startByTurn[key] else { continue }
       seenEndedTurns.insert(key)
+      let metadata = workTurnModelMetadata(model: model, modelId: modelId, fallbackProvider: "")
       markers.append(WorkTurnEndMarker(
         turnId: key,
         time: envelope.timestamp,
-        workedDurationLabel: formattedSessionDuration(startedAt: start, endedAt: envelope.timestamp)
+        workedDurationLabel: formattedSessionDuration(startedAt: start, endedAt: envelope.timestamp),
+        status: status,
+        provider: metadata.provider,
+        modelLabel: metadata.modelLabel,
+        modelId: metadata.modelId
       ))
     default:
       guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { continue }
@@ -1275,9 +1946,9 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .toolResult(_, _, _, _, let turnId, _),
        .activity(_, _, let turnId),
        .plan(_, _, let turnId),
-       .subagentStarted(_, _, _, let turnId),
-       .subagentProgress(_, _, _, _, let turnId),
-       .subagentResult(_, _, _, let turnId),
+       .subagentStarted(_, _, _, _, _, _, let turnId),
+       .subagentProgress(_, _, _, _, _, _, _, let turnId),
+       .subagentResult(_, _, _, _, _, _, let turnId),
        .structuredQuestion(_, _, _, let turnId),
        .approvalRequest(_, _, _, let turnId),
        .pendingInputResolved(_, _, let turnId),
@@ -1313,27 +1984,63 @@ struct WorkTurnModelMetadata {
 
 func workTurnModelMetadataByTurn(
   from transcript: [WorkChatEnvelope],
-  fallback: WorkTurnModelMetadata? = nil
+  fallback: WorkTurnModelMetadata? = nil,
+  matchingTurnIds: Set<String>? = nil
 ) -> [String: WorkTurnModelMetadata] {
   var metadataByTurn: [String: WorkTurnModelMetadata] = [:]
+  if let matchingTurnIds {
+    guard !matchingTurnIds.isEmpty else { return metadataByTurn }
+    for envelope in transcript.reversed() {
+      guard case .done(_, _, _, let turnId, let model, let modelId) = envelope.event else { continue }
+      let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard matchingTurnIds.contains(normalizedTurnId),
+            metadataByTurn[normalizedTurnId] == nil else { continue }
+      metadataByTurn[normalizedTurnId] = workTurnModelMetadata(
+        model: model,
+        modelId: modelId,
+        fallbackProvider: fallback?.provider ?? "",
+        fallbackModelLabel: fallback?.modelLabel ?? "Model",
+        fallbackModelId: fallback?.modelId
+      )
+      if metadataByTurn.count == matchingTurnIds.count { break }
+    }
+    return metadataByTurn
+  }
+
   for envelope in transcript {
     guard case .done(_, _, _, let turnId, let model, let modelId) = envelope.event else { continue }
     let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalizedTurnId.isEmpty else { continue }
-    let rawModel = [model, modelId]
-      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .first { !$0.isEmpty }
-      ?? ""
-    let rawModelId = [modelId, model]
-      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .first { !$0.isEmpty }
-    metadataByTurn[normalizedTurnId] = WorkTurnModelMetadata(
-      provider: workModelCatalogGroupKey(for: rawModelId ?? rawModel, currentProvider: fallback?.provider ?? ""),
-      modelLabel: rawModel.isEmpty ? fallback?.modelLabel ?? "Model" : prettyWorkChatModelName(rawModel),
-      modelId: rawModelId ?? fallback?.modelId
+    metadataByTurn[normalizedTurnId] = workTurnModelMetadata(
+      model: model,
+      modelId: modelId,
+      fallbackProvider: fallback?.provider ?? "",
+      fallbackModelLabel: fallback?.modelLabel ?? "Model",
+      fallbackModelId: fallback?.modelId
     )
   }
   return metadataByTurn
+}
+
+private func workTurnModelMetadata(
+  model: String?,
+  modelId: String?,
+  fallbackProvider: String,
+  fallbackModelLabel: String = "Model",
+  fallbackModelId: String? = nil
+) -> WorkTurnModelMetadata {
+  let rawModel = [model, modelId]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .first { !$0.isEmpty }
+    ?? ""
+  let rawModelId = [modelId, model]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .first { !$0.isEmpty }
+  return WorkTurnModelMetadata(
+    provider: workModelCatalogGroupKey(for: rawModelId ?? rawModel, currentProvider: fallbackProvider),
+    modelLabel: rawModel.isEmpty ? fallbackModelLabel : prettyWorkChatModelName(rawModel),
+    modelId: rawModelId ?? fallbackModelId
+  )
 }
 
 /// Beautify a host-supplied model id into the label used on chips and turn
@@ -1440,6 +2147,18 @@ func workContextUsageViewModel(
 ) -> WorkContextUsageViewModel? {
   let provider = summary?.provider ?? ""
   let fallbackWindow = workContextWindowFallback(summary: summary)
+  return workContextUsageViewModel(
+    transcript: transcript,
+    provider: provider,
+    fallbackContextWindow: fallbackWindow
+  )
+}
+
+func workContextUsageViewModel(
+  transcript: [WorkChatEnvelope],
+  provider: String,
+  fallbackContextWindow: Int?
+) -> WorkContextUsageViewModel? {
 
   for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
     switch envelope.event {
@@ -1447,14 +2166,14 @@ func workContextUsageViewModel(
       return makeWorkContextUsageViewModel(
         usage: usage,
         provider: provider,
-        fallbackContextWindow: fallbackWindow
+        fallbackContextWindow: fallbackContextWindow
       )
     case .done(_, _, let usage, _, _, _):
       if let usage {
         return makeWorkContextUsageViewModel(
           usage: usage,
           provider: provider,
-          fallbackContextWindow: fallbackWindow
+          fallbackContextWindow: fallbackContextWindow
         )
       }
     default:
@@ -1518,20 +2237,24 @@ private func workProviderUsesCodexTokenOccupancy(_ provider: String) -> Bool {
   return normalized == "codex" || normalized == "openai"
 }
 
-private func workContextWindowFallback(summary: AgentChatSessionSummary?) -> Int? {
+func workContextWindowFallback(summary: AgentChatSessionSummary?) -> Int? {
   guard let summary else { return nil }
-  let model = [summary.modelId, summary.model]
+  return workContextWindowFallback(modelId: summary.modelId, model: summary.model)
+}
+
+func workContextWindowFallback(modelId: String?, model: String) -> Int? {
+  let modelKey = [modelId, Optional(model)]
     .compactMap { $0?.lowercased() }
     .joined(separator: " ")
 
-  if model.contains("1m") || model.contains("1-million") { return 1_000_000 }
-  if model.contains("gpt-5") {
+  if modelKey.contains("1m") || modelKey.contains("1-million") { return 1_000_000 }
+  if modelKey.contains("gpt-5") {
     return 258_400
   }
-  if model.contains("claude") || model.contains("sonnet") || model.contains("opus") || model.contains("haiku") || model.contains("fable") {
+  if modelKey.contains("claude") || modelKey.contains("sonnet") || modelKey.contains("opus") || modelKey.contains("haiku") || modelKey.contains("fable") {
     return 200_000
   }
-  if model.contains("gpt-4.1") || model.contains("gpt-4o") {
+  if modelKey.contains("gpt-4.1") || modelKey.contains("gpt-4o") {
     return 128_000
   }
   return nil

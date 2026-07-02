@@ -6,6 +6,7 @@ import SwiftUI
 struct CtoTeamScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @Binding var path: NavigationPath
+  var isTabActive = true
 
   @State private var agents: [AgentIdentity] = []
   @State private var fallbackWorkers: [CtoWorkerEntry] = []
@@ -367,6 +368,8 @@ struct CtoTeamScreen: View {
   }
 
   private var ctoAgentsLiveReloadKey: String? {
+    // Don't poll fetchCtoAgents/fetchCtoBudget while the CTO tab isn't frontmost.
+    guard isTabActive else { return nil }
     switch syncService.connectionState {
     case .connected, .syncing:
       return "live-\(syncService.localStateRevision)"

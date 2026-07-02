@@ -22,6 +22,12 @@ These services are loaded by the ADE runtime's project scope (and by the desktop
 - `githubPollingService.ts` — direct GitHub REST polling for the origin repo plus `extraRepos`. Diffs per-poll snapshots of issues/PRs/comments to emit `github.issue_*` and `github.pr_*` trigger events without requiring a webhook or relay. Cursor format is `<slug>=<iso>|<slug>=<iso>` to support multi-repo state in a single stored string; see `readCursor`/`writeCursor` for the legacy-compat parser.
 - `automationSecretService.ts` — secret resolution for automation actions (env-ref style, same policy as CTO workers). Referenced as `${env:VAR}` in action config; resolved at execution time.
 
+### GitHub relay and App
+
+- `apps/webhook-relay/` — the hosted GitHub relay: a Cloudflare Worker (`src/index.ts` / `src/relay.ts`) plus D1 migrations. Receives ADE-GitHub-App webhooks, verifies the HMAC signature, stores deliveries idempotently by delivery id, and serves repo-scoped `/github/repos/:owner/:repo/status` and `/events` reads (monotonic `seq:<n>` cursors). Legacy `/projects/:projectId/github/...` project-token routes remain for self-hosted deployments. See `apps/webhook-relay/README.md` for deploy/setup.
+- `apps/desktop/src/main/services/github/githubRelayConfig.ts` — resolves the relay base URL and auth mode. Defaults to the hosted Worker (`DEFAULT_GITHUB_RELAY_API_BASE_URL`) with `usesHostedDefault`; `fetchGitHubAppInstallationStatus` calls the repo status route with the user's GitHub token, falling back to the legacy project-token route only when `shouldUseLegacyGitHubRelayProjectRoute` (non-default base URL + project id + access token).
+- `apps/desktop/src/main/services/github/githubService.ts` (`getAppInstallationStatus`) and `apps/desktop/src/renderer/components/github/GitHubAppInstallPanel.tsx` — desktop surface for installing / checking "ADE for GitHub" per repo (Settings and onboarding).
+
 ### ADE Actions registry
 
 - `apps/desktop/src/main/services/adeActions/registry.ts` — curated allowlist of `(domain, action)` pairs exposed to automation rules as the `ade-action` action type. Each domain maps to a main-process service (`lane`, `git`, `pr`, `issue`, `chat`, `linear_*`, `file`, `pty`, etc.); the allowlist keeps the surface deterministic and audit-able. `listAllowedAdeActionNames` and `isAllowedAdeAction` gate runtime dispatch.
@@ -123,7 +129,7 @@ Automations accept inbound events from four sources (`AutomationIngressSource`):
 - `local-webhook` — `automationIngressService` opens an HTTP endpoint.
   - `github-webhook` events verify HMAC-SHA256 via `safeCompareSignature` (timing-safe). Secret read from `automations.githubWebhook.secret`.
   - `webhook` events are custom inbound webhooks with optional shared-secret verification.
-- `github-relay` — polls a GitHub relay (`automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken`) for out-of-band delivery when the desktop app is behind NAT.
+- `github-relay` — the default hosted path. A Cloudflare Worker (`apps/webhook-relay/`) receives GitHub App webhooks, verifies the GitHub HMAC signature, and writes each delivery into D1. ADE polls **repo-scoped** Worker routes — `GET /github/repos/:owner/:repo/status` for App-installation/webhook state and `GET /github/repos/:owner/:repo/events?after=<cursor>` for new deliveries — authenticated by the **user's existing GitHub token**. Normal users need no relay token and no `local.secret.yaml`; the only repo-side step is installing the "ADE for GitHub" App. The relay base URL defaults to `DEFAULT_GITHUB_RELAY_API_BASE_URL`; `readGitHubRelayConfig` reports `usesHostedDefault` so the desktop knows to use the token-free repo routes. The legacy `automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken` **project-token** routes (`/projects/:projectId/github/...`) remain for self-hosted relays — chosen only when a non-default base URL plus project id and access token are all set (`shouldUseLegacyGitHubRelayProjectRoute`).
 - `linear-relay` — Linear event relay (shared with CTO intake; Linear triggers here are context-only).
 - `github-polling` — `githubPollingService` polls the GitHub REST API directly for the origin repo and any `extraRepos`, diffing per-poll snapshots to synthesize `github.issue_*` / `github.pr_*` events (opened / edited / labeled / closed / commented, and PR merged). No relay or webhook infra required. Cursor is a `<slug>=<iso>|<slug>=<iso>` string stored via `automationService.setIngressCursor({ source: "github-polling" })`; default interval is 30s.
 
@@ -169,7 +175,7 @@ Automations route outputs based on `outputs.disposition`:
 - **Polling cursor format is sticky.** `githubPollingService.readCursor` must handle three historical shapes: bare `<iso>` (first-ever poll, legacy), single `<slug>=<iso>` (new single-repo), and multi-repo `<slug>=<iso>|<slug>=<iso>`. Don't simplify the parser without a migration path.
 - **Cron sanity-check before installing.** `cron.validate(expr)` plus the 5-field split is the safety net; otherwise `node-cron` throws.
 - **Webhook secret verification is timing-safe.** Don't refactor `safeCompareSignature` into a plain string compare.
-- **Relay polling must respect the access token ref.** `automations.githubRelay.accessToken` is an env ref; resolve via `automationSecretService`, never hard-coded.
+- **Legacy relay polling must respect the access token ref.** `automations.githubRelay.accessToken` is an env ref for self-hosted/project-token relays; resolve via `automationSecretService`, never hard-coded.
 - **Confidence threshold is `0.65` baseline.** Rules that explicitly raise the threshold penalize confidence proportionally — document this in rule descriptions so operators understand scoring.
 ## Cross-links
 

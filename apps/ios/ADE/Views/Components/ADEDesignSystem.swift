@@ -741,6 +741,47 @@ struct ADEProjectHomeButton: View {
 /// separated by 1pt white α0.08 vertical dividers. All tap targets, wiring and
 /// accessibility labels are preserved exactly.
 @available(iOS 17.0, *)
+/// Permanent "back to the hub" affordance shown at the leading edge of every
+/// in-project tab header: a left chevron + the active project's icon. Tapping it
+/// returns to the all-projects hub (`showProjectHome`) from any tab's main page.
+/// Replaces the old top-right "Projects" grid button.
+struct ADEHubBackButton: View {
+  @EnvironmentObject private var syncService: SyncService
+
+  var body: some View {
+    Button {
+      syncService.showProjectHome()
+    } label: {
+      HStack(spacing: 5) {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 14, weight: .bold))
+          .foregroundStyle(ADEColor.accent)
+        if let icon = projectIconImage(from: syncService.activeProject?.iconDataUrl) {
+          Image(uiImage: icon).projectIconStyle(size: 24, cornerRadius: 6)
+        } else {
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(ADEColor.recessedBackground)
+            .frame(width: 24, height: 24)
+            .overlay(
+              Image(systemName: "folder")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ADEColor.textSecondary)
+            )
+        }
+      }
+      .padding(.vertical, 5)
+      .padding(.leading, 8)
+      .padding(.trailing, 6)
+      .background(ADEColor.glassBackground, in: Capsule())
+      .overlay(Capsule().stroke(Color.white.opacity(0.12), lineWidth: 1))
+      .contentShape(Capsule())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Back to all projects")
+    .accessibilityHint("Returns to the project hub.")
+  }
+}
+
 struct ADERootToolbarControls: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var drawer: AttentionDrawerModel
@@ -754,113 +795,81 @@ struct ADERootToolbarControls: View {
     self.scopeKey = scopeKey
   }
 
-  private var presentation: ConnectionHealthPresentation {
-    ConnectionHealthPresentation(
-      health: syncService.connectionHealth,
-      connectionState: syncService.connectionState,
-      hostName: syncService.hostName
-    )
-  }
-
-  private var connectionTint: Color { presentation.tint }
-  private var connectionIsAlive: Bool { presentation.showsConnectedGlow }
-  private var connectionAccessibilityLabel: String {
-    "Machine connection · \(presentation.accessibilityLabel)"
-  }
-
   private var hasUnread: Bool { drawer.unreadCount > 0 }
 
   var body: some View {
-    HStack(spacing: 0) {
-      toolbarIconButton(
-        icon: "laptopcomputer",
-        tint: connectionTint,
-        isAlive: connectionIsAlive,
-        accessibilityLabel: connectionAccessibilityLabel,
-        action: { syncService.settingsPresented = true }
-      )
-
-      divider
-
-      toolbarIconButton(
-        icon: "square.grid.2x2.fill",
-        tint: PrsGlass.accentTop,
-        isAlive: false,
-        iconImage: projectIconImage(from: syncService.activeProject?.iconDataUrl),
-        accessibilityLabel: "Projects",
-        action: { syncService.showProjectHome() }
-      )
-
-      divider
-
-      ZStack(alignment: .topTrailing) {
-        toolbarIconButton(
-          icon: "bell.fill",
-          tint: hasUnread ? ADESharedTheme.warningAmber : PrsGlass.textSecondary,
-          isAlive: hasUnread,
-          accessibilityLabel: "Attention items: \(drawer.unreadCount)",
-          action: { syncService.attentionDrawerPresented = true }
-        )
-
-        if hasUnread {
-          Circle()
-            .fill(ADEColor.warning)
-            .frame(width: 7, height: 7)
-            .overlay(
-              Circle().stroke(PrsGlass.ink, lineWidth: 1.25)
-            )
-            .shadow(color: ADEColor.warning.opacity(0.45), radius: 3, x: 0, y: 0)
-            .offset(x: -7, y: 6)
-            .transition(.scale.combined(with: .opacity))
-            .accessibilityHidden(true)
-        }
-      }
+    toolbarBody
       .animation(.snappy(duration: 0.2), value: drawer.unreadCount)
-    }
-    .padding(.vertical, 4)
-    .background {
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(ADEColor.glassBackground)
-    }
-    .overlay {
-      // Soft vertical highlight (white 0.10 → 0).
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [Color.white.opacity(0.10), .clear],
-            startPoint: .top,
-            endPoint: .bottom
+      .padding(.vertical, 4)
+      .background {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(ADEColor.glassBackground)
+      }
+      .overlay {
+        // Soft vertical highlight (white 0.10 → 0).
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(
+            LinearGradient(
+              colors: [Color.white.opacity(0.10), .clear],
+              startPoint: .top,
+              endPoint: .bottom
+            )
           )
-        )
-        .allowsHitTesting(false)
-    }
-    .overlay {
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(
-          LinearGradient(
-            colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
-            startPoint: .top,
-            endPoint: .bottom
-          ),
-          lineWidth: 1
-        )
-        .allowsHitTesting(false)
-    }
-    .overlay {
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(Color.white.opacity(0.08), lineWidth: 0.75)
-        .allowsHitTesting(false)
-    }
-    .compositingGroup()
-    .shadow(color: Color.black.opacity(0.28), radius: 12, x: 0, y: 5)
-    .fixedSize(horizontal: true, vertical: false)
+          .allowsHitTesting(false)
+      }
+      .overlay {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .strokeBorder(
+            LinearGradient(
+              colors: [Color.white.opacity(0.22), Color.white.opacity(0.04)],
+              startPoint: .top,
+              endPoint: .bottom
+            ),
+            lineWidth: 1
+          )
+          .allowsHitTesting(false)
+      }
+      .overlay {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(Color.white.opacity(0.08), lineWidth: 0.75)
+          .allowsHitTesting(false)
+      }
+      .compositingGroup()
+      .shadow(color: Color.black.opacity(0.28), radius: 12, x: 0, y: 5)
+      .fixedSize(horizontal: true, vertical: false)
   }
 
-  private var divider: some View {
-    Rectangle()
-      .fill(Color.white.opacity(0.08))
-      .frame(width: 1, height: 18)
-      .allowsHitTesting(false)
+  private var toolbarBody: some View {
+    ZStack(alignment: .topTrailing) {
+      attentionButton
+      unreadBadge
+    }
+  }
+
+  private var attentionButton: some View {
+    toolbarIconButton(
+      icon: "bell.fill",
+      tint: hasUnread ? ADESharedTheme.warningAmber : PrsGlass.textSecondary,
+      isAlive: hasUnread,
+      accessibilityLabel: "Attention items: \(drawer.unreadCount)",
+      action: { syncService.attentionDrawerPresented = true }
+    )
+  }
+
+  @ViewBuilder
+  private var unreadBadge: some View {
+    if hasUnread {
+      Circle()
+        .fill(ADEColor.warning)
+        .frame(width: 7, height: 7)
+        .overlay(
+          Circle().stroke(PrsGlass.ink, lineWidth: 1.25)
+        )
+        .shadow(color: ADEColor.warning.opacity(0.45), radius: 3, x: 0, y: 0)
+        .offset(x: -7, y: 6)
+        .transition(.scale.combined(with: .opacity))
+        .accessibilityHidden(true)
+    }
   }
 
   @ViewBuilder
@@ -924,37 +933,42 @@ struct ADERootToolbarLeading: View {
 struct ADERootTopBar<Actions: View>: View {
   let title: String
   let showsGlobalControls: Bool
+  let showsHubBackButton: Bool
   let actions: Actions
 
   init(
     title: String,
     showsGlobalControls: Bool = true,
+    showsHubBackButton: Bool = true,
     @ViewBuilder actions: () -> Actions
   ) {
     self.title = title
     self.showsGlobalControls = showsGlobalControls
+    self.showsHubBackButton = showsHubBackButton
     self.actions = actions()
   }
 
   var body: some View {
-    ZStack {
+    HStack(spacing: 8) {
+      // Permanent back-to-hub control, at the leading edge of every root tab.
+      if showsHubBackButton {
+        ADEHubBackButton()
+      }
+
       if !title.isEmpty {
         Text(title)
           .font(.system(size: 22, weight: .heavy, design: .rounded))
           .foregroundStyle(PrsGlass.textPrimary)
           .lineLimit(1)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.leading, 4)
+          .padding(.leading, showsHubBackButton ? 0 : 4)
           .shadow(color: Color.black.opacity(0.55), radius: 8, x: 0, y: 3)
           .accessibilityAddTraits(.isHeader)
       }
 
-      HStack(spacing: 8) {
-        Spacer(minLength: 0)
-        actions
-        if showsGlobalControls {
-          ADERootToolbarControls(scopeKey: title)
-        }
+      Spacer(minLength: 8)
+      actions
+      if showsGlobalControls {
+        ADERootToolbarControls(scopeKey: title)
       }
     }
     .padding(.horizontal, 16)
@@ -979,9 +993,10 @@ struct ADERootTopBar<Actions: View>: View {
 
 @available(iOS 17.0, *)
 extension ADERootTopBar where Actions == EmptyView {
-  init(title: String, showsGlobalControls: Bool = true) {
+  init(title: String, showsGlobalControls: Bool = true, showsHubBackButton: Bool = true) {
     self.title = title
     self.showsGlobalControls = showsGlobalControls
+    self.showsHubBackButton = showsHubBackButton
     self.actions = EmptyView()
   }
 }

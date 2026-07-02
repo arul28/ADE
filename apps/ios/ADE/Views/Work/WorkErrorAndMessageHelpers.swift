@@ -4,6 +4,12 @@ import AVKit
 import OSLog
 
 private let workChatTranscriptLog = Logger(subsystem: "com.ade.ios", category: "WorkChatTranscript")
+private let workStreamingMergeMinimumReplayAnchorLength = 24
+private let workStreamingMergeMaxScanCharacters = 512
+private let workStreamingMergeReplaySearchWindowCharacters = 12_000
+private let workStreamingMergeReplayAnchorLengths = [512, 256, 128, 64, 32, workStreamingMergeMinimumReplayAnchorLength]
+private let workStreamingMergeMinimumRepeatedTailLength = 24
+private let workStreamingMergeRepeatedTailWindowCharacters = 4_096
 
 struct WorkErrorPresentation {
   let title: String
@@ -50,15 +56,25 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].steerId == steerId,
          messages[lastIndex].timestamp == envelope.timestamp {
         messages[lastIndex].markdown += text
-        if let attachments, !attachments.isEmpty {
-          messages[lastIndex].attachments = attachments
-        }
-        if let deliveryState {
-          messages[lastIndex].deliveryState = deliveryState
-        }
-        if let processed {
-          messages[lastIndex].processed = processed
-        }
+        mergeWorkUserMessageMetadata(
+          into: &messages[lastIndex],
+          attachments: attachments,
+          deliveryState: deliveryState,
+          processed: processed
+        )
+      } else if let duplicateIndex = duplicateUserMessageVariantIndex(
+        in: messages,
+        text: text,
+        turnId: turnId,
+        steerId: steerId,
+        deliveryState: deliveryState
+      ) {
+        mergeWorkUserMessageMetadata(
+          into: &messages[duplicateIndex],
+          attachments: attachments,
+          deliveryState: deliveryState,
+          processed: processed
+        )
       } else {
         messages.append(WorkChatMessage(
           id: envelope.id,
@@ -74,16 +90,32 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         ))
       }
     case .assistantText(let text, let turnId, let itemId):
+      let text = workStreamingTextByCollapsingRepeatedTailReplay(text)
       let metadata = turnId
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .flatMap { metadataByTurn[$0] }
-      let canMergeWithPreviousAssistant = itemId != nil || previousEnvelopeWasAssistantText
-      if let lastIndex = messages.indices.last,
+      let isLiveFragment = envelope.sequence != nil
+      let canMergeWithPreviousAssistant = itemId != nil || (previousEnvelopeWasAssistantText && isLiveFragment)
+      if let itemIndex = assistantFragmentIndexByItemId(
+        in: messages,
+        turnId: turnId,
+        itemId: itemId
+      ) {
+        messages[itemIndex].markdown = mergeWorkStreamingText(messages[itemIndex].markdown, text)
+        messages[itemIndex].assistantPreview = nil
+        if messages[itemIndex].turnProvider == nil {
+          messages[itemIndex].turnProvider = metadata?.provider
+        }
+        if messages[itemIndex].turnModelId == nil {
+          messages[itemIndex].turnModelId = metadata?.modelId
+        }
+      } else if let lastIndex = messages.indices.last,
          messages[lastIndex].role == "assistant",
          messages[lastIndex].turnId == turnId,
          messages[lastIndex].itemId == itemId,
          canMergeWithPreviousAssistant {
         messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
+        messages[lastIndex].assistantPreview = nil
       } else if let duplicateIndex = duplicateAssistantFragmentIndex(
         in: messages,
         turnId: turnId,
@@ -113,6 +145,75 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   }
 
   return messages
+}
+
+private func assistantFragmentIndexByItemId(
+  in messages: [WorkChatMessage],
+  turnId: String?,
+  itemId: String?
+) -> Int? {
+  let normalizedItemId = normalizedAssistantItemId(itemId)
+  guard !normalizedItemId.isEmpty else { return nil }
+  return messages.indices.reversed().first { index in
+    let message = messages[index]
+    guard message.role == "assistant",
+          normalizedAssistantItemId(message.itemId) == normalizedItemId
+    else { return false }
+    return assistantTurnIdsAllowStableItemMerge(message.turnId, turnId)
+  }
+}
+
+private func normalizedAssistantItemId(_ itemId: String?) -> String {
+  itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+private func assistantTurnIdsAllowStableItemMerge(_ lhs: String?, _ rhs: String?) -> Bool {
+  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return left.isEmpty || right.isEmpty || left == right
+}
+
+private func duplicateUserMessageVariantIndex(
+  in messages: [WorkChatMessage],
+  text: String,
+  turnId: String?,
+  steerId: String?,
+  deliveryState: String?
+) -> Int? {
+  guard deliveryState != "queued" else { return nil }
+  let normalizedText = normalizedWorkLocalEchoText(text)
+  guard !normalizedText.isEmpty else { return nil }
+  let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedSteerId = steerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard normalizedTurnId?.isEmpty == false || normalizedSteerId?.isEmpty == false else { return nil }
+  return messages.lastIndex { message in
+    guard message.role == "user" else { return false }
+    guard !(message.deliveryState == "queued" && message.steerId != nil) else { return false }
+    let sameTurn = normalizedTurnId?.isEmpty == false && message.turnId == turnId
+    let sameSteer = normalizedSteerId?.isEmpty == false && message.steerId == steerId
+    guard sameTurn || sameSteer else { return false }
+    return normalizedWorkLocalEchoText(message.markdown) == normalizedText
+  }
+}
+
+private func mergeWorkUserMessageMetadata(
+  into message: inout WorkChatMessage,
+  attachments: [AgentChatFileRef]?,
+  deliveryState: String?,
+  processed: Bool?
+) {
+  if let attachments, !attachments.isEmpty {
+    let existing = message.attachments ?? []
+    let existingKeys = Set(existing.map { "\($0.type)|\($0.path)|\($0.url ?? "")" })
+    let mergedAttachments = existing + attachments.filter { !existingKeys.contains("\($0.type)|\($0.path)|\($0.url ?? "")") }
+    message.attachments = mergedAttachments
+  }
+  if let deliveryState {
+    message.deliveryState = deliveryState
+  }
+  if let processed {
+    message.processed = processed
+  }
 }
 
 private func duplicateAssistantFragmentIndex(
@@ -154,13 +255,36 @@ func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
   if incoming.isEmpty { return existing }
   if existing == incoming { return existing }
   if incoming.hasPrefix(existing) { return incoming }
+  if existing.hasPrefix(incoming),
+     workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: existing, incoming: incoming) {
+    return incoming
+  }
   if existing.hasPrefix(incoming) { return existing }
+  let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+  if !normalizedIncoming.isEmpty,
+     normalizedExisting.hasSuffix(normalizedIncoming) {
+    return existing
+  }
+  if !normalizedExisting.isEmpty,
+     normalizedIncoming.hasPrefix(normalizedExisting) {
+    return incoming
+  }
+  if workStreamingTextHasMultiwordReplayShape(incoming),
+     existing.hasSuffix(incoming) {
+    return existing
+  }
+  if let mergedReplay = mergeWorkStreamingReplayText(existing: existing, incoming: incoming) {
+    return workStreamingTextByCollapsingRepeatedTail(mergedReplay)
+  }
 
-  let maxOverlap = min(existing.count, incoming.count)
-  guard maxOverlap > 0 else { return existing + incoming }
+  let maxOverlap = min(min(existing.count, incoming.count), workStreamingMergeMaxScanCharacters)
+  guard maxOverlap > 0 else {
+    return existing + incoming
+  }
 
   // The hasPrefix checks above handle the common streaming-duplication cases, so this
-  // O(n*m) overlap scan only runs for rare partial-overlap chunks where n and m are small.
+  // overlap scan is capped to keep long transcript rebuilds bounded.
   for length in stride(from: maxOverlap, through: 1, by: -1) {
     let existingSuffix = existing.suffix(length)
     let incomingPrefix = incoming.prefix(length)
@@ -172,14 +296,203 @@ func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
   return existing + incoming
 }
 
+private func workStreamingExistingOnlyAddsRepeatedIncomingTail(existing: String, incoming: String) -> Bool {
+  guard existing.count > incoming.count else { return false }
+  let extraStart = existing.index(existing.startIndex, offsetBy: incoming.count)
+  let extra = String(existing[extraStart...])
+  let extraWords = workStreamingNormalizedWords(extra)
+  guard !extraWords.isEmpty, extraWords.count <= 24 else { return false }
+
+  let incomingWords = workStreamingNormalizedWords(incoming)
+  guard !incomingWords.isEmpty else { return false }
+
+  let maxPhraseLength = min(extraWords.count, incomingWords.count, 12)
+  guard maxPhraseLength > 0 else { return false }
+
+  for phraseLength in 1...maxPhraseLength where extraWords.count % phraseLength == 0 {
+    let phrase = Array(extraWords.prefix(phraseLength))
+    guard phrase.count >= 2 || phrase.first?.count ?? 0 >= 4 else { continue }
+    guard Array(incomingWords.suffix(phraseLength)) == phrase else { continue }
+
+    var index = phraseLength
+    var repeatsIncomingTail = true
+    while index < extraWords.count {
+      let end = index + phraseLength
+      guard Array(extraWords[index..<end]) == phrase else {
+        repeatsIncomingTail = false
+        break
+      }
+      index = end
+    }
+    if repeatsIncomingTail { return true }
+  }
+
+  return false
+}
+
+private func workStreamingNormalizedWords(_ text: String) -> [String] {
+  text
+    .lowercased()
+    .split { scalar in
+      !scalar.isLetter && !scalar.isNumber
+    }
+    .map(String.init)
+}
+
+private func mergeWorkStreamingReplayText(existing: String, incoming: String) -> String? {
+  let existingCount = existing.count
+  let incomingCount = incoming.count
+  guard existingCount >= workStreamingMergeMinimumReplayAnchorLength,
+        incomingCount >= workStreamingMergeMinimumReplayAnchorLength else {
+    return nil
+  }
+
+  let searchWindowLength = min(existingCount, workStreamingMergeReplaySearchWindowCharacters)
+  let searchStart = existing.index(existing.endIndex, offsetBy: -searchWindowLength)
+  let searchableExisting = existing[searchStart...]
+  let maxAnchorLength = min(
+    min(incomingCount, searchableExisting.count),
+    workStreamingMergeMaxScanCharacters
+  )
+  guard maxAnchorLength >= workStreamingMergeMinimumReplayAnchorLength else { return nil }
+
+  var anchorLengths = [maxAnchorLength]
+  anchorLengths.append(contentsOf: workStreamingMergeReplayAnchorLengths.filter {
+    $0 < maxAnchorLength && $0 >= workStreamingMergeMinimumReplayAnchorLength
+  })
+
+  for length in anchorLengths {
+    let incomingAnchor = incoming.prefix(length)
+    guard let anchorRange = searchableExisting.range(of: incomingAnchor, options: [.backwards]) else {
+      continue
+    }
+
+    let existingReplayTail = searchableExisting[anchorRange.lowerBound...]
+    if incoming.hasPrefix(existingReplayTail) {
+      return String(existing[..<anchorRange.lowerBound]) + incoming
+    }
+    if existingReplayTail.hasPrefix(incoming) {
+      return existing
+    }
+  }
+
+  return nil
+}
+
+private func workStreamingTextHasMultiwordReplayShape(_ text: String) -> Bool {
+  guard text.count >= workStreamingMergeMinimumRepeatedTailLength else { return false }
+  return text.range(of: #"\S\s+\S"#, options: .regularExpression) != nil
+}
+
+private func workStreamingTextByCollapsingRepeatedTail(_ text: String) -> String {
+  guard text.count >= workStreamingMergeMinimumRepeatedTailLength * 2 else { return text }
+
+  let tailWindow = String(text.suffix(workStreamingMergeRepeatedTailWindowCharacters))
+  let collapsedTail = workStreamingTextTailRemovingAdjacentRepeats(tailWindow)
+  guard collapsedTail.count < tailWindow.count else { return text }
+
+  let prefix = text.dropLast(tailWindow.count)
+  return String(prefix) + collapsedTail
+}
+
+private func workStreamingTextByCollapsingRepeatedTailReplay(_ text: String) -> String {
+  var result = workStreamingTextByCollapsingRepeatedTail(text)
+  var changed = true
+
+  while changed {
+    changed = false
+    let words = workStreamingWordsWithRanges(result)
+    let maxPhraseLength = min(12, words.count / 2)
+    guard maxPhraseLength >= 2 else { break }
+
+    for phraseLength in 2...maxPhraseLength {
+      let tailStart = words.count - phraseLength
+      let previousStart = tailStart - phraseLength
+      let tailWords = words[tailStart..<words.count].map(\.word)
+      let previousWords = words[previousStart..<tailStart].map(\.word)
+      guard tailWords == previousWords else { continue }
+
+      let tailRange = words[tailStart].range.lowerBound..<words[words.count - 1].range.upperBound
+      let tailText = String(result[tailRange])
+      guard tailText.count >= 12 else { continue }
+
+      var removalStart = tailRange.lowerBound
+      while removalStart > result.startIndex {
+        let previous = result.index(before: removalStart)
+        guard result[previous].isWhitespace else { break }
+        removalStart = previous
+      }
+      result.removeSubrange(removalStart..<result.endIndex)
+      changed = true
+      break
+    }
+  }
+
+  return result
+}
+
+private func workStreamingWordsWithRanges(_ text: String) -> [(word: String, range: Range<String.Index>)] {
+  var words: [(word: String, range: Range<String.Index>)] = []
+  var cursor = text.startIndex
+
+  while cursor < text.endIndex {
+    while cursor < text.endIndex, !text[cursor].isLetter, !text[cursor].isNumber {
+      cursor = text.index(after: cursor)
+    }
+    guard cursor < text.endIndex else { break }
+
+    let start = cursor
+    while cursor < text.endIndex, text[cursor].isLetter || text[cursor].isNumber {
+      cursor = text.index(after: cursor)
+    }
+    let range = start..<cursor
+    words.append((word: text[range].lowercased(), range: range))
+  }
+
+  return words
+}
+
+private func workStreamingTextTailRemovingAdjacentRepeats(_ text: String) -> String {
+  var result = text
+  var changed = true
+
+  while changed {
+    changed = false
+    let count = result.count
+    let maxLength = min(count / 2, workStreamingMergeMaxScanCharacters)
+    guard maxLength >= workStreamingMergeMinimumRepeatedTailLength else { break }
+
+    for length in stride(from: maxLength, through: workStreamingMergeMinimumRepeatedTailLength, by: -1) {
+      let suffixStart = result.index(result.endIndex, offsetBy: -length)
+      guard let previousStart = result.index(suffixStart, offsetBy: -length, limitedBy: result.startIndex) else {
+        continue
+      }
+      let previous = result[previousStart..<suffixStart]
+      let suffix = result[suffixStart..<result.endIndex]
+      guard previous == suffix,
+            workStreamingTextHasMultiwordReplayShape(String(suffix))
+      else { continue }
+
+      result.removeSubrange(suffixStart..<result.endIndex)
+      changed = true
+      break
+    }
+  }
+
+  return result
+}
+
 func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId: String) -> [WorkChatEnvelope] {
   entries.map { entry in
-    WorkChatEnvelope(
+    let messageId = entry.messageId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let fallbackItemId = entry.itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let itemId = messageId?.isEmpty == false ? messageId : (fallbackItemId?.isEmpty == false ? fallbackItemId : nil)
+    return WorkChatEnvelope(
       sessionId: sessionId,
       timestamp: entry.timestamp,
       sequence: nil,
       event: entry.role == "assistant"
-        ? .assistantText(text: entry.text, turnId: entry.turnId, itemId: nil)
+        ? .assistantText(text: entry.text, turnId: entry.turnId, itemId: itemId)
         : .userMessage(text: entry.text, attachments: nil, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil)
     )
   }
@@ -338,25 +651,62 @@ private func replaceTruncatedTextEnvelope(
 ) -> Bool {
   guard let fallbackIdentity = workTextRoleTurnKey(for: fallback),
         let fallbackText = workTextEnvelopeText(fallback),
-        !fallbackText.isEmpty
+        !fallbackText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   else { return false }
+
+  if textEnvelopeAlreadyPresentForBackfill(fallback: fallback, merged: transcript) {
+    let beforeCount = transcript.count
+    transcript.removeAll { candidate in
+      guard workTextRoleTurnKey(for: candidate) == fallbackIdentity,
+            let candidateText = workTextEnvelopeText(candidate)
+      else { return false }
+      return workTextShouldReplaceWithCanonicalFallback(candidateText: candidateText, fallbackText: fallbackText)
+    }
+    let removedStaleCandidate = transcript.count != beforeCount
+    if removedStaleCandidate {
+      transcript.append(fallback)
+    }
+    return removedStaleCandidate
+  }
 
   guard let index = transcript.firstIndex(where: { candidate in
     guard workTextRoleTurnKey(for: candidate) == fallbackIdentity,
           let candidateText = workTextEnvelopeText(candidate)
     else { return false }
-    let normalizedCandidate = candidateText.trimmingCharacters(in: .whitespacesAndNewlines)
-    let normalizedFallback = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !normalizedCandidate.isEmpty, normalizedFallback.count > normalizedCandidate.count else {
-      return false
-    }
-    return normalizedFallback.contains(normalizedCandidate)
-      || normalizedFallback.hasSuffix(normalizedCandidate)
-      || normalizedFallback.hasPrefix(normalizedCandidate)
+    return workTextShouldReplaceWithCanonicalFallback(candidateText: candidateText, fallbackText: fallbackText)
   }) else { return false }
 
   transcript[index] = fallback
   return true
+}
+
+private func workTextShouldReplaceWithCanonicalFallback(candidateText: String, fallbackText: String) -> Bool {
+  let normalizedCandidate = candidateText.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedFallback = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !normalizedCandidate.isEmpty,
+        !normalizedFallback.isEmpty,
+        normalizedCandidate != normalizedFallback
+  else { return false }
+
+  if workTextIsTruncatedVersion(normalizedCandidate, of: normalizedFallback) {
+    return true
+  }
+
+  return workStreamingExistingOnlyAddsRepeatedIncomingTail(
+    existing: normalizedCandidate,
+    incoming: normalizedFallback
+  )
+}
+
+private func workTextIsTruncatedVersion(_ candidateText: String, of fallbackText: String) -> Bool {
+  let normalizedCandidate = candidateText.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedFallback = fallbackText.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !normalizedCandidate.isEmpty, normalizedFallback.count > normalizedCandidate.count else {
+    return false
+  }
+  return normalizedFallback.contains(normalizedCandidate)
+    || normalizedFallback.hasSuffix(normalizedCandidate)
+    || normalizedFallback.hasPrefix(normalizedCandidate)
 }
 
 /// Identity key for a user/assistant text envelope used for backfill dedup.
@@ -453,21 +803,32 @@ private func textEnvelopeAlreadyPresentForBackfill(
         !fallbackText.isEmpty
   else { return false }
   let fallbackTurnId = workTextTurnId(for: fallback)
+  let fallbackRole = workTextRole(for: fallback)
   for candidate in merged {
-    guard workTextRole(for: candidate) == workTextRole(for: fallback),
-          let candidateText = workTextEnvelopeText(candidate)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          candidateText == fallbackText
+    guard workTextRole(for: candidate) == fallbackRole,
+          let candidateText = workTextEnvelopeText(candidate)?.trimmingCharacters(in: .whitespacesAndNewlines)
     else { continue }
     let candidateTurnId = workTextTurnId(for: candidate)
     if !fallbackTurnId.isEmpty, !candidateTurnId.isEmpty {
       guard fallbackTurnId == candidateTurnId else { continue }
-      return true
+    } else {
+      guard candidate.timestamp == fallback.timestamp else { continue }
     }
-    if candidate.timestamp == fallback.timestamp {
+    if candidateText == fallbackText ||
+       workTextContainsBackfillFragment(candidateText: candidateText, fallbackText: fallbackText) {
       return true
     }
   }
   return false
+}
+
+private func workTextContainsBackfillFragment(candidateText: String, fallbackText: String) -> Bool {
+  guard candidateText.count >= fallbackText.count,
+        fallbackText.count >= workStreamingMergeMinimumRepeatedTailLength
+  else { return false }
+  return candidateText.contains(fallbackText)
+    || candidateText.hasSuffix(fallbackText)
+    || candidateText.hasPrefix(fallbackText)
 }
 
 private func workTextRole(for envelope: WorkChatEnvelope) -> String? {
@@ -535,11 +896,35 @@ private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) ->
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
   var resolvedSteerIds = Set<String>()
+  var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
-    case .userMessage(_, _, _, let steerId, let deliveryState, _):
-      if let steerId, deliveryState != "queued" {
-        resolvedSteerIds.insert(steerId)
+    case .userMessage(let text, _, _, let steerId, let deliveryState, _):
+      if let steerId, deliveryState == "queued" {
+        let normalizedText = normalizedQueuedSteerText(text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
+        }
+      } else {
+        // A delivered/inline/failed row graduates at most ONE queued steer.
+        // Prefer the exact steerId match; only fall back to text (consuming a
+        // single queued id) so duplicate prompts don't clear multiple pending
+        // steers at once.
+        let normalizedText = normalizedQueuedSteerText(text)
+        if let steerId {
+          resolvedSteerIds.insert(steerId)
+          if !normalizedText.isEmpty {
+            if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
+              queuedSteerIdsByText[normalizedText]?.remove(steerId)
+            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+              resolvedSteerIds.insert(consumed)
+              queuedSteerIdsByText[normalizedText]?.remove(consumed)
+            }
+          }
+        } else if !normalizedText.isEmpty, let consumed = queuedSteerIdsByText[normalizedText]?.first {
+          resolvedSteerIds.insert(consumed)
+          queuedSteerIdsByText[normalizedText]?.remove(consumed)
+        }
       }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
@@ -562,7 +947,6 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
 
 func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !live.isEmpty else { return base }
-  guard !base.isEmpty else { return live }
 
   var merged: [WorkChatEnvelope] = []
   merged.reserveCapacity(base.count + live.count)
@@ -571,7 +955,7 @@ func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]
   for envelope in base + live {
     let key = workChatEnvelopeMergeKey(envelope)
     if let existing = indexByKey[key] {
-      merged[existing] = envelope
+      merged[existing] = mergedWorkChatEnvelope(existing: merged[existing], incoming: envelope)
     } else {
       indexByKey[key] = merged.count
       merged.append(envelope)
@@ -583,6 +967,77 @@ func mergeWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]
       return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
     }
     return lhs.timestamp < rhs.timestamp
+  }
+}
+
+func appendWorkChatTranscripts(base: [WorkChatEnvelope], live: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  guard !live.isEmpty else { return base }
+
+  var merged = base
+  merged.reserveCapacity(base.count + live.count)
+  var indexByKey: [String: Int] = [:]
+  indexByKey.reserveCapacity(base.count + live.count)
+  for (index, envelope) in merged.enumerated() {
+    indexByKey[workChatEnvelopeMergeKey(envelope)] = index
+  }
+
+  var needsSort = false
+  for envelope in live {
+    let key = workChatEnvelopeMergeKey(envelope)
+    if let existing = indexByKey[key] {
+      let previous = merged[existing]
+      merged[existing] = mergedWorkChatEnvelope(existing: previous, incoming: envelope)
+      if previous.timestamp != envelope.timestamp || previous.sequence != envelope.sequence {
+        needsSort = true
+      }
+      continue
+    }
+
+    if let last = merged.last, !workChatEnvelopeSortPrecedesOrMatches(last, envelope) {
+      needsSort = true
+    }
+    indexByKey[key] = merged.count
+    merged.append(envelope)
+  }
+
+  guard needsSort else { return merged }
+  return merged.sorted { lhs, rhs in
+    if lhs.timestamp == rhs.timestamp {
+      return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
+    }
+    return lhs.timestamp < rhs.timestamp
+  }
+}
+
+private func workChatEnvelopeSortPrecedesOrMatches(_ lhs: WorkChatEnvelope, _ rhs: WorkChatEnvelope) -> Bool {
+  if lhs.timestamp == rhs.timestamp {
+    return (lhs.sequence ?? 0) <= (rhs.sequence ?? 0)
+  }
+  return lhs.timestamp <= rhs.timestamp
+}
+
+private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkChatEnvelope) -> WorkChatEnvelope {
+  switch (existing.event, incoming.event) {
+  case (
+    .assistantText(let existingText, let existingTurnId, let existingItemId),
+    .assistantText(let incomingText, let incomingTurnId, let incomingItemId)
+  ):
+    // Keep the earlier envelope's ordering key so a stable-key assistant message
+    // doesn't jump to the latest fragment position when the transcript is sorted,
+    // which would reorder the visible timeline around tool/status events.
+    let keepExistingOrder = workChatEnvelopeSortPrecedesOrMatches(existing, incoming)
+    return WorkChatEnvelope(
+      sessionId: incoming.sessionId,
+      timestamp: keepExistingOrder ? existing.timestamp : incoming.timestamp,
+      sequence: keepExistingOrder ? existing.sequence : incoming.sequence,
+      event: .assistantText(
+        text: mergeWorkStreamingText(existingText, incomingText),
+        turnId: incomingTurnId ?? existingTurnId,
+        itemId: incomingItemId ?? existingItemId
+      )
+    )
+  default:
+    return incoming
   }
 }
 
@@ -1022,16 +1477,39 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var queue: [String: WorkPendingSteerModel] = [:]
   var order: [String] = []
   var resolved = Set<String>()
+  var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .userMessage(let text, _, let turnId, let steerId, let deliveryState, _):
-      guard let steerId, !resolved.contains(steerId) else { continue }
-      if deliveryState == "queued" {
+      if let steerId, deliveryState == "queued", !resolved.contains(steerId) {
         if queue[steerId] == nil { order.append(steerId) }
         queue[steerId] = WorkPendingSteerModel(id: steerId, text: text, turnId: turnId, timestamp: envelope.timestamp)
-      } else if deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
-        queue.removeValue(forKey: steerId)
-        resolved.insert(steerId)
+        let normalizedText = normalizedQueuedSteerText(text)
+        if !normalizedText.isEmpty {
+          queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
+        }
+      } else {
+        // Graduate at most ONE queued steer per delivered row: prefer the exact
+        // steerId, then fall back to consuming a single text-matched queued id so
+        // a duplicate prompt doesn't clear multiple pending steers at once.
+        let normalizedText = normalizedQueuedSteerText(text)
+        if let steerId, deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
+          queue.removeValue(forKey: steerId)
+          resolved.insert(steerId)
+          if !normalizedText.isEmpty {
+            if queuedSteerIdsByText[normalizedText]?.contains(steerId) == true {
+              queuedSteerIdsByText[normalizedText]?.remove(steerId)
+            } else if let consumed = queuedSteerIdsByText[normalizedText]?.first {
+              queue.removeValue(forKey: consumed)
+              resolved.insert(consumed)
+              queuedSteerIdsByText[normalizedText]?.remove(consumed)
+            }
+          }
+        } else if !normalizedText.isEmpty, let consumed = queuedSteerIdsByText[normalizedText]?.first {
+          queue.removeValue(forKey: consumed)
+          resolved.insert(consumed)
+          queuedSteerIdsByText[normalizedText]?.remove(consumed)
+        }
       }
     case .systemNotice(_, let message, _, _, let steerId):
       if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
@@ -1043,6 +1521,13 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+func normalizedQueuedSteerText(_ text: String) -> String {
+  text
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+    .lowercased()
 }
 
 func workSystemNoticeResolvesQueuedSteer(_ message: String) -> Bool {
@@ -1104,7 +1589,26 @@ func sortedWorkChatEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvel
 }
 
 func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
-  "\(envelope.sessionId)|\(envelope.timestamp)|\(workChatEventMergeKey(envelope.event))"
+  if let stableKey = workChatEnvelopeStableUpdateKey(envelope) {
+    return stableKey
+  }
+  return "\(envelope.sessionId)|\(envelope.timestamp)|\(workChatEventMergeKey(envelope.event))"
+}
+
+private func workChatEnvelopeStableUpdateKey(_ envelope: WorkChatEnvelope) -> String? {
+  switch envelope.event {
+  case .assistantText(_, let turnId, let itemId):
+    let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !normalizedItemId.isEmpty else { return nil }
+    return [
+      envelope.sessionId,
+      "assistant_text",
+      turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+      normalizedItemId,
+    ].joined(separator: "|")
+  default:
+    return nil
+  }
 }
 
 func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
@@ -1118,7 +1622,11 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     let attachmentDigest = (attachments ?? []).map { "\($0.type):\($0.path)" }.joined(separator: ",")
     return ["user_message", turnId ?? "", steerId ?? "", deliveryState ?? "", processed.map { $0 ? "1" : "0" } ?? "", attachmentDigest, text].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
-    return ["text", turnId ?? "", itemId ?? "", text].joined(separator: "|")
+    let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !normalizedItemId.isEmpty {
+      return ["text", turnId ?? "", normalizedItemId].joined(separator: "|")
+    }
+    return ["text", turnId ?? "", text].joined(separator: "|")
   case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):
     return ["tool_call", turnId ?? "", itemId, parentItemId ?? "", tool, argsText].joined(separator: "|")
   case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status):
@@ -1128,12 +1636,12 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
   case .plan(let steps, let explanation, let turnId):
     let stepDigest = steps.map { "\($0.status):\($0.text)" }.joined(separator: "\n")
     return ["plan", turnId ?? "", explanation ?? "", stepDigest].joined(separator: "|")
-  case .subagentStarted(let taskId, let description, let background, let turnId):
-    return ["subagent_started", turnId ?? "", taskId, description, background ? "1" : "0"].joined(separator: "|")
-  case .subagentProgress(let taskId, let description, let summary, let toolName, let turnId):
-    return ["subagent_progress", turnId ?? "", taskId, description ?? "", summary, toolName ?? ""].joined(separator: "|")
-  case .subagentResult(let taskId, let status, let summary, let turnId):
-    return ["subagent_result", turnId ?? "", taskId, status, summary].joined(separator: "|")
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+    return ["subagent_started", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description, background ? "1" : "0"].joined(separator: "|")
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let turnId):
+    return ["subagent_progress", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description ?? "", summary, toolName ?? ""].joined(separator: "|")
+  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let turnId):
+    return ["subagent_result", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", status, summary].joined(separator: "|")
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     let digest = options.map { "\($0.label)\t\($0.value)\t\($0.description ?? "")\t\($0.recommended ? "1" : "0")" }.joined(separator: "\n")
     return ["structured_question", turnId ?? "", itemId, question, digest].joined(separator: "|")

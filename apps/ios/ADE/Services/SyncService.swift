@@ -271,12 +271,15 @@ private let syncTerminalSubscriptionMaxBytes = 240_000
 private let syncTerminalStreamMaxBytes = 512_000
 private let syncTerminalHistoryMaxBytes = 262_144
 private let syncChatSubscriptionMaxBytes = 2_000_000
+private let syncChatHistoryTailPageProbeOffset = 1_000_000_000
+private let syncChatHistoryTailPageMaxBytes = 600_000
 // 512KB, up from 160KB: the old budget silently truncated reasoning-heavy
 // turns on cellular/Tailscale routes. Chunked envelopes plus off-main decode
 // make the larger snapshot cheap to receive.
 private let syncReducedLoadChatSubscriptionMaxBytes = 512_000
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
+private let chatEventHistoryMaxSessions = 64
 /// Coalescing window for chat-event UI notifications. The coalescer fires on
 /// the leading edge (first event after a quiet period surfaces immediately)
 /// and then at most once per window during a sustained burst. Was a 420 ms
@@ -394,15 +397,19 @@ func syncEndpointHost(_ rawValue: String) -> String? {
   syncParseRouteEndpoint(rawValue)?.host
 }
 
-func syncConnectPortCandidates(primaryPort: Int, addresses: [String]) -> [Int] {
+func syncConnectPortCandidates(
+  primaryPort: Int,
+  addresses: [String],
+  allowFallbackSweep: Bool = true
+) -> [Int] {
   let normalizedHosts = addresses
     .map(syncNormalizedRouteHost)
     .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
   let hasBonjourRoute = normalizedHosts.contains { $0.hasSuffix(".local") }
   let hasTailnetRoute = addresses.contains(where: syncIsTailscaleRoute)
-  let shouldTryDefaultPair =
-    (SyncDirectHostPorts.portCandidates.contains(primaryPort) && !hasBonjourRoute)
-      || hasTailnetRoute
+  let shouldTryDefaultPair = allowFallbackSweep
+    && ((SyncDirectHostPorts.portCandidates.contains(primaryPort) && !hasBonjourRoute)
+      || hasTailnetRoute)
   let fallbackPorts = shouldTryDefaultPair ? SyncDirectHostPorts.portCandidates : []
   var seen = Set<Int>()
   return ([primaryPort] + fallbackPorts)
@@ -410,7 +417,7 @@ func syncConnectPortCandidates(primaryPort: Int, addresses: [String]) -> [Int] {
     .filter { seen.insert($0).inserted }
 }
 
-struct SyncConnectionEndpointAttempt: Equatable {
+struct SyncConnectionEndpointAttempt: Equatable, Hashable {
   var address: String
   var port: Int
 }
@@ -429,6 +436,23 @@ func syncConnectionEndpointAttempts(
     }
   }
   return primaryAttempts + fallbackAttempts
+}
+
+func syncStalePortRecoveryEndpointAttempts(
+  addresses: [String],
+  ports: [Int]
+) -> [SyncConnectionEndpointAttempt] {
+  guard !addresses.isEmpty, !ports.isEmpty else { return [] }
+  let priorityAddresses = Array(addresses.prefix(2))
+  let fallbackAddresses = Array(addresses.dropFirst(2))
+  let prioritySweep = priorityAddresses.flatMap { address in
+    ports.map { port in SyncConnectionEndpointAttempt(address: address, port: port) }
+  }
+  let fallbackSweep = syncConnectionEndpointAttempts(addresses: fallbackAddresses, ports: ports)
+  var seen = Set<SyncConnectionEndpointAttempt>()
+  return (prioritySweep + fallbackSweep).filter { attempt in
+    seen.insert(attempt).inserted
+  }
 }
 
 func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> String? {
@@ -486,6 +510,7 @@ struct SyncPreprocessedEnvelope {
 }
 
 private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
+private let maxChunkedSyncEnvelopeBytes = 32 * 1024 * 1024
 
 func syncPreprocessIncoming(
   _ text: String,
@@ -574,18 +599,38 @@ func syncRaceAddressCandidates(
 /// in `index` order into the original envelope JSON. Bounded so a broken host
 /// cannot grow the buffer without limit.
 struct SyncEnvelopeChunkAssembler {
+  private struct Part {
+    let data: Data
+    let encodedBytes: Int
+  }
+
   private struct PartialChunk {
     let total: Int
-    var parts: [Int: String] = [:]
+    var parts: [Int: Part] = [:]
+    var decodedBytes = 0
+    var encodedBytes = 0
   }
 
   private var buffers: [String: PartialChunk] = [:]
   private var arrivalOrder: [String] = []
   private let maxConcurrentChunks = 8
   private let maxTotalParts = 512
+  private let maxEnvelopeBytes: Int
+
+  init(maxEnvelopeBytes: Int = maxChunkedSyncEnvelopeBytes) {
+    self.maxEnvelopeBytes = max(1, maxEnvelopeBytes)
+  }
 
   mutating func add(chunkId: String, index: Int, total: Int, part: String) -> String? {
     guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
+    let encodedBytes = part.utf8.count
+    let decodedUpperBound = ((encodedBytes + 3) / 4) * 3
+    guard decodedUpperBound <= maxEnvelopeBytes,
+          let decodedPart = Data(base64Encoded: part) else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
     if buffers[chunkId] == nil {
       while arrivalOrder.count >= maxConcurrentChunks, let oldest = arrivalOrder.first {
         arrivalOrder.removeFirst()
@@ -599,7 +644,20 @@ struct SyncEnvelopeChunkAssembler {
       arrivalOrder.removeAll { $0 == chunkId }
       return nil
     }
-    buffer.parts[index] = part
+    if let existing = buffer.parts[index] {
+      buffer.decodedBytes -= existing.data.count
+      buffer.encodedBytes -= existing.encodedBytes
+    }
+    let nextDecodedBytes = buffer.decodedBytes + decodedPart.count
+    let nextEncodedBytes = buffer.encodedBytes + encodedBytes
+    guard nextDecodedBytes <= maxEnvelopeBytes, nextEncodedBytes <= maxEnvelopeBytes * 2 else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
+    buffer.parts[index] = Part(data: decodedPart, encodedBytes: encodedBytes)
+    buffer.decodedBytes = nextDecodedBytes
+    buffer.encodedBytes = nextEncodedBytes
     guard buffer.parts.count == buffer.total else {
       buffers[chunkId] = buffer
       return nil
@@ -607,9 +665,10 @@ struct SyncEnvelopeChunkAssembler {
     buffers.removeValue(forKey: chunkId)
     arrivalOrder.removeAll { $0 == chunkId }
     var data = Data()
+    data.reserveCapacity(buffer.decodedBytes)
     for partIndex in 0..<buffer.total {
-      guard let encoded = buffer.parts[partIndex], let decoded = Data(base64Encoded: encoded) else { return nil }
-      data.append(decoded)
+      guard let part = buffer.parts[partIndex] else { return nil }
+      data.append(part.data)
     }
     return String(data: data, encoding: .utf8)
   }
@@ -1009,6 +1068,16 @@ struct LaneNavigationRequest: Equatable, Identifiable {
   }
 }
 
+struct WorkLaneNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let laneId: String
+
+  init(laneId: String) {
+    self.id = UUID().uuidString
+    self.laneId = laneId
+  }
+}
+
 struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let id: String
   let sessionId: String
@@ -1019,24 +1088,45 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   }
 }
 
+enum PrNavigationRequestTarget: Equatable {
+  case detail(prId: String, prNumber: Int?, laneId: String?)
+  case githubNumber(Int)
+  case create(laneId: String)
+}
+
 struct PrNavigationRequest: Equatable, Identifiable {
   let id: String
-  let prId: String
-  let prNumber: Int?
-  let laneId: String?
+  let target: PrNavigationRequestTarget
 
   init(prId: String, prNumber: Int? = nil, laneId: String? = nil) {
     self.id = UUID().uuidString
-    self.prId = prId
-    self.prNumber = prNumber
-    self.laneId = laneId
+    self.target = .detail(prId: prId, prNumber: prNumber, laneId: laneId)
   }
 
   init(prNumber: Int) {
     self.id = UUID().uuidString
-    self.prId = "github-pr-number:\(prNumber)"
-    self.prNumber = prNumber
-    self.laneId = nil
+    self.target = .githubNumber(prNumber)
+  }
+
+  init(createLaneId: String) {
+    self.id = UUID().uuidString
+    self.target = .create(laneId: createLaneId)
+  }
+
+  var laneId: String? {
+    switch target {
+    case .detail(_, _, let laneId):
+      return laneId
+    case .githubNumber:
+      return nil
+    case .create(let laneId):
+      return laneId
+    }
+  }
+
+  var createLaneId: String? {
+    guard case .create(let laneId) = target else { return nil }
+    return laneId
   }
 }
 
@@ -1193,10 +1283,36 @@ final class SyncService: ObservableObject {
   @Published private(set) var filesProjectionRevision = 0
   @Published private(set) var prsProjectionRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
+
+  private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+  private let iso8601Formatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+  }()
   @Published private(set) var workspaceSnapshotRevision = 0
+  // All-projects chat roster (mobile hub). `rosterProjects` is the machine-wide
+  // projection of every project's lanes + chats; the hub reads it overlaid on
+  // `projects` (the catalog). Mutated only by the roster apply path below.
+  @Published private(set) var rosterProjects: [RemoteRosterProject] = []
+  @Published private(set) var rosterRevision = 0
+  /// Last applied roster `seq`; gates delta-vs-resnapshot. nil ⇒ no baseline.
+  var rosterSeq: Int?
+  /// Whether `roster_subscribe` has been sent on the current connection.
+  var rosterSubscribed = false
+  /// True once the host has answered at least one roster push this launch, so
+  /// the hub knows the feed is supported (older hosts never answer → fallback).
+  @Published private(set) var rosterSupported = false
+  /// Debounces persistence of the roster snapshot to the App Group cache.
+  var rosterPersistTask: Task<Void, Never>?
   @Published var settingsPresented = false
   @Published var projectHomePresented = true
   @Published var attentionDrawerPresented = false
+  @Published var requestedWorkLaneNavigation: WorkLaneNavigationRequest?
   @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
@@ -1370,6 +1486,11 @@ final class SyncService: ObservableObject {
   private var pendingDatabaseChangeAffectsAll = false
   private var latestRemoteDbVersion = 0
   private var outboundLocalDbVersion = 0
+  private var outboundCursorPersistTask: Task<Void, Never>?
+  private var pendingOutboundCursorPersistVersion: Int?
+  private var remoteCursorProfilePersistTask: Task<Void, Never>?
+  private var pendingRemoteProfileDbVersion: Int?
+  private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
@@ -1388,6 +1509,7 @@ final class SyncService: ObservableObject {
   private var autoReconnectAwaitingLiveDiscovery = false
   /// Prevents overlapping `reconnectIfPossible` runs from stacking TCP/WebSocket attempts.
   private var reconnectConnectInFlight = false
+  private var reconnectConnectInFlightGeneration: UInt64?
   private var bonjourDiscoveredHosts: [DiscoveredSyncHost] = []
   private var tailnetDiscoveredHosts: [DiscoveredSyncHost] = []
   private var lastNetworkPathSnapshot: SyncNetworkPathSnapshot?
@@ -1441,6 +1563,7 @@ final class SyncService: ObservableObject {
   /// Tracks `activeSessions` derivation so we do not rebuild on every
   /// unrelated `localStateRevision` bump.
   private var activeSessionsObservationTask: Task<Void, Never>?
+  private var activeSessionsSnapshotSignature = 0
 
   /// Backing storage for `attentionDrawer` + the Combine subscriptions it
   /// uses to observe `activeSessions` / workspace snapshot writes. Lazily
@@ -1563,6 +1686,45 @@ final class SyncService: ObservableObject {
     scheduleWorkspaceSnapshotWrite()
     if connectionState == .connected || connectionState == .syncing {
       startInitialHydrationTask(for: connectionGeneration)
+    }
+  }
+
+  /// Activate a project so a chat opened FROM THE HUB can stream its transcript,
+  /// without leaving the hub (the chat is presented over it; Back returns to the
+  /// hub). No-op when the project is already active. Returns once the project is
+  /// active enough for the chat surface to load (or immediately on the local
+  /// fallback path). Errors are surfaced via `lastError`, not thrown — the chat
+  /// cover shows a loading/retry state.
+  func openProjectForHubChat(_ project: MobileProjectSummary) async {
+    if isActiveProject(project) { return }
+    unhideProject(project)
+
+    guard supportsProjectCatalog,
+          canSendLiveRequests(),
+          let rootPath = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !rootPath.isEmpty else {
+      // Cached/offline fallback: point reads at the project locally without
+      // tearing down the hub. Transcript streaming resumes when live.
+      if project.isCached || database.hasProject(id: project.id) {
+        setActiveProjectId(project.id, rootPath: project.rootPath)
+        localStateRevision += 1
+        refreshActiveSessionsAndSnapshot()
+      }
+      return
+    }
+
+    let selectionGeneration = beginProjectSelection()
+    let normalizedSwitchRoot = normalizedProjectRoot(rootPath) ?? rootPath
+    projectSwitchInFlightRootPath = normalizedSwitchRoot
+    do {
+      try await switchToDesktopProject(project, rootPath: rootPath, selectionGeneration: selectionGeneration, dismissHome: false)
+    } catch {
+      if isCurrentProjectSelection(selectionGeneration) {
+        lastError = SyncUserFacingError.message(for: error)
+      }
+    }
+    if isCurrentProjectSelection(selectionGeneration) {
+      projectSwitchInFlightRootPath = nil
     }
   }
 
@@ -1989,7 +2151,8 @@ final class SyncService: ObservableObject {
   private func switchToDesktopProject(
     _ project: MobileProjectSummary,
     rootPath: String,
-    selectionGeneration: UInt64
+    selectionGeneration: UInt64,
+    dismissHome: Bool = true
   ) async throws {
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {
@@ -2032,7 +2195,7 @@ final class SyncService: ObservableObject {
       // reconnects via the WebSocket. Treat this as a successful switch:
       // preserve the new active project, tear down any live socket, and let
       // reconnectIfPossible re-establish streaming for the new project.
-      projectHomePresented = false
+      if dismissHome { projectHomePresented = false }
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
@@ -2122,7 +2285,7 @@ final class SyncService: ObservableObject {
       )
       guard isCurrentConnectAttempt(connectAttemptGeneration), isCurrentProjectSelection(selectionGeneration) else { return }
       currentAddress = connectedEndpoint.host
-      projectHomePresented = false
+      if dismissHome { projectHomePresented = false }
       localStateRevision += 1
       refreshActiveSessionsAndSnapshot()
       scheduleWorkspaceSnapshotWrite()
@@ -2396,11 +2559,14 @@ final class SyncService: ObservableObject {
     projects = deduplicateProjectListByRoot(
       sortedProjectList(database.listMobileProjects().filter { !isProjectHidden($0) })
     )
+    rosterProjects = loadCachedRoster()
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
-    if activeProjectId != nil {
-      projectHomePresented = false
-    }
+    // The hub (all-projects ProjectHomeView) is the launch surface: always land
+    // there, even when a project was previously active. Opening a project from
+    // the hub (`selectProject`) dismisses it into that project's tabs; Back
+    // returns here. `activeProjectId` stays set so the roster's live overlay and
+    // on-tap chat opening have a synced project to work with.
     pendingOperationCount = loadPendingOperations().count
     resetOutboundCursorStateForActiveProject()
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
@@ -2474,6 +2640,8 @@ final class SyncService: ObservableObject {
     reconnectTask?.cancel()
     networkPathReconnectTask?.cancel()
     pendingOperationFlushTask?.cancel()
+    outboundCursorPersistTask?.cancel()
+    remoteCursorProfilePersistTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
     chatEventRevisionTask?.cancel()
@@ -2503,11 +2671,45 @@ final class SyncService: ObservableObject {
       let touchedTables = self.pendingDatabaseChangeAffectsAll ? Set<String>() : self.pendingDatabaseTouchedTables
       self.pendingDatabaseTouchedTables.removeAll()
       self.pendingDatabaseChangeAffectsAll = false
-      self.refreshProjectCatalog()
-      localStateRevision += 1
-      self.bumpProjectionRevisions(for: touchedTables)
-      self.refreshActiveSessionsAndSnapshot()
+
+      let affectsAll = touchedTables.isEmpty
+      let affectsProjectCatalog = affectsAll || touchedTables.contains(where: Self.tableAffectsProjectCatalog)
+      let affectsAnyProjection = affectsAll
+        || touchedTables.contains(where: Self.tableAffectsLanesProjection)
+        || touchedTables.contains(where: Self.tableAffectsLaneDetailProjection)
+        || touchedTables.contains(where: Self.tableAffectsWorkProjection)
+        || touchedTables.contains(where: Self.tableAffectsFilesProjection)
+        || touchedTables.contains(where: Self.tableAffectsPrsProjection)
+        || touchedTables.contains(where: Self.tableAffectsProofArtifactsProjection)
+      let affectsActiveSessions = affectsAll || touchedTables.contains(where: Self.tableAffectsActiveSessionsSnapshot)
+
+      if affectsProjectCatalog {
+        self.refreshProjectCatalog()
+      }
+      if affectsAnyProjection {
+        localStateRevision += 1
+        self.bumpProjectionRevisions(for: touchedTables)
+      }
+      if affectsActiveSessions {
+        self.refreshActiveSessionsAndSnapshot()
+      }
     }
+  }
+
+  private static func tableAffectsProjectCatalog(_ table: String) -> Bool {
+    [
+      "projects",
+      "lanes",
+      "lane_list_snapshots",
+    ].contains(table)
+  }
+
+  private static func tableAffectsActiveSessionsSnapshot(_ table: String) -> Bool {
+    [
+      "terminal_sessions",
+      "session_deltas",
+      "checkpoints",
+    ].contains(table)
   }
 
   private func bumpProjectionRevisions(for touchedTables: Set<String>) {
@@ -2980,7 +3182,7 @@ final class SyncService: ObservableObject {
         syncConnectLog.info("ADE_SYNC_TRACE reconnect user override cancels in-flight attempt")
         beginConnectAttempt()
         teardownSocket(reason: "Reconnect restarted.")
-        reconnectConnectInFlight = false
+        clearReconnectConnectInFlight()
       }
     }
     // Background retries (slow heartbeat, network-path task, discovery
@@ -3020,12 +3222,10 @@ final class SyncService: ObservableObject {
       syncConnectLog.info("reconnect skipped: connect already in flight")
       return
     }
-    reconnectConnectInFlight = true
     let connectAttemptGeneration = beginConnectAttempt()
+    markReconnectConnectInFlight(connectAttemptGeneration)
     defer {
-      if self.connectAttemptGeneration == connectAttemptGeneration {
-        reconnectConnectInFlight = false
-      }
+      clearReconnectConnectInFlight(connectAttemptGeneration)
     }
     publishReconnectStarted(profile: profile)
     do {
@@ -3437,7 +3637,7 @@ final class SyncService: ObservableObject {
       setAutoReconnectPausedByUser(true)
     }
     allowAutoReconnect = false
-    reconnectConnectInFlight = false
+    clearReconnectConnectInFlight()
     cancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
@@ -3875,6 +4075,10 @@ final class SyncService: ObservableObject {
     database.fetchSessions()
   }
 
+  func fetchSession(id sessionId: String) async throws -> TerminalSessionSummary? {
+    database.fetchSession(id: sessionId)
+  }
+
   func listProcessDefinitions() async throws -> [ProcessDefinition] {
     try await sendDecodableCommand(action: "processes.listDefinitions", as: [ProcessDefinition].self)
   }
@@ -3962,6 +4166,14 @@ final class SyncService: ObservableObject {
 
   func fetchPullRequestListItems(laneId: String) async throws -> [PullRequestListItem] {
     database.fetchPullRequestListItems(forLane: laneId)
+  }
+
+  func fetchPullRequestForLane(laneId: String) async throws -> PrSummary? {
+    try await sendDecodableCommand(
+      action: "prs.getForLane",
+      args: ["laneId": laneId],
+      as: PrSummary?.self
+    )
   }
 
   func fetchPullRequestGroupMembers(groupId: String) async throws -> [PrGroupMemberSummary] {
@@ -4124,9 +4336,20 @@ final class SyncService: ObservableObject {
 
   // MARK: - PR detail warm cache
 
+  /// Bounds the warm cache; full PR detail snapshots would otherwise grow
+  /// insert-only for the process lifetime.
+  private static let prDetailCacheMaxEntries = 24
+
   /// Store a fully-loaded detail entry for `prId`. Stamps `loadedAt` so the
   /// freshness gate can decide whether a later revision bump should refetch.
   func storePrDetailWarmEntry(_ entry: PrDetailWarmEntry, for prId: String) {
+    // Bounded-growth insurance: evict the oldest entry (by loadedAt) before a
+    // brand-new key pushes the cache past the cap.
+    if prDetailCache[prId] == nil,
+       prDetailCache.count >= Self.prDetailCacheMaxEntries,
+       let oldest = prDetailCache.min(by: { $0.value.loadedAt < $1.value.loadedAt })?.key {
+      prDetailCache.removeValue(forKey: oldest)
+    }
     prDetailCache[prId] = entry
   }
 
@@ -4181,13 +4404,9 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func ensureMobileFileMutationsAllowed(workspaceId: String) throws {
-    let workspace = database.listWorkspaces().first { $0.id == workspaceId }
-    guard let workspace else {
+  private func ensureFilesWorkspaceAvailable(workspaceId: String) throws {
+    guard database.listWorkspaces().contains(where: { $0.id == workspaceId }) else {
       throw NSError(domain: "ADE", code: 118, userInfo: [NSLocalizedDescriptionKey: "The selected Files workspace is no longer available on this phone."])
-    }
-    guard !workspace.readOnlyOnMobile else {
-      throw NSError(domain: "ADE", code: 119, userInfo: [NSLocalizedDescriptionKey: "Files stays read-only on iPhone for this workspace."])
     }
   }
 
@@ -4237,7 +4456,7 @@ final class SyncService: ObservableObject {
   }
 
   func writeText(workspaceId: String, path: String, text: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "writeText", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4246,7 +4465,7 @@ final class SyncService: ObservableObject {
   }
 
   func createFile(workspaceId: String, path: String, content: String = "") async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "createFile", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4255,7 +4474,7 @@ final class SyncService: ObservableObject {
   }
 
   func createDirectory(workspaceId: String, path: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "createDirectory", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4263,7 +4482,7 @@ final class SyncService: ObservableObject {
   }
 
   func renamePath(workspaceId: String, oldPath: String, newPath: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "rename", args: [
       "workspaceId": workspaceId,
       "oldPath": oldPath,
@@ -4272,7 +4491,7 @@ final class SyncService: ObservableObject {
   }
 
   func deletePath(workspaceId: String, path: String) async throws {
-    try ensureMobileFileMutationsAllowed(workspaceId: workspaceId)
+    try ensureFilesWorkspaceAvailable(workspaceId: workspaceId)
     _ = try await sendFileRequest(action: "deletePath", args: [
       "workspaceId": workspaceId,
       "path": path,
@@ -4603,6 +4822,19 @@ final class SyncService: ObservableObject {
     chatEventEnvelopesBySession[sessionId] ?? []
   }
 
+  @discardableResult
+  func pruneChatEventHistory(sessionId: String, keepingTail limit: Int) -> [AgentChatEventEnvelope] {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty,
+          let events = chatEventEnvelopesBySession[trimmedSessionId]
+    else { return [] }
+    let clampedLimit = max(0, limit)
+    guard events.count > clampedLimit else { return events }
+    let next = Array(events.suffix(clampedLimit))
+    chatEventEnvelopesBySession[trimmedSessionId] = next
+    return next
+  }
+
   func chatEventRevision(for sessionId: String) -> Int {
     chatEventRevisionsBySession[sessionId] ?? 0
   }
@@ -4676,7 +4908,9 @@ final class SyncService: ObservableObject {
     modelId: String? = nil,
     reasoningEffort: String? = nil,
     cols: Int? = nil,
-    rows: Int? = nil
+    rows: Int? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> StartCliSessionResult {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -4703,7 +4937,13 @@ final class SyncService: ObservableObject {
     if let rows, rows > 0 {
       args["rows"] = rows
     }
-    return try await sendDecodableCommand(action: "work.startCliSession", args: args, as: StartCliSessionResult.self)
+    return try await sendDecodableCommand(
+      action: "work.startCliSession",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: StartCliSessionResult.self
+    )
   }
 
   func stopWorkRuntime(sessionId: String) async throws {
@@ -4717,7 +4957,9 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     branchName: String? = nil,
     startPoint: String? = nil,
-    linearIssue: LaneLinearIssue? = nil
+    linearIssue: LaneLinearIssue? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -4741,7 +4983,13 @@ final class SyncService: ObservableObject {
         args["branchName"] = branchName
       }
     }
-    return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
+    return try await sendDecodableCommand(
+      action: "lanes.create",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: LaneSummary.self
+    )
   }
 
   private struct SuggestLaneNameResult: Decodable { let name: String }
@@ -4906,7 +5154,9 @@ final class SyncService: ObservableObject {
     deleteBranch: Bool = true,
     deleteRemoteBranch: Bool = false,
     remoteName: String = "origin",
-    force: Bool = false
+    force: Bool = false,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws {
     _ = try await sendCommand(action: "lanes.delete", args: [
       "laneId": laneId,
@@ -4914,7 +5164,7 @@ final class SyncService: ObservableObject {
       "deleteRemoteBranch": deleteRemoteBranch,
       "remoteName": remoteName,
       "force": force,
-    ])
+    ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
   }
 
   func fetchLaneTemplates() async throws -> [LaneTemplate] {
@@ -5215,9 +5465,16 @@ final class SyncService: ObservableObject {
   @MainActor
   func getChatModelCatalog(
     mode: String = "refresh-stale",
-    refreshProvider: String? = nil
+    refreshProvider: String? = nil,
+    cursorSource: String? = nil
   ) async throws -> AgentChatModelCatalog {
-    let cacheKey = chatModelsCacheKey(provider: "catalog:\(mode):\(refreshProvider ?? "")")
+    let normalizedCursorSource = cursorSource?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    let cursorSourceKeySuffix = normalizedCursorSource.map { ":\($0)" } ?? ""
+    let cacheKey = chatModelsCacheKey(
+      provider: "catalog:\(mode):\(refreshProvider ?? "")\(cursorSourceKeySuffix)"
+    )
     let now = Date()
 
     if mode != "force",
@@ -5246,6 +5503,9 @@ final class SyncService: ObservableObject {
       if let refreshProvider {
         args["refreshProvider"] = refreshProvider
       }
+      if let normalizedCursorSource, !normalizedCursorSource.isEmpty {
+        args["cursorSource"] = normalizedCursorSource
+      }
       let response = try await self.sendCommand(
         action: "chat.modelCatalog",
         args: args,
@@ -5261,7 +5521,9 @@ final class SyncService: ObservableObject {
       let catalog = try await task.value
       chatModelCatalogCache[cacheKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       if mode == "force", let refreshProvider {
-        let refreshStaleKey = chatModelsCacheKey(provider: "catalog:refresh-stale:\(refreshProvider)")
+        let refreshStaleKey = chatModelsCacheKey(
+          provider: "catalog:refresh-stale:\(refreshProvider)\(cursorSourceKeySuffix)"
+        )
         chatModelCatalogCache[refreshStaleKey] = ChatModelCatalogCacheEntry(catalog: catalog, fetchedAt: now)
       }
       chatModelCatalogInFlight[cacheKey] = nil
@@ -5372,7 +5634,9 @@ final class SyncService: ObservableObject {
     cursorModeId: String? = nil,
     cursorConfigValues: [String: RemoteJSONValue]? = nil,
     computerUse: RemoteJSONValue? = nil,
-    requestedCwd: String? = nil
+    requestedCwd: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -5428,11 +5692,61 @@ final class SyncService: ObservableObject {
     if let requestedCwd, !requestedCwd.isEmpty {
       args["requestedCwd"] = requestedCwd
     }
-    return try await sendDecodableCommand(action: "chat.create", args: args, as: AgentChatSessionSummary.self)
+    return try await sendDecodableCommand(
+      action: "chat.create",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: AgentChatSessionSummary.self
+    )
   }
 
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
     try await sendDecodableCommand(action: "chat.getSummary", args: ["sessionId": sessionId], as: AgentChatSessionSummary.self)
+  }
+
+  func fetchChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
+    try await sendDecodableCommand(
+      action: "chat.getChatEventHistory",
+      args: ["sessionId": sessionId, "maxEvents": max(1, min(chatEventHistoryMaxEvents, maxEvents))],
+      as: AgentChatEventHistorySnapshot.self
+    )
+  }
+
+  @discardableResult
+  func hydrateChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
+    let snapshot = try await fetchChatEventHistorySnapshot(sessionId: sessionId, maxEvents: maxEvents)
+    guard snapshot.sessionFound != false else { return snapshot }
+    mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+    return snapshot
+  }
+
+  @discardableResult
+  func hydrateChatEventHistoryTailPage(sessionId: String) async throws -> AgentChatEventHistoryPage {
+    let page = try await fetchChatEventHistoryPage(
+      sessionId: sessionId,
+      beforeOffset: syncChatHistoryTailPageProbeOffset,
+      maxBytes: syncChatHistoryTailPageMaxBytes
+    )
+    guard page.sessionFound != false else { return page }
+    mergeChatEventHistory(sessionId: page.sessionId, events: page.events)
+    return page
+  }
+
+  func fetchChatEventHistoryPage(
+    sessionId: String,
+    beforeOffset: Int,
+    maxBytes: Int? = nil
+  ) async throws -> AgentChatEventHistoryPage {
+    var args: [String: Any] = ["sessionId": sessionId, "beforeOffset": beforeOffset]
+    if let maxBytes, maxBytes > 0 {
+      args["maxBytes"] = maxBytes
+    }
+    return try await sendDecodableCommand(
+      action: "chat.getChatEventHistoryPage",
+      args: args,
+      as: AgentChatEventHistoryPage.self
+    )
   }
 
   func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
@@ -5459,6 +5773,33 @@ final class SyncService: ObservableObject {
     var truncated: Bool
     var totalEntries: Int
     var nextCursor: Int?
+  }
+
+  struct AgentChatSubagentTranscriptMessage: Codable, Equatable {
+    var type: String
+    var uuid: String?
+    var sessionId: String
+    var parentToolUseId: String?
+    var message: RemoteJSONValue?
+    var text: String?
+    var subagentMetadata: RemoteJSONValue?
+  }
+
+  struct AgentChatSubagentSnapshot: Codable, Equatable {
+    var taskId: String
+    var agentId: String?
+    var agentType: String?
+    var parentToolUseId: String?
+    var description: String
+    var status: String
+    var turnId: String?
+    var startTimestamp: String?
+    var endTimestamp: String?
+    var summary: String?
+    var finalSummary: String?
+    var lastToolName: String?
+    var background: Bool?
+    var usage: AgentChatSubagentUsage?
   }
 
   /// Fetch a transcript page. Without `cursor` this returns the newest
@@ -5498,14 +5839,66 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func fetchSubagentTranscript(
+    sessionId: String,
+    agentId: String,
+    taskId: String? = nil,
+    laneId: String? = nil,
+    limit: Int? = nil,
+    offset: Int? = nil
+  ) async throws -> [AgentChatSubagentTranscriptMessage]? {
+    var args: [String: Any] = [
+      "sessionId": sessionId,
+      "agentId": agentId,
+    ]
+    if let taskId, !taskId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      args["taskId"] = taskId
+    }
+    if let laneId, !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      args["laneId"] = laneId
+    }
+    if let limit {
+      args["limit"] = limit
+    }
+    if let offset {
+      args["offset"] = offset
+    }
+    let response = try await sendCommand(action: "chat.getSubagentTranscript", args: args)
+    if response is NSNull {
+      return nil
+    }
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: "chat.getSubagentTranscript")
+    }
+    return try decode(response, as: [AgentChatSubagentTranscriptMessage].self)
+  }
+
+  func fetchSubagents(sessionId: String) async throws -> [AgentChatSubagentSnapshot] {
+    let response = try await sendCommand(
+      action: "chat.listSubagents",
+      args: ["sessionId": sessionId]
+    )
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: "chat.listSubagents")
+    }
+    return try decode(response, as: [AgentChatSubagentSnapshot].self)
+  }
+
   @discardableResult
-  func sendChatMessage(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
+  func sendChatMessage(
+    sessionId: String,
+    text: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> SyncChatMessageDelivery {
     let response = try await sendCommand(
       action: "chat.send",
       args: ["sessionId": sessionId, "text": text],
       disconnectOnTimeout: false,
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
-      timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds
+      timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
     )
     return syncChatMessageDelivery(from: response)
   }
@@ -6039,8 +6432,12 @@ final class SyncService: ObservableObject {
         saveSavedProfiles(profiles)
         migrateTokenIfNeeded(for: profile)
       }
-      activeHostProfile = profile
-      hostName = profile.hostName
+      if activeHostProfile.map({ !syncProfilesEquivalentForPublishedState($0, profile) }) ?? true {
+        activeHostProfile = profile
+      }
+      if hostName != profile.hostName {
+        hostName = profile.hostName
+      }
       hiddenProjectKeys = loadHiddenProjectKeys()
       if activeProjectId != nil {
         let hostIdentity = syncNormalizedCommandScopeValue(profile.hostIdentity)
@@ -6064,10 +6461,83 @@ final class SyncService: ObservableObject {
   }
 
   private func updateProfile(_ transform: (inout HostConnectionProfile) -> Void) {
-    guard var profile = loadProfile() else { return }
+    guard var profile = activeHostProfile ?? loadProfile() else { return }
+    let previous = profile
     transform(&profile)
-    profile.updatedAt = ISO8601DateFormatter().string(from: Date())
+    guard !syncProfilesEquivalentIgnoringUpdatedAt(previous, profile) else { return }
+    profile.updatedAt = syncDateFormatter.string(from: Date())
     saveProfile(profile)
+  }
+
+  private func syncProfilesEquivalentIgnoringUpdatedAt(
+    _ lhs: HostConnectionProfile,
+    _ rhs: HostConnectionProfile
+  ) -> Bool {
+    var left = lhs
+    var right = rhs
+    left.updatedAt = ""
+    right.updatedAt = ""
+    return left == right
+  }
+
+  private func syncProfilesEquivalentForPublishedState(
+    _ lhs: HostConnectionProfile,
+    _ rhs: HostConnectionProfile
+  ) -> Bool {
+    lhs.hostIdentity == rhs.hostIdentity
+      && lhs.hostName == rhs.hostName
+      && lhs.siteId == rhs.siteId
+      && lhs.port == rhs.port
+      && lhs.authKind == rhs.authKind
+      && lhs.pairedDeviceId == rhs.pairedDeviceId
+      && lhs.lastHostDeviceId == rhs.lastHostDeviceId
+      && lhs.lastSuccessfulAddress == rhs.lastSuccessfulAddress
+      && lhs.savedAddressCandidates == rhs.savedAddressCandidates
+      && lhs.discoveredLanAddresses == rhs.discoveredLanAddresses
+      && lhs.tailscaleAddress == rhs.tailscaleAddress
+  }
+
+  private func markSyncActivity(force: Bool = false) {
+    let now = Date()
+    if !force, let lastSyncAt, now.timeIntervalSince(lastSyncAt) < 2 {
+      return
+    }
+    lastSyncAt = now
+  }
+
+  private func scheduleRemoteDbCursorProfilePersist(dbVersion: Int, cursorSite: String?) {
+    pendingRemoteProfileDbVersion = max(pendingRemoteProfileDbVersion ?? 0, dbVersion)
+    if let cursorSite {
+      pendingRemoteProfileDbVersionBySite[cursorSite] = max(
+        pendingRemoteProfileDbVersionBySite[cursorSite] ?? 0,
+        dbVersion
+      )
+    }
+    remoteCursorProfilePersistTask?.cancel()
+    remoteCursorProfilePersistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.persistPendingRemoteDbCursorProfile()
+    }
+  }
+
+  private func persistPendingRemoteDbCursorProfile() {
+    guard let dbVersion = pendingRemoteProfileDbVersion else { return }
+    let dbVersionBySite = pendingRemoteProfileDbVersionBySite
+    pendingRemoteProfileDbVersion = nil
+    pendingRemoteProfileDbVersionBySite = [:]
+    remoteCursorProfilePersistTask = nil
+
+    updateProfile { profile in
+      profile.lastRemoteDbVersion = max(profile.lastRemoteDbVersion, dbVersion)
+      if !dbVersionBySite.isEmpty {
+        var bySite = profile.remoteDbVersionBySite ?? [:]
+        for (siteId, version) in dbVersionBySite {
+          bySite[siteId] = max(bySite[siteId] ?? 0, version)
+        }
+        profile.remoteDbVersionBySite = bySite
+      }
+    }
   }
 
   private func loadRemoteCommandDescriptors() -> [SyncRemoteCommandDescriptor] {
@@ -6362,9 +6832,34 @@ final class SyncService: ObservableObject {
     outboundLocalDbVersion = min(outboundLocalDbVersion, persisted.payload.fromDbVersion)
   }
 
-  private func advanceOutboundCursorForActiveProject(to dbVersion: Int) {
+  private func advanceOutboundCursorForActiveProject(
+    to dbVersion: Int,
+    persistImmediately: Bool = true
+  ) {
     outboundLocalDbVersion = max(outboundLocalDbVersion, max(0, dbVersion))
-    persistOutboundCursorForActiveProject(outboundLocalDbVersion)
+    if persistImmediately {
+      outboundCursorPersistTask?.cancel()
+      outboundCursorPersistTask = nil
+      pendingOutboundCursorPersistVersion = nil
+      persistOutboundCursorForActiveProject(outboundLocalDbVersion)
+    } else {
+      scheduleDeferredOutboundCursorPersist(outboundLocalDbVersion)
+    }
+  }
+
+  private func scheduleDeferredOutboundCursorPersist(_ dbVersion: Int) {
+    pendingOutboundCursorPersistVersion = max(pendingOutboundCursorPersistVersion ?? 0, dbVersion)
+    outboundCursorPersistTask?.cancel()
+    outboundCursorPersistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self, !Task.isCancelled else { return }
+      let dbVersion = self.pendingOutboundCursorPersistVersion
+      self.pendingOutboundCursorPersistVersion = nil
+      self.outboundCursorPersistTask = nil
+      if let dbVersion {
+        self.persistOutboundCursorForActiveProject(dbVersion)
+      }
+    }
   }
 
   private func prepareOutboundStateForProjectScopeChange() {
@@ -6436,6 +6931,19 @@ final class SyncService: ObservableObject {
   private func beginConnectAttempt() -> UInt64 {
     connectAttemptGeneration &+= 1
     return connectAttemptGeneration
+  }
+
+  private func markReconnectConnectInFlight(_ generation: UInt64) {
+    reconnectConnectInFlight = true
+    reconnectConnectInFlightGeneration = generation
+  }
+
+  private func clearReconnectConnectInFlight(_ generation: UInt64? = nil) {
+    if let generation, reconnectConnectInFlightGeneration != generation {
+      return
+    }
+    reconnectConnectInFlight = false
+    reconnectConnectInFlightGeneration = nil
   }
 
   private func isCurrentConnectAttempt(_ generation: UInt64) -> Bool {
@@ -6798,11 +7306,23 @@ final class SyncService: ObservableObject {
     publishConnecting: Bool
   ) async throws -> (host: String, port: Int) {
     var lastFailure: Error?
+    let matchingDiscovery = discoveredHosts.filter { host in
+      matchesDiscoveredHost(host, profile: profile)
+    }
+    var seenLivePorts = Set<Int>()
+    let livePorts = matchingDiscovery
+      .map(\.port)
+      .filter { $0 > 0 && seenLivePorts.insert($0).inserted }
+    let primaryPort = livePorts.first ?? profile.port
     let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
     let addresses = connectableAddresses(from: rawAddresses)
-    let portCandidates = syncConnectPortCandidates(primaryPort: profile.port, addresses: addresses)
+    let portCandidates = syncConnectPortCandidates(
+      primaryPort: primaryPort,
+      addresses: addresses,
+      allowFallbackSweep: !preferLiveCandidatesOnly || livePorts.isEmpty
+    )
     syncConnectLog.info(
       "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)]"
     )
@@ -6823,7 +7343,11 @@ final class SyncService: ObservableObject {
       )
     }
 
-    for attempt in syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates) {
+    let endpointAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
+      ? syncStalePortRecoveryEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
+      : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
+
+    for attempt in endpointAttempts {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }
@@ -6949,7 +7473,7 @@ final class SyncService: ObservableObject {
     reconnectTask = nil
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = nil
-    reconnectConnectInFlight = false
+    clearReconnectConnectInFlight()
     autoReconnectAwaitingLiveDiscovery = false
     let machineName = syncTrimmedNonEmptyName(profile?.hostName)
       ?? syncTrimmedNonEmptyName(hostName)
@@ -7027,6 +7551,9 @@ final class SyncService: ObservableObject {
     let liveTailscaleAddress = matching.compactMap(\.tailscaleAddress).first ?? profile.tailscaleAddress
     next.discoveredLanAddresses = liveLanAddresses
     next.tailscaleAddress = liveTailscaleAddress
+    if let livePort = matching.map(\.port).first(where: { $0 > 0 }) {
+      next.port = livePort
+    }
     next.savedAddressCandidates = Array(
       deduplicatedAddresses(
         (profile.lastSuccessfulAddress.map { [$0] } ?? [])
@@ -7633,7 +8160,7 @@ final class SyncService: ObservableObject {
     refreshReducedSyncLoad()
     lastError = nil
     lastPairingErrorCode = nil
-    lastSyncAt = Date()
+    markSyncActivity(force: true)
     saveRemoteCommandDescriptors(commandDescriptors)
 
     let matchingDiscovery = discoveredHosts.first { discovered in
@@ -7686,6 +8213,7 @@ final class SyncService: ObservableObject {
     startInitialHydrationTask(for: connectionGeneration)
     restoreTerminalSubscriptions()
     restoreChatEventSubscriptions()
+    subscribeRosterIfNeeded()
   }
 
   private func failPendingRequests(with error: Error) {
@@ -7886,17 +8414,10 @@ final class SyncService: ObservableObject {
         // here would make the host skip the new project DB's backlog.
         guard isCurrentConnectionGeneration(generation) else { return }
         latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
-        lastSyncAt = Date()
+        markSyncActivity()
         let advancedVersion = latestRemoteDbVersion
         let cursorSite = activeRemoteDbSiteId
-        updateProfile { profile in
-          profile.lastRemoteDbVersion = advancedVersion
-          if let cursorSite {
-            var bySite = profile.remoteDbVersionBySite ?? [:]
-            bySite[cursorSite] = max(bySite[cursorSite] ?? 0, advancedVersion)
-            profile.remoteDbVersionBySite = bySite
-          }
-        }
+        scheduleRemoteDbCursorProfilePersist(dbVersion: advancedVersion, cursorSite: cursorSite)
         sendChangesetAck(
           batch: batch,
           ok: true,
@@ -7963,7 +8484,11 @@ final class SyncService: ObservableObject {
           // events of the new stream as "old".
           chatEventLastSeqBySession.removeValue(forKey: snapshot.sessionId)
         }
-        mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        if resumed {
+          mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        } else {
+          replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        }
         if let turnActive = snapshot.turnActive {
           updateChatTurnActiveHint(sessionId: snapshot.sessionId, turnActive: turnActive)
         } else if (dict["resumed"] as? Bool) != true {
@@ -8015,6 +8540,14 @@ final class SyncService: ObservableObject {
         terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(sessionId: sessionId, immediate: true)
         terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
+      }
+    case "roster_snapshot":
+      if let snapshot = try? decode(payload, as: RemoteRosterSnapshotPayload.self) {
+        applyRosterSnapshot(snapshot)
+      }
+    case "roster_delta":
+      if let delta = try? decode(payload, as: RemoteRosterDeltaPayload.self) {
+        applyRosterDelta(delta)
       }
     default:
       break
@@ -8098,7 +8631,7 @@ final class SyncService: ObservableObject {
       pendingOutboundChangeset = nil
       clearPendingOutboundChangesetForActiveProject()
       advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
-      lastSyncAt = Date()
+      markSyncActivity(force: true)
       lastError = nil
       return
     }
@@ -8127,7 +8660,7 @@ final class SyncService: ObservableObject {
         pendingOutboundChangeset = nil
         clearPendingOutboundChangesetForActiveProject()
         advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
-        lastSyncAt = Date()
+        markSyncActivity(force: true)
         return
       }
       if now - pending.sentAt >= 10 {
@@ -8150,7 +8683,7 @@ final class SyncService: ObservableObject {
       persistPendingOutboundChangesetForActiveProject(pending)
     } else {
       advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
-      lastSyncAt = Date()
+      markSyncActivity(force: true)
     }
   }
 
@@ -8161,7 +8694,7 @@ final class SyncService: ObservableObject {
     let changes = database.exportChangesSince(version: outboundLocalDbVersion).filter { $0.siteId == localSiteId }
     let previousDbVersion = outboundLocalDbVersion
     guard !changes.isEmpty else {
-      advanceOutboundCursorForActiveProject(to: currentDbVersion)
+      advanceOutboundCursorForActiveProject(to: currentDbVersion, persistImmediately: false)
       return nil
     }
 
@@ -8316,6 +8849,13 @@ final class SyncService: ObservableObject {
   }
 
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    // The roster subscription is bound to the live socket; a reconnect must
+    // re-subscribe. Keep `rosterProjects` for offline render, but drop the
+    // seq baseline so the next subscribe asks for (and applies) a fresh snapshot.
+    rosterSubscribed = false
+    rosterSeq = nil
+    rosterPersistTask?.cancel()
+    rosterPersistTask = nil
     transportProbeTask?.cancel()
     transportProbeTask = nil
     relayTask?.cancel()
@@ -8500,13 +9040,17 @@ final class SyncService: ObservableObject {
     args: [String: Any] = [:],
     disconnectOnTimeout: Bool = true,
     timeoutNanoseconds: UInt64? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil,
     as type: T.Type
   ) async throws -> T {
     let response = try await sendCommand(
       action: action,
       args: args,
       disconnectOnTimeout: disconnectOnTimeout,
-      timeoutNanoseconds: timeoutNanoseconds
+      timeoutNanoseconds: timeoutNanoseconds,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
     )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
@@ -8569,7 +9113,14 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func enqueueOperation(kind: String, action: String, args: [String: Any], id: String? = nil) throws {
+  private func enqueueOperation(
+    kind: String,
+    action: String,
+    args: [String: Any],
+    id: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) throws {
     guard JSONSerialization.isValidJSONObject(args) else {
       throw NSError(domain: "ADE", code: 11, userInfo: [NSLocalizedDescriptionKey: "Invalid queued operation payload."])
     }
@@ -8582,8 +9133,8 @@ final class SyncService: ObservableObject {
       payload: payload,
       queuedAt: syncDateFormatter.string(from: Date()),
       hostId: activeHostStorageKey(),
-      projectId: activeProjectId,
-      projectRootPath: activeProjectRootPath
+      projectId: targetProjectId ?? activeProjectId,
+      projectRootPath: targetProjectRootPath ?? activeProjectRootPath
     ))
     savePendingOperations(queued)
     if canSendLiveRequests() {
@@ -8704,13 +9255,21 @@ final class SyncService: ObservableObject {
     commandId: String? = nil,
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
-    timeoutNanoseconds: UInt64? = nil
+    timeoutNanoseconds: UInt64? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
     }
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
+    // `targetProjectId` lets a command create-in-place in a NON-active project
+    // (mobile hub composer): the host routes the command to that project's scope
+    // via the command-payload projectId without switching the phone's active
+    // sync project. Defaults to the active project for every existing caller.
+    let resolvedProjectId = targetProjectId ?? self.activeProjectId
+    let resolvedProjectRootPath = targetProjectRootPath ?? self.activeProjectRootPath
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
@@ -8724,8 +9283,8 @@ final class SyncService: ObservableObject {
           commandId: requestId,
           action: action,
           args: args,
-          projectId: self.activeProjectId,
-          projectRootPath: self.activeProjectRootPath
+          projectId: resolvedProjectId,
+          projectRootPath: resolvedProjectRootPath
         )
       )
     }
@@ -8737,7 +9296,9 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
-    timeoutNanoseconds: UInt64? = nil
+    timeoutNanoseconds: UInt64? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> Any {
     let commandId = makeRequestId()
     if canSendLiveRequests() {
@@ -8748,7 +9309,9 @@ final class SyncService: ObservableObject {
           commandId: commandId,
           disconnectOnTimeout: disconnectOnTimeout,
           timeoutMessage: timeoutMessage,
-          timeoutNanoseconds: timeoutNanoseconds
+          timeoutNanoseconds: timeoutNanoseconds,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
         )
       } catch {
         let stillLive = canSendLiveRequests()
@@ -8757,7 +9320,14 @@ final class SyncService: ObservableObject {
           canSendLiveRequests: stillLive,
           queueable: commandPolicy(for: action)?.queueable == true
         ) {
-          try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
+          try enqueueOperation(
+            kind: "command",
+            action: action,
+            args: args,
+            id: commandId,
+            targetProjectId: targetProjectId,
+            targetProjectRootPath: targetProjectRootPath
+          )
           if stillLive, isSyncRequestTimeoutError(error) {
             verifyTransportAliveAfterRequestTimeout(error as NSError)
           }
@@ -8772,7 +9342,13 @@ final class SyncService: ObservableObject {
     guard policy.queueable == true else {
       throw NSError(domain: "ADE", code: 15, userInfo: [NSLocalizedDescriptionKey: "This action requires a live connection to the machine."])
     }
-    try enqueueOperation(kind: "command", action: action, args: args)
+    try enqueueOperation(
+      kind: "command",
+      action: action,
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
     return ["queued": true]
   }
 
@@ -8835,30 +9411,29 @@ final class SyncService: ObservableObject {
   }
 
   func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
-    var events = chatEventEnvelopesBySession[envelope.sessionId] ?? []
-    guard !events.contains(where: { $0.id == envelope.id }) else { return }
-    // Fast path: arrival-order appends stay sorted when timestamps are
-    // monotonically non-decreasing — common for live streaming. Out-of-order
-    // deliveries (e.g., a delayed tool_result arriving after a later text
-    // fragment, or a merge with a historical snapshot) fall through to the
-    // full dedup/sort in deduplicatedChatEventHistory so bubble order matches
-    // the replace/merge paths.
-    let canAppendInOrder: Bool = {
-      guard let last = events.last else { return true }
-      let lastDate = Self.parseIso8601(last.timestamp)
-      let envelopeDate = Self.parseIso8601(envelope.timestamp)
-      if let lhs = envelopeDate, let rhs = lastDate { return lhs >= rhs }
-      return envelope.timestamp >= last.timestamp
-    }()
-    if canAppendInOrder {
-      events.append(envelope)
-      events = trimChatEventHistory(events)
+    let sessionId = envelope.sessionId
+    if let last = chatEventEnvelopesBySession[sessionId]?.last {
+      if canAppendChatEvent(envelope, after: last) {
+        // Hot streaming path: append + cap in place via the Dictionary `_modify`
+        // accessor so the up-to-chatEventHistoryMaxEvents array isn't copied on
+        // every chat_event. Semantics match trimChatEventHistory (keep the last
+        // chatEventHistoryMaxEvents, drop the overflow from the front).
+        chatEventEnvelopesBySession[sessionId, default: []].append(envelope)
+        let overflow = (chatEventEnvelopesBySession[sessionId]?.count ?? 0) - chatEventHistoryMaxEvents
+        if overflow > 0 {
+          chatEventEnvelopesBySession[sessionId, default: []].removeFirst(overflow)
+        }
+      } else {
+        let events = chatEventEnvelopesBySession[sessionId] ?? []
+        guard !chatEventHistoryContainsDuplicate(envelope, in: events) else { return }
+        chatEventEnvelopesBySession[sessionId] = insertChatEventEnvelope(envelope, into: events)
+      }
     } else {
-      events = deduplicatedChatEventHistory(events + [envelope])
+      chatEventEnvelopesBySession[sessionId, default: []].append(envelope)
     }
-    chatEventEnvelopesBySession[envelope.sessionId] = events
-    chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
-    lastSyncAt = Date()
+    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
+    chatEventRevisionsBySession[sessionId, default: 0] += 1
+    markSyncActivity()
     updateChatTurnActiveHintFromEvent(envelope)
     markChatEventsChanged()
   }
@@ -8867,8 +9442,9 @@ final class SyncService: ObservableObject {
     let next = deduplicatedChatEventHistory(events)
     guard chatEventEnvelopesBySession[sessionId] != next else { return }
     chatEventEnvelopesBySession[sessionId] = next
+    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
     chatEventRevisionsBySession[sessionId, default: 0] += 1
-    lastSyncAt = Date()
+    markSyncActivity()
     markChatEventsChanged(immediate: true)
   }
 
@@ -8877,44 +9453,212 @@ final class SyncService: ObservableObject {
     let next = deduplicatedChatEventHistory(current + events)
     guard current != next else { return }
     chatEventEnvelopesBySession[sessionId] = next
+    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
     chatEventRevisionsBySession[sessionId, default: 0] += 1
-    lastSyncAt = Date()
+    markSyncActivity()
     markChatEventsChanged(immediate: true)
   }
 
   private func deduplicatedChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
     var seen = Set<String>()
-    let unique = events.filter { event in
-      guard !seen.contains(event.id) else { return false }
-      seen.insert(event.id)
+    var unique: [AgentChatEventEnvelope] = []
+    unique.reserveCapacity(events.count)
+    for event in events {
+      let key = chatEventHistoryDedupeKey(event)
+      guard seen.insert(key).inserted else { continue }
+      unique.append(event)
+    }
+    let sorted = unique
+      .map { ChatEventSortRecord(event: $0, timestampKey: chatEventTimestampSortKey($0.timestamp)) }
+      .sorted { lhs, rhs in
+        compareChatEventSortRecords(lhs, rhs) == .orderedAscending
+      }
+      .map(\.event)
+    return trimChatEventHistory(sorted)
+  }
+
+  private func chatEventHistoryContainsDuplicate(
+    _ envelope: AgentChatEventEnvelope,
+    in events: [AgentChatEventEnvelope]
+  ) -> Bool {
+    if events.contains(where: { $0.id == envelope.id }) {
       return true
     }
-    .sorted { lhs, rhs in
-      // Parse timestamps to Date before comparing — a lexicographic compare
-      // misorders mixed ISO-8601 variants (e.g., "…56.500Z" sorts before
-      // "…56Z" because "." < "Z" in ASCII, even though chronologically it's
-      // half a second later).
-      let lhsDate = Self.parseIso8601(lhs.timestamp)
-      let rhsDate = Self.parseIso8601(rhs.timestamp)
-      if lhsDate == rhsDate {
-        if lhs.timestamp == rhs.timestamp {
-          return (lhs.sequence ?? 0) < (rhs.sequence ?? 0)
-        }
-        return lhs.timestamp < rhs.timestamp
-      }
-      switch (lhsDate, rhsDate) {
-      case (let l?, let r?): return l < r
-      case (nil, _?): return true
-      case (_?, nil): return false
-      case (nil, nil): return lhs.timestamp < rhs.timestamp
+    guard let key = chatEventContentDedupeKey(envelope) else {
+      return false
+    }
+    return events.contains { chatEventContentDedupeKey($0) == key }
+  }
+
+  private func insertChatEventEnvelope(
+    _ envelope: AgentChatEventEnvelope,
+    into events: [AgentChatEventEnvelope]
+  ) -> [AgentChatEventEnvelope] {
+    var next = events
+    let index = chatEventInsertionIndex(for: envelope, in: next)
+    next.insert(envelope, at: index)
+    return trimChatEventHistory(next)
+  }
+
+  private func chatEventInsertionIndex(
+    for envelope: AgentChatEventEnvelope,
+    in events: [AgentChatEventEnvelope]
+  ) -> Int {
+    var low = events.startIndex
+    var high = events.endIndex
+    while low < high {
+      let mid = low + (high - low) / 2
+      if compareChatEvents(events[mid], envelope) == .orderedDescending {
+        high = mid
+      } else {
+        low = mid + 1
       }
     }
-    return trimChatEventHistory(unique)
+    return low
+  }
+
+  private func chatEventHistoryDedupeKey(_ envelope: AgentChatEventEnvelope) -> String {
+    if let contentKey = chatEventContentDedupeKey(envelope) {
+      return contentKey
+    }
+    return envelope.id
+  }
+
+  private func chatEventContentDedupeKey(_ envelope: AgentChatEventEnvelope) -> String? {
+    switch envelope.event {
+    case .text(let text, let messageId, let turnId, let itemId):
+      let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard normalizedText.count >= 24 else { return nil }
+      let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let stableMessageId = normalizedItemId.isEmpty ? normalizedMessageId : normalizedItemId
+      guard !normalizedTurnId.isEmpty || !stableMessageId.isEmpty else { return nil }
+      return [
+        envelope.sessionId,
+        "text",
+        normalizedTurnId,
+        stableMessageId,
+        normalizedText
+      ].joined(separator: "|")
+    case .userMessage(let text, _, let turnId, let steerId, let deliveryState, let processed):
+      let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      let normalizedSteerId = steerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+      guard !normalizedTurnId.isEmpty || !normalizedSteerId.isEmpty else { return nil }
+      return [
+        envelope.sessionId,
+        "user_message",
+        normalizedTurnId,
+        normalizedSteerId,
+        deliveryState ?? "",
+        processed.map { $0 ? "1" : "0" } ?? "",
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+      ].joined(separator: "|")
+    default:
+      return nil
+    }
+  }
+
+  private struct ChatEventSortRecord {
+    let event: AgentChatEventEnvelope
+    let timestampKey: String
+  }
+
+  private func compareChatEventSortRecords(
+    _ lhs: ChatEventSortRecord,
+    _ rhs: ChatEventSortRecord
+  ) -> ComparisonResult {
+    if lhs.event.timestamp == rhs.event.timestamp {
+      return compareChatEventSequence(lhs.event.sequence, rhs.event.sequence)
+    }
+    let timestampOrder = lhs.timestampKey.compare(rhs.timestampKey)
+    if timestampOrder != .orderedSame { return timestampOrder }
+    return compareChatEventSequence(lhs.event.sequence, rhs.event.sequence)
+  }
+
+  private func canAppendChatEvent(_ envelope: AgentChatEventEnvelope, after last: AgentChatEventEnvelope) -> Bool {
+    if let lastSequence = last.sequence,
+       let envelopeSequence = envelope.sequence,
+       envelopeSequence <= lastSequence {
+      return false
+    }
+
+    if envelope.timestamp > last.timestamp {
+      return true
+    }
+    if envelope.timestamp == last.timestamp {
+      return (envelope.sequence ?? 0) >= (last.sequence ?? 0)
+    }
+
+    return compareChatEvents(last, envelope) != .orderedDescending
+  }
+
+  private func compareChatEvents(
+    _ lhs: AgentChatEventEnvelope,
+    _ rhs: AgentChatEventEnvelope
+  ) -> ComparisonResult {
+    if lhs.timestamp == rhs.timestamp {
+      return compareChatEventSequence(lhs.sequence, rhs.sequence)
+    }
+    let timestampOrder = chatEventTimestampSortKey(lhs.timestamp).compare(chatEventTimestampSortKey(rhs.timestamp))
+    if timestampOrder != .orderedSame { return timestampOrder }
+    return compareChatEventSequence(lhs.sequence, rhs.sequence)
+  }
+
+  private func chatEventTimestampSortKey(_ raw: String) -> String {
+    guard raw.hasSuffix("Z") else { return raw }
+    let withoutZone = raw.dropLast()
+    guard let dotIndex = withoutZone.lastIndex(of: ".") else {
+      return "\(withoutZone).000000000Z"
+    }
+    let prefix = withoutZone[..<dotIndex]
+    let fractionStart = withoutZone.index(after: dotIndex)
+    let fraction = String(withoutZone[fractionStart...].prefix(9))
+    let paddedFraction = fraction + String(repeating: "0", count: max(0, 9 - fraction.count))
+    return "\(prefix).\(paddedFraction)Z"
+  }
+
+  private func compareChatEventSequence(_ lhs: Int?, _ rhs: Int?) -> ComparisonResult {
+    let left = lhs ?? 0
+    let right = rhs ?? 0
+    if left == right { return .orderedSame }
+    return left < right ? .orderedAscending : .orderedDescending
   }
 
   private func trimChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
     guard events.count > chatEventHistoryMaxEvents else { return events }
     return Array(events.suffix(chatEventHistoryMaxEvents))
+  }
+
+  private func pruneChatEventHistoryCacheIfNeeded(preserving additionalSessionIds: Set<String> = []) {
+    let targetCount = max(chatEventHistoryMaxSessions, subscribedChatSessionIds.count + additionalSessionIds.count)
+    guard chatEventEnvelopesBySession.count > targetCount else { return }
+
+    let protectedSessionIds = subscribedChatSessionIds.union(additionalSessionIds)
+    let staleSessionIds = chatEventEnvelopesBySession.keys
+      .filter { !protectedSessionIds.contains($0) }
+      .sorted { lhs, rhs in
+        let leftEvent = chatEventEnvelopesBySession[lhs]?.last
+        let rightEvent = chatEventEnvelopesBySession[rhs]?.last
+        switch (leftEvent, rightEvent) {
+        case let (left?, right?):
+          let order = compareChatEvents(left, right)
+          return order == .orderedSame ? lhs < rhs : order == .orderedAscending
+        case (nil, nil):
+          return lhs < rhs
+        case (nil, _):
+          return true
+        case (_, nil):
+          return false
+        }
+      }
+    let dropCount = max(0, chatEventEnvelopesBySession.count - targetCount)
+    for sessionId in staleSessionIds.prefix(dropCount) {
+      chatEventEnvelopesBySession.removeValue(forKey: sessionId)
+      chatEventRevisionsBySession.removeValue(forKey: sessionId)
+      chatEventLastSeqBySession.removeValue(forKey: sessionId)
+      chatTurnActiveHintBySession.removeValue(forKey: sessionId)
+    }
   }
 
   private func trimmedTerminalBuffer(_ buffer: String) -> String {
@@ -9002,6 +9746,8 @@ final class SyncService: ObservableObject {
       // Watermarks are only meaningful while the applied history is retained;
       // resuming from a seq after dropping history would skip those events.
       chatEventLastSeqBySession.removeAll()
+    } else {
+      pruneChatEventHistoryCacheIfNeeded()
     }
     markChatEventsChanged(immediate: true)
     localStateRevision += 1
@@ -9366,7 +10112,7 @@ extension SyncService {
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
       if isRunningRuntime && !isFailedStatus { runningChatCount += 1 }
 
-      let started = Self.parseIso8601(session.startedAt) ?? now
+      let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
       // `lastActivityAt` when available; fall back to `chatIdleSinceAt`. If
       // neither is set yet, treat a running session as fresh by falling back
@@ -9377,9 +10123,9 @@ extension SyncService {
       // affects the running roster when activity timestamps are missing.
       let summary = chatSummaryCache[session.id]
       let lastActivity =
-        Self.parseIso8601(summary?.lastActivityAt ?? "")
-        ?? Self.parseIso8601(session.endedAt ?? "")
-        ?? Self.parseIso8601(session.chatIdleSinceAt ?? "")
+        parseIso8601(summary?.lastActivityAt ?? "")
+        ?? parseIso8601(session.endedAt ?? "")
+        ?? parseIso8601(session.chatIdleSinceAt ?? "")
         ?? (isRunningRuntime ? now : started)
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
 
@@ -9423,12 +10169,51 @@ extension SyncService {
       }
     }
 
+    let nextSignature = activeSessionsSignature(
+      agents: allAgents,
+      awaitingInputCount: awaitingInputCount,
+      runningChatCount: runningChatCount,
+      idleCount: idleCount
+    )
+    guard nextSignature != activeSessionsSnapshotSignature else { return }
+    activeSessionsSnapshotSignature = nextSignature
+
     activeSessions = allAgents
     awaitingInputSessionsCount = awaitingInputCount
     runningChatSessionCount = runningChatCount
     idleSessionsCount = idleCount
 
     scheduleWorkspaceSnapshotWrite()
+  }
+
+  private func activeSessionsSignature(
+    agents: [AgentSnapshot],
+    awaitingInputCount: Int,
+    runningChatCount: Int,
+    idleCount: Int
+  ) -> Int {
+    var hasher = Hasher()
+    hasher.combine(agents.count)
+    hasher.combine(awaitingInputCount)
+    hasher.combine(runningChatCount)
+    hasher.combine(idleCount)
+    for agent in agents {
+      hasher.combine(agent.sessionId)
+      hasher.combine(agent.provider)
+      hasher.combine(agent.modelId)
+      hasher.combine(agent.laneName)
+      hasher.combine(agent.title)
+      hasher.combine(agent.status)
+      hasher.combine(agent.awaitingInput)
+      hasher.combine(agent.lastActivityAt.timeIntervalSince1970)
+      hasher.combine(agent.elapsedSeconds)
+      hasher.combine(agent.preview)
+      hasher.combine(agent.pendingInputItemId)
+      hasher.combine(agent.progress)
+      hasher.combine(agent.phase)
+      hasher.combine(agent.toolCalls)
+    }
+    return hasher.finalize()
   }
 
   private func pendingInputItemIdForSnapshot(sessionId: String) -> String? {
@@ -9460,7 +10245,7 @@ extension SyncService {
         state: item.state,
         mergeReady: (item.reviewStatus == "approved") && (item.checksStatus == "passing") && item.state == "open",
         branch: item.headBranch.isEmpty ? nil : item.headBranch,
-        updatedAt: Self.parseIso8601(item.updatedAt)
+        updatedAt: parseIso8601(item.updatedAt)
       )
     }
 
@@ -9486,13 +10271,10 @@ extension SyncService {
     }
   }
 
-  private static func parseIso8601(_ raw: String) -> Date? {
+  private func parseIso8601(_ raw: String) -> Date? {
     guard !raw.isEmpty else { return nil }
-    let iso = ISO8601DateFormatter()
-    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let date = iso.date(from: raw) { return date }
-    iso.formatOptions = [.withInternetDateTime]
-    return iso.date(from: raw)
+    if let date = iso8601WithFractionalSecondsFormatter.date(from: raw) { return date }
+    return iso8601Formatter.date(from: raw)
   }
 }
 
@@ -9576,8 +10358,10 @@ private final class SyncTailnetProbe {
         switch state {
         case .ready:
           complete(.reachable)
-        case .waiting:
-          break
+        case .waiting(let error):
+          if Self.probeResult(for: error) == .unresolvedHost {
+            complete(.unresolvedHost)
+          }
         case .failed(let error):
           complete(Self.probeResult(for: error))
         case .cancelled:
@@ -10008,33 +10792,33 @@ private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvel
   var output = Data()
   let chunkSize = 16_384
 
-  data.withUnsafeBytes { rawBuffer in
-    stream.next_in = UnsafeMutablePointer<Bytef>(mutating: rawBuffer.bindMemory(to: Bytef.self).baseAddress)
-    stream.avail_in = uint(data.count)
-  }
-
   status = inflateInit2_(&stream, MAX_WBITS + 32, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
   guard status == Z_OK else {
     throw NSError(domain: "ADE", code: 9, userInfo: [NSLocalizedDescriptionKey: "Unable to start gzip decoder."])
   }
   defer { inflateEnd(&stream) }
 
-  repeat {
-    var chunk = [UInt8](repeating: 0, count: chunkSize)
-    chunk.withUnsafeMutableBytes { chunkBuffer in
-      stream.next_out = chunkBuffer.bindMemory(to: Bytef.self).baseAddress
-      stream.avail_out = uint(chunkSize)
-      status = inflate(&stream, Z_SYNC_FLUSH)
-      let produced = chunkSize - Int(stream.avail_out)
-      if produced > 0, let baseAddress = chunkBuffer.bindMemory(to: UInt8.self).baseAddress {
-        if output.count + produced > maxOutputBytes {
-          status = Z_MEM_ERROR
-          return
+  data.withUnsafeBytes { rawBuffer in
+    stream.next_in = UnsafeMutablePointer<Bytef>(mutating: rawBuffer.bindMemory(to: Bytef.self).baseAddress)
+    stream.avail_in = uint(data.count)
+
+    repeat {
+      var chunk = [UInt8](repeating: 0, count: chunkSize)
+      chunk.withUnsafeMutableBytes { chunkBuffer in
+        stream.next_out = chunkBuffer.bindMemory(to: Bytef.self).baseAddress
+        stream.avail_out = uint(chunkSize)
+        status = inflate(&stream, Z_SYNC_FLUSH)
+        let produced = chunkSize - Int(stream.avail_out)
+        if produced > 0, let baseAddress = chunkBuffer.bindMemory(to: UInt8.self).baseAddress {
+          if output.count + produced > maxOutputBytes {
+            status = Z_MEM_ERROR
+            return
+          }
+          output.append(baseAddress, count: produced)
         }
-        output.append(baseAddress, count: produced)
       }
-    }
-  } while status == Z_OK
+    } while status == Z_OK
+  }
 
   guard status == Z_STREAM_END else {
     let message: String
@@ -10099,4 +10883,309 @@ struct PrAutoMapPreflightResult: Decodable, Equatable {
 struct PrAutoMapCreateResult: Decodable, Equatable {
   let preflight: PrAutoMapPreflight
   let lane: LaneSummary
+}
+
+// MARK: - All-projects chat roster (mobile hub)
+//
+// A machine-wide projection of every project's lanes + chat sessions, pushed by
+// the brain over `roster_snapshot` / `roster_delta` envelopes so the hub can
+// render all projects' chats-grouped-by-lane at once without activating each
+// project. This extension lives in the same file as the `rosterProjects`
+// declaration so it can write the `private(set)` store. See the contract in
+// `apps/desktop/src/shared/types/sync.ts` (search `SyncRoster`).
+extension SyncService {
+  private static let rosterCacheKey = "ade.roster.cache.v1"
+
+  /// Subscribe to the all-projects roster once per live connection. Older hosts
+  /// that don't implement the feed simply never answer, leaving `rosterSupported`
+  /// false so the hub falls back to the per-project catalog (lane counts only).
+  func subscribeRosterIfNeeded() {
+    guard canSendLiveRequests(), !rosterSubscribed else { return }
+    rosterSubscribed = true
+    var payload: [String: Any] = [:]
+    if let rosterSeq {
+      payload["sinceSeq"] = rosterSeq
+    }
+    sendEnvelope(type: "roster_subscribe", requestId: nil, payload: payload)
+  }
+
+  /// Force a fresh full snapshot (used after a detected seq gap).
+  func requestRosterSnapshot() {
+    guard canSendLiveRequests() else { return }
+    rosterSubscribed = true
+    sendEnvelope(type: "roster_subscribe", requestId: nil, payload: [:])
+  }
+
+  func unsubscribeRoster() {
+    guard canSendLiveRequests() else { return }
+    rosterSubscribed = false
+    sendEnvelope(type: "roster_unsubscribe", requestId: nil, payload: [:])
+  }
+
+  func applyRosterSnapshot(_ snapshot: RemoteRosterSnapshotPayload) {
+    rosterProjects = sortRosterProjects(snapshot.projects)
+    rosterSeq = snapshot.seq
+    rosterSupported = true
+    rosterRevision &+= 1
+    schedulePersistRoster()
+  }
+
+  func applyRosterDelta(_ delta: RemoteRosterDeltaPayload) {
+    rosterSupported = true
+    switch rosterApplyDelta(current: rosterProjects, currentSeq: rosterSeq, delta: delta) {
+    case .needsSnapshot:
+      // No baseline or a seq gap — re-request a full snapshot rather than apply
+      // onto an unknown baseline (mirrors the chat_event sinceSeq discipline).
+      requestRosterSnapshot()
+    case .dropped:
+      break // duplicate / out-of-order replay
+    case let .applied(projects, seq):
+      rosterProjects = sortRosterProjects(projects)
+      rosterSeq = seq
+      rosterRevision &+= 1
+      schedulePersistRoster()
+    }
+  }
+
+  /// Roster entry for a catalog project, matched by id then normalized root path
+  /// (the brain derives both ids from the root, but match on root as a fallback).
+  func rosterProject(for project: MobileProjectSummary) -> RemoteRosterProject? {
+    if let direct = rosterProjects.first(where: { $0.projectId == project.id }) {
+      return direct
+    }
+    guard let root = normalizedProjectRoot(project.rootPath) else { return nil }
+    return rosterProjects.first { normalizedProjectRoot($0.rootPath) == root }
+  }
+
+  private func sortRosterProjects(_ projects: [RemoteRosterProject]) -> [RemoteRosterProject] {
+    // Attention first, then most-recently-active, then name — so the projects
+    // that need the user float to the top of the hub.
+    projects.sorted { lhs, rhs in
+      if (lhs.attentionCount > 0) != (rhs.attentionCount > 0) {
+        return lhs.attentionCount > 0
+      }
+      let lhsActivity = lhs.chats.compactMap { $0.lastActivityAt }.max() ?? lhs.lastOpenedAt ?? ""
+      let rhsActivity = rhs.chats.compactMap { $0.lastActivityAt }.max() ?? rhs.lastOpenedAt ?? ""
+      if lhsActivity != rhsActivity {
+        return lhsActivity > rhsActivity
+      }
+      return lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName) == .orderedAscending
+    }
+  }
+
+  // MARK: Persistence (App Group UserDefaults — instant offline hub render)
+
+  private func schedulePersistRoster() {
+    rosterPersistTask?.cancel()
+    let snapshot = rosterProjects
+    rosterPersistTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      guard let self, !Task.isCancelled else { return }
+      self.persistRoster(snapshot)
+    }
+  }
+
+  private func persistRoster(_ projects: [RemoteRosterProject]) {
+    guard let data = try? JSONEncoder().encode(projects) else { return }
+    ADESharedContainer.defaults.set(data, forKey: Self.rosterCacheKey)
+  }
+
+  func loadCachedRoster() -> [RemoteRosterProject] {
+    guard let data = ADESharedContainer.defaults.data(forKey: Self.rosterCacheKey),
+          let projects = try? JSONDecoder().decode([RemoteRosterProject].self, from: data)
+    else { return [] }
+    return projects
+  }
+
+  /// Build the active project's roster entry from the phone's local DB (its
+  /// lanes + chat/CLI sessions are already synced and authoritative). This makes
+  /// the active project's hub card show real chats instantly, without depending
+  /// on the cross-project roster feed (which only the active brain build serves,
+  /// and which only the brain can populate for NON-active projects).
+  func buildActiveProjectLocalRoster() -> RemoteRosterProject? {
+    guard let projectId = activeProjectId else { return nil }
+    let lanes = database.fetchLanes(includeArchived: false)
+    let visibleLaneIds = Set(lanes.map(\.id))
+    let scopedSessions = database.fetchSessions().filter { session in
+      session.archivedAt == nil && visibleLaneIds.contains(session.laneId)
+    }
+    let topLevelIds = Set(scopedSessions.filter { isRosterTopLevelToolType($0.toolType) }.map(\.id))
+    let visibleSessions = scopedSessions.filter { session in
+      if isRosterTopLevelToolType(session.toolType) { return true }
+      guard let parentId = normalizedRosterParentSessionId(session),
+            topLevelIds.contains(parentId) else {
+        return false
+      }
+      return true
+    }
+    let chats: [RemoteRosterChat] = visibleSessions.map { session in
+      let status = rosterStatus(forSession: session)
+      return RemoteRosterChat(
+        id: session.id,
+        laneId: session.laneId,
+        chatSessionId: session.chatSessionId,
+        title: session.title,
+        provider: session.toolType,
+        model: nil,
+        toolType: session.toolType,
+        status: status,
+        awaitingInput: status == .awaiting,
+        pinned: session.pinned,
+        archived: false,
+        lastActivityAt: session.endedAt ?? session.startedAt,
+        preview: session.lastOutputPreview
+      )
+    }
+    let rosterLanes: [RemoteRosterLane] = lanes.map { lane in
+      RemoteRosterLane(
+        id: lane.id,
+        name: lane.name,
+        color: lane.color,
+        icon: lane.icon?.rawValue,
+        laneType: lane.laneType,
+        branchRef: lane.branchRef
+      )
+    }
+    let active = activeProject
+    let roster = RemoteRosterProject(
+      projectId: projectId,
+      rootPath: activeProjectRootPath ?? active?.rootPath,
+      displayName: active?.displayName ?? "Project",
+      iconDataUrl: active?.iconDataUrl,
+      lastOpenedAt: active?.lastOpenedAt,
+      booted: true,
+      runningCount: chats.filter(\.isRunning).count,
+      attentionCount: chats.filter(\.needsAttention).count,
+      lanes: rosterLanes,
+      chats: chats
+    )
+    upsertLocalRosterProject(roster)
+    return roster
+  }
+
+  private func upsertLocalRosterProject(_ local: RemoteRosterProject) {
+    var next = rosterProjects
+    let localRoot = normalizedProjectRoot(local.rootPath)
+    let existingIndex = next.firstIndex { project in
+      project.projectId == local.projectId
+        || (localRoot != nil && normalizedProjectRoot(project.rootPath) == localRoot)
+    }
+
+    if let existingIndex {
+      let merged = mergedRosterProject(remote: next[existingIndex], local: local)
+      guard next[existingIndex] != merged else { return }
+      next[existingIndex] = merged
+    } else {
+      next.append(local)
+    }
+
+    rosterProjects = sortRosterProjects(next)
+    rosterRevision &+= 1
+    schedulePersistRoster()
+  }
+
+  private func mergedRosterProject(remote: RemoteRosterProject, local: RemoteRosterProject) -> RemoteRosterProject {
+    var merged = remote
+
+    var laneIds = Set(merged.lanes.map(\.id))
+    for lane in local.lanes where laneIds.insert(lane.id).inserted {
+      merged.lanes.append(lane)
+    }
+
+    var chatIndexById = Dictionary(uniqueKeysWithValues: merged.chats.enumerated().map { ($0.element.id, $0.offset) })
+    for localChat in local.chats {
+      if let index = chatIndexById[localChat.id] {
+        merged.chats[index] = mergedRosterChat(remote: merged.chats[index], local: localChat)
+      } else {
+        chatIndexById[localChat.id] = merged.chats.count
+        merged.chats.append(localChat)
+      }
+    }
+
+    merged.booted = remote.booted || local.booted
+    merged.runningCount = merged.chats.filter(\.isRunning).count
+    merged.attentionCount = merged.chats.filter(\.needsAttention).count
+    merged.chats.sort { ($0.lastActivityAt ?? "") > ($1.lastActivityAt ?? "") }
+    return merged
+  }
+
+  private func mergedRosterChat(remote: RemoteRosterChat, local: RemoteRosterChat) -> RemoteRosterChat {
+    var merged = remote
+    let localIsAtLeastAsFresh = (local.lastActivityAt ?? "") >= (remote.lastActivityAt ?? "")
+
+    if localIsAtLeastAsFresh {
+      merged.status = local.status
+      merged.awaitingInput = local.awaitingInput ?? remote.awaitingInput
+      merged.pinned = local.pinned ?? remote.pinned
+      merged.archived = local.archived ?? remote.archived
+      merged.lastActivityAt = nonEmptyRosterString(local.lastActivityAt) ?? remote.lastActivityAt
+      merged.title = nonEmptyRosterString(local.title) ?? remote.title
+      merged.preview = nonEmptyRosterString(local.preview) ?? remote.preview
+    }
+
+    merged.provider = nonEmptyRosterString(remote.provider) ?? local.provider
+    merged.model = nonEmptyRosterString(remote.model) ?? local.model
+    merged.toolType = nonEmptyRosterString(remote.toolType) ?? local.toolType
+    merged.chatSessionId = nonEmptyRosterString(remote.chatSessionId) ?? local.chatSessionId
+    return merged
+  }
+
+  private func nonEmptyRosterString(_ value: String?) -> String? {
+    guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+    return value
+  }
+
+  private func isRosterTopLevelToolType(_ toolType: String?) -> Bool {
+    let raw = toolType?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased() ?? ""
+    guard !raw.isEmpty else { return false }
+    if raw == "codex-chat" || raw == "claude-chat" || raw == "opencode-chat" || raw == "cursor" {
+      return true
+    }
+    return raw.hasSuffix("-chat")
+  }
+
+  private func normalizedRosterParentSessionId(_ session: TerminalSessionSummary) -> String? {
+    let parentId = session.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !parentId.isEmpty, parentId != session.id else { return nil }
+    return parentId
+  }
+
+  private func rosterStatus(forSession session: TerminalSessionSummary) -> RemoteRosterChatStatus {
+    let runtimeState = session.runtimeState.lowercased()
+    let status = session.status.lowercased()
+    if status == "awaiting-input" || status == "awaiting_input" || runtimeState == "waiting-input" {
+      return .awaiting
+    }
+    switch runtimeState {
+    case "running": return .running
+    case "idle": return .idle
+    case "stopped", "exited", "completed", "interrupted": return .ended
+    case "failed": return .failed
+    default: break
+    }
+    switch status {
+    case "running", "active": return .running
+    case "idle", "paused": return .idle
+    case "failed": return .failed
+    case "ended", "completed", "interrupted", "exited": return .ended
+    default: return .ended
+    }
+  }
+
+  /// Run a chat lifecycle action (`chat.archive` / `chat.unarchive` /
+  /// `chat.delete`) on a roster chat, routing to its project — which may not be
+  /// the active one — without switching the active sync project. Refreshes the
+  /// roster so the row updates promptly.
+  func performRosterChatAction(_ action: String, sessionId: String, project: MobileProjectSummary) async throws {
+    let foreign = !isActiveProject(project)
+    _ = try await sendCommand(
+      action: action,
+      args: ["sessionId": sessionId],
+      targetProjectId: foreign ? project.id : nil,
+      targetProjectRootPath: foreign ? project.rootPath : nil
+    )
+    requestRosterSnapshot()
+  }
 }

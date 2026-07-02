@@ -10,6 +10,7 @@ import { WebSocketServer, WebSocket, type RawData } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   CrsqlChangeRow,
   DeviceMarker,
   FileContent,
@@ -36,6 +37,7 @@ import type {
   CreateProjectInput,
   SyncEnvelope,
   SyncChatEventPayload,
+  SyncChatSubscribePayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
   SyncFileBlob,
@@ -54,6 +56,10 @@ import type {
   SyncProjectForgetResultPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  SyncRosterProject,
+  SyncRosterSnapshotPayload,
+  SyncRosterDeltaPayload,
+  SyncRosterSubscribePayload,
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
   ProjectBrowseInput,
@@ -179,6 +185,24 @@ const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
 const SYNC_HOST_AUTH_TIMEOUT_MS = 15_000;
+// All-projects roster (mobile hub) push cadence: trailing-edge debounce, hard
+// max-wait cap so a steady event stream still flushes, and a slow safety poll
+// that runs only while ≥1 peer is subscribed.
+const ROSTER_DEBOUNCE_MS = 250;
+const ROSTER_MAX_WAIT_MS = 1_000;
+const ROSTER_SAFETY_POLL_MS = 15_000;
+// Remote commands that add/remove a roster-visible lane or chat row (possibly
+// in a non-active project via projectId routing). A successful one nudges the
+// coalesced roster flush; everything else relies on chat events + safety poll.
+const ROSTER_DIRTYING_COMMAND_ACTIONS = new Set<string>([
+  "chat.create",
+  "work.startCliSession",
+  "work.resumeCliSession",
+  "lanes.create",
+  "lanes.createChild",
+  "lanes.archive",
+  "lanes.delete",
+]);
 const MAX_CHANGESET_ACK_RETRIES = 6;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
@@ -193,14 +217,6 @@ export type NativeLanDiscoveryProcess = {
   ppid: number;
   command: string;
 };
-const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
-  "writeText",
-  "createFile",
-  "createDirectory",
-  "rename",
-  "deletePath",
-]);
-
 export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
   switch (payload.action) {
     case "listTree":
@@ -268,6 +284,13 @@ type PeerState = {
   chatTranscriptOffsets: Map<string, number>;
   chatEventIdsSent: Map<string, Set<string>>;
   pendingChangesetBatch: PendingChangesetBatch | null;
+  // All-projects roster (mobile hub): whether this peer is subscribed, the
+  // monotonic seq last sent to THIS peer (per-peer so a peer that skips a
+  // no-change flush never sees a seq gap), and the per-project serialized
+  // baseline it last received (projectId → JSON) for changed/removed diffing.
+  rosterSubscribed: boolean;
+  rosterSeq: number;
+  rosterBaseline: Map<string, string>;
 };
 
 type PendingChangesetBatch = {
@@ -415,6 +438,17 @@ export type SyncProjectCatalogProvider = {
   forgetProject?: (args: SyncProjectForgetRequestPayload) => Promise<SyncProjectForgetResultPayload>;
 };
 
+/**
+ * Builds the machine-wide all-projects chat roster (mobile hub). Lives where
+ * the project registry + project scope registry are both in scope (ade-cli
+ * brain). Optional: a host without a roster provider (e.g. single-project
+ * desktop) simply never answers `roster_subscribe`, so the phone falls back to
+ * the project catalog with no cross-project chats.
+ */
+export type SyncRosterProvider = {
+  buildSnapshot: () => Promise<SyncRosterProject[]>;
+};
+
 type SyncHostServiceArgs = {
   db: AdeDb;
   logger: Logger;
@@ -478,6 +512,7 @@ type SyncHostServiceArgs = {
   compressionThresholdBytes?: number;
   deviceRegistryService?: DeviceRegistryService;
   projectCatalogProvider?: SyncProjectCatalogProvider;
+  rosterProvider?: SyncRosterProvider;
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
@@ -1532,6 +1567,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let discoveryEnabled = args.discoveryEnabled !== false;
   let chatPumpInFlight = false;
   let changesPumpInFlight = false;
+  // All-projects roster (mobile hub) coalescing state. Each subscribed peer
+  // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
+  // any seq discontinuity.
+  let rosterFlushTimer: ReturnType<typeof setTimeout> | null = null;
+  let rosterMaxWaitTimer: ReturnType<typeof setTimeout> | null = null;
+  let rosterSafetyPollTimer: ReturnType<typeof setInterval> | null = null;
+  let rosterFlushInFlight = false;
   let tailnetDiscoveryStatus: SyncTailnetDiscoveryStatus = {
     state: !discoveryEnabled
       ? "disabled"
@@ -1683,6 +1725,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       chatTranscriptOffsets: new Map(),
       chatEventIdsSent: new Map(),
       pendingChangesetBatch: null,
+      rosterSubscribed: false,
+      rosterSeq: 0,
+      rosterBaseline: new Map(),
     };
     peers.add(peer);
     peer.authTimeout = setTimeout(() => {
@@ -1726,6 +1771,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         broadcastBrainStatus();
       }
       peers.delete(peer);
+      if (peer.rosterSubscribed && rosterSubscriberPeers().length === 0) {
+        stopRosterSafetyPoll();
+        clearRosterFlushTimers();
+      }
       for (const sessionId of peer.subscribedSessionIds) {
         restoreDesktopTerminalSizeIfUnwatched(sessionId);
       }
@@ -1845,6 +1894,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           } satisfies SyncChatSubscribeSnapshotPayload);
           peer.subscribedChatSessionIds.add(sessionId);
         }
+        peer.rosterSubscribed = snapshot.rosterSubscribed === true;
         args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
           lastSeenAt: nowIso(),
           lastHost: peer.remoteAddress,
@@ -1871,6 +1921,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (peer.ws.readyState !== WebSocket.OPEN) continue;
       send(peer.ws, "brain_status", brainStatus);
       sendProjectCatalog(peer, projectCatalog);
+    }
+    // Re-prime any roster subscription carried across the host switch: a fresh
+    // snapshot (new seq epoch) re-seeds the peer's baseline on this host.
+    if (args.rosterProvider && adopted.some((peer) => peer.rosterSubscribed)) {
+      ensureRosterSafetyPoll();
+      const projects = await buildRosterProjects();
+      if (projects != null) {
+        for (const peer of adopted) {
+          if (!peer.rosterSubscribed || peer.ws.readyState !== WebSocket.OPEN) continue;
+          sendRosterSnapshotToPeer(peer, projects);
+        }
+      }
     }
     await pumpChanges();
   }
@@ -2645,6 +2707,184 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       sendProjectCatalog(peer, projectCatalog);
     }
+    // A catalog change (open/create/clone/forget/switch) reshapes the roster's
+    // project set; recompute + push it too.
+    markRosterDirty();
+  }
+
+  // --- All-projects roster (mobile hub) --------------------------------------
+
+  function rosterSubscriberPeers(): PeerState[] {
+    const subscribers: PeerState[] = [];
+    for (const peer of peers) {
+      if (peer.rosterSubscribed && peer.authenticated && peer.ws.readyState === WebSocket.OPEN) {
+        subscribers.push(peer);
+      }
+    }
+    return subscribers;
+  }
+
+  function ensureRosterSafetyPoll(): void {
+    if (rosterSafetyPollTimer || disposed) return;
+    // While ≥1 peer is subscribed, a slow poll catches out-of-band on-disk
+    // changes in un-booted projects (e.g. a direct `ade` CLI run elsewhere)
+    // that emit no in-process event.
+    rosterSafetyPollTimer = setInterval(() => {
+      if (rosterSubscriberPeers().length === 0) {
+        stopRosterSafetyPoll();
+        return;
+      }
+      markRosterDirty();
+    }, ROSTER_SAFETY_POLL_MS);
+    rosterSafetyPollTimer.unref?.();
+  }
+
+  function stopRosterSafetyPoll(): void {
+    if (!rosterSafetyPollTimer) return;
+    clearInterval(rosterSafetyPollTimer);
+    rosterSafetyPollTimer = null;
+  }
+
+  function clearRosterFlushTimers(): void {
+    if (rosterFlushTimer) {
+      clearTimeout(rosterFlushTimer);
+      rosterFlushTimer = null;
+    }
+    if (rosterMaxWaitTimer) {
+      clearTimeout(rosterMaxWaitTimer);
+      rosterMaxWaitTimer = null;
+    }
+  }
+
+  // Coalesced recompute+push: trailing-edge debounce with a hard max-wait cap
+  // so a steady stream of events still flushes at least once per cap.
+  function markRosterDirty(): void {
+    if (disposed || !args.rosterProvider) return;
+    if (rosterSubscriberPeers().length === 0) return;
+    if (rosterFlushTimer) clearTimeout(rosterFlushTimer);
+    rosterFlushTimer = setTimeout(() => {
+      void flushRoster();
+    }, ROSTER_DEBOUNCE_MS);
+    rosterFlushTimer.unref?.();
+    if (!rosterMaxWaitTimer) {
+      rosterMaxWaitTimer = setTimeout(() => {
+        void flushRoster();
+      }, ROSTER_MAX_WAIT_MS);
+      rosterMaxWaitTimer.unref?.();
+    }
+  }
+
+  async function buildRosterProjects(): Promise<SyncRosterProject[] | null> {
+    if (!args.rosterProvider) return null;
+    try {
+      return await args.rosterProvider.buildSnapshot();
+    } catch (error) {
+      args.logger.warn("sync_host.roster_build_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  // Send a full snapshot and (re)seed the peer's per-project baseline so the
+  // next flush can diff against it. A snapshot resets the peer's seq epoch (the
+  // client adopts snapshot.seq as its new watermark), so it is always safe.
+  function sendRosterSnapshotToPeer(
+    peer: PeerState,
+    projects: SyncRosterProject[],
+    requestId?: string | null,
+  ): void {
+    const seq = ++peer.rosterSeq;
+    const sent = send(peer.ws, "roster_snapshot", { seq, projects } satisfies SyncRosterSnapshotPayload, requestId);
+    if (!sent) {
+      // Backpressured/closed: drop the baseline so the next flush re-snapshots.
+      peer.rosterBaseline.clear();
+      return;
+    }
+    peer.rosterBaseline = new Map(projects.map((project) => [project.projectId, JSON.stringify(project)]));
+  }
+
+  async function flushRoster(): Promise<void> {
+    clearRosterFlushTimers();
+    if (disposed || rosterFlushInFlight) return;
+    const subscribers = rosterSubscriberPeers();
+    if (subscribers.length === 0) {
+      stopRosterSafetyPoll();
+      return;
+    }
+    rosterFlushInFlight = true;
+    try {
+      const projects = await buildRosterProjects();
+      if (projects == null) return;
+      const subscribersNow = rosterSubscriberPeers();
+      if (subscribersNow.length === 0) return;
+      const serialized = new Map(projects.map((project) => [project.projectId, JSON.stringify(project)]));
+      for (const peer of subscribersNow) {
+        if (peer.rosterBaseline.size === 0) {
+          // No baseline (fresh subscribe / prior drop) → full snapshot.
+          sendRosterSnapshotToPeer(peer, projects);
+          continue;
+        }
+        const changed: SyncRosterProject[] = [];
+        for (const project of projects) {
+          if (peer.rosterBaseline.get(project.projectId) !== serialized.get(project.projectId)) {
+            changed.push(project);
+          }
+        }
+        const removed: string[] = [];
+        for (const projectId of peer.rosterBaseline.keys()) {
+          if (!serialized.has(projectId)) removed.push(projectId);
+        }
+        if (changed.length === 0 && removed.length === 0) {
+          // Nothing changed for this peer: skip the send WITHOUT advancing its
+          // seq, so its next delta still arrives as lastSeq+1 (no false gap).
+          continue;
+        }
+        const seq = ++peer.rosterSeq;
+        const delta: SyncRosterDeltaPayload = {
+          seq,
+          ...(changed.length > 0 ? { changed } : {}),
+          ...(removed.length > 0 ? { removed } : {}),
+        };
+        const sent = send(peer.ws, "roster_delta", delta);
+        if (!sent) {
+          // Backpressured: roll back the seq + force a fresh snapshot next flush.
+          peer.rosterSeq -= 1;
+          peer.rosterBaseline.clear();
+          continue;
+        }
+        peer.rosterBaseline = new Map(serialized);
+      }
+    } finally {
+      rosterFlushInFlight = false;
+    }
+  }
+
+  async function handleRosterSubscribe(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    _payload: SyncRosterSubscribePayload | null,
+  ): Promise<void> {
+    if (!args.rosterProvider) {
+      // No roster on this host — stay silent so the phone falls back to the
+      // project catalog (the contract treats a non-answering host gracefully).
+      return;
+    }
+    peer.rosterSubscribed = true;
+    peer.rosterBaseline.clear();
+    ensureRosterSafetyPoll();
+    const projects = await buildRosterProjects();
+    if (projects == null) return;
+    sendRosterSnapshotToPeer(peer, projects, requestId ?? null);
+  }
+
+  function handleRosterUnsubscribe(peer: PeerState): void {
+    peer.rosterSubscribed = false;
+    peer.rosterBaseline.clear();
+    if (rosterSubscriberPeers().length === 0) {
+      stopRosterSafetyPoll();
+      clearRosterFlushTimers();
+    }
   }
 
   async function handleProjectBrowseRequest(
@@ -2920,6 +3160,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!rememberChatEventSent(peer, event)) continue;
       send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
     }
+    // A chat lifecycle event for the host project updates its roster status
+    // live (other booted scopes are covered by the safety poll + live overlay).
+    markRosterDirty();
   }
 
   async function pumpChanges(): Promise<void> {
@@ -3129,32 +3372,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       .find((entry) => entry.id === workspaceId) ?? null;
   }
 
-  function assertWriteAllowed(peer: PeerState, workspace: FilesWorkspace | null): void {
-    if (!isMobilePeer(peer)) return;
-    if (!workspace || workspace.mobileReadOnly === true || workspace.isReadOnlyByDefault) {
-      throw new Error("Mobile file access is read-only for this workspace.");
-    }
-  }
-
   function assertMobileExternalWorkspaceBlocked(peer: PeerState, payload: SyncFileRequest): void {
     assertFileRequestWorkspaceVisibleToPeer({
       isMobile: isMobilePeer(peer),
       workspace: workspaceForId(syncFileRequestWorkspaceId(payload)),
     });
-  }
-
-  function assertFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
-    if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
-    const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
-    assertWriteAllowed(peer, workspaceForId(workspaceId));
-  }
-
-  function assertLaneFileMutationAllowed(peer: PeerState, payload: SyncCommandPayload): void {
-    const laneId = toOptionalString((payload.args as Record<string, unknown> | null | undefined)?.laneId);
-    if (!laneId) return;
-    const workspace = args.fileService.listWorkspaces({ includeArchived: true })
-      .find((entry) => entry.laneId === laneId) ?? null;
-    assertWriteAllowed(peer, workspace);
   }
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
@@ -3164,7 +3386,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     try {
       assertMobileExternalWorkspaceBlocked(peer, payload);
-      assertFileMutationAllowed(peer, payload);
       let result:
         | FilesWorkspace[]
         | FileTreeNode[]
@@ -3426,14 +3647,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
       return;
     }
-    if (payload.action === "files.writeTextAtomic") {
-      try {
-        assertLaneFileMutationAllowed(peer, payload);
-      } catch (error) {
-        reject(error instanceof Error ? error.message : String(error), "mobile_read_only");
-        return;
-      }
-    }
     if (policy.localOnly || policy.requiresApproval) {
       reject(`Remote command ${payload.action} requires approval on this machine.`, "approval_required");
       return;
@@ -3454,6 +3667,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ? { ...payload, projectId: hostProjectId }
         : payload;
       const created = await executor.execute(routedPayload);
+      // Create-in-place (possibly into another project) adds a lane/chat row the
+      // hub must see; nudge the roster (coalesced, no-op without subscribers).
+      if (ROSTER_DIRTYING_COMMAND_ACTIONS.has(payload.action)) markRosterDirty();
       sendResult(acceptedRecord, {
         commandId,
         ok: true,
@@ -4069,7 +4285,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "chat_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceSeq?: number } | null;
+        const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         peer.subscribedChatSessionIds.add(sessionId);
@@ -4123,14 +4339,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           1_024,
           Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
         );
-        const raw = session?.transcriptPath
-          ? await args.sessionService.readTranscriptTail(
-              session.transcriptPath,
-              maxBytes,
-              { raw: true, alignToLineBoundary: true },
-            )
-          : "";
-        const events = parseAgentChatTranscript(raw).filter((event) => event.sessionId === sessionId);
+        const history: AgentChatEventHistorySnapshot | null = args.agentChatService?.getChatEventHistory(sessionId, {
+          maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
+          maxBytes,
+        }) ?? null;
+        const events = history?.events ?? [];
         const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
           ? fs.statSync(session.transcriptPath).size
           : 0;
@@ -4138,11 +4351,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const snapshot: SyncChatSubscribeSnapshotPayload = {
           sessionId,
           capturedAt: nowIso(),
-          truncated: transcriptSize > maxBytes,
+          truncated: history?.truncated ?? (transcriptSize > maxBytes),
           events,
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
+        for (const event of events) {
+          rememberChatEventSent(peer, event);
+        }
         break;
       }
       case "chat_unsubscribe": {
@@ -4153,6 +4369,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
         }
+        break;
+      }
+      case "roster_subscribe": {
+        await handleRosterSubscribe(peer, envelope.requestId, envelope.payload as SyncRosterSubscribePayload | null);
+        break;
+      }
+      case "roster_unsubscribe": {
+        handleRosterUnsubscribe(peer);
         break;
       }
       case "command":
@@ -4394,6 +4618,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
+      stopRosterSafetyPoll();
+      clearRosterFlushTimers();
       unpublishLanDiscovery();
       try {
         await unpublishTailnetDiscovery();
@@ -4439,6 +4665,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             subscribedSessionIds: [...peer.subscribedSessionIds],
             subscribedChatSessionIds: [...peer.subscribedChatSessionIds],
             chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
+            rosterSubscribed: peer.rosterSubscribed,
           });
         }
         peers.clear();

@@ -218,6 +218,11 @@ function createStubFileService(workspaceRoot: string) {
       fs.mkdirSync(path.dirname(absolute), { recursive: true });
       fs.writeFileSync(absolute, text, "utf8");
     },
+    writeTextAtomic: ({ relPath, text }: { laneId: string; relPath: string; text: string }) => {
+      const absolute = resolveWorkspacePath(relPath);
+      fs.mkdirSync(path.dirname(absolute), { recursive: true });
+      fs.writeFileSync(absolute, text, "utf8");
+    },
     createFile: ({ path: relPath, content }: { path: string; content?: string }) => {
       const absolute = resolveWorkspacePath(relPath);
       fs.mkdirSync(path.dirname(absolute), { recursive: true });
@@ -270,6 +275,14 @@ function createStubChatService() {
     deleteSession: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
     getSessionSummary: vi.fn().mockResolvedValue(null),
+    getChatEventHistory: vi.fn((sessionId: string) => ({
+      sessionId,
+      events: [],
+      truncated: false,
+      transcriptTruncated: false,
+      windowTruncated: false,
+      sessionFound: true,
+    })),
     getChatTranscript: vi.fn().mockResolvedValue([]),
     createSession: vi.fn().mockResolvedValue(baseSession),
     getAvailableModels: vi.fn().mockResolvedValue([]),
@@ -1790,9 +1803,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const mobileWriteResponse = await phoneClient.queue.next("file_response");
     const mobileWritePayload = mobileWriteResponse.payload as { ok: boolean; error?: { message: string } };
     expect(mobileWriteResponse.requestId).toBe("mobile-write-text");
-    expect(mobileWritePayload.ok).toBe(false);
-    expect(mobileWritePayload.error?.message).toMatch(/read-only/i);
-    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("updated");
+    expect(mobileWritePayload.ok).toBe(true);
+    expect(mobileWritePayload.error).toBeUndefined();
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("mobile update");
 
     const atomicWrite = await sendCommand(phoneClient.ws, phoneClient.queue, {
       commandId: "mobile-atomic-write",
@@ -1805,12 +1818,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     });
     const atomicAckPayload = atomicWrite.ack.payload as { accepted: boolean; status: string };
     const atomicResultPayload = atomicWrite.result.payload as { ok: boolean; error?: { code: string; message: string } };
-    expect(atomicAckPayload.accepted).toBe(false);
-    expect(atomicAckPayload.status).toBe("rejected");
-    expect(atomicResultPayload.ok).toBe(false);
-    expect(atomicResultPayload.error?.code).toBe("mobile_read_only");
-    expect(atomicResultPayload.error?.message).toMatch(/read-only/i);
-    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("updated");
+    expect(atomicAckPayload.accepted).toBe(true);
+    expect(atomicAckPayload.status).toBe("accepted");
+    expect(atomicResultPayload.ok).toBe(true);
+    expect(atomicResultPayload.error).toBeUndefined();
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("mobile atomic update");
 
     client.ws.send(encodeSyncEnvelope({
       type: "file_request",
@@ -2752,7 +2764,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(chatService.service.deleteSession).toHaveBeenCalledWith({ sessionId: "session-1" });
   }, 15_000);
 
-  it("pairs a phone peer and keeps paired reconnects read-only even if hello metadata is spoofed", async () => {
+  it("pairs a phone peer and preserves paired reconnect identity even if hello metadata is spoofed", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-pairing-project-");
     const workspaceRoot = path.join(projectRoot, "workspace");
@@ -2949,9 +2961,9 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     }));
     const spoofedWriteResponse = await authQueue.next("file_response");
     const spoofedWritePayload = spoofedWriteResponse.payload as { ok: boolean; error?: { message: string } };
-    expect(spoofedWritePayload.ok).toBe(false);
-    expect(spoofedWritePayload.error?.message).toMatch(/read-only/i);
-    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("original");
+    expect(spoofedWritePayload.ok).toBe(true);
+    expect(spoofedWritePayload.error).toBeUndefined();
+    expect(fs.readFileSync(path.join(workspaceRoot, "notes.txt"), "utf8")).toBe("spoofed update");
 
     host.revokePairedDevice("ios-phone-1");
     if (authWs.readyState !== WebSocket.CLOSED) {
