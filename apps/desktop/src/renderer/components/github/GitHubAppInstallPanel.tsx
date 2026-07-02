@@ -12,6 +12,7 @@ import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, pr
 const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
+const POST_AUTH_STATUS_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
 
 type GitHubAppInstallPanelProps = {
   variant?: "settings" | "onboarding";
@@ -29,14 +30,35 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   const autoRenewCountRef = useRef(0);
   const copyFeedbackTimeoutRef = useRef<number | null>(null);
   const appAuthRef = useRef<GitHubAppUserAuthStatus | null>(null);
+  const statusRequestSeqRef = useRef(0);
+  const mountedRef = useRef(true);
   appAuthRef.current = appAuth;
 
-  const loadStatus = useCallback(async (forceRefresh = false) => {
+  const loadStatus = useCallback(async (forceRefresh = false, opts: { retryAfterAuthorization?: boolean } = {}) => {
     if (!window.ade?.github?.getAppInstallationStatus) return;
+    const requestSeq = statusRequestSeqRef.current + 1;
+    statusRequestSeqRef.current = requestSeq;
     setLoading(true);
+    let latestStatus: GitHubAppInstallationStatus | null = null;
     try {
-      setStatus(await window.ade.github.getAppInstallationStatus({ forceRefresh }));
+      const attemptCount = opts.retryAfterAuthorization
+        ? POST_AUTH_STATUS_RETRY_DELAYS_MS.length + 1
+        : 1;
+      for (let attempt = 0; attempt < attemptCount; attempt += 1) {
+        latestStatus = await window.ade.github.getAppInstallationStatus({
+          forceRefresh: forceRefresh || attempt > 0,
+        });
+        if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
+        setStatus(latestStatus);
+        if (!opts.retryAfterAuthorization || !isGitHubAppRepoAccessPending(latestStatus)) break;
+        const retryDelay = POST_AUTH_STATUS_RETRY_DELAYS_MS[attempt];
+        if (retryDelay == null) break;
+        setDeviceMessage("GitHub authorization is complete. Waiting for repository access to appear...");
+        await sleepMs(retryDelay);
+        if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
+      }
     } catch (error) {
+      if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
       setStatus({
         repo: null,
         appName: ADE_GITHUB_APP_NAME,
@@ -57,12 +79,24 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      const isCurrentRequest = () => mountedRef.current && statusRequestSeqRef.current === requestSeq;
       // Read auth state AFTER the status call (success or failure): an
       // expired stored token can be cleared during the status check, and the
       // panel must reflect that immediately.
-      const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
-      setAppAuth(authStatus ?? null);
-      setLoading(false);
+      if (isCurrentRequest()) {
+        const authStatus = await window.ade.github.getAppUserAuthStatus?.().catch(() => null);
+        if (isCurrentRequest()) {
+          setAppAuth(authStatus ?? null);
+          if (opts.retryAfterAuthorization) {
+            setDeviceMessage(
+              latestStatus && isGitHubAppRepoAccessPending(latestStatus)
+                ? "GitHub authorization is complete. Repository access is still warming up; use Refresh again in a moment."
+                : null,
+            );
+          }
+          setLoading(false);
+        }
+      }
     }
   }, []);
 
@@ -145,7 +179,8 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       setDeviceMessage(result.message);
       if (result.status === "authorized") {
         autoRenewCountRef.current = 0;
-        await loadStatus(true);
+        setDeviceMessage("GitHub authorization is complete. Checking repository access...");
+        await loadStatus(true, { retryAfterAuthorization: true });
       }
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
@@ -159,7 +194,10 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   }, [deviceSession?.sessionId]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
+      statusRequestSeqRef.current += 1;
       if (copyFeedbackTimeoutRef.current != null) {
         window.clearTimeout(copyFeedbackTimeoutRef.current);
       }
@@ -171,6 +209,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   }, [loadStatus]);
 
   const appAuthorized = appAuth?.tokenStored === true;
+  const repoAccessPending = appAuthorized && isGitHubAppRepoAccessPending(status);
   const view = statusView(status, loading, appAuthorized);
   const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
 
@@ -221,7 +260,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
       {!appAuthorized && !deviceSession ? <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p> : null}
 
       <div style={actionRowStyle}>
-        {!appAuthorized || status?.state === "error" ? (
+        {!appAuthorized || (status?.state === "error" && !repoAccessPending) ? (
           <button
             type="button"
             style={
@@ -256,7 +295,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         <button
           type="button"
           style={outlineButton(compact ? compactSecondaryButtonStyle : undefined)}
-          onClick={() => void loadStatus(true)}
+          onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
           disabled={loading}
         >
           {loading ? <WarningCircle size={12} weight="bold" /> : <ArrowClockwise size={12} weight="bold" />}
@@ -267,7 +306,21 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
   );
 }
 
-function statusView(status: GitHubAppInstallationStatus | null, loading: boolean, appAuthorized: boolean): {
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+export function isGitHubAppRepoAccessPending(status: GitHubAppInstallationStatus | null): boolean {
+  if (status?.state !== "error" || !status.relayConfigured || status.installed) return false;
+  const error = status.error?.trim().toLowerCase() ?? "";
+  return error === "not found"
+    || error.includes("repository not found")
+    || error.includes("could not resolve to a repository");
+}
+
+export function statusView(status: GitHubAppInstallationStatus | null, loading: boolean, appAuthorized: boolean): {
   label: string;
   color: string;
   description: (repoLabel: string | null) => string;
@@ -322,6 +375,16 @@ function statusView(status: GitHubAppInstallationStatus | null, loading: boolean
         label: "Authorize GitHub",
         color: COLORS.warning,
         description: () => "Authorize ADE with GitHub to enable instant PR updates for this repo.",
+      };
+    }
+    if (isGitHubAppRepoAccessPending(status)) {
+      return {
+        label: "Checking access",
+        color: COLORS.warning,
+        description: (repoLabel) =>
+          repoLabel
+            ? `GitHub accepted authorization. ADE is waiting for the GitHub App's repository access to become visible for ${repoLabel}. If this stays here, install the App or select this repo in GitHub.`
+            : "GitHub accepted authorization. ADE is waiting for the GitHub App's repository access to become visible. If this stays here, install the App or select this repo in GitHub.",
       };
     }
     return {
