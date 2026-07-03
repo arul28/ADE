@@ -438,74 +438,10 @@ struct LaneListRow: View, Equatable {
   }
 }
 
-// MARK: - Inline rebase warning (rendered inside lane cards)
-
-enum LaneCardRebaseWarningPresentation: Equatable {
-  case suggestion(behindCount: Int, hasPr: Bool)
-  case autoRebase(state: String, message: String?)
-
-  var icon: String {
-    switch self {
-    case .suggestion: return "arrow.triangle.2.circlepath"
-    case .autoRebase(let state, _):
-      return state == "rebaseConflict" ? "exclamationmark.triangle.fill" : "exclamationmark.arrow.triangle.2.circlepath"
-    }
-  }
-
-  var tint: Color {
-    switch self {
-    case .suggestion: return ADEColor.warning
-    case .autoRebase(let state, _):
-      return (state == "rebaseConflict" || state == "rebaseFailed") ? ADEColor.danger : ADEColor.warning
-    }
-  }
-
-  var title: String {
-    switch self {
-    case .suggestion: return "Rebase suggested"
-    case .autoRebase(let state, _):
-      switch state {
-      case "rebaseConflict": return "Auto-rebase conflict"
-      case "rebaseFailed": return "Auto-rebase failed"
-      default: return "Auto-rebase needs attention"
-      }
-    }
-  }
-
-  var detail: String? {
-    switch self {
-    case .suggestion(let behindCount, let hasPr):
-      let noun = behindCount == 1 ? "commit" : "commits"
-      let base = "\(behindCount) \(noun) behind"
-      return hasPr ? "\(base) · PR open" : base
-    case .autoRebase(_, let message):
-      return message
-    }
-  }
-
-  var accessibilitySummary: String {
-    [title, detail].compactMap { part in
-      guard let part, !part.isEmpty else { return nil }
-      return part
-    }.joined(separator: ". ")
-  }
-}
-
-func laneCardRebaseWarningPresentation(for snapshot: LaneListSnapshot) -> LaneCardRebaseWarningPresentation? {
-  if let status = snapshot.autoRebaseStatus, status.state != "autoRebased" {
-    return .autoRebase(state: status.state, message: status.message)
-  }
-  if let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil {
-    return .suggestion(behindCount: suggestion.behindCount, hasPr: suggestion.hasPr)
-  }
-  return nil
-}
-
 func laneStackCardAccessibilityLabel(
   snapshot: LaneListSnapshot,
   isPinned: Bool,
   isOpen: Bool,
-  rebaseWarning: LaneCardRebaseWarningPresentation?,
   pullRequest: LanePrTag? = nil
 ) -> String {
   var parts = [snapshot.lane.name, normalizedPrBranchName(snapshot.lane.branchRef)]
@@ -517,43 +453,7 @@ func laneStackCardAccessibilityLabel(
   if snapshot.lane.status.ahead > 0 { parts.append("\(snapshot.lane.status.ahead) ahead") }
   if snapshot.lane.status.behind > 0 { parts.append("\(snapshot.lane.status.behind) behind") }
   if let pullRequest { parts.append(formatLanePrBadgeLabel(pullRequest)) }
-  if let warning = rebaseWarning { parts.append(warning.accessibilitySummary) }
   return parts.joined(separator: ", ")
-}
-
-struct LaneCardRebaseWarning: View {
-  let presentation: LaneCardRebaseWarningPresentation
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 8) {
-      Image(systemName: presentation.icon)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(presentation.tint)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(presentation.title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if let detail = presentation.detail, !detail.isEmpty {
-          Text(detail)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(2)
-        }
-      }
-      Spacer(minLength: 0)
-    }
-    .padding(.vertical, 8)
-    .padding(.horizontal, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(presentation.tint.opacity(0.10), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .stroke(presentation.tint.opacity(0.28), lineWidth: 0.5)
-    )
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(presentation.accessibilitySummary)
-  }
 }
 
 // MARK: - PR tag
@@ -594,12 +494,23 @@ struct LaneStackCard: View, Equatable {
   var isSelectedTransitionSource = false
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
-    lhs.snapshot == rhs.snapshot
-      && lhs.isPinned == rhs.isPinned
-      && lhs.isOpen == rhs.isOpen
-      && lhs.depth == rhs.depth
-      && lhs.pullRequest == rhs.pullRequest
-      && lhs.isSelectedTransitionSource == rhs.isSelectedTransitionSource
+    lhs.renderSignature == rhs.renderSignature
+  }
+
+  /// Cheap render-relevant equality key (mirrors the Hub row-signature pattern in
+  /// `HubComponents.swift`): hashes only the fields this card actually draws, so a
+  /// legitimate lanes update re-renders only rows whose visible state changed, and
+  /// the `.equatable()` diff is one `Int` compare instead of a deep
+  /// `LaneListSnapshot` compare that also over-invalidates on non-rendered fields.
+  fileprivate var renderSignature: Int {
+    laneStackCardRenderSignature(
+      snapshot: snapshot,
+      isPinned: isPinned,
+      isOpen: isOpen,
+      depth: depth,
+      pullRequest: pullRequest,
+      isSelectedTransitionSource: isSelectedTransitionSource
+    )
   }
 
   var body: some View {
@@ -674,10 +585,6 @@ struct LaneStackCard: View, Equatable {
           }
           .scrollClipDisabled()
         }
-
-        if let warning = rebaseWarning {
-          LaneCardRebaseWarning(presentation: warning)
-        }
       }
       .padding(.leading, 14)
       .padding(.trailing, 14)
@@ -702,10 +609,6 @@ struct LaneStackCard: View, Equatable {
 
   private var laneLabelColor: Color {
     laneTint.text ?? ADEColor.textPrimary
-  }
-
-  private var rebaseWarning: LaneCardRebaseWarningPresentation? {
-    laneCardRebaseWarningPresentation(for: snapshot)
   }
 
   private var cardStrokeTint: Color {
@@ -739,8 +642,50 @@ struct LaneStackCard: View, Equatable {
       snapshot: snapshot,
       isPinned: isPinned,
       isOpen: isOpen,
-      rebaseWarning: rebaseWarning,
       pullRequest: pullRequest
     )
   }
+}
+
+/// Render-relevant signature for a `LaneStackCard` row. Combine only the fields
+/// the card draws; adding a field here is required whenever the card starts
+/// rendering something new, or that change will not trigger a re-render.
+func laneStackCardRenderSignature(
+  snapshot: LaneListSnapshot,
+  isPinned: Bool,
+  isOpen: Bool,
+  depth: Int,
+  pullRequest: LanePrTag?,
+  isSelectedTransitionSource: Bool
+) -> Int {
+  var hasher = Hasher()
+  let lane = snapshot.lane
+  hasher.combine(lane.id)
+  hasher.combine(lane.name)
+  hasher.combine(lane.color)
+  hasher.combine(lane.icon?.rawValue)
+  hasher.combine(lane.laneType)
+  hasher.combine(lane.archivedAt)
+  hasher.combine(lane.branchRef)
+  hasher.combine(lane.status.dirty)
+  hasher.combine(lane.status.ahead)
+  hasher.combine(lane.status.behind)
+  hasher.combine(lane.childCount)
+  // The card's presence icon derives from device PLATFORMS, not just how many
+  // devices are open — hash the sorted platform list so swapping a mac peer
+  // for an iPhone (same count) still re-renders the row.
+  hasher.combine((lane.devicesOpen ?? []).map(\.platform).sorted())
+  hasher.combine(primaryLaneLinearIssue(for: lane)?.identifier)
+  hasher.combine(laneLinearIssueLinkCount(for: lane))
+  hasher.combine(isPinned)
+  hasher.combine(isOpen)
+  hasher.combine(depth)
+  hasher.combine(isSelectedTransitionSource)
+  if let pullRequest {
+    hasher.combine(pullRequest.githubPrNumber)
+    hasher.combine(pullRequest.state)
+  } else {
+    hasher.combine(0)
+  }
+  return hasher.finalize()
 }

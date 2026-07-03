@@ -158,6 +158,7 @@ export type AdeRuntimeSyncOptions = {
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   rosterProvider?: Parameters<typeof createSyncService>[0]["rosterProvider"];
+  foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
   /**
    * Brain-level websocket listener shared by every project scope's sync host
@@ -1242,6 +1243,7 @@ export async function createAdeRuntime(args: {
       forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,
       projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
       rosterProvider: resolvedArgs.syncRuntime.rosterProvider,
+      foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),

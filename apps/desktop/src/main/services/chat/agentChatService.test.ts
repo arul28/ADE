@@ -13452,7 +13452,9 @@ describe("createAgentChatService", () => {
         expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start").length)
           .toBeGreaterThan(turnStartCountBeforeApproval);
       });
-      expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("edit");
+      // An approved plan hands the session straight to full access — the user
+      // already reviewed exactly what will happen.
+      expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("full-auto");
     });
 
     it("emits a terminal event when a streamed native Codex plan item completes", async () => {

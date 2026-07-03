@@ -15591,8 +15591,11 @@ export function createAgentChatService(args: {
   ): void => {
     const approved = args.decision === "accept" || args.decision === "accept_for_session";
     if (approved) {
-      managed.session.permissionMode = "edit";
-      applyLegacyPermissionModeToNativeControls(managed.session, "edit");
+      // An approved plan hands the session straight to full access — the user
+      // already reviewed exactly what will happen, so gating every file change
+      // behind another approval round just relitigates the plan.
+      managed.session.permissionMode = "full-auto";
+      applyLegacyPermissionModeToNativeControls(managed.session, "full-auto");
       managed.session.interactionMode = "default";
       runtime.threadResumed = false;
       runtime.canAttachResumedTurnStart = false;

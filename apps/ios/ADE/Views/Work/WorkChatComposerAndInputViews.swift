@@ -497,7 +497,6 @@ struct WorkComposerControlsRow: View {
 /// through the full model picker.
 struct WorkComposerChipStrip: View {
   let chatSummary: WorkChatSummaryRenderContext
-  let pendingInputCount: Int
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
   let onOpenModelPicker: (() -> Void)?
@@ -539,10 +538,6 @@ struct WorkComposerChipStrip: View {
             onToggleFastMode: onToggleCodexFastMode
           )
         }
-
-        if pendingInputCount > 0 {
-          statusChip(icon: "hand.raised.circle.fill", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
-        }
       }
       .padding(.horizontal, 2)
     }
@@ -557,25 +552,6 @@ struct WorkComposerChipStrip: View {
             availableWidth = newValue
           }
       }
-    )
-  }
-
-  @ViewBuilder
-  private func statusChip(icon: String, label: String, tint: Color) -> some View {
-    HStack(spacing: 5) {
-      Image(systemName: icon)
-        .font(.caption2.weight(.semibold))
-      Text(label)
-        .font(.caption.weight(.semibold))
-        .lineLimit(1)
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 8)
-    .padding(.vertical, 5)
-    .background(tint.opacity(0.1), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(tint.opacity(0.22), lineWidth: 0.5)
     )
   }
 
@@ -886,52 +862,6 @@ struct WorkQueuedSteerRow: View {
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
     .accessibilityElement(children: .contain)
-  }
-}
-
-struct WorkApprovalRequestCard: View {
-  let approval: WorkPendingApprovalModel
-  let busy: Bool
-  let onDecision: @MainActor (AgentChatApprovalDecision) async -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("Approval needed")
-        .font(.headline)
-        .foregroundStyle(ADEColor.textPrimary)
-
-      Text(approval.description)
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-
-      if let detail = approval.detail, !detail.isEmpty {
-        WorkStructuredOutputBlock(title: "Details", text: detail)
-      }
-
-      HStack(spacing: 10) {
-        Button("Approve") {
-          Task { await onDecision(.accept) }
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.success)
-        .disabled(busy)
-
-        Button("Approve for session") {
-          Task { await onDecision(.acceptForSession) }
-        }
-        .buttonStyle(.glass)
-        .tint(ADEColor.accent)
-        .disabled(busy)
-
-        Button("Deny") {
-          Task { await onDecision(.decline) }
-        }
-        .buttonStyle(.glass)
-        .tint(ADEColor.danger)
-        .disabled(busy)
-      }
-    }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
   }
 }
 

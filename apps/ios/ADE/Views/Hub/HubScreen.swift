@@ -4,8 +4,9 @@ import SwiftUI
 // connected. Lists every project on the machine, each expandable to its chats
 // grouped by lane (sourced from the live roster feed). Tapping a project card
 // opens its detailed tabbed view; tapping a chat opens that chat directly
-// (presented over the hub, so Back returns here). A bottom "type to vibecode"
-// bar slides up a new-chat drawer with a Project ▸ Lane destination picker.
+// (presented over the hub, so Back returns here). The bottom "type to vibecode"
+// box is the inline new-chat composer — focusing it expands the full controls
+// above the keyboard (see HubInlineComposer).
 //
 // Replaces the connected-state layout of the old `ProjectHomeView`; the
 // no-machine / connecting states are preserved here.
@@ -21,7 +22,9 @@ struct HubScreen: View {
   // hub looks identical after opening a project and coming back — mobile-only,
   // never touches desktop ordering.
   @State private var projectOrder: [String] = []
-  @State private var composerPresented = false
+  // Whether the bottom composer is expanded (keyboard/session controls up).
+  // Owned here so taps on the list behind it collapse it.
+  @State private var composerExpanded = false
   // Set when a hub chat row is tapped — drives the chat cover (wired in
   // HubScreen+ChatNavigation).
   @State var openChatTarget: HubChatTarget?
@@ -48,7 +51,7 @@ struct HubScreen: View {
   }
 
   private var hubIsActive: Bool {
-    syncService.shouldShowProjectHome && openChatTarget == nil && !composerPresented
+    syncService.shouldShowProjectHome && openChatTarget == nil
   }
 
   var body: some View {
@@ -66,7 +69,6 @@ struct HubScreen: View {
       RemoteProjectAddSheet().environmentObject(syncService)
     }
     .hubChatCover(target: $openChatTarget)
-    .hubComposerDrawer(isPresented: $composerPresented, onCreated: handleCreated)
     .overlay(alignment: .bottom) {
       if let toast = createdToast {
         HubCreatedToast(toast: toast, onOpen: { openCreated(toast) }, onDismiss: { dismissToast() })
@@ -98,11 +100,19 @@ struct HubScreen: View {
     createdToast = nil
   }
 
+  private func collapseComposer() {
+    withAnimation(hubComposerSpring) { composerExpanded = false }
+  }
+
   private func openCreated(_ created: HubCreatedChat) {
     dismissToast()
     guard let project = syncService.projects.first(where: { $0.id == created.projectId }) else { return }
+    // Carry the CLI marker: toolType nil reads as a chat (isChatTool defaults
+    // true), and a CLI session must not take the cross-project chat quick-look
+    // (CLI sessions have no chat transcript to stream — they need activation).
     let chat = RemoteRosterChat(
-      id: created.sessionId, laneId: "", chatSessionId: nil, title: nil, provider: nil, model: nil, toolType: nil,
+      id: created.sessionId, laneId: "", chatSessionId: nil, title: nil, provider: nil, model: nil,
+      toolType: created.isCli ? "cli" : nil,
       status: .running, awaitingInput: nil, pinned: nil, archived: nil, lastActivityAt: nil, preview: nil
     )
     openChatTarget = HubChatTarget(project: project, lane: nil, chat: chat)
@@ -163,6 +173,24 @@ struct HubScreen: View {
         .padding(.bottom, 16)
       }
       .scrollIndicators(.hidden)
+      .scrollDismissesKeyboard(.interactively)
+      // While the composer is expanded, a dim scrim sits between the list and
+      // the composer: it swallows taps/drags (no accidental row opens) and any
+      // touch on it collapses the composer. Layered before safeAreaInset so
+      // the composer itself stays above and interactive.
+      .overlay {
+        if composerExpanded {
+          Color.black.opacity(0.38)
+            .ignoresSafeArea()
+            .onTapGesture { collapseComposer() }
+            .gesture(
+              DragGesture(minimumDistance: 12).onEnded { value in
+                if value.translation.height > 24 { collapseComposer() }
+              }
+            )
+            .transition(.opacity)
+        }
+      }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if canShowProjects {
           VStack(spacing: 0) {
@@ -177,7 +205,7 @@ struct HubScreen: View {
             .frame(height: 14)
             .allowsHitTesting(false)
 
-            HubComposerBar { composerPresented = true }
+            HubInlineComposer(expanded: $composerExpanded, onCreated: handleCreated)
           }
           .background(
             ADEColor.pageBackground

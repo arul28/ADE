@@ -633,6 +633,19 @@ struct WorkEventCardModel: Identifiable, Equatable {
   /// in-progress affordance (spinner + "Compacting context…"); once the host
   /// emits the completed event the merged card flips this back to false.
   let isInProgress: Bool
+  /// Structured question payload for `kind == "question"`, so the resolved
+  /// transcript card can render the provider logo, the question text, and clean
+  /// option rows (with the recommended/selected option marked) instead of the
+  /// flat "Extras: … Options: …" bullet dump.
+  let questionModel: WorkPendingQuestionModel?
+  /// Structured plan payload for `kind == "planApproval"`, so the resolved card
+  /// can render a markdown preview + expand-to-sheet instead of per-line bullets.
+  let planApprovalModel: WorkPendingPlanApprovalModel?
+  /// Resolution word (`accepted` / `declined` / `cancelled` / a chosen value)
+  /// joined from the matching `pending_input_resolved` event. Lets the question
+  /// and plan cards fold the resolved state inline and drop the separate
+  /// floating "Input resolved · Accepted" ribbon.
+  let resolution: String?
 
   init(
     id: String,
@@ -645,7 +658,10 @@ struct WorkEventCardModel: Identifiable, Equatable {
     bullets: [String],
     metadata: [String],
     planSteps: [WorkPlanStep] = [],
-    isInProgress: Bool = false
+    isInProgress: Bool = false,
+    questionModel: WorkPendingQuestionModel? = nil,
+    planApprovalModel: WorkPendingPlanApprovalModel? = nil,
+    resolution: String? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -658,6 +674,9 @@ struct WorkEventCardModel: Identifiable, Equatable {
     self.metadata = metadata
     self.planSteps = planSteps
     self.isInProgress = isInProgress
+    self.questionModel = questionModel
+    self.planApprovalModel = planApprovalModel
+    self.resolution = resolution
   }
 }
 

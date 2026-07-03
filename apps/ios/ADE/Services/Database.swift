@@ -12,6 +12,10 @@ extension Notification.Name {
 
 enum ADEDatabaseChangeNotification {
   static let touchedTablesUserInfoKey = "touchedTables"
+  /// Lane ids whose local `lane_detail_snapshots` cache row changed, when known.
+  /// Only the phone-local detail write path can attribute a change to a lane, so
+  /// this lets subscribers invalidate a single lane detail instead of all.
+  static let laneDetailIdsUserInfoKey = "laneDetailIds"
 }
 
 final class DatabaseService {
@@ -842,7 +846,7 @@ final class DatabaseService {
       try bindText(encodedDetail, to: statement, index: 2)
       try bindText(updatedAt, to: statement, index: 3)
     }
-    notifyDidChange(touchedTables: ["lane_detail_snapshots"])
+    notifyDidChange(touchedTables: ["lane_detail_snapshots"], laneDetailIds: [detail.lane.id])
   }
 
   private func laneSnapshotHydrationMatchesExisting(_ snapshots: [LaneListSnapshot]) -> Bool {
@@ -3403,16 +3407,24 @@ final class DatabaseService {
     }
   }
 
-  private func notifyDidChange(touchedTables: Set<String> = []) {
+  private func notifyDidChange(touchedTables: Set<String> = [], laneDetailIds: Set<String> = []) {
     let normalizedTables = touchedTables
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
       .filter { !$0.isEmpty }
       .sorted()
-    let userInfo: [AnyHashable: Any]? = normalizedTables.isEmpty
-      ? nil
-      : [ADEDatabaseChangeNotification.touchedTablesUserInfoKey: normalizedTables]
+    let normalizedLaneDetailIds = laneDetailIds
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    var userInfo: [AnyHashable: Any] = [:]
+    if !normalizedTables.isEmpty {
+      userInfo[ADEDatabaseChangeNotification.touchedTablesUserInfoKey] = normalizedTables
+    }
+    if !normalizedLaneDetailIds.isEmpty {
+      userInfo[ADEDatabaseChangeNotification.laneDetailIdsUserInfoKey] = normalizedLaneDetailIds
+    }
+    let payload: [AnyHashable: Any]? = userInfo.isEmpty ? nil : userInfo
     DispatchQueue.main.async {
-      NotificationCenter.default.post(name: .adeDatabaseDidChange, object: nil, userInfo: userInfo)
+      NotificationCenter.default.post(name: .adeDatabaseDidChange, object: nil, userInfo: payload)
     }
   }
 

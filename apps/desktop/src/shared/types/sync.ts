@@ -239,6 +239,16 @@ export type SyncFeatureFlags = {
   chatStreaming: {
     enabled: true;
   };
+  /**
+   * Cross-project chat "quick look": when enabled, the host honors a
+   * `projectId`/`projectRootPath` override on `chat_subscribe` and streams a
+   * foreign (non-active) project's chat transcript + live events read-only,
+   * without switching the socket's active project. Absent on hosts that
+   * predate the feature — clients must fall back to a full project activation.
+   */
+  crossProjectChat?: {
+    enabled: boolean;
+  };
   projectCatalog: {
     enabled: boolean;
   };
@@ -681,6 +691,16 @@ export type SyncChatSubscribePayload = {
    * falls back to the regular maxBytes-capped snapshot.
    */
   sinceSeq?: number;
+  /**
+   * Cross-project "quick look" override. When present and identifying a
+   * registered project OTHER than the one this sync socket is scoped to, the
+   * host serves this session's transcript + live events from that foreign
+   * project read-only (no project switch, no runtime boot) — see the
+   * `crossProjectChat` feature flag. Absent for ordinary same-project
+   * subscribes, which stay scoped to the socket's active project.
+   */
+  projectId?: string;
+  projectRootPath?: string;
 };
 
 export type SyncChatSubscribeSnapshotPayload = {
@@ -709,6 +729,9 @@ export type SyncChatSubscribeSnapshotPayload = {
 
 export type SyncChatUnsubscribePayload = {
   sessionId: string;
+  /** Cross-project override, mirrors SyncChatSubscribePayload.projectId. */
+  projectId?: string;
+  projectRootPath?: string;
 };
 
 /**

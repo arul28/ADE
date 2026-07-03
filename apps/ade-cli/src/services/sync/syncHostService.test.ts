@@ -199,6 +199,7 @@ describe("buildSyncHostHelloOkPayload", () => {
       projectCatalog: { projects: [project] },
       projectCatalogEnabled: true,
       projectActionsEnabled: false,
+      crossProjectChatEnabled: true,
       remoteCommandSupportedActions: [remoteCommand.action],
       remoteCommandDescriptors: [remoteCommand],
       localCommandDescriptors: [localPresenceCommand],
@@ -211,6 +212,7 @@ describe("buildSyncHostHelloOkPayload", () => {
     expect(payload.projects).toEqual([project]);
     expect(payload.features.projectCatalog).toEqual({ enabled: true });
     expect(payload.features.projectActions).toEqual({ enabled: false });
+    expect(payload.features.crossProjectChat).toEqual({ enabled: true });
     expect(payload.features.fileAccess).toBe(true);
     expect(payload.features.terminalStreaming).toBe(true);
     expect(payload.features.chatStreaming).toEqual({ enabled: true });

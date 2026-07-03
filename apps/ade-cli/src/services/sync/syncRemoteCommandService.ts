@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
@@ -213,6 +213,15 @@ type SyncRemoteCommandServiceArgs = {
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   /**
+   * Deterministic stamp of the sync host's in-memory lane presence
+   * (`devicesOpen`). The host decorates lane list/detail payloads with
+   * presence AFTER this service builds them, so the conditional-response
+   * signatures fold the stamp in — otherwise a presence-only change (another
+   * device opening a lane) would keep matching `ifNoneMatch` and the client
+   * would hold a stale presence indicator until an unrelated lane change.
+   */
+  getLanePresenceStamp?: () => string;
+  /**
    * Lazy accessor for the model picker store (favorites + recents, backed by
    * the per-project cr-sqlite DB). iOS hits these via the `modelPicker.*` sync
    * commands so favorites/recents stay in sync with desktop + TUI. Optional —
@@ -268,6 +277,33 @@ function asOptionalBoolean(value: unknown): boolean | undefined {
 
 function asOptionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function payloadSignature(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+/**
+ * Conditional-response envelope shared by the lane list/detail commands: when
+ * the caller's ifNoneMatch equals the current payload signature, return the
+ * lightweight notModified shell instead of the full payload. The full payload
+ * is still computed (the signature comes from it), so this saves transport and
+ * client decode/DB work, not host compute.
+ */
+function respondWithSignature<T extends object, E extends object>(
+  response: T,
+  ifNoneMatch: string | null | undefined,
+  emptyResponse: E,
+  signatureSalt = "",
+): (T | E) & { signature: string; notModified: boolean } {
+  // The salt folds host-decorated state (lane presence) into the signature so
+  // a presence-only change invalidates the client's cached copy even though
+  // the undecorated payload is byte-identical.
+  const signature = payloadSignature(signatureSalt ? { response, signatureSalt } : response);
+  if (ifNoneMatch && ifNoneMatch === signature) {
+    return { ...emptyResponse, signature, notModified: true };
+  }
+  return { ...response, signature, notModified: false };
 }
 
 function asConfidenceThreshold(value: unknown): number | undefined {
@@ -1931,6 +1967,18 @@ async function buildLaneListSnapshots(
   }));
 }
 
+type LaneDetailRequestArgs = {
+  laneId: string;
+  ifNoneMatch?: string;
+};
+
+function parseLaneDetailRequestArgs(value: Record<string, unknown>): LaneDetailRequestArgs {
+  return {
+    laneId: requireString(value.laneId, "lanes.getDetail requires laneId."),
+    ...(asTrimmedString(value.ifNoneMatch) ? { ifNoneMatch: asTrimmedString(value.ifNoneMatch)! } : {}),
+  };
+}
+
 async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId: string): Promise<LaneDetailPayload> {
   const lane = await args.laneService.getSummary(laneId, { includeStatus: true });
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
@@ -2011,13 +2059,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
     const listArgs = parseListLanesArgs(payload);
     const refreshed = await args.laneService.refreshSnapshots(listArgs);
-    return {
+    const response = {
       ...refreshed,
       snapshots: await buildLaneListSnapshots(args, refreshed.lanes, listArgs),
     };
+    return respondWithSignature(response, asTrimmedString(payload.ifNoneMatch), {
+      refreshedCount: 0,
+      lanes: [],
+      snapshots: null,
+    }, args.getLanePresenceStamp?.() ?? "");
   });
-  register("lanes.getDetail", { viewerAllowed: true }, async (payload) =>
-    buildLaneDetailPayload(args, requireString(payload.laneId, "lanes.getDetail requires laneId.")));
+  register("lanes.getDetail", { viewerAllowed: true }, async (payload) => {
+    const detailArgs = parseLaneDetailRequestArgs(payload);
+    const response = await buildLaneDetailPayload(args, detailArgs.laneId);
+    return respondWithSignature(response, detailArgs.ifNoneMatch, {}, args.getLanePresenceStamp?.() ?? "");
+  });
   register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
   // Background lane naming for mobile auto-create. Deliberately NOT queueable:
   // when the phone is offline we want the call to fail fast so the client uses

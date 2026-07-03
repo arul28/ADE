@@ -618,16 +618,6 @@ func syncSummary(_ status: GitUpstreamSyncStatus) -> String {
   return "In sync with remote."
 }
 
-func compactSyncSummary(_ status: GitUpstreamSyncStatus?) -> String {
-  guard let status else { return "Checking remote" }
-  if !status.hasUpstream { return "No upstream" }
-  if status.diverged { return "Diverged" }
-  if status.ahead > 0 && status.behind == 0 { return "\(status.ahead) ahead remote" }
-  if status.behind > 0 && status.ahead == 0 { return "\(status.behind) behind remote" }
-  if status.ahead > 0 && status.behind > 0 { return "\(status.ahead) ahead · \(status.behind) behind remote" }
-  return "In sync with remote"
-}
-
 func conflictSummary(_ status: ConflictStatus) -> String {
   switch status.status {
   case "conflict-active":
