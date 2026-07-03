@@ -1,0 +1,26 @@
+---
+title: "v1.2.12"
+description: "Release notes for ADE v1.2.12 - July 3, 2026"
+---
+
+v1.2.12 makes GitHub PR freshness work in installed builds, adds cross-project chat quick-look, overhauls the mobile hub and chat surfaces, and speeds up the Lanes tab. iOS stays on its current marketing version and gets a build-number-only TestFlight update for the same release train.
+
+---
+
+## Desktop
+
+- **PR freshness in installed builds.** Daemon-owned GitHub PR polling now starts at project startup, so Work, Lanes, and PRs refresh without opening the PR tab first. Terminal ADE PR state (merged/closed) is no longer overridden by a stale open GitHub snapshot, and the webhook relay gained repo-gated secret-heal and delivery-log routes to recover from webhook secret drift.
+- **Faster webhook delivery.** The GitHub relay is polled every 30s instead of 60s, halving worst-case webhook-to-app latency at negligible cost.
+- **Cross-project chat quick-look.** Open a lane's chat transcript from the hub without switching projects — the brain streams a foreign lane read-only without booting its runtime, capability-gated and fail-closed on older brains.
+- **Work-tab lane creation.** Create a lane in place from the Work tab with a redesigned create-lane modal and lane action toasts, including scoped setup retry and conflict-aware pull-success suppression.
+- **Lanes tab performance.** No-op lane-state snapshot writes are suppressed via conditional CRR upserts, lane list/detail responses are conditional (ifNoneMatch/notModified with presence stamping), and per-lane detail invalidation cuts redundant list reloads.
+- **GitHub auth status and update card.** Clearer GitHub App authorization status UX, plus a restyled post-update restart card whose release notes point at the docs changelog route.
+
+---
+
+## iOS
+
+- **Build-number-only TestFlight update.** The mobile app keeps its existing marketing version for this train; this release only bumps the iOS build number for TestFlight.
+- **Mobile hub and chat overhaul.** An inline keyboard composer replaces the sheet drawer (draft and settings survive collapse), hub chat-open waits for real project hydration so transcripts no longer open blank, and question/approval/plan cards are redesigned with hardened chat-event decoding so one unknown event can't wipe a transcript.
+- **Cross-project quick-look on phone.** Phones open hub chats across projects read-only without switching projects, falling back to activation on older brains.
+- **PR chip accuracy.** Terminal ADE PR state now wins over a stale GitHub snapshot in iOS lane chips, matching the desktop rule.

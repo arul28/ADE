@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.12] - 2026-07-03
+
+### Added
+
+- Added cross-project chat quick-look: open a lane's chat transcript from the hub (desktop and iOS) without switching projects, streamed read-only from the brain without booting the foreign runtime, capability-gated and fail-closed on older brains.
+- Added Work-tab lane creation in place with a redesigned create-lane modal and lane action toasts.
+- Added repo-gated webhook-secret heal and delivery-log routes to the GitHub webhook relay to recover from webhook secret drift.
+
+### Changed
+
+- Improved GitHub PR freshness in installed builds: daemon-owned PR polling now starts at project startup so Work, Lanes, and PRs refresh without opening the PR tab first, and the GitHub relay is polled every 30s instead of 60s.
+- Improved the mobile hub and chat surfaces with an inline keyboard composer, hydration-gated chat open, and redesigned question/approval/plan cards with hardened chat-event decoding.
+- Improved Lanes tab performance via conditional CRR upserts for no-op lane-state snapshots, conditional (ifNoneMatch/notModified) lane list/detail responses with presence stamping, and per-lane detail invalidation.
+- Improved GitHub App authorization status UX and restyled the post-update restart card to point release notes at the docs changelog route.
+- Kept the current mobile marketing version for a build-number-only iOS TestFlight update.
+
+### Fixed
+
+- Fixed terminal ADE PR state (merged/closed) being overridden by a stale open GitHub snapshot in desktop and iOS lane PR chips.
+
 ## [1.2.11] - 2026-07-02
 
 ### Added
@@ -509,7 +529,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.11...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.12...HEAD
+[1.2.12]: https://github.com/arul28/ADE/compare/v1.2.11...v1.2.12
 [1.2.11]: https://github.com/arul28/ADE/compare/v1.2.10...v1.2.11
 [1.2.10]: https://github.com/arul28/ADE/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/arul28/ADE/compare/v1.2.8...v1.2.9
