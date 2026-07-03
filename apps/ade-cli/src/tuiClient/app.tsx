@@ -6669,11 +6669,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     if (nextTerminalSession) {
       const current = modelStateRef.current;
-      if (current.provider !== "claude") {
+      const terminalProvider = terminalSessionProvider(nextTerminalSession) ?? "claude";
+      if (current.provider !== terminalProvider) {
         setModelState((prev) => {
           const next = {
             ...prev,
-            ...fallbackModelStatePatch("claude"),
+            ...fallbackModelStatePatch(terminalProvider),
             permissionMode: nextTerminalSession.resumeMetadata?.launch?.permissionMode ?? prev.permissionMode,
             claudePermissionMode: nextTerminalSession.resumeMetadata?.launch?.claudePermissionMode ?? prev.claudePermissionMode,
           };
@@ -6866,7 +6867,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       codexApprovalPolicy: normalized.provider === "codex" ? normalized.codexApprovalPolicy : undefined,
       codexSandbox: normalized.provider === "codex" ? normalized.codexSandbox : undefined,
       codexConfigSource: normalized.provider === "codex" ? normalized.codexConfigSource : undefined,
-      opencodePermissionMode: normalized.provider === "opencode" ? normalized.opencodePermissionMode : undefined,
+      opencodePermissionMode: runtimeProviderForUiProvider(normalized.provider) === "opencode" ? normalized.opencodePermissionMode : undefined,
       droidPermissionMode: normalized.provider === "droid" ? normalized.droidPermissionMode : undefined,
       cursorModeId: normalized.provider === "cursor" ? normalized.cursorModeId : undefined,
       cursorConfigValues: normalized.provider === "cursor" ? normalized.cursorConfigValues : undefined,
@@ -10501,7 +10502,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }));
       return;
     }
-    if (modelState.provider === "opencode") {
+    if (runtimeProviderForUiProvider(modelState.provider) === "opencode") {
       const index = Math.max(0, OPENCODE_PERMISSION_OPTIONS.findIndex((entry) => entry === modelState.opencodePermissionMode));
       const next = OPENCODE_PERMISSION_OPTIONS[(index + delta + OPENCODE_PERMISSION_OPTIONS.length) % OPENCODE_PERMISSION_OPTIONS.length] ?? "edit";
       applyModelState((prev) => ({ ...prev, opencodePermissionMode: next, permissionMode: next }));
