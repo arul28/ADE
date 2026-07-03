@@ -539,6 +539,7 @@ export function aggregateChatBlocks(args: {
   activeSession: AgentChatSessionSummary | null;
   expandedLineIds?: Set<string>;
   maxBlocks?: number;
+  pendingSteers?: PendingSteer[];
 }): AggregatedBlock[] {
   const lines = renderChatLines({
     events: args.events,
@@ -551,7 +552,7 @@ export function aggregateChatBlocks(args: {
   for (const line of lines) linesById.set(line.id, line);
 
   const blocks: AggregatedBlock[] = [];
-  const pendingSteerIds = new Set(derivePendingSteers(args.events).map((steer) => steer.steerId));
+  const pendingSteerIds = new Set((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer) => steer.steerId));
   const subagentParentItemIds = new Set<string>();
   for (const envelope of args.events) {
     const parentItemId = subagentParentItemId(envelope.event);

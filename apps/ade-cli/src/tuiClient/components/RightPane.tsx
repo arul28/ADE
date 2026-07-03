@@ -1826,7 +1826,7 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
 // Main right pane component
 // ---------------------------------------------------------------------------
 
-export function RightPane({
+function RightPaneComponent({
   content,
   formValues = {},
   activeFormField = 0,
@@ -2079,3 +2079,5 @@ export function RightPane({
     </Box>
   );
 }
+
+export const RightPane = React.memo(RightPaneComponent);

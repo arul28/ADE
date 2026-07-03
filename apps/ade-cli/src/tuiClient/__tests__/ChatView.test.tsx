@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import {
   ChatView,
+  chatScrollMaxOffsetFromSelectableRows,
   computeChatScrollMaxOffset,
+  renderChatSelectableRows,
   renderChatSelectableRowTexts,
+  renderChatSelectableRowTextsFromRows,
   renderChatTranscriptPlainText,
   renderChatVisibleSelectionRows,
+  renderChatVisibleSelectionRowsFromRows,
   selectedTextFromChatRows,
   workGroupExpandKey,
 } from "../components/ChatView";
@@ -118,6 +122,64 @@ describe("ChatView", () => {
     expect(rows.join("\n")).toContain("selectable row 12");
     expect(selectedTextFromChatRows(rows, { startRow: 0, startColumn: 0, endRow: rows.length - 1, endColumn: 200 }))
       .toContain("selectable row 12");
+  });
+
+  it("derives scroll and selection data from one selectable row pass", () => {
+    const events = Array.from({ length: 8 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: {
+        type: index % 2 === 0 ? "user_message" : "text",
+        text: `single pass row ${index + 1}`,
+      },
+    }));
+    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
+    const selectableRows = renderChatSelectableRows({
+      blocks,
+      width: 80,
+      streaming: true,
+      showWorkingIndicator: true,
+    });
+
+    expect(chatScrollMaxOffsetFromSelectableRows({ rows: selectableRows, maxRows: 5 })).toBe(
+      computeChatScrollMaxOffset({
+        blocks,
+        events,
+        notices: [],
+        activeSession: session,
+        maxRows: 5,
+        width: 80,
+        streaming: true,
+        showWorkingIndicator: true,
+      }),
+    );
+    expect(renderChatVisibleSelectionRowsFromRows({
+      rows: selectableRows,
+      maxRows: 5,
+      scrollOffsetRows: 1,
+      unseenMessageCount: 2,
+    })).toEqual(renderChatVisibleSelectionRows({
+      blocks,
+      events,
+      notices: [],
+      activeSession: session,
+      maxRows: 5,
+      scrollOffsetRows: 1,
+      unseenMessageCount: 2,
+      width: 80,
+      streaming: true,
+      showWorkingIndicator: true,
+    }));
+    expect(renderChatSelectableRowTextsFromRows(selectableRows)).toEqual(renderChatSelectableRowTexts({
+      blocks,
+      events,
+      notices: [],
+      activeSession: session,
+      width: 80,
+      streaming: true,
+      showWorkingIndicator: true,
+    }));
   });
 
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {

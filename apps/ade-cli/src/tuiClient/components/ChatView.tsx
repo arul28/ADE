@@ -1400,6 +1400,63 @@ function selectableRowsForBlocks({
   return baseRows;
 }
 
+export function renderChatSelectableRows({
+  blocks,
+  width = DEFAULT_VIEW_WIDTH,
+  streaming = false,
+  interrupted = false,
+  showWorkingIndicator = true,
+  expandedLineIds,
+}: {
+  blocks: AggregatedBlock[];
+  width?: number;
+  streaming?: boolean;
+  interrupted?: boolean;
+  showWorkingIndicator?: boolean;
+  expandedLineIds?: Set<string>;
+}): RenderedChatRow[] {
+  return selectableRowsForBlocks({
+    blocks,
+    width,
+    streaming,
+    interrupted,
+    showWorkingIndicator,
+    expandedGroupIds: expandedLineIds,
+  });
+}
+
+export function chatScrollMaxOffsetFromSelectableRows({
+  rows,
+  maxRows,
+}: {
+  rows: ReadonlyArray<RenderedChatRow>;
+  maxRows?: number;
+}): number {
+  return maxScrollOffsetForRows(rows.length, maxRows);
+}
+
+export function renderChatSelectableRowTextsFromRows(rows: ReadonlyArray<RenderedChatRow>): string[] {
+  return rows.map(renderedRowText);
+}
+
+export function renderChatVisibleSelectionRowsFromRows({
+  rows,
+  maxRows,
+  scrollOffsetRows = 0,
+  unseenMessageCount = 0,
+}: {
+  rows: RenderedChatRow[];
+  maxRows?: number;
+  scrollOffsetRows?: number;
+  unseenMessageCount?: number;
+}): ChatVisibleSelectionRow[] {
+  return sliceRows(rows, maxRows, scrollOffsetRows, unseenMessageCount).map((row) => ({
+    sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
+    text: renderedRowText(row),
+    expandableId: row.expandableGroupId ?? null,
+  }));
+}
+
 function visibleRowsForBlocks({
   blocks,
   maxRows,
@@ -1670,7 +1727,7 @@ export function computeChatScrollMaxOffset({
   return maxScrollOffsetForRows(rowCount, maxRows);
 }
 
-export function ChatView({
+function ChatViewComponent({
   events,
   blocks: providedBlocks,
   notices,
@@ -1889,3 +1946,5 @@ export function ChatView({
     </Box>
   );
 }
+
+export const ChatView = React.memo(ChatViewComponent);

@@ -17,7 +17,7 @@ export function laneIconGlyph(icon: LaneIcon | null | undefined): string {
   return LANE_ICON_GLYPH[icon] ?? "▎";
 }
 
-export function Header({
+function HeaderComponent({
   projectName,
   lane,
   chatTitle,
@@ -95,3 +95,5 @@ export function Header({
     </Box>
   );
 }
+
+export const Header = React.memo(HeaderComponent);

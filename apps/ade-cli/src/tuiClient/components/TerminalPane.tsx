@@ -275,16 +275,16 @@ function styleForCell(cell: TerminalSnapshotCell): TerminalRunStyle {
     backgroundColor = color;
     color = nextColor;
   }
-  return {
-    ...(color ? { color } : {}),
-    ...(backgroundColor ? { backgroundColor } : {}),
-    ...(cell.bold ? { bold: true } : {}),
-    ...(cell.dim ? { dim: true } : {}),
-    ...(cell.italic ? { italic: true } : {}),
-    ...(cell.underline ? { underline: true } : {}),
-    ...(cell.inverse ? { inverse: true } : {}),
-    ...(cell.strikethrough ? { strikethrough: true } : {}),
-  };
+  const style: TerminalRunStyle = {};
+  if (color) style.color = color;
+  if (backgroundColor) style.backgroundColor = backgroundColor;
+  if (cell.bold) style.bold = true;
+  if (cell.dim) style.dim = true;
+  if (cell.italic) style.italic = true;
+  if (cell.underline) style.underline = true;
+  if (cell.inverse) style.inverse = true;
+  if (cell.strikethrough) style.strikethrough = true;
+  return style;
 }
 
 function styleKey(style: TerminalRunStyle): string {
@@ -323,19 +323,38 @@ function snapshotCellFromXtermCell(cell: XtermBufferCell | undefined): TerminalS
   }
   const fgMode = cell.isFgRGB() ? "rgb" : cell.isFgPalette() ? "palette" : "default";
   const bgMode = cell.isBgRGB() ? "rgb" : cell.isBgPalette() ? "palette" : "default";
-  return {
+  const snapshot: TerminalSnapshotCell = {
     text: cell.getChars() || " ",
     fg: fgMode === "default" ? null : cell.getFgColor(),
     bg: bgMode === "default" ? null : cell.getBgColor(),
     fgMode,
     bgMode,
-    ...(cell.isBold() ? { bold: true } : {}),
-    ...(cell.isDim() ? { dim: true } : {}),
-    ...(cell.isItalic() ? { italic: true } : {}),
-    ...(cell.isUnderline() ? { underline: true } : {}),
-    ...(cell.isInverse() ? { inverse: true } : {}),
-    ...(cell.isStrikethrough() ? { strikethrough: true } : {}),
   };
+  if (cell.isBold()) snapshot.bold = true;
+  if (cell.isDim()) snapshot.dim = true;
+  if (cell.isItalic()) snapshot.italic = true;
+  if (cell.isUnderline()) snapshot.underline = true;
+  if (cell.isInverse()) snapshot.inverse = true;
+  if (cell.isStrikethrough()) snapshot.strikethrough = true;
+  return snapshot;
+}
+
+function isBlankDefaultCell(cell: TerminalSnapshotCell): boolean {
+  return (cell.text || " ") === " "
+    && cell.fg == null
+    && cell.bg == null
+    && cell.fgMode === "default"
+    && cell.bgMode === "default"
+    && !cell.bold
+    && !cell.dim
+    && !cell.italic
+    && !cell.underline
+    && !cell.inverse
+    && !cell.strikethrough;
+}
+
+function isBlankStyledRow(row: TerminalStyledRow): boolean {
+  return row.runs.every((run) => run.text.trim().length === 0 && Object.keys(run.style).length === 0);
 }
 
 function styledRowsFromTerminal(
@@ -355,12 +374,23 @@ function styledRowsFromTerminal(
       rows.push({ runs: [{ text: " ", style: {} }] });
       continue;
     }
-    const cells: TerminalSnapshotCell[] = [];
-    for (let column = 0; column < terminal.cols; column += 1) {
-      cells.push(snapshotCellFromXtermCell(line.getCell(column) as unknown as XtermBufferCell | undefined));
+    const fallbackText = line.translateToString(true);
+    if (!fallbackText) {
+      rows.push({ runs: [{ text: " ", style: {} }] });
+      continue;
     }
-    rows.push(styledRowFromCells(cells, line.translateToString(true)));
+    const cells: TerminalSnapshotCell[] = [];
+    let lastContentColumn = -1;
+    const scanColumns = Math.min(terminal.cols, fallbackText.length);
+    for (let column = 0; column < scanColumns; column += 1) {
+      const cell = snapshotCellFromXtermCell(line.getCell(column) as unknown as XtermBufferCell | undefined);
+      cells.push(cell);
+      if (!isBlankDefaultCell(cell)) lastContentColumn = column;
+    }
+    if (lastContentColumn >= 0) cells.length = lastContentColumn + 1;
+    rows.push(styledRowFromCells(lastContentColumn >= 0 ? cells : [], fallbackText));
   }
+  while (rows.length > 1 && isBlankStyledRow(rows[rows.length - 1]!)) rows.pop();
   return rows;
 }
 
@@ -403,7 +433,7 @@ function terminalControlBorderColor(frame: string): string {
   return frame === "◐" || frame === "◑" ? theme.color.warning : theme.color.attention2;
 }
 
-export function TerminalPane({
+function TerminalPaneComponent({
   title,
   terminalId,
   cliLabel,
@@ -643,3 +673,5 @@ export function TerminalPane({
     </Box>
   );
 }
+
+export const TerminalPane = React.memo(TerminalPaneComponent);

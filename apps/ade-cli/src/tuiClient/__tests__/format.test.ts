@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { diffLineKind, latestExpandableFailureId, parseAssistantMarkdown, parseInlineRuns, renderChatLines, renderObject } from "../format";
+import {
+  __clearAssistantMarkdownCacheForTests,
+  __getAssistantMarkdownCacheStatsForTests,
+  diffLineKind,
+  latestExpandableFailureId,
+  parseAssistantMarkdown,
+  parseInlineRuns,
+  renderChatLines,
+  renderObject,
+} from "../format";
 
 describe("diffLineKind", () => {
   it("classifies hunk, meta, add, del, and context lines", () => {
@@ -18,6 +27,16 @@ describe("diffLineKind", () => {
 });
 
 describe("renderChatLines", () => {
+  it("LRU-caches assistant markdown parses by message text", () => {
+    __clearAssistantMarkdownCacheForTests();
+    const text = "Paragraph text\n\n```ts\nconst value = 1;\n```";
+    const first = parseAssistantMarkdown(text);
+    const second = parseAssistantMarkdown(text);
+
+    expect(second).toBe(first);
+    expect(__getAssistantMarkdownCacheStatsForTests().entries).toBe(1);
+  });
+
   it("parses assistant markdown into stable blocks", () => {
     const blocks = parseAssistantMarkdown([
       "# Heading",

@@ -34,14 +34,13 @@ function isApprovalMode(request: PendingInputRequest | undefined): boolean {
 
 export function latestPendingApproval(events: AgentChatEventEnvelope[]): PendingApproval | null {
   const resolved = new Set<string>();
-  for (const envelope of events) {
-    const event = envelope.event as Record<string, unknown>;
-    if (event.type === "pending_input_resolved" && typeof event.itemId === "string") {
-      resolved.add(event.itemId);
-    }
-  }
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]?.event as Record<string, unknown> | undefined;
+    if (!event) continue;
+    if (event.type === "pending_input_resolved" && typeof event.itemId === "string") {
+      resolved.add(event.itemId);
+      continue;
+    }
     if (!event || event.type !== "approval_request" || typeof event.itemId !== "string") continue;
     if (resolved.has(event.itemId)) continue;
     const request = requestFromApprovalEvent(event);

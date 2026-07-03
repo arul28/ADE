@@ -88,7 +88,7 @@ function pad(text: string, width: number): string {
   return text + " ".repeat(width - text.length);
 }
 
-export function Drawer({
+function DrawerComponent({
   lanes,
   sessions,
   activeLaneId,
@@ -322,6 +322,8 @@ export function Drawer({
     </Box>
   );
 }
+
+export const Drawer = React.memo(DrawerComponent);
 
 // Lane-card chrome note: the drawer's mouse hit-test (drawerMouseHitForLayout
 // in drawerLayout.ts) models exactly two border rows per lane card (top +

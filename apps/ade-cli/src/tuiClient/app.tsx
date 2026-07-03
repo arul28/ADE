@@ -132,9 +132,11 @@ import {
 } from "./newLaneForm";
 import {
   ChatView,
-  computeChatScrollMaxOffset,
-  renderChatSelectableRowTexts,
-  renderChatVisibleSelectionRows,
+  chatScrollMaxOffsetFromSelectableRows,
+  hasConversationContent,
+  renderChatSelectableRows,
+  renderChatSelectableRowTextsFromRows,
+  renderChatVisibleSelectionRowsFromRows,
   selectedTextFromChatRows,
   type ChatVisibleSelectionRow,
   type ChatTextSelection,
@@ -258,6 +260,9 @@ import type {
 } from "./types";
 
 const PURPLE = theme.color.accent;
+const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
+const EMPTY_SUBAGENT_SNAPSHOTS: SubagentSnapshot[] = [];
+const EMPTY_TERMINAL_CHUNKS: string[] = [];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultracode"];
 const PROVIDER_OPTIONS: Array<{ value: AdeCodeProvider; label: string }> = [
   { value: "claude", label: "Claude" },
@@ -290,6 +295,7 @@ type DrawerChatAction = "new-chat";
 // — fewer, larger renders means far less per-token transcript re-wrap/flicker,
 // while staying well within smooth-streaming range for text.
 const CHAT_EVENT_FLUSH_MS = 48;
+export const BACKGROUND_REFRESH_DEBOUNCE_MS = 200;
 const PTY_ATTACHED_FLUSH_MS = 16;
 const PTY_PREVIEW_FLUSH_MS = 32;
 const TERMINAL_PREVIEW_POLL_MS = 1_000;
@@ -1243,7 +1249,7 @@ function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
   return right.length ? `◎ ${objective}   ${right.join(" · ")}` : `◎ ${objective}`;
 }
 
-import { subagentSnapshotsFromEvents } from "../../../desktop/src/shared/chatSubagents";
+import { subagentActivitySummaryFromEvents, subagentSnapshotsFromEvents } from "../../../desktop/src/shared/chatSubagents";
 export { subagentSnapshotsFromEvents };
 
 const LANE_WORKTREE_AVAILABILITY_CACHE_TTL_MS = 2_000;
@@ -2980,6 +2986,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     maxScrollable: 0,
     visibleText: "",
   });
+  const handleTerminalViewportMetrics = useCallback((metrics: { maxScrollable: number; visibleText: string }) => {
+    terminalViewportMetricsRef.current = metrics;
+  }, []);
   const [activeLaneId, setActiveLaneId] = useState<string | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(project.sessionHint);
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
@@ -3156,6 +3165,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // batched render on a short timer (see flushPendingChatEvents / scheduleChatFlush).
   const pendingChatEnvelopesRef = useRef<AgentChatEventEnvelope[]>([]);
   const chatFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backgroundRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const backgroundRefreshInFlightRef = useRef(false);
+  const backgroundRefreshPendingAfterInFlightRef = useRef(false);
   const refreshGenerationRef = useRef(0);
   const chatScrollOffsetRowsRef = useRef(0);
   const chatScrollMaxOffsetRef = useRef(0);
@@ -3200,7 +3212,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const modelStateRef = useRef<AdeCodeModelState>(initialModelState());
   const chatMouseSelectionRef = useRef<ChatSelectionState | null>(null);
   const chatSelectionAnchorRef = useRef<ChatSelectionPoint | null>(null);
-  const selectableChatRowTextsRef = useRef<string[]>([]);
+  const selectableChatRowCountRef = useRef(0);
+  const selectableChatRowTextBuilderRef = useRef<() => string[]>(() => []);
   const drawerPreviewGenerationRef = useRef(0);
   const drawerOpenRef = useRef(false);
   const drawerSectionRef = useRef<"lanes" | "chats">("lanes");
@@ -3536,7 +3549,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       stopChatSelectionEdgeScroll();
       return;
     }
-    const rowCount = selectableChatRowTextsRef.current.length;
+    const rowCount = selectableChatRowCountRef.current;
     if (!rowCount) {
       stopChatSelectionEdgeScroll();
       return;
@@ -3823,15 +3836,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     footerReasoningSupportedRef.current = footerReasoningSupported;
   }, [footerFastSupported, footerReasoningSupported]);
   const latestFailedLineId = useMemo(() => latestExpandableFailureId(events), [events]);
-  const subagentSnapshots = useMemo(() => subagentSnapshotsFromEvents(events), [events]);
-  const liveAgentCount = useMemo(
-    () => subagentSnapshots.filter((snap) => snap.status === "running").length,
-    [subagentSnapshots],
+  // Chat info is available for any active chat — including Claude terminal
+  // sessions (resume row / status); subagent rows fill in when the provider
+  // emits agent lifecycle events.
+  const subagentPaneCommandAvailable = Boolean(activeDisplaySession && !draftChatActive);
+  const subagentActivity = useMemo(() => subagentActivitySummaryFromEvents(events), [events]);
+  const chatInfoPaneVisible = rightOpen && rightPane.kind === "chat-info";
+  const shouldAutoOpenSubagentPane = Boolean(
+    activeSessionId
+      && subagentPaneCommandAvailable
+      && subagentActivity.totalCount > 0
+      && !subagentAutoOpenedSessionsRef.current.has(activeSessionId)
+      && !userDismissedRightPaneRef.current
+      && !rightOpen,
   );
+  const shouldDeriveFullChatInfo = chatInfoPaneVisible || inspectedSubagentId != null || shouldAutoOpenSubagentPane;
+  const subagentSnapshots = useMemo(
+    () => shouldDeriveFullChatInfo ? subagentSnapshotsFromEvents(events) : EMPTY_SUBAGENT_SNAPSHOTS,
+    [events, shouldDeriveFullChatInfo],
+  );
+  const chatInfoEvents = shouldDeriveFullChatInfo ? events : EMPTY_CHAT_EVENTS;
+  const liveAgentCount = shouldDeriveFullChatInfo
+    ? subagentSnapshots.filter((snap) => snap.status === "running").length
+    : subagentActivity.runningCount;
   const chatInfo = useMemo(() => {
     const chatLaneId = activeDisplaySession?.laneId ?? activeLaneId;
     return deriveChatInfoSnapshot({
-      events,
+      events: chatInfoEvents,
       activeSession: activeDisplaySession,
       provider: modelState.provider,
       modelLabel: modelState.displayName || modelState.model || modelState.provider,
@@ -3851,8 +3882,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     activeLane?.name,
     activeLaneId,
     activeTerminalSession,
+    chatInfoEvents,
     currentGoal,
-    events,
     inspectedSubagentId,
     modelState.displayName,
     modelState.model,
@@ -3862,14 +3893,48 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     streaming,
     subagentSnapshots,
   ]);
+  const buildChatInfoSnapshot = useCallback(() => {
+    const chatLaneId = activeDisplaySession?.laneId ?? activeLaneId;
+    const snapshots = shouldDeriveFullChatInfo ? subagentSnapshots : subagentSnapshotsFromEvents(events);
+    return deriveChatInfoSnapshot({
+      events,
+      activeSession: activeDisplaySession,
+      provider: modelState.provider,
+      modelLabel: modelState.displayName || modelState.model || modelState.provider,
+      laneLabel: activeLane?.name ?? null,
+      snapshots,
+      tokenStats: statusLineStats,
+      goal: currentGoal,
+      streaming,
+      inspectedSubagentId,
+      pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+      resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
+    });
+  }, [
+    activeDisplaySession,
+    activeLane?.name,
+    activeLaneId,
+    activeTerminalSession,
+    currentGoal,
+    events,
+    inspectedSubagentId,
+    modelState.displayName,
+    modelState.model,
+    modelState.provider,
+    prByLaneId,
+    shouldDeriveFullChatInfo,
+    statusLineStats,
+    streaming,
+    subagentSnapshots,
+  ]);
   const chatInfoRef = useRef(chatInfo);
+  const buildChatInfoSnapshotRef = useRef(buildChatInfoSnapshot);
   useEffect(() => {
     chatInfoRef.current = chatInfo;
   }, [chatInfo]);
-  // Chat info is available for any active chat — including Claude terminal
-  // sessions (resume row / status); subagent rows fill in when the provider
-  // emits agent lifecycle events.
-  const subagentPaneCommandAvailable = Boolean(activeDisplaySession && !draftChatActive);
+  useEffect(() => {
+    buildChatInfoSnapshotRef.current = buildChatInfoSnapshot;
+  }, [buildChatInfoSnapshot]);
   const subagentsButtonVisibleRef = useRef<boolean>(false);
   useEffect(() => {
     subagentsButtonVisibleRef.current = subagentPaneCommandAvailable;
@@ -3936,7 +4001,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setInlineRowFocus({ cell: null });
     setRightPane({
       kind: "chat-info",
-      info: chatInfo,
+      info: buildChatInfoSnapshot(),
     });
     setRightSelectionIndex(0);
     setRightOpen(true);
@@ -3944,7 +4009,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     lastUserOpenedPaneRef.current = "chat-info";
     return true;
   }, [
-    chatInfo,
+    buildChatInfoSnapshot,
     selectFooterControl,
     setPaneFocus,
     stashActiveInput,
@@ -3978,7 +4043,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     const sessionId = activeSessionId;
     if (!sessionId || !subagentPaneCommandAvailable) return;
-    if (subagentSnapshots.length === 0) return;
+    if (subagentActivity.totalCount === 0) return;
     if (subagentAutoOpenedSessionsRef.current.has(sessionId)) return;
     if (userDismissedRightPaneRef.current) return;
     // chat-info already visible → agents are already shown; consume the flag.
@@ -3989,11 +4054,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // A different pane is intentionally open → don't stomp it; retry when it
     // next changes (this effect re-runs on rightPane.kind / rightOpen).
     if (rightOpen) return;
-    setRightPane({ kind: "chat-info", info: chatInfoRef.current });
+    setRightPane({ kind: "chat-info", info: buildChatInfoSnapshot() });
     setRightSelectionIndex(0);
     setRightOpen(true);
     subagentAutoOpenedSessionsRef.current.add(sessionId);
-  }, [activeSessionId, rightOpen, rightPane.kind, subagentPaneCommandAvailable, subagentSnapshots.length]);
+  }, [activeSessionId, buildChatInfoSnapshot, rightOpen, rightPane.kind, subagentActivity.totalCount, subagentPaneCommandAvailable]);
   const promptHistory = useMemo(() => events
     .map((envelope) => envelope.event)
     .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "user_message" }> => event.type === "user_message")
@@ -4353,6 +4418,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     return buildSubagentTranscriptEvents({ events, activeSession, snapshot: selectedAgentSnapshot });
   }, [activeSession, events, realSubagentTranscript, selectedAgentSnapshot]);
+  const displayPendingSteers = useMemo(
+    () => displayEvents === events ? pendingSteers : derivePendingSteers(displayEvents),
+    [displayEvents, events, pendingSteers],
+  );
   // Fetch the real child transcript for the inspected subagent when the runtime
   // can produce one (Codex app-server threads / OpenCode child sessions). Falls
   // back silently to local reconstruction on null/empty/error.
@@ -4412,8 +4481,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       notices: displayNotices,
       activeSession,
       expandedLineIds,
+      pendingSteers: displayPendingSteers,
     }),
-    [activeSession, displayEvents, displayNotices, expandedLineIds],
+    [activeSession, displayEvents, displayNotices, displayPendingSteers, expandedLineIds],
   );
   const displayStreaming = selectedAgentSnapshot ? selectedAgentSnapshot.status === "running" : streaming;
   const displayInterrupted = selectedAgentSnapshot ? false : interrupted && !displayStreaming;
@@ -4427,18 +4497,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     || mode === "connecting"
     || liveAgentCount > 0;
   const showChatWorkingIndicator = modelState.provider !== "claude" && activeSession?.provider !== "claude";
-  const chatScrollMaxOffset = useMemo(() => computeChatScrollMaxOffset({
+  const selectableChatRows = useMemo(() => renderChatSelectableRows({
     blocks: displayBlocks,
-    events: displayEvents,
-    notices: displayNotices,
-    activeSession,
     expandedLineIds,
-    maxRows: chatRowBudget,
+    width: chatWrapWidth,
     streaming: displayStreaming,
     interrupted: displayInterrupted,
     showWorkingIndicator: showChatWorkingIndicator,
-    width: chatWrapWidth,
-  }), [activeSession, chatRowBudget, chatWrapWidth, displayBlocks, displayEvents, displayInterrupted, displayNotices, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
+  }), [chatWrapWidth, displayBlocks, displayInterrupted, displayStreaming, expandedLineIds, showChatWorkingIndicator]);
+  const chatScrollMaxOffset = useMemo(() => {
+    if (!hasConversationContent(displayBlocks) && !displayStreaming && !displayInterrupted) return 0;
+    return chatScrollMaxOffsetFromSelectableRows({
+      rows: selectableChatRows,
+      maxRows: chatRowBudget,
+    });
+  }, [chatRowBudget, displayBlocks, displayInterrupted, displayStreaming, selectableChatRows]);
   chatScrollMaxOffsetRef.current = chatScrollMaxOffset;
   const effectiveChatScrollOffsetRows = clampChatScrollOffsetRows(chatScrollOffsetRows, chatScrollMaxOffset);
   chatScrollOffsetRowsRef.current = effectiveChatScrollOffsetRows;
@@ -4451,58 +4524,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const unseenMessageCount = effectiveChatScrollOffsetRows > 0
     ? Math.max(0, displayEvents.length - lastSeenAtBottomEventCountRef.current)
     : 0;
-  const visibleChatSelectionRows = useMemo(() => renderChatVisibleSelectionRows({
-    blocks: displayBlocks,
-    events: displayEvents,
-    notices: displayNotices,
-    activeSession,
-    expandedLineIds,
+  const visibleChatSelectionRows = useMemo(() => renderChatVisibleSelectionRowsFromRows({
+    rows: selectableChatRows,
     maxRows: chatRowBudget,
     scrollOffsetRows: effectiveChatScrollOffsetRows,
     unseenMessageCount,
-    width: chatWrapWidth,
-    streaming: displayStreaming,
-    interrupted: displayInterrupted,
-    showWorkingIndicator: showChatWorkingIndicator,
   }), [
-    activeSession,
     chatRowBudget,
-    chatWrapWidth,
-    displayBlocks,
-    displayEvents,
-    displayInterrupted,
-    displayNotices,
-    displayStreaming,
     effectiveChatScrollOffsetRows,
-    expandedLineIds,
-    showChatWorkingIndicator,
+    selectableChatRows,
     unseenMessageCount,
   ]);
-  const selectableChatRowTexts = useMemo(() => renderChatSelectableRowTexts({
-    blocks: displayBlocks,
-    events: displayEvents,
-    notices: displayNotices,
-    activeSession,
-    expandedLineIds,
-    width: chatWrapWidth,
-    streaming: displayStreaming,
-    interrupted: displayInterrupted,
-    showWorkingIndicator: showChatWorkingIndicator,
-  }), [
-    activeSession,
-    chatWrapWidth,
-    displayBlocks,
-    displayEvents,
-    displayInterrupted,
-    displayNotices,
-    displayStreaming,
-    expandedLineIds,
-    showChatWorkingIndicator,
-  ]);
-  selectableChatRowTextsRef.current = selectableChatRowTexts;
-  useEffect(() => {
-    selectableChatRowTextsRef.current = selectableChatRowTexts;
-  }, [selectableChatRowTexts]);
+  selectableChatRowCountRef.current = selectableChatRows.length;
+  selectableChatRowTextBuilderRef.current = () => renderChatSelectableRowTextsFromRows(selectableChatRows);
   const providerReadinessRows = useMemo(
     () => buildProviderReadinessRows(aiStatus, storedApiKeyProviders, openCodeDiagnostics),
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
@@ -7028,6 +7062,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     refreshStateRef.current = refreshState;
   }, [refreshState]);
 
+  const runBackgroundRefresh = useCallback(() => {
+    if (backgroundRefreshInFlightRef.current) {
+      backgroundRefreshPendingAfterInFlightRef.current = true;
+      return;
+    }
+    backgroundRefreshInFlightRef.current = true;
+    void refreshStateRef.current({ hydrateHistory: false })
+      .catch(() => undefined)
+      .finally(() => {
+        backgroundRefreshInFlightRef.current = false;
+        if (!backgroundRefreshPendingAfterInFlightRef.current) return;
+        backgroundRefreshPendingAfterInFlightRef.current = false;
+        if (backgroundRefreshTimerRef.current) clearTimeout(backgroundRefreshTimerRef.current);
+        backgroundRefreshTimerRef.current = setTimeout(() => {
+          backgroundRefreshTimerRef.current = null;
+          runBackgroundRefresh();
+        }, BACKGROUND_REFRESH_DEBOUNCE_MS);
+        backgroundRefreshTimerRef.current.unref?.();
+      });
+  }, []);
+
+  const scheduleBackgroundRefresh = useCallback(() => {
+    if (backgroundRefreshTimerRef.current) {
+      clearTimeout(backgroundRefreshTimerRef.current);
+    }
+    backgroundRefreshTimerRef.current = setTimeout(() => {
+      backgroundRefreshTimerRef.current = null;
+      runBackgroundRefresh();
+    }, BACKGROUND_REFRESH_DEBOUNCE_MS);
+    backgroundRefreshTimerRef.current.unref?.();
+  }, [runBackgroundRefresh]);
+
+  useEffect(() => () => {
+    if (backgroundRefreshTimerRef.current) {
+      clearTimeout(backgroundRefreshTimerRef.current);
+      backgroundRefreshTimerRef.current = null;
+    }
+  }, []);
+
   const flushPendingChatEvents = useCallback(() => {
     if (chatFlushTimerRef.current) {
       clearTimeout(chatFlushTimerRef.current);
@@ -7126,7 +7199,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (!openSessionIds.has(envelope.sessionId)) {
         // Event for a session we're not displaying — refresh summaries (cheap,
         // dedup-guarded). Only the open-session token stream below is coalesced.
-        void refreshStateRef.current({ hydrateHistory: false }).catch(() => undefined);
+        scheduleBackgroundRefresh();
         return;
       }
       const clearedAtNow = clearedAtRef.current;
@@ -7150,10 +7223,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         if (isActiveSessionEvent) setInterrupted(false);
         if (isActiveSessionEvent && activePaneRef.current !== "drawer") {
           setRightPane((prev) => {
-            if (prev.kind === "chat-info") return { kind: "chat-info", info: chatInfoRef.current };
+            if (prev.kind === "chat-info") return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
             if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
             setRightOpen(true);
-            return { kind: "chat-info", info: chatInfoRef.current };
+            return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
           });
         }
       }
@@ -7177,12 +7250,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // Drawer navigation keeps lane details in the right pane.
         if (!isActiveSessionEvent || activePaneRef.current === "drawer") return;
         setRightPane((prev) => {
-          if (prev.kind === "chat-info") return { kind: "chat-info", info: chatInfoRef.current };
+          if (prev.kind === "chat-info") return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
           if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
           setRightOpen(true);
           return {
             kind: "chat-info",
-            info: chatInfoRef.current,
+            info: buildChatInfoSnapshotRef.current(),
           };
         });
       }
@@ -7196,7 +7269,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
     // Re-bind only when the connection itself changes (reconnect). clearedAt and
     // refreshState are read via refs so their churn doesn't drop the buffer.
-  }, [connection, flushPendingChatEvents, scheduleChatFlush, setSessionInterrupted, setSessionStreaming]);
+  }, [connection, flushPendingChatEvents, scheduleBackgroundRefresh, scheduleChatFlush, setSessionInterrupted, setSessionStreaming]);
 
   useEffect(() => {
     if (!connection) return;
@@ -7479,7 +7552,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // flight to refreshState.
   const showChatInfoAfterDraftCommit = useCallback(() => {
     if (!isNewChatSetupPane(rightPaneRef.current)) return;
-    setRightPane({ kind: "chat-info", info: chatInfoRef.current });
+    setRightPane({ kind: "chat-info", info: buildChatInfoSnapshotRef.current() });
     setRightSelectionIndex(0);
     setRightOpen(true);
     lastUserOpenedPaneRef.current = "chat-info";
@@ -7941,7 +8014,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("Copied selected chat text.", "success");
       return true;
     }
-    const text = selectedTextFromChatRows(selectableChatRowTextsRef.current, resolvedSelection);
+    const text = selectedTextFromChatRows(selectableChatRowTextBuilderRef.current(), resolvedSelection);
     if (text.length === 0) {
       addNotice("No chat text selected.", "info");
       return false;
@@ -14092,6 +14165,41 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return Boolean(terminal && terminal.status === "running" && terminalSessionProvider(terminal));
   }, [gridViewActive, multiView, terminalSessionById]);
 
+  // Footer mini-map: show tile state when multi-view is open, or just the
+  // transient notice when we have something to flash but no grid yet.
+  const footerMultiViewMap = useMemo(() => {
+    if (multiView) {
+      return { count: multiView.tiles.length, focusedIndex: multiView.focusedIndex, notice: multiViewNotice };
+    }
+    if (multiViewNotice) {
+      return { count: 1, focusedIndex: 0, notice: multiViewNotice };
+    }
+    return null;
+  }, [multiView, multiViewNotice]);
+  const rightPaneModelPickerInputs = useMemo(() => ({
+    models,
+    catalog: modelCatalog,
+    favorites: modelPickerFavorites,
+    recents: modelPickerRecents,
+    activeModelId: modelState.modelId,
+    activeReasoningEffort: modelState.reasoningEffort,
+    aiStatus,
+    interfaceMode: modelState.interfaceMode,
+  }), [
+    aiStatus,
+    modelCatalog,
+    modelPickerFavorites,
+    modelPickerRecents,
+    modelState.interfaceMode,
+    modelState.modelId,
+    modelState.reasoningEffort,
+    models,
+  ]);
+  const activeTerminalScroll = readTerminalScroll(terminalScrollBySessionId, activeTerminalSession?.terminalId);
+  const activeTerminalLiveChunks = activeTerminalSession
+    ? terminalLiveChunks[activeTerminalSession.terminalId] ?? EMPTY_TERMINAL_CHUNKS
+    : EMPTY_TERMINAL_CHUNKS;
+
   if (error && !connection) {
     return (
       <Box flexDirection="column">
@@ -14101,18 +14209,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       </Box>
     );
   }
-
-  // Footer mini-map: show tile state when multi-view is open, or just the
-  // transient notice when we have something to flash but no grid yet.
-  const footerMultiViewMap = (() => {
-    if (multiView) {
-      return { count: multiView.tiles.length, focusedIndex: multiView.focusedIndex, notice: multiViewNotice };
-    }
-    if (multiViewNotice) {
-      return { count: 1, focusedIndex: 0, notice: multiViewNotice };
-    }
-    return null;
-  })();
 
   return (
     <SpinTickProvider active={spinTickActive}>
@@ -14191,7 +14287,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 cliLabel={terminalControlLabel}
                 claudeChrome={activeTerminalProvider === "claude"}
                 preview={terminalPreview}
-                liveChunks={terminalLiveChunks[activeTerminalSession.terminalId] ?? []}
+                liveChunks={activeTerminalLiveChunks}
                 attached={attachedTerminalId === activeTerminalSession.terminalId}
                 width={terminalPaneWidth}
                 height={chatRowBudget}
@@ -14199,11 +14295,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   && activeTerminalSession.status === "running"
                   && isClaudePlaceholderTitle(activeTerminalSession.title)}
                 hiddenBottomRows={CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS}
-                scrollOffset={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).scrollOffset}
-                pendingNewCount={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).pendingNewCount}
-                onViewportMetrics={(metrics) => {
-                  terminalViewportMetricsRef.current = metrics;
-                }}
+                scrollOffset={activeTerminalScroll.scrollOffset}
+                pendingNewCount={activeTerminalScroll.pendingNewCount}
+                onViewportMetrics={handleTerminalViewportMetrics}
               />
             ) : (
               <>
@@ -14244,16 +14338,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	              activeProvider={activeCommandProvider as AdeCodeProvider}
 	              width={rightPaneWidth}
               scrollOffsetRows={rightPaneScrollOffsetRows}
-		              modelPickerInputs={{
-	                models,
-		                catalog: modelCatalog,
-		                favorites: modelPickerFavorites,
-	                recents: modelPickerRecents,
-	                activeModelId: modelState.modelId,
-                activeReasoningEffort: modelState.reasoningEffort,
-                aiStatus,
-                interfaceMode: modelState.interfaceMode,
-	              }}
+              modelPickerInputs={rightPaneModelPickerInputs}
               onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
             />
           ) : null}

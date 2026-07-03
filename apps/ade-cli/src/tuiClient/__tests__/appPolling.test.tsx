@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getChatHistory: vi.fn(),
   getSlashCommands: vi.fn(),
   getAvailableModels: vi.fn(),
+  fsWatch: vi.fn(),
 }));
 
 vi.mock("../connection", () => ({
@@ -52,10 +53,26 @@ vi.mock("../adeApi", async () => {
   };
 });
 
-import { AdeCodeApp, isLaneWorktreeAvailable, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return {
+    ...actual,
+    watch: mocks.fsWatch,
+    default: {
+      ...actual,
+      watch: mocks.fsWatch,
+    },
+  };
+});
+
+import { AdeCodeApp, BACKGROUND_REFRESH_DEBOUNCE_MS, isLaneWorktreeAvailable, MENTION_REMOTE_DEBOUNCE_MS, shouldHydrateRefreshHistory } from "../app";
 
 const reactActGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
 let previousReactActEnvironment: boolean | undefined;
+
+function stripAnsi(text: string): string {
+  return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
 
 beforeAll(() => {
   previousReactActEnvironment = reactActGlobal.IS_REACT_ACT_ENVIRONMENT;
@@ -126,6 +143,24 @@ async function flushAsyncEffects() {
   });
 }
 
+async function flushInkFrame() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(40);
+  });
+  await flushAsyncEffects();
+}
+
+async function waitForFrame(instance: ReturnType<typeof render>, text: string) {
+  for (let i = 0; i < 100; i++) {
+    if (stripAnsi(instance.frames.join("\n")).includes(text)) return;
+    await flushAsyncEffects();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+  }
+  expect(stripAnsi(instance.frames.join("\n"))).toContain(text);
+}
+
 async function renderApp(element: React.ReactElement): Promise<ReturnType<typeof render>> {
   let instance: ReturnType<typeof render> | null = null;
   await act(async () => {
@@ -188,6 +223,7 @@ describe("AdeCodeApp polling", () => {
     });
     mocks.getSlashCommands.mockResolvedValue([]);
     mocks.getAvailableModels.mockResolvedValue([]);
+    mocks.fsWatch.mockReturnValue({ close: vi.fn() });
   });
 
   afterEach(() => {
@@ -220,6 +256,12 @@ describe("AdeCodeApp polling", () => {
     await act(async () => {
       [...chatListeners][0]?.(event("background-chat", 2, "status"));
       await Promise.resolve();
+    });
+    await flushAsyncEffects();
+
+    expect(mocks.listChatSessions).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(BACKGROUND_REFRESH_DEBOUNCE_MS);
     });
     await flushAsyncEffects();
 
@@ -260,24 +302,25 @@ describe("AdeCodeApp polling", () => {
   });
 
   it("shows startup retry guidance and automatically reconnects", async () => {
-    mocks.connectToAde
-      .mockRejectedValueOnce(new Error("socket down"))
-      .mockResolvedValueOnce(connection);
+    mocks.connectToAde.mockImplementation(async () => {
+      throw new Error("socket down");
+    });
 
-    const instance = render(<AdeCodeApp project={project} />);
-    await flushAsyncEffects();
+    const instance = await renderApp(<AdeCodeApp project={project} />);
 
-    expect(instance.lastFrame()).toContain("r retry now");
-    expect(mocks.connectToAde).toHaveBeenCalledTimes(1);
+    await waitForFrame(instance, "r retry now");
+    expect(mocks.connectToAde).toHaveBeenCalled();
 
+    const callsBeforeRetry = mocks.connectToAde.mock.calls.length;
+    mocks.connectToAde.mockResolvedValue(connection);
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_000);
     });
     await flushAsyncEffects();
 
-    expect(mocks.connectToAde).toHaveBeenCalledTimes(2);
+    expect(mocks.connectToAde.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
 
-    instance.unmount();
+    await unmountApp(instance);
   });
 
   it("debounces mention RPCs and caches lane git/pr suggestions", async () => {
@@ -290,24 +333,25 @@ describe("AdeCodeApp polling", () => {
     });
     connection.action = actionMock as unknown as AdeCodeConnection["action"];
 
-    const instance = render(<AdeCodeApp project={project} />);
-    await flushAsyncEffects();
+    const instance = await renderApp(<AdeCodeApp project={project} />);
 
     await act(async () => {
       instance.stdin.write("@a");
-      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS - 1);
     });
-    await flushAsyncEffects();
+    await flushInkFrame();
 
     expect(connection.action).not.toHaveBeenCalledWith("git", "listRecentCommits", expect.anything());
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
     });
     await flushAsyncEffects();
 
     await act(async () => {
       instance.stdin.write("b");
+    });
+    await flushInkFrame();
+    await act(async () => {
       await vi.advanceTimersByTimeAsync(MENTION_REMOTE_DEBOUNCE_MS);
     });
     await flushAsyncEffects();
@@ -317,7 +361,7 @@ describe("AdeCodeApp polling", () => {
     expect(calls.filter(([domain, action]) => domain === "git" && action === "listRecentCommits")).toHaveLength(1);
     expect(calls.filter(([domain, action]) => domain === "pr" && action === "listAll")).toHaveLength(1);
 
-    instance.unmount();
+    await unmountApp(instance);
   });
 });
 

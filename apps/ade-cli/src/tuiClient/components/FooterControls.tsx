@@ -149,7 +149,7 @@ function Cell({
   return <Text color={baseColor}>{value}</Text>;
 }
 
-export function FooterControls({
+function FooterControlsComponent({
   provider,
   providerLocked,
   modelDisplay,
@@ -418,3 +418,5 @@ export function FooterControls({
     </Box>
   );
 }
+
+export const FooterControls = React.memo(FooterControlsComponent);
