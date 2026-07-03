@@ -442,10 +442,24 @@ export function dispatchKeybinding(
 
 export function openKeybindingsFile(filePath = defaultKeybindingsPath()): { command: string; args: string[] } {
   const editor = process.env.VISUAL || process.env.EDITOR;
-  const command = editor || (process.platform === "darwin" ? "open" : "xdg-open");
-  const args = editor ? [filePath] : [filePath];
-  const child = spawn(command, args, { stdio: "ignore", detached: true, shell: Boolean(editor) });
+  const { command, args } = keybindingsEditorCommand(filePath, editor, process.platform);
+  const child = spawn(command, args, { stdio: "ignore", detached: true, shell: false });
   child.on("error", () => undefined);
   child.unref();
   return { command, args };
+}
+
+export function keybindingsEditorCommand(
+  filePath: string,
+  editor: string | undefined,
+  platform: NodeJS.Platform,
+): { command: string; args: string[] } {
+  const editorParts = editor ? splitEditorCommand(editor) : [];
+  const command = editorParts[0] || (platform === "darwin" ? "open" : "xdg-open");
+  const args = editorParts.length ? [...editorParts.slice(1), filePath] : [filePath];
+  return { command, args };
+}
+
+export function splitEditorCommand(value: string): string[] {
+  return value.trim().split(/\s+/).filter(Boolean);
 }

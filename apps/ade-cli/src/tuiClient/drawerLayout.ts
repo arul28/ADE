@@ -84,6 +84,7 @@ export type DrawerLanePlan = {
 export type DrawerLayout = {
   laneStart: number;
   lanes: DrawerLanePlan[];
+  newLaneRow: number;
 };
 
 export function computeDrawerLayout({
@@ -151,13 +152,14 @@ export function computeDrawerLayout({
     plan.moreCount = more;
     remaining -= rowsUsed;
   }
-  return { laneStart, lanes: plans };
+  return { laneStart, lanes: plans, newLaneRow: Math.max(1, panelHeight - 1) };
 }
 
 export type DrawerMouseHit =
   | { kind: "lane"; index: number }
   | { kind: "chat"; laneIndex: number; chatIndex: number }
   | { kind: "new-chat" }
+  | { kind: "new-lane" }
   | null;
 
 /**
@@ -173,7 +175,9 @@ export function drawerMouseHitForLayout({
   y: number | null;
   layout: DrawerLayout;
 }): DrawerMouseHit {
-  if (y == null || layout.lanes.length === 0) return null;
+  if (y == null) return null;
+  if (y === layout.newLaneRow) return { kind: "new-lane" };
+  if (layout.lanes.length === 0) return null;
   let line = 3; // first lane card's top border row
   for (let index = 0; index < layout.lanes.length; index += 1) {
     const plan = layout.lanes[index]!;

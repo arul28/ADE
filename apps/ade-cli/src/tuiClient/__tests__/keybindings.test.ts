@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   dispatchKeybinding,
+  keybindingsEditorCommand,
   keypressToChord,
   normalizeKeyChord,
+  splitEditorCommand,
   validateClaudeKeybindingsConfig,
 } from "../keybindings";
 
@@ -112,5 +114,17 @@ describe("keybindings", () => {
   it("converts Ink keypresses to chords", () => {
     expect(keypressToChord("", { pageDown: true })).toBe("pagedown");
     expect(keypressToChord("k", { ctrl: true })).toBe("ctrl+k");
+  });
+
+  it("builds editor argv without shell parsing the target file path", () => {
+    expect(splitEditorCommand("code --wait")).toEqual(["code", "--wait"]);
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", "code --wait", "darwin")).toEqual({
+      command: "code",
+      args: ["--wait", "/tmp/keybindings.json"],
+    });
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", undefined, "darwin")).toEqual({
+      command: "open",
+      args: ["/tmp/keybindings.json"],
+    });
   });
 });

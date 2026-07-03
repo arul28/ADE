@@ -107,6 +107,43 @@ describe("runDefaultLaneSetup", () => {
       { domain: "lane", action: "initEnv", args: { laneId: "lane-1" } },
     ]);
   });
+
+  it("applies an explicit setup template instead of the default", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        if (action === "listTemplates") return [{ id: "tpl-default", name: "Default" }, { id: "tpl-custom", name: "Custom" }];
+        if (action === "getDefaultTemplate") return "tpl-default";
+        if (action === "applyTemplate") {
+          return { laneId: "lane-1", steps: [], startedAt: "2026-01-01T00:00:00.000Z", overallStatus: "completed" };
+        }
+        throw new Error(`unexpected action ${action}`);
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await runDefaultLaneSetup(connection, "lane-1", { templateId: "tpl-custom" });
+
+    expect(result.templateId).toBe("tpl-custom");
+    expect(calls).toEqual([
+      { domain: "lane", action: "listTemplates", args: undefined },
+      { domain: "lane", action: "getDefaultTemplate", args: undefined },
+      { domain: "lane", action: "applyTemplate", args: { laneId: "lane-1", templateId: "tpl-custom" } },
+    ]);
+  });
+
+  it("rejects an explicit setup template that does not exist", async () => {
+    const connection = {
+      action: async (_domain: string, action: string) => {
+        if (action === "listTemplates") return [{ id: "tpl-default", name: "Default" }];
+        if (action === "getDefaultTemplate") return "tpl-default";
+        throw new Error(`unexpected action ${action}`);
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(runDefaultLaneSetup(connection, "lane-1", { templateId: "missing" }))
+      .rejects.toThrow('Setup template "missing" was not found.');
+  });
 });
 
 describe("getChatHistoryPage", () => {

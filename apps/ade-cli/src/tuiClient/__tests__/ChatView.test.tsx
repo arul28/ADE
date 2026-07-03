@@ -104,6 +104,18 @@ describe("ChatView", () => {
     )).toBe("  const value = 1;  \n    return value;  ");
   });
 
+  it("selects CJK and emoji by terminal display cells", () => {
+    expect(selectedTextFromChatRows(
+      ["a界b"],
+      { startRow: 0, startColumn: 1, endRow: 0, endColumn: 2 },
+    )).toBe("界");
+
+    expect(selectedTextFromChatRows(
+      ["a🙂b"],
+      { startRow: 0, startColumn: 1, endRow: 0, endColumn: 2 },
+    )).toBe("🙂");
+  });
+
   it("copies selected absolute transcript rows outside the visible viewport", () => {
     const events = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
       sessionId: "s1",

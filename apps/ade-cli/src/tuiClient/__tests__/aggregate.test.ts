@@ -177,6 +177,30 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(activity!.entries[0]).toMatchObject({ label: "compacting memory", detail: "trimming context" });
   });
 
+  it("compacts PreToolUse hook errors into one failed hook activity row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "system_notice",
+        noticeKind: "hook",
+        message: "Hook: PreToolUse: Bash error",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const activity = blocks.find((b) => b.kind === "runtime-activity") as Extract<AggregatedBlock, { kind: "runtime-activity" }> | undefined;
+
+    expect(blocks).toHaveLength(1);
+    expect(activity?.entries).toEqual([
+      {
+        id: expect.any(String),
+        label: "hook",
+        detail: "PreToolUse: Bash error",
+        status: "failed",
+      },
+    ]);
+    expect(activity?.live).toBe(false);
+  });
+
   it("collapses a context_compact begin→end into one block that flips live→done", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", state: "started", turnId: "turn-1" }),

@@ -310,6 +310,7 @@ export type RightPaneContent =
         deletions: number;
       };
       files: { path: string; status: "M" | "A" | "D" | "?"; staged: boolean }[];
+      setup?: LaneSetupStatus | null;
       pr: {
         number: number;
         state: "open" | "closed" | "merged";
@@ -328,6 +329,14 @@ export type RightPaneContent =
       selectedActionIndex: number;
       worktreeAvailable?: boolean;
     };
+
+export type LaneSetupStatus = {
+  status: "running" | "failed" | "completed";
+  label: string;
+  detail?: string;
+  templateId?: string | null;
+  retryable?: boolean;
+};
 
 export type LocalNotice = {
   id: string;

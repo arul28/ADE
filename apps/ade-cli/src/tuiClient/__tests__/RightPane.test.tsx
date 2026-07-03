@@ -511,6 +511,7 @@ describe("RightPane lane-details", () => {
           ...baseLaneDetails,
         }}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
@@ -540,6 +541,7 @@ describe("RightPane lane-details", () => {
           },
         }}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
@@ -579,6 +581,30 @@ describe("RightPane lane-details", () => {
     expect(frame).toContain("CHANGES · 2");
     expect(frame).toContain("No changed files.");
     expect(frame).toContain("● clean");
+  });
+
+  it("surfaces retryable lane setup failure in lane details", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          setup: {
+            status: "failed",
+            label: "Setup failed",
+            detail: "Template install failed · press r to retry",
+            retryable: true,
+          },
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SETUP");
+    expect(frame).toContain("Setup failed");
+    expect(frame).toContain("press r to retry");
   });
 
   it("shows action shortcuts only for the selected row", () => {

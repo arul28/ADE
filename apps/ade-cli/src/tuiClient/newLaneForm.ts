@@ -1,5 +1,6 @@
-import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { LaneLinearIssue, LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { LANE_COLOR_PALETTE } from "../../../desktop/src/shared/laneColorPalette";
+import { linearIssueBranchName } from "../../../desktop/src/shared/linearIssueBranch";
 
 /**
  * Pure model for the /new lane form — mirrors the desktop CreateLaneDialog's
@@ -117,6 +118,8 @@ export function newLaneFormFields(
   } else {
     fields.push({ name: "baseBranch", label: "Base branch", placeholder: "default" });
   }
+  fields.push({ name: "linearIssue", label: "Linear issue", placeholder: "ADE-123 or issue id" });
+  fields.push({ name: "templateId", label: "Setup template", placeholder: "default" });
   fields.push({ name: "create", label: "Create" });
   return fields;
 }
@@ -240,19 +243,37 @@ export function newLaneCreateAction(args: {
 // ---------------------------------------------------------------------------
 
 export type NewLaneSubmission =
-  | { kind: "create"; payload: { name: string; baseBranch?: string }; color?: string }
+  | {
+      kind: "create";
+      payload: { name: string; baseBranch?: string; branchName?: string; linearIssue?: LaneLinearIssue | null };
+      color?: string;
+      templateId?: string;
+    }
   | {
       kind: "createChild";
-      payload: { name: string; parentLaneId: string; baseBranchRef?: string };
+      payload: {
+        name: string;
+        parentLaneId: string;
+        baseBranchRef?: string;
+        branchName?: string;
+        linearIssue?: LaneLinearIssue | null;
+      };
       color?: string;
+      templateId?: string;
     }
-  | { kind: "importBranch"; payload: { branchRef: string; name: string; baseBranch?: string }; color?: string }
+  | {
+      kind: "importBranch";
+      payload: { branchRef: string; name: string; baseBranch?: string };
+      color?: string;
+      templateId?: string;
+    }
   | { kind: "error"; message: string };
 
 export function buildNewLaneSubmission(args: {
   values: Record<string, string | undefined>;
   lanes: LaneSummary[];
   activeLaneId: string | null;
+  linearIssue?: LaneLinearIssue | null;
 }): NewLaneSubmission {
   const start = normalizeNewLaneStart(args.values.start);
   const name = args.values.name?.trim() ?? "";
@@ -260,8 +281,23 @@ export function buildNewLaneSubmission(args: {
   const baseBranch = args.values.baseBranch?.trim() || undefined;
   const color = args.values.color?.trim() || undefined;
   const withColor = color ? { color } : {};
+  const templateId = args.values.templateId?.trim() || undefined;
+  const withTemplate = templateId ? { templateId } : {};
+  const linearIssueInput = args.values.linearIssue?.trim() ?? "";
+  const withLinearIssue = args.linearIssue
+    ? {
+        linearIssue: args.linearIssue,
+        branchName: linearIssueBranchName(args.linearIssue) ?? undefined,
+      }
+    : {};
 
   if (start === "import") {
+    if (linearIssueInput) {
+      return {
+        kind: "error",
+        message: "Linear issue attachment is not supported when importing an existing branch.",
+      };
+    }
     // branchRef passes through as typed/picked: lane.importBranch accepts both
     // local names and remote refs ("origin/x" — and resolves bare names against
     // origin + all remotes via resolveImportBranchTarget), and listBranches
@@ -272,6 +308,7 @@ export function buildNewLaneSubmission(args: {
       kind: "importBranch",
       payload: { branchRef, name, ...(baseBranch ? { baseBranch } : {}) },
       ...withColor,
+      ...withTemplate,
     };
   }
 
@@ -295,8 +332,10 @@ export function buildNewLaneSubmission(args: {
         name,
         parentLaneId: parent.id,
         ...(baseBranch ? { baseBranchRef: baseBranch } : {}),
+        ...withLinearIssue,
       },
       ...withColor,
+      ...withTemplate,
     };
   }
 
@@ -305,7 +344,9 @@ export function buildNewLaneSubmission(args: {
     payload: {
       name,
       ...(baseBranch ? { baseBranch } : {}),
+      ...withLinearIssue,
     },
     ...withColor,
+    ...withTemplate,
   };
 }

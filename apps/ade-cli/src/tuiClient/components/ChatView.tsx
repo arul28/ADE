@@ -29,6 +29,13 @@ import {
 } from "./AdeWordmark";
 import { laneIconGlyph } from "./Header";
 import type { AdeCodeProvider } from "../types";
+import {
+  hardWrapDisplayText,
+  sliceByDisplayCells,
+  splitByDisplayCells,
+  terminalDisplayWidth,
+  truncateDisplayEnd,
+} from "../displayWidth";
 
 // Hero halo target: when no chat content is visible, let the hero stretch to a
 // roomy reading width instead of staying narrow against an empty pane.
@@ -90,7 +97,7 @@ export function workGroupExpandKey(blockId: string): string {
 }
 
 function textWidth(value: string): number {
-  return [...value].length;
+  return terminalDisplayWidth(value);
 }
 
 function repeat(value: string, count: number): string {
@@ -110,19 +117,11 @@ function maxRenderedLineWidth(lines: string[]): number {
 }
 
 function truncateEnd(value: string, max: number): string {
-  if (textWidth(value) <= max) return value;
-  if (max <= 1) return value.slice(0, Math.max(0, max));
-  return `${[...value].slice(0, max - 1).join("")}…`;
+  return truncateDisplayEnd(value, max);
 }
 
 function hardWrapWord(word: string, width: number): string[] {
-  if (width <= 1) return [word];
-  const chars = [...word];
-  const chunks: string[] = [];
-  for (let index = 0; index < chars.length; index += width) {
-    chunks.push(chars.slice(index, index + width).join(""));
-  }
-  return chunks;
+  return hardWrapDisplayText(word, width);
 }
 
 function wrapText(value: string, width: number, firstPrefix = "", restPrefix = firstPrefix): string[] {
@@ -1296,25 +1295,19 @@ function normalizeSelection(selection: ChatTextSelection): ChatTextSelection {
   };
 }
 
-function selectedRangeForRow(rowIndex: number, selection: ChatTextSelection, lineLength: number): [number, number] | null {
+function selectedRangeForRow(rowIndex: number, selection: ChatTextSelection, lineWidth: number): [number, number] | null {
   const normalized = normalizeSelection(selection);
   if (rowIndex < normalized.startRow || rowIndex > normalized.endRow) return null;
   const rawStart = rowIndex === normalized.startRow ? normalized.startColumn : 0;
-  const rawEnd = rowIndex === normalized.endRow ? normalized.endColumn + 1 : Math.max(lineLength, 1);
-  const start = Math.max(0, Math.min(rawStart, Math.max(lineLength, 1)));
-  const end = Math.max(start, Math.min(rawEnd, Math.max(lineLength, 1)));
+  const rawEnd = rowIndex === normalized.endRow ? normalized.endColumn + 1 : Math.max(lineWidth, 1);
+  const start = Math.max(0, Math.min(rawStart, Math.max(lineWidth, 1)));
+  const end = Math.max(start, Math.min(rawEnd, Math.max(lineWidth, 1)));
   return end > start ? [start, end] : null;
 }
 
 function splitTextByColumns(value: string, start: number, end: number): [string, string, string] {
-  const chars = [...(value || BLANK_ROW_TEXT)];
-  const safeStart = Math.max(0, Math.min(start, chars.length));
-  const safeEnd = Math.max(safeStart, Math.min(end, chars.length));
-  return [
-    chars.slice(0, safeStart).join(""),
-    chars.slice(safeStart, safeEnd).join(""),
-    chars.slice(safeEnd).join(""),
-  ];
+  const parts = splitByDisplayCells(value || BLANK_ROW_TEXT, start, end);
+  return [parts.before, parts.selected, parts.after];
 }
 
 const ChatRow = React.memo(function ChatRow({
@@ -1638,13 +1631,12 @@ export function selectedTextFromChatRows(rows: string[], selection: ChatTextSele
   const selected: string[] = [];
   for (let rowIndex = normalized.startRow; rowIndex <= normalized.endRow; rowIndex += 1) {
     const row = rows[rowIndex] ?? "";
-    const chars = [...row];
-    const range = selectedRangeForRow(rowIndex, normalized, chars.length);
+    const range = selectedRangeForRow(rowIndex, normalized, textWidth(row));
     if (!range) {
       selected.push("");
       continue;
     }
-    selected.push(chars.slice(range[0], range[1]).join(""));
+    selected.push(sliceByDisplayCells(row, range[0], range[1]));
   }
   return selected.join("\n");
 }

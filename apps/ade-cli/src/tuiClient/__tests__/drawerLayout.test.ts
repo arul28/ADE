@@ -138,4 +138,17 @@ describe("drawerMouseHitForLayout", () => {
     expect(drawerMouseHitForLayout({ y: 13, layout })).toEqual({ kind: "chat", laneIndex: 1, chatIndex: 3 });
     expect(drawerMouseHitForLayout({ y: 14, layout })).toEqual({ kind: "lane", index: 1 });
   });
+
+  it("maps the drawer + new lane row through the shared layout model", () => {
+    const layout = computeDrawerLayout({
+      panelHeight: 20,
+      lanes: [laneInput("a", 0)],
+      expandedLaneIndex: null,
+      selectedLaneIndex: null,
+      scrollOffsetRows: 0,
+    });
+
+    expect(layout.newLaneRow).toBe(19);
+    expect(drawerMouseHitForLayout({ y: layout.newLaneRow, layout })).toEqual({ kind: "new-lane" });
+  });
 });

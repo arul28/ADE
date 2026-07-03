@@ -79,15 +79,20 @@ export type DefaultLaneSetupResult = {
 export async function runDefaultLaneSetup(
   connection: AdeCodeConnection,
   laneId: string,
+  options: { templateId?: string | null } = {},
 ): Promise<DefaultLaneSetupResult> {
   const [templates, defaultTemplateId] = await Promise.all([
     connection.action<LaneTemplate[]>("lane", "listTemplates").catch(() => []),
     connection.action<string | null>("lane", "getDefaultTemplate").catch(() => null),
   ]);
-  const trimmedTemplateId = typeof defaultTemplateId === "string" ? defaultTemplateId.trim() : "";
-  const templateId = trimmedTemplateId && templates.some((template) => template.id === trimmedTemplateId)
-    ? trimmedTemplateId
+  const explicitTemplateId = typeof options.templateId === "string" ? options.templateId.trim() : "";
+  const trimmedTemplateId = explicitTemplateId || (typeof defaultTemplateId === "string" ? defaultTemplateId.trim() : "");
+  const templateId = trimmedTemplateId
+    ? templates.find((template) => template.id === trimmedTemplateId)?.id ?? null
     : null;
+  if (explicitTemplateId && !templateId) {
+    throw new Error(`Setup template "${explicitTemplateId}" was not found.`);
+  }
   const progress = templateId
     ? await connection.action<LaneEnvInitProgress>("lane", "applyTemplate", { laneId, templateId })
     : await connection.action<LaneEnvInitProgress>("lane", "initEnv", { laneId });

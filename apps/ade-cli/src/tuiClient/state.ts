@@ -16,6 +16,8 @@ const STATE_LOCK_TIMEOUT_MS = 2_000;
 const STATE_LOCK_STALE_MS = 30_000;
 const STATE_LOCK_RETRY_MS = 25;
 
+let stateWriteQueue: Promise<void> = Promise.resolve();
+
 export function loadAdeCodeState(): AdeCodeState {
   try {
     const raw = fs.readFileSync(getStatePath(), "utf8");
@@ -26,18 +28,33 @@ export function loadAdeCodeState(): AdeCodeState {
 }
 
 export function saveAdeCodeState(state: AdeCodeState): void {
-  withStateLock(() => writeAdeCodeStateUnlocked(state));
+  void saveAdeCodeStateAsync(state);
 }
 
-function writeAdeCodeStateUnlocked(state: AdeCodeState): void {
+export function saveAdeCodeStateAsync(state: AdeCodeState): Promise<void> {
+  return enqueueStateWrite(() => withStateLock(async () => {
+    await writeAdeCodeStateUnlocked(state);
+  }));
+}
+
+async function writeAdeCodeStateUnlocked(state: AdeCodeState): Promise<void> {
   try {
     const { dir, path: statePath } = getStatePaths();
-    fs.mkdirSync(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
     const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
-    fs.renameSync(tempPath, statePath);
+    await fs.promises.writeFile(tempPath, JSON.stringify(state, null, 2), "utf8");
+    await fs.promises.rename(tempPath, statePath);
   } catch {
     // best-effort persistence; ignore
+  }
+}
+
+async function readAdeCodeStateUnlocked(): Promise<AdeCodeState> {
+  try {
+    const raw = await fs.promises.readFile(getStatePath(), "utf8");
+    return normalizeAdeCodeState(JSON.parse(raw));
+  } catch {
+    return emptyAdeCodeState();
   }
 }
 
@@ -56,8 +73,15 @@ export function saveAdeCodeProjectState(
   projectRoot: string,
   projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId">,
 ): void {
-  withStateLock(() => {
-    const current = loadAdeCodeState();
+  void saveAdeCodeProjectStateAsync(projectRoot, projectState);
+}
+
+export function saveAdeCodeProjectStateAsync(
+  projectRoot: string,
+  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId">,
+): Promise<void> {
+  return enqueueStateWrite(() => withStateLock(async () => {
+    const current = await readAdeCodeStateUnlocked();
     const projectKey = normalizeProjectKey(projectRoot);
     current.lastChatByProjectLane[projectKey] = { ...projectState.lastChatByLane };
     if (projectState.lastLaneId) {
@@ -67,8 +91,8 @@ export function saveAdeCodeProjectState(
     }
     current.lastChatByLane = { ...projectState.lastChatByLane };
     current.lastLaneId = projectState.lastLaneId;
-    writeAdeCodeStateUnlocked(current);
-  });
+    await writeAdeCodeStateUnlocked(current);
+  }));
 }
 
 export function normalizeAdeCodeState(value: unknown): AdeCodeState {
@@ -109,36 +133,42 @@ function getStatePath(): string {
   return getStatePaths().path;
 }
 
-function withStateLock(write: () => void): void {
+function enqueueStateWrite(write: () => Promise<void>): Promise<void> {
+  const run = stateWriteQueue.then(write, write);
+  stateWriteQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function withStateLock(write: () => Promise<void>): Promise<void> {
   const { dir, lockPath } = getStatePaths();
-  let fd: number | null = null;
+  let handle: fs.promises.FileHandle | null = null;
   const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    while (fd === null) {
+    await fs.promises.mkdir(dir, { recursive: true });
+    while (handle === null) {
       try {
-        fd = fs.openSync(lockPath, "wx");
-        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+        handle = await fs.promises.open(lockPath, "wx");
+        await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "EEXIST") throw error;
-        removeStaleStateLock(lockPath);
+        await removeStaleStateLock(lockPath);
         if (Date.now() >= deadline) return;
-        sleepSync(STATE_LOCK_RETRY_MS);
+        await delay(STATE_LOCK_RETRY_MS);
       }
     }
-    write();
+    await write();
   } catch {
     // best-effort persistence; ignore
   } finally {
-    if (fd !== null) {
+    if (handle !== null) {
       try {
-        fs.closeSync(fd);
+        await handle.close();
       } catch {
         // ignore
       }
       try {
-        fs.unlinkSync(lockPath);
+        await fs.promises.unlink(lockPath);
       } catch {
         // ignore
       }
@@ -146,19 +176,21 @@ function withStateLock(write: () => void): void {
   }
 }
 
-function removeStaleStateLock(lockPath: string): void {
+async function removeStaleStateLock(lockPath: string): Promise<void> {
   try {
-    const stat = fs.statSync(lockPath);
+    const stat = await fs.promises.stat(lockPath);
     if (Date.now() - stat.mtimeMs > STATE_LOCK_STALE_MS) {
-      fs.unlinkSync(lockPath);
+      await fs.promises.unlink(lockPath);
     }
   } catch {
     // ignore
   }
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> {

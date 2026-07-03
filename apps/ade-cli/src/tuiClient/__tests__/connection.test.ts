@@ -965,9 +965,9 @@ describe("ade-code TUI state", () => {
 
   it("persists the last lane id with last chat pointers", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-tui-state-"));
-    const { loadAdeCodeState, saveAdeCodeState } = await loadStateModule(home);
+    const { loadAdeCodeState, saveAdeCodeStateAsync } = await loadStateModule(home);
 
-    saveAdeCodeState({
+    await saveAdeCodeStateAsync({
       lastChatByLane: { "lane-2": "chat-9" },
       lastChatByProjectLane: {},
       lastLaneId: "lane-2",

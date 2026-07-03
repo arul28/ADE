@@ -14,6 +14,7 @@ import {
   deletePreviousPromptWord,
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
+  latestAuthFailedPrompt,
   applyCoalescedPromptInput,
   firstUrlInText,
   footerControlsForAvailability,
@@ -73,11 +74,14 @@ import {
   splitTerminalControlInput,
   stableInkViewportRows,
   subagentSnapshotsFromEvents,
+  terminalBracketedPasteDisableSequence,
+  terminalBracketedPasteEnableSequence,
   terminalAlternateScreenDisableSequence,
   terminalAlternateScrollDisableSequence,
   terminalInteractiveRestoreSequence,
   terminalMouseTrackingDisableSequence,
   terminalMouseTrackingEnableSequence,
+  terminalControlInputAction,
   isClaudePlaceholderTitle,
   isClipboardScratchTemp,
   mergeOptimisticTerminalSessions,
@@ -85,11 +89,19 @@ import {
   clipboardImageCacheRootForRuntime,
   uploadClipboardImageAttachmentToRuntime,
 } from "../app";
+import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  EMPTY_BRACKETED_PASTE_STATE,
+  consumeBracketedPasteInput,
+  formatTerminalControlForwardedInput,
+  stripBracketedPasteMarkers,
+} from "../bracketedPaste";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
 import { clipboardScratchDir } from "../imageTargets";
 import type { AdeCodeConnection, ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
-import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { ChatTerminalPreviewResult } from "../../../../desktop/src/shared/types";
@@ -1148,6 +1160,14 @@ describe("terminal control toggle", () => {
     expect(isTerminalControlToggle("t", {})).toBe(false);
   });
 
+  it("ignores arbitrary input while attached but still recognizes detach chords", () => {
+    expect(terminalControlInputAction("x", {})).toBe("ignore");
+    expect(terminalControlInputAction("\x1b[A", {})).toBe("ignore");
+    expect(terminalControlInputAction("t", { ctrl: true })).toBe("detach");
+    expect(terminalControlInputAction("\x14", {})).toBe("detach");
+    expect(terminalControlInputAction("\x1d", {})).toBe("detach");
+  });
+
   it("detaches from terminal control while preserving other raw input bytes", () => {
     expect(splitTerminalControlInput("a\x14b\x1dc")).toEqual({
       detach: true,
@@ -1156,6 +1176,20 @@ describe("terminal control toggle", () => {
     expect(splitTerminalControlInput("\x1b[A")).toEqual({
       detach: false,
       forwarded: "\x1b[A",
+    });
+  });
+
+  it("wraps multiline forwarded terminal control input in bracketed paste", () => {
+    expect(formatTerminalControlForwardedInput("one\ntwo")).toBe(
+      `${BRACKETED_PASTE_START}one\ntwo${BRACKETED_PASTE_END}`,
+    );
+    expect(splitTerminalControlInput("one\r\ntwo")).toEqual({
+      detach: false,
+      forwarded: `${BRACKETED_PASTE_START}one\ntwo${BRACKETED_PASTE_END}`,
+    });
+    expect(splitTerminalControlInput(`\x14one\ntwo`)).toEqual({
+      detach: true,
+      forwarded: `${BRACKETED_PASTE_START}one\ntwo${BRACKETED_PASTE_END}`,
     });
   });
 });
@@ -1443,11 +1477,22 @@ describe("prompt editing helpers", () => {
 
   it("does not split multi-byte characters when editing or wrapping", () => {
     expect(promptDisplayRowsWithCursor("a🙂b", 2, 3).rows).toEqual([
-      { text: "a🙂", start: 0, end: 3, cursorColumn: null },
+      { text: "a", start: 0, end: 1, cursorColumn: null },
+      { text: "🙂", start: 1, end: 3, cursorColumn: null },
       { text: "b", start: 3, end: 4, cursorColumn: 0 },
     ]);
     expect(deletePromptBackward("a🙂b", 3)).toEqual({ value: "ab", cursor: 1 });
     expect(deletePromptForward("a🙂b", 1)).toEqual({ value: "ab", cursor: 1 });
+  });
+
+  it("counts CJK and emoji prompt cursor columns in terminal cells", () => {
+    const cjk = promptDisplayRowsWithCursor("a界bc", 4, 2);
+    expect(cjk.rows[0]).toEqual({ text: "a界b", start: 0, end: 3, cursorColumn: 3 });
+    expect(cjk.rows[1]).toEqual({ text: "c", start: 3, end: 4, cursorColumn: null });
+
+    const emoji = promptDisplayRowsWithCursor("a🙂bc", 4, 3);
+    expect(emoji.rows[0]).toEqual({ text: "a🙂b", start: 0, end: 4, cursorColumn: 3 });
+    expect(emoji.rows[1]).toEqual({ text: "c", start: 4, end: 5, cursorColumn: null });
   });
 });
 
@@ -1504,6 +1549,58 @@ describe("optimistic chat summaries", () => {
   });
 });
 
+describe("latestAuthFailedPrompt", () => {
+  it("restores the most recent prompt when the latest turn failed with auth", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "retry deploy", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "Authentication failed: token expired", turnId: "turn-1" },
+      },
+    ];
+
+    expect(latestAuthFailedPrompt(events)).toBe("retry deploy");
+  });
+
+  it("ignores older auth failures once a later user turn succeeds", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "first", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "auth required", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "user_message", text: "second", turnId: "turn-2" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:03.000Z",
+        sequence: 4,
+        event: { type: "done", status: "completed", turnId: "turn-2" },
+      },
+    ];
+
+    expect(latestAuthFailedPrompt(events)).toBeNull();
+  });
+});
+
 describe("terminal mouse tracking", () => {
   it("uses one conservative cross-terminal mouse baseline", () => {
     expect(terminalMouseTrackingEnableSequence()).toBe("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
@@ -1516,8 +1613,13 @@ describe("terminal mouse tracking", () => {
 
   it("restores mouse tracking, alternate scroll, and the alt screen together", () => {
     expect(terminalInteractiveRestoreSequence()).toBe(
-      `${terminalMouseTrackingDisableSequence()}${terminalAlternateScrollDisableSequence()}${terminalAlternateScreenDisableSequence()}`,
+      `${terminalMouseTrackingDisableSequence()}${terminalAlternateScrollDisableSequence()}${terminalBracketedPasteDisableSequence()}${terminalAlternateScreenDisableSequence()}`,
     );
+  });
+
+  it("uses standard bracketed paste mode toggles for terminal control", () => {
+    expect(terminalBracketedPasteEnableSequence()).toBe("\x1b[?2004h");
+    expect(terminalBracketedPasteDisableSequence()).toBe("\x1b[?2004l");
   });
 });
 
@@ -1533,6 +1635,41 @@ describe("encodeTerminalPromptSubmit", () => {
   it("uses a delayed confirm enter for live Claude terminal submissions", () => {
     expect(encodeTerminalPromptSubmitConfirm()).toBe("\r");
     expect(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe("bracketed paste input", () => {
+  it("buffers pasted text and keeps embedded newlines as literal input", () => {
+    const result = consumeBracketedPasteInput(
+      EMPTY_BRACKETED_PASTE_STATE,
+      `${BRACKETED_PASTE_START}one\r\ntwo${BRACKETED_PASTE_END}`,
+    );
+
+    expect(result).toEqual({
+      consumed: true,
+      state: EMPTY_BRACKETED_PASTE_STATE,
+      text: "one\ntwo",
+    });
+  });
+
+  it("supports bracketed paste split across input chunks", () => {
+    const first = consumeBracketedPasteInput(EMPTY_BRACKETED_PASTE_STATE, `${BRACKETED_PASTE_START}one`);
+    expect(first).toEqual({
+      consumed: true,
+      state: { active: true, buffer: "one" },
+      text: "",
+    });
+
+    const second = consumeBracketedPasteInput(first.state, `\ntwo${BRACKETED_PASTE_END}`);
+    expect(second).toEqual({
+      consumed: true,
+      state: EMPTY_BRACKETED_PASTE_STATE,
+      text: "one\ntwo",
+    });
+  });
+
+  it("strips stray bracketed paste markers from printable prompt input", () => {
+    expect(stripBracketedPasteMarkers(`${BRACKETED_PASTE_START}alpha${BRACKETED_PASTE_END}`)).toBe("alpha");
   });
 });
 

@@ -22,6 +22,7 @@ const tuiNoExternal = [
   "@opencode-ai/sdk",
   "@xterm/headless",
   "marked",
+  "string-width",
   "ws",
   "yaml",
   /^highlight\.js(?:\/.*)?$/,
