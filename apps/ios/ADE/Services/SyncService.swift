@@ -4349,8 +4349,16 @@ final class SyncService: ObservableObject {
       manuallyNamed: manuallyNamed
     )
     if supportsRemoteAction("work.updateSessionMeta") {
+      // Route to the session's project (cross-project quick look) — a foreign
+      // session's rename must not target the active project's scope.
+      let scope = chatCommandScope(for: sessionId)
       do {
-        _ = try await sendCommand(action: "work.updateSessionMeta", args: args)
+        _ = try await sendCommand(
+          action: "work.updateSessionMeta",
+          args: args,
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath
+        )
       } catch {
         syncConnectLog.info(
           "work updateSessionMeta deferred session=\(sessionId, privacy: .public) error=\(String(describing: error), privacy: .public)"
@@ -5194,7 +5202,15 @@ final class SyncService: ObservableObject {
   }
 
   func stopWorkRuntime(sessionId: String) async throws {
-    _ = try await sendCommand(action: "work.stopRuntime", args: ["sessionId": sessionId])
+    // Scope to the session's project so a stop issued from a cross-project
+    // quick look reaches the right runtime.
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendCommand(
+      action: "work.stopRuntime",
+      args: ["sessionId": sessionId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   func createLane(

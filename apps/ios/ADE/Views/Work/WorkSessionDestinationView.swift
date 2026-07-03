@@ -971,7 +971,10 @@ struct WorkSessionDestinationView: View {
     }
     let resolvedSessionStatus: String? = viewingSubagent ? "ended" : sessionStatus
     let loadOlderTranscriptAction: (@MainActor () async -> Void)?
-    if viewingSubagent {
+    if viewingSubagent || isCrossProject {
+      // Cross-project quick looks show the subscribed tail only: the paged
+      // history command routes through the project scope registry and would
+      // boot the foreign runtime for a read.
       loadOlderTranscriptAction = nil
     } else {
       loadOlderTranscriptAction = { await loadOlderTranscriptEntries() }
@@ -1148,6 +1151,12 @@ struct WorkSessionDestinationView: View {
       chatSummary = cached
     }
 
+    // Cross-project quick look reads come from the chat_subscribe snapshot +
+    // live tail, which the brain serves WITHOUT booting the foreign project.
+    // The scoped chat.getSummary command routes through the project scope
+    // registry and would spin up that project's runtime just to look.
+    guard !isCrossProject else { return }
+
     if syncService.supportsRemoteAction("chat.getSummary"),
        let fetchedSummary = try? await syncService.fetchChatSummary(sessionId: sessionId) {
       if chatSummary != fetchedSummary {
@@ -1225,11 +1234,16 @@ struct WorkSessionDestinationView: View {
         try? await syncService.requestFullChatEventSnapshot(sessionId: sessionId)
       }
 
-      let shouldHydrateCanonicalEventTail = !preferLightweight
+      // Quick looks stay on the chat_subscribe snapshot/tail — the canonical
+      // history commands route through the project scope registry and would
+      // boot the foreign runtime for a read (the cost this mode exists to avoid).
+      let shouldHydrateCanonicalEventTail = !isCrossProject && (
+        !preferLightweight
         || transcript.isEmpty
         || transcriptStatus != "active"
         || !initialTranscriptTailHydrated
         || forceOpeningTranscriptRefresh
+      )
       if shouldHydrateCanonicalEventTail {
         do {
           if syncService.supportsRemoteAction("chat.getChatEventHistory") {

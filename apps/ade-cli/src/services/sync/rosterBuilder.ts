@@ -432,12 +432,22 @@ export function createForeignChatTranscriptResolver(args: {
       });
       if (!record) return null;
 
-      const transcriptsDir = path.resolve(resolveAdeLayout(record.rootPath).chatTranscriptsDir);
-      const filePath = path.resolve(path.join(transcriptsDir, `${safeSessionId}.jsonl`));
-      // Defense in depth: a validated session id already can't traverse, but
-      // confirm the resolved path stays inside the transcripts dir.
-      if (!filePath.startsWith(transcriptsDir + path.sep)) return null;
-      return filePath;
+      const layout = resolveAdeLayout(record.rootPath);
+      const chatTranscriptsDir = path.resolve(layout.chatTranscriptsDir);
+      const legacyTranscriptsDir = path.resolve(layout.transcriptsDir);
+      // Mirror the chat service's candidate order: the dedicated chat dir
+      // first, then the legacy `<transcripts>/<id>.chat.jsonl` location that
+      // older/restored sessions may still be writing. Defense in depth: a
+      // validated session id already can't traverse, but confirm each
+      // resolved path stays inside its transcripts dir.
+      const dedicatedPath = path.resolve(path.join(chatTranscriptsDir, `${safeSessionId}.jsonl`));
+      if (!dedicatedPath.startsWith(chatTranscriptsDir + path.sep)) return null;
+      const legacyPath = path.resolve(path.join(legacyTranscriptsDir, `${safeSessionId}.chat.jsonl`));
+      if (!legacyPath.startsWith(legacyTranscriptsDir + path.sep)) return null;
+      if (!fs.existsSync(dedicatedPath) && fs.existsSync(legacyPath)) {
+        return legacyPath;
+      }
+      return dedicatedPath;
     },
   };
 }
