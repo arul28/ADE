@@ -63,7 +63,7 @@ export function CompetitorEquation() {
               </motion.span>
             )}
             <motion.div variants={item} className="flex shrink-0 flex-col items-center gap-[3px]">
-              <div className="group/logo flex h-8 w-8 items-center justify-center overflow-hidden rounded-[8px] border border-[color:var(--color-hairline-strong)] bg-white/[0.045] p-[3px] transition-all duration-300 motion-safe:hover:-translate-y-[2px] hover:border-[color:var(--color-violet-bright)]/55 sm:h-9 sm:w-9">
+              <div className="group/logo flex h-7 w-7 items-center justify-center overflow-hidden rounded-[7px] border border-[color:var(--color-hairline-strong)] bg-white/[0.045] p-[3px] transition-all duration-300 motion-safe:hover:-translate-y-[2px] hover:border-[color:var(--color-violet-bright)]/55 sm:h-8 sm:w-8">
                 <img
                   src={app.logo}
                   alt={app.name}
@@ -90,7 +90,7 @@ export function CompetitorEquation() {
       >
         <span
           className="font-serif italic text-[color:var(--color-violet-bright)]"
-          style={{ fontSize: "clamp(24px, 2.6vw, 34px)" }}
+          style={{ fontSize: "clamp(20px, 2.1vw, 28px)" }}
         >
           equals
         </span>
@@ -120,7 +120,7 @@ export function CompetitorEquation() {
           <img
             src="/images/ade-dock-icon.webp"
             alt="ADE"
-            className="relative h-[80px] w-[80px] rounded-[22%] object-contain drop-shadow-[0_14px_48px_rgba(124,58,237,0.6)] sm:h-[96px] sm:w-[96px]"
+            className="relative h-[64px] w-[64px] rounded-[22%] object-contain drop-shadow-[0_14px_48px_rgba(124,58,237,0.6)] sm:h-[78px] sm:w-[78px]"
           />
         </div>
       </motion.div>

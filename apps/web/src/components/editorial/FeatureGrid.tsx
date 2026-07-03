@@ -104,10 +104,13 @@ const DEMOS: Demo[] = [
 ];
 
 /**
- * One demo tile. The clip auto-plays (muted loop) while it's on screen and
- * pauses the moment it scrolls away, so at most a couple play at once — alive
- * but cheap. Click opens the full clip in a lightbox. Posters carry the static
- * first frame for reduced-motion and pre-play.
+ * One demo tile. Every clip auto-plays (muted loop) while it's anywhere near
+ * the viewport — the whole grid running at once is the point of this section.
+ * The mp4s are faststart-encoded so they render frames while still streaming,
+ * and playback starts 300px before the tile scrolls in so the grid is already
+ * alive when it lands. Offscreen tiles pause to give the bandwidth back.
+ * Click opens the full clip in a lightbox. Posters carry the static first
+ * frame for reduced-motion and pre-play.
  */
 function DemoTile({
   demo,
@@ -131,10 +134,13 @@ function DemoTile({
         if (entry?.isIntersecting) void v.play().catch(() => {});
         else v.pause();
       },
-      { threshold: 0.35 }
+      { threshold: 0.01, rootMargin: "300px 0px" }
     );
     io.observe(el);
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      v.pause();
+    };
   }, [reduceMotion]);
 
   const Icon = demo.icon;
