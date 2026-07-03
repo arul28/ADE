@@ -3201,6 +3201,9 @@ app.whenReady().then(async () => {
       githubService,
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
       ingressCursorStore: createKvIngressCursorStore(db),
+      // 30s halves worst-case webhook latency. Each poll is one request to
+      // our own relay worker (no GitHub data cost); the service floors at 30s.
+      pollIntervalMs: 30_000,
     });
 
     const githubPollingService = automationService
