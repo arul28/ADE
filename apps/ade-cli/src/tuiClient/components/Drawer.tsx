@@ -6,6 +6,7 @@ import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { formatSessionLabel } from "../format";
 import { computeStackRowMeta, sortLanesForStackGraph } from "../laneTree";
 import { formatRelativePastTime } from "../relativeTime";
+import { closedCliSessionStatusKind } from "../closedCliSessions";
 import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
 import type { AdeCodeProvider } from "../types";
@@ -759,9 +760,9 @@ function ClosedCliRow({
 }) {
   const provider = (session.provider as AdeCodeProvider) ?? null;
   const exec = theme.provider(provider);
-  const dot = statusGlyph("idle");
+  const dot = statusGlyph(closedCliSessionStatusKind(session));
   const ended = formatRelativePastTime(session.endedAt ?? session.lastActivityAt ?? session.startedAt);
-  const suffix = ` ${ended}`;
+  const suffix = ` · ${ended}`;
   const label = truncate(formatSessionLabel(session), Math.max(3, max - suffix.length - 4));
   return (
     <Box>

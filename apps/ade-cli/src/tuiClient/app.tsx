@@ -5,24 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import { Box, Text, useApp, useInput } from "ink";
 import {
-  getDefaultModelDescriptor,
   getModelById,
-  getRuntimeModelRefForDescriptor,
-  listModelDescriptorsForProvider,
   modelSupportsFastMode,
-  resolveCursorCliModelVariant,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
-  type ModelDescriptor,
-  type ModelProviderGroup,
 } from "../../../desktop/src/shared/modelRegistry";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
-import { CURSOR_AVAILABLE_MODE_IDS, CURSOR_MODE_LABELS } from "../../../desktop/src/shared/cursorModes";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import type {
-  AgentChatCodexApprovalPolicy,
-  AgentChatCodexConfigSource,
-  AgentChatCodexSandbox,
   AgentChatClaudePlugin,
   AgentChatReloadClaudePluginsResult,
 	  AgentChatEventEnvelope,
@@ -31,8 +21,6 @@ import type {
 		  AgentChatModelCatalogModel,
 		  AgentChatModelCatalogRefreshProvider,
 		  AgentChatModelInfo,
-  AgentChatPermissionMode,
-  AgentChatProvider,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
@@ -158,6 +146,45 @@ import { Header } from "./components/Header";
 import { CHAT_INFO_RESUME_ROW_LINES, chatInfoSelectionOffset, computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
 import { modelPickerGeometry } from "./components/ModelPicker/modelPickerGeometry";
+import { buildModelPickerLayoutInput, modelPickerRefreshProvider } from "./modelPickerController";
+import {
+  CODEX_PRESETS,
+  CLAUDE_PERMISSION_OPTIONS,
+  DROID_PERMISSION_OPTIONS,
+  OPENCODE_PERMISSION_OPTIONS,
+  applyProviderPermissionMode,
+  buildSetupRows,
+  cliProviderForModelStateProvider,
+  codexApprovalSandboxLabel,
+  codexPresetPatch,
+  cursorModeIdsForState,
+  cursorModelAvailableForInterface,
+  cursorSourceForInterfaceMode,
+  defaultSetupSelectionIndex,
+  droidPermissionToLegacy,
+  fallbackModelStatePatch,
+  initialModelState,
+  modeAccentColor,
+  modeDescription,
+  modelCatalogRefreshCacheKey,
+  modelInfoSupportsFastMode,
+  modelReasoningEfforts,
+  modelStatePatchForModel,
+  permissionSummary,
+  providerModelsCacheKey,
+  reconcileCursorModelStateForInterface,
+  registryModelsForProvider,
+  resolveCodexPreset,
+  resolveCursorCliModelForLaunch,
+  runtimeProviderForUiProvider,
+} from "./modelState";
+import {
+  TUI_PROVIDER_OPTIONS,
+  TUI_PROVIDERS,
+  normalizeCatalogProvider,
+  normalizeProvider,
+  providerLabel,
+} from "./providerMetadata";
 import { SlashPalette, slashPaletteReservedRows } from "./components/SlashPalette";
 import { MentionPalette, MENTION_PALETTE_ROWS } from "./components/MentionPalette";
 import { CommandPalette, COMMAND_PALETTE_ROWS, type CommandPaletteItem } from "./components/CommandPalette";
@@ -169,9 +196,23 @@ import { AddChatModeBanner } from "./components/AddChatMode";
 import { theme } from "./theme";
 import { resolveTuiChatRefreshTarget } from "./project";
 import { chatSelectionCopyText, resolveDrawerChatSelection } from "./drawerSelection";
+import {
+  RIGHT_CHAT_CLOSED_TOGGLE_ID,
+  buildDrawerChatItems,
+  closedCliRightPaneRow,
+  deriveClosedCliSessions,
+  deriveOpenDrawerSessions,
+  drawerChatActionForItem,
+  isTerminalSessionResumable,
+  sessionFromDrawerChatItem,
+  sortSessionsByRecentActivity,
+  terminalSessionProvider,
+  terminalSessionToChatSummary,
+  type DrawerChatAction,
+  type DrawerChatListItem,
+} from "./closedCliSessions";
 import { sortLanesForStackGraph } from "./laneTree";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
-import { formatRelativePastTime } from "./relativeTime";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
@@ -222,6 +263,7 @@ import {
 import {
   answerForQuestion,
   buildPendingInputAnswers,
+  cancelPendingQuestionDigitSelection,
   convertPendingQuestionDigitSelectionToText,
   createPendingQuestionSelectionState,
   ensurePendingQuestionSelectionState,
@@ -280,36 +322,18 @@ import type {
   RuntimeMode,
 } from "./types";
 
+export { isTerminalSessionResumable } from "./closedCliSessions";
+
 const PURPLE = theme.color.accent;
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
 const EMPTY_SUBAGENT_SNAPSHOTS: SubagentSnapshot[] = [];
 const EMPTY_TERMINAL_CHUNKS: string[] = [];
-const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultracode"];
-const PROVIDER_OPTIONS: Array<{ value: AdeCodeProvider; label: string }> = [
-  { value: "claude", label: "Claude" },
-  { value: "codex", label: "Codex" },
-  { value: "cursor", label: "Cursor" },
-  { value: "droid", label: "Droid" },
-  { value: "opencode", label: "OpenCode" },
-  { value: "ollama", label: "Ollama" },
-  { value: "lmstudio", label: "LM Studio" },
-];
-const PROVIDERS = new Set<AdeCodeProvider>(PROVIDER_OPTIONS.map((provider) => provider.value));
-const CODEX_PRESETS = ["default", "edit", "plan", "full-auto", "config-toml"] as const;
 const MODEL_CATALOG_CLIENT_REFRESH_TTL_MS = 5 * 60_000;
 const MODEL_CATALOG_LOCAL_CLIENT_REFRESH_TTL_MS = 30_000;
-const CLAUDE_PERMISSION_OPTIONS = ["default", "auto", "plan", "acceptEdits", "bypassPermissions"] as const;
-const OPENCODE_PERMISSION_OPTIONS = ["plan", "edit", "full-auto", "config-toml"] as const;
-const DROID_PERMISSION_OPTIONS = ["read-only", "auto-low", "auto-medium", "auto-high", "agi"] as const;
 type PaneFocus = "drawer" | "chat" | "details" | "addMode";
 type AddModeState = { cursorLaneId: string; cursorChatId: string | null };
 export type FooterControl = "drawer" | "details" | "agents";
 type DrawerLaneAction = "new-lane";
-type DrawerChatAction = "new-chat" | "closed-toggle";
-type DrawerChatListItem =
-  | { kind: "chat"; session: AgentChatSessionSummary }
-  | { kind: "closed-toggle"; laneId: string; count: number; expanded: boolean }
-  | { kind: "closed-chat"; session: AgentChatSessionSummary };
 
 // Streaming chat events are coalesced into a single React render per frame
 // (~40fps) instead of one render per token. Lifecycle edges (turn start/stop,
@@ -717,15 +741,6 @@ function openExternalUrl(url: string, notice: (message: string, tone?: LocalNoti
   return true;
 }
 
-export function isTerminalSessionResumable(session: ChatTerminalSession | null | undefined): boolean {
-  return Boolean(
-    session
-      && session.status !== "running"
-      && terminalSessionResumeProvider(session)
-      && (session.resumeMetadata || session.resumeCommand),
-  );
-}
-
 export function shouldToggleLatestFailedLineOnBlankEnter(args: {
   pane: PaneFocus;
   prompt: string;
@@ -742,84 +757,6 @@ export function shouldToggleLatestFailedLineOnBlankEnter(args: {
     && args.rightPaneKind !== "form"
     && args.slashRowCount === 0
     && !isTerminalSessionResumable(args.activeTerminalSession);
-}
-
-/** Narrow a terminal session's derived provider to an AgentChatProvider (CLI terminals are always one of the five). */
-function terminalSummaryProvider(session: ChatTerminalSession): AgentChatProvider {
-  const provider = terminalSessionProvider(session);
-  return provider === "codex" || provider === "claude" || provider === "opencode" || provider === "cursor" || provider === "droid"
-    ? provider
-    : "claude";
-}
-
-function terminalSessionToChatSummary(session: ChatTerminalSession): AgentChatSessionSummary {
-  const status: AgentChatSessionSummary["status"] = session.status === "running"
-    ? session.runtimeState === "idle" ? "idle" : "active"
-    : "ended";
-  const provider = terminalSummaryProvider(session);
-  return {
-    sessionId: session.terminalId,
-    laneId: session.laneId,
-    provider,
-    model: provider === "claude" ? "claude-code" : `${provider} cli`,
-    title: session.title,
-    goal: session.goal,
-    permissionMode: session.resumeMetadata?.launch?.permissionMode ?? "default",
-    status,
-    startedAt: session.startedAt,
-    endedAt: session.endedAt,
-    lastActivityAt: session.endedAt ?? session.startedAt,
-    lastOutputPreview: session.lastOutputPreview,
-    summary: session.summary,
-    surface: "work",
-  };
-}
-
-function sortSessionsByRecentActivity<T extends { startedAt: string; lastActivityAt?: string | null }>(sessions: T[]): T[] {
-  return [...sessions].sort((left, right) => {
-    const rightMs = Date.parse(right.lastActivityAt ?? right.startedAt);
-    const leftMs = Date.parse(left.lastActivityAt ?? left.startedAt);
-    return (Number.isFinite(rightMs) ? rightMs : 0) - (Number.isFinite(leftMs) ? leftMs : 0);
-  });
-}
-
-function buildDrawerChatItems(args: {
-  openSessions: AgentChatSessionSummary[];
-  closedSessions: AgentChatSessionSummary[];
-  closedToggleVisible: boolean;
-  closedExpanded: boolean;
-  laneId: string | null;
-}): DrawerChatListItem[] {
-  const items: DrawerChatListItem[] = args.openSessions.map((session) => ({ kind: "chat", session }));
-  if (args.closedToggleVisible && args.laneId) {
-    items.push({
-      kind: "closed-toggle",
-      laneId: args.laneId,
-      count: args.closedSessions.length,
-      expanded: args.closedExpanded,
-    });
-    if (args.closedExpanded) {
-      items.push(...args.closedSessions.map((session): DrawerChatListItem => ({ kind: "closed-chat", session })));
-    }
-  }
-  return items;
-}
-
-function sessionFromDrawerChatItem(item: DrawerChatListItem | null | undefined): AgentChatSessionSummary | null {
-  return item?.kind === "chat" || item?.kind === "closed-chat" ? item.session : null;
-}
-
-function drawerChatActionForItem(item: DrawerChatListItem | null | undefined): DrawerChatAction | null {
-  return item?.kind === "closed-toggle" ? "closed-toggle" : null;
-}
-
-const RIGHT_CHAT_CLOSED_TOGGLE_ID = "__closed_cli_toggle__";
-
-function closedCliRightPaneRow(session: AgentChatSessionSummary, activeSessionId: string | null): string {
-  const active = session.sessionId === activeSessionId ? "●" : "○";
-  const provider = theme.provider((session.provider as AdeCodeProvider) ?? null);
-  const ended = formatRelativePastTime(session.endedAt ?? session.lastActivityAt ?? session.startedAt);
-  return `${active} ${provider.glyph} ${session.title ?? session.sessionId} · ended ${ended}`;
 }
 
 function openChatRightPaneRow(session: AgentChatSessionSummary, activeSessionId: string | null): string {
@@ -952,63 +889,6 @@ export function shouldHydrateRefreshHistory(args: {
     || args.loadedSessionId !== args.nextSessionId;
 }
 
-export function initialModelState(draftKind: AdeCodeInterfaceMode = "chat"): AdeCodeModelState {
-  const descriptor = getDefaultModelDescriptor("codex");
-  return {
-    provider: "codex",
-    interfaceMode: draftKind,
-    model: descriptor?.providerModelId ?? "gpt-5.5",
-    modelId: descriptor?.id ?? null,
-    displayName: descriptor?.displayName ?? "GPT-5.5",
-    reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
-    fastMode: false,
-    permissionMode: "default",
-    interactionMode: "default",
-    claudePermissionMode: "default",
-    codexApprovalPolicy: "on-request",
-    codexSandbox: "workspace-write",
-    codexConfigSource: "flags",
-    opencodePermissionMode: "edit",
-    droidPermissionMode: "auto-low",
-    cursorModeId: "agent",
-    cursorAvailableModeIds: [],
-    cursorConfigValues: {},
-  };
-}
-
-type CodexPreset = (typeof CODEX_PRESETS)[number];
-
-function providerLabel(provider: AdeCodeProvider): string {
-  return PROVIDER_OPTIONS.find((entry) => entry.value === provider)?.label ?? provider;
-}
-
-function normalizeProvider(value: string | null | undefined): AdeCodeProvider {
-  return PROVIDERS.has(value as AdeCodeProvider) ? value as AdeCodeProvider : "codex";
-}
-
-export function normalizeCatalogProvider(value: string | null | undefined): AdeCodeProvider {
-  const normalized = (value ?? "").trim().toLowerCase();
-  if (normalized === "anthropic") return "claude";
-  if (normalized === "openai") return "codex";
-  if (normalized === "factory") return "droid";
-  return normalizeProvider(normalized);
-}
-
-function runtimeProviderForUiProvider(provider: AdeCodeProvider): ModelProviderGroup {
-  return provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
-}
-
-/**
- * The provider CLI a modelState provider launches as, or null when it has no
- * tracked CLI (Ollama / LM Studio are OpenCode-backed chat only). Gates the
- * Interface=CLI launch path.
- */
-export function cliProviderForModelStateProvider(provider: AdeCodeProvider): CliTerminalProvider | null {
-  return provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || provider === "opencode"
-    ? provider
-    : null;
-}
-
 function claudeModelCommandKey(state: AdeCodeModelState, terminalId: string | null | undefined): string {
   return JSON.stringify([
     terminalId ?? null,
@@ -1022,373 +902,6 @@ function modelCatalogClientRefreshTtlMs(provider?: AgentChatModelCatalogRefreshP
   return provider === "lmstudio" || provider === "ollama"
     ? MODEL_CATALOG_LOCAL_CLIENT_REFRESH_TTL_MS
     : MODEL_CATALOG_CLIENT_REFRESH_TTL_MS;
-}
-
-function firstReasoningEffortForModel(model: AgentChatModelInfo | null | undefined, provider: AdeCodeProvider): string | null {
-  const efforts = model?.reasoningEfforts?.map((entry) => entry.effort).filter(Boolean) ?? [];
-  const modelId = `${model?.modelId ?? ""} ${model?.id ?? ""} ${model?.displayName ?? ""}`.toLowerCase();
-  if (modelId.includes("fable") && efforts.includes("high")) return "high";
-  if (efforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
-  if (efforts.length) return efforts[0] ?? null;
-  const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
-  const descriptorEfforts = descriptor?.reasoningTiers ?? [];
-  const descriptorId = `${descriptor?.id ?? ""} ${descriptor?.providerModelId ?? ""} ${descriptor?.displayName ?? ""}`.toLowerCase();
-  if (descriptorId.includes("fable") && descriptorEfforts.includes("high")) return "high";
-  if (descriptorEfforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
-  if (descriptorEfforts.length) return descriptorEfforts[0] ?? null;
-  return provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null;
-}
-
-function modelStatePatchForModel(provider: AdeCodeProvider, model: AgentChatModelInfo): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
-  const modelId = model.modelId ?? model.id;
-  const descriptor = getModelById(modelId);
-  const resolvedProvider = descriptor ? normalizeProvider(resolveProviderGroupForModel(descriptor)) : provider;
-  const runtimeProvider = runtimeProviderForUiProvider(resolvedProvider);
-  return {
-    provider: resolvedProvider,
-    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, runtimeProvider) : model.id,
-    modelId,
-    displayName: model.displayName,
-    reasoningEffort: firstReasoningEffortForModel(model, resolvedProvider),
-  };
-}
-
-function modelInfoSupportsFastMode(model: AgentChatModelInfo | null | undefined): boolean {
-  const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
-  return Boolean(model?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
-    || modelSupportsFastMode(descriptor);
-}
-
-function cursorDescriptorForModelInfo(model: AgentChatModelInfo | null | undefined): ModelDescriptor | undefined {
-  const modelId = model?.modelId ?? model?.id;
-  return modelId ? getModelById(modelId) : undefined;
-}
-
-function cursorAvailabilityForModel(
-  model: AgentChatModelInfo | null | undefined,
-  descriptor = cursorDescriptorForModelInfo(model),
-): { cli: boolean; sdk: boolean } | null {
-  return model?.cursorAvailability ?? descriptor?.cursorAvailability ?? null;
-}
-
-export function cursorModelAvailableForInterface(
-  model: AgentChatModelInfo | null | undefined,
-  interfaceMode: AdeCodeInterfaceMode,
-): boolean {
-  const descriptor = cursorDescriptorForModelInfo(model);
-  if (descriptor?.family !== "cursor" && model?.family !== "cursor") return true;
-  const availability = cursorAvailabilityForModel(model, descriptor);
-  if (!availability) return false;
-  return interfaceMode === "cli" ? availability.cli === true : availability.sdk === true;
-}
-
-export function cursorSourceForInterfaceMode(interfaceMode: AdeCodeInterfaceMode): "sdk" | "cli" {
-  return interfaceMode === "cli" ? "cli" : "sdk";
-}
-
-function providerModelsCacheKey(provider: AdeCodeProvider, interfaceMode: AdeCodeInterfaceMode): string {
-  return provider === "cursor" ? `cursor:${cursorSourceForInterfaceMode(interfaceMode)}` : provider;
-}
-
-function modelCatalogRefreshCacheKey(
-  provider: AgentChatModelCatalogRefreshProvider,
-  cursorSource?: "sdk" | "cli",
-): string {
-  return provider === "cursor" ? `cursor:${cursorSource ?? "sdk"}` : provider;
-}
-
-function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
-  const registryProvider = provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
-  const descriptor = getDefaultModelDescriptor(registryProvider)
-    ?? listModelDescriptorsForProvider(registryProvider)[0]
-    ?? getDefaultModelDescriptor("codex");
-  return {
-    provider,
-    model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.5",
-    modelId: descriptor?.id ?? null,
-    displayName: descriptor?.displayName ?? providerLabel(provider),
-    reasoningEffort: descriptor?.id.includes("fable") && descriptor.reasoningTiers?.includes("high")
-      ? "high"
-      : descriptor?.reasoningTiers?.[0] ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
-  };
-}
-
-function registryModelsForProvider(provider: AdeCodeProvider): AgentChatModelInfo[] {
-  if (provider === "ollama" || provider === "lmstudio") return [];
-  return listModelDescriptorsForProvider(provider).map((descriptor) => ({
-    id: descriptor.id,
-    modelId: descriptor.id,
-    displayName: descriptor.displayName,
-	    isDefault: descriptor.id === getDefaultModelDescriptor(provider)?.id,
-	    reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
-	    ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
-	    ...(descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
-	    ...(descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
-	  }));
-	}
-
-function compatibleCursorModelForInterface(
-  models: readonly AgentChatModelInfo[],
-  interfaceMode: AdeCodeInterfaceMode,
-): AgentChatModelInfo | null {
-  const compatible = models.filter((model) => cursorModelAvailableForInterface(model, interfaceMode));
-  return compatible.find((model) => model.isDefault) ?? compatible[0] ?? null;
-}
-
-function modelInfoMatchesModelState(model: AgentChatModelInfo, state: AdeCodeModelState): boolean {
-  const selected = (state.modelId ?? state.model).trim().toLowerCase();
-  if (!selected) return false;
-  return [model.id, model.modelId, ...(model.aliases ?? [])]
-    .filter((value): value is string => typeof value === "string")
-    .some((value) => value.trim().toLowerCase() === selected);
-}
-
-export function reconcileCursorModelStateForInterface(
-  state: AdeCodeModelState,
-  interfaceMode: AdeCodeInterfaceMode,
-  models: readonly AgentChatModelInfo[],
-): AdeCodeModelState {
-  if (state.provider !== "cursor") return { ...state, interfaceMode };
-  const currentModel = models.find((model) => modelInfoMatchesModelState(model, state)) ?? null;
-  const descriptor = state.modelId ? getModelById(state.modelId) : undefined;
-  const availability = cursorAvailabilityForModel(currentModel, descriptor);
-  const currentAllowed = availability
-    ? (interfaceMode === "cli" ? availability.cli === true : availability.sdk === true)
-    : false;
-  if (currentAllowed && descriptor?.family === "cursor") {
-    const supportsFast = modelSupportsFastMode(descriptor);
-    return {
-      ...state,
-      interfaceMode,
-      model: interfaceMode === "cli"
-        ? resolveCursorCliModelVariant(descriptor, {
-            reasoningEffort: state.reasoningEffort,
-            fastMode: supportsFast && state.fastMode,
-          })
-        : getRuntimeModelRefForDescriptor(descriptor, "cursor"),
-      fastMode: supportsFast ? state.fastMode : false,
-    };
-  }
-  if (currentAllowed) return { ...state, interfaceMode };
-  const fallback = compatibleCursorModelForInterface(models, interfaceMode);
-  if (!fallback) {
-    return {
-      ...state,
-      interfaceMode,
-      model: "",
-      modelId: null,
-      displayName: providerLabel("cursor"),
-      reasoningEffort: null,
-      fastMode: false,
-    };
-  }
-  const patch = modelStatePatchForModel("cursor", fallback);
-  const fallbackDescriptor = patch.modelId ? getModelById(patch.modelId) : undefined;
-  const launchDescriptor = fallbackDescriptor?.family === "cursor" && fallback.cursorCliVariants?.length
-    ? { ...fallbackDescriptor, cursorCliVariants: fallback.cursorCliVariants }
-    : fallbackDescriptor;
-  const supportsFast = modelInfoSupportsFastMode(fallback);
-  return {
-    ...state,
-    ...patch,
-    interfaceMode,
-    model: interfaceMode === "cli" && launchDescriptor?.family === "cursor"
-      ? resolveCursorCliModelVariant(launchDescriptor, {
-          reasoningEffort: patch.reasoningEffort,
-          fastMode: supportsFast && state.fastMode,
-        })
-      : patch.model,
-    fastMode: supportsFast ? state.fastMode : false,
-  };
-}
-
-export function resolveCursorCliModelForLaunch(
-  state: AdeCodeModelState,
-  models: readonly AgentChatModelInfo[] = [],
-): string {
-  const modelId = (state.modelId ?? state.model).trim();
-  if (!modelId) throw new Error("Choose a Cursor CLI model before launching a CLI session.");
-  const modelInfo = models.find((model) => modelInfoMatchesModelState(model, state)) ?? null;
-  const descriptor = getModelById(modelId);
-  const availability = cursorAvailabilityForModel(modelInfo, descriptor);
-  if (!availability?.cli) {
-    throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
-  }
-  if (descriptor?.family === "cursor") {
-    const launchDescriptor = modelInfo?.cursorCliVariants?.length
-      ? { ...descriptor, cursorCliVariants: modelInfo.cursorCliVariants }
-      : descriptor;
-    const supportsFast = modelSupportsFastMode(launchDescriptor);
-    return resolveCursorCliModelVariant(launchDescriptor, {
-      reasoningEffort: state.reasoningEffort,
-      fastMode: supportsFast && state.fastMode,
-    });
-  }
-  return modelId.toLowerCase().startsWith("cursor/") ? modelId.slice("cursor/".length) : modelId;
-}
-
-function modelReasoningEfforts(modelState: AdeCodeModelState, models: AgentChatModelInfo[]): string[] {
-  const model = models.find((entry) => entry.id === modelState.modelId || entry.modelId === modelState.modelId);
-  const fromModel = model?.reasoningEfforts?.map((entry) => entry.effort).filter(Boolean) ?? [];
-  if (fromModel.length) return fromModel;
-  const descriptor = modelState.modelId ? getModelById(modelState.modelId) : undefined;
-  if (descriptor?.reasoningTiers?.length) return descriptor.reasoningTiers;
-  return modelState.provider === "codex" ? EFFORTS : [];
-}
-
-function resolveCodexPreset(modelState: AdeCodeModelState): CodexPreset | "custom" {
-  if (modelState.codexConfigSource === "config-toml") return "config-toml";
-  if (modelState.codexApprovalPolicy === "never" && modelState.codexSandbox === "danger-full-access") return "full-auto";
-  if (modelState.codexApprovalPolicy === "untrusted" && modelState.codexSandbox === "workspace-write") return "edit";
-  if (
-    (modelState.codexApprovalPolicy === "on-request" || modelState.codexApprovalPolicy === "untrusted")
-    && modelState.codexSandbox === "read-only"
-  ) return "plan";
-  if (
-    (modelState.codexApprovalPolicy === "on-request" || modelState.codexApprovalPolicy === "on-failure" || modelState.codexApprovalPolicy === "untrusted")
-    && modelState.codexSandbox === "workspace-write"
-  ) return "default";
-  return "custom";
-}
-
-export function codexApprovalSandboxLabel(modelState: Pick<AdeCodeModelState, "codexApprovalPolicy" | "codexSandbox">): string {
-  return `${modelState.codexApprovalPolicy} · ${modelState.codexSandbox}`;
-}
-
-function codexPresetPatch(preset: CodexPreset): Pick<AdeCodeModelState, "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "permissionMode"> {
-  if (preset === "full-auto") {
-    return {
-      codexApprovalPolicy: "never",
-      codexSandbox: "danger-full-access",
-      codexConfigSource: "flags",
-      permissionMode: "full-auto",
-    };
-  }
-  if (preset === "plan") {
-    return {
-      codexApprovalPolicy: "on-request",
-      codexSandbox: "read-only",
-      codexConfigSource: "flags",
-      permissionMode: "plan",
-    };
-  }
-  if (preset === "edit") {
-    return {
-      codexApprovalPolicy: "untrusted",
-      codexSandbox: "workspace-write",
-      codexConfigSource: "flags",
-      permissionMode: "edit",
-    };
-  }
-  if (preset === "config-toml") {
-    return {
-      codexApprovalPolicy: "on-request",
-      codexSandbox: "workspace-write",
-      codexConfigSource: "config-toml",
-      permissionMode: "config-toml",
-    };
-  }
-  return {
-    codexApprovalPolicy: "on-request",
-    codexSandbox: "workspace-write",
-    codexConfigSource: "flags",
-    permissionMode: "default",
-  };
-}
-
-function droidPermissionToLegacy(mode: AdeCodeModelState["droidPermissionMode"]): AgentChatPermissionMode {
-  if (mode === "read-only") return "plan";
-  if (mode === "agi") return "plan";
-  if (mode === "auto-low") return "edit";
-  if (mode === "auto-medium") return "default";
-  return "full-auto";
-}
-
-function cursorModeLabel(modeId: string | null | undefined): string {
-  const normalized = modeId?.trim().toLowerCase() || "agent";
-  return CURSOR_MODE_LABELS[normalized] ?? normalized;
-}
-
-export function cursorModeIdsForState(modelState: Pick<AdeCodeModelState, "cursorAvailableModeIds">): string[] {
-  const snapshotIds = modelState.cursorAvailableModeIds
-    .map((modeId) => modeId.trim())
-    .filter(Boolean);
-  return snapshotIds.length ? snapshotIds : [...CURSOR_AVAILABLE_MODE_IDS];
-}
-
-function permissionSummary(modelState: AdeCodeModelState): string {
-  if (modelState.provider === "codex") return resolveCodexPreset(modelState);
-  if (modelState.provider === "claude") {
-    if (modelState.interactionMode === "plan" || modelState.claudePermissionMode === "plan") return "plan";
-    if (modelState.claudePermissionMode === "auto") return "auto";
-    if (modelState.claudePermissionMode === "acceptEdits") return "accept edits";
-    if (modelState.claudePermissionMode === "bypassPermissions") return "bypass";
-    return "default";
-  }
-  if (modelState.provider === "opencode") return modelState.opencodePermissionMode;
-  if (modelState.provider === "droid") return modelState.droidPermissionMode;
-  return cursorModeLabel(modelState.cursorModeId);
-}
-
-const MODE_DESCRIPTIONS: Record<string, string> = {
-  plan: "read-only deliberation",
-  default: "ask before acting",
-  auto: "auto-approve safe actions",
-  "accept edits": "auto-approve file edits",
-  bypass: "skip permission checks",
-  "full-auto": "no approvals required",
-  edit: "edit-mode operations",
-  agent: "agent-driven actions",
-  ask: "confirm each action",
-  "read-only": "no edits or execution",
-  "auto-low": "low-autonomy ops",
-  "auto-medium": "medium-autonomy ops",
-  "auto-high": "high-autonomy ops",
-  agi: "orchestrator mission",
-  "config-toml": "config-defined mode",
-};
-
-function modeDescription(summary: string): string {
-  return MODE_DESCRIPTIONS[summary] ?? "permission mode";
-}
-
-function modeAccentColor(summary: string): string {
-  if (summary === "plan" || summary === "read-only" || summary === "agi") return theme.color.planMode;
-  if (summary === "bypass" || summary === "full-auto" || summary === "auto-high") return theme.color.warning;
-  return theme.color.accent;
-}
-
-function permissionOptionsDetail(modelState: AdeCodeModelState): string {
-  if (modelState.provider === "codex") return CODEX_PRESETS.join(" · ");
-  if (modelState.provider === "claude") return "default · plan · auto · bypass";
-  if (modelState.provider === "opencode") return OPENCODE_PERMISSION_OPTIONS.join(" · ");
-  if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
-  return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
-}
-
-function applyProviderPermissionMode(modelState: AdeCodeModelState): Partial<AdeCodeModelState> {
-  if (modelState.provider === "codex") {
-    const preset = resolveCodexPreset(modelState);
-    return { permissionMode: preset === "custom" ? modelState.permissionMode : preset };
-  }
-  if (modelState.provider === "claude") {
-    if (modelState.interactionMode === "plan" || modelState.claudePermissionMode === "plan") {
-      return { permissionMode: "plan", interactionMode: "plan", claudePermissionMode: "plan" };
-    }
-    if (modelState.claudePermissionMode === "auto") return { permissionMode: "auto", interactionMode: "default" };
-    if (modelState.claudePermissionMode === "acceptEdits") return { permissionMode: "edit", interactionMode: "default" };
-    if (modelState.claudePermissionMode === "bypassPermissions") return { permissionMode: "full-auto", interactionMode: "default" };
-    return { permissionMode: "default", interactionMode: "default" };
-  }
-  if (modelState.provider === "opencode") return { permissionMode: modelState.opencodePermissionMode };
-  if (modelState.provider === "droid") return { permissionMode: droidPermissionToLegacy(modelState.droidPermissionMode) };
-  if (modelState.provider === "cursor") {
-    if (modelState.cursorModeId === "plan") return { permissionMode: "plan" };
-    if (modelState.cursorModeId === "ask") return { permissionMode: "edit" };
-    if (modelState.cursorModeId === "full-auto") return { permissionMode: "full-auto" };
-    return { permissionMode: "default" };
-  }
-  return {};
 }
 
 function noticeId(): string {
@@ -1998,126 +1511,6 @@ function formatDoctorReport(args: {
     "",
     statusLine,
   ].join("\n");
-}
-
-export function buildSetupRows(args: {
-  modelState: AdeCodeModelState;
-  models: AgentChatModelInfo[];
-  includeRefresh: boolean;
-  includeApply: boolean;
-  outputStyle?: string | null;
-  outputStyleEditable?: boolean;
-  /** Draft/next-chat interface (Chat = SDK chat, CLI = tracked terminal). */
-  interfaceMode: AdeCodeInterfaceMode;
-  /** False once a session exists — interface is fixed by the session type. */
-  interfaceEditable: boolean;
-}): SetupPaneRow[] {
-  const efforts = modelReasoningEfforts(args.modelState, args.models);
-  const descriptor = args.modelState.modelId ? getModelById(args.modelState.modelId) : undefined;
-  const activeModel = args.models.find((entry) => entry.id === args.modelState.modelId || entry.modelId === args.modelState.modelId);
-  const fastSupported =
-    Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
-    || modelSupportsFastMode(descriptor);
-  const rows: SetupPaneRow[] = [
-    {
-      kind: "provider",
-      label: "Provider",
-      value: providerLabel(args.modelState.provider),
-      cyclable: true,
-    },
-    {
-      kind: "interface",
-      label: "Interface",
-      value: args.interfaceMode === "cli" ? "CLI" : "Chat",
-      detail: args.interfaceEditable
-        ? "Chat · CLI"
-        : args.interfaceMode === "cli"
-          ? "tracked CLI session"
-          : "ADE chat",
-      disabled: !args.interfaceEditable,
-      cyclable: args.interfaceEditable,
-    },
-    {
-      kind: "model",
-      label: "Model",
-      value: args.modelState.displayName,
-      detail: args.models.length ? `${args.models.length} available` : "using registry default",
-      cyclable: true,
-    },
-    {
-      kind: "reasoning",
-      label: "Reasoning",
-      value: args.modelState.reasoningEffort ?? "none",
-      detail: efforts.length ? efforts.join(", ") : "not exposed by this model",
-      disabled: !efforts.length,
-      cyclable: true,
-    },
-    {
-      kind: "permission",
-      label: "Permissions",
-      value: permissionSummary(args.modelState),
-      detail: permissionOptionsDetail(args.modelState),
-      cyclable: true,
-    },
-  ];
-  rows.push({
-    kind: "codex-fast",
-    label: "Fast mode",
-    value: fastSupported && args.modelState.fastMode ? "on" : "off",
-    detail: "on · off",
-    disabled: !fastSupported,
-    cyclable: true,
-  });
-  if (args.modelState.provider === "claude") {
-    rows.push({
-      kind: "output-style",
-      label: "Output style",
-      value: args.outputStyle?.trim() || "default",
-      detail: args.outputStyleEditable === false
-        ? "active Claude chat only"
-        : "default · concise · verbose",
-      disabled: args.outputStyleEditable === false,
-      cyclable: true,
-    });
-  }
-  if (args.includeRefresh) {
-    rows.push({
-      kind: "refresh-status",
-      label: "Refresh status",
-      value: "run",
-      detail: "checks provider auth/runtime state",
-    });
-  }
-  if (args.includeApply) {
-    rows.push({
-      kind: "apply",
-      label: "Confirm",
-      value: "ready",
-      detail: "returns focus to the chat composer",
-    });
-  }
-  return rows;
-}
-
-function defaultSetupSelectionIndex(rows: SetupPaneRow[]): number {
-  const applyIndex = rows.findIndex((row) => row.kind === "apply");
-  return applyIndex >= 0 ? applyIndex : 0;
-}
-
-function defaultModelPickerSelectionIndex(rows: SetupPaneRow[]): number {
-  const modelIndex = rows.findIndex((row) => row.kind === "model" && !row.disabled);
-  if (modelIndex >= 0) return modelIndex;
-  const reasoningIndex = rows.findIndex((row) => row.kind === "reasoning" && !row.disabled);
-  if (reasoningIndex >= 0) return reasoningIndex;
-  return defaultSetupSelectionIndex(rows);
-}
-
-function setupSelectionIndexForKind(rows: SetupPaneRow[], preferredKind: SetupPaneRowKind | null | undefined): number {
-  if (preferredKind) {
-    const preferredIndex = rows.findIndex((row) => row.kind === preferredKind);
-    if (preferredIndex >= 0) return preferredIndex;
-  }
-  return defaultModelPickerSelectionIndex(rows);
 }
 
 type ConnectionStatusProvider = Extract<AdeCodeProvider, "claude" | "codex" | "cursor" | "droid">;
@@ -3099,22 +2492,6 @@ function claudeTerminalRowsForPane(rows: number): number {
     4,
     Math.min(120, safeRows + CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS),
   );
-}
-
-function terminalSessionProvider(session: ChatTerminalSession | null | undefined): AdeCodeProvider | null {
-  return terminalSessionResumeProvider(session) ?? (session ? "claude" : null);
-}
-
-function terminalSessionResumeProvider(session: ChatTerminalSession | null | undefined): AdeCodeProvider | null {
-  const provider = session?.resumeMetadata?.provider ?? null;
-  if (provider && PROVIDERS.has(provider as AdeCodeProvider)) return provider as AdeCodeProvider;
-  const toolType = session?.toolType ?? "";
-  if (toolType.startsWith("codex")) return "codex";
-  if (toolType.startsWith("cursor")) return "cursor";
-  if (toolType.startsWith("droid")) return "droid";
-  if (toolType.startsWith("opencode")) return "opencode";
-  if (toolType.startsWith("claude")) return "claude";
-  return null;
 }
 
 export function promptTextForTerminal(text: string, attachments: AgentChatFileRef[]): string {
@@ -4135,20 +3512,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     [sessions, terminalSessions],
   );
   const closedCliSessions = useMemo(
-    () => sortSessionsByRecentActivity(
-      terminalSessions
-        .filter((session) => session.status !== "running" && terminalSessionProvider(session) != null)
-        .map(terminalSessionToChatSummary),
-    ),
+    () => deriveClosedCliSessions(terminalSessions),
     [terminalSessions],
   );
-  const closedCliSessionIds = useMemo(
-    () => new Set(closedCliSessions.map((session) => session.sessionId)),
-    [closedCliSessions],
-  );
   const openDrawerSessions = useMemo(
-    () => displaySessions.filter((session) => !closedCliSessionIds.has(session.sessionId)),
-    [closedCliSessionIds, displaySessions],
+    () => deriveOpenDrawerSessions(displaySessions, closedCliSessions),
+    [closedCliSessions, displaySessions],
   );
   const sessionBySessionId = useMemo(() => {
     const out: Record<string, AgentChatSessionSummary> = {};
@@ -4475,7 +3844,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const backgroundLaunchRows = backgroundLaunchStatus ? 1 : 0;
   const backgroundLaunchStatusText = backgroundLaunchStatus
     ? backgroundLaunchStatus.status === "running"
-      ? `launching in ${backgroundLaunchStatus.laneName}...`
+      ? `launching in ${backgroundLaunchStatus.laneName}…`
       : `launch failed in ${backgroundLaunchStatus.laneName}: ${backgroundLaunchStatus.error ?? "restore draft"}`
     : null;
   const goalBannerRows = goalBannerText ? 1 : 0;
@@ -5958,7 +5327,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         const failedStep = progress.steps.find((step) => step.status === "failed");
         const detail = failedStep?.error?.trim()
-          || (failedStep ? `${failedStep.label} failed.` : "Environment setup failed.");
+          || (failedStep ? `${failedStep.label} failed` : "Environment setup failed");
         const failed: LaneSetupStatus = {
           status: "failed",
           label: failedStep?.label ? `${failedStep.label} failed` : "lane setup failed",
@@ -6852,26 +6221,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Build a starter selection from current activeModelId/recents so the
       // picker opens with relevant content already filtered.
       const provider = modelState.provider;
-	      const layoutSeed = buildModelPickerLayout({
+	      const layoutSeed = buildModelPickerLayout(buildModelPickerLayoutInput({
+	        picker: {
+	          kind: "model-picker",
+	          surface,
+	          query: "",
+	          searchMode: false,
+	          selection: { kind: "provider", provider },
+	          providerTabKey: null,
+	          focusedIndex: 0,
+	          railFocused: true,
+	          footerFocus: options.focusKind ?? null,
+	          settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
+	          laneLabel: surface === "new-chat"
+	            ? (lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null)
+	            : null,
+	        },
 	        models,
 	        catalog: modelCatalogRef.current ?? modelCatalog,
 	        favorites: modelPickerFavorites,
 	        recents: modelPickerRecents,
-        activeModelId: modelState.modelId,
-        activeReasoningEffort: modelState.reasoningEffort,
-        aiStatus,
-        interfaceMode: modelState.interfaceMode,
-		        query: "",
-	        selection: { kind: "provider", provider },
-	        providerTabKey: null,
-	        focusedIndex: 0,
-	        searchMode: false,
-        settingsRows: surface === "new-chat" ? newChatSetupRows : (providerLockedRef.current ? modelPickerRows : modelSetupRows),
-        footerFocus: options.focusKind ?? null,
-        laneLabel: surface === "new-chat"
-          ? (lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? activeLane?.name ?? null)
-          : null,
-      });
+	        modelState,
+	        aiStatus,
+      }));
       const selection = defaultSelectionFor(
         modelState.modelId,
         modelPickerRecents,
@@ -8679,7 +8051,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("Could not find a clipboard command for this terminal.", "error");
       return;
     }
-    addNotice(`copied ${secret.name}`, "success");
+    addNotice(`Copied ${secret.name}`, "success");
   }, [addNotice]);
 
   const openSecretsPane = useCallback(async (): Promise<void> => {
@@ -8692,7 +8064,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
       return;
     }
-    setRightPane({ kind: "list", title: "Secrets", rows: [], emptyText: "Loading secrets..." });
+    setRightPane({ kind: "list", title: "Secrets", rows: [], emptyText: "Loading secrets…" });
     const result = await conn.action<ProjectSecretsListResult>("project_secret", "list", {});
     const secrets = [...(result.secrets ?? [])].sort((left, right) => left.name.localeCompare(right.name));
     setRightSelectionIndex(0);
@@ -9845,8 +9217,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const sessionId = activeSessionIdRef.current;
     if (name === "/login") {
       const requestedProvider = args.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-      if (requestedProvider && !PROVIDERS.has(requestedProvider as AdeCodeProvider)) {
-        addNotice(`Unknown provider "${requestedProvider}". Try one of: ${PROVIDER_OPTIONS.map((entry) => entry.value).join(", ")}.`, "error");
+      if (requestedProvider && !TUI_PROVIDERS.has(requestedProvider as AdeCodeProvider)) {
+        addNotice(`Unknown provider "${requestedProvider}". Try one of: ${TUI_PROVIDER_OPTIONS.map((entry) => entry.value).join(", ")}.`, "error");
         return;
       }
       const provider = requestedProvider
@@ -11061,8 +10433,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("Provider is locked for this chat. /new chat to switch.", "info");
       return;
     }
-    const index = Math.max(0, PROVIDER_OPTIONS.findIndex((entry) => entry.value === modelState.provider));
-    const next = PROVIDER_OPTIONS[(index + delta + PROVIDER_OPTIONS.length) % PROVIDER_OPTIONS.length]?.value ?? "codex";
+    const index = Math.max(0, TUI_PROVIDER_OPTIONS.findIndex((entry) => entry.value === modelState.provider));
+    const next = TUI_PROVIDER_OPTIONS[(index + delta + TUI_PROVIDER_OPTIONS.length) % TUI_PROVIDER_OPTIONS.length]?.value ?? "codex";
     selectProvider(next);
   }, [addNotice, modelState.provider, selectProvider]);
 
@@ -12624,24 +11996,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       && rightPane.footerFocus == null
     ) {
       const picker = rightPane;
-      const layout = buildModelPickerLayout({
+      const layout = buildModelPickerLayout(buildModelPickerLayoutInput({
+        picker,
         models,
         catalog: modelCatalogRef.current ?? modelCatalog,
         favorites: modelPickerFavorites,
         recents: modelPickerRecents,
-        activeModelId: modelState.modelId,
-        activeReasoningEffort: modelState.reasoningEffort,
+        modelState,
         aiStatus,
-        interfaceMode: modelState.interfaceMode,
-        settingsRows: picker.settingsRows ?? [],
-        footerFocus: picker.footerFocus ?? null,
-        laneLabel: picker.laneLabel ?? null,
-        query: picker.query,
-        selection: picker.selection,
-        providerTabKey: picker.providerTabKey ?? null,
-        focusedIndex: picker.focusedIndex,
-        searchMode: picker.searchMode,
-      });
+      }));
       const nextTabKey = nextModelPickerProviderTabKey({
         providerTabs: layout.providerTabs,
         providerTabIndex: layout.providerTabIndex,
@@ -12850,17 +12213,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     if (pendingQuestionKeyActive) {
       if (!pendingQuestionApproval) return;
-      const updateQuestionState = (
-        updater: (state: PendingQuestionSelectionState) => PendingQuestionSelectionState,
-      ): boolean => {
+	      const updateQuestionState = (
+	        updater: (state: PendingQuestionSelectionState) => PendingQuestionSelectionState,
+	      ): boolean => {
         const current = ensurePendingQuestionSelectionState(pendingQuestionApproval, pendingQuestionStateRef.current);
         if (!current) return false;
         const next = updater(current);
         pendingQuestionStateRef.current = next;
-        setPendingQuestionState(next);
-        return true;
-      };
-      if (key.upArrow || key.downArrow) {
+	        setPendingQuestionState(next);
+	        return true;
+	      };
+	      if (key.escape || key.backspace || key.delete) {
+	        let cancelled = false;
+	        updateQuestionState((state) => {
+	          const result = cancelPendingQuestionDigitSelection(state);
+	          cancelled = result.cancelled;
+	          return result.state;
+	        });
+	        if (cancelled) return;
+	      }
+	      if (key.upArrow || key.downArrow) {
         updateQuestionState((state) => {
           const question = pendingQuestionApproval.request?.questions[state.activeQuestionIndex];
           const options = optionsForPendingQuestion(pendingQuestionApproval.request, question, state.activeQuestionIndex);
@@ -13326,25 +12698,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     if (pane === "details" && rightOpen && rightPane.kind === "model-picker") {
       const picker = rightPane;
-      // Re-derive layout each keystroke so we never select stale indexes.
-	      const layout = buildModelPickerLayout({
-	        models,
-	        catalog: modelCatalogRef.current ?? modelCatalog,
-	        favorites: modelPickerFavorites,
+	      // Re-derive layout each keystroke so we never select stale indexes.
+		      const layout = buildModelPickerLayout(buildModelPickerLayoutInput({
+		        picker,
+		        models,
+		        catalog: modelCatalogRef.current ?? modelCatalog,
+		        favorites: modelPickerFavorites,
 		        recents: modelPickerRecents,
-		        activeModelId: modelState.modelId,
-            activeReasoningEffort: modelState.reasoningEffort,
-            aiStatus,
-            interfaceMode: modelState.interfaceMode,
-            settingsRows: picker.settingsRows ?? [],
-            footerFocus: picker.footerFocus ?? null,
-            laneLabel: picker.laneLabel ?? null,
-		        query: picker.query,
-	        selection: picker.selection,
-	        providerTabKey: picker.providerTabKey ?? null,
-	        focusedIndex: picker.focusedIndex,
-	        searchMode: picker.searchMode,
-      });
+		        modelState,
+		        aiStatus,
+	      }));
       const pickerSettingsRows = (picker.settingsRows ?? []).filter((row) => row.kind !== "provider" && row.kind !== "model");
       const lastModelIndex = Math.max(0, layout.entries.length - 1);
       // Navigation has two stages. Stage 1 is the SELECTION AREA — two columns:
@@ -13378,14 +12741,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             : nextEntry.kind === "recents"
               ? ({ kind: "recents" } as const)
               : ({ kind: "provider", provider: nextEntry.provider } as const);
-        if (nextSelection.kind === "provider") {
-          const refreshProvider =
-            nextSelection.provider === "opencode" || nextSelection.provider === "cursor" || nextSelection.provider === "droid"
-            || nextSelection.provider === "lmstudio" || nextSelection.provider === "ollama"
-              ? nextSelection.provider
-              : null;
-          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
-        }
+	        if (nextSelection.kind === "provider") {
+	          const refreshProvider = modelPickerRefreshProvider(nextSelection.provider);
+	          if (refreshProvider) void refreshModelCatalog({ refreshProvider });
+	        }
         setRightPane({ ...picker, selection: nextSelection, providerTabKey: null, focusedIndex: 0, footerFocus: null, railFocused: true, query: "", searchMode: false });
       };
 
@@ -14558,24 +13917,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const rightBodyTop = 2 + goalBannerRows + addModeRows;
       if (rightPane.kind === "model-picker") {
         const picker = rightPane;
-        const layout = buildModelPickerLayout({
+        const layout = buildModelPickerLayout(buildModelPickerLayoutInput({
+          picker,
           models,
           catalog: modelCatalogRef.current ?? modelCatalog,
           favorites: modelPickerFavorites,
           recents: modelPickerRecents,
-          activeModelId: modelState.modelId,
-          activeReasoningEffort: modelState.reasoningEffort,
+          modelState,
           aiStatus,
-          interfaceMode: modelState.interfaceMode,
-          settingsRows: picker.settingsRows ?? [],
-          footerFocus: picker.footerFocus ?? null,
-          laneLabel: picker.laneLabel ?? null,
-          query: picker.query,
-          selection: picker.selection,
-          providerTabKey: picker.providerTabKey ?? null,
-          focusedIndex: picker.focusedIndex,
-          searchMode: picker.searchMode,
-        });
+        }));
         // Single geometry source: derive every clickable rect from the SAME
         // constants + windowing the render uses (modelPickerGeometry), so a
         // click lands on the row the user sees. Prefer the pane's MEASURED
@@ -14618,11 +13968,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             onClick: () => {
               const nextSelection = railEntrySelection(entry);
               if (nextSelection.kind === "provider") {
-                const refreshProvider =
-                  nextSelection.provider === "opencode" || nextSelection.provider === "cursor" || nextSelection.provider === "droid"
-                  || nextSelection.provider === "lmstudio" || nextSelection.provider === "ollama"
-                    ? nextSelection.provider
-                    : null;
+                const refreshProvider = modelPickerRefreshProvider(nextSelection.provider);
                 if (refreshProvider) void refreshModelCatalog({ refreshProvider });
               }
               setRightPane({

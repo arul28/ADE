@@ -5,6 +5,7 @@ import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
 import { useHoveredHitId } from "../../hitTestRegistry";
 import { KeyHints } from "../designKit";
 import type { ModelPickerAuthStatus, ModelPickerEntry, ModelPickerRailEntry, ModelPickerState } from "./types";
+import { normalizeProviderToken, providerFamilyLabel, titleCaseProviderName } from "../../providerMetadata";
 // The model list is a FIXED-height window so a long catalog (e.g. OpenCode's
 // dozens of providers) scrolls inside its own region instead of shoving the
 // settings footer around. Settings stay stickied below. Geometry constants +
@@ -36,37 +37,13 @@ function authPip(status: ModelPickerAuthStatus): { glyph: string; color: string 
   return null;
 }
 
-const RAIL_LABELS: Record<string, string> = {
-  claude: "Anthropic",
-  codex: "OpenAI",
-  droid: "Droid",
-  cursor: "Cursor",
-  opencode: "OpenCode",
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-};
-
-function normalizeProviderToken(value: string | null | undefined): string {
-  return (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
-}
-
 function titleCaseProvider(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  const normalized = normalizeProviderToken(trimmed);
-  const known = PROVIDER_MARKS[normalized]?.label;
-  if (known) return known;
-  return trimmed
-    .replace(/\b\w/g, (ch) => ch.toUpperCase())
-    .replace(/\bAi\b/g, "AI");
+  return PROVIDER_MARKS[normalizeProviderToken(value)]?.label ?? titleCaseProviderName(value);
 }
 
 function providerLabelFor(entry: Pick<ModelPickerEntry, "family" | "subProvider">): string {
   if (entry.subProvider?.trim()) return titleCaseProvider(entry.subProvider);
-  return RAIL_LABELS[entry.family] ?? theme.provider(entry.family).label;
+  return providerFamilyLabel(entry.family);
 }
 
 type ProviderMark = {
@@ -263,7 +240,7 @@ function VerticalRail({
         const showCursor = selected && focused;
         const pip = entry.kind === "provider" ? authPip(entry.authStatus) : null;
         const label = entry.kind === "provider"
-          ? (RAIL_LABELS[entry.provider] ?? entry.label)
+          ? providerFamilyLabel(entry.provider)
           : entry.kind === "favorites"
             ? "Favs"
             : "Recents";
@@ -428,6 +405,9 @@ function SettingsFooter({
   if (!visibleRows.length) return null;
   const settingRows = visibleRows.filter((row) => row.kind !== "apply");
   const applyRow = visibleRows.find((row) => row.kind === "apply") ?? null;
+  const focusedDetail = footerFocus
+    ? settingRows.find((row) => row.kind === footerFocus && !row.disabled)?.detail?.trim() ?? null
+    : null;
   const divider = "─".repeat(Math.max(4, width));
 
   return (
@@ -450,6 +430,13 @@ function SettingsFooter({
               </Box>
             );
           })}
+          {focusedDetail ? (
+            <Box paddingLeft={3}>
+              <Text color={theme.color.t5} dimColor wrap="truncate-end">
+                {endTruncate(focusedDetail, Math.max(4, width - 3))}
+              </Text>
+            </Box>
+          ) : null}
         </Box>
       ) : null}
       {applyRow ? (

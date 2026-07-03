@@ -141,8 +141,8 @@ For the embedded runtime there is no `projects.add` step — the in-process runt
   OpenCode), `Ctrl+T` moves keyboard input from ADE into that terminal.
   `TerminalPane` switches from preview mode to a bordered control frame,
   stops hiding the CLI's bottom input rows, and the footer shows
-  `<PROVIDER> CONTROL` (e.g. `CODEX CONTROL`) with `Ctrl+T` to return to
-  ADE and `Ctrl+]` as the escape chord. Raw terminal input strips only
+  `<PROVIDER> CONTROL` (e.g. `CODEX CONTROL`) with `^t` to return to
+  ADE and `^]` as the escape chord. Raw terminal input strips only
   those control bytes before forwarding the rest to the PTY. `/model` and
   `/effort` write directly into a running terminal only for Claude; other
   providers rely on `pty.sendToSession` for continuation.

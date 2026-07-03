@@ -267,6 +267,13 @@ export function convertPendingQuestionDigitSelectionToText(
   };
 }
 
+export function cancelPendingQuestionDigitSelection(
+  state: PendingQuestionSelectionState,
+): { state: PendingQuestionSelectionState; cancelled: boolean } {
+  if (!state.pendingDigitSelection) return { state, cancelled: false };
+  return { state: restorePendingQuestionDigitSelection(state), cancelled: true };
+}
+
 export function movePendingQuestionOption(
   request: PendingInputRequest | undefined,
   state: PendingQuestionSelectionState,

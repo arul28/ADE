@@ -28,7 +28,6 @@ import {
   isTerminalSessionFastPollActive,
   isLaneWorktreeAvailable,
   isTerminalSessionWorking,
-  isTerminalSessionResumable,
   shouldToggleLatestFailedLineOnBlankEnter,
   isTerminalControlToggle,
   isChatTextSelectionRange,
@@ -39,8 +38,6 @@ import {
   chatSelectionFromAnchor,
   chatSessionToOptimisticSummary,
   chatSelectionPointFromVisibleRows,
-  codexApprovalSandboxLabel,
-  cursorModeIdsForState,
   moveChatSelectionFocusByRows,
   mergeOptimisticChatSessions,
   insertPromptText,
@@ -54,7 +51,6 @@ import {
   modelPickerPaneContentOrigin,
   modelPickerProviderSwitchBlocked,
   mergeNewChatModelPickerContext,
-  normalizeCatalogProvider,
   planSessionStatePrune,
   planTerminalBufferPrune,
   isNewChatSetupPane,
@@ -87,11 +83,17 @@ import {
   mergeOptimisticTerminalSessions,
   promptTextForTerminal,
   clipboardImageCacheRootForRuntime,
+  uploadClipboardImageAttachmentToRuntime,
+} from "../app";
+import { isTerminalSessionResumable } from "../closedCliSessions";
+import {
+  codexApprovalSandboxLabel,
+  cursorModeIdsForState,
   cursorSourceForInterfaceMode,
   reconcileCursorModelStateForInterface,
   resolveCursorCliModelForLaunch,
-  uploadClipboardImageAttachmentToRuntime,
-} from "../app";
+} from "../modelState";
+import { normalizeCatalogProvider } from "../providerMetadata";
 import {
   BRACKETED_PASTE_END,
   BRACKETED_PASTE_START,

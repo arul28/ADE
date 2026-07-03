@@ -200,7 +200,7 @@ export function ApprovalPrompt({
 
   // Footer hints, keyed to the real bindings in app input handling.
   const hints: Array<[string, string]> = isQuestion
-    ? [["↑↓", "choose"], ["←→", "question"], ["enter", "next/send"], ["type", "custom"], ["deny", "decline"]]
+    ? [["↑↓", "choose"], ["←→", "question"], ["1-9", "pick"], ["enter", "next/send"], ["type", "custom"], ["deny", "decline"]]
     : highStakes
       ? [["approve", "allow"], ["deny", "decline"], ["enter", "confirm"]]
       : [["a", "approve"], ["d", "deny"]];

@@ -592,7 +592,7 @@ function TerminalPaneComponent({
 
   const controlLabel = cliLabel?.trim() || "Claude";
   const status = attached
-    ? `${controlLabel.toUpperCase()} CONTROL · Ctrl+T returns to ADE · Ctrl+] escape`
+    ? `${controlLabel.toUpperCase()} CONTROL · ^t returns to ADE · ^] escape`
     : preview?.session.status === "running"
       ? effectiveHiddenBottomRows > 0 ? `ADE prompt sends to ${controlLabel}` : "live preview"
       : preview?.session.resumeCommand
@@ -634,10 +634,10 @@ function TerminalPaneComponent({
   const content = (
     <>
       <Box width={contentWidth}>
-        <Text color={attached ? theme.color.warning : theme.color.accent}>
+        <Text color={attached ? theme.color.warning : theme.color.accent} wrap="truncate-end">
           {attached ? `${spinFrame} ${title}` : title}
         </Text>
-        <Text color={theme.color.mutedFg}>  {status}</Text>
+        <Text color={theme.color.mutedFg} wrap="truncate-end">  {status}</Text>
         {namingHint && !attached ? (
           <Text color={theme.color.accent}>{`  ${spinFrame} naming…`}</Text>
         ) : null}

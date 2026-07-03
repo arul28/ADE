@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSetupRows, cliProviderForModelStateProvider, initialModelState } from "../app";
+import { buildSetupRows, cliProviderForModelStateProvider, initialModelState } from "../modelState";
 import type { AdeCodeInterfaceMode, AdeCodeModelState } from "../types";
 
 function baseModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeModelState {

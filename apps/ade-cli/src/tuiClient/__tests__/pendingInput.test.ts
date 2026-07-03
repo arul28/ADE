@@ -3,6 +3,7 @@ import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../../de
 import {
   answerForQuestion,
   buildPendingInputAnswers,
+  cancelPendingQuestionDigitSelection,
   convertPendingQuestionDigitSelectionToText,
   createPendingQuestionSelectionState,
   latestPendingApproval,
@@ -265,6 +266,40 @@ describe("pendingInput", () => {
     expect(converted?.text).toBe("3 apples");
     expect(converted?.state.pendingDigitSelection).toBeNull();
     expect(converted ? pendingQuestionSelectionValue(request, converted.state) : null).toBe("one");
+  });
+
+  it("restores the original default when a provisional digit is cancelled before Enter", () => {
+    const initial = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionDigit(baseRequest, initial, "2").state;
+
+    const cancelled = cancelPendingQuestionDigitSelection(selected);
+
+    expect(cancelled.cancelled).toBe(true);
+    expect(cancelled.state.pendingDigitSelection).toBeNull();
+    expect(pendingQuestionSelectionValue(baseRequest, cancelled.state)).toBe("recommended");
+  });
+
+  it("lets Backspace-cancelled digit input fall back to plain typed text", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        options: [
+          { label: "One", value: "one" },
+          { label: "Two", value: "two" },
+          { label: "Three", value: "three" },
+        ],
+      }],
+    };
+    const initial = createPendingQuestionSelectionState(questionApproval(request))!;
+    const selected = selectPendingQuestionDigit(request, initial, "3").state;
+
+    const cancelled = cancelPendingQuestionDigitSelection(selected);
+
+    expect(cancelled.cancelled).toBe(true);
+    expect(convertPendingQuestionDigitSelectionToText(request, cancelled.state, " apples")).toBeNull();
+    expect(pendingQuestionSelectionValue(request, cancelled.state)).toBe("one");
+    expect(answerForQuestion(request.questions[0]!, "3 apples")).toBe("3 apples");
   });
 
   it("leaves out-of-range digits for the composer", () => {

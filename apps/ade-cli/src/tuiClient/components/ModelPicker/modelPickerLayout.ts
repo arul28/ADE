@@ -19,16 +19,7 @@ import type {
   ModelPickerAuthStatus,
 } from "./types";
 import type { SetupPaneRow, SetupPaneRowKind } from "../../types";
-
-const PROVIDER_LABELS: Record<AdeCodeProvider, string> = {
-  codex: "OpenAI",
-  claude: "Anthropic",
-  opencode: "OpenCode",
-  cursor: "Cursor",
-  droid: "Droid",
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-};
+import { normalizeProvider, providerFamilyLabel as providerLabel, titleCaseProviderName } from "../../providerMetadata";
 
 const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
   "claude",
@@ -43,27 +34,8 @@ const PROVIDER_ORDER: readonly AdeCodeProvider[] = [
 const RAIL_PROVIDER_ORDER: readonly AdeCodeProvider[] = PROVIDER_ORDER;
 const STATIC_REGISTRY_FALLBACK_PROVIDERS: readonly ModelProviderGroup[] = ["claude", "codex"];
 
-function providerLabel(provider: AdeCodeProvider): string {
-  return PROVIDER_LABELS[provider] ?? provider;
-}
-
 function openCodeProviderLabel(providerId: string): string {
-  const normalized = providerId.trim().toLowerCase();
-  const labels: Record<string, string> = {
-    anthropic: "Anthropic",
-    claude: "Anthropic",
-    openai: "OpenAI",
-    google: "Google",
-    deepseek: "DeepSeek",
-    mistral: "Mistral",
-    xai: "xAI",
-    groq: "Groq",
-    together: "Together",
-    openrouter: "OpenRouter",
-    ollama: "Ollama",
-    lmstudio: "LM Studio",
-  };
-  return labels[normalized] ?? providerId.trim().replace(/\b\w/g, (ch) => ch.toUpperCase());
+  return titleCaseProviderName(providerId);
 }
 
 function providerSignInHint(provider: AdeCodeProvider): string {
@@ -136,20 +108,6 @@ export function modelPickerProviderAuthStatus(
   if (matchingOpenCodeProvider?.connected) return "ready";
   if (matchingOpenCodeProvider || matchingRuntime.length) return "unavailable";
   return "unknown";
-}
-
-function normalizeProvider(value: ProviderFamily | string | undefined): AdeCodeProvider {
-  // resolveProviderGroupForModel already returns ModelProviderGroup values
-  // (claude/codex/opencode/cursor/droid). Map ProviderFamily aliases as well so
-  // raw registry families resolve correctly.
-  if (value === "claude" || value === "anthropic") return "claude";
-  if (value === "codex" || value === "openai") return "codex";
-  if (value === "opencode") return "opencode";
-  if (value === "ollama") return "ollama";
-  if (value === "lmstudio") return "lmstudio";
-  if (value === "cursor") return "cursor";
-  if (value === "droid" || value === "factory") return "droid";
-  return "codex";
 }
 
 function providerFromCatalogGroup(groupKey: string, fallbackFamily?: string): AdeCodeProvider {

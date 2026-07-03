@@ -4,6 +4,7 @@ import { render } from "ink-testing-library";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { Drawer } from "../components/Drawer";
+import type { ClosedCliSessionSummary } from "../closedCliSessions";
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -181,18 +182,21 @@ describe("Drawer lane and chat navigation layout", () => {
       lastOutputPreview: null,
       summary: null,
     };
-    const closedSession: AgentChatSessionSummary = {
+    const closedSession: ClosedCliSessionSummary = {
       sessionId: "term-1",
       laneId: "lane-1",
       provider: "codex",
       model: "gpt-5.5",
-      title: "Closed CLI",
+      title: "CLI",
       status: "idle",
       startedAt: "2026-05-12T10:00:00.000Z",
       endedAt: "2026-05-12T11:45:00.000Z",
       lastActivityAt: "2026-05-12T11:45:00.000Z",
       lastOutputPreview: null,
       summary: null,
+      terminalStatus: "failed",
+      terminalExitCode: 1,
+      terminalRuntimeState: "killed",
     };
 
     const frame = stripAnsi(render(
@@ -213,8 +217,9 @@ describe("Drawer lane and chat navigation layout", () => {
     ).lastFrame() ?? "");
 
     expect(frame).toContain("▾ closed (1)");
-    expect(frame).toContain("Closed");
-    expect(frame).toContain("15m ago");
+    expect(frame).toContain("CLI");
+    expect(frame).toContain("· 15m ago");
+    expect(frame).toContain("✗");
     expect(frame).toContain("◎");
   });
 

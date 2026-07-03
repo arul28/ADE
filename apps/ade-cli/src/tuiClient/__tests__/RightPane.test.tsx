@@ -835,6 +835,43 @@ describe("RightPane setup panes", () => {
     expect(frame).toContain("reasoning");
     expect(frame).not.toContain("think high");
   });
+
+  it("renders the selected model-picker setting detail in the footer", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "model-picker",
+          surface: "new-chat",
+          query: "",
+          searchMode: false,
+          selection: { kind: "provider", provider: "codex" },
+          providerTabKey: null,
+          focusedIndex: 0,
+          footerFocus: "interface",
+          settingsRows: [
+            { kind: "interface", label: "Interface", value: "Chat", detail: "Chat · CLI", cyclable: true },
+            { kind: "permission", label: "Permissions", value: "default", detail: "default · edit", cyclable: true },
+            { kind: "apply", label: "Confirm", value: "ready", detail: "returns focus to the chat composer" },
+          ],
+        }}
+        modelPickerInputs={{
+          models: [
+            { id: "openai/gpt-5.5", displayName: "GPT-5.5", isDefault: true },
+          ],
+          favorites: [],
+          recents: [],
+          activeModelId: "openai/gpt-5.5",
+          activeReasoningEffort: "medium",
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("interface");
+    expect(frame).toContain("Chat · CLI");
+  });
 });
 
 describe("RightPane details", () => {

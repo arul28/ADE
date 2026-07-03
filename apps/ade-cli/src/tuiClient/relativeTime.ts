@@ -1,7 +1,7 @@
 export function formatRelativePastTime(timestamp: string | null | undefined, nowMs = Date.now()): string {
-  if (!timestamp) return "ended";
+  if (!timestamp) return "recently";
   const thenMs = Date.parse(timestamp);
-  if (!Number.isFinite(thenMs)) return "ended";
+  if (!Number.isFinite(thenMs)) return "recently";
   const diffSeconds = Math.max(0, Math.floor((nowMs - thenMs) / 1000));
   if (diffSeconds < 45) return "just now";
   if (diffSeconds < 90) return "1m ago";

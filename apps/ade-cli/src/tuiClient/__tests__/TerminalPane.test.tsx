@@ -145,8 +145,8 @@ describe("TerminalPane", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("CLAUDE CONTROL");
-    expect(frame).toContain("Ctrl+T returns to ADE");
-    expect(frame).toContain("Ctrl+] escape");
+    expect(frame).toContain("^t returns to ADE");
+    expect(frame).toContain("^] escape");
     expect(frame).toContain("permission prompt");
   });
 
