@@ -1138,6 +1138,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     laneTemplateService: args.laneTemplateService,
     rebaseSuggestionService: args.rebaseSuggestionService,
     autoRebaseService: args.autoRebaseService,
+    // Lane presence lives in this closure; without the stamp, a presence-only
+    // change (devicesOpen) would keep matching ifNoneMatch and serve stale
+    // presence via notModified. The injected-service path (syncService.ts)
+    // wires the same stamp from the outside.
+    getLanePresenceStamp: () => computeLanePresenceStamp(),
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
     logger: args.logger,
   });
@@ -4565,6 +4570,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       .filter((entry) => entry.devicesOpen.length > 0);
   };
 
+  // Hoisted so the fallback remoteCommandService args (declared earlier in
+  // this closure) can reference it lazily without TDZ concerns.
+  function computeLanePresenceStamp(): string {
+    return getLanePresenceSnapshot()
+      .map((entry) => `${entry.laneId}:${entry.devicesOpen.map((d) => `${d.deviceId}|${d.displayName}|${d.platform}`).sort().join(",")}`)
+      .sort()
+      .join(";");
+  }
+
   function getListeningPort(): number | null {
     if (!server) return sharedListener?.getPort() ?? null;
     const address = server.address();
@@ -4718,10 +4732,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // Deterministic digest of lane presence for conditional-response
     // signatures (see SyncRemoteCommandServiceArgs.getLanePresenceStamp).
     getLanePresenceStamp(): string {
-      return getLanePresenceSnapshot()
-        .map((entry) => `${entry.laneId}:${entry.devicesOpen.map((d) => `${d.deviceId}|${d.displayName}|${d.platform}`).sort().join(",")}`)
-        .sort()
-        .join(";");
+      return computeLanePresenceStamp();
     },
 
     getChatSubscriptionSnapshot(): Array<{ deviceId: string; subscribedChatSessionIds: string[] }> {
