@@ -1,4 +1,5 @@
 import type { ModelPickerProviderTab, ModelPickerState } from "./types";
+import { titleCaseProviderName } from "../../providerMetadata";
 
 /**
  * Screen rectangle in 1-based terminal cells. Structurally identical to
@@ -85,45 +86,8 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, Math.max(0, max - 1))}…`;
 }
 
-function normalizeProviderToken(value: string | null | undefined): string {
-  return (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "");
-}
-
-const PROVIDER_TAB_LABELS: Record<string, string> = {
-  anthropic: "Anthropic",
-  claude: "Anthropic",
-  openai: "OpenAI",
-  codex: "OpenAI",
-  google: "Google",
-  gemini: "Google",
-  deepseek: "DeepSeek",
-  mistral: "Mistral",
-  xai: "xAI",
-  grok: "xAI",
-  groq: "Groq",
-  together: "Together",
-  openrouter: "OpenRouter",
-  opencode: "OpenCode",
-  droid: "Droid",
-  factory: "Droid",
-  cursor: "Cursor",
-  kimi: "Kimi",
-  moonshot: "Kimi",
-  ollama: "Ollama",
-  lmstudio: "LM Studio",
-};
-
 export function formatProviderTabLabel(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  const known = PROVIDER_TAB_LABELS[normalizeProviderToken(trimmed)];
-  if (known) return known;
-  return trimmed
-    .replace(/\b\w/g, (ch) => ch.toUpperCase())
-    .replace(/\bAi\b/g, "AI");
+  return titleCaseProviderName(value);
 }
 
 export type ProviderTabSegment = {
@@ -344,6 +308,10 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
   );
   const settingRows = visibleRows.filter((row) => row.kind !== "apply");
   const applyRow = visibleRows.find((row) => row.kind === "apply") ?? null;
+  const focusedDetailVisible = Boolean(
+    state.footerFocus
+    && settingRows.some((row) => row.kind === state.footerFocus && !row.disabled && row.detail?.trim()),
+  );
 
   // The settings list has its OWN marginTop (1) below the divider (the divider
   // sits at footerTop), so rows paint at footerTop+2. The render is vertical,
@@ -362,7 +330,7 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
   // below the divider when there are no settings. Rendered as "[ Apply ]".
   let apply: HitRect | null = null;
   if (applyRow) {
-    const applyY = settingRows.length ? chipsY + settingRows.length + 1 : footerTop + 2;
+    const applyY = settingRows.length ? chipsY + settingRows.length + (focusedDetailVisible ? 2 : 1) : footerTop + 2;
     apply = { x: paneLeft, y: applyY, w: Math.max(8, Math.min(paneWidth, 24)), h: 1 };
   }
 

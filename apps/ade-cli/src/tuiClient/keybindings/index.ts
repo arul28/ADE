@@ -442,10 +442,74 @@ export function dispatchKeybinding(
 
 export function openKeybindingsFile(filePath = defaultKeybindingsPath()): { command: string; args: string[] } {
   const editor = process.env.VISUAL || process.env.EDITOR;
-  const command = editor || (process.platform === "darwin" ? "open" : "xdg-open");
-  const args = editor ? [filePath] : [filePath];
-  const child = spawn(command, args, { stdio: "ignore", detached: true, shell: Boolean(editor) });
+  const { command, args } = keybindingsEditorCommand(filePath, editor, process.platform);
+  const child = spawn(command, args, { stdio: "ignore", detached: true, shell: false });
   child.on("error", () => undefined);
   child.unref();
   return { command, args };
+}
+
+export function keybindingsEditorCommand(
+  filePath: string,
+  editor: string | undefined,
+  platform: NodeJS.Platform,
+): { command: string; args: string[] } {
+  const editorParts = editor ? splitEditorCommand(editor) : [];
+  const command = editorParts[0] || (platform === "darwin" ? "open" : "xdg-open");
+  const args = editorParts.length ? [...editorParts.slice(1), filePath] : [filePath];
+  return { command, args };
+}
+
+// Quote-aware split so VISUAL/EDITOR values like `emacsclient -a ""` or
+// `"/Applications/Visual Studio Code.app/..." --wait` keep their quoted
+// segments as single argv entries (spawn runs with shell:false, so nothing
+// re-tokenizes downstream). Supports '..', "..", and backslash escapes;
+// an explicitly quoted empty string is preserved as an argument.
+export function splitEditorCommand(value: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let hasToken = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\" && value[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else if (ch === '"') {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < value.length) {
+      current += value[i + 1];
+      hasToken = true;
+      i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken || current) {
+        parts.push(current);
+        current = "";
+        hasToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken || current) parts.push(current);
+  return parts;
 }

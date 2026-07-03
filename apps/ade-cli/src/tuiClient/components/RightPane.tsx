@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type {
+  AdeCodeInterfaceMode,
   AdeCodeProvider,
   ChatInfoPlanStep,
   ChatInfoSnapshot,
@@ -130,6 +131,10 @@ export function laneDetailsInteractionLayout(content: LaneDetailsContent): LaneD
   row += 2; // STATUS section heading with marginTop.
   row += 1; // working state.
   row += 1; // ahead / behind line.
+  if (content.setup) {
+    row += 2; // SETUP section heading with marginTop.
+    row += content.setup.detail ? 2 : 1;
+  }
   if (worktreeMissing) {
     row += 2; // UNAVAILABLE section heading with marginTop.
     row += 1; // unavailable detail.
@@ -436,6 +441,12 @@ function LaneDetailsPane({
     workingColor = theme.color.running;
     workingLabel = "clean";
   }
+  const setup = content.setup ?? null;
+  const setupColor = setup?.status === "failed"
+    ? theme.color.error
+    : setup?.status === "running"
+      ? theme.color.running
+      : theme.color.t3;
 
   let laneDetailsFooterHint = "↑↓ move · ↵ run · tab next section · esc close";
   if (worktreeMissing) {
@@ -459,6 +470,19 @@ function LaneDetailsPane({
           <Text color={theme.color.t4}> {tailTruncate(remoteLabel, Math.max(5, contentWidth - 8))}</Text>
         ) : null}
       </Box>
+      {setup ? (
+        <>
+          <LaneSectionHead title="SETUP" width={contentWidth} />
+          <Text color={setupColor} wrap="truncate-end">
+            {setup.status === "running" ? "●" : setup.status === "failed" ? "×" : "✓"} {endTruncate(setup.label, contentWidth - 2)}
+          </Text>
+          {setup.detail ? (
+            <Text color={setup.status === "failed" ? theme.color.error : theme.color.t4} dimColor={setup.status !== "failed"} wrap="truncate-end">
+              {"  "}{endTruncate(setup.detail, contentWidth - 2)}
+            </Text>
+          ) : null}
+        </>
+      ) : null}
       {worktreeMissing ? (
         <>
           <LaneSectionHead title="UNAVAILABLE" width={contentWidth} />
@@ -1630,7 +1654,9 @@ function NewLaneFormPane({
       case "name":
       case "parent":
       case "branch":
-      case "baseBranch": {
+      case "baseBranch":
+      case "linearIssue":
+      case "templateId": {
         const value = formValues[field.name]?.trim() ?? "";
         return (
           <Box key={field.name} flexDirection="column" marginTop={1}>
@@ -1825,7 +1851,7 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
 // Main right pane component
 // ---------------------------------------------------------------------------
 
-export function RightPane({
+function RightPaneComponent({
   content,
   formValues = {},
   activeFormField = 0,
@@ -1855,6 +1881,7 @@ export function RightPane({
 	    activeModelId: string | null;
 	    activeReasoningEffort?: string | null;
 	    aiStatus?: AiSettingsStatus | null;
+	    interfaceMode?: AdeCodeInterfaceMode;
 	  };
 }) {
   const { title, hint, branch } = paneTitle(content);
@@ -1929,7 +1956,9 @@ export function RightPane({
             </Text>
           ) : null}
           {content.action && content.rows.length ? (
-            <Text color={theme.color.t4} dimColor>arrows move · enter opens</Text>
+            <Text color={theme.color.t4} dimColor>
+              {content.action.kind === "copy-secret" ? "arrows move · enter/c copies" : "arrows move · enter opens"}
+            </Text>
           ) : null}
         </Box>
       ) : null}
@@ -2004,6 +2033,7 @@ export function RightPane({
 			            activeModelId: modelPickerInputs.activeModelId,
 			            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
 			            aiStatus: modelPickerInputs.aiStatus,
+			            interfaceMode: modelPickerInputs.interfaceMode,
 			            settingsRows: content.settingsRows,
 		            footerFocus: content.footerFocus ?? null,
 		            laneLabel: content.laneLabel ?? null,
@@ -2076,3 +2106,5 @@ export function RightPane({
     </Box>
   );
 }
+
+export const RightPane = React.memo(RightPaneComponent);

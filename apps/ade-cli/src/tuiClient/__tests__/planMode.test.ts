@@ -6,6 +6,7 @@ import type { AdeCodeModelState } from "../types";
 function baseModelState(overrides: Partial<AdeCodeModelState>): AdeCodeModelState {
   return {
     provider: "codex",
+    interfaceMode: "chat",
     model: "gpt-5.5",
     modelId: null,
     displayName: "GPT-5.5",

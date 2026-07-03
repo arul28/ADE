@@ -12,7 +12,8 @@ The wire transport is the same JSON-RPC the local machine runtime answers. The r
   `lastSucceededAt` plus manual-disconnect state), runtime RPC client
   (timeouts treated as fatal), remote connection pool (eviction listeners,
   retryable read-only actions and selected retryable sync reads, local TCP
-  forwards for remote preview URLs, optional-action fallbacks), remote
+  forwards for remote preview URLs, optional-action fallbacks, event-stream
+  gap/epoch propagation), remote
   connection service (`powerMonitor`-driven `probeSavedConnections`, explicit
   connect vs implicit reconnect policy), `runtimeDiscovery.ts` (Bonjour +
   Tailscale with `discoverLanRuntimes` returning `{ machines, diagnostics }`).
@@ -53,14 +54,17 @@ The wire transport is the same JSON-RPC the local machine runtime answers. The r
   opens before retrying read-only project calls, blocks mutating action/sync
   calls with the "Project is switching" error, and avoids refreshing a stale
   runtime binding. Remote event polling suppresses buffered replay on the first
-  live subscription and backs off when idle; lane preview URLs returned by a
-  remote runtime are localized through a local TCP forward before the renderer
-  opens them.
+  live subscription, resets cursors on `eventEpoch` changes, notifies project
+  refresh paths on `gap: true`, and backs off when idle; lane preview URLs
+  returned by a remote runtime are localized through a local TCP forward before
+  the renderer opens them.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
-  and sync methods plus project-scoped action dispatch. `projects.list` inlines
-  each project's host-resolved icon (`icon: { dataUrl, sourcePath, mimeType }`)
-  so a connected desktop can render the real project logo in its remote tab
-  instead of a blank folder.
+  and sync methods plus project-scoped action dispatch. `runtimeEvents.*`
+  replies include `eventEpoch`, `gap`, and `oldestCursor` from the runtime's
+  bounded event buffer. `projects.list` inlines host-resolved icons, with
+  `dataUrl`, `sourcePath`, and `mimeType` fields, under a connect-path budget
+  (64 icons / 12 MB per call), so a connected desktop can render real project
+  logos without letting an oversized registry stall connection setup.
 - `apps/ade-cli/src/services/projects/` — machine project registry,
   per-project service scope cache, and `projectIconResolver.ts`
   (`resolveRemoteProjectIcon`, an electron-free port of the desktop icon

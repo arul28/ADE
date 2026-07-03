@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   dispatchKeybinding,
+  keybindingsEditorCommand,
   keypressToChord,
   normalizeKeyChord,
+  splitEditorCommand,
   validateClaudeKeybindingsConfig,
 } from "../keybindings";
 
@@ -112,5 +114,36 @@ describe("keybindings", () => {
   it("converts Ink keypresses to chords", () => {
     expect(keypressToChord("", { pageDown: true })).toBe("pagedown");
     expect(keypressToChord("k", { ctrl: true })).toBe("ctrl+k");
+  });
+
+  it("builds editor argv without shell parsing the target file path", () => {
+    expect(splitEditorCommand("code --wait")).toEqual(["code", "--wait"]);
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", "code --wait", "darwin")).toEqual({
+      command: "code",
+      args: ["--wait", "/tmp/keybindings.json"],
+    });
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", undefined, "darwin")).toEqual({
+      command: "open",
+      args: ["/tmp/keybindings.json"],
+    });
+  });
+
+  it("preserves quoted segments in VISUAL/EDITOR values", () => {
+    expect(splitEditorCommand('emacsclient -a ""')).toEqual(["emacsclient", "-a", ""]);
+    expect(splitEditorCommand('"/Applications/Visual Studio Code.app/Contents/MacOS/Electron" --wait')).toEqual([
+      "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
+      "--wait",
+    ]);
+    expect(splitEditorCommand("vim -c 'set ft=json'")).toEqual(["vim", "-c", "set ft=json"]);
+    expect(splitEditorCommand('code --user-data-dir "/tmp/my dir"')).toEqual([
+      "code",
+      "--user-data-dir",
+      "/tmp/my dir",
+    ]);
+    expect(splitEditorCommand("edit\\ or --flag")).toEqual(["edit or", "--flag"]);
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", 'emacsclient -a ""', "linux")).toEqual({
+      command: "emacsclient",
+      args: ["-a", "", "/tmp/keybindings.json"],
+    });
   });
 });

@@ -45,6 +45,13 @@ export type RunAdeActionResult<T = unknown> = {
   statusHints?: Record<string, unknown>;
 };
 
+export type RuntimeEventGapMetadata = {
+  gap: true;
+  oldestCursor: number | null;
+  nextCursor: number | null;
+  subscriptionId?: string | null;
+};
+
 export type AdeCodeConnection = {
   mode: RuntimeMode;
   projectRoot: string;
@@ -63,7 +70,13 @@ export type AdeCodeConnection = {
    */
   onConnectionClose?(handler: () => void): () => void;
   subscribeRuntimeEvents(
-    args: { category?: BufferedEvent["category"] | null; cursor?: number; limit?: number; replay?: boolean },
+    args: {
+      category?: BufferedEvent["category"] | null;
+      cursor?: number;
+      limit?: number;
+      replay?: boolean;
+      onGap?: (gap: RuntimeEventGapMetadata) => void;
+    },
     callback: (event: BufferedEvent) => void,
   ): Promise<() => void>;
   close(): Promise<void>;
@@ -71,8 +84,18 @@ export type AdeCodeConnection = {
 
 export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid"> | "ollama" | "lmstudio";
 
+/**
+ * How a new chat draft is launched. `chat` creates an SDK chat via
+ * `chat.createSession`; `cli` starts a tracked provider CLI terminal via the
+ * `start_cli_session` action. Mirrors the desktop/iOS Chat/CLI switcher and
+ * defaults to `chat`.
+ */
+export type AdeCodeInterfaceMode = "chat" | "cli";
+
 export type AdeCodeModelState = {
   provider: AdeCodeProvider;
+  /** Draft-only: whether the next chat launches as an SDK chat or a tracked CLI terminal. */
+  interfaceMode: AdeCodeInterfaceMode;
   model: string;
   modelId: string | null;
   displayName: string;
@@ -101,6 +124,7 @@ export type ProviderReadinessRow = {
 
 export type SetupPaneRowKind =
   | "provider"
+  | "interface"
   | "model"
   | "reasoning"
   | "permission"
@@ -234,7 +258,7 @@ export type RightPaneContent =
       rows: string[];
       emptyText?: string;
       action?: {
-        kind: "switch-lane" | "switch-chat";
+        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret";
         ids: string[];
       };
     }
@@ -299,6 +323,7 @@ export type RightPaneContent =
         deletions: number;
       };
       files: { path: string; status: "M" | "A" | "D" | "?"; staged: boolean }[];
+      setup?: LaneSetupStatus | null;
       pr: {
         number: number;
         state: "open" | "closed" | "merged";
@@ -317,6 +342,14 @@ export type RightPaneContent =
       selectedActionIndex: number;
       worktreeAvailable?: boolean;
     };
+
+export type LaneSetupStatus = {
+  status: "running" | "failed" | "completed";
+  label: string;
+  detail?: string;
+  templateId?: string | null;
+  retryable?: boolean;
+};
 
 export type LocalNotice = {
   id: string;

@@ -192,6 +192,8 @@ sync.getPin   sync.setPin   sync.clearPin
 sync.setActiveLanePresence
 ```
 
+`runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`.
+
 **Project-scoped** — every other request must carry `params.projectId`. `ade/actions/call` (and the legacy ADE action / tool catalog underneath it) is dispatched into the per-project `ProjectScope` returned by `ProjectScopeRegistry.get(projectId)`.
 
 `ade/initialize` advertises `runtimeInfo.multiProject: true` and `capabilities.projects: true`. Clients use that to switch between sending `projectId` per request (multi-project runtime) and the legacy per-process binding (embedded runtime). Sync is owned by the sync service for the most-recently-opened registered project; `ProjectScopeRegistry.ensureSyncHost` refreshes the active sync project when projects are added or removed.
@@ -217,7 +219,7 @@ ade code --print-state             # smoke-test the connection and exit
 ade code remote --target mac --project ADE
                                    # attach to a saved desktop remote machine
 ade code remote session --target mac --project ADE --session chat-1
-                                   # open a remote chat or Claude terminal session
+                                   # open a remote chat or provider CLI terminal session
 ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
 ade --project-root /repo code      # bind to a specific project root
 ```
@@ -292,6 +294,8 @@ ade prs comments pr-id --text
 ade run defs --text
 ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
+ade terminal list --lane lane-id --text
+ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"

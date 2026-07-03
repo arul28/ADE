@@ -409,6 +409,8 @@ export function createMultiProjectRpcRequestHandler(
           nextCursor: scope.runtime.eventBuffer.latestCursor(),
           hasMore: false,
           eventEpoch,
+          gap: false,
+          oldestCursor: null,
         };
     for (const event of replayResult.events) {
       if (shouldForward(event))
@@ -419,6 +421,8 @@ export function createMultiProjectRpcRequestHandler(
       nextCursor: replayResult.nextCursor,
       hasMore: replayResult.hasMore,
       eventEpoch: replayResult.eventEpoch,
+      gap: replayResult.gap === true,
+      oldestCursor: replayResult.oldestCursor ?? null,
     };
   };
 

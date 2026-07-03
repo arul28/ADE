@@ -137,7 +137,9 @@ apps/ios/
 │   │   │                            # FilesWorkspacePickerDropdown
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
-│   │   │                            #   launcher), WorkLanePickerDropdown,
+│   │   │                            #   launcher + per-project interface
+│   │   │                            #   preference shared with Hub),
+│   │   │                            # WorkLanePickerDropdown,
 │   │   │                            # WorkChatRichCardViews (de-glassed
 │   │   │                            #   tool-call / work-log / command /
 │   │   │                            #   file-change transcript cards),
@@ -697,6 +699,17 @@ project id under the active host profile, so a DB-cached row and a
 runtime-catalog row representing the same filesystem path disappear
 together without hiding matching paths from other paired machines.
 Opening or selecting the project again clears those hidden keys.
+
+The Work and Hub new-session composers share the same Chat/CLI interface
+preference store (`WorkNewSessionModePreferences`,
+`ade.work.newSessionModeByProject.v1` in the App Group defaults). The value is
+keyed by project id and is written only when the user explicitly taps the
+Chat/CLI switcher, so opening a composer, switching projects, or falling back
+from a CLI-only selection to a chat-compatible model never clobbers the user's
+stored choice. `WorkNewChatScreen` captures the active project id when pushed;
+`HubComposerDrawer` reloads the preference whenever its Project destination
+changes so a hub-created session cannot accidentally launch with the previous
+project's interface mode.
 
 ### Shipped
 

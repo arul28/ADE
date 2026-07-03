@@ -142,6 +142,21 @@ package. The desktop tree only contains thin re-export proxies plus the
 legacy fallback; do not edit the desktop copies expecting the runtime to
 see your change.
 
+Runtime support files outside `services/sync/`:
+
+- `apps/ade-cli/src/eventBuffer.ts` — bounded runtime-event replay buffer
+  used by multi-project RPC and desktop/TUI event streams. Retains up to
+  10,000 events / 16 MB total / 1 MB per event by default, emits live
+  subscribers best-effort even for oversize events, and returns
+  `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
+  reset stale cursors when a daemon restarts or history was evicted.
+- `apps/ade-cli/src/multiProjectRpcServer.ts` — machine-level JSON-RPC
+  surface for `projects.*`, `sync.*`, `runtimeEvents.*`, and project-scoped
+  `ade/actions/call`. Runtime-event subscribe replies include the gap
+  fields above; `projects.list` resolves host-side icons under a connect-path
+  budget (64 icons / 12 MB per call) so large project registries cannot stall
+  remote desktop or mobile catalog setup just to inline artwork.
+
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
 - `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
@@ -369,6 +384,12 @@ calls can still refresh after the new binding is established. Remote sync calls
 replay only for the explicit retry-safe allowlist (status/discovery/device/PIN reads,
 lane-presence announce, and model-picker reads); other sync mutations surface
 connection errors rather than being replayed after reconnect.
+
+Runtime-event IPC uses the same local/remote binding path. `RemoteRuntimeStreamEventsResult`
+includes `eventEpoch`, `gap`, and `oldestCursor`; preload resets its cursor and
+dedupe cache on epoch changes, and when a poll/subscription reports `gap: true`
+it triggers the normal project-binding refresh path so renderer projections
+recover from an evicted replay window instead of assuming the cursor was exact.
 
 `sync.connectToBrain` is a legacy API name. New docs should call this a
 runtime connection or sync authority connection.

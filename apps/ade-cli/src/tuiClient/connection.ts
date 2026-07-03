@@ -1,12 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { JsonRpcClient } from "./jsonRpcClient";
-import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
+import type { AdeCodeConnection, ProjectLaunchContext, RuntimeEventGapMetadata } from "./types";
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 import type { BufferedEvent } from "../eventBuffer";
 import { resolveAdeDefaultRole } from "../runtimeRoles";
@@ -58,7 +59,13 @@ type EmbeddedRuntime = {
     ) => () => void;
   };
   eventBuffer?: {
-    drain?: (cursor: number, limit?: number) => { events: BufferedEvent[]; nextCursor: number; hasMore: boolean };
+    drain?: (cursor: number, limit?: number) => {
+      events: BufferedEvent[];
+      nextCursor: number;
+      hasMore: boolean;
+      gap?: boolean;
+      oldestCursor?: number | null;
+    };
     subscribe?: (listener: (event: BufferedEvent) => void) => () => void;
   };
 };
@@ -79,6 +86,9 @@ type CreateEmbeddedRpcRequestHandler = (args: {
   runtime: EmbeddedRuntime;
   serverVersion: string;
 }) => DirectHandler;
+
+const DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS = 50;
+const DAEMON_CONNECT_RETRY_MAX_DELAY_MS = 200;
 
 const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "ade/initialize",
@@ -245,6 +255,30 @@ type PendingRuntimeEvent = {
   subscriptionId?: string;
   event: BufferedEvent;
 };
+
+function runtimeEventGapMetadata(
+  value: unknown,
+  subscriptionId?: string | null,
+): RuntimeEventGapMetadata | null {
+  if (!value || typeof value !== "object" || (value as { gap?: unknown }).gap !== true) return null;
+  const source = value as {
+    oldestCursor?: unknown;
+    nextCursor?: unknown;
+    subscriptionId?: unknown;
+  };
+  return {
+    gap: true,
+    oldestCursor: typeof source.oldestCursor === "number" && Number.isFinite(source.oldestCursor)
+      ? Math.max(0, Math.floor(source.oldestCursor))
+      : null,
+    nextCursor: typeof source.nextCursor === "number" && Number.isFinite(source.nextCursor)
+      ? Math.max(0, Math.floor(source.nextCursor))
+      : null,
+    subscriptionId: typeof source.subscriptionId === "string"
+      ? source.subscriptionId
+      : subscriptionId ?? null,
+  };
+}
 
 async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
   const result = await request<InitializeResult>("ade/initialize", {
@@ -493,6 +527,153 @@ function spawnDaemon(socketPath: string): boolean {
   return true;
 }
 
+type SocketSpawnLockOwner = {
+  id: string | null;
+  pid: number | null;
+};
+
+function createSocketSpawnLockOwner(): SocketSpawnLockOwner {
+  return {
+    id: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    pid: process.pid,
+  };
+}
+
+function serializeSocketSpawnLockOwner(owner: SocketSpawnLockOwner): string {
+  return JSON.stringify({
+    id: owner.id,
+    pid: owner.pid,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function readSocketSpawnLockOwner(lockPath: string): SocketSpawnLockOwner {
+  const raw = fs.readFileSync(lockPath, "utf8");
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; pid?: unknown };
+    return {
+      id: typeof parsed.id === "string" ? parsed.id : null,
+      pid: typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0
+        ? parsed.pid
+        : null,
+    };
+  } catch {
+    const [pidLine] = raw.split(/\r?\n/u);
+    const pid = Number.parseInt(pidLine ?? "", 10);
+    return {
+      id: null,
+      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+    };
+  }
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {
+  try {
+    const stat = fs.statSync(lockPath);
+    const owner = readSocketSpawnLockOwner(lockPath);
+    if (owner.pid != null && processExists(owner.pid)) return false;
+    if (owner.pid == null && Date.now() - stat.mtimeMs <= 30_000) return false;
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+function unlinkSocketSpawnLockIfOwner(lockPath: string, ownerId: string | null): void {
+  if (!ownerId) return;
+  try {
+    const owner = readSocketSpawnLockOwner(lockPath);
+    if (owner.id !== ownerId) return;
+    fs.unlinkSync(lockPath);
+  } catch {
+    // ignore cleanup races
+  }
+}
+
+async function probeLocalSocketLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
+  if (socketPath.startsWith("tcp://")) return "unknown";
+  return await new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (result: "live" | "stale" | "unknown") => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    timer = setTimeout(() => finish("unknown"), 500);
+    timer.unref?.();
+    socket.once("connect", () => finish("live"));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+        finish("stale");
+        return;
+      }
+      finish("unknown");
+    });
+  });
+}
+
+async function unlinkStaleLocalSocket(socketPath: string): Promise<boolean> {
+  if (socketPath.startsWith("tcp://")) return false;
+  try {
+    const stat = fs.lstatSync(socketPath);
+    if (!stat.isSocket() && !stat.isFile()) return false;
+    if (stat.isSocket() && await probeLocalSocketLiveness(socketPath) !== "stale") return false;
+    fs.unlinkSync(socketPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
+  if (socketPath.startsWith("tcp://")) return await task();
+  const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 10_000;
+  const owner = createSocketSpawnLockOwner();
+  let fd: number | null = null;
+  while (fd == null) {
+    try {
+      fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(fd, serializeSocketSpawnLockOwner(owner), "utf8");
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw error;
+      if (unlinkSocketSpawnLockIfStale(lockPath)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  try {
+    return await task();
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+    unlinkSocketSpawnLockIfOwner(lockPath, owner.id);
+  }
+}
+
 async function connectAttachedSocket(args: {
   socketPath: string;
   project: ProjectLaunchContext;
@@ -620,6 +801,11 @@ async function connectAttachedSocket(args: {
             limit: subscriptionArgs.limit ?? 100,
             replay: subscriptionArgs.replay,
           });
+          const gap = runtimeEventGapMetadata(response, response.subscriptionId);
+          if (gap) {
+            pending.length = 0;
+            subscriptionArgs.onGap?.(gap);
+          }
           subscriptionId = response.subscriptionId;
           for (const payload of pending) {
             if (payload.subscriptionId === subscriptionId) {
@@ -666,10 +852,21 @@ async function connectAttachedSocketWithRetry(args: {
     } catch (error) {
       lastError = error;
       if (attempt + 1 >= args.attempts) break;
-      await new Promise((resolve) => setTimeout(resolve, args.delayMs));
+      const delayMs = retryDelayMs(args.delayMs, attempt);
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function retryDelayMs(initialDelayMs: number, attempt: number): number {
+  if (initialDelayMs <= 0) return 0;
+  return Math.min(
+    DAEMON_CONNECT_RETRY_MAX_DELAY_MS,
+    Math.max(0, Math.floor(initialDelayMs * 2 ** attempt)),
+  );
 }
 
 export async function connectToAde(args: {
@@ -724,7 +921,7 @@ export async function connectToAde(args: {
         socketPath: machineSocketPath,
         project: args.project,
         attempts,
-        delayMs: 200,
+        delayMs: DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS,
         shutdownOnStale: true,
       });
     const repairService = async (): Promise<AdeCodeConnection | null> => {
@@ -740,10 +937,13 @@ export async function connectToAde(args: {
     };
     try {
       if (!fs.existsSync(machineSocketPath)) {
-        const repaired = await repairService();
-        if (repaired) return repaired;
-        const spawned = spawnDaemon(machineSocketPath);
-        return await tryDaemon(spawned ? 25 : 1);
+        return await withSocketSpawnLock(machineSocketPath, async () => {
+          if (fs.existsSync(machineSocketPath)) return await tryDaemon(25);
+          const repaired = await repairService();
+          if (repaired) return repaired;
+          const spawned = spawnDaemon(machineSocketPath);
+          return await tryDaemon(spawned ? 25 : 1);
+        });
       }
       return await tryDaemon(1);
     } catch (firstError) {
@@ -753,8 +953,12 @@ export async function connectToAde(args: {
       const repaired = await repairService();
       if (repaired) return repaired;
       try {
-        const spawned = spawnDaemon(machineSocketPath);
+        const spawned = await withSocketSpawnLock(machineSocketPath, async () => {
+          if (fs.existsSync(machineSocketPath) && !(await unlinkStaleLocalSocket(machineSocketPath))) return false;
+          return spawnDaemon(machineSocketPath);
+        });
         if (spawned) return await tryDaemon(25);
+        return await tryDaemon(25);
       } catch (error) {
         attachError = error;
       }
@@ -844,10 +1048,12 @@ export async function connectToAde(args: {
       const eventBuffer = runtime.eventBuffer;
       if (!eventBuffer) return () => {};
       const shouldForward = (event: BufferedEvent) => !category || event.category === category;
-      const replay = subscriptionArgs.replay !== false && typeof eventBuffer.drain === "function"
-        ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
-        : { events: [] };
-      for (const event of replay.events) {
+	      const replay = subscriptionArgs.replay !== false && typeof eventBuffer.drain === "function"
+	        ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
+	        : { events: [] };
+	      const gap = runtimeEventGapMetadata(replay);
+	      if (gap) subscriptionArgs.onGap?.(gap);
+	      for (const event of replay.events) {
         if (shouldForward(event)) callback(event);
       }
       if (typeof eventBuffer.subscribe !== "function") return () => {};

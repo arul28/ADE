@@ -3,7 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "ink-testing-library";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import { Drawer } from "../components/Drawer";
+import {
+  closedCliRightPaneRow,
+  closedCliSessionStatusKind,
+  deriveClosedCliSessions,
+  deriveOpenDrawerSessions,
+  type ClosedCliSessionSummary,
+} from "../closedCliSessions";
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -33,6 +41,31 @@ function lane(id: string, name: string, branchRef: string, createdAt: string, ah
     icon: null,
     tags: [],
     createdAt,
+    ...overrides,
+  };
+}
+
+function terminal(overrides: Partial<ChatTerminalSession> = {}): ChatTerminalSession {
+  return {
+    terminalId: "terminal-1",
+    ptyId: null,
+    chatSessionId: null,
+    laneId: "lane-1",
+    laneName: "Lane 1",
+    title: "Codex CLI",
+    toolType: "codex",
+    goal: null,
+    status: "completed",
+    runtimeState: "exited",
+    active: false,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: "2026-01-01T00:01:00.000Z",
+    exitCode: 0,
+    pid: null,
+    resumeCommand: "codex resume terminal-1",
+    resumeMetadata: { provider: "codex", targetKind: "session", targetId: "terminal-1", launch: {} },
+    lastOutputPreview: null,
+    summary: null,
     ...overrides,
   };
 }
@@ -80,6 +113,43 @@ describe("Drawer diff stats", () => {
     expect(frame).not.toContain("+141 / −112");
     expect(frame).not.toContain("-18");
     expect(frame).not.toContain("5m");
+  });
+});
+
+describe("Drawer closed CLI sessions", () => {
+  it.each([
+    ["failed status", { status: "failed", exitCode: 1, runtimeState: "killed" }, "failed"],
+    ["non-zero exit", { status: "completed", exitCode: 2, runtimeState: "exited" }, "failed"],
+    ["user close", { status: "disposed", exitCode: 130, runtimeState: "killed" }, "idle"],
+    ["clean close", { status: "completed", exitCode: 0, runtimeState: "exited" }, "idle"],
+  ] as const)("classifies %s for closed-session glyphs", (_label, overrides, expected) => {
+    const [session] = deriveClosedCliSessions([terminal({
+      terminalId: `t-${_label.replace(/\s+/g, "-")}`,
+      ...overrides,
+    })]);
+
+    expect(session).toBeTruthy();
+    expect(closedCliSessionStatusKind(session!)).toBe(expected);
+    expect(closedCliRightPaneRow(session!, null)).toContain(expected === "failed" ? "✗" : "○");
+  });
+
+  it("filters closed CLI sessions out of the open drawer list", () => {
+    const [closed] = deriveClosedCliSessions([terminal()]);
+    const open: AgentChatSessionSummary = {
+      sessionId: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-01-01T00:01:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    };
+
+    expect(closed).toBeTruthy();
+    expect(deriveOpenDrawerSessions([open, closed!], [closed!])).toEqual([open]);
   });
 });
 
@@ -162,6 +232,64 @@ describe("Drawer lane and chat navigation layout", () => {
     // chats.
     expect(chatModeFrame).not.toContain("lane card");
     expect(chatModeFrame).not.toContain("next lane");
+  });
+
+  it("renders ended tracked CLI sessions behind the closed group in chat mode", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
+
+    const openSession: AgentChatSessionSummary = {
+      sessionId: "chat-open",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      title: "Open chat",
+      status: "idle",
+      startedAt: "2026-05-12T11:30:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-05-12T11:31:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    };
+    const closedSession: ClosedCliSessionSummary = {
+      sessionId: "term-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      title: "CLI",
+      status: "idle",
+      startedAt: "2026-05-12T10:00:00.000Z",
+      endedAt: "2026-05-12T11:45:00.000Z",
+      lastActivityAt: "2026-05-12T11:45:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      terminalStatus: "failed",
+      terminalExitCode: 1,
+      terminalRuntimeState: "killed",
+    };
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "Feature", "feature/closed-cli", "2026-05-12T11:55:00.000Z")]}
+        sessions={[openSession]}
+        closedSessions={[closedSession]}
+        closedCliExpandedLaneIds={new Set(["lane-1"])}
+        activeLaneId="lane-1"
+        activeSessionId="chat-open"
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={2}
+        panelHeight={30}
+        mode="chats"
+        focused
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("▾ closed (1)");
+    expect(frame).toContain("CLI");
+    expect(frame).toContain("· 15m ago");
+    expect(frame).toContain("✗");
+    expect(frame).toContain("◎");
   });
 
   it("previews chats under non-selected lanes and hides branch refs from lane cards", () => {

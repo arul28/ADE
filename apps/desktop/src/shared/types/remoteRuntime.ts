@@ -213,6 +213,8 @@ export type RemoteRuntimeStreamEventsResult = {
   nextCursor: number;
   hasMore: boolean;
   eventEpoch?: string | null;
+  gap?: boolean;
+  oldestCursor?: number | null;
 };
 
 export type RemoteRuntimeEventNotificationPayload = {

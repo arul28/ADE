@@ -92,6 +92,28 @@ describe("drawerMouseHitForLayout", () => {
     expect(drawerMouseHitForLayout({ y: 15, layout })).toEqual({ kind: "lane", index: 1 });
   });
 
+  it("maps expanded closed CLI group rows through the shared layout model", () => {
+    const layout = computeDrawerLayout({
+      panelHeight: 60,
+      lanes: [laneInput("a", 2, { closedChatCount: 3, closedExpanded: true })],
+      expandedLaneIndex: 0,
+      selectedLaneIndex: 0,
+      scrollOffsetRows: 0,
+    });
+
+    expect(layout.lanes[0]).toMatchObject({
+      visibleChatCount: 2,
+      closedToggleVisible: true,
+      visibleClosedChatCount: 3,
+      closedExpanded: true,
+    });
+    expect(drawerMouseHitForLayout({ y: 5, layout })).toEqual({ kind: "chat", laneIndex: 0, chatIndex: 0 });
+    expect(drawerMouseHitForLayout({ y: 7, layout })).toEqual({ kind: "closed-toggle", laneIndex: 0 });
+    expect(drawerMouseHitForLayout({ y: 8, layout })).toEqual({ kind: "closed-chat", laneIndex: 0, closedIndex: 0 });
+    expect(drawerMouseHitForLayout({ y: 10, layout })).toEqual({ kind: "closed-chat", laneIndex: 0, closedIndex: 2 });
+    expect(drawerMouseHitForLayout({ y: 11, layout })).toEqual({ kind: "new-chat" });
+  });
+
   it("maps an expanded empty lane's new-chat row directly under its lane line", () => {
     const layout = computeDrawerLayout({
       panelHeight: 60,
@@ -137,5 +159,18 @@ describe("drawerMouseHitForLayout", () => {
     //   y=14 "+6 more".
     expect(drawerMouseHitForLayout({ y: 13, layout })).toEqual({ kind: "chat", laneIndex: 1, chatIndex: 3 });
     expect(drawerMouseHitForLayout({ y: 14, layout })).toEqual({ kind: "lane", index: 1 });
+  });
+
+  it("maps the drawer + new lane row through the shared layout model", () => {
+    const layout = computeDrawerLayout({
+      panelHeight: 20,
+      lanes: [laneInput("a", 0)],
+      expandedLaneIndex: null,
+      selectedLaneIndex: null,
+      scrollOffsetRows: 0,
+    });
+
+    expect(layout.newLaneRow).toBe(19);
+    expect(drawerMouseHitForLayout({ y: layout.newLaneRow, layout })).toEqual({ kind: "new-lane" });
   });
 });

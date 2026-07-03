@@ -34,14 +34,13 @@ function isApprovalMode(request: PendingInputRequest | undefined): boolean {
 
 export function latestPendingApproval(events: AgentChatEventEnvelope[]): PendingApproval | null {
   const resolved = new Set<string>();
-  for (const envelope of events) {
-    const event = envelope.event as Record<string, unknown>;
-    if (event.type === "pending_input_resolved" && typeof event.itemId === "string") {
-      resolved.add(event.itemId);
-    }
-  }
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]?.event as Record<string, unknown> | undefined;
+    if (!event) continue;
+    if (event.type === "pending_input_resolved" && typeof event.itemId === "string") {
+      resolved.add(event.itemId);
+      continue;
+    }
     if (!event || event.type !== "approval_request" || typeof event.itemId !== "string") continue;
     if (resolved.has(event.itemId)) continue;
     const request = requestFromApprovalEvent(event);
@@ -89,6 +88,12 @@ export type PendingQuestionSelectionState = {
   answers: Record<string, string | string[]>;
   optionIndexByQuestionId: Record<string, number>;
   selectedValuesByQuestionId: Record<string, string[]>;
+  pendingDigitSelection: {
+    questionId: string;
+    digit: string;
+    previousOptionIndex: number;
+    previousSelectedValues: string[];
+  } | null;
 };
 
 export function optionsForPendingQuestion(
@@ -125,6 +130,7 @@ export function createPendingQuestionSelectionState(
     answers: {},
     optionIndexByQuestionId,
     selectedValuesByQuestionId: {},
+    pendingDigitSelection: null,
   };
 }
 
@@ -137,6 +143,7 @@ export function ensurePendingQuestionSelectionState(
     return {
       ...previous,
       selectedValuesByQuestionId: previous.selectedValuesByQuestionId ?? {},
+      pendingDigitSelection: previous.pendingDigitSelection ?? null,
     };
   }
   return createPendingQuestionSelectionState(approval);
@@ -178,7 +185,7 @@ export function setPendingQuestionOptionIndex(
   if (!options.length) return state;
   const clamped = Math.max(0, Math.min(options.length - 1, optionIndex));
   return {
-    ...state,
+    ...clearPendingQuestionDigitSelection(state),
     optionIndexByQuestionId: {
       ...state.optionIndexByQuestionId,
       [question.id]: clamped,
@@ -213,6 +220,60 @@ export function selectPendingQuestionOptionIndex(
   };
 }
 
+export function selectPendingQuestionDigit(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  digit: string,
+): { state: PendingQuestionSelectionState; selected: boolean } {
+  if (!/^[1-9]$/.test(digit)) return { state, selected: false };
+  const questions = request?.questions ?? [];
+  const question = questions[state.activeQuestionIndex];
+  if (!question) return { state, selected: false };
+  const options = optionsForPendingQuestion(request, question, state.activeQuestionIndex);
+  const optionIndex = Number(digit) - 1;
+  if (!options[optionIndex]) return { state, selected: false };
+  const baseline = restorePendingQuestionDigitSelection(state);
+  const previousOptionIndex = baseline.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  const previousSelectedValues = [...(baseline.selectedValuesByQuestionId[question.id] ?? [])];
+  const next = question.multiSelect
+    ? selectPendingQuestionOptionIndex(request, baseline, optionIndex)
+    : setPendingQuestionOptionIndex(request, baseline, optionIndex);
+  return {
+    selected: true,
+    state: {
+      ...next,
+      pendingDigitSelection: {
+        questionId: question.id,
+        digit,
+        previousOptionIndex,
+        previousSelectedValues,
+      },
+    },
+  };
+}
+
+export function convertPendingQuestionDigitSelectionToText(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  suffix: string,
+): { state: PendingQuestionSelectionState; text: string } | null {
+  const pending = state.pendingDigitSelection;
+  if (!pending || suffix.length === 0) return null;
+  const question = request?.questions?.[state.activeQuestionIndex];
+  if (!question || question.id !== pending.questionId) return null;
+  return {
+    state: restorePendingQuestionDigitSelection(state),
+    text: `${pending.digit}${suffix}`,
+  };
+}
+
+export function cancelPendingQuestionDigitSelection(
+  state: PendingQuestionSelectionState,
+): { state: PendingQuestionSelectionState; cancelled: boolean } {
+  if (!state.pendingDigitSelection) return { state, cancelled: false };
+  return { state: restorePendingQuestionDigitSelection(state), cancelled: true };
+}
+
 export function movePendingQuestionOption(
   request: PendingInputRequest | undefined,
   state: PendingQuestionSelectionState,
@@ -236,7 +297,7 @@ export function movePendingQuestionFocus(
   const count = request?.questions?.length ?? 0;
   if (count <= 0) return state;
   return {
-    ...state,
+    ...clearPendingQuestionDigitSelection(state),
     activeQuestionIndex: (state.activeQuestionIndex + delta + count) % count,
   };
 }
@@ -256,4 +317,31 @@ export function buildPendingInputAnswers(
     question.id,
     answerForQuestion(question, lines[index] ?? text),
   ]));
+}
+
+function clearPendingQuestionDigitSelection(state: PendingQuestionSelectionState): PendingQuestionSelectionState {
+  return state.pendingDigitSelection ? { ...state, pendingDigitSelection: null } : state;
+}
+
+function restorePendingQuestionDigitSelection(state: PendingQuestionSelectionState): PendingQuestionSelectionState {
+  const pending = state.pendingDigitSelection;
+  if (!pending) return state;
+  const optionIndexByQuestionId = { ...state.optionIndexByQuestionId };
+  if (pending.previousOptionIndex >= 0) {
+    optionIndexByQuestionId[pending.questionId] = pending.previousOptionIndex;
+  } else {
+    delete optionIndexByQuestionId[pending.questionId];
+  }
+  const selectedValuesByQuestionId = { ...state.selectedValuesByQuestionId };
+  if (pending.previousSelectedValues.length > 0) {
+    selectedValuesByQuestionId[pending.questionId] = pending.previousSelectedValues;
+  } else {
+    delete selectedValuesByQuestionId[pending.questionId];
+  }
+  return {
+    ...state,
+    optionIndexByQuestionId,
+    selectedValuesByQuestionId,
+    pendingDigitSelection: null,
+  };
 }

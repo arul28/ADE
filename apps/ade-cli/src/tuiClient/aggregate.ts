@@ -455,6 +455,14 @@ function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeAct
   return null;
 }
 
+function summarizePreToolUseHookError(event: AgentChatEvent): string | null {
+  if (event.type !== "system_notice") return null;
+  if ((event as { noticeKind?: string }).noticeKind !== "hook") return null;
+  const message = event.message.replace(/\s+/g, " ").trim();
+  const match = message.match(/^hook:\s*(PreToolUse:[^\n]+?\s+error)$/i);
+  return match?.[1]?.trim() ?? null;
+}
+
 function appendRuntimeActivityBlock(
   blocks: AggregatedBlock[],
   id: string,
@@ -539,6 +547,7 @@ export function aggregateChatBlocks(args: {
   activeSession: AgentChatSessionSummary | null;
   expandedLineIds?: Set<string>;
   maxBlocks?: number;
+  pendingSteers?: PendingSteer[];
 }): AggregatedBlock[] {
   const lines = renderChatLines({
     events: args.events,
@@ -551,7 +560,7 @@ export function aggregateChatBlocks(args: {
   for (const line of lines) linesById.set(line.id, line);
 
   const blocks: AggregatedBlock[] = [];
-  const pendingSteerIds = new Set(derivePendingSteers(args.events).map((steer) => steer.steerId));
+  const pendingSteerIds = new Set((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer) => steer.steerId));
   const subagentParentItemIds = new Set<string>();
   for (const envelope of args.events) {
     const parentItemId = subagentParentItemId(envelope.event);
@@ -843,6 +852,17 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (isSteerLifecycleNotice(event)) {
+      continue;
+    }
+    const hookError = summarizePreToolUseHookError(event);
+    if (hookError) {
+      appendRuntimeActivityBlock(blocks, id, turnId, {
+        id,
+        label: "hook",
+        detail: hookError,
+        status: "failed",
+      });
+      finishTurnBlocks(blocks, turnId);
       continue;
     }
     if (event.type === "activity") {

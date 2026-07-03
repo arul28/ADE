@@ -14,6 +14,7 @@ import {
   deletePreviousPromptWord,
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
+  latestAuthFailedPrompt,
   applyCoalescedPromptInput,
   firstUrlInText,
   footerControlsForAvailability,
@@ -27,7 +28,6 @@ import {
   isTerminalSessionFastPollActive,
   isLaneWorktreeAvailable,
   isTerminalSessionWorking,
-  isTerminalSessionResumable,
   shouldToggleLatestFailedLineOnBlankEnter,
   isTerminalControlToggle,
   isChatTextSelectionRange,
@@ -38,8 +38,6 @@ import {
   chatSelectionFromAnchor,
   chatSessionToOptimisticSummary,
   chatSelectionPointFromVisibleRows,
-  codexApprovalSandboxLabel,
-  cursorModeIdsForState,
   moveChatSelectionFocusByRows,
   mergeOptimisticChatSessions,
   insertPromptText,
@@ -53,7 +51,6 @@ import {
   modelPickerPaneContentOrigin,
   modelPickerProviderSwitchBlocked,
   mergeNewChatModelPickerContext,
-  normalizeCatalogProvider,
   planSessionStatePrune,
   planTerminalBufferPrune,
   isNewChatSetupPane,
@@ -73,11 +70,14 @@ import {
   splitTerminalControlInput,
   stableInkViewportRows,
   subagentSnapshotsFromEvents,
+  terminalBracketedPasteDisableSequence,
+  terminalBracketedPasteEnableSequence,
   terminalAlternateScreenDisableSequence,
   terminalAlternateScrollDisableSequence,
   terminalInteractiveRestoreSequence,
   terminalMouseTrackingDisableSequence,
   terminalMouseTrackingEnableSequence,
+  terminalControlInputAction,
   isClaudePlaceholderTitle,
   isClipboardScratchTemp,
   mergeOptimisticTerminalSessions,
@@ -85,14 +85,84 @@ import {
   clipboardImageCacheRootForRuntime,
   uploadClipboardImageAttachmentToRuntime,
 } from "../app";
+import { isTerminalSessionResumable } from "../closedCliSessions";
+import {
+  buildSetupRows,
+  cliProviderForModelStateProvider,
+  codexApprovalSandboxLabel,
+  cursorModeIdsForState,
+  cursorSourceForInterfaceMode,
+  initialModelState,
+  applyProviderPermissionMode,
+  permissionSummary,
+  reconcileCursorModelStateForInterface,
+  resolveCursorCliModelForLaunch,
+} from "../modelState";
+import { normalizeCatalogProvider } from "../providerMetadata";
+import {
+  BRACKETED_PASTE_END,
+  BRACKETED_PASTE_START,
+  EMPTY_BRACKETED_PASTE_STATE,
+  consumeBracketedPasteInput,
+  formatTerminalControlForwardedInput,
+  stripBracketedPasteMarkers,
+} from "../bracketedPaste";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
 import { clipboardScratchDir } from "../imageTargets";
-import type { AdeCodeConnection, ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
+import type { AdeCodeConnection, AdeCodeModelState, ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
-import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatEventEnvelope, AgentChatModelInfo, AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { ChatTerminalPreviewResult } from "../../../../desktop/src/shared/types";
+
+function cursorModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeModelState {
+  return {
+    provider: "cursor",
+    interfaceMode: "chat",
+    model: "sdk-only",
+    modelId: "cursor/sdk-only",
+    displayName: "SDK only",
+    reasoningEffort: null,
+    fastMode: false,
+    permissionMode: "default",
+    interactionMode: "default",
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "never",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "config-toml",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+    cursorAvailableModeIds: ["agent"],
+    cursorConfigValues: {},
+    ...overrides,
+  };
+}
+
+function setupPaneModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeModelState {
+  return {
+    provider: "codex",
+    interfaceMode: "chat",
+    model: "gpt-5.5",
+    modelId: null,
+    displayName: "GPT-5.5",
+    reasoningEffort: "medium",
+    fastMode: false,
+    permissionMode: "default",
+    interactionMode: "default",
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "flags",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+    cursorAvailableModeIds: [],
+    cursorConfigValues: {},
+    ...overrides,
+  };
+}
 
 describe("session activity helpers", () => {
   it("keeps Ink output below the terminal height to avoid full-screen clears", () => {
@@ -990,6 +1060,52 @@ describe("inlineRowCellOrder", () => {
   });
 });
 
+describe("interface draft setup", () => {
+  function interfaceRows(interfaceMode: AdeCodeModelState["interfaceMode"], interfaceEditable: boolean) {
+    return buildSetupRows({
+      modelState: setupPaneModelState({ interfaceMode }),
+      models: [],
+      includeRefresh: false,
+      includeApply: true,
+      interfaceMode,
+      interfaceEditable,
+    });
+  }
+
+  it("maps tracked CLI providers and rejects chat-only providers", () => {
+    for (const provider of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
+      expect(cliProviderForModelStateProvider(provider)).toBe(provider);
+    }
+    expect(cliProviderForModelStateProvider("ollama")).toBeNull();
+    expect(cliProviderForModelStateProvider("lmstudio")).toBeNull();
+  });
+
+  it("keeps the Interface setup row after Provider and labels the active mode", () => {
+    const chatRows = interfaceRows("chat", true);
+    const cliRows = interfaceRows("cli", true);
+
+    expect(chatRows.map((row) => row.kind).slice(0, 2)).toEqual(["provider", "interface"]);
+    expect(chatRows.find((row) => row.kind === "interface")).toMatchObject({
+      value: "Chat",
+      disabled: false,
+      cyclable: true,
+      detail: "Chat · CLI",
+    });
+    expect(cliRows.find((row) => row.kind === "interface")?.value).toBe("CLI");
+  });
+
+  it("locks Interface after launch and remembers the draft default", () => {
+    expect(interfaceRows("cli", false).find((row) => row.kind === "interface")).toMatchObject({
+      value: "CLI",
+      disabled: true,
+      cyclable: false,
+      detail: "tracked CLI session",
+    });
+    expect(initialModelState("cli").interfaceMode).toBe("cli");
+    expect(initialModelState("chat").interfaceMode).toBe("chat");
+  });
+});
+
 describe("provider permission helpers", () => {
   it("summarizes Codex approval and sandbox as a footer detail", () => {
     expect(codexApprovalSandboxLabel({
@@ -1001,6 +1117,31 @@ describe("provider permission helpers", () => {
   it("uses Cursor runtime snapshot modes before falling back to static modes", () => {
     expect(cursorModeIdsForState({ cursorAvailableModeIds: ["ask", "plan"] })).toEqual(["ask", "plan"]);
     expect(cursorModeIdsForState({ cursorAvailableModeIds: [] })).toContain("agent");
+  });
+
+  it("uses OpenCode permissions for Ollama and LM Studio chat providers", () => {
+    for (const provider of ["ollama", "lmstudio"] as const) {
+      const modelState = setupPaneModelState({
+        provider,
+        opencodePermissionMode: "plan",
+        cursorModeId: "ask",
+      });
+      const permissionRow = buildSetupRows({
+        modelState,
+        models: [],
+        includeRefresh: false,
+        includeApply: true,
+        interfaceMode: "chat",
+        interfaceEditable: true,
+      }).find((row) => row.kind === "permission");
+
+      expect(permissionSummary(modelState)).toBe("plan");
+      expect(applyProviderPermissionMode(modelState)).toEqual({ permissionMode: "plan" });
+      expect(permissionRow).toMatchObject({
+        value: "plan",
+        detail: "plan · edit · full-auto · config-toml",
+      });
+    }
   });
 });
 
@@ -1148,6 +1289,14 @@ describe("terminal control toggle", () => {
     expect(isTerminalControlToggle("t", {})).toBe(false);
   });
 
+  it("ignores arbitrary input while attached but still recognizes detach chords", () => {
+    expect(terminalControlInputAction("x", {})).toBe("ignore");
+    expect(terminalControlInputAction("\x1b[A", {})).toBe("ignore");
+    expect(terminalControlInputAction("t", { ctrl: true })).toBe("detach");
+    expect(terminalControlInputAction("\x14", {})).toBe("detach");
+    expect(terminalControlInputAction("\x1d", {})).toBe("detach");
+  });
+
   it("detaches from terminal control while preserving other raw input bytes", () => {
     expect(splitTerminalControlInput("a\x14b\x1dc")).toEqual({
       detach: true,
@@ -1156,6 +1305,20 @@ describe("terminal control toggle", () => {
     expect(splitTerminalControlInput("\x1b[A")).toEqual({
       detach: false,
       forwarded: "\x1b[A",
+    });
+  });
+
+  it("wraps multiline forwarded terminal control input in bracketed paste", () => {
+    expect(formatTerminalControlForwardedInput("one\ntwo")).toBe(
+      `${BRACKETED_PASTE_START}one\ntwo${BRACKETED_PASTE_END}`,
+    );
+    expect(splitTerminalControlInput("one\r\ntwo")).toEqual({
+      detach: false,
+      forwarded: `${BRACKETED_PASTE_START}one\ntwo${BRACKETED_PASTE_END}`,
+    });
+    expect(splitTerminalControlInput(`\x14one\ntwo`)).toEqual({
+      detach: true,
+      forwarded: `${BRACKETED_PASTE_START}one\ntwo${BRACKETED_PASTE_END}`,
     });
   });
 });
@@ -1423,6 +1586,10 @@ describe("prompt editing helpers", () => {
     expect(movePromptCursorVertical("abcdef", 3, 1, 1)).toBe(4);
     expect(movePromptCursorVertical("abcdef", 3, 4, -1)).toBe(1);
     expect(movePromptCursorVertical("abc", 3, 3, 1)).toBe(3);
+    expect(movePromptCursorVertical("a界bcde", 4, 2, 1)).toBe(6);
+    expect(movePromptCursorVertical("a界bcde", 4, 6, -1)).toBe(2);
+    expect(movePromptCursorVertical("a🙂bcde", 4, 3, 1)).toBe(7);
+    expect(movePromptCursorVertical("a🙂bcde", 4, 7, -1)).toBe(3);
   });
 
   it("detects prompt visual-row edges for attachment and model-row navigation", () => {
@@ -1443,11 +1610,80 @@ describe("prompt editing helpers", () => {
 
   it("does not split multi-byte characters when editing or wrapping", () => {
     expect(promptDisplayRowsWithCursor("a🙂b", 2, 3).rows).toEqual([
-      { text: "a🙂", start: 0, end: 3, cursorColumn: null },
+      { text: "a", start: 0, end: 1, cursorColumn: null },
+      { text: "🙂", start: 1, end: 3, cursorColumn: null },
       { text: "b", start: 3, end: 4, cursorColumn: 0 },
     ]);
     expect(deletePromptBackward("a🙂b", 3)).toEqual({ value: "ab", cursor: 1 });
     expect(deletePromptForward("a🙂b", 1)).toEqual({ value: "ab", cursor: 1 });
+  });
+
+  it("counts CJK and emoji prompt cursor columns in terminal cells", () => {
+    const cjk = promptDisplayRowsWithCursor("a界bc", 4, 2);
+    expect(cjk.rows[0]).toEqual({ text: "a界b", start: 0, end: 3, cursorColumn: 3 });
+    expect(cjk.rows[1]).toEqual({ text: "c", start: 3, end: 4, cursorColumn: null });
+
+    const emoji = promptDisplayRowsWithCursor("a🙂bc", 4, 3);
+    expect(emoji.rows[0]).toEqual({ text: "a🙂b", start: 0, end: 4, cursorColumn: 3 });
+    expect(emoji.rows[1]).toEqual({ text: "c", start: 4, end: 5, cursorColumn: null });
+  });
+
+  it("sources and validates Cursor models by TUI interface", () => {
+    const sdkOnly: AgentChatModelInfo = {
+      id: "cursor/sdk-only",
+      modelId: "cursor/sdk-only",
+      displayName: "SDK only",
+      isDefault: true,
+      cursorAvailability: { sdk: true, cli: false },
+    };
+    const cliOnly: AgentChatModelInfo = {
+      id: "cursor/cli-only",
+      modelId: "cursor/cli-only",
+      displayName: "CLI only",
+      isDefault: false,
+      cursorAvailability: { sdk: false, cli: true },
+      cursorCliVariants: [{ modelId: "cli-only-default" }],
+    };
+    const cliReady: AgentChatModelInfo = {
+      id: "cursor/cli-ready",
+      modelId: "cursor/cli-ready",
+      displayName: "CLI ready",
+      isDefault: false,
+      reasoningEfforts: [{ effort: "high", description: "High" }],
+      cursorAvailability: { sdk: true, cli: true },
+      cursorCliVariants: [
+        { modelId: "cli-ready-default" },
+        { modelId: "cli-ready-high", reasoningEffort: "high" },
+      ],
+    };
+
+    expect(cursorSourceForInterfaceMode("chat")).toBe("sdk");
+    expect(cursorSourceForInterfaceMode("cli")).toBe("cli");
+
+    const toggled = reconcileCursorModelStateForInterface(
+      cursorModelState(),
+      "cli",
+      [sdkOnly, cliOnly],
+    );
+    expect(toggled).toMatchObject({
+      interfaceMode: "cli",
+      modelId: "cursor/cli-only",
+      model: "cli-only-default",
+      displayName: "CLI only",
+    });
+
+    expect(() => resolveCursorCliModelForLaunch(cursorModelState(), [sdkOnly]))
+      .toThrow(/available for chat only/i);
+    expect(resolveCursorCliModelForLaunch(
+      cursorModelState({
+        interfaceMode: "cli",
+        model: "cli-ready",
+        modelId: "cursor/cli-ready",
+        displayName: "CLI ready",
+        reasoningEffort: "high",
+      }),
+      [cliReady],
+    )).toBe("cli-ready-high");
   });
 });
 
@@ -1504,6 +1740,58 @@ describe("optimistic chat summaries", () => {
   });
 });
 
+describe("latestAuthFailedPrompt", () => {
+  it("restores the most recent prompt when the latest turn failed with auth", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "retry deploy", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "Authentication failed: token expired", turnId: "turn-1" },
+      },
+    ];
+
+    expect(latestAuthFailedPrompt(events)).toBe("retry deploy");
+  });
+
+  it("ignores older auth failures once a later user turn succeeds", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "first", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "error", message: "auth required", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "user_message", text: "second", turnId: "turn-2" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:03.000Z",
+        sequence: 4,
+        event: { type: "done", status: "completed", turnId: "turn-2" },
+      },
+    ];
+
+    expect(latestAuthFailedPrompt(events)).toBeNull();
+  });
+});
+
 describe("terminal mouse tracking", () => {
   it("uses one conservative cross-terminal mouse baseline", () => {
     expect(terminalMouseTrackingEnableSequence()).toBe("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
@@ -1516,8 +1804,13 @@ describe("terminal mouse tracking", () => {
 
   it("restores mouse tracking, alternate scroll, and the alt screen together", () => {
     expect(terminalInteractiveRestoreSequence()).toBe(
-      `${terminalMouseTrackingDisableSequence()}${terminalAlternateScrollDisableSequence()}${terminalAlternateScreenDisableSequence()}`,
+      `${terminalMouseTrackingDisableSequence()}${terminalAlternateScrollDisableSequence()}${terminalBracketedPasteDisableSequence()}${terminalAlternateScreenDisableSequence()}`,
     );
+  });
+
+  it("uses standard bracketed paste mode toggles for terminal control", () => {
+    expect(terminalBracketedPasteEnableSequence()).toBe("\x1b[?2004h");
+    expect(terminalBracketedPasteDisableSequence()).toBe("\x1b[?2004l");
   });
 });
 
@@ -1533,6 +1826,41 @@ describe("encodeTerminalPromptSubmit", () => {
   it("uses a delayed confirm enter for live Claude terminal submissions", () => {
     expect(encodeTerminalPromptSubmitConfirm()).toBe("\r");
     expect(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe("bracketed paste input", () => {
+  it("buffers pasted text and keeps embedded newlines as literal input", () => {
+    const result = consumeBracketedPasteInput(
+      EMPTY_BRACKETED_PASTE_STATE,
+      `${BRACKETED_PASTE_START}one\r\ntwo${BRACKETED_PASTE_END}`,
+    );
+
+    expect(result).toEqual({
+      consumed: true,
+      state: EMPTY_BRACKETED_PASTE_STATE,
+      text: "one\ntwo",
+    });
+  });
+
+  it("supports bracketed paste split across input chunks", () => {
+    const first = consumeBracketedPasteInput(EMPTY_BRACKETED_PASTE_STATE, `${BRACKETED_PASTE_START}one`);
+    expect(first).toEqual({
+      consumed: true,
+      state: { active: true, buffer: "one" },
+      text: "",
+    });
+
+    const second = consumeBracketedPasteInput(first.state, `\ntwo${BRACKETED_PASTE_END}`);
+    expect(second).toEqual({
+      consumed: true,
+      state: EMPTY_BRACKETED_PASTE_STATE,
+      text: "one\ntwo",
+    });
+  });
+
+  it("strips stray bracketed paste markers from printable prompt input", () => {
+    expect(stripBracketedPasteMarkers(`${BRACKETED_PASTE_START}alpha${BRACKETED_PASTE_END}`)).toBe("alpha");
   });
 });
 

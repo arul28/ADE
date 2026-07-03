@@ -57,7 +57,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../desktop/src/shared/types";
 import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/services/chat/projectSlashCommandDiscovery";
-import type { AdeCodeConnection, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
+import type { AdeCodeConnection, AdeCodeInterfaceMode, AdeCodeProvider, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 
@@ -79,15 +79,20 @@ export type DefaultLaneSetupResult = {
 export async function runDefaultLaneSetup(
   connection: AdeCodeConnection,
   laneId: string,
+  options: { templateId?: string | null } = {},
 ): Promise<DefaultLaneSetupResult> {
   const [templates, defaultTemplateId] = await Promise.all([
     connection.action<LaneTemplate[]>("lane", "listTemplates").catch(() => []),
     connection.action<string | null>("lane", "getDefaultTemplate").catch(() => null),
   ]);
-  const trimmedTemplateId = typeof defaultTemplateId === "string" ? defaultTemplateId.trim() : "";
-  const templateId = trimmedTemplateId && templates.some((template) => template.id === trimmedTemplateId)
-    ? trimmedTemplateId
+  const explicitTemplateId = typeof options.templateId === "string" ? options.templateId.trim() : "";
+  const trimmedTemplateId = explicitTemplateId || (typeof defaultTemplateId === "string" ? defaultTemplateId.trim() : "");
+  const templateId = trimmedTemplateId
+    ? templates.find((template) => template.id === trimmedTemplateId)?.id ?? null
     : null;
+  if (explicitTemplateId && !templateId) {
+    throw new Error(`Setup template "${explicitTemplateId}" was not found.`);
+  }
   const progress = templateId
     ? await connection.action<LaneEnvInitProgress>("lane", "applyTemplate", { laneId, templateId })
     : await connection.action<LaneEnvInitProgress>("lane", "initEnv", { laneId });
@@ -154,17 +159,35 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "droid-chat",
 ]);
 
-const RESUMABLE_TERMINAL_TOOL_TYPES = new Set([
+const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
   "claude",
-  "claude-orchestrated",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
 ]);
 
-function isClaudeTerminalSession(session: ChatTerminalSession): boolean {
+/**
+ * Resolve the CLI provider backing a tracked terminal session (or null when the
+ * session is not a provider CLI — e.g. a plain shell). Recognizes provider
+ * metadata, the tool-type prefix, and, as a legacy fallback, a `claude` resume
+ * command. Mirrors terminalSessionResumeProvider in app.tsx and
+ * isTerminalSessionLaunchable in remoteLauncher.ts. Callers should exclude
+ * CHAT_BACKED_TERMINAL_TOOL_TYPES first (a "cursor" chat vs a "cursor-cli" CLI).
+ */
+export function trackedCliTerminalProvider(session: ChatTerminalSession): AdeCodeProvider | null {
+  const metaProvider = session.resumeMetadata?.provider;
+  if (metaProvider && TRACKED_CLI_PROVIDERS.has(metaProvider as AdeCodeProvider)) {
+    return metaProvider as AdeCodeProvider;
+  }
   const toolType = session.toolType ?? "";
-  if (RESUMABLE_TERMINAL_TOOL_TYPES.has(toolType)) return true;
-  if (session.resumeMetadata?.provider === "claude") return true;
+  if (toolType.startsWith("codex")) return "codex";
+  if (toolType.startsWith("cursor")) return "cursor";
+  if (toolType.startsWith("droid")) return "droid";
+  if (toolType.startsWith("opencode")) return "opencode";
+  if (toolType.startsWith("claude")) return "claude";
   const resumeCommand = typeof session.resumeCommand === "string" ? session.resumeCommand.trim().toLowerCase() : "";
-  return Boolean(resumeCommand && /\bclaude\b/.test(resumeCommand));
+  return resumeCommand && /\bclaude\b/.test(resumeCommand) ? "claude" : null;
 }
 
 export async function listTerminalSessions(
@@ -178,7 +201,7 @@ export async function listTerminalSessions(
   return sessions.filter((session) => {
     const toolType = session.toolType ?? "";
     if (CHAT_BACKED_TERMINAL_TOOL_TYPES.has(toolType)) return false;
-    return isClaudeTerminalSession(session);
+    return trackedCliTerminalProvider(session) !== null;
   });
 }
 
@@ -216,8 +239,11 @@ export async function signalTerminal(
   await connection.action("terminal", "signal", { terminalId, signal });
 }
 
-export type StartClaudeTerminalSessionResult = {
-  provider: "claude";
+/** The five provider CLIs the TUI can launch as a tracked terminal session. */
+export type CliTerminalProvider = Extract<AdeCodeProvider, "claude" | "codex" | "cursor" | "droid" | "opencode">;
+
+export type StartCliTerminalSessionResult = {
+  provider: string;
   laneId: string;
   title: string;
   permissionMode: AgentChatPermissionMode;
@@ -261,25 +287,34 @@ export function normalizeChatTerminalSession(
   return terminalSummaryToChatSession(session);
 }
 
-export async function startClaudeTerminalSession(args: {
+/**
+ * Start a tracked provider CLI terminal via the shared `start_cli_session`
+ * action. The runtime owns launch-command construction (including Cursor CLI
+ * model-variant resolution) and title/goal derivation, so the TUI only forwards
+ * the picked provider/model/reasoning/permission plus the pane dimensions.
+ */
+export async function startCliTerminalSession(args: {
   connection: AdeCodeConnection;
+  provider: CliTerminalProvider;
   laneId: string;
   title?: string | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  fastMode?: boolean;
   permissionMode?: AgentChatPermissionMode | null;
   initialInput?: string | null;
   cols: number;
   rows: number;
-}): Promise<StartClaudeTerminalSessionResult> {
-  const result = await args.connection.tool<Omit<StartClaudeTerminalSessionResult, "session"> & {
+}): Promise<StartCliTerminalSessionResult> {
+  const result = await args.connection.tool<Omit<StartCliTerminalSessionResult, "session"> & {
     session: ChatTerminalSession | TerminalSessionSummary | null;
   }>("start_cli_session", {
     laneId: args.laneId,
-    provider: "claude",
+    provider: args.provider,
     title: args.title ?? undefined,
     model: args.model ?? undefined,
     reasoningEffort: args.reasoningEffort ?? undefined,
+    ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
     permissionMode: args.permissionMode ?? "default",
     initialInput: args.initialInput ?? undefined,
     cols: args.cols,
@@ -413,7 +448,9 @@ export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSl
 export async function getAvailableModels(
   connection: AdeCodeConnection,
   provider: AgentChatProvider,
+  options: { interfaceMode?: AdeCodeInterfaceMode } = {},
 ): Promise<AgentChatModelInfo[]> {
+  const cursorSource = options.interfaceMode === "cli" ? "cli" : "sdk";
   return await connection.action<AgentChatModelInfo[]>("chat", "getAvailableModels", {
     provider,
     // Cursor needs a live probe for SDK/CLI service tiers. Droid is also probed
@@ -422,9 +459,7 @@ export async function getAvailableModels(
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
     activateRuntime: provider === "cursor" || provider === "droid",
-    // TUI chats run cursor models through the SDK; probing only that source
-    // keeps the picker refresh off the slower cursor-agent CLI spawn.
-    ...(provider === "cursor" ? { cursorSource: "sdk" } : {}),
+    ...(provider === "cursor" ? { cursorSource } : {}),
   });
 }
 

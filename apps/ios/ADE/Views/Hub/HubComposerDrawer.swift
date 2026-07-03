@@ -94,17 +94,36 @@ struct HubInlineComposer: View {
   init(expanded: Binding<Bool>, onCreated: @escaping (HubCreatedChat) -> Void) {
     self._expanded = expanded
     self.onCreated = onCreated
+    var restoredProvider = "claude"
+    var restoredModelId = "claude-sonnet-4-6"
     if let saved = WorkComposerPreferences.load() {
+      restoredProvider = saved.provider
+      restoredModelId = saved.modelId
       _provider = State(initialValue: saved.provider)
       _modelId = State(initialValue: saved.modelId)
       _runtimeMode = State(initialValue: saved.runtimeMode)
       _reasoningEffort = State(initialValue: saved.reasoningEffort)
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
+    var restoredProjectId = ""
     if let dest = HubInlineComposer.loadLastDestination() {
+      restoredProjectId = dest.projectId
       _pickedProjectId = State(initialValue: dest.projectId)
       _selectedLaneId = State(initialValue: dest.laneId)
     }
+    // Restore the last explicitly chosen Chat/CLI interface for the restored
+    // destination project (shared per-project store with the in-project New Chat
+    // screen), honoring a stored CLI choice only when the restored model can run
+    // in CLI — otherwise open on chat without discarding the preference. Seeding
+    // the initial @State here keeps the sessionMode onChange from resetting
+    // runtimeMode to the provider default. Switching the destination project
+    // inside the open drawer reloads this per-project mode (see
+    // `reloadSessionMode(forProjectId:)`).
+    _sessionMode = State(initialValue: WorkNewSessionModePreferences.resolvedMode(
+      stored: WorkNewSessionModePreferences.load(projectId: restoredProjectId),
+      modelId: restoredModelId,
+      provider: restoredProvider
+    ))
   }
 
   // MARK: Derived state
@@ -203,7 +222,9 @@ struct HubInlineComposer: View {
         destinationControl
           .transition(.move(edge: .bottom).combined(with: .opacity))
         if !isDictating {
-          WorkSessionTypeSwitcher(selection: $sessionMode)
+          WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in
+            WorkNewSessionModePreferences.save(mode, projectId: pickedProjectId)
+          })
             .frame(maxWidth: .infinity, alignment: .center)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
@@ -465,6 +486,9 @@ struct HubInlineComposer: View {
       // Switching projects resets the lane to that project's default; the user
       // can still tap a specific lane (or auto-create) below to confirm.
       selectedLaneId = defaultLaneId(forProjectId: project.id)
+      // …and restores that project's own last Chat/CLI choice so `submit` never
+      // branches on a stale mode from the previously targeted project.
+      reloadSessionMode(forProjectId: project.id)
     } label: {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: isSelected)
@@ -884,8 +908,12 @@ struct HubInlineComposer: View {
       return
     }
     if pickedProjectId.isEmpty || !projects.contains(where: { $0.id == pickedProjectId }) {
-      pickedProjectId = syncService.activeProject?.id ?? projects[0].id
-      selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
+      let resolvedProjectId = syncService.activeProject?.id ?? projects[0].id
+      pickedProjectId = resolvedProjectId
+      selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
+      // The seeded mode was for the (now invalid) restored project; realign it
+      // with the project we actually fell back to.
+      reloadSessionMode(forProjectId: resolvedProjectId)
       return
     }
     if !isAutoCreateLane {
@@ -893,6 +921,22 @@ struct HubInlineComposer: View {
       if selectedLaneId.isEmpty || !lanes.contains(where: { $0.id == selectedLaneId }) {
         selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
       }
+    }
+  }
+
+  /// Reloads the per-project Chat/CLI interface when the destination project
+  /// changes, so the switcher and the mode `submit` branches on always reflect
+  /// the project actually being targeted (e.g. project A saved Chat, project B
+  /// saved CLI). Applies the same session-only availability fallback as init and
+  /// never writes the store — only an explicit switcher tap persists a choice.
+  private func reloadSessionMode(forProjectId projectId: String) {
+    let resolved = WorkNewSessionModePreferences.resolvedMode(
+      stored: WorkNewSessionModePreferences.load(projectId: projectId),
+      modelId: modelId,
+      provider: provider
+    )
+    if resolved != sessionMode {
+      sessionMode = resolved
     }
   }
 

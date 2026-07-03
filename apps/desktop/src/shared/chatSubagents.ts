@@ -307,6 +307,79 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
   return [...snapshots.values()];
 }
 
+export function subagentActivitySummaryFromEvents(events: AgentChatEventEnvelope[]): { totalCount: number; runningCount: number } {
+  const snapshots = new Map<string, Pick<SubagentSnapshot, "status" | "kind" | "background" | "turnId">>();
+  const terminalTurnIds = new Set<string>();
+
+  for (const envelope of events) {
+    const event = envelope.event as Record<string, unknown>;
+    const type = typeof event.type === "string" ? event.type : "";
+    const turnId = typeof event.turnId === "string" ? event.turnId : null;
+    if (turnId && (type === "done" || (type === "status" && event.turnStatus !== "started"))) {
+      terminalTurnIds.add(turnId);
+    }
+
+    if (type === "teammate.idle") {
+      const teamName = typeof event.teamName === "string" ? event.teamName : "";
+      const teammateName = typeof event.teammateName === "string" ? event.teammateName : "";
+      if (!teammateName) continue;
+      snapshots.set(`teammate:${teamName}:${teammateName}`, {
+        kind: "teammate",
+        status: "running",
+        turnId,
+      });
+      continue;
+    }
+
+    if (type === "task.completed") {
+      const teamName = typeof event.teamName === "string" ? event.teamName : "";
+      const teammateName = typeof event.teammateName === "string" ? event.teammateName : "";
+      if (!teammateName) continue;
+      snapshots.set(`teammate:${teamName}:${teammateName}`, {
+        kind: "teammate",
+        status: "completed",
+        turnId,
+      });
+      continue;
+    }
+
+    if (!type.startsWith("subagent")) continue;
+    const taskId = typeof event.taskId === "string" && event.taskId.trim() ? event.taskId.trim() : null;
+    const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
+    const id = agentId ?? taskId;
+    if (!id) continue;
+    if (taskId && id !== taskId) snapshots.delete(taskId);
+    const status = type === "subagent_result" || type === "subagent.completed"
+      ? event.status === "failed" || event.status === "stopped" || event.status === "completed"
+        ? event.status
+        : "completed"
+      : "running";
+    snapshots.set(id, {
+      kind: "subagent",
+      status,
+      background: event.background === true,
+      turnId,
+    });
+  }
+
+  let runningCount = 0;
+  for (const [id, snapshot] of snapshots) {
+    let status = snapshot.status;
+    if (
+      snapshot.kind === "subagent"
+      && status === "running"
+      && snapshot.background !== true
+      && snapshot.turnId
+      && terminalTurnIds.has(snapshot.turnId)
+    ) {
+      status = "stopped";
+      snapshots.set(id, { ...snapshot, status });
+    }
+    if (status === "running") runningCount += 1;
+  }
+  return { totalCount: snapshots.size, runningCount };
+}
+
 export function buildSubagentPaneRows(content: SubagentPaneContent): SubagentPaneRow[] {
   const foregroundSubagents = content.snapshots.filter((snap) => (
     snap.kind === "subagent"

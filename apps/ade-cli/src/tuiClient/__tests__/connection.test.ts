@@ -1,12 +1,15 @@
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectToAde } from "../connection";
 import { JsonRpcClient } from "../jsonRpcClient";
 import { startTuiHeartbeat, type TuiHeartbeat } from "../heartbeat";
+import { ProcessJsonRpcClient } from "../remoteBridge";
 import {
   appendDedupedTuiEvent,
   appendReservedTuiEvent,
@@ -91,6 +94,13 @@ const originalArgv1 = process.argv[1];
 const originalAdeHome = process.env.ADE_HOME;
 const originalAdeRpcSocketPath = process.env.ADE_RPC_SOCKET_PATH;
 const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
+
+class FakeRemoteRpcChild extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly stdin = new PassThrough();
+  readonly kill = vi.fn();
+}
 
 function restoreEnv(): void {
   process.argv[1] = originalArgv1;
@@ -470,6 +480,83 @@ describe("connectToAde embedded mode", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+	  });
+
+  it("surfaces runtime event replay gaps to subscribers", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-gap-"));
+    const socketPath = path.join(tmpDir, "ade.sock");
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string; params?: Record<string, unknown> };
+          const result = (() => {
+            if (request.method === "ade/initialize") {
+              return {
+                runtimeInfo: { multiProject: true, defaultRole: "cto" },
+                capabilities: { projects: true },
+              };
+            }
+            if (request.method === "projects.add") {
+              return { projectId: "project-daemon", rootPath: project.projectRoot };
+            }
+            if (request.method === "runtimeEvents.subscribe") {
+              return {
+                subscriptionId: "runtime-sub-gap",
+                gap: true,
+                oldestCursor: 12,
+                nextCursor: 90,
+              };
+            }
+            if (request.method === "runtimeEvents.unsubscribe") {
+              return { removed: true };
+            }
+            return null;
+          })();
+          if (!socket.destroyed && socket.writable) {
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    const connection = await connectToAde({
+      project,
+      socketPath,
+    });
+    try {
+      const gaps: unknown[] = [];
+      const callback = vi.fn();
+      const unsubscribe = await connection.subscribeRuntimeEvents(
+        {
+          category: "runtime",
+          cursor: 50,
+          limit: 10,
+          onGap: (gap) => gaps.push(gap),
+        },
+        callback,
+      );
+      expect(gaps).toEqual([{
+        gap: true,
+        oldestCursor: 12,
+        nextCursor: 90,
+        subscriptionId: "runtime-sub-gap",
+      }]);
+      expect(callback).not.toHaveBeenCalled();
+      unsubscribe();
+    } finally {
+      await connection.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("spawns the standalone binary directly when no CLI script entrypoint exists", async () => {
@@ -502,6 +589,54 @@ describe("connectToAde embedded mode", () => {
     expect((spawnCall?.[2] as { env?: Record<string, string> } | undefined)?.env?.ADE_RUNTIME_BUILD_HASH).toBeUndefined();
     expect(childProcess.child.unref).toHaveBeenCalledTimes(1);
     expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks the machine socket after taking the spawn lock", async () => {
+    const socketPath = useMissingMachineSocket();
+    const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, "stale\n0\n", "utf8");
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+    const client = mockAttachedClient();
+    childProcess.spawn.mockImplementation(() => {
+      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+      fs.writeFileSync(socketPath, "", "utf8");
+      return childProcess.child;
+    });
+
+    const connection = await connectToAde({ project });
+    await connection.close();
+    const secondConnection = await connectToAde({ project });
+    await secondConnection.close();
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("unlinks stale machine socket files before retrying daemon startup", async () => {
+    const socketPath = useMissingMachineSocket();
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+    fs.writeFileSync(socketPath, "");
+    expect(fs.existsSync(socketPath)).toBe(true);
+
+    const client = mockAttachedClient();
+    let connectAttempts = 0;
+    vi.mocked(JsonRpcClient.connect).mockImplementation(async () => {
+      connectAttempts += 1;
+      if (connectAttempts === 1) {
+        throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+      }
+      return client as unknown as JsonRpcClient;
+    });
+
+    const connection = await connectToAde({ project });
+    await connection.close();
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(connectAttempts).toBeGreaterThan(1);
+    expect(fs.existsSync(socketPath)).toBe(false);
   });
 
   it("repairs the packaged service before spawning an unmanaged machine daemon", async () => {
@@ -738,6 +873,83 @@ describe("JsonRpcClient", () => {
     }
   });
 
+  it("matches responses whose ids are echoed as strings", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string };
+          const response = `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: String(request.id),
+            result: { method: request.method },
+          })}\n`;
+          socket.write(response.slice(0, 13));
+          socket.write(response.slice(13));
+        }
+      });
+    });
+
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    try {
+      await expect(client.request("ping")).resolves.toEqual({ method: "ping" });
+    } finally {
+      client.close();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("handles large Content-Length frames split across many chunks", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => {
+      resolveServerSocket(socket);
+    });
+
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const notification = new Promise((resolve) => {
+        client.onNotification("chat/event", resolve);
+      });
+      const message = "x".repeat(128 * 1024);
+      const payload = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "chat/event",
+        params: { message },
+      });
+      const framed = Buffer.concat([
+        Buffer.from(`Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n`, "ascii"),
+        Buffer.from(payload, "utf8"),
+      ]);
+      for (let offset = 0; offset < framed.length; offset += 1024) {
+        socket.write(framed.subarray(offset, offset + 1024));
+      }
+
+      await expect(notification).resolves.toEqual({ message });
+    } finally {
+      client.close();
+      socket.destroy();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("fires onClose when the socket drops unexpectedly", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
     const socketPath = path.join(tmpDir, "rpc.sock");
@@ -777,6 +989,84 @@ describe("JsonRpcClient", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("times out pending requests by tearing down the socket", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => resolveServerSocket(socket));
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const closed = new Promise<void>((resolve) => client.onClose(resolve));
+      const first = client.request("slow", undefined, { timeoutMs: 25 });
+      const second = client.request("also-slow", undefined, { timeoutMs: 1_000 });
+
+      await expect(first).rejects.toThrow(/timed out/i);
+      await expect(second).rejects.toThrow(/timed out|closed/i);
+      await expect(closed).resolves.toBeUndefined();
+      await expect(client.request("after-timeout")).rejects.toThrow(/closed/i);
+    } finally {
+      client.close();
+      socket.destroy();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the connection on parse garbage instead of continuing", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => resolveServerSocket(socket));
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const closed = new Promise<void>((resolve) => client.onClose(resolve));
+      const pending = client.request("ping", undefined, { timeoutMs: 1_000 });
+      socket.write("this is not json\n");
+
+      await expect(pending).rejects.toThrow(/Invalid JSON-RPC response|non-JSON output|closed/i);
+      await expect(closed).resolves.toBeUndefined();
+    } finally {
+      client.close();
+      socket.destroy();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("ProcessJsonRpcClient", () => {
+  it("matches string response ids and clears pending RPC timers", async () => {
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
+    const child = new FakeRemoteRpcChild();
+    const client = new ProcessJsonRpcClient(child as never);
+
+    const resolved = client.request("ade/ping");
+    child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: "1", result: { ok: true } })}\n`);
+    await expect(resolved).resolves.toEqual({ ok: true });
+
+    const rejected = client.request("ade/fail");
+    child.stdout.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { code: -32000, message: "remote failed" },
+    })}\n`);
+    await expect(rejected).rejects.toThrow("remote failed");
+
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
+    client.close();
+    clearTimeoutSpy.mockRestore();
+  });
 });
 
 async function loadStateModule(home: string): Promise<typeof import("../state")> {
@@ -805,18 +1095,22 @@ describe("ade-code TUI state", () => {
       lastChatByProjectLane: {},
       lastLaneId: null,
       lastLaneByProject: {},
+      draftKind: "chat",
+      draftKindByProject: {},
     });
   });
 
   it("persists the last lane id with last chat pointers", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-tui-state-"));
-    const { loadAdeCodeState, saveAdeCodeState } = await loadStateModule(home);
+    const { loadAdeCodeState, saveAdeCodeStateAsync } = await loadStateModule(home);
 
-    saveAdeCodeState({
+    await saveAdeCodeStateAsync({
       lastChatByLane: { "lane-2": "chat-9" },
       lastChatByProjectLane: {},
       lastLaneId: "lane-2",
       lastLaneByProject: {},
+      draftKind: "cli",
+      draftKindByProject: {},
     });
 
     expect(loadAdeCodeState()).toEqual({
@@ -824,6 +1118,8 @@ describe("ade-code TUI state", () => {
       lastChatByProjectLane: {},
       lastLaneId: "lane-2",
       lastLaneByProject: {},
+      draftKind: "cli",
+      draftKindByProject: {},
     });
   });
 });

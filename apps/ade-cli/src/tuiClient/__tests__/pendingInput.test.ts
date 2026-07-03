@@ -3,12 +3,15 @@ import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../../de
 import {
   answerForQuestion,
   buildPendingInputAnswers,
+  cancelPendingQuestionDigitSelection,
+  convertPendingQuestionDigitSelectionToText,
   createPendingQuestionSelectionState,
   latestPendingApproval,
   movePendingQuestionFocus,
   movePendingQuestionOption,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
+  selectPendingQuestionDigit,
   selectPendingQuestionOptionIndex,
 } from "../pendingInput";
 
@@ -30,6 +33,16 @@ const baseRequest: PendingInputRequest = {
   blocking: true,
   canProceedWithoutAnswer: false,
 };
+
+function questionApproval(request: PendingInputRequest = baseRequest) {
+  return {
+    itemId: "item-questions",
+    description: "Need input",
+    highStakes: false,
+    mode: "question" as const,
+    request,
+  };
+}
 
 describe("pendingInput", () => {
   it("maps option numbers to structured answers", () => {
@@ -157,13 +170,7 @@ describe("pendingInput", () => {
         },
       ],
     };
-    const approval = {
-      itemId: "item-questions",
-      description: "Need input",
-      highStakes: false,
-      mode: "question" as const,
-      request,
-    };
+    const approval = questionApproval(request);
 
     const initial = createPendingQuestionSelectionState(approval)!;
     expect(pendingQuestionSelectionValue(request, initial)).toBe("recommended");
@@ -197,13 +204,7 @@ describe("pendingInput", () => {
         multiSelect: true,
       }],
     };
-    const approval = {
-      itemId: "item-multi",
-      description: "Need input",
-      highStakes: false,
-      mode: "question" as const,
-      request,
-    };
+    const approval = questionApproval(request);
 
     const initial = createPendingQuestionSelectionState(approval)!;
     expect(pendingQuestionSelectionValue(request, initial)).toBeNull();
@@ -229,5 +230,124 @@ describe("pendingInput", () => {
 
     expect(pendingQuestionAnsweredCount(request, { path: "manual" })).toBe(1);
     expect(pendingQuestionAnsweredCount(request, { path: "manual", second: "yes" })).toBe(2);
+  });
+
+  it("selects a numbered option provisionally until Enter submits the highlighted answer", () => {
+    const initial = createPendingQuestionSelectionState(questionApproval())!;
+    const result = selectPendingQuestionDigit(baseRequest, initial, "2");
+
+    expect(result.selected).toBe(true);
+    expect(pendingQuestionSelectionValue(baseRequest, result.state)).toBe("manual");
+    expect(result.state.answers).toEqual({});
+    expect(result.state.pendingDigitSelection).toEqual(expect.objectContaining({
+      digit: "2",
+      previousOptionIndex: 0,
+      questionId: "path",
+    }));
+  });
+
+  it("converts a provisional digit into free text and restores the previous option", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        options: [
+          { label: "One", value: "one" },
+          { label: "Two", value: "two" },
+          { label: "Three", value: "three" },
+        ],
+      }],
+    };
+    const initial = createPendingQuestionSelectionState(questionApproval(request))!;
+    const selected = selectPendingQuestionDigit(request, initial, "3").state;
+
+    const converted = convertPendingQuestionDigitSelectionToText(request, selected, " apples");
+
+    expect(converted?.text).toBe("3 apples");
+    expect(converted?.state.pendingDigitSelection).toBeNull();
+    expect(converted ? pendingQuestionSelectionValue(request, converted.state) : null).toBe("one");
+  });
+
+  it("restores the original default when a provisional digit is cancelled before Enter", () => {
+    const initial = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionDigit(baseRequest, initial, "2").state;
+
+    const cancelled = cancelPendingQuestionDigitSelection(selected);
+
+    expect(cancelled.cancelled).toBe(true);
+    expect(cancelled.state.pendingDigitSelection).toBeNull();
+    expect(pendingQuestionSelectionValue(baseRequest, cancelled.state)).toBe("recommended");
+  });
+
+  it("lets Backspace-cancelled digit input fall back to plain typed text", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        options: [
+          { label: "One", value: "one" },
+          { label: "Two", value: "two" },
+          { label: "Three", value: "three" },
+        ],
+      }],
+    };
+    const initial = createPendingQuestionSelectionState(questionApproval(request))!;
+    const selected = selectPendingQuestionDigit(request, initial, "3").state;
+
+    const cancelled = cancelPendingQuestionDigitSelection(selected);
+
+    expect(cancelled.cancelled).toBe(true);
+    expect(convertPendingQuestionDigitSelectionToText(request, cancelled.state, " apples")).toBeNull();
+    expect(pendingQuestionSelectionValue(request, cancelled.state)).toBe("one");
+    expect(answerForQuestion(request.questions[0]!, "3 apples")).toBe("3 apples");
+  });
+
+  it("leaves out-of-range digits for the composer", () => {
+    const initial = createPendingQuestionSelectionState(questionApproval())!;
+    const result = selectPendingQuestionDigit(baseRequest, initial, "9");
+
+    expect(result.selected).toBe(false);
+    expect(result.state).toBe(initial);
+    expect(convertPendingQuestionDigitSelectionToText(baseRequest, result.state, "9")).toBeNull();
+  });
+
+  it("replaces a provisional quick-select on rapid in-range digits", () => {
+    const selectedOne = selectPendingQuestionDigit(baseRequest, createPendingQuestionSelectionState(questionApproval())!, "1").state;
+    const selectedTwo = selectPendingQuestionDigit(baseRequest, selectedOne, "2").state;
+
+    expect(pendingQuestionSelectionValue(baseRequest, selectedTwo)).toBe("manual");
+    expect(selectedTwo.pendingDigitSelection).toEqual(expect.objectContaining({
+      digit: "2",
+      previousOptionIndex: 0,
+    }));
+  });
+
+  it("converts an out-of-range second digit after a provisional quick-select into text", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        options: [
+          { label: "One", value: "one" },
+          { label: "Two", value: "two" },
+          { label: "Three", value: "three" },
+        ],
+      }],
+    };
+    const selectedThree = selectPendingQuestionDigit(request, createPendingQuestionSelectionState(questionApproval(request))!, "3").state;
+    const ignoredNine = selectPendingQuestionDigit(request, selectedThree, "9");
+    const converted = convertPendingQuestionDigitSelectionToText(request, ignoredNine.state, "9");
+
+    expect(ignoredNine.selected).toBe(false);
+    expect(converted?.text).toBe("39");
+    expect(converted ? pendingQuestionSelectionValue(request, converted.state) : null).toBe("one");
+  });
+
+  it("keeps direct option selection immediate for click-style callers", () => {
+    const initial = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionOptionIndex(baseRequest, initial, 1);
+
+    expect(pendingQuestionSelectionValue(baseRequest, selected)).toBe("manual");
+    expect(selected.pendingDigitSelection).toBeNull();
   });
 });

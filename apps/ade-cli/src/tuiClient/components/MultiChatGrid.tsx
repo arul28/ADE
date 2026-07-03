@@ -15,6 +15,7 @@ import {
   type MultiViewTile,
 } from "../multiChatLayout";
 import { useHitTestTarget } from "../hitTestRegistry";
+import { terminalSessionProvider } from "../closedCliSessions";
 import { theme } from "../theme";
 
 type TileData = {
@@ -104,6 +105,7 @@ function TerminalChatTile({
         preview={preview}
         liveChunks={liveChunks}
         attached={attached}
+        claudeChrome={terminalSessionProvider(terminal) === "claude"}
         width={innerWidth}
         height={Math.max(1, rect.h - 3)}
         scrollOffset={scrollOffset}

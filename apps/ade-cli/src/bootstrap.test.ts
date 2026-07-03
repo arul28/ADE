@@ -35,7 +35,71 @@ describe("createEventBuffer", () => {
     const result = buffer.drain(0);
     // Should have IDs 3, 4, 5 (the oldest 1, 2 were evicted)
     expect(result.events.map((e) => e.id)).toEqual([3, 4, 5]);
+    expect(result.gap).toBe(true);
+    expect(result.oldestCursor).toBe(3);
     expect(result.events[0]!.payload).toEqual({ i: 2 });
+  });
+
+  it("reports no gap when the next retained event is contiguous with the cursor", () => {
+    const buffer = createEventBuffer(3);
+
+    for (let i = 0; i < 5; i++) {
+      buffer.push({ timestamp: `2026-03-01T00:0${i}:00Z`, category: "runtime", payload: { i } });
+    }
+
+    const result = buffer.drain(2);
+    expect(result.events.map((event) => event.id)).toEqual([3, 4, 5]);
+    expect(result.gap).toBe(false);
+    expect(result.oldestCursor).toBe(3);
+  });
+
+  it("evicts by retained byte budget and reports the replay gap", () => {
+    const buffer = createEventBuffer(10, { maxBytes: 260, maxEventBytes: 260 });
+
+    for (let i = 0; i < 4; i++) {
+      buffer.push({
+        timestamp: `2026-03-01T00:0${i}:00Z`,
+        category: "pty",
+        payload: { data: "x".repeat(90), i },
+      });
+    }
+
+    const result = buffer.drain(0);
+    expect(result.events.length).toBeLessThan(4);
+    expect(result.events.at(-1)?.id).toBe(4);
+    expect(result.gap).toBe(true);
+    expect(result.oldestCursor).toBeGreaterThan(1);
+  });
+
+  it("does not retain events larger than the per-event cap but still notifies live subscribers", () => {
+    const buffer = createEventBuffer(10, { maxBytes: 1024, maxEventBytes: 64 });
+    const seen: BufferedEvent[] = [];
+    buffer.subscribe((event) => seen.push(event));
+
+    buffer.push({
+      timestamp: "2026-03-01T00:00:00Z",
+      category: "pty",
+      payload: { data: "x".repeat(200) },
+    });
+
+    expect(seen).toHaveLength(1);
+    const result = buffer.drain(0);
+    expect(result.events).toEqual([]);
+    expect(result.gap).toBe(true);
+    expect(result.nextCursor).toBe(1);
+  });
+
+  it("reports a replay gap when an oversized event is skipped between retained events", () => {
+    const buffer = createEventBuffer(10, { maxBytes: 4096, maxEventBytes: 180 });
+
+    buffer.push({ timestamp: "2026-03-01T00:00:00Z", category: "runtime", payload: { data: "small-1" } });
+    buffer.push({ timestamp: "2026-03-01T00:00:01Z", category: "runtime", payload: { data: "x".repeat(500) } });
+    buffer.push({ timestamp: "2026-03-01T00:00:02Z", category: "runtime", payload: { data: "small-2" } });
+
+    const result = buffer.drain(1);
+    expect(result.events.map((event) => event.id)).toEqual([3]);
+    expect(result.gap).toBe(true);
+    expect(result.oldestCursor).toBe(3);
   });
 
   it("drains events after cursor", () => {

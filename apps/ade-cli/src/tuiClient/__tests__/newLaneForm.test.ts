@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { LaneLinearIssue, LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { LANE_COLOR_PALETTE } from "../../../../desktop/src/shared/laneColorPalette";
 import {
   NEW_LANE_COLOR_OPTIONS,
@@ -23,16 +23,44 @@ function lane(id: string, name: string): LaneSummary {
   return { id, name } as LaneSummary;
 }
 
+function linearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
+  return {
+    id: "issue-1",
+    identifier: "ADE-123",
+    title: "Fix setup parity",
+    description: null,
+    url: "https://linear.app/ade/issue/ADE-123/fix-setup-parity",
+    projectId: "project-1",
+    projectSlug: "ade",
+    projectName: "ADE",
+    teamId: "team-1",
+    teamKey: "ADE",
+    teamName: "ADE",
+    stateId: "state-1",
+    stateName: "Todo",
+    stateType: "unstarted",
+    priority: 0,
+    priorityLabel: "none",
+    labels: [],
+    assigneeId: null,
+    assigneeName: null,
+    branchName: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
 describe("newLaneFormFields", () => {
   it("shows mode-specific fields for each start mode, always ending in the create button", () => {
     const primary = newLaneFormFields("primary").map((field) => field.name);
-    expect(primary).toEqual(["name", "color", "start", "baseBranch", "create"]);
+    expect(primary).toEqual(["name", "color", "start", "baseBranch", "linearIssue", "templateId", "create"]);
 
     const child = newLaneFormFields("child", { activeLaneName: "Current" }).map((field) => field.name);
-    expect(child).toEqual(["name", "color", "start", "parent", "baseBranch", "create"]);
+    expect(child).toEqual(["name", "color", "start", "parent", "baseBranch", "linearIssue", "templateId", "create"]);
 
     const imported = newLaneFormFields("import").map((field) => field.name);
-    expect(imported).toEqual(["name", "color", "start", "branchSource", "branch", "baseBranch", "create"]);
+    expect(imported).toEqual(["name", "color", "start", "branchSource", "branch", "baseBranch", "linearIssue", "templateId", "create"]);
   });
 
   it("keeps the start row at the same index across modes so focus stays put", () => {
@@ -113,12 +141,12 @@ describe("branch typeahead", () => {
 
 describe("newLaneFormFieldRowOffsets", () => {
   it("matches the NewLaneFormPane block heights (start = 5 rows, typeahead +4, create = 2)", () => {
-    // primary: name(1), color(4), start(7), baseBranch(12, +typeahead), create(19)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("primary"))).toEqual([1, 4, 7, 12, 19]);
-    // child has no typeahead: name(1), color(4), start(7), parent(12), base(15), create(18)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("child"))).toEqual([1, 4, 7, 12, 15, 18]);
-    // import: name(1), color(4), start(7), source(12), branch(15, +typeahead), base(22), create(25)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("import"))).toEqual([1, 4, 7, 12, 15, 22, 25]);
+    // primary: name(1), color(4), start(7), baseBranch(12, +typeahead), issue(19), template(22), create(25)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("primary"))).toEqual([1, 4, 7, 12, 19, 22, 25]);
+    // child has no typeahead: name(1), color(4), start(7), parent(12), base(15), issue(18), template(21), create(24)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("child"))).toEqual([1, 4, 7, 12, 15, 18, 21, 24]);
+    // import: name(1), color(4), start(7), source(12), branch(15, +typeahead), base(22), issue(25), template(28), create(31)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("import"))).toEqual([1, 4, 7, 12, 15, 22, 25, 28, 31]);
     expect(NEW_LANE_TYPEAHEAD_ROWS).toBe(4);
   });
 });
@@ -235,5 +263,51 @@ describe("buildNewLaneSubmission", () => {
       lanes,
       activeLaneId: null,
     })).toEqual({ kind: "error", message: "Branch is required." });
+  });
+
+  it("attaches Linear issue metadata and selected setup template to create payloads", () => {
+    const issue = linearIssue();
+
+    expect(buildNewLaneSubmission({
+      values: { name: "feature-x", start: "primary", linearIssue: "ADE-123", templateId: "tpl-default" },
+      lanes,
+      activeLaneId: "lane-1",
+      linearIssue: issue,
+    })).toEqual({
+      kind: "create",
+      payload: {
+        name: "feature-x",
+        branchName: "ade-123-fix-setup-parity",
+        linearIssue: issue,
+      },
+      templateId: "tpl-default",
+    });
+
+    expect(buildNewLaneSubmission({
+      values: { name: "stacked", start: "child", linearIssue: "ADE-123" },
+      lanes,
+      activeLaneId: "lane-2",
+      linearIssue: issue,
+    })).toMatchObject({
+      kind: "createChild",
+      payload: {
+        name: "stacked",
+        parentLaneId: "lane-2",
+        branchName: "ade-123-fix-setup-parity",
+        linearIssue: issue,
+      },
+    });
+  });
+
+  it("rejects Linear issue attachment for imported branches", () => {
+    expect(buildNewLaneSubmission({
+      values: { name: "adopted", start: "import", branch: "origin/feature-y", linearIssue: "ADE-123" },
+      lanes,
+      activeLaneId: null,
+      linearIssue: linearIssue(),
+    })).toEqual({
+      kind: "error",
+      message: "Linear issue attachment is not supported when importing an existing branch.",
+    });
   });
 });

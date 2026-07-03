@@ -2,11 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+export type AdeCodeDraftKind = "chat" | "cli";
+
 export type AdeCodeState = {
   lastChatByLane: Record<string, string>;
   lastChatByProjectLane: Record<string, Record<string, string>>;
   lastLaneId: string | null;
   lastLaneByProject: Record<string, string>;
+  draftKind: AdeCodeDraftKind;
+  draftKindByProject: Record<string, AdeCodeDraftKind>;
 };
 
 const STATE_DIR = path.join(os.homedir(), ".ade");
@@ -15,6 +19,8 @@ const STATE_LOCK_FILE = `${STATE_FILE}.lock`;
 const STATE_LOCK_TIMEOUT_MS = 2_000;
 const STATE_LOCK_STALE_MS = 30_000;
 const STATE_LOCK_RETRY_MS = 25;
+
+let stateWriteQueue: Promise<void> = Promise.resolve();
 
 export function loadAdeCodeState(): AdeCodeState {
   try {
@@ -26,38 +32,61 @@ export function loadAdeCodeState(): AdeCodeState {
 }
 
 export function saveAdeCodeState(state: AdeCodeState): void {
-  withStateLock(() => writeAdeCodeStateUnlocked(state));
+  void saveAdeCodeStateAsync(state);
 }
 
-function writeAdeCodeStateUnlocked(state: AdeCodeState): void {
+export function saveAdeCodeStateAsync(state: AdeCodeState): Promise<void> {
+  return enqueueStateWrite(() => withStateLock(async () => {
+    await writeAdeCodeStateUnlocked(state);
+  }));
+}
+
+async function writeAdeCodeStateUnlocked(state: AdeCodeState): Promise<void> {
   try {
     const { dir, path: statePath } = getStatePaths();
-    fs.mkdirSync(dir, { recursive: true });
+    await fs.promises.mkdir(dir, { recursive: true });
     const tempPath = `${statePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2), "utf8");
-    fs.renameSync(tempPath, statePath);
+    await fs.promises.writeFile(tempPath, JSON.stringify(state, null, 2), "utf8");
+    await fs.promises.rename(tempPath, statePath);
   } catch {
     // best-effort persistence; ignore
+  }
+}
+
+async function readAdeCodeStateUnlocked(): Promise<AdeCodeState> {
+  try {
+    const raw = await fs.promises.readFile(getStatePath(), "utf8");
+    return normalizeAdeCodeState(JSON.parse(raw));
+  } catch {
+    return emptyAdeCodeState();
   }
 }
 
 export function scopedAdeCodeState(
   state: AdeCodeState,
   projectRoot: string,
-): Pick<AdeCodeState, "lastChatByLane" | "lastLaneId"> {
+): Pick<AdeCodeState, "lastChatByLane" | "lastLaneId" | "draftKind"> {
   const projectKey = normalizeProjectKey(projectRoot);
   return {
     lastChatByLane: state.lastChatByProjectLane[projectKey] ?? state.lastChatByLane,
     lastLaneId: state.lastLaneByProject[projectKey] ?? state.lastLaneId,
+    draftKind: state.draftKindByProject[projectKey] ?? state.draftKind,
   };
 }
 
 export function saveAdeCodeProjectState(
   projectRoot: string,
-  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId">,
+  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId" | "draftKind">,
 ): void {
-  withStateLock(() => {
-    const current = loadAdeCodeState();
+  void saveAdeCodeProjectStateAsync(projectRoot, projectState);
+}
+
+export function saveAdeCodeProjectStateAsync(
+  projectRoot: string,
+  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId" | "draftKind">,
+): Promise<void> {
+  return enqueueStateWrite(() => withStateLock(async () => {
+    const current = await readAdeCodeStateUnlocked();
     const projectKey = normalizeProjectKey(projectRoot);
     current.lastChatByProjectLane[projectKey] = { ...projectState.lastChatByLane };
     if (projectState.lastLaneId) {
@@ -65,10 +94,16 @@ export function saveAdeCodeProjectState(
     } else {
       delete current.lastLaneByProject[projectKey];
     }
+    current.draftKindByProject[projectKey] = projectState.draftKind;
     current.lastChatByLane = { ...projectState.lastChatByLane };
     current.lastLaneId = projectState.lastLaneId;
-    writeAdeCodeStateUnlocked(current);
-  });
+    current.draftKind = projectState.draftKind;
+    await writeAdeCodeStateUnlocked(current);
+  }));
+}
+
+export function flushAdeCodeStateWrites(): Promise<void> {
+  return stateWriteQueue;
 }
 
 export function normalizeAdeCodeState(value: unknown): AdeCodeState {
@@ -80,6 +115,8 @@ export function normalizeAdeCodeState(value: unknown): AdeCodeState {
     lastChatByProjectLane: normalizeNestedStringRecord(parsed.lastChatByProjectLane),
     lastLaneId: typeof parsed.lastLaneId === "string" ? parsed.lastLaneId : null,
     lastLaneByProject: normalizeStringRecord(parsed.lastLaneByProject),
+    draftKind: normalizeDraftKind(parsed.draftKind),
+    draftKindByProject: normalizeDraftKindRecord(parsed.draftKindByProject),
   };
 }
 
@@ -89,6 +126,8 @@ function emptyAdeCodeState(): AdeCodeState {
     lastChatByProjectLane: {},
     lastLaneId: null,
     lastLaneByProject: {},
+    draftKind: "chat",
+    draftKindByProject: {},
   };
 }
 
@@ -109,36 +148,42 @@ function getStatePath(): string {
   return getStatePaths().path;
 }
 
-function withStateLock(write: () => void): void {
+function enqueueStateWrite(write: () => Promise<void>): Promise<void> {
+  const run = stateWriteQueue.then(write, write);
+  stateWriteQueue = run.catch(() => undefined);
+  return run;
+}
+
+async function withStateLock(write: () => Promise<void>): Promise<void> {
   const { dir, lockPath } = getStatePaths();
-  let fd: number | null = null;
+  let handle: fs.promises.FileHandle | null = null;
   const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS;
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    while (fd === null) {
+    await fs.promises.mkdir(dir, { recursive: true });
+    while (handle === null) {
       try {
-        fd = fs.openSync(lockPath, "wx");
-        fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+        handle = await fs.promises.open(lockPath, "wx");
+        await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
         if (code !== "EEXIST") throw error;
-        removeStaleStateLock(lockPath);
+        await removeStaleStateLock(lockPath);
         if (Date.now() >= deadline) return;
-        sleepSync(STATE_LOCK_RETRY_MS);
+        await delay(STATE_LOCK_RETRY_MS);
       }
     }
-    write();
+    await write();
   } catch {
     // best-effort persistence; ignore
   } finally {
-    if (fd !== null) {
+    if (handle !== null) {
       try {
-        fs.closeSync(fd);
+        await handle.close();
       } catch {
         // ignore
       }
       try {
-        fs.unlinkSync(lockPath);
+        await fs.promises.unlink(lockPath);
       } catch {
         // ignore
       }
@@ -146,19 +191,21 @@ function withStateLock(write: () => void): void {
   }
 }
 
-function removeStaleStateLock(lockPath: string): void {
+async function removeStaleStateLock(lockPath: string): Promise<void> {
   try {
-    const stat = fs.statSync(lockPath);
+    const stat = await fs.promises.stat(lockPath);
     if (Date.now() - stat.mtimeMs > STATE_LOCK_STALE_MS) {
-      fs.unlinkSync(lockPath);
+      await fs.promises.unlink(lockPath);
     }
   } catch {
     // ignore
   }
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function normalizeStringRecord(value: unknown): Record<string, string> {
@@ -178,6 +225,21 @@ function normalizeNestedStringRecord(value: unknown): Record<string, Record<stri
   for (const [key, entry] of Object.entries(value)) {
     const child = normalizeStringRecord(entry);
     if (Object.keys(child).length > 0) normalized[key] = child;
+  }
+  return normalized;
+}
+
+function normalizeDraftKind(value: unknown): AdeCodeDraftKind {
+  return value === "cli" ? "cli" : "chat";
+}
+
+function normalizeDraftKindRecord(value: unknown): Record<string, AdeCodeDraftKind> {
+  const normalized: Record<string, AdeCodeDraftKind> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === "chat" || entry === "cli") {
+      normalized[key] = entry;
+    }
   }
   return normalized;
 }

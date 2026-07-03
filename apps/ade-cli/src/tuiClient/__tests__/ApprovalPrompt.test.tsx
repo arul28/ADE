@@ -63,6 +63,8 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("Banner text");
     expect(frame).toContain("Compact");
     expect(frame).toContain("Detailed");
+    expect(frame).toContain("1-9");
+    expect(frame).toContain("pick");
     expect(frame).toContain("enter");
     expect(frame).toContain("next/send");
   });

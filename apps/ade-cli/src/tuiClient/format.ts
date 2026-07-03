@@ -384,8 +384,61 @@ function appendBlockTokens(tokens: Token[], blocks: AssistantMarkdownBlock[]): v
   }
 }
 
-export function parseAssistantMarkdown(text: string): AssistantMarkdownBlock[] {
-  if (!text.length) return [];
+const MARKDOWN_CACHE_MAX_ENTRIES = 500;
+const MARKDOWN_CACHE_MAX_BYTES = 50 * 1024 * 1024;
+const markdownCache = new Map<string, { blocks: AssistantMarkdownBlock[]; bytes: number }>();
+let markdownCacheBytes = 0;
+
+function estimateMarkdownBytes(text: string, blocks: AssistantMarkdownBlock[]): number {
+  let bytes = text.length * 2 + 32;
+  for (const block of blocks) {
+    bytes += 48;
+    switch (block.kind) {
+      case "code":
+        bytes += (block.language?.length ?? 0) * 2;
+        for (const line of block.lines) bytes += line.length * 2 + 16;
+        break;
+      case "table":
+        for (const header of block.headers) bytes += header.length * 2 + 16;
+        for (const row of block.rows) {
+          for (const cell of row) bytes += cell.length * 2 + 16;
+        }
+        break;
+      case "heading":
+      case "paragraph":
+      case "quote":
+      case "bullet":
+      case "numbered":
+        bytes += block.text.length * 2;
+        break;
+      case "hr":
+        break;
+      default:
+        break;
+    }
+  }
+  return bytes;
+}
+
+function rememberMarkdownParse(text: string, blocks: AssistantMarkdownBlock[]): AssistantMarkdownBlock[] {
+  const bytes = estimateMarkdownBytes(text, blocks);
+  markdownCache.set(text, { blocks, bytes });
+  markdownCacheBytes += bytes;
+  while (markdownCache.size > MARKDOWN_CACHE_MAX_ENTRIES || markdownCacheBytes > MARKDOWN_CACHE_MAX_BYTES) {
+    const oldest = markdownCache.keys().next().value;
+    if (oldest === undefined) break;
+    const evicted = markdownCache.get(oldest);
+    markdownCache.delete(oldest);
+    if (evicted) markdownCacheBytes -= evicted.bytes;
+    if (markdownCache.size === 0) {
+      markdownCacheBytes = 0;
+      break;
+    }
+  }
+  return blocks;
+}
+
+function parseAssistantMarkdownUncached(text: string): AssistantMarkdownBlock[] {
   const blocks: AssistantMarkdownBlock[] = [];
   try {
     const tokens = Lexer.lex(text.replace(/\r\n/g, "\n"));
@@ -397,6 +450,26 @@ export function parseAssistantMarkdown(text: string): AssistantMarkdownBlock[] {
     blocks.push({ kind: "paragraph", text: text.trim() });
   }
   return blocks;
+}
+
+export function parseAssistantMarkdown(text: string): AssistantMarkdownBlock[] {
+  if (!text.length) return [];
+  const hit = markdownCache.get(text);
+  if (hit) {
+    markdownCache.delete(text);
+    markdownCache.set(text, hit);
+    return hit.blocks;
+  }
+  return rememberMarkdownParse(text, parseAssistantMarkdownUncached(text));
+}
+
+export function __clearAssistantMarkdownCacheForTests(): void {
+  markdownCache.clear();
+  markdownCacheBytes = 0;
+}
+
+export function __getAssistantMarkdownCacheStatsForTests(): { entries: number; bytes: number } {
+  return { entries: markdownCache.size, bytes: markdownCacheBytes };
 }
 
 export function latestExpandableFailureId(events: AgentChatEventEnvelope[]): string | null {

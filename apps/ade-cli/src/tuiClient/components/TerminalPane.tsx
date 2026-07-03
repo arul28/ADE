@@ -18,6 +18,13 @@ const { Terminal: HeadlessTerminal } = headlessXtermModule;
 type TerminalPaneProps = {
   title: string;
   terminalId?: string | null;
+  /** Provider label shown in the control/preview status ("Claude", "Codex", …). Defaults to Claude Code. */
+  cliLabel?: string | null;
+  /**
+   * Apply the Claude-specific closed-transcript chrome stripping (spinner/box
+   * noise filters). Off for other providers, which get a plain control strip.
+   */
+  claudeChrome?: boolean;
   preview: ChatTerminalPreviewResult | null;
   liveChunks: string[];
   attached: boolean;
@@ -212,6 +219,26 @@ function compactClosedTerminalTranscript(value: string): string[] {
   return compacted;
 }
 
+/**
+ * Provider-neutral closed-transcript cleanup: strip terminal control codes and
+ * collapse blank runs, without the Claude-specific spinner/box noise filters.
+ */
+function compactTerminalTranscript(value: string): string[] {
+  const lines = stripTerminalControls(value).split(/\r\n|\n|\r/);
+  const compacted: string[] = [];
+  let lastWasBlank = false;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\u00a0/g, " ").trimEnd();
+    const blank = line.trim().length === 0;
+    if (blank && lastWasBlank) continue;
+    compacted.push(line);
+    lastWasBlank = blank;
+  }
+  while (compacted.length && compacted[0]!.trim().length === 0) compacted.shift();
+  while (compacted.length && compacted[compacted.length - 1]!.trim().length === 0) compacted.pop();
+  return compacted;
+}
+
 function rgbColor(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const safe = Math.max(0, Math.min(0xffffff, Math.floor(value)));
@@ -248,16 +275,16 @@ function styleForCell(cell: TerminalSnapshotCell): TerminalRunStyle {
     backgroundColor = color;
     color = nextColor;
   }
-  return {
-    ...(color ? { color } : {}),
-    ...(backgroundColor ? { backgroundColor } : {}),
-    ...(cell.bold ? { bold: true } : {}),
-    ...(cell.dim ? { dim: true } : {}),
-    ...(cell.italic ? { italic: true } : {}),
-    ...(cell.underline ? { underline: true } : {}),
-    ...(cell.inverse ? { inverse: true } : {}),
-    ...(cell.strikethrough ? { strikethrough: true } : {}),
-  };
+  const style: TerminalRunStyle = {};
+  if (color) style.color = color;
+  if (backgroundColor) style.backgroundColor = backgroundColor;
+  if (cell.bold) style.bold = true;
+  if (cell.dim) style.dim = true;
+  if (cell.italic) style.italic = true;
+  if (cell.underline) style.underline = true;
+  if (cell.inverse) style.inverse = true;
+  if (cell.strikethrough) style.strikethrough = true;
+  return style;
 }
 
 function styleKey(style: TerminalRunStyle): string {
@@ -296,19 +323,38 @@ function snapshotCellFromXtermCell(cell: XtermBufferCell | undefined): TerminalS
   }
   const fgMode = cell.isFgRGB() ? "rgb" : cell.isFgPalette() ? "palette" : "default";
   const bgMode = cell.isBgRGB() ? "rgb" : cell.isBgPalette() ? "palette" : "default";
-  return {
+  const snapshot: TerminalSnapshotCell = {
     text: cell.getChars() || " ",
     fg: fgMode === "default" ? null : cell.getFgColor(),
     bg: bgMode === "default" ? null : cell.getBgColor(),
     fgMode,
     bgMode,
-    ...(cell.isBold() ? { bold: true } : {}),
-    ...(cell.isDim() ? { dim: true } : {}),
-    ...(cell.isItalic() ? { italic: true } : {}),
-    ...(cell.isUnderline() ? { underline: true } : {}),
-    ...(cell.isInverse() ? { inverse: true } : {}),
-    ...(cell.isStrikethrough() ? { strikethrough: true } : {}),
   };
+  if (cell.isBold()) snapshot.bold = true;
+  if (cell.isDim()) snapshot.dim = true;
+  if (cell.isItalic()) snapshot.italic = true;
+  if (cell.isUnderline()) snapshot.underline = true;
+  if (cell.isInverse()) snapshot.inverse = true;
+  if (cell.isStrikethrough()) snapshot.strikethrough = true;
+  return snapshot;
+}
+
+function isBlankDefaultCell(cell: TerminalSnapshotCell): boolean {
+  return (cell.text || " ") === " "
+    && cell.fg == null
+    && cell.bg == null
+    && cell.fgMode === "default"
+    && cell.bgMode === "default"
+    && !cell.bold
+    && !cell.dim
+    && !cell.italic
+    && !cell.underline
+    && !cell.inverse
+    && !cell.strikethrough;
+}
+
+function isBlankStyledRow(row: TerminalStyledRow): boolean {
+  return row.runs.every((run) => run.text.trim().length === 0 && Object.keys(run.style).length === 0);
 }
 
 function styledRowsFromTerminal(
@@ -328,12 +374,22 @@ function styledRowsFromTerminal(
       rows.push({ runs: [{ text: " ", style: {} }] });
       continue;
     }
-    const cells: TerminalSnapshotCell[] = [];
-    for (let column = 0; column < terminal.cols; column += 1) {
-      cells.push(snapshotCellFromXtermCell(line.getCell(column) as unknown as XtermBufferCell | undefined));
+    const fallbackText = line.translateToString(true);
+    if (!fallbackText) {
+      rows.push({ runs: [{ text: " ", style: {} }] });
+      continue;
     }
-    rows.push(styledRowFromCells(cells, line.translateToString(true)));
+    const cells: TerminalSnapshotCell[] = [];
+    let lastContentColumn = -1;
+    for (let column = 0; column < terminal.cols; column += 1) {
+      const cell = snapshotCellFromXtermCell(line.getCell(column) as unknown as XtermBufferCell | undefined);
+      cells.push(cell);
+      if (!isBlankDefaultCell(cell)) lastContentColumn = column;
+    }
+    if (lastContentColumn >= 0) cells.length = lastContentColumn + 1;
+    rows.push(styledRowFromCells(lastContentColumn >= 0 ? cells : [], fallbackText));
   }
+  while (rows.length > 1 && isBlankStyledRow(rows[rows.length - 1]!)) rows.pop();
   return rows;
 }
 
@@ -354,29 +410,33 @@ export function styledRowsFromSnapshotRows(rows: TerminalSnapshotRow[], maxRows:
   return rows.slice(0, Math.max(0, maxRows)).map((row) => styledRowFromCells(row.cells, row.text));
 }
 
-function transcriptPreviewRows(transcript: string | null | undefined, maxRows: number): TerminalStyledRow[] {
-  const lines = compactClosedTerminalTranscript(transcript ?? "");
+function transcriptPreviewRows(transcript: string | null | undefined, maxRows: number, claudeChrome: boolean): TerminalStyledRow[] {
+  const lines = claudeChrome
+    ? compactClosedTerminalTranscript(transcript ?? "")
+    : compactTerminalTranscript(transcript ?? "");
   if (!lines.length) {
     return [{ runs: [{ text: "Terminal closed. Resume the chat to view live output.", style: {} }] }];
   }
   return lines.slice(-maxRows).map((line) => ({ runs: [{ text: line || " ", style: {} }] }));
 }
 
-function fallbackPreviewRows(preview: ChatTerminalPreviewResult | null, maxRows: number): TerminalStyledRow[] {
+function fallbackPreviewRows(preview: ChatTerminalPreviewResult | null, maxRows: number, claudeChrome: boolean): TerminalStyledRow[] {
   if (!preview) return [{ runs: [{ text: "No terminal preview yet.", style: {} }] }];
   if (preview.snapshot?.visibleRows?.length) {
     return styledRowsFromSnapshotRows(preview.snapshot.visibleRows, maxRows);
   }
-  return transcriptPreviewRows(preview.transcript, maxRows);
+  return transcriptPreviewRows(preview.transcript, maxRows, claudeChrome);
 }
 
 function terminalControlBorderColor(frame: string): string {
   return frame === "◐" || frame === "◑" ? theme.color.warning : theme.color.attention2;
 }
 
-export function TerminalPane({
+function TerminalPaneComponent({
   title,
   terminalId,
+  cliLabel,
+  claudeChrome = true,
   preview,
   liveChunks,
   attached,
@@ -510,12 +570,12 @@ export function TerminalPane({
   const lines = useMemo(() => {
     if (snapshotRows?.length && liveChunks.length === 0) return snapshotRows.slice(0, rows);
     if (preview?.transcript && preview.session.status !== "running" && !liveChunks.length) {
-      return transcriptPreviewRows(preview.transcript, rows);
+      return transcriptPreviewRows(preview.transcript, rows, claudeChrome);
     }
     const terminal = terminalRef.current;
     if (terminal) return styledRowsFromTerminal(terminal, rows, effectiveScrollOffset);
-    return fallbackPreviewRows(preview, rows);
-  }, [effectiveScrollOffset, liveChunks.length, preview, renderTick, rows, snapshotRows]);
+    return fallbackPreviewRows(preview, rows, claudeChrome);
+  }, [claudeChrome, effectiveScrollOffset, liveChunks.length, preview, renderTick, rows, snapshotRows]);
 
   // Surface scrollback bounds + the current visible text to the owner so it can
   // clamp keyboard scroll requests and copy the visible region. Cheap: gated on
@@ -529,10 +589,11 @@ export function TerminalPane({
     reportMetrics({ maxScrollable, visibleText: plainTextFromStyledRows(lines) });
   }, [lines, reportMetrics, snapshotRows]);
 
+  const controlLabel = cliLabel?.trim() || "Claude";
   const status = attached
-    ? "CLAUDE CONTROL · Ctrl+T returns to ADE · Ctrl+] escape"
+    ? `${controlLabel.toUpperCase()} CONTROL · ^t returns to ADE · ^] escape`
     : preview?.session.status === "running"
-      ? effectiveHiddenBottomRows > 0 ? "ADE prompt sends to Claude Code" : "live preview"
+      ? effectiveHiddenBottomRows > 0 ? `ADE prompt sends to ${controlLabel}` : "live preview"
       : preview?.session.resumeCommand
         ? "closed, resumable · Enter resumes"
         : "closed";
@@ -572,10 +633,10 @@ export function TerminalPane({
   const content = (
     <>
       <Box width={contentWidth}>
-        <Text color={attached ? theme.color.warning : theme.color.accent}>
+        <Text color={attached ? theme.color.warning : theme.color.accent} wrap="truncate-end">
           {attached ? `${spinFrame} ${title}` : title}
         </Text>
-        <Text color={theme.color.mutedFg}>  {status}</Text>
+        <Text color={theme.color.mutedFg} wrap="truncate-end">  {status}</Text>
         {namingHint && !attached ? (
           <Text color={theme.color.accent}>{`  ${spinFrame} naming…`}</Text>
         ) : null}
@@ -611,3 +672,5 @@ export function TerminalPane({
     </Box>
   );
 }
+
+export const TerminalPane = React.memo(TerminalPaneComponent);

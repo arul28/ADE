@@ -178,7 +178,7 @@ export function resolveTuiChatRefreshTarget(args: {
   draftChatActive: boolean;
   initialNewChatPreview: boolean;
   newChatPreviewLaneId: string | null;
-  selectedDrawerChatAction: "new-chat" | null;
+  selectedDrawerChatAction: "new-chat" | "closed-toggle" | null;
   drawerLaneId: string | null;
   drawerBrowsingChatId?: string | null;
   drawerBrowsingNewChat?: boolean;

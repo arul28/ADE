@@ -972,6 +972,9 @@ let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
 let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
+const projectBindingChangedCallbacks = new Set<
+  (binding: OpenProjectBinding | null) => void
+>();
 
 function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const previousKey = currentProjectBinding?.key ?? null;
@@ -985,6 +988,23 @@ function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   }
   if (binding) {
     ensureRemoteRuntimeEventPump();
+  }
+}
+
+function notifyProjectBindingChangedCallbacks(
+  binding: OpenProjectBinding | null,
+): void {
+  rememberProjectBinding(binding);
+  clearProjectScopedReadCaches();
+  for (const callback of [...projectBindingChangedCallbacks]) {
+    try {
+      callback(binding);
+    } catch (error) {
+      console.warn(
+        "[preload] project binding listener failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
   }
 }
 
@@ -1865,6 +1885,10 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
         nextDelayMs = 0;
         return;
       }
+    }
+    if (batch.gap === true) {
+      resetRemoteRuntimeEventDedup(binding.key);
+      resetRemoteRuntimeEmptyPolls();
     }
 
     remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)
@@ -3215,6 +3239,7 @@ contextBridge.exposeInMainWorld("ade", {
     onProjectBindingChanged: (
       cb: (binding: OpenProjectBinding | null) => void,
     ) => {
+      projectBindingChangedCallbacks.add(cb);
       const listener = (
         _event: Electron.IpcRendererEvent,
         payload: OpenProjectBinding | null,
@@ -3224,8 +3249,10 @@ contextBridge.exposeInMainWorld("ade", {
         cb(payload);
       };
       ipcRenderer.on(IPC.appProjectBindingChanged, listener);
-      return () =>
+      return () => {
+        projectBindingChangedCallbacks.delete(cb);
         ipcRenderer.removeListener(IPC.appProjectBindingChanged, listener);
+      };
     },
     onNavigate: (cb: (request: AppNavigationRequest) => void) => {
       const listener = (

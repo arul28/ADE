@@ -511,6 +511,7 @@ describe("RightPane lane-details", () => {
           ...baseLaneDetails,
         }}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
@@ -540,6 +541,7 @@ describe("RightPane lane-details", () => {
           },
         }}
         focused
+        width={80}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
@@ -579,6 +581,30 @@ describe("RightPane lane-details", () => {
     expect(frame).toContain("CHANGES · 2");
     expect(frame).toContain("No changed files.");
     expect(frame).toContain("● clean");
+  });
+
+  it("surfaces retryable lane setup failure in lane details", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          setup: {
+            status: "failed",
+            label: "Setup failed",
+            detail: "Template install failed · press r to retry",
+            retryable: true,
+          },
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SETUP");
+    expect(frame).toContain("Setup failed");
+    expect(frame).toContain("press r to retry");
   });
 
   it("shows action shortcuts only for the selected row", () => {
@@ -808,6 +834,43 @@ describe("RightPane setup panes", () => {
     // "think high" chip (that detail was removed from model rows).
     expect(frame).toContain("reasoning");
     expect(frame).not.toContain("think high");
+  });
+
+  it("renders the selected model-picker setting detail in the footer", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "model-picker",
+          surface: "new-chat",
+          query: "",
+          searchMode: false,
+          selection: { kind: "provider", provider: "codex" },
+          providerTabKey: null,
+          focusedIndex: 0,
+          footerFocus: "interface",
+          settingsRows: [
+            { kind: "interface", label: "Interface", value: "Chat", detail: "Chat · CLI", cyclable: true },
+            { kind: "permission", label: "Permissions", value: "default", detail: "default · edit", cyclable: true },
+            { kind: "apply", label: "Confirm", value: "ready", detail: "returns focus to the chat composer" },
+          ],
+        }}
+        modelPickerInputs={{
+          models: [
+            { id: "openai/gpt-5.5", displayName: "GPT-5.5", isDefault: true },
+          ],
+          favorites: [],
+          recents: [],
+          activeModelId: "openai/gpt-5.5",
+          activeReasoningEffort: "medium",
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("interface");
+    expect(frame).toContain("Chat · CLI");
   });
 });
 

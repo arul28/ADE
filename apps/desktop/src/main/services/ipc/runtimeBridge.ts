@@ -96,7 +96,7 @@ type RuntimeEventWindowSubscription = {
 
 type RuntimeEventSubscriptionInit = Pick<
   RemoteRuntimeStreamEventsResult,
-  "nextCursor" | "hasMore" | "eventEpoch"
+  "nextCursor" | "hasMore" | "eventEpoch" | "gap" | "oldestCursor"
 >;
 
 type RuntimeEventSubscribe = (
@@ -1016,6 +1016,8 @@ export function registerRuntimeBridge({
           nextCursor: subscriptionInit?.nextCursor ?? request.cursor ?? 0,
           hasMore: subscriptionInit?.hasMore === true,
           ...(subscriptionInit?.eventEpoch ? { eventEpoch: subscriptionInit.eventEpoch } : {}),
+          ...(subscriptionInit?.gap === true ? { gap: true } : {}),
+          ...(typeof subscriptionInit?.oldestCursor === "number" ? { oldestCursor: subscriptionInit.oldestCursor } : {}),
         };
       }
       return await localRuntimeConnectionPool.streamEventsForRoot(
@@ -1075,6 +1077,8 @@ export function registerRuntimeBridge({
           nextCursor: subscriptionInit?.nextCursor ?? request.cursor ?? 0,
           hasMore: subscriptionInit?.hasMore === true,
           ...(subscriptionInit?.eventEpoch ? { eventEpoch: subscriptionInit.eventEpoch } : {}),
+          ...(subscriptionInit?.gap === true ? { gap: true } : {}),
+          ...(typeof subscriptionInit?.oldestCursor === "number" ? { oldestCursor: subscriptionInit.oldestCursor } : {}),
         };
       }
       const result = await remoteConnectionService.streamEvents(

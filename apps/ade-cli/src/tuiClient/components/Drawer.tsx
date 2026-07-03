@@ -5,6 +5,8 @@ import type { DiffLineStats } from "../../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { formatSessionLabel } from "../format";
 import { computeStackRowMeta, sortLanesForStackGraph } from "../laneTree";
+import { formatRelativePastTime } from "../relativeTime";
+import { closedCliSessionStatusKind } from "../closedCliSessions";
 import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
 import type { AdeCodeProvider } from "../types";
@@ -88,9 +90,10 @@ function pad(text: string, width: number): string {
   return text + " ".repeat(width - text.length);
 }
 
-export function Drawer({
+function DrawerComponent({
   lanes,
   sessions,
+  closedSessions = [],
   activeLaneId,
   activeSessionId,
   browsingLaneId,
@@ -107,9 +110,11 @@ export function Drawer({
   unavailableLaneIds = new Set<string>(),
   width: requestedWidth,
   scrollOffsetRows = 0,
+  closedCliExpandedLaneIds = new Set<string>(),
 }: {
   lanes: LaneSummary[];
   sessions: AgentChatSessionSummary[];
+  closedSessions?: AgentChatSessionSummary[];
   activeLaneId: string | null;
   activeSessionId: string | null;
   browsingLaneId: string | null;
@@ -126,6 +131,7 @@ export function Drawer({
   unavailableLaneIds?: ReadonlySet<string>;
   width?: number;
   scrollOffsetRows?: number;
+  closedCliExpandedLaneIds?: ReadonlySet<string>;
 }) {
   const { stdout } = useStdout();
   const resolvedPanelHeight = panelHeight ?? stdout?.rows ?? 40;
@@ -159,6 +165,8 @@ export function Drawer({
     lanes: ordered.map((lane): DrawerLaneInput => ({
       laneId: lane.id,
       chatCount: sessions.filter((s) => s.laneId === lane.id).length,
+      closedChatCount: closedSessions.filter((s) => s.laneId === lane.id).length,
+      closedExpanded: closedCliExpandedLaneIds.has(lane.id),
       worktreeAvailable: !unavailableLaneIds.has(lane.id),
     })),
     expandedLaneIndex: expandedAbsoluteIndex,
@@ -174,6 +182,11 @@ export function Drawer({
     ? sessions
         .filter((s) => s.laneId === expandedPlan.laneId)
         .slice(0, expandedPlan.visibleChatCount)
+    : [];
+  const laneClosedSessions = expandedPlan
+    ? closedSessions
+        .filter((s) => s.laneId === expandedPlan.laneId)
+        .slice(0, expandedPlan.visibleClosedChatCount)
     : [];
 
   const width = density === "mini"
@@ -197,6 +210,7 @@ export function Drawer({
         laneStart={laneStart}
         laneTotal={ordered.length}
         sessions={laneSessions}
+        closedSessions={laneClosedSessions}
         activeLaneId={activeLaneId}
         activeSessionId={activeSessionId}
         browsingLaneId={browsing}
@@ -243,7 +257,9 @@ export function Drawer({
           const worktreeAvailable = plan.worktreeAvailable;
           const status = deriveLaneStatus(lane, sessions, activeLaneId, unavailableLaneIds);
           const sessionsInLane = sessions.filter((session) => session.laneId === lane.id);
+          const closedInLane = closedSessions.filter((session) => session.laneId === lane.id);
           const laneChatSessions = sessionsInLane.slice(0, plan.visibleChatCount);
+          const laneClosedChatSessions = closedInLane.slice(0, plan.visibleClosedChatCount);
           const showChatBlock = plan.expanded;
           // Flat rows: no side borders or per-card padding, so content uses the
           // full drawer width. Only the outer drawer border (2) + the lane
@@ -283,6 +299,10 @@ export function Drawer({
               {showChatBlock ? (
                 <ChatBlock
                   sessions={laneChatSessions}
+                  closedSessions={laneClosedChatSessions}
+                  closedCount={closedInLane.length}
+                  closedExpanded={plan.closedExpanded}
+                  closedToggleVisible={plan.closedToggleVisible}
                   activeSessionId={activeSessionId}
                   selectedChatIndex={selectedChatIndex}
                   width={laneContentWidth}
@@ -322,6 +342,8 @@ export function Drawer({
     </Box>
   );
 }
+
+export const Drawer = React.memo(DrawerComponent);
 
 // Lane-card chrome note: the drawer's mouse hit-test (drawerMouseHitForLayout
 // in drawerLayout.ts) models exactly two border rows per lane card (top +
@@ -620,6 +642,10 @@ function ChatRow({
  */
 function ChatBlock({
   sessions,
+  closedSessions,
+  closedCount,
+  closedExpanded,
+  closedToggleVisible,
   activeSessionId,
   selectedChatIndex,
   width,
@@ -628,6 +654,10 @@ function ChatBlock({
   hoveredId,
 }: {
   sessions: AgentChatSessionSummary[];
+  closedSessions: AgentChatSessionSummary[];
+  closedCount: number;
+  closedExpanded: boolean;
+  closedToggleVisible: boolean;
   activeSessionId: string | null;
   selectedChatIndex: number;
   width: number;
@@ -643,6 +673,9 @@ function ChatBlock({
     );
   }
   const max = Math.max(8, width - 4);
+  const closedToggleIndex = sessions.length;
+  const closedStartIndex = closedToggleIndex + (closedToggleVisible ? 1 : 0);
+  const newChatIndex = closedStartIndex + (closedExpanded ? closedSessions.length : 0);
   return (
     <Box flexDirection="column">
       {sessions.map((session, index) => {
@@ -660,11 +693,87 @@ function ChatBlock({
           />
         );
       })}
+      {closedToggleVisible ? (
+        <ClosedCliToggleRow
+          count={closedCount}
+          expanded={closedExpanded}
+          max={max}
+          selected={interactive && selectedChatIndex === closedToggleIndex}
+          hovered={hoveredId?.startsWith("drawer:closed-toggle:") ?? false}
+        />
+      ) : null}
+      {closedExpanded ? closedSessions.map((session, index) => (
+        <ClosedCliRow
+          key={session.sessionId}
+          session={session}
+          max={max}
+          selected={interactive && selectedChatIndex === closedStartIndex + index}
+          hovered={hoveredId?.startsWith(`drawer:closed-chat:${session.sessionId}:`) ?? false}
+        />
+      )) : null}
       <Box>
-        <Text color={(interactive && selectedChatIndex === sessions.length) || (hoveredId?.startsWith("drawer:new-chat:") ?? false) ? theme.color.violet : theme.color.t4}>
+        <Text color={(interactive && selectedChatIndex === newChatIndex) || (hoveredId?.startsWith("drawer:new-chat:") ?? false) ? theme.color.violet : theme.color.t4}>
           + new chat
         </Text>
       </Box>
+    </Box>
+  );
+}
+
+function ClosedCliToggleRow({
+  count,
+  expanded,
+  max,
+  selected,
+  hovered,
+}: {
+  count: number;
+  expanded: boolean;
+  max: number;
+  selected: boolean;
+  hovered: boolean;
+}) {
+  const label = truncate(`${expanded ? "▾" : "▸"} closed (${count})`, max);
+  return (
+    <Box>
+      <Text
+        color={selected || hovered ? theme.color.violet : theme.color.t4}
+        dimColor={!selected && !hovered}
+        wrap="truncate-end"
+      >
+        {label}
+      </Text>
+    </Box>
+  );
+}
+
+function ClosedCliRow({
+  session,
+  max,
+  selected,
+  hovered,
+}: {
+  session: AgentChatSessionSummary;
+  max: number;
+  selected: boolean;
+  hovered: boolean;
+}) {
+  const provider = (session.provider as AdeCodeProvider) ?? null;
+  const exec = theme.provider(provider);
+  const dot = statusGlyph(closedCliSessionStatusKind(session));
+  const ended = formatRelativePastTime(session.endedAt ?? session.lastActivityAt ?? session.startedAt);
+  const suffix = ` · ${ended}`;
+  const label = truncate(formatSessionLabel(session), Math.max(3, max - suffix.length - 4));
+  return (
+    <Box>
+      <Text wrap="truncate-end">
+        <Text color={dot.color} dimColor>{dot.glyph} </Text>
+        <Text color={exec.color}>{exec.glyph} </Text>
+        <Text color={selected || hovered ? theme.color.violet : theme.color.t3} dimColor={!selected && !hovered}>
+          {label}
+        </Text>
+        <Text color={theme.color.t5} dimColor>{suffix}</Text>
+      </Text>
     </Box>
   );
 }
@@ -731,6 +840,7 @@ function MiniDrawer({
   laneStart,
   laneTotal,
   sessions,
+  closedSessions,
   activeLaneId,
   activeSessionId,
   browsingLaneId,
@@ -751,6 +861,7 @@ function MiniDrawer({
   laneStart: number;
   laneTotal: number;
   sessions: AgentChatSessionSummary[];
+  closedSessions: AgentChatSessionSummary[];
   activeLaneId: string | null;
   activeSessionId: string | null;
   browsingLaneId: string | null;
@@ -765,6 +876,7 @@ function MiniDrawer({
 }) {
   void focused;
   void browsingLaneId;
+  void closedSessions;
   const hoveredId = useHoveredHitId();
   const inner = width - 2;
   return (

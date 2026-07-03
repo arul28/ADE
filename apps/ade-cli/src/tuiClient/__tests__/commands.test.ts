@@ -102,6 +102,17 @@ describe("commands", () => {
     }));
   });
 
+  it("routes /secrets to the ADE Code right pane", () => {
+    const parsed = parseCommand("/secrets");
+    expect(parsed?.spec?.name).toBe("/secrets");
+    expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+    expect(paletteCommands("/sec")).toContainEqual(expect.objectContaining({
+      name: "/secrets",
+      source: "ade",
+      description: "List project secret names and copy masked values",
+    }));
+  });
+
   it("routes runtime commands to chat", () => {
     const parsed = parseCommand("/ship now", [
       { name: "/ship", description: "Ship it", source: "sdk" },
@@ -203,6 +214,10 @@ describe("commands", () => {
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/skills",
       description: "List agent skills from project, user, and ADE bundled roots",
+    }));
+    expect(rows).toContainEqual(expect.objectContaining({
+      name: "/secrets",
+      description: "List project secret names and copy masked values",
     }));
     expect(rows).toContainEqual(expect.objectContaining({
       name: "/compact",

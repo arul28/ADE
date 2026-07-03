@@ -209,6 +209,33 @@ describe("ade code remote launcher", () => {
     ]);
   });
 
+  it("lists every tracked provider CLI terminal and hides chat-backed terminals", async () => {
+    const terminals = [
+      { terminalId: "claude-cli", toolType: "claude", laneId: "lane-1", title: "Claude", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      { terminalId: "codex-cli", toolType: "codex", laneId: "lane-1", title: "Codex", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      { terminalId: "cursor-cli", toolType: "cursor-cli", laneId: "lane-1", title: "Cursor", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      { terminalId: "droid-cli", toolType: "droid", laneId: "lane-1", title: "Droid", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      { terminalId: "opencode-cli", toolType: "opencode", laneId: "lane-1", title: "OpenCode", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      // Chat-backed + plain shell must NOT be launchable.
+      { terminalId: "codex-chat", toolType: "codex-chat", laneId: "lane-1", title: "Codex chat", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      { terminalId: "cursor-chat", toolType: "cursor", laneId: "lane-1", title: "Cursor chat", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+      { terminalId: "raw-shell", toolType: "shell", laneId: "lane-1", title: "Shell", status: "running", runtimeState: "idle", startedAt: "2026-06-15T00:00:00.000Z" },
+    ];
+    const client = {
+      request: async (_method: string, params: unknown) => {
+        const args = (params as { arguments?: { domain?: string; action?: string } }).arguments;
+        if (args?.domain === "chat" && args.action === "listSessions") return { result: [] };
+        if (args?.domain === "terminal" && args.action === "list") return { result: terminals };
+        throw new Error("unexpected request");
+      },
+    };
+
+    const result = await listRemoteSessions(client as never, "project-1");
+    expect(result.map((session) => session.sessionId).sort()).toEqual(
+      ["claude-cli", "codex-cli", "cursor-cli", "droid-cli", "opencode-cli"].sort(),
+    );
+  });
+
   it("does not register a new remote project when a path query is ambiguous", async () => {
     const request = vi.fn();
     await expect(selectProject(request as never, [

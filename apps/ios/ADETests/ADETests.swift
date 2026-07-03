@@ -6967,6 +6967,78 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkComposerPreferences.load()?.modelId, "claude-opus-4-8")
   }
 
+  func testWorkNewSessionModePreferencesPerProjectPersistence() {
+    let storageKey = "ade.work.newSessionModeByProject.v1"
+    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+    defer { ADESharedContainer.defaults.removeObject(forKey: storageKey) }
+
+    // Unset → nil so the caller defaults to .chat.
+    XCTAssertNil(WorkNewSessionModePreferences.load(projectId: "project-a"))
+
+    // Per-project round-trip: a choice for one project is scoped to it.
+    WorkNewSessionModePreferences.save(.cli, projectId: "project-a")
+    WorkNewSessionModePreferences.save(.chat, projectId: "project-b")
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .cli)
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-b"), .chat)
+
+    // Overwrites are last-write-wins per project and don't touch siblings.
+    WorkNewSessionModePreferences.save(.chat, projectId: "project-a")
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .chat)
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-b"), .chat)
+
+    // Unknown/blank project scope is a no-op on save and nil on load, so a
+    // nil-scope session can never clobber a good per-project record.
+    WorkNewSessionModePreferences.save(.cli, projectId: nil)
+    WorkNewSessionModePreferences.save(.cli, projectId: "   ")
+    XCTAssertNil(WorkNewSessionModePreferences.load(projectId: nil))
+    XCTAssertNil(WorkNewSessionModePreferences.load(projectId: ""))
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .chat)
+  }
+
+  func testWorkNewSessionModeResolveReloadsPerProjectWithoutWriting() {
+    let storageKey = "ade.work.newSessionModeByProject.v1"
+    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+    defer { ADESharedContainer.defaults.removeObject(forKey: storageKey) }
+
+    // Switching the destination project inside an open composer reloads that
+    // project's own choice — project A saved Chat, project B saved CLI — so the
+    // mode the composer submits on tracks the targeted project rather than the
+    // one the drawer opened on (the hub project-switch regression). A CLI-capable
+    // model honors a stored CLI choice.
+    XCTAssertTrue(
+      workModelAllowedForAvailabilityMode(modelId: "claude-sonnet-4-6", provider: "claude", mode: .cli),
+      "precondition: claude-sonnet-4-6 must be CLI-capable"
+    )
+    WorkNewSessionModePreferences.save(.chat, projectId: "proj-a")
+    WorkNewSessionModePreferences.save(.cli, projectId: "proj-b")
+    XCTAssertEqual(
+      WorkNewSessionModePreferences.resolvedMode(
+        stored: WorkNewSessionModePreferences.load(projectId: "proj-a"),
+        modelId: "claude-sonnet-4-6", provider: "claude"),
+      .chat
+    )
+    XCTAssertEqual(
+      WorkNewSessionModePreferences.resolvedMode(
+        stored: WorkNewSessionModePreferences.load(projectId: "proj-b"),
+        modelId: "claude-sonnet-4-6", provider: "claude"),
+      .cli
+    )
+
+    // A project with no stored choice resolves to chat.
+    XCTAssertEqual(
+      WorkNewSessionModePreferences.resolvedMode(
+        stored: WorkNewSessionModePreferences.load(projectId: "proj-unset"),
+        modelId: "claude-sonnet-4-6", provider: "claude"),
+      .chat
+    )
+
+    // Resolving/reloading is read-only: the availability fallback and every
+    // project switch must leave the stored choices untouched (only an explicit
+    // switcher tap persists a mode).
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "proj-a"), .chat)
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "proj-b"), .cli)
+  }
+
   func testWorkComposerRuntimeProviderCoercesLocalOpenCodeGroups() {
     // Local OpenCode-routed groups must collapse to the wireable `opencode`
     // provider so a persisted "last used" selection restores supported access

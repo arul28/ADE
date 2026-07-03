@@ -8,6 +8,10 @@ function stripAnsi(value: string): string {
   return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
+function countMatches(value: string, pattern: RegExp): number {
+  return value.match(pattern)?.length ?? 0;
+}
+
 /** Poll until `check()` is truthy (xterm write callbacks are async). */
 async function waitFor(check: () => boolean, timeoutMs = 1_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -145,8 +149,8 @@ describe("TerminalPane", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("CLAUDE CONTROL");
-    expect(frame).toContain("Ctrl+T returns to ADE");
-    expect(frame).toContain("Ctrl+] escape");
+    expect(frame).toContain("^t returns to ADE");
+    expect(frame).toContain("^] escape");
     expect(frame).toContain("permission prompt");
   });
 
@@ -177,6 +181,23 @@ describe("TerminalPane", () => {
 
     await waitFor(() => stripAnsi(result.lastFrame() ?? "").includes("fresh echo"));
     expect(stripAnsi(result.lastFrame() ?? "")).toContain("fresh echo");
+  });
+
+  it("keeps wide glyphs when extracting styled rows from a live terminal", async () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={null}
+        liveChunks={["界界界\r\n"]}
+        attached={false}
+        width={20}
+        height={5}
+        hiddenBottomRows={0}
+      />,
+    );
+
+    await waitFor(() => countMatches(stripAnsi(result.lastFrame() ?? ""), /界/g) >= 3);
+    expect(countMatches(stripAnsi(result.lastFrame() ?? ""), /界/g)).toBeGreaterThanOrEqual(3);
   });
 
   it("applies live PTY chunks on top of the newest snapshot seed", async () => {

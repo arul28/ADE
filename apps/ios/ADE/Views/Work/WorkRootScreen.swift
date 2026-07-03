@@ -634,6 +634,7 @@ struct WorkRootScreen: View {
         WorkNewChatScreen(
           lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
           preferredLaneId: route.preferredLaneId,
+          activeProjectId: syncService.activeProjectId,
           onStarted: { summary, opener in
             let sessionId = summary.sessionId
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)

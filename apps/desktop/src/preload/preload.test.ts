@@ -4136,6 +4136,73 @@ describe("preload OAuth bridge", () => {
     } finally {
       vi.useRealTimers();
     }
+	  });
+
+  it("does not notify project binding listeners for same-binding event polling gaps", async () => {
+    vi.useFakeTimers();
+    try {
+      const binding = {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/project",
+        displayName: "Project",
+      };
+      const invoke = vi.fn(async (channel: string) => {
+        if (channel === IPC.appGetWindowSession) {
+          return { windowId: 1, project: null, binding };
+        }
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return {
+            events: [],
+            nextCursor: 42,
+            hasMore: false,
+            gap: true,
+            eventEpoch: "epoch-a",
+          };
+        }
+        return undefined;
+      });
+      const on = vi.fn();
+      const removeListener = vi.fn();
+      const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+        (globalThis as any).__bridgeName = name;
+        (globalThis as any).__adeBridge = value;
+      });
+
+      vi.doMock("electron", () => ({
+        contextBridge: { exposeInMainWorld },
+        ipcRenderer: { invoke, on, removeListener },
+        webFrame: {
+          getZoomLevel: vi.fn(() => 0),
+          setZoomLevel: vi.fn(),
+          getZoomFactor: vi.fn(() => 1),
+        },
+      }));
+
+      await import("./preload");
+
+      const bridge = (globalThis as any).__adeBridge;
+      const bindingChanged = vi.fn();
+      const unsubscribeBinding = bridge.app.onProjectBindingChanged(bindingChanged);
+      const unsubscribeEvents = bridge.project.onStateEvent(vi.fn());
+
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(bindingChanged).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeStreamEvents, {
+        id: "target-1",
+        projectId: "project-1",
+        request: { cursor: 0, limit: 100, replay: false },
+      });
+
+      unsubscribeEvents();
+      unsubscribeBinding();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("backs off idle remote runtime event polling after empty batches", async () => {

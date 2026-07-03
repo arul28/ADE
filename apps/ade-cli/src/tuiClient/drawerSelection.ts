@@ -2,17 +2,17 @@ import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/
 
 export type DrawerChatSelection = {
   selectedDrawerChatId: string | null;
-  selectedDrawerChatAction: "new-chat" | null;
+  selectedDrawerChatAction: "new-chat" | "closed-toggle" | null;
 };
 
 export function chatSelectionCopyText(args: {
   drawerSection: "lanes" | "chats";
   displaySessions: AgentChatSessionSummary[];
-  selectedDrawerChatAction: "new-chat" | null;
+  selectedDrawerChatAction: "new-chat" | "closed-toggle" | null;
   selectedDrawerChatId: string | null;
 }): string | null {
   if (args.drawerSection !== "chats") return null;
-  if (args.selectedDrawerChatAction === "new-chat" || !args.selectedDrawerChatId) return null;
+  if (args.selectedDrawerChatAction !== null || !args.selectedDrawerChatId) return null;
   const session = args.displaySessions.find((entry) => entry.sessionId === args.selectedDrawerChatId);
   if (!session) return null;
   return session.title?.trim() || session.sessionId;
@@ -24,7 +24,8 @@ export function resolveDrawerChatSelection(args: {
   draftChatActive: boolean;
   drawerLaneId: string | null;
   drawerVisibleLaneSessions: AgentChatSessionSummary[];
-  selectedDrawerChatAction: "new-chat" | null;
+  closedToggleVisible?: boolean;
+  selectedDrawerChatAction: "new-chat" | "closed-toggle" | null;
   selectedDrawerChatId: string | null;
 }): DrawerChatSelection | null {
   const selectedChatIsVisible = Boolean(
@@ -34,6 +35,12 @@ export function resolveDrawerChatSelection(args: {
   if (selectedChatIsVisible) {
     return null;
   }
+
+  const selectedClosedToggleIsValid = args.selectedDrawerChatAction === "closed-toggle"
+    && args.selectedDrawerChatId == null
+    && args.drawerLaneId != null
+    && args.closedToggleVisible === true;
+  if (selectedClosedToggleIsValid) return null;
 
   const selectedNewChatIsValid = args.selectedDrawerChatAction === "new-chat"
     && args.selectedDrawerChatId == null
