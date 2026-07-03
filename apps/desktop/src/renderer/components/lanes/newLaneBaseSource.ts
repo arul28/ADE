@@ -1,4 +1,5 @@
 import type { NewLaneBaseSource, ProjectConfigSnapshot } from "../../../shared/types";
+import { remoteLaneBaseCandidate } from "../../../shared/defaultRemoteLaneBase";
 import type { LaneBranchOption } from "./laneUtils";
 
 export const DEFAULT_NEW_LANE_BASE_SOURCE: NewLaneBaseSource = "remote";
@@ -107,15 +108,10 @@ export function selectDefaultNewLaneBaseRef(args: {
   return preferredLocal?.name ?? "";
 }
 
-export function remoteNewLaneBaseFallback(primaryBaseRef: string | null | undefined): string {
-  const trimmed = primaryBaseRef?.trim() ?? "";
-  if (!trimmed) return "";
-  if (trimmed.startsWith("refs/remotes/")) return trimmed.slice("refs/remotes/".length);
-  if (trimmed.startsWith("origin/")) return trimmed;
-  if (trimmed.startsWith("refs/heads/")) return `origin/${trimmed.slice("refs/heads/".length)}`;
-  if (/^[0-9a-f]{40}$/i.test(trimmed)) return "";
-  return `origin/${trimmed}`;
-}
+// Canonical implementation lives in shared (also used by the sync command
+// layer's lanes.create default-base resolution); exported under the
+// renderer's historical name.
+export const remoteNewLaneBaseFallback = remoteLaneBaseCandidate;
 
 export async function fetchNewLaneBaseBranches(args: {
   source: NewLaneBaseSource;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { GitBranchSummary } from "../../../shared/types";
+import type { GitBranchSummary } from "./types";
 import {
   remoteLaneBaseCandidate,
   resolveDefaultRemoteLaneBase,

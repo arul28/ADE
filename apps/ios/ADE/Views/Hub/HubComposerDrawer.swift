@@ -22,10 +22,18 @@ struct HubCreatedChat: Equatable {
   let laneName: String
   let sessionId: String
   let isCli: Bool
-  /// Provider the session was created with (e.g. "claude", "cursor"), so the
-  /// toast's Open shortcut can seed a stub with the real chat toolType instead
-  /// of guessing from nil.
+  /// Provider the session was created with (e.g. "claude", "cursor").
   let provider: String?
+
+  /// Tool type for the toast's Open-shortcut stub. A CLI session must never
+  /// read as a chat (the cross-project chat quick-look renders blank for it);
+  /// a chat keeps its provider-derived chat tool type so quick-look applies.
+  var stubToolType: String {
+    if isCli { return "cli" }
+    let normalized = provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    if normalized.isEmpty { return "claude-chat" }
+    return normalized == "cursor" ? "cursor" : "\(normalized)-chat"
+  }
 }
 
 /// Reports the destination control's global top edge so the picker popover can

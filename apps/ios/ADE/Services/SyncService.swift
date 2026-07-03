@@ -127,6 +127,19 @@ func isRemoteCommandApplicationError(_ error: Error) -> Bool {
   return nsError.domain == "ADE"
     && nsError.code == 17
     && nsError.userInfo["ADEErrorCode"] != nil
+    && !isSyncHostUnavailableError(error)
+}
+
+/// The brain-level ingress answers commands with `host_unavailable` while the
+/// project sync host is restarting (it used to drop them into a 30s timeout).
+/// That state is transient by definition — treat it like a timeout everywhere
+/// (retryable, queueable), never like an application rejection, or queued
+/// offline work would be permanently deleted on replay during the window.
+func isSyncHostUnavailableError(_ error: Error) -> Bool {
+  let nsError = error as NSError
+  return nsError.domain == "ADE"
+    && nsError.code == 17
+    && (nsError.userInfo["ADEErrorCode"] as? String) == "host_unavailable"
 }
 
 func isSyncRequestTimeoutError(_ error: Error) -> Bool {
@@ -137,7 +150,7 @@ func isSyncRequestTimeoutError(_ error: Error) -> Bool {
 func syncShouldQueueCommandAfterSendFailure(error: Error, canSendLiveRequests: Bool, queueable: Bool) -> Bool {
   guard queueable else { return false }
   guard !isRemoteCommandApplicationError(error) else { return false }
-  return !canSendLiveRequests || isSyncRequestTimeoutError(error)
+  return !canSendLiveRequests || isSyncRequestTimeoutError(error) || isSyncHostUnavailableError(error)
 }
 
 func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) throws -> T {
@@ -5623,6 +5636,19 @@ final class SyncService: ObservableObject {
   func stashPop(laneId: String, stashRef: String) async throws { _ = try await sendCommand(action: "git.stashPop", args: ["laneId": laneId, "stashRef": stashRef]) }
   func stashDrop(laneId: String, stashRef: String) async throws { _ = try await sendCommand(action: "git.stashDrop", args: ["laneId": laneId, "stashRef": stashRef]) }
   func fetchGit(laneId: String) async throws { _ = try await sendCommand(action: "git.fetch", args: ["laneId": laneId]) }
+
+  /// Advisory remote fetch used to freshen remote-tracking refs before offering
+  /// them as new-lane bases. Bounded by its own short timeout and NEVER queued
+  /// or connection-disrupting — a stale branch list is an acceptable outcome,
+  /// a background-queued fetch the user never asked for is not.
+  func fetchGitAdvisory(laneId: String, timeoutNanoseconds: UInt64 = 4_000_000_000) async throws {
+    _ = try await performCommandRequest(
+      action: "git.fetch",
+      args: ["laneId": laneId],
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: timeoutNanoseconds
+    )
+  }
   func pullGit(laneId: String) async throws { _ = try await sendCommand(action: "git.pull", args: ["laneId": laneId]) }
   func fetchSyncStatus(laneId: String) async throws -> GitUpstreamSyncStatus { try await sendDecodableCommand(action: "git.getSyncStatus", args: ["laneId": laneId], as: GitUpstreamSyncStatus.self) }
   func syncGit(laneId: String, mode: String = "merge", baseRef: String? = nil) async throws {
@@ -9620,6 +9646,12 @@ final class SyncService: ObservableObject {
       } catch {
         lastError = SyncUserFacingError.message(for: error)
         let stillLive = canSendLiveRequests()
+        if isSyncHostUnavailableError(error) {
+          // The machine's project host is restarting; the queued work is still
+          // valid. Keep it and let the retry cadence drain it once the host is
+          // back — deleting here would silently destroy the user's action.
+          return stillLive
+        }
         if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
           removePendingOperation(operation)
           queued = loadPendingOperations()

@@ -428,23 +428,18 @@ struct LaneCreateSheet: View {
     return locals.first(where: \.isCurrent)?.name ?? locals.first?.name ?? (primaryLane?.branchRef ?? "")
   }
 
-  /// Freshen remote-tracking refs before offering them as bases. Bounded — a
-  /// slow remote falls back to the already-listed refs rather than blocking the
-  /// sheet (desktop's create dialog uses the same fetch-with-timeout pattern).
+  /// Freshen remote-tracking refs before offering them as bases. The advisory
+  /// fetch carries its own short timeout (and is never queued), so a slow
+  /// remote just falls back to the already-listed refs rather than blocking
+  /// the sheet (desktop's create dialog uses the same fetch-with-timeout
+  /// pattern).
   @MainActor
   private func refreshRemoteRefsIfNeeded() async {
     guard !remoteRefsFetched, let primaryLane else { return }
     remoteRefsFetched = true
     let service = syncService
     let laneId = primaryLane.id
-    // Race the fetch against a 4s deadline; whichever finishes first wins and
-    // the branch list refreshes with whatever refs are available.
-    await withTaskGroup(of: Void.self) { group in
-      group.addTask { try? await service.fetchGit(laneId: laneId) }
-      group.addTask { try? await Task.sleep(nanoseconds: 4_000_000_000) }
-      await group.next()
-      group.cancelAll()
-    }
+    try? await service.fetchGitAdvisory(laneId: laneId)
     if let refreshed = try? await service.listBranches(laneId: laneId) {
       branches = refreshed
       if selectedBaseBranch.isEmpty || !branches.contains(where: { $0.name == selectedBaseBranch }) {

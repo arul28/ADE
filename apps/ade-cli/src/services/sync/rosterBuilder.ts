@@ -389,7 +389,13 @@ async function buildRosterProject(
         : diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";
     if (status === "running") runningCount += 1;
-    if (status === "awaiting" || status === "failed") attentionCount += 1;
+    // Attention drives hub badges AND attention-first project sorting. Only
+    // chat rows (and their attached shells) count: a standalone CLI session
+    // that exited non-zero months ago must not pin its project to the top
+    // forever — mobile has no way to clear it (CLI rows can't be archived).
+    const countsTowardAttention = isRosterTopLevelToolType(row.tool_type)
+      || normalizedParentSessionId(row) != null;
+    if ((status === "awaiting" || status === "failed") && countsTowardAttention) attentionCount += 1;
     const lastActivityAt = live?.lastActivityAt ?? row.last_output_at ?? row.started_at ?? null;
     chats.push({
       id: row.id,

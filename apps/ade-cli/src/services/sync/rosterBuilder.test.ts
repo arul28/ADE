@@ -176,7 +176,9 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("cli-codex")!.toolType).toBe("codex"); // raw CLI toolType passes through
 
     expect(projects[0]!.runningCount).toBe(0);
-    expect(projects[0]!.attentionCount).toBe(2); // awaiting + failed CLI
+    // Failed standalone CLI rows show their per-row status but never count
+    // toward attention (which drives attention-first project sorting).
+    expect(projects[0]!.attentionCount).toBe(1); // awaiting chat only
   });
 
   it("hard-truncates the preview to ~120 chars and reads sidecar provider/model", async () => {

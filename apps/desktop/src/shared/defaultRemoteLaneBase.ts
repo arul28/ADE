@@ -1,4 +1,4 @@
-import type { GitBranchSummary, NewLaneBaseSource } from "../../../shared/types";
+import type { GitBranchSummary, NewLaneBaseSource } from "./types";
 
 // Host-side counterpart of the renderer's `newLaneBaseSource.ts`: resolve the
 // base ref a new lane should branch from when the caller did not pick one.
@@ -54,7 +54,7 @@ export function selectRemoteLaneBaseRef(args: {
  * so creation proceeds with the existing local-default behavior.
  */
 export async function resolveDefaultRemoteLaneBase(args: {
-  newLaneBaseSource: NewLaneBaseSource | string | null | undefined;
+  newLaneBaseSource: NewLaneBaseSource | null;
   primaryBaseRef: string | null | undefined;
   fetchRemote: () => Promise<unknown>;
   listBranches: () => Promise<GitBranchSummary[]>;
