@@ -10,8 +10,10 @@ import {
   getRuntimeModelRefForDescriptor,
   listModelDescriptorsForProvider,
   modelSupportsFastMode,
+  resolveCursorCliModelVariant,
   resolveModelDescriptor,
   resolveProviderGroupForModel,
+  type ModelDescriptor,
   type ModelProviderGroup,
 } from "../../../desktop/src/shared/modelRegistry";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
@@ -25,10 +27,10 @@ import type {
   AgentChatReloadClaudePluginsResult,
 	  AgentChatEventEnvelope,
 	  AgentChatFileRef,
-	  AgentChatModelCatalog,
-	  AgentChatModelCatalogModel,
-	  AgentChatModelCatalogRefreshProvider,
-	  AgentChatModelInfo,
+		  AgentChatModelCatalog,
+		  AgentChatModelCatalogModel,
+		  AgentChatModelCatalogRefreshProvider,
+		  AgentChatModelInfo,
   AgentChatPermissionMode,
   AgentChatProvider,
   AgentChatSession,
@@ -181,6 +183,7 @@ import {
   type BracketedPasteState,
 } from "./bracketedPaste";
 import {
+  codeUnitIndexForDisplayCell,
   displayCellForCodeUnitIndex,
   displayClusters,
   splitByDisplayCells,
@@ -997,6 +1000,44 @@ function modelInfoSupportsFastMode(model: AgentChatModelInfo | null | undefined)
     || modelSupportsFastMode(descriptor);
 }
 
+function cursorDescriptorForModelInfo(model: AgentChatModelInfo | null | undefined): ModelDescriptor | undefined {
+  const modelId = model?.modelId ?? model?.id;
+  return modelId ? getModelById(modelId) : undefined;
+}
+
+function cursorAvailabilityForModel(
+  model: AgentChatModelInfo | null | undefined,
+  descriptor = cursorDescriptorForModelInfo(model),
+): { cli: boolean; sdk: boolean } | null {
+  return model?.cursorAvailability ?? descriptor?.cursorAvailability ?? null;
+}
+
+export function cursorModelAvailableForInterface(
+  model: AgentChatModelInfo | null | undefined,
+  interfaceMode: AdeCodeInterfaceMode,
+): boolean {
+  const descriptor = cursorDescriptorForModelInfo(model);
+  if (descriptor?.family !== "cursor" && model?.family !== "cursor") return true;
+  const availability = cursorAvailabilityForModel(model, descriptor);
+  if (!availability) return false;
+  return interfaceMode === "cli" ? availability.cli === true : availability.sdk === true;
+}
+
+export function cursorSourceForInterfaceMode(interfaceMode: AdeCodeInterfaceMode): "sdk" | "cli" {
+  return interfaceMode === "cli" ? "cli" : "sdk";
+}
+
+function providerModelsCacheKey(provider: AdeCodeProvider, interfaceMode: AdeCodeInterfaceMode): string {
+  return provider === "cursor" ? `cursor:${cursorSourceForInterfaceMode(interfaceMode)}` : provider;
+}
+
+function modelCatalogRefreshCacheKey(
+  provider: AgentChatModelCatalogRefreshProvider,
+  cursorSource?: "sdk" | "cli",
+): string {
+  return provider === "cursor" ? `cursor:${cursorSource ?? "sdk"}` : provider;
+}
+
 function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelState, "provider" | "model" | "modelId" | "displayName" | "reasoningEffort"> {
   const registryProvider = provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
   const descriptor = getDefaultModelDescriptor(registryProvider)
@@ -1019,10 +1060,112 @@ function registryModelsForProvider(provider: AdeCodeProvider): AgentChatModelInf
     id: descriptor.id,
     modelId: descriptor.id,
     displayName: descriptor.displayName,
-    isDefault: descriptor.id === getDefaultModelDescriptor(provider)?.id,
-    reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
-    ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
-  }));
+	    isDefault: descriptor.id === getDefaultModelDescriptor(provider)?.id,
+	    reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
+	    ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
+	    ...(descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
+	    ...(descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
+	  }));
+	}
+
+function compatibleCursorModelForInterface(
+  models: readonly AgentChatModelInfo[],
+  interfaceMode: AdeCodeInterfaceMode,
+): AgentChatModelInfo | null {
+  const compatible = models.filter((model) => cursorModelAvailableForInterface(model, interfaceMode));
+  return compatible.find((model) => model.isDefault) ?? compatible[0] ?? null;
+}
+
+function modelInfoMatchesModelState(model: AgentChatModelInfo, state: AdeCodeModelState): boolean {
+  const selected = (state.modelId ?? state.model).trim().toLowerCase();
+  if (!selected) return false;
+  return [model.id, model.modelId, ...(model.aliases ?? [])]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => value.trim().toLowerCase() === selected);
+}
+
+export function reconcileCursorModelStateForInterface(
+  state: AdeCodeModelState,
+  interfaceMode: AdeCodeInterfaceMode,
+  models: readonly AgentChatModelInfo[],
+): AdeCodeModelState {
+  if (state.provider !== "cursor") return { ...state, interfaceMode };
+  const currentModel = models.find((model) => modelInfoMatchesModelState(model, state)) ?? null;
+  const descriptor = state.modelId ? getModelById(state.modelId) : undefined;
+  const availability = cursorAvailabilityForModel(currentModel, descriptor);
+  const currentAllowed = availability
+    ? (interfaceMode === "cli" ? availability.cli === true : availability.sdk === true)
+    : false;
+  if (currentAllowed && descriptor?.family === "cursor") {
+    const supportsFast = modelSupportsFastMode(descriptor);
+    return {
+      ...state,
+      interfaceMode,
+      model: interfaceMode === "cli"
+        ? resolveCursorCliModelVariant(descriptor, {
+            reasoningEffort: state.reasoningEffort,
+            fastMode: supportsFast && state.fastMode,
+          })
+        : getRuntimeModelRefForDescriptor(descriptor, "cursor"),
+      fastMode: supportsFast ? state.fastMode : false,
+    };
+  }
+  if (currentAllowed) return { ...state, interfaceMode };
+  const fallback = compatibleCursorModelForInterface(models, interfaceMode);
+  if (!fallback) {
+    return {
+      ...state,
+      interfaceMode,
+      model: "",
+      modelId: null,
+      displayName: providerLabel("cursor"),
+      reasoningEffort: null,
+      fastMode: false,
+    };
+  }
+  const patch = modelStatePatchForModel("cursor", fallback);
+  const fallbackDescriptor = patch.modelId ? getModelById(patch.modelId) : undefined;
+  const launchDescriptor = fallbackDescriptor?.family === "cursor" && fallback.cursorCliVariants?.length
+    ? { ...fallbackDescriptor, cursorCliVariants: fallback.cursorCliVariants }
+    : fallbackDescriptor;
+  const supportsFast = modelInfoSupportsFastMode(fallback);
+  return {
+    ...state,
+    ...patch,
+    interfaceMode,
+    model: interfaceMode === "cli" && launchDescriptor?.family === "cursor"
+      ? resolveCursorCliModelVariant(launchDescriptor, {
+          reasoningEffort: patch.reasoningEffort,
+          fastMode: supportsFast && state.fastMode,
+        })
+      : patch.model,
+    fastMode: supportsFast ? state.fastMode : false,
+  };
+}
+
+export function resolveCursorCliModelForLaunch(
+  state: AdeCodeModelState,
+  models: readonly AgentChatModelInfo[] = [],
+): string {
+  const modelId = (state.modelId ?? state.model).trim();
+  if (!modelId) throw new Error("Choose a Cursor CLI model before launching a CLI session.");
+  const modelInfo = models.find((model) => modelInfoMatchesModelState(model, state)) ?? null;
+  const descriptor = getModelById(modelId);
+  const availability = cursorAvailabilityForModel(modelInfo, descriptor);
+  if (!availability?.cli) {
+    throw new Error("This Cursor model is available for chat only. Choose a Cursor CLI model for a CLI session.");
+  }
+  if (descriptor?.family === "cursor") {
+    const launchDescriptor = modelInfo?.cursorCliVariants?.length
+      ? { ...descriptor, cursorCliVariants: modelInfo.cursorCliVariants }
+      : descriptor;
+    const supportsFast = modelSupportsFastMode(launchDescriptor);
+    return resolveCursorCliModelVariant(launchDescriptor, {
+      reasoningEffort: state.reasoningEffort,
+      fastMode: supportsFast && state.fastMode,
+    });
+  }
+  return modelId.toLowerCase().startsWith("cursor/") ? modelId.slice("cursor/".length) : modelId;
 }
 
 function modelReasoningEfforts(modelState: AdeCodeModelState, models: AgentChatModelInfo[]): string[] {
@@ -2342,9 +2485,9 @@ export function movePromptCursorVertical(value: string, width: number, cursor: n
   if (!row) return safeCursor;
   const target = rows[rowIndex + delta];
   if (!target) return safeCursor;
-  const column = Math.max(0, Math.min([...row.text].length, [...value.slice(row.start, safeCursor)].length));
-  const targetPrefix = [...target.text].slice(0, column).join("");
-  return Math.max(target.start, Math.min(target.end, target.start + targetPrefix.length));
+  const column = displayCellForCodeUnitIndex(row.text, safeCursor - row.start);
+  const targetOffset = codeUnitIndexForDisplayCell(target.text, column);
+  return Math.max(target.start, Math.min(target.end, target.start + targetOffset));
 }
 
 export function isPromptCursorOnFirstVisualRow(value: string, width: number, cursor: number): boolean {
@@ -3008,6 +3151,9 @@ function modelInfoFromDescriptor(modelRef: string): AgentChatModelInfo | null {
     displayName: descriptor.displayName,
     isDefault: false,
     reasoningEfforts: descriptor.reasoningTiers?.map((effort) => ({ effort, description: effort })),
+    ...(descriptor.serviceTiers?.length ? { serviceTiers: descriptor.serviceTiers } : {}),
+    ...(descriptor.cursorAvailability ? { cursorAvailability: descriptor.cursorAvailability } : {}),
+    ...(descriptor.cursorCliVariants?.length ? { cursorCliVariants: descriptor.cursorCliVariants } : {}),
   };
 }
 
@@ -3378,9 +3524,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const olderSnapshotBufferBySessionIdRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   // Render mirror of the cursor for the "↑ loading earlier…" indicator.
   const [olderHistoryStatusBySessionId, setOlderHistoryStatusBySessionId] = useState<Record<string, "loading" | "available" | "exhausted">>({});
-	  const providerModelsCacheRef = useRef<Map<AdeCodeProvider, AgentChatModelInfo[]>>(new Map());
+	  const providerModelsCacheRef = useRef<Map<string, AgentChatModelInfo[]>>(new Map());
 	  const modelCatalogRef = useRef<AgentChatModelCatalog | null>(null);
-	  const modelCatalogProviderRefreshedAtRef = useRef<Map<AgentChatModelCatalogRefreshProvider, number>>(new Map());
+		  const modelCatalogProviderRefreshedAtRef = useRef<Map<string, number>>(new Map());
   const pendingModelCommitTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingModelCommitStateRef = useRef<AdeCodeModelState | null>(null);
 
@@ -6146,14 +6292,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setAiStatusCheckedAt(new Date().toISOString());
   }, []);
 
-	  const loadProviderModels = useCallback(async (provider: AdeCodeProvider, options: { applyDefault?: boolean; force?: boolean } = {}) => {
+	  const loadProviderModels = useCallback(async (provider: AdeCodeProvider, options: { applyDefault?: boolean; force?: boolean; interfaceMode?: AdeCodeInterfaceMode } = {}) => {
     const conn = connectionRef.current;
-    const cached = providerModelsCacheRef.current.get(provider);
+    const interfaceMode = options.interfaceMode ?? modelStateRef.current.interfaceMode;
+    const cacheKey = providerModelsCacheKey(provider, interfaceMode);
+    const cached = providerModelsCacheRef.current.get(cacheKey);
     let nextModels = cached ?? registryModelsForProvider(provider);
     if (options.force === true || !cached) {
       try {
-        nextModels = conn ? await getAvailableModels(conn, provider) : registryModelsForProvider(provider);
-        providerModelsCacheRef.current.set(provider, nextModels);
+        nextModels = conn ? await getAvailableModels(conn, provider, { interfaceMode }) : registryModelsForProvider(provider);
+        providerModelsCacheRef.current.set(cacheKey, nextModels);
       } catch {
         nextModels = cached ?? registryModelsForProvider(provider);
       }
@@ -6178,41 +6326,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	  const refreshModelCatalog = useCallback(async (options: { refreshProvider?: AgentChatModelCatalogRefreshProvider } = {}) => {
 	    const conn = connectionRef.current;
 	    if (!conn) return modelCatalogRef.current;
-	    if (!options.refreshProvider && modelCatalogRef.current) {
-	      setModelCatalog(modelCatalogRef.current);
-	      return modelCatalogRef.current;
-	    }
-	    if (options.refreshProvider && modelCatalogRef.current) {
-	      const refreshedAt = modelCatalogProviderRefreshedAtRef.current.get(options.refreshProvider);
-	      if (refreshedAt && Date.now() - refreshedAt <= modelCatalogClientRefreshTtlMs(options.refreshProvider)) {
-	        setModelCatalog(modelCatalogRef.current);
-	        return modelCatalogRef.current;
-	      }
-	    }
-	    try {
+		    if (!options.refreshProvider && modelCatalogRef.current) {
+		      setModelCatalog(modelCatalogRef.current);
+		      return modelCatalogRef.current;
+		    }
+		    const cursorSource = options.refreshProvider === "cursor"
+		      ? cursorSourceForInterfaceMode(modelStateRef.current.interfaceMode)
+		      : undefined;
+		    const refreshCacheKey = options.refreshProvider
+		      ? modelCatalogRefreshCacheKey(options.refreshProvider, cursorSource)
+		      : null;
+		    if (options.refreshProvider && modelCatalogRef.current) {
+		      const refreshedAt = refreshCacheKey ? modelCatalogProviderRefreshedAtRef.current.get(refreshCacheKey) : undefined;
+		      if (refreshedAt && Date.now() - refreshedAt <= modelCatalogClientRefreshTtlMs(options.refreshProvider)) {
+		        setModelCatalog(modelCatalogRef.current);
+		        return modelCatalogRef.current;
+		      }
+		    }
+		    try {
 	      const catalog = await getModelCatalog(conn, {
 	        mode: options.refreshProvider ? "refresh-stale" : "cached",
 	        ...(options.refreshProvider ? { refreshProvider: options.refreshProvider } : {}),
-	        // TUI chats run cursor models through the SDK; refreshing only that
-	        // source keeps the catalog probe off the slower host cursor-agent CLI
-	        // spawn (mirrors getAvailableModels and the desktop ModelPicker).
-	        ...(options.refreshProvider === "cursor" ? { cursorSource: "sdk" as const } : {}),
+	        ...(cursorSource ? { cursorSource } : {}),
 	      });
 	      modelCatalogRef.current = catalog;
-	      setModelCatalog(catalog);
-	      if (options.refreshProvider && catalog.stale !== true) {
-	        modelCatalogProviderRefreshedAtRef.current.set(options.refreshProvider, Date.now());
-	      }
-	      if (options.refreshProvider && catalog.stale === true) {
+		      setModelCatalog(catalog);
+		      if (refreshCacheKey && catalog.stale !== true) {
+		        modelCatalogProviderRefreshedAtRef.current.set(refreshCacheKey, Date.now());
+		      }
+		      if (options.refreshProvider && catalog.stale === true) {
 	        void getModelCatalog(conn, {
 	          mode: "force",
 	          refreshProvider: options.refreshProvider,
-	          ...(options.refreshProvider === "cursor" ? { cursorSource: "sdk" as const } : {}),
-	        }).then((freshCatalog) => {
-	          if (connectionRef.current !== conn) return;
-	          modelCatalogRef.current = freshCatalog;
-	          modelCatalogProviderRefreshedAtRef.current.set(options.refreshProvider!, Date.now());
-	          setModelCatalog(freshCatalog);
+	          ...(cursorSource ? { cursorSource } : {}),
+		        }).then((freshCatalog) => {
+		          if (connectionRef.current !== conn) return;
+		          modelCatalogRef.current = freshCatalog;
+		          if (refreshCacheKey) modelCatalogProviderRefreshedAtRef.current.set(refreshCacheKey, Date.now());
+		          setModelCatalog(freshCatalog);
 	        }).catch(() => undefined);
 	      }
 	      return catalog;
@@ -6907,7 +7058,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const projectCommands = discoverProjectSlashCommands(nextLane?.worktreePath || project.workspaceRoot);
     const nextCommands = remoteCommands.length ? remoteCommands : projectCommands;
     const provider = normalizeProvider(nextProvider);
-    const cachedModels = providerModelsCacheRef.current.get(provider);
+    const cachedModels = providerModelsCacheRef.current.get(providerModelsCacheKey(provider, modelStateRef.current.interfaceMode));
     const nextModels = cachedModels ?? registryModelsForProvider(provider);
     if (!cachedModels) {
       void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
@@ -7556,9 +7707,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
     // Re-bind only when the connection itself changes (reconnect). clearedAt and
     // refreshState are read via refs so their churn doesn't drop the buffer.
-  }, [connection, flushPendingChatEvents, scheduleBackgroundRefresh, scheduleChatFlush, setSessionInterrupted, setSessionStreaming]);
+	  }, [connection, flushPendingChatEvents, scheduleBackgroundRefresh, scheduleChatFlush, setSessionInterrupted, setSessionStreaming]);
 
-  useEffect(() => {
+  const handleRuntimeEventGap = useCallback(() => {
+    void refreshState({ hydrateHistory: true }).catch((err) => {
+      setError(err instanceof Error ? err.message : String(err));
+    });
+  }, [refreshState]);
+
+	  useEffect(() => {
     if (!connection) return;
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
@@ -7624,7 +7781,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       ptyFlushTimerRef.current = setTimeout(flushPendingPty, delayMs);
     };
 
-    void connection.subscribeRuntimeEvents({ category: "pty", cursor: 0, limit: 50, replay: false }, (event) => {
+    void connection.subscribeRuntimeEvents({
+      category: "pty",
+      cursor: 0,
+      limit: 50,
+      replay: false,
+      onGap: handleRuntimeEventGap,
+    }, (event) => {
       const payload = event.payload as { type?: unknown; event?: unknown };
       const terminalEvent = payload.event as { sessionId?: unknown; data?: unknown } | undefined;
       const sessionId = typeof terminalEvent?.sessionId === "string" ? terminalEvent.sessionId : null;
@@ -7668,7 +7831,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // Flush whatever is buffered so a reconnect doesn't strand chunks.
       flushPendingPty();
     };
-  }, [connection, refreshState]);
+  }, [connection, handleRuntimeEventGap, refreshState]);
 
   useEffect(() => {
     if (!connection || !activeSessionId) {
@@ -7760,7 +7923,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const timer = setInterval(() => {
       void refreshPrsByLane();
     }, 30_000);
-    void connection.subscribeRuntimeEvents({ category: "runtime", cursor: 0, limit: 50, replay: false }, (event) => {
+    void connection.subscribeRuntimeEvents({
+      category: "runtime",
+      cursor: 0,
+      limit: 50,
+      replay: false,
+      onGap: handleRuntimeEventGap,
+    }, (event) => {
       const type = typeof event.payload.type === "string" ? event.payload.type : "";
       if (type !== "prs-updated" && type !== "pr-notification") return;
       void refreshPrsByLane();
@@ -7777,7 +7946,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       clearInterval(timer);
       unsubscribe?.();
     };
-  }, [connection, refreshState]);
+  }, [connection, handleRuntimeEventGap, refreshState]);
 
   // Detect an attached socket dropping mid-session. Without this the UI freezes
   // on a stale snapshot (and a spinner that never resolves) with no retry.
@@ -8043,7 +8212,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const applyLocalModelArg = useCallback((value: string, providerOverride?: AdeCodeProvider) => {
     const provider = providerOverride ?? modelStateRef.current.provider;
-    const availableModels = providerModelsCacheRef.current.get(provider) ?? models;
+    const availableModels = providerModelsCacheRef.current.get(
+      providerModelsCacheKey(provider, modelStateRef.current.interfaceMode),
+    ) ?? models;
     const patch = modelStatePatchForArg(provider, availableModels, value);
     const next = { ...modelStateRef.current, ...patch };
     modelStateRef.current = next;
@@ -8204,6 +8375,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return null;
     }
     const normalized = { ...modelStateRef.current, ...applyProviderPermissionMode(modelStateRef.current) };
+    const launchModel = provider === "cursor"
+      ? resolveCursorCliModelForLaunch(
+          normalized,
+          providerModelsCacheRef.current.get(providerModelsCacheKey("cursor", "cli")) ?? models,
+        )
+      : normalized.modelId ?? normalized.model;
     const cols = clampTerminalPaneCols(terminalPaneWidth);
     const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
     const activeProviderChat = activeSessionRef.current?.provider === provider ? activeSessionRef.current : null;
@@ -8215,7 +8392,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       provider,
       laneId,
       title,
-      model: normalized.modelId ?? normalized.model,
+      model: launchModel,
       reasoningEffort: normalized.reasoningEffort,
       fastMode: normalized.fastMode,
       permissionMode: normalized.permissionMode,
@@ -8241,7 +8418,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     showChatInfoAfterDraftCommit();
     await refreshState();
     return created.sessionId;
-  }, [addNotice, chatRowBudget, lanes, refreshState, registerOptimisticTerminalSession, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, lanes, models, refreshState, registerOptimisticTerminalSession, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const sendClaudeModelCommandToTerminal = useCallback(async (modelRef?: string | null): Promise<boolean> => {
     const terminal = activeTerminalSessionRef.current;
@@ -10337,6 +10514,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? cliProviderForModelStateProvider(normalized.provider)
         : null;
       if (cliProvider) {
+        const launchModel = cliProvider === "cursor"
+          ? resolveCursorCliModelForLaunch(
+              normalized,
+              providerModelsCacheRef.current.get(providerModelsCacheKey("cursor", "cli")) ?? models,
+            )
+          : normalized.modelId ?? normalized.model;
         const cols = clampTerminalPaneCols(terminalPaneWidth);
         const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
         const terminalPrompt = promptTextForTerminal(text, promptAttachments);
@@ -10346,7 +10529,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           provider: cliProvider,
           laneId,
           title: cliTitle,
-          model: normalized.modelId ?? normalized.model,
+          model: launchModel,
           reasoningEffort: normalized.reasoningEffort,
           fastMode: normalized.fastMode,
           permissionMode: normalized.permissionMode,
@@ -10415,7 +10598,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setError(message);
       addNotice(launched ? `Launched chat, but follow-up failed: ${message}` : message, "error");
     }
-  }, [addNotice, chatRowBudget, lanes, refreshState, registerOptimisticTerminalSession, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, lanes, models, refreshState, registerOptimisticTerminalSession, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
     const range = activeMention(prompt);
@@ -10485,10 +10668,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       })) {
         addNotice("Provider is locked for this chat. /new chat to switch.", "info");
         return;
-      }
-      const previousModelState = modelStateRef.current;
-      const nextModelState: AdeCodeModelState = {
-        ...previousModelState,
+	      }
+	      const previousModelState = modelStateRef.current;
+	      if (provider === "cursor" && !cursorModelAvailableForInterface(target, previousModelState.interfaceMode)) {
+	        addNotice(
+	          previousModelState.interfaceMode === "cli"
+	            ? "This Cursor model is available for chat only. Choose a Cursor CLI model."
+	            : "This Cursor model is available for CLI only. Switch Interface to CLI or choose a chat model.",
+	          "error",
+	        );
+	        return;
+	      }
+	      const nextModelState: AdeCodeModelState = {
+	        ...previousModelState,
         ...modelStatePatchForModel(provider, target),
         fastMode: (target.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(descriptor))
           ? previousModelState.fastMode
@@ -10553,7 +10745,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("Provider is locked for this chat. /new chat to switch.", "info");
       return;
     }
-    const immediateModels = providerModelsCacheRef.current.get(provider) ?? registryModelsForProvider(provider);
+    const immediateModels = providerModelsCacheRef.current.get(
+      providerModelsCacheKey(provider, modelStateRef.current.interfaceMode),
+    ) ?? registryModelsForProvider(provider);
     setModels(immediateModels);
     const model = immediateModels.find((entry) => entry.isDefault) ?? immediateModels[0] ?? null;
     applyModelState((prev) => {
@@ -10674,13 +10868,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cycleProvider(direction);
       return;
     }
-    if (row.kind === "interface") {
-      // Only two values, so any cycle direction toggles Chat ↔ CLI. Editable
-      // rows only (disabled rows return above); a committed session's interface
-      // is fixed by its type.
-      applyModelState((prev) => ({ ...prev, interfaceMode: prev.interfaceMode === "cli" ? "chat" : "cli" }));
-      return;
-    }
+	    if (row.kind === "interface") {
+	      // Only two values, so any cycle direction toggles Chat ↔ CLI. Editable
+	      // rows only (disabled rows return above); a committed session's interface
+	      // is fixed by its type.
+	      const nextInterface = modelStateRef.current.interfaceMode === "cli" ? "chat" : "cli";
+	      const cursorModels = providerModelsCacheRef.current.get(providerModelsCacheKey("cursor", nextInterface))
+	        ?? (modelStateRef.current.provider === "cursor" ? models : registryModelsForProvider("cursor"));
+	      applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, cursorModels));
+	      if (modelStateRef.current.provider === "cursor") {
+	        void loadProviderModels("cursor", {
+	          applyDefault: false,
+	          force: true,
+	          interfaceMode: nextInterface,
+	        }).then((loaded) => {
+	          const current = modelStateRef.current;
+	          if (current.provider !== "cursor" || current.interfaceMode !== nextInterface) return;
+	          applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, loaded));
+	        }).catch(() => undefined);
+	      }
+	      return;
+	    }
     if (row.kind === "model") {
       cycleModel(direction);
       return;
@@ -10746,7 +10954,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       lastUserOpenedPaneRef.current = null;
       focusChat();
     }
-  }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
+  }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, loadProviderModels, models, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
 
   const recallPromptHistory = useCallback((direction: "previous" | "next"): boolean => {
     const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);

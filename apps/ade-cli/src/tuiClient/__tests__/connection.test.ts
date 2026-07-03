@@ -470,6 +470,83 @@ describe("connectToAde embedded mode", () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+	  });
+
+  it("surfaces runtime event replay gaps to subscribers", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-gap-"));
+    const socketPath = path.join(tmpDir, "ade.sock");
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string; params?: Record<string, unknown> };
+          const result = (() => {
+            if (request.method === "ade/initialize") {
+              return {
+                runtimeInfo: { multiProject: true, defaultRole: "cto" },
+                capabilities: { projects: true },
+              };
+            }
+            if (request.method === "projects.add") {
+              return { projectId: "project-daemon", rootPath: project.projectRoot };
+            }
+            if (request.method === "runtimeEvents.subscribe") {
+              return {
+                subscriptionId: "runtime-sub-gap",
+                gap: true,
+                oldestCursor: 12,
+                nextCursor: 90,
+              };
+            }
+            if (request.method === "runtimeEvents.unsubscribe") {
+              return { removed: true };
+            }
+            return null;
+          })();
+          if (!socket.destroyed && socket.writable) {
+            socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+          }
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    const connection = await connectToAde({
+      project,
+      socketPath,
+    });
+    try {
+      const gaps: unknown[] = [];
+      const callback = vi.fn();
+      const unsubscribe = await connection.subscribeRuntimeEvents(
+        {
+          category: "runtime",
+          cursor: 50,
+          limit: 10,
+          onGap: (gap) => gaps.push(gap),
+        },
+        callback,
+      );
+      expect(gaps).toEqual([{
+        gap: true,
+        oldestCursor: 12,
+        nextCursor: 90,
+        subscriptionId: "runtime-sub-gap",
+      }]);
+      expect(callback).not.toHaveBeenCalled();
+      unsubscribe();
+    } finally {
+      await connection.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("spawns the standalone binary directly when no CLI script entrypoint exists", async () => {

@@ -6,7 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { JsonRpcClient } from "./jsonRpcClient";
-import type { AdeCodeConnection, ProjectLaunchContext } from "./types";
+import type { AdeCodeConnection, ProjectLaunchContext, RuntimeEventGapMetadata } from "./types";
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
 import type { BufferedEvent } from "../eventBuffer";
 import { resolveAdeDefaultRole } from "../runtimeRoles";
@@ -254,6 +254,30 @@ type PendingRuntimeEvent = {
   subscriptionId?: string;
   event: BufferedEvent;
 };
+
+function runtimeEventGapMetadata(
+  value: unknown,
+  subscriptionId?: string | null,
+): RuntimeEventGapMetadata | null {
+  if (!value || typeof value !== "object" || (value as { gap?: unknown }).gap !== true) return null;
+  const source = value as {
+    oldestCursor?: unknown;
+    nextCursor?: unknown;
+    subscriptionId?: unknown;
+  };
+  return {
+    gap: true,
+    oldestCursor: typeof source.oldestCursor === "number" && Number.isFinite(source.oldestCursor)
+      ? Math.max(0, Math.floor(source.oldestCursor))
+      : null,
+    nextCursor: typeof source.nextCursor === "number" && Number.isFinite(source.nextCursor)
+      ? Math.max(0, Math.floor(source.nextCursor))
+      : null,
+    subscriptionId: typeof source.subscriptionId === "string"
+      ? source.subscriptionId
+      : subscriptionId ?? null,
+  };
+}
 
 async function initialize(request: AdeRpcRequest): Promise<InitializeResult> {
   const result = await request<InitializeResult>("ade/initialize", {
@@ -673,9 +697,10 @@ async function connectAttachedSocket(args: {
             limit: subscriptionArgs.limit ?? 100,
             replay: subscriptionArgs.replay,
           });
-          if (response && typeof response === "object" && "gap" in response) {
-            const gap = (response as { gap?: unknown }).gap === true;
-            if (gap) pending.length = 0;
+          const gap = runtimeEventGapMetadata(response, response.subscriptionId);
+          if (gap) {
+            pending.length = 0;
+            subscriptionArgs.onGap?.(gap);
           }
           subscriptionId = response.subscriptionId;
           for (const payload of pending) {
@@ -919,10 +944,12 @@ export async function connectToAde(args: {
       const eventBuffer = runtime.eventBuffer;
       if (!eventBuffer) return () => {};
       const shouldForward = (event: BufferedEvent) => !category || event.category === category;
-      const replay = subscriptionArgs.replay !== false && typeof eventBuffer.drain === "function"
-        ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
-        : { events: [] };
-      for (const event of replay.events) {
+	      const replay = subscriptionArgs.replay !== false && typeof eventBuffer.drain === "function"
+	        ? eventBuffer.drain(subscriptionArgs.cursor ?? 0, subscriptionArgs.limit ?? 100)
+	        : { events: [] };
+	      const gap = runtimeEventGapMetadata(replay);
+	      if (gap) subscriptionArgs.onGap?.(gap);
+	      for (const event of replay.events) {
         if (shouldForward(event)) callback(event);
       }
       if (typeof eventBuffer.subscribe !== "function") return () => {};

@@ -581,7 +581,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string)
   });
 }
 
-class ProcessJsonRpcClient {
+export class ProcessJsonRpcClient {
   private nextId = 1;
   private buffer = Buffer.alloc(0);
   private readonly pending = new Map<number | string, PendingRequest>();
@@ -616,6 +616,7 @@ class ProcessJsonRpcClient {
         );
         this.child.kill();
       }, REMOTE_RPC_REQUEST_TIMEOUT_MS);
+      timer.unref?.();
       this.pending.set(id, {
         method,
         resolve: (value) => resolve(value as T),
@@ -739,6 +740,7 @@ class ProcessJsonRpcClient {
     const pending = this.pending.get(response.id);
     if (!pending) return;
     this.pending.delete(response.id);
+    clearTimeout(pending.timer);
     if (response.error) {
       pending.reject(new Error(response.error.message));
       return;
@@ -1161,7 +1163,7 @@ function printSessions(sessions: RemoteSessionChoice[]): void {
   }
 }
 
-async function startRemoteBridge(target: RemoteRuntimeTarget): Promise<RemoteBridge> {
+async function startRemoteBridge(target: RemoteRuntimeTarget, initialAttempt?: RemoteRpcAttempt): Promise<RemoteBridge> {
   const activeSockets = new Set<net.Socket>();
   const activeChildren = new Set<ChildProcessWithoutNullStreams>();
   const bridgeDir = process.platform === "win32"
@@ -1183,7 +1185,13 @@ async function startRemoteBridge(target: RemoteRuntimeTarget): Promise<RemoteBri
     }
   };
 
+  let firstBridgeAttempt: RemoteRpcAttempt | null = initialAttempt ?? null;
   const selectBridgeAttempt = async (): Promise<RemoteRpcAttempt> => {
+    if (firstBridgeAttempt) {
+      const attempt = firstBridgeAttempt;
+      firstBridgeAttempt = null;
+      return attempt;
+    }
     const session = await openRemoteRpcSession(currentTarget());
     const attempt = session.attempt;
     session.client.close();
@@ -1359,7 +1367,7 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
     }
 
     remote.client.close();
-    bridge = await startRemoteBridge(target);
+    bridge = await startRemoteBridge(target, remote.attempt);
     process.stderr.write(
       `Connecting ADE Code to ${target.name} · ${project.displayName}${session ? ` · ${session.title}` : ""}\n`,
     );

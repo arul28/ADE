@@ -87,6 +87,9 @@ import {
   mergeOptimisticTerminalSessions,
   promptTextForTerminal,
   clipboardImageCacheRootForRuntime,
+  cursorSourceForInterfaceMode,
+  reconcileCursorModelStateForInterface,
+  resolveCursorCliModelForLaunch,
   uploadClipboardImageAttachmentToRuntime,
 } from "../app";
 import {
@@ -99,12 +102,36 @@ import {
 } from "../bracketedPaste";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
 import { clipboardScratchDir } from "../imageTargets";
-import type { AdeCodeConnection, ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
+import type { AdeCodeConnection, AdeCodeModelState, ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
-import type { AgentChatEventEnvelope, AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { AgentChatEventEnvelope, AgentChatModelInfo, AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { ChatTerminalPreviewResult } from "../../../../desktop/src/shared/types";
+
+function cursorModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeModelState {
+  return {
+    provider: "cursor",
+    interfaceMode: "chat",
+    model: "sdk-only",
+    modelId: "cursor/sdk-only",
+    displayName: "SDK only",
+    reasoningEffort: null,
+    fastMode: false,
+    permissionMode: "default",
+    interactionMode: "default",
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "never",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "config-toml",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+    cursorAvailableModeIds: ["agent"],
+    cursorConfigValues: {},
+    ...overrides,
+  };
+}
 
 describe("session activity helpers", () => {
   it("keeps Ink output below the terminal height to avoid full-screen clears", () => {
@@ -1457,6 +1484,10 @@ describe("prompt editing helpers", () => {
     expect(movePromptCursorVertical("abcdef", 3, 1, 1)).toBe(4);
     expect(movePromptCursorVertical("abcdef", 3, 4, -1)).toBe(1);
     expect(movePromptCursorVertical("abc", 3, 3, 1)).toBe(3);
+    expect(movePromptCursorVertical("a界bcde", 4, 2, 1)).toBe(6);
+    expect(movePromptCursorVertical("a界bcde", 4, 6, -1)).toBe(2);
+    expect(movePromptCursorVertical("a🙂bcde", 4, 3, 1)).toBe(7);
+    expect(movePromptCursorVertical("a🙂bcde", 4, 7, -1)).toBe(3);
   });
 
   it("detects prompt visual-row edges for attachment and model-row navigation", () => {
@@ -1493,6 +1524,64 @@ describe("prompt editing helpers", () => {
     const emoji = promptDisplayRowsWithCursor("a🙂bc", 4, 3);
     expect(emoji.rows[0]).toEqual({ text: "a🙂b", start: 0, end: 4, cursorColumn: 3 });
     expect(emoji.rows[1]).toEqual({ text: "c", start: 4, end: 5, cursorColumn: null });
+  });
+
+  it("sources and validates Cursor models by TUI interface", () => {
+    const sdkOnly: AgentChatModelInfo = {
+      id: "cursor/sdk-only",
+      modelId: "cursor/sdk-only",
+      displayName: "SDK only",
+      isDefault: true,
+      cursorAvailability: { sdk: true, cli: false },
+    };
+    const cliOnly: AgentChatModelInfo = {
+      id: "cursor/cli-only",
+      modelId: "cursor/cli-only",
+      displayName: "CLI only",
+      isDefault: false,
+      cursorAvailability: { sdk: false, cli: true },
+      cursorCliVariants: [{ modelId: "cli-only-default" }],
+    };
+    const cliReady: AgentChatModelInfo = {
+      id: "cursor/cli-ready",
+      modelId: "cursor/cli-ready",
+      displayName: "CLI ready",
+      isDefault: false,
+      reasoningEfforts: [{ effort: "high", description: "High" }],
+      cursorAvailability: { sdk: true, cli: true },
+      cursorCliVariants: [
+        { modelId: "cli-ready-default" },
+        { modelId: "cli-ready-high", reasoningEffort: "high" },
+      ],
+    };
+
+    expect(cursorSourceForInterfaceMode("chat")).toBe("sdk");
+    expect(cursorSourceForInterfaceMode("cli")).toBe("cli");
+
+    const toggled = reconcileCursorModelStateForInterface(
+      cursorModelState(),
+      "cli",
+      [sdkOnly, cliOnly],
+    );
+    expect(toggled).toMatchObject({
+      interfaceMode: "cli",
+      modelId: "cursor/cli-only",
+      model: "cli-only-default",
+      displayName: "CLI only",
+    });
+
+    expect(() => resolveCursorCliModelForLaunch(cursorModelState(), [sdkOnly]))
+      .toThrow(/available for chat only/i);
+    expect(resolveCursorCliModelForLaunch(
+      cursorModelState({
+        interfaceMode: "cli",
+        model: "cli-ready",
+        modelId: "cursor/cli-ready",
+        displayName: "CLI ready",
+        reasoningEffort: "high",
+      }),
+      [cliReady],
+    )).toBe("cli-ready-high");
   });
 });
 

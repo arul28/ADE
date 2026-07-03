@@ -45,6 +45,13 @@ export type RunAdeActionResult<T = unknown> = {
   statusHints?: Record<string, unknown>;
 };
 
+export type RuntimeEventGapMetadata = {
+  gap: true;
+  oldestCursor: number | null;
+  nextCursor: number | null;
+  subscriptionId?: string | null;
+};
+
 export type AdeCodeConnection = {
   mode: RuntimeMode;
   projectRoot: string;
@@ -63,7 +70,13 @@ export type AdeCodeConnection = {
    */
   onConnectionClose?(handler: () => void): () => void;
   subscribeRuntimeEvents(
-    args: { category?: BufferedEvent["category"] | null; cursor?: number; limit?: number; replay?: boolean },
+    args: {
+      category?: BufferedEvent["category"] | null;
+      cursor?: number;
+      limit?: number;
+      replay?: boolean;
+      onGap?: (gap: RuntimeEventGapMetadata) => void;
+    },
     callback: (event: BufferedEvent) => void,
   ): Promise<() => void>;
   close(): Promise<void>;

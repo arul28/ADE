@@ -433,7 +433,7 @@ describe("discoverProjectSlashCommands", () => {
 });
 
 describe("getAvailableModels", () => {
-  it("activates dynamic Cursor model discovery for TUI model lists", async () => {
+  it("sources Cursor model discovery from the active TUI interface", async () => {
     const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
     const connection = {
       action: vi.fn(async (domain: string, action: string, args?: Record<string, unknown>) => {
@@ -443,14 +443,18 @@ describe("getAvailableModels", () => {
     } as any;
 
     await getAvailableModels(connection, "cursor");
+    await getAvailableModels(connection, "cursor", { interfaceMode: "cli" });
 
     expect(calls).toEqual([
       {
         domain: "chat",
         action: "getAvailableModels",
-        // TUI chats run cursor through the SDK, so only that source is probed
-        // synchronously; the CLI flavor revalidates in the background on the host.
         args: { provider: "cursor", activateRuntime: true, cursorSource: "sdk" },
+      },
+      {
+        domain: "chat",
+        action: "getAvailableModels",
+        args: { provider: "cursor", activateRuntime: true, cursorSource: "cli" },
       },
     ]);
   });

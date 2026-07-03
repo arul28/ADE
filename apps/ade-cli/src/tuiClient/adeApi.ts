@@ -57,7 +57,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../desktop/src/shared/types";
 import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/services/chat/projectSlashCommandDiscovery";
-import type { AdeCodeConnection, AdeCodeProvider, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
+import type { AdeCodeConnection, AdeCodeInterfaceMode, AdeCodeProvider, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 
@@ -448,7 +448,9 @@ export function discoverProjectSlashCommands(workspaceRoot: string): AgentChatSl
 export async function getAvailableModels(
   connection: AdeCodeConnection,
   provider: AgentChatProvider,
+  options: { interfaceMode?: AdeCodeInterfaceMode } = {},
 ): Promise<AgentChatModelInfo[]> {
+  const cursorSource = options.interfaceMode === "cli" ? "cli" : "sdk";
   return await connection.action<AgentChatModelInfo[]>("chat", "getAvailableModels", {
     provider,
     // Cursor needs a live probe for SDK/CLI service tiers. Droid is also probed
@@ -457,9 +459,7 @@ export async function getAvailableModels(
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
     activateRuntime: provider === "cursor" || provider === "droid",
-    // TUI chats run cursor models through the SDK; probing only that source
-    // keeps the picker refresh off the slower cursor-agent CLI spawn.
-    ...(provider === "cursor" ? { cursorSource: "sdk" } : {}),
+    ...(provider === "cursor" ? { cursorSource } : {}),
   });
 }
 

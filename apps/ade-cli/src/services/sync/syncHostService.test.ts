@@ -1766,6 +1766,152 @@ describe("sync host reliability guards", () => {
       await host.dispose();
       cleanup();
     }
+	  });
+
+  it("closes peers instead of dropping project catalog chunks under backpressure", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-catalog-backpressure");
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(17 * 1024 * 1024);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "project_catalog_request",
+        requestId: "catalog-backpressure",
+        payload: {},
+      }));
+
+      const closeEvent = await waitForValue(
+        () => peer?.closeEvents[0],
+        "project catalog required-send backpressure close",
+      );
+      expect(closeEvent.code).toBe(4001);
+      expect(closeEvent.reason).toBe("Required sync response backpressured");
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("processes heartbeat pongs while a long command is still queued", async () => {
+    vi.useFakeTimers();
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const sendMessage = vi.fn((): Promise<void> => new Promise<void>(() => {}));
+    const host = createReliabilityHost(projectRoot, {
+      heartbeatIntervalMs: 5_000,
+      agentChatService: {
+        sendMessage,
+        subscribeToEvents: vi.fn(() => vi.fn()),
+      } as unknown as Parameters<typeof createSyncHostService>[0]["agentChatService"],
+    });
+    let peer: ReturnType<typeof trackClientEnvelopes> & { ws: WebSocket } | null = null;
+    const waitForTrackedEnvelope = (
+      tracked: ReturnType<typeof trackClientEnvelopes>,
+      predicate: (envelope: ParsedSyncEnvelope) => boolean,
+      _label: string,
+    ): Promise<ParsedSyncEnvelope> => {
+      const existing = tracked.envelopes.find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return new Promise((resolve) => {
+        const cleanupListener = () => {
+          peer?.ws.off("message", onMessage);
+        };
+        const onMessage = () => {
+          const match = tracked.envelopes.find(predicate);
+          if (!match) return;
+          cleanupListener();
+          resolve(match);
+        };
+        peer?.ws.on("message", onMessage);
+      });
+    };
+    try {
+      const port = await host.waitUntilListening();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      const tracked = trackClientEnvelopes(ws);
+      peer = { ws, ...tracked };
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+      });
+      const helloOk = waitForTrackedEnvelope(tracked, (envelope) => envelope.type === "hello_ok", "hello_ok");
+      ws.send(encodeSyncEnvelope({
+        type: "hello",
+        payload: {
+          peer: {
+            deviceId: "desktop-heartbeat",
+            deviceName: "Desktop heartbeat",
+            platform: "macOS",
+            deviceType: "desktop",
+            siteId: "desktop-heartbeat-site",
+            dbVersion: 0,
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      await helloOk;
+
+      const commandAck = waitForTrackedEnvelope(
+        tracked,
+        (envelope) => envelope.type === "command_ack" && envelope.requestId === "long-command",
+        "long command ack",
+      );
+      ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "long-command",
+        projectId: "project-1",
+        payload: {
+          commandId: "long-command",
+          action: "chat.send",
+          projectId: "project-1",
+          args: {
+            sessionId: "session-1",
+            text: "hello",
+          },
+        },
+      }));
+      await commandAck;
+
+      const ping = waitForTrackedEnvelope(
+        tracked,
+        (envelope) => envelope.type === "heartbeat" && (envelope.payload as { kind?: string } | null)?.kind === "ping",
+        "heartbeat ping",
+      );
+      await vi.advanceTimersByTimeAsync(5_000);
+      const pingEnvelope = await ping;
+      ws.send(encodeSyncEnvelope({
+        type: "heartbeat",
+        payload: {
+          kind: "pong",
+          sentAt: (pingEnvelope.payload as { sentAt?: string }).sentAt,
+        },
+      }));
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await Promise.resolve();
+      expect(tracked.closeEvents).toEqual([]);
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+      vi.useRealTimers();
+    }
   });
 
   it("rejects oversized artifact reads with a clear file response", async () => {

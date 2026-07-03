@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
-import { WebSocketServer, WebSocket, type RawData } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
   AgentChatEventEnvelope,
@@ -105,7 +105,7 @@ import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import {
@@ -1846,9 +1846,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }, authTimeoutMs);
     peer.authTimeout.unref?.();
     ws.on("message", (raw) => {
+      let envelope: ParsedSyncEnvelope;
+      try {
+        envelope = parseSyncEnvelope(wsDataToText(raw));
+      } catch (error) {
+        args.logger.warn("sync_host.message_parse_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+        });
+        return;
+      }
+      if (handleImmediateControlEnvelope(peer, envelope)) return;
       peer.messageQueue = peer.messageQueue
         .catch(() => {})
-        .then(() => handleMessage(peer, raw))
+        .then(() => handleMessage(peer, envelope))
         .catch((error) => {
           args.logger.warn("sync_host.message_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -2720,16 +2731,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer: PeerState,
     projectCatalog: SyncProjectCatalogPayload,
     requestId?: string | null,
-  ): void {
-    for (const message of buildSyncProjectCatalogMessages({
-      projectCatalog,
-      requestId,
-      compressionThresholdBytes,
-      maxProjectCatalogEnvelopeBytes,
-    })) {
-      send(peer.ws, message.type, message.payload, message.requestId);
-    }
-  }
+	  ): void {
+	    for (const message of buildSyncProjectCatalogMessages({
+	      projectCatalog,
+	      requestId,
+	      compressionThresholdBytes,
+	      maxProjectCatalogEnvelopeBytes,
+	    })) {
+	      if (!sendRequired(peer, message.type, message.payload, message.requestId)) break;
+	    }
+	  }
 
   async function handleProjectSwitchRequest(
     peer: PeerState,
@@ -3875,13 +3886,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  async function handleMessage(peer: PeerState, raw: RawData): Promise<void> {
-    const rawText = wsDataToText(raw);
-    const envelope = parseSyncEnvelope(rawText);
+  function markPeerMessageSeen(peer: PeerState): string | null {
     const heartbeatAwaitedAt = peer.awaitingHeartbeatAt;
     peer.lastSeenAt = nowIso();
     peer.awaitingHeartbeatAt = null;
     peer.missedHeartbeatCount = 0;
+    return heartbeatAwaitedAt;
+  }
+
+  function handleHeartbeatEnvelope(
+    peer: PeerState,
+    envelope: ParsedSyncEnvelope,
+    heartbeatAwaitedAt: string | null,
+  ): void {
+    const payload = envelope.payload as { kind?: string; sentAt?: string } | null;
+    if (payload?.kind === "ping") {
+      send(peer.ws, "heartbeat", {
+        kind: "pong",
+        sentAt: payload.sentAt ?? nowIso(),
+        dbVersion: args.db.sync.getDbVersion(),
+      }, envelope.requestId);
+    } else if (payload?.kind === "pong" && heartbeatAwaitedAt) {
+      const now = Date.now();
+      const sentAtMs = Date.parse(heartbeatAwaitedAt);
+      peer.latencyMs = Number.isFinite(sentAtMs) ? Math.max(0, now - sentAtMs) : null;
+      peer.awaitingHeartbeatAt = null;
+    }
+  }
+
+  function handleImmediateControlEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): boolean {
+    if (!peer.authenticated || envelope.type !== "heartbeat") return false;
+    const heartbeatAwaitedAt = markPeerMessageSeen(peer);
+    handleHeartbeatEnvelope(peer, envelope, heartbeatAwaitedAt);
+    return true;
+  }
+
+  async function handleMessage(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const heartbeatAwaitedAt = markPeerMessageSeen(peer);
 
     if (!peer.authenticated) {
       if (envelope.type !== "hello" && envelope.type !== "pairing_request") {
@@ -4155,19 +4196,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "heartbeat": {
-        const payload = envelope.payload as { kind?: string; sentAt?: string } | null;
-        if (payload?.kind === "ping") {
-          send(peer.ws, "heartbeat", {
-            kind: "pong",
-            sentAt: payload.sentAt ?? nowIso(),
-            dbVersion: args.db.sync.getDbVersion(),
-          }, envelope.requestId);
-        } else if (payload?.kind === "pong" && heartbeatAwaitedAt) {
-          const now = Date.now();
-          const sentAtMs = Date.parse(heartbeatAwaitedAt);
-          peer.latencyMs = Number.isFinite(sentAtMs) ? Math.max(0, now - sentAtMs) : null;
-          peer.awaitingHeartbeatAt = null;
-        }
+        handleHeartbeatEnvelope(peer, envelope, heartbeatAwaitedAt);
         break;
       }
       case "changeset_batch": {
