@@ -784,7 +784,7 @@ export function ShipShowcase() {
                   : "z-0 pointer-events-none opacity-0 motion-safe:translate-y-[10px]"
               )}
             >
-              {mountedTabs.has(index) ? (
+              {selected || mountedTabs.has(index) ? (
                 <>
                   <CopyPanel tab={item} />
                   <ImageStage tab={item} />
