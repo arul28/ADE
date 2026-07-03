@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSetupRows, cliProviderForModelStateProvider } from "../app";
+import { buildSetupRows, cliProviderForModelStateProvider, initialModelState } from "../app";
 import type { AdeCodeInterfaceMode, AdeCodeModelState } from "../types";
 
 function baseModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeModelState {
@@ -83,5 +83,10 @@ describe("buildSetupRows interface row", () => {
   it("toggles Chat ↔ CLI (two-value state machine)", () => {
     expect(toggleInterface("chat")).toBe("cli");
     expect(toggleInterface("cli")).toBe("chat");
+  });
+
+  it("defaults new drafts from the remembered interface mode", () => {
+    expect(initialModelState("cli").interfaceMode).toBe("cli");
+    expect(initialModelState("chat").interfaceMode).toBe("chat");
   });
 });

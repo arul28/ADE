@@ -20,8 +20,9 @@
  * chat, no gaps) so a card barely changes when you select it — it just gains a
  * violet border. The two shapes differ only by their trailing row:
  *   - Expanded lane (the selected/browsing one): chats directly under the lane
- *     line + a "+ new chat" row. Unavailable worktrees render a single
- *     "worktree missing" row instead of chats.
+ *     line, an optional collapsed/expanded closed-CLI group, and a "+ new chat"
+ *     row. Unavailable worktrees render a single "worktree missing" row instead
+ *     of chats.
  *   - Every other lane: the same chats + an optional "+N more" row when the
  *     row budget can't fit them all.
  */
@@ -63,8 +64,12 @@ export function drawerLaneWindow(
 
 export type DrawerLaneInput = {
   laneId: string;
-  /** Total chat sessions in the lane. */
+  /** Total open/live chat sessions in the lane. */
   chatCount: number;
+  /** Ended tracked CLI sessions in the lane. */
+  closedChatCount?: number;
+  /** Whether the closed CLI group is expanded for this lane. */
+  closedExpanded?: boolean;
   /** Lane worktree exists on disk (missing worktrees swap the expanded chat block for a warning). */
   worktreeAvailable: boolean;
 };
@@ -76,6 +81,12 @@ export type DrawerLanePlan = {
   expanded: boolean;
   /** Chats rendered for this lane (expanded block rows or compact preview rows). */
   visibleChatCount: number;
+  /** Whether the expanded lane renders the collapsed/expanded closed-CLI row. */
+  closedToggleVisible: boolean;
+  /** Closed CLI rows rendered below the closed toggle. */
+  visibleClosedChatCount: number;
+  /** Whether the closed CLI row is expanded. */
+  closedExpanded: boolean;
   /** Hidden-chat count behind the compact preview's "+N more" row (0 = no row). */
   moreCount: number;
   worktreeAvailable: boolean;
@@ -116,6 +127,9 @@ export function computeDrawerLayout({
     laneIndex: laneStart + offset,
     expanded: laneStart + offset === expandedLaneIndex,
     visibleChatCount: 0,
+    closedToggleVisible: false,
+    visibleClosedChatCount: 0,
+    closedExpanded: lane.closedExpanded === true,
     moreCount: 0,
     worktreeAvailable: lane.worktreeAvailable,
   }));
@@ -128,9 +142,24 @@ export function computeDrawerLayout({
       // single "worktree missing" row — no chat rows, no header.
       remaining = Math.max(0, remaining - 1);
     } else {
-      const chats = visibleDrawerChatCount(lane.chatCount, chatRowBudget);
+      const closedCount = Math.max(0, Math.floor(lane.closedChatCount ?? 0));
+      const closedToggleRows = closedCount > 0 && chatRowBudget > 1 ? 1 : 0;
+      const availableAfterFixedRows = Math.max(0, chatRowBudget - 1 - closedToggleRows);
+      const closedReserve = lane.closedExpanded && closedCount > 0
+        ? Math.min(closedCount, Math.max(1, Math.floor(availableAfterFixedRows / 2)))
+        : 0;
+      const chats = Math.min(
+        lane.chatCount,
+        DRAWER_COMPACT_CHAT_CAP,
+        Math.max(0, availableAfterFixedRows - closedReserve),
+      );
       expandedPlan.visibleChatCount = chats;
-      const blockRows = chats + 1; // tight chats + "+ new chat"
+      expandedPlan.closedToggleVisible = closedToggleRows > 0;
+      if (lane.closedExpanded && closedCount > 0) {
+        const closedRows = Math.max(0, availableAfterFixedRows - chats);
+        expandedPlan.visibleClosedChatCount = Math.min(closedCount, DRAWER_COMPACT_CHAT_CAP, closedRows);
+      }
+      const blockRows = chats + closedToggleRows + expandedPlan.visibleClosedChatCount + 1; // tight rows + "+ new chat"
       remaining = Math.max(0, remaining - blockRows);
     }
   }
@@ -158,6 +187,8 @@ export function computeDrawerLayout({
 export type DrawerMouseHit =
   | { kind: "lane"; index: number }
   | { kind: "chat"; laneIndex: number; chatIndex: number }
+  | { kind: "closed-toggle"; laneIndex: number }
+  | { kind: "closed-chat"; laneIndex: number; closedIndex: number }
   | { kind: "new-chat" }
   | { kind: "new-lane" }
   | null;
@@ -197,9 +228,18 @@ export function drawerMouseHitForLayout({
         for (let chatIdx = 0; chatIdx < chatCount; chatIdx += 1) {
           if (y === line + chatIdx) return { kind: "chat", laneIndex: index, chatIndex: chatIdx };
         }
-        const newChatY = line + chatCount;
+        line += chatCount;
+        if (plan.closedToggleVisible) {
+          if (y === line) return { kind: "closed-toggle", laneIndex: index };
+          line += 1;
+          for (let closedIdx = 0; closedIdx < plan.visibleClosedChatCount; closedIdx += 1) {
+            if (y === line + closedIdx) return { kind: "closed-chat", laneIndex: index, closedIndex: closedIdx };
+          }
+          line += plan.visibleClosedChatCount;
+        }
+        const newChatY = line;
         if (y === newChatY) return { kind: "new-chat" };
-        line += chatCount + 1;
+        line += 1;
       }
     } else if (plan.visibleChatCount > 0) {
       // Compact preview: one row per chat, then an optional "+N more" row.

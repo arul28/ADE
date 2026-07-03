@@ -258,7 +258,7 @@ export type RightPaneContent =
       rows: string[];
       emptyText?: string;
       action?: {
-        kind: "switch-lane" | "switch-chat";
+        kind: "switch-lane" | "switch-chat" | "chat-list" | "copy-secret";
         ids: string[];
       };
     }

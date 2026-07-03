@@ -21,11 +21,17 @@ describe("ade code persisted state", () => {
         "/repo-a": "repo-a-lane",
         "/repo-b": "repo-b-lane",
       },
+      draftKind: "chat",
+      draftKindByProject: {
+        "/repo-a": "chat",
+        "/repo-b": "cli",
+      },
     });
 
     expect(scopedAdeCodeState(state, "/repo-b")).toEqual({
       lastChatByLane: { main: "repo-b-chat" },
       lastLaneId: "repo-b-lane",
+      draftKind: "cli",
     });
   });
 
@@ -33,6 +39,7 @@ describe("ade code persisted state", () => {
     const state = normalizeAdeCodeState({
       lastChatByLane: { main: "legacy-chat" },
       lastLaneId: "legacy-lane",
+      draftKind: "cli",
       lastChatByProjectLane: {
         "/repo-a": { main: "repo-a-chat" },
       },
@@ -44,6 +51,7 @@ describe("ade code persisted state", () => {
     expect(scopedAdeCodeState(state, "/repo-b")).toEqual({
       lastChatByLane: { main: "legacy-chat" },
       lastLaneId: "legacy-lane",
+      draftKind: "cli",
     });
   });
 
@@ -59,6 +67,12 @@ describe("ade code persisted state", () => {
         "/repo-a": "repo-a-lane",
         "/repo-b": null,
       },
+      draftKind: "terminal",
+      draftKindByProject: {
+        "/repo-a": "cli",
+        "/repo-b": "terminal",
+        "/repo-c": "chat",
+      },
     });
 
     expect(state).toEqual({
@@ -66,6 +80,8 @@ describe("ade code persisted state", () => {
       lastChatByProjectLane: { "/repo-a": { main: "repo-a-chat" } },
       lastLaneId: null,
       lastLaneByProject: { "/repo-a": "repo-a-lane" },
+      draftKind: "chat",
+      draftKindByProject: { "/repo-a": "cli", "/repo-c": "chat" },
     });
   });
 
@@ -76,10 +92,12 @@ describe("ade code persisted state", () => {
     await saveAdeCodeProjectStateAsync("/repo-a", {
       lastChatByLane: { main: "repo-a-chat" },
       lastLaneId: "repo-a-lane",
+      draftKind: "chat",
     });
     await saveAdeCodeProjectStateAsync("/repo-b", {
       lastChatByLane: { main: "repo-b-chat" },
       lastLaneId: "repo-b-lane",
+      draftKind: "cli",
     });
 
     const persisted = loadAdeCodeState();
@@ -91,6 +109,11 @@ describe("ade code persisted state", () => {
       [path.resolve("/repo-a")]: "repo-a-lane",
       [path.resolve("/repo-b")]: "repo-b-lane",
     });
+    expect(persisted.draftKindByProject).toEqual({
+      [path.resolve("/repo-a")]: "chat",
+      [path.resolve("/repo-b")]: "cli",
+    });
+    expect(persisted.draftKind).toBe("cli");
     expect(fs.existsSync(path.join(stateDir, "ade-code-state.json.lock"))).toBe(false);
   });
 
@@ -104,6 +127,7 @@ describe("ade code persisted state", () => {
     const savePromise = saveAdeCodeProjectStateAsync("/repo-a", {
       lastChatByLane: { main: "repo-a-chat" },
       lastLaneId: "repo-a-lane",
+      draftKind: "cli",
     });
     let settled = false;
     savePromise.then(() => {
@@ -119,6 +143,9 @@ describe("ade code persisted state", () => {
     const persisted = loadAdeCodeState();
     expect(persisted.lastChatByProjectLane).toEqual({
       [path.resolve("/repo-a")]: { main: "repo-a-chat" },
+    });
+    expect(persisted.draftKindByProject).toEqual({
+      [path.resolve("/repo-a")]: "cli",
     });
     expect(fs.existsSync(lockPath)).toBe(false);
   });

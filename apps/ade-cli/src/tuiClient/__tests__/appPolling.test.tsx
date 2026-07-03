@@ -35,6 +35,8 @@ vi.mock("../state", async () => {
       lastChatByProjectLane: { "/repo": { "lane-1": "chat-1" } },
       lastLaneByProject: { "/repo": "lane-1" },
       lastLaneId: null,
+      draftKind: "chat",
+      draftKindByProject: {},
     }),
     saveAdeCodeProjectState: vi.fn(),
   };

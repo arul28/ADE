@@ -164,6 +164,60 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(chatModeFrame).not.toContain("next lane");
   });
 
+  it("renders ended tracked CLI sessions behind the closed group in chat mode", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
+
+    const openSession: AgentChatSessionSummary = {
+      sessionId: "chat-open",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      title: "Open chat",
+      status: "idle",
+      startedAt: "2026-05-12T11:30:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-05-12T11:31:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    };
+    const closedSession: AgentChatSessionSummary = {
+      sessionId: "term-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      title: "Closed CLI",
+      status: "idle",
+      startedAt: "2026-05-12T10:00:00.000Z",
+      endedAt: "2026-05-12T11:45:00.000Z",
+      lastActivityAt: "2026-05-12T11:45:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+    };
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "Feature", "feature/closed-cli", "2026-05-12T11:55:00.000Z")]}
+        sessions={[openSession]}
+        closedSessions={[closedSession]}
+        closedCliExpandedLaneIds={new Set(["lane-1"])}
+        activeLaneId="lane-1"
+        activeSessionId="chat-open"
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={2}
+        panelHeight={30}
+        mode="chats"
+        focused
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("▾ closed (1)");
+    expect(frame).toContain("Closed");
+    expect(frame).toContain("15m ago");
+    expect(frame).toContain("◎");
+  });
+
   it("previews chats under non-selected lanes and hides branch refs from lane cards", () => {
     const sessions: AgentChatSessionSummary[] = [
       {

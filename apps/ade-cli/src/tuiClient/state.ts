@@ -2,11 +2,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+export type AdeCodeDraftKind = "chat" | "cli";
+
 export type AdeCodeState = {
   lastChatByLane: Record<string, string>;
   lastChatByProjectLane: Record<string, Record<string, string>>;
   lastLaneId: string | null;
   lastLaneByProject: Record<string, string>;
+  draftKind: AdeCodeDraftKind;
+  draftKindByProject: Record<string, AdeCodeDraftKind>;
 };
 
 const STATE_DIR = path.join(os.homedir(), ".ade");
@@ -61,24 +65,25 @@ async function readAdeCodeStateUnlocked(): Promise<AdeCodeState> {
 export function scopedAdeCodeState(
   state: AdeCodeState,
   projectRoot: string,
-): Pick<AdeCodeState, "lastChatByLane" | "lastLaneId"> {
+): Pick<AdeCodeState, "lastChatByLane" | "lastLaneId" | "draftKind"> {
   const projectKey = normalizeProjectKey(projectRoot);
   return {
     lastChatByLane: state.lastChatByProjectLane[projectKey] ?? state.lastChatByLane,
     lastLaneId: state.lastLaneByProject[projectKey] ?? state.lastLaneId,
+    draftKind: state.draftKindByProject[projectKey] ?? state.draftKind,
   };
 }
 
 export function saveAdeCodeProjectState(
   projectRoot: string,
-  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId">,
+  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId" | "draftKind">,
 ): void {
   void saveAdeCodeProjectStateAsync(projectRoot, projectState);
 }
 
 export function saveAdeCodeProjectStateAsync(
   projectRoot: string,
-  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId">,
+  projectState: Pick<AdeCodeState, "lastChatByLane" | "lastLaneId" | "draftKind">,
 ): Promise<void> {
   return enqueueStateWrite(() => withStateLock(async () => {
     const current = await readAdeCodeStateUnlocked();
@@ -89,8 +94,10 @@ export function saveAdeCodeProjectStateAsync(
     } else {
       delete current.lastLaneByProject[projectKey];
     }
+    current.draftKindByProject[projectKey] = projectState.draftKind;
     current.lastChatByLane = { ...projectState.lastChatByLane };
     current.lastLaneId = projectState.lastLaneId;
+    current.draftKind = projectState.draftKind;
     await writeAdeCodeStateUnlocked(current);
   }));
 }
@@ -104,6 +111,8 @@ export function normalizeAdeCodeState(value: unknown): AdeCodeState {
     lastChatByProjectLane: normalizeNestedStringRecord(parsed.lastChatByProjectLane),
     lastLaneId: typeof parsed.lastLaneId === "string" ? parsed.lastLaneId : null,
     lastLaneByProject: normalizeStringRecord(parsed.lastLaneByProject),
+    draftKind: normalizeDraftKind(parsed.draftKind),
+    draftKindByProject: normalizeDraftKindRecord(parsed.draftKindByProject),
   };
 }
 
@@ -113,6 +122,8 @@ function emptyAdeCodeState(): AdeCodeState {
     lastChatByProjectLane: {},
     lastLaneId: null,
     lastLaneByProject: {},
+    draftKind: "chat",
+    draftKindByProject: {},
   };
 }
 
@@ -210,6 +221,21 @@ function normalizeNestedStringRecord(value: unknown): Record<string, Record<stri
   for (const [key, entry] of Object.entries(value)) {
     const child = normalizeStringRecord(entry);
     if (Object.keys(child).length > 0) normalized[key] = child;
+  }
+  return normalized;
+}
+
+function normalizeDraftKind(value: unknown): AdeCodeDraftKind {
+  return value === "cli" ? "cli" : "chat";
+}
+
+function normalizeDraftKindRecord(value: unknown): Record<string, AdeCodeDraftKind> {
+  const normalized: Record<string, AdeCodeDraftKind> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return normalized;
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === "chat" || entry === "cli") {
+      normalized[key] = entry;
+    }
   }
   return normalized;
 }

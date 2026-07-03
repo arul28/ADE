@@ -1037,6 +1037,8 @@ describe("ade-code TUI state", () => {
       lastChatByProjectLane: {},
       lastLaneId: null,
       lastLaneByProject: {},
+      draftKind: "chat",
+      draftKindByProject: {},
     });
   });
 
@@ -1049,6 +1051,8 @@ describe("ade-code TUI state", () => {
       lastChatByProjectLane: {},
       lastLaneId: "lane-2",
       lastLaneByProject: {},
+      draftKind: "cli",
+      draftKindByProject: {},
     });
 
     expect(loadAdeCodeState()).toEqual({
@@ -1056,6 +1060,8 @@ describe("ade-code TUI state", () => {
       lastChatByProjectLane: {},
       lastLaneId: "lane-2",
       lastLaneByProject: {},
+      draftKind: "cli",
+      draftKindByProject: {},
     });
   });
 });
