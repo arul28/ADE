@@ -478,7 +478,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
-    $ ade terminal list | read | write | signal     Control an attached session terminal
+    $ ade terminal list | resume | read | write | signal
+                                                    Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
     $ ade cto state | chats                         Operate CTO state and Work chats
@@ -1151,12 +1152,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code remote --target <machine> --project <project>
                                                      Launch against a saved desktop remote machine
     $ ade code remote session --target <machine> --project <project> --session <session>
-                                                     Open a specific remote chat or Claude terminal session
+                                                     Open a specific remote chat or provider CLI terminal session
     $ ade code remote --list-targets               List saved remote machines
     $ ade code remote --target <machine> --list-projects
                                                      List ADE projects available on the remote machine
     $ ade code remote session --target <machine> --project <project> --list-sessions
-                                                     List remote chat and Claude terminal sessions
+                                                     List remote chat and provider CLI terminal sessions
     $ ade --project-root <path> code                Launch against a specific ADE project
 
   Keys:
@@ -1389,8 +1390,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   tracked agent CLI session. Use attached runtime mode when you want the same
   terminal the app is viewing.
 
-    $ ade terminal list --chat-session <owner-session-id> --text  List terminals for a session
+    $ ade terminal list --chat-session <owner-session-id> --text  List running and ended terminals for a session
     $ ade terminal active --chat-session <owner-session-id> --text Show the active terminal
+    $ ade terminal resume --terminal <session-id> --text Resume an ended provider CLI terminal
     $ ade terminal read --terminal <session-id> --text Read terminal scrollback
     $ ade terminal read --pty <pty-id> --text       Read by PTY id
     $ ade app-control logs --text                   Read the active App Control launch terminal
@@ -5918,6 +5920,7 @@ function buildTerminalPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "terminal list",
+      formatter: "terminal-list",
       steps: [
         actionStep(
           "result",
@@ -5927,6 +5930,31 @@ function buildTerminalPlan(args: string[]): CliPlan {
             chatSessionId: chatSessionId(),
             laneId: readValue(args, ["--lane", "--lane-id"]),
             limit: readIntOption(args, ["--limit"], undefined),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "resume" || sub === "reattach") {
+    const terminal =
+      readValue(args, ["--terminal", "--terminal-id", "--session", "--session-id"]) ??
+      firstStandalonePositional(args);
+    return {
+      kind: "execute",
+      label: "terminal resume",
+      formatter: "pty-create",
+      steps: [
+        actionStep(
+          "result",
+          "pty",
+          "resumeSession",
+          collectGenericObjectArgs(args, {
+            sessionId: requireValue(terminal, "terminalId"),
+            cols: readIntOption(args, ["--cols"], 120),
+            rows: readIntOption(args, ["--rows"], 36),
+            model: readValue(args, ["--model", "--model-id"]),
+            reasoningEffort: readValue(args, ["--reasoning", "--reasoning-effort"]),
+            permissionMode: readValue(args, ["--permission-mode", "--permissions"]),
           }),
         ),
       ],
@@ -15232,13 +15260,15 @@ function formatTerminalList(value: unknown): string {
       ? [value]
       : firstArray(value, ["terminals", "items"]);
   return renderTable(
-    ["terminal", "pty", "chat", "status", "runtime", "title"],
+    ["terminal", "pty", "chat", "status", "runtime", "ended", "resume", "title"],
     terminals.map((terminal) => [
       terminal.terminalId,
       terminal.ptyId,
       terminal.chatSessionId,
       terminal.status,
       terminal.runtimeState,
+      terminal.endedAt,
+      terminal.endedAt && (terminal.resumeCommand || terminal.resumeMetadata) ? "yes" : "",
       terminal.title,
     ]),
     "ADE attached terminals\n(no terminals found)",
