@@ -99,22 +99,26 @@ func workSessionShouldAppearInWorkList(
 
   let parentId = session.chatSessionId?
     .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  if !parentId.isEmpty, parentId != session.id, parentChatSessionIds.contains(parentId) {
-    return true
+  if !parentId.isEmpty, parentId != session.id {
+    // Chat-owned PTY row: it rides its parent chat's entry. An orphaned child
+    // (parent chat not listed) only surfaces while it is actually live.
+    if parentChatSessionIds.contains(parentId) { return true }
+    if let ptyId = session.ptyId?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !ptyId.isEmpty {
+      return true
+    }
+    let status = session.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let runtimeState = session.runtimeState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return status == "running"
+      || status == "idle"
+      || runtimeState == "running"
+      || runtimeState == "idle"
+      || runtimeState == "waiting-input"
   }
 
-  if let ptyId = session.ptyId?.trimmingCharacters(in: .whitespacesAndNewlines),
-     !ptyId.isEmpty {
-    return true
-  }
-
-  let status = session.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  let runtimeState = session.runtimeState.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-  return status == "running"
-    || status == "idle"
-    || runtimeState == "running"
-    || runtimeState == "idle"
-    || runtimeState == "waiting-input"
+  // Standalone CLI session: always a real entry — ended sessions stay listed
+  // (and resumable) exactly like they do on desktop.
+  return true
 }
 
 func workRunningBannerLiveCounts(_ liveSessions: [TerminalSessionSummary]) -> (chat: Int, terminal: Int) {

@@ -22,6 +22,10 @@ struct HubCreatedChat: Equatable {
   let laneName: String
   let sessionId: String
   let isCli: Bool
+  /// Provider the session was created with (e.g. "claude", "cursor"), so the
+  /// toast's Open shortcut can seed a stub with the real chat toolType instead
+  /// of guessing from nil.
+  let provider: String?
 }
 
 /// Reports the destination control's global top edge so the picker popover can
@@ -817,7 +821,8 @@ struct HubInlineComposer: View {
         projectName: project.displayName,
         laneName: targetLaneName,
         sessionId: sessionId,
-        isCli: isCli
+        isCli: isCli,
+        provider: provider
       )
       // Collapse back to the minimized box; the hub's toast takes over from here.
       collapse()

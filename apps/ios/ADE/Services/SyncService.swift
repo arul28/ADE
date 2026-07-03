@@ -11413,11 +11413,12 @@ extension SyncService {
     let topLevelIds = Set(scopedSessions.filter { isRosterTopLevelToolType($0.toolType) }.map(\.id))
     let visibleSessions = scopedSessions.filter { session in
       if isRosterTopLevelToolType(session.toolType) { return true }
-      guard let parentId = normalizedRosterParentSessionId(session),
-            topLevelIds.contains(parentId) else {
-        return false
+      if let parentId = normalizedRosterParentSessionId(session) {
+        return topLevelIds.contains(parentId)
       }
-      return true
+      // Standalone CLI session (tracked terminal with no chat parent): a real
+      // hub entry whether it is live or ended — mirrors the host rosterBuilder.
+      return !isRunOwnedSession(session)
     }
     let chats: [RemoteRosterChat] = visibleSessions.map { session in
       let status = rosterStatus(forSession: session)

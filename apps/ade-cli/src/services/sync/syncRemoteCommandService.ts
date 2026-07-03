@@ -139,6 +139,7 @@ import {
 } from "../../../../desktop/src/shared/cliLaunch";
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
+import { resolveDefaultRemoteLaneBase } from "../../../../desktop/src/main/services/lanes/defaultRemoteLaneBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -705,6 +706,38 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
   const t = toolType.trim().toLowerCase();
   return t === "cursor" || t.endsWith("-chat");
+}
+
+/**
+ * Remote-first default base for `lanes.create` calls that omit `baseBranch`.
+ * Reads the project's `git.newLaneBaseSource` (effective default "remote"),
+ * fetches the primary lane's remote (bounded), and maps the primary base branch
+ * to its remote-tracking ref. Returns null — keep the local default — when the
+ * source is "local", services are unavailable, or no remote ref exists.
+ */
+async function resolveLaneCreateRemoteBase(args: SyncRemoteCommandServiceArgs): Promise<string | null> {
+  const gitService = args.gitService;
+  if (!gitService) return null;
+  let source: string | null = null;
+  try {
+    source = args.projectConfigService?.getEffective().git?.newLaneBaseSource ?? null;
+  } catch {
+    source = null;
+  }
+  if (source === "local") return null;
+  try {
+    const lanes = await args.laneService.list({ includeStatus: false });
+    const primary = lanes.find((lane) => lane.laneType === "primary");
+    if (!primary) return null;
+    return await resolveDefaultRemoteLaneBase({
+      newLaneBaseSource: source ?? "remote",
+      primaryBaseRef: primary.baseRef || primary.branchRef,
+      fetchRemote: () => gitService.fetch({ laneId: primary.id }),
+      listBranches: () => gitService.listBranches({ laneId: primary.id }),
+    });
+  } catch {
+    return null;
+  }
 }
 
 async function listRemoteWorkSessions(
@@ -2074,7 +2107,18 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     const response = await buildLaneDetailPayload(args, detailArgs.laneId);
     return respondWithSignature(response, detailArgs.ifNoneMatch, {}, args.getLanePresenceStamp?.() ?? "");
   });
-  register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
+  register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const parsed = parseCreateLaneArgs(payload);
+    // Mobile/CLI callers that don't pick a base (hub composer auto-create, the
+    // create sheet's default) must branch from the project's configured
+    // new-lane base — remote-first, matching desktop's create-lane dialog —
+    // not from the possibly-stale LOCAL primary tip.
+    if (!parsed.baseBranch && !parsed.startPoint && !parsed.parentLaneId) {
+      const remoteBase = await resolveLaneCreateRemoteBase(args);
+      if (remoteBase) return args.laneService.create({ ...parsed, baseBranch: remoteBase });
+    }
+    return args.laneService.create(parsed);
+  });
   // Background lane naming for mobile auto-create. Deliberately NOT queueable:
   // when the phone is offline we want the call to fail fast so the client uses
   // its deterministic fallback name, never a stale queued suggestion. The naming

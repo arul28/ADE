@@ -113,13 +113,19 @@ func rosterApplyDelta(
 // MARK: - Convenience
 
 extension RemoteRosterChat {
+  /// Only explicit chat tool types stream the chat-event surface. An unknown or
+  /// missing toolType must NOT read as a chat: routing a CLI (terminal) session
+  /// through the chat transcript path yields a permanently blank screen (CLI
+  /// sessions have no chat JSONL). The activation/terminal path handles both
+  /// kinds, so it is the safe default.
   var isChatTool: Bool {
-    guard let toolType = toolType?
+    let raw = toolType?
       .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased() else { return true }
-    return toolType == "cursor"
-      || toolType.hasSuffix("-chat")
-      || toolType == "chat"
+      .lowercased() ?? ""
+    guard !raw.isEmpty else { return false }
+    return raw == "cursor"
+      || raw.hasSuffix("-chat")
+      || raw == "chat"
   }
 
   /// Whether this row should drive an attention bubble on the hub.

@@ -304,9 +304,11 @@ export type SyncProjectCatalogChunkPayload = {
 // ---------------------------------------------------------------------------
 // All-projects chat roster (mobile hub)
 //
-// A lightweight, machine-wide projection of every project's lanes + chat
-// sessions, so the mobile hub can render all projects' chats-grouped-by-lane at
-// once without activating each project. Sourced cheaply from disk (each
+// A lightweight, machine-wide projection of every project's lanes + work
+// sessions — agent chats, their attached shell rows, AND standalone CLI
+// (tracked terminal) sessions, live or ended — so the mobile hub can render
+// all projects' sessions-grouped-by-lane at once without activating each
+// project. Sourced cheaply from disk (each
 // project's `<root>/.ade/ade.db` + `.ade/cache/chat-sessions/*.json`) for
 // un-booted projects, with live running/awaiting fidelity overlaid for any
 // project scope currently booted on the runtime. Transcripts are NOT included

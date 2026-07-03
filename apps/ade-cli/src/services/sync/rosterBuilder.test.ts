@@ -81,13 +81,16 @@ function seedDatabase(): void {
   insertChat.run("chat-run", "lane-primary", null, "claude-chat", "Running chat", "running", longPreview, "2026-01-02T00:00:00Z", 1, null, "2026-01-02T00:00:00Z", null);
   // Chat awaiting input (from sidecar) — attention.
   insertChat.run("chat-await", "lane-primary", null, "cursor", "Awaiting chat", "running", "needs input", "2026-01-03T00:00:00Z", 0, null, "2026-01-03T00:00:00Z", null);
-  // Standalone CLI session without a parent chat — hidden from the hub roster.
+  // Standalone CLI session without a parent chat — a real hub entry (failed).
   insertChat.run("cli-fail", "lane-work", null, "shell", "Build", "ended", "boom", "2026-01-01T12:00:00Z", 0, 1, "2026-01-01T00:00:00Z", null);
   // CLI session that exited cleanly → ended; owned by chat-run for child shell grouping.
   insertChat.run("cli-end", "lane-work", "chat-run", "shell", "Lint", "ended", "ok", "2026-01-01T06:00:00Z", 0, 0, "2026-01-01T00:00:00Z", null);
-  // Legacy provider-name CLI row — desktop no longer treats raw providers as
-  // Work chat rows, so the mobile hub must not surface it as a chat either.
-  insertChat.run("legacy-codex", "lane-work", null, "codex", "Legacy Codex", "running", "legacy", "2026-01-04T00:00:00Z", 0, null, "2026-01-04T00:00:00Z", null);
+  // Standalone tracked CLI session (raw provider tool type, e.g. `codex`) —
+  // a real hub entry, not a chat: toolType passes through so the phone routes
+  // it to the terminal surface.
+  insertChat.run("cli-codex", "lane-work", null, "codex", "Codex CLI", "running", "cli", "2026-01-04T00:00:00Z", 0, null, "2026-01-04T00:00:00Z", null);
+  // Run-owned infrastructure session — never a hub entry.
+  insertChat.run("run-owned", "lane-work", null, "run-shell", "Dev server", "ended", "exited", "2026-01-04T06:00:00Z", 0, 0, "2026-01-04T00:00:00Z", null);
   // Archived chat — filtered out.
   insertChat.run("chat-arch", "lane-primary", null, "claude-chat", "Old", "ended", null, "2026-01-01T00:00:00Z", 0, 0, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
   // Chat whose lane was filtered out — orphan, dropped.
@@ -112,10 +115,15 @@ const projectRegistry = {
 
 const unbootedScopes: RosterScopeRegistry = { getIfBooted: () => null };
 
-function bootedScopes(liveSessions: RosterLiveSession[]): RosterScopeRegistry {
+function bootedScopes(
+  liveSessions: RosterLiveSession[],
+  livePtySessionIds: string[] = [],
+): RosterScopeRegistry {
+  const livePtyIds = new Set(livePtySessionIds);
   const scope: RosterBootedScope = {
     runtime: {
       agentChatService: { listSessions: async () => liveSessions },
+      ptyService: { hasLivePty: (sessionId) => livePtyIds.has(sessionId) },
     },
   };
   return { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null) };
@@ -143,9 +151,16 @@ describe("buildRosterSnapshot", () => {
     // Archived + worktree-gone lanes are filtered; primary sorts first.
     expect(project.lanes.map((lane) => lane.id)).toEqual(["lane-primary", "lane-work"]);
 
-    // Orphan, archived, standalone shell, and legacy provider CLI rows are
-    // dropped; child shells owned by a visible chat remain.
-    expect(project.chats.map((chat) => chat.id)).toEqual(["chat-await", "chat-run", "cli-end"]);
+    // Orphan, archived, and run-owned rows are dropped. Chats, child shells
+    // owned by a visible chat, AND standalone CLI sessions (running or ended)
+    // are all real entries, freshest-activity first.
+    expect(project.chats.map((chat) => chat.id)).toEqual([
+      "cli-codex",
+      "chat-await",
+      "chat-run",
+      "cli-fail",
+      "cli-end",
+    ]);
   });
 
   it("maps disk status truthfully (running→idle, awaiting, failed) when un-booted", async () => {
@@ -156,9 +171,12 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("chat-await")!.status).toBe("awaiting");
     expect(byId.get("chat-await")!.awaitingInput).toBe(true);
     expect(byId.get("cli-end")!.status).toBe("ended");
+    expect(byId.get("cli-fail")!.status).toBe("failed"); // ended with exit code 1
+    expect(byId.get("cli-codex")!.status).toBe("idle"); // DB running, no live runtime
+    expect(byId.get("cli-codex")!.toolType).toBe("codex"); // raw CLI toolType passes through
 
     expect(projects[0]!.runningCount).toBe(0);
-    expect(projects[0]!.attentionCount).toBe(1); // awaiting
+    expect(projects[0]!.attentionCount).toBe(2); // awaiting + failed CLI
   });
 
   it("hard-truncates the preview to ~120 chars and reads sidecar provider/model", async () => {
@@ -187,6 +205,17 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("chat-run")!.status).toBe("running");
     expect(byId.get("chat-run")!.provider).toBe("claude");
     expect(project.runningCount).toBe(1);
+  });
+
+  it("marks a CLI session running via the booted scope's live PTY table", async () => {
+    const scopeRegistry = bootedScopes([], ["cli-codex"]);
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry, hostProjectId: PROJECT_ID });
+    const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
+
+    // Live PTY → running; a CLI row with no live PTY keeps its disk status.
+    expect(byId.get("cli-codex")!.status).toBe("running");
+    expect(byId.get("cli-fail")!.status).toBe("failed");
+    expect(projects[0]!.runningCount).toBe(1);
   });
 
   it("resolves a registered foreign chat transcript path and rejects unsafe input", () => {

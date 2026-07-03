@@ -64,8 +64,15 @@ export type RosterAgentChatService = {
   ): Promise<RosterLiveSession[]>;
 };
 
+export type RosterPtyService = {
+  hasLivePty(sessionId: string): boolean;
+};
+
 export type RosterBootedScope = {
-  runtime: { agentChatService?: RosterAgentChatService | null };
+  runtime: {
+    agentChatService?: RosterAgentChatService | null;
+    ptyService?: RosterPtyService | null;
+  };
 };
 
 export type RosterScopeRegistry = {
@@ -171,6 +178,12 @@ function isRosterTopLevelToolType(toolType: string | null | undefined): boolean 
   return raw.endsWith("-chat");
 }
 
+// Sessions spawned by process runs (`run-shell`) are infrastructure noise, not
+// user work — mirrors `isRunOwnedSession` on desktop and iOS.
+function isRunOwnedToolType(toolType: string | null | undefined): boolean {
+  return normalizedToolType(toolType) === "run-shell";
+}
+
 function normalizedParentSessionId(row: TerminalSessionRow): string | null {
   const parentId = row.chat_session_id?.trim() ?? "";
   if (!parentId || parentId === row.id) return null;
@@ -188,7 +201,11 @@ function desktopVisibleRosterRows(rows: TerminalSessionRow[], visibleLaneIds: Se
   return scopedRows.filter((row) => {
     if (isRosterTopLevelToolType(row.tool_type)) return true;
     const parentId = normalizedParentSessionId(row);
-    return parentId != null && topLevelIds.has(parentId);
+    if (parentId != null) return topLevelIds.has(parentId);
+    // Standalone CLI session (tracked terminal with no chat parent): a real
+    // roster entry whether it is live or ended — the hub must list every CLI
+    // session, not just agent chats.
+    return !isRunOwnedToolType(row.tool_type);
   });
 }
 
@@ -325,6 +342,7 @@ async function buildRosterProject(
   // carries true running/awaiting fidelity keyed by sessionId.
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
+  let livePtyService: RosterPtyService | null = null;
   try {
     const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
     const scope = bootedPromise
@@ -336,6 +354,7 @@ async function buildRosterProject(
         ])
       : null;
     const agentChatService = scope?.runtime.agentChatService;
+    livePtyService = scope?.runtime.ptyService ?? null;
     if (agentChatService) {
       booted = true;
       const liveSessions = await agentChatService
@@ -360,7 +379,14 @@ async function buildRosterProject(
   for (const row of desktopVisibleRosterRows(disk.chats, visibleLaneIds)) {
     const live = liveBySessionId.get(row.id);
     const sidecar = readChatSidecar(chatSessionsDir, row.id);
-    const status = live ? liveChatStatus(live) : diskChatStatus(row, Boolean(sidecar?.awaitingInput));
+    // CLI (terminal) sessions never appear in agentChatService; on a booted
+    // scope their liveness comes from the PTY table instead.
+    const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
+    const status: SyncRosterChatStatus = live
+      ? liveChatStatus(live)
+      : hasLivePty
+        ? "running"
+        : diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";
     if (status === "running") runningCount += 1;
     if (status === "awaiting" || status === "failed") attentionCount += 1;
@@ -453,8 +479,9 @@ export function createForeignChatTranscriptResolver(args: {
 }
 
 /**
- * Build the all-projects chat roster: every registered project's lanes + chat
- * sessions, sourced cheaply from disk, with live status overlaid for any
+ * Build the all-projects chat roster: every registered project's lanes + work
+ * sessions (agent chats, chat-owned shell rows, and standalone CLI sessions —
+ * live or ended), sourced cheaply from disk, with live status overlaid for any
  * already-booted scope. Projects are sorted most-recently-opened first.
  */
 export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promise<SyncRosterProject[]> {
