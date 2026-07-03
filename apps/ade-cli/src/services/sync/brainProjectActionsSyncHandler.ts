@@ -32,7 +32,11 @@ import {
   parseSyncEnvelope,
   wsDataToText,
 } from "./syncProtocol";
-import type { SyncProjectCatalogProvider } from "./syncHostService";
+import {
+  buildSyncHostHelloOkPayload,
+  buildSyncProjectCatalogMessages,
+  type SyncProjectCatalogProvider,
+} from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
 
 type BrainProjectActionsSyncHandlerArgs = {
@@ -209,6 +213,20 @@ function send(
   }));
 }
 
+function sendProjectCatalog(
+  ws: WebSocket,
+  catalog: SyncProjectCatalogPayload,
+  requestId?: string | null,
+): void {
+  for (const message of buildSyncProjectCatalogMessages({
+    projectCatalog: catalog,
+    requestId,
+    compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+  })) {
+    send(ws, message.type, message.payload, message.requestId);
+  }
+}
+
 function projectActionsEnabled(provider: SyncProjectCatalogProvider): boolean {
   return Boolean(
     provider.browseDirectories
@@ -343,7 +361,7 @@ export function createBrainProjectActionsSyncHandler(
     try {
       const project = await action(payload);
       send(peer.ws, resultType, { ok: true, project }, requestId);
-      send(peer.ws, "project_catalog", await projectCatalog(args.projectCatalogProvider, args.logger));
+      sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger));
     } catch (error) {
       send(peer.ws, resultType, {
         ok: false,
@@ -355,7 +373,7 @@ export function createBrainProjectActionsSyncHandler(
   const handleAuthenticatedEnvelope = async (peer: BrainPeerState, envelope: ReturnType<typeof parseSyncEnvelope>): Promise<void> => {
     switch (envelope.type) {
       case "project_catalog_request": {
-        send(peer.ws, "project_catalog", await projectCatalog(args.projectCatalogProvider, args.logger), envelope.requestId);
+        sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger), envelope.requestId);
         break;
       }
       case "project_switch_request": {
@@ -410,7 +428,7 @@ export function createBrainProjectActionsSyncHandler(
           );
           send(peer.ws, "project_forget_result", result, envelope.requestId);
           if (result.ok) {
-            send(peer.ws, "project_catalog", await projectCatalog(args.projectCatalogProvider, args.logger));
+            sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger));
           }
         } catch (error) {
           send(peer.ws, "project_forget_result", {
@@ -664,29 +682,20 @@ export function createBrainProjectActionsSyncHandler(
           peer.metadata = hello.peer;
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
-          send(ws, "hello_ok", {
+          send(ws, "hello_ok", buildSyncHostHelloOkPayload({
             peer: hello.peer,
             brain,
             serverDbVersion: 0,
             heartbeatIntervalMs,
             pollIntervalMs,
-            projects: catalog.projects,
-            features: {
-              fileAccess: true,
-              terminalStreaming: true,
-              chatStreaming: { enabled: true },
-              projectCatalog: { enabled: true },
-              projectActions: { enabled: projectActionsEnabled(args.projectCatalogProvider) },
-              changesetAck: { enabled: true },
-              bootstrapAuth: true,
-              pairingAuth: { enabled: true, pinDigits: 6 },
-              commandRouting: {
-                mode: "allowlisted",
-                supportedActions: [],
-                actions: [],
-              },
-            },
-          }, envelope.requestId);
+            projectCatalog: catalog,
+            projectCatalogEnabled: true,
+            projectActionsEnabled: projectActionsEnabled(args.projectCatalogProvider),
+            remoteCommandSupportedActions: [],
+            remoteCommandDescriptors: [],
+            localCommandDescriptors: [],
+            compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+          }), envelope.requestId);
           return;
         }
 

@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import net, { type AddressInfo } from "node:net";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import readline from "node:readline";
 import readlinePromises from "node:readline/promises";
 import { RemoteTargetRegistry, normalizeRemoteTargetRoutes } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
@@ -24,9 +27,21 @@ type JsonRpcResponse = {
   params?: unknown;
 };
 
+type InitializeResponse = {
+  runtimeInfo?: {
+    version?: string | null;
+    multiProject?: boolean;
+  };
+  capabilities?: {
+    projects?: boolean;
+  };
+};
+
 type PendingRequest = {
+  method: string;
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 type RemoteRuntimeLayout = {
@@ -84,9 +99,45 @@ type RemoteSessionChoice = {
 export type RunAdeCodeCli = (argv: string[]) => Promise<number>;
 
 const REMOTE_RPC_TIMEOUT_MS = 20_000;
+const REMOTE_RPC_REQUEST_TIMEOUT_MS = 120_000;
+const MAX_RPC_BUFFER_BYTES = 16 * 1024 * 1024;
+const MAX_STDERR_TAIL_BYTES = 32 * 1024;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+class ByteRingBuffer {
+  private chunks: Buffer[] = [];
+  private bytes = 0;
+
+  constructor(private readonly maxBytes: number) {}
+
+  push(chunk: Buffer | string): void {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8");
+    if (this.maxBytes <= 0) return;
+    this.chunks.push(buffer);
+    this.bytes += buffer.length;
+    while (this.bytes > this.maxBytes && this.chunks.length > 0) {
+      const first = this.chunks[0]!;
+      const overflow = this.bytes - this.maxBytes;
+      if (overflow >= first.length) {
+        this.chunks.shift();
+        this.bytes -= first.length;
+      } else {
+        this.chunks[0] = first.subarray(overflow);
+        this.bytes -= overflow;
+      }
+    }
+  }
+
+  text(): string {
+    return Buffer.concat(this.chunks, this.bytes).toString("utf8").trim();
+  }
+
+  tailLines(limit = 8): string {
+    return this.text().split(/\r?\n/).filter(Boolean).slice(-limit).join("\n");
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -103,6 +154,37 @@ function readFlagValue(argv: string[], index: number, flag: string): string {
     throw new Error(`${flag} requires a value.`);
   }
   return value;
+}
+
+function localCliVersion(): string {
+  const envVersion = process.env.ADE_CLI_VERSION?.trim();
+  if (envVersion) return envVersion;
+  let cursor = process.cwd();
+  while (true) {
+    const candidate = path.join(cursor, "package.json");
+    try {
+      const packageJson = JSON.parse(fs.readFileSync(candidate, "utf8")) as {
+        name?: unknown;
+        version?: unknown;
+      };
+      if (packageJson.name === "ade-cli" && typeof packageJson.version === "string" && packageJson.version.trim()) {
+        return packageJson.version.trim();
+      }
+    } catch {}
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.resolve("apps/ade-cli/package.json"), "utf8"),
+    ) as { version?: unknown };
+    return typeof packageJson.version === "string" && packageJson.version.trim()
+      ? packageJson.version.trim()
+      : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
 }
 
 export function parseRemoteAdeCodeArgs(argv: string[]): RemoteCliOptions {
@@ -503,13 +585,13 @@ class ProcessJsonRpcClient {
   private nextId = 1;
   private buffer = Buffer.alloc(0);
   private readonly pending = new Map<number | string, PendingRequest>();
-  private readonly stderrChunks: Buffer[] = [];
+  private readonly stderrTail = new ByteRingBuffer(MAX_STDERR_TAIL_BYTES);
   private closed = false;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     child.stdout.on("data", (chunk: Buffer | string) => this.handleData(chunk));
     child.stderr.on("data", (chunk: Buffer | string) => {
-      this.stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
+      this.stderrTail.push(chunk);
     });
     child.on("error", (error) => this.handleClosed(error));
     child.on("close", (code, signal) => {
@@ -527,12 +609,23 @@ class ProcessJsonRpcClient {
       ...(params !== undefined ? { params } : {}),
     };
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.handleClosed(
+          new Error(`Remote ADE RPC timed out waiting for method ${method} (${REMOTE_RPC_REQUEST_TIMEOUT_MS}ms).`),
+        );
+        this.child.kill();
+      }, REMOTE_RPC_REQUEST_TIMEOUT_MS);
       this.pending.set(id, {
+        method,
         resolve: (value) => resolve(value as T),
         reject,
+        timer,
       });
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
         if (!error) return;
+        const pending = this.pending.get(id);
+        if (pending) clearTimeout(pending.timer);
         this.pending.delete(id);
         reject(error);
       });
@@ -548,9 +641,7 @@ class ProcessJsonRpcClient {
   }
 
   private closeMessage(code: number | null, signal: NodeJS.Signals | null): string {
-    const detail = this.stderrChunks.length
-      ? Buffer.concat(this.stderrChunks).toString("utf8").trim().split("\n").slice(-4).join("\n")
-      : "";
+    const detail = this.stderrTail.tailLines(8);
     const status = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
     return detail
       ? `Remote ADE RPC exited with ${status}: ${detail}`
@@ -564,20 +655,35 @@ class ProcessJsonRpcClient {
   }
 
   private handleData(chunk: Buffer | string): void {
+    if (this.closed) return;
     this.buffer = Buffer.concat([
       this.buffer,
       Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"),
     ]);
+    if (this.buffer.length > MAX_RPC_BUFFER_BYTES) {
+      this.handleClosed(new Error(`Remote ADE RPC sent an oversized partial frame (> ${MAX_RPC_BUFFER_BYTES} bytes).`));
+      this.child.kill();
+      return;
+    }
     while (true) {
-      const next = this.takeNextPayload();
+      let next: string | null;
+      try {
+        next = this.takeNextPayload();
+      } catch (error) {
+        this.handleClosed(error instanceof Error ? error : new Error(String(error)));
+        this.child.kill();
+        return;
+      }
       if (!next) return;
       const payload = next.trim();
       if (!payload) continue;
       let parsed: JsonRpcResponse | JsonRpcResponse[] | null = null;
       try {
         parsed = JSON.parse(payload) as JsonRpcResponse | JsonRpcResponse[];
-      } catch {
-        continue;
+      } catch (error) {
+        this.handleClosed(new Error(`Failed to parse remote ADE RPC response: ${error instanceof Error ? error.message : String(error)}`));
+        this.child.kill();
+        return;
       }
       const responses = Array.isArray(parsed) ? parsed : [parsed];
       for (const response of responses) this.handleResponse(response);
@@ -593,9 +699,16 @@ class ProcessJsonRpcClient {
     if (first === "{" || first === "[") {
       const idx = this.buffer.indexOf(0x0a);
       if (idx < 0) return null;
+      if (idx > MAX_RPC_BUFFER_BYTES) {
+        throw new Error(`Remote ADE RPC sent an oversized JSON line (> ${MAX_RPC_BUFFER_BYTES} bytes).`);
+      }
       const payload = this.buffer.subarray(0, idx).toString("utf8");
       this.buffer = this.buffer.subarray(idx + 1);
       return payload;
+    }
+    const probe = this.buffer.subarray(0, Math.min(this.buffer.length, "content-length".length)).toString("ascii").toLowerCase();
+    if (!"content-length".startsWith(probe)) {
+      throw new Error("Remote ADE RPC sent non-JSON output on stdout.");
     }
 
     const crlfBoundary = this.buffer.indexOf("\r\n\r\n");
@@ -607,10 +720,12 @@ class ProcessJsonRpcClient {
     const header = this.buffer.subarray(0, boundary.index).toString("ascii");
     const match = /^content-length\s*:\s*(\d+)\s*$/im.exec(header);
     if (!match) {
-      this.buffer = this.buffer.subarray(boundary.index + boundary.length);
-      return "";
+      throw new Error("Remote ADE RPC sent a malformed Content-Length frame.");
     }
     const length = Number.parseInt(match[1]!, 10);
+    if (!Number.isFinite(length) || length < 0 || length > MAX_RPC_BUFFER_BYTES) {
+      throw new Error(`Remote ADE RPC sent an oversized Content-Length frame (${length} bytes).`);
+    }
     const bodyStart = boundary.index + boundary.length;
     const bodyEnd = bodyStart + length;
     if (this.buffer.length < bodyEnd) return null;
@@ -633,6 +748,7 @@ class ProcessJsonRpcClient {
 
   private rejectAll(error: Error): void {
     for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
       pending.reject(error);
     }
     this.pending.clear();
@@ -640,14 +756,35 @@ class ProcessJsonRpcClient {
 }
 
 async function initializeRemoteRpc(client: ProcessJsonRpcClient): Promise<void> {
-  await client.request("ade/initialize", {
+  const initialize = await client.request<InitializeResponse>("ade/initialize", {
     protocolVersion: "2025-06-18",
     clientName: "ade-code-remote",
+    clientInfo: { name: "ade-code-remote", version: localCliVersion() },
     identity: {
       role: "cto",
       callerId: `ade-code-remote:${process.pid}`,
     },
   });
+  const remoteVersion = typeof initialize?.runtimeInfo?.version === "string"
+    ? initialize.runtimeInfo.version.trim()
+    : "";
+  const localVersion = localCliVersion();
+  if (
+    remoteVersion &&
+    localVersion &&
+    remoteVersion !== "0.0.0" &&
+    localVersion !== "0.0.0" &&
+    remoteVersion !== localVersion
+  ) {
+    process.stderr.write(
+      `Warning: remote ADE is ${remoteVersion}, local ADE Code is ${localVersion}; continuing because required RPC capabilities are present.\n`,
+    );
+  }
+  if (initialize?.runtimeInfo?.multiProject !== true && initialize?.capabilities?.projects !== true) {
+    throw new Error(
+      `Remote ADE service ${remoteVersion || "unknown"} does not support the projects capability required by ade code remote. Update ADE on the remote machine.`,
+    );
+  }
   await client.request("ade/initialized");
 }
 
@@ -1024,26 +1161,82 @@ function printSessions(sessions: RemoteSessionChoice[]): void {
   }
 }
 
-async function startRemoteBridge(attempt: RemoteRpcAttempt): Promise<RemoteBridge> {
+async function startRemoteBridge(target: RemoteRuntimeTarget): Promise<RemoteBridge> {
+  const activeSockets = new Set<net.Socket>();
+  const activeChildren = new Set<ChildProcessWithoutNullStreams>();
+  const bridgeDir = process.platform === "win32"
+    ? null
+    : fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-remote-"));
+  if (bridgeDir) {
+    try {
+      fs.chmodSync(bridgeDir, 0o700);
+    } catch {}
+  }
+  const bridgeSocketPath = bridgeDir ? path.join(bridgeDir, "bridge.sock") : null;
+  let closing = false;
+
+  const currentTarget = (): RemoteRuntimeTarget => {
+    try {
+      return new RemoteTargetRegistry().get(target.id) ?? target;
+    } catch {
+      return target;
+    }
+  };
+
+  const selectBridgeAttempt = async (): Promise<RemoteRpcAttempt> => {
+    const session = await openRemoteRpcSession(currentTarget());
+    const attempt = session.attempt;
+    session.client.close();
+    return attempt;
+  };
+
   const server = net.createServer((socket) => {
-    const child = spawnRemoteRpcProcess(attempt);
+    activeSockets.add(socket);
+    socket.pause();
+    let child: ChildProcessWithoutNullStreams | null = null;
     let settled = false;
-    const teardown = (): void => {
+    const stderrTail = new ByteRingBuffer(MAX_STDERR_TAIL_BYTES);
+    const teardown = (reason?: string): void => {
       if (settled) return;
       settled = true;
+      activeSockets.delete(socket);
+      if (child) activeChildren.delete(child);
+      if (!closing && reason) {
+        const detail = stderrTail.tailLines(8);
+        process.stderr.write(
+          detail
+            ? `Remote ADE bridge closed: ${reason}\n${detail}\n`
+            : `Remote ADE bridge closed: ${reason}\n`,
+        );
+      }
       socket.destroy();
-      child.stdin.destroy();
-      child.stdout.destroy();
-      child.stderr.destroy();
-      child.kill();
+      if (child) {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.kill();
+      }
     };
-    socket.on("error", teardown);
-    socket.on("close", teardown);
-    child.on("error", teardown);
-    child.on("close", teardown);
-    child.stderr.resume();
-    socket.pipe(child.stdin);
-    child.stdout.pipe(socket);
+    socket.on("error", (error) => teardown(error.message));
+    socket.on("close", () => teardown());
+    void selectBridgeAttempt()
+      .then((attempt) => {
+        if (settled || closing) return;
+        child = spawnRemoteRpcProcess(attempt);
+        activeChildren.add(child);
+        child.stderr.on("data", (chunk: Buffer | string) => stderrTail.push(chunk));
+        child.on("error", (error) => teardown(error.message));
+        child.on("close", (code, signal) => {
+          const status = signal ? `signal ${signal}` : `code ${code ?? "unknown"}`;
+          teardown(`ssh child exited with ${status}`);
+        });
+        socket.pipe(child.stdin);
+        child.stdout.pipe(socket);
+        socket.resume();
+      })
+      .catch((error) => {
+        teardown(error instanceof Error ? error.message : String(error));
+      });
   });
   server.maxConnections = 1;
 
@@ -1062,17 +1255,42 @@ async function startRemoteBridge(attempt: RemoteRpcAttempt): Promise<RemoteBridg
     };
     server.once("listening", onListening);
     server.once("error", onError);
-    server.listen(0, "127.0.0.1");
+    if (bridgeSocketPath) server.listen(bridgeSocketPath);
+    else server.listen(0, "127.0.0.1");
   });
 
-  const address = server.address() as AddressInfo | null;
-  if (!address) {
-    throw new Error("Remote bridge did not bind a local port.");
+  let socketUrl: string;
+  if (bridgeSocketPath) {
+    socketUrl = bridgeSocketPath;
+  } else {
+    const address = server.address() as AddressInfo | null;
+    if (!address) {
+      throw new Error("Remote bridge did not bind a local port.");
+    }
+    socketUrl = `tcp://127.0.0.1:${address.port}`;
   }
   return {
-    socketUrl: `tcp://127.0.0.1:${address.port}`,
+    socketUrl,
     close: async () => {
+      closing = true;
+      for (const socket of [...activeSockets]) socket.destroy();
+      for (const child of [...activeChildren]) {
+        child.stdin.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.kill();
+      }
       await new Promise<void>((resolve) => server.close(() => resolve()));
+      if (bridgeSocketPath) {
+        try {
+          fs.unlinkSync(bridgeSocketPath);
+        } catch {}
+      }
+      if (bridgeDir) {
+        try {
+          fs.rmdirSync(bridgeDir);
+        } catch {}
+      }
     },
   };
 }
@@ -1141,7 +1359,7 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
     }
 
     remote.client.close();
-    bridge = await startRemoteBridge(remote.attempt);
+    bridge = await startRemoteBridge(target);
     process.stderr.write(
       `Connecting ADE Code to ${target.name} · ${project.displayName}${session ? ` · ${session.title}` : ""}\n`,
     );

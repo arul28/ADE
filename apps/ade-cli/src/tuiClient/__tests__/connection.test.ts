@@ -504,6 +504,30 @@ describe("connectToAde embedded mode", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
+  it("rechecks the machine socket after taking the spawn lock", async () => {
+    const socketPath = useMissingMachineSocket();
+    const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, "stale\n0\n", "utf8");
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+    const client = mockAttachedClient();
+    childProcess.spawn.mockImplementation(() => {
+      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+      fs.writeFileSync(socketPath, "", "utf8");
+      return childProcess.child;
+    });
+
+    const connection = await connectToAde({ project });
+    await connection.close();
+    const secondConnection = await connectToAde({ project });
+    await secondConnection.close();
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(client.request).toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   it("repairs the packaged service before spawning an unmanaged machine daemon", async () => {
     useMissingMachineSocket();
     const installEnvRoles: Array<string | undefined> = [];
@@ -738,6 +762,83 @@ describe("JsonRpcClient", () => {
     }
   });
 
+  it("matches responses whose ids are echoed as strings", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string };
+          const response = `${JSON.stringify({
+            jsonrpc: "2.0",
+            id: String(request.id),
+            result: { method: request.method },
+          })}\n`;
+          socket.write(response.slice(0, 13));
+          socket.write(response.slice(13));
+        }
+      });
+    });
+
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    try {
+      await expect(client.request("ping")).resolves.toEqual({ method: "ping" });
+    } finally {
+      client.close();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("handles large Content-Length frames split across many chunks", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => {
+      resolveServerSocket(socket);
+    });
+
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const notification = new Promise((resolve) => {
+        client.onNotification("chat/event", resolve);
+      });
+      const message = "x".repeat(128 * 1024);
+      const payload = JSON.stringify({
+        jsonrpc: "2.0",
+        method: "chat/event",
+        params: { message },
+      });
+      const framed = Buffer.concat([
+        Buffer.from(`Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n`, "ascii"),
+        Buffer.from(payload, "utf8"),
+      ]);
+      for (let offset = 0; offset < framed.length; offset += 1024) {
+        socket.write(framed.subarray(offset, offset + 1024));
+      }
+
+      await expect(notification).resolves.toEqual({ message });
+    } finally {
+      client.close();
+      socket.destroy();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("fires onClose when the socket drops unexpectedly", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
     const socketPath = path.join(tmpDir, "rpc.sock");
@@ -773,6 +874,60 @@ describe("JsonRpcClient", () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(onClose).not.toHaveBeenCalled();
     } finally {
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("times out pending requests by tearing down the socket", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => resolveServerSocket(socket));
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const closed = new Promise<void>((resolve) => client.onClose(resolve));
+      const first = client.request("slow", undefined, { timeoutMs: 25 });
+      const second = client.request("also-slow", undefined, { timeoutMs: 1_000 });
+
+      await expect(first).rejects.toThrow(/timed out/i);
+      await expect(second).rejects.toThrow(/timed out|closed/i);
+      await expect(closed).resolves.toBeUndefined();
+      await expect(client.request("after-timeout")).rejects.toThrow(/closed/i);
+    } finally {
+      client.close();
+      socket.destroy();
+      await closeServer(server);
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails the connection on parse garbage instead of continuing", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
+    const socketPath = path.join(tmpDir, "rpc.sock");
+    let resolveServerSocket: (socket: net.Socket) => void = () => {};
+    const serverSocketReady = new Promise<net.Socket>((resolve) => {
+      resolveServerSocket = resolve;
+    });
+    const server = net.createServer((socket) => resolveServerSocket(socket));
+    await listenRpc(server, socketPath);
+    const client = await JsonRpcClient.connect(socketPath);
+    const socket = await serverSocketReady;
+    try {
+      const closed = new Promise<void>((resolve) => client.onClose(resolve));
+      const pending = client.request("ping", undefined, { timeoutMs: 1_000 });
+      socket.write("this is not json\n");
+
+      await expect(pending).rejects.toThrow(/Invalid JSON-RPC response|non-JSON output|closed/i);
+      await expect(closed).resolves.toBeUndefined();
+    } finally {
+      client.close();
+      socket.destroy();
       await closeServer(server);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

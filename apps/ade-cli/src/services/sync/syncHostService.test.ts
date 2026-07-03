@@ -8,6 +8,7 @@ import type {
   CrsqlChangeRow,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
+  SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
 import {
@@ -15,6 +16,7 @@ import {
   CHAT_EVENT_REPLAY_MAX_EVENTS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   buildSyncHostHelloOkPayload,
+  buildSyncProjectCatalogMessages,
   createChatEventReplayBuffer,
   createSyncHostService,
   planChatEventResume,
@@ -219,6 +221,47 @@ describe("buildSyncHostHelloOkPayload", () => {
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
       actions: [remoteCommand, localPresenceCommand],
     });
+  });
+});
+
+describe("buildSyncProjectCatalogMessages", () => {
+  it("keeps small catalogs as a single catalog message", () => {
+    const project = createDiscoveryProject({ id: "project-small", rootPath: "/srv/small" });
+
+    expect(buildSyncProjectCatalogMessages({
+      projectCatalog: { projects: [project] },
+      requestId: "catalog-small",
+      compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+    })).toEqual([{
+      type: "project_catalog",
+      payload: { projects: [project] },
+      requestId: "catalog-small",
+    }]);
+  });
+
+  it("chunks oversized fallback catalogs with stable request metadata", () => {
+    const projects = Array.from({ length: 3 }, (_, index) =>
+      createDiscoveryProject({
+        id: `project-large-${index}`,
+        rootPath: `/srv/${"x".repeat(130_000)}-${index}`,
+      }));
+
+    const messages = buildSyncProjectCatalogMessages({
+      projectCatalog: { projects },
+      requestId: "catalog-large",
+      compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+      maxProjectCatalogEnvelopeBytes: 512,
+    });
+
+    expect(messages.length).toBeGreaterThan(1);
+    expect(messages.every((message) => message.type === "project_catalog_chunk")).toBe(true);
+    expect(messages.every((message) => message.requestId === "catalog-large")).toBe(true);
+    const payloads = messages.map((message) => message.payload as { catalogId: string; index: number; total: number; done: boolean; projects: SyncMobileProjectSummary[] });
+    expect(new Set(payloads.map((payload) => payload.catalogId)).size).toBe(1);
+    expect(payloads.map((payload) => payload.index)).toEqual([0, 1, 2]);
+    expect(payloads.every((payload) => payload.total === messages.length)).toBe(true);
+    expect(payloads.map((payload) => payload.done)).toEqual([false, false, true]);
+    expect(payloads.flatMap((payload) => payload.projects).map((project) => project.id)).toEqual(projects.map((project) => project.id));
   });
 });
 
@@ -1505,6 +1548,262 @@ describe("sync host handoff over a shared listener", () => {
         // ignore
       }
       await listener.close();
+    }
+  });
+
+  it("closes parked peers when buffered handoff frames exceed the byte budget", async () => {
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1", parkedPeerGraceMs: 500 });
+    const logger = createDiscoveryLogger();
+    const loggedListener = createSharedSyncListener({
+      logger,
+      bindHost: "127.0.0.1",
+      parkedPeerGraceMs: 500,
+    });
+    let client: WebSocket | null = null;
+    try {
+      await listener.close();
+      const port = await loggedListener.ensureListening([0]);
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { closeEvents } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+      client.send(Buffer.alloc(600 * 1024, "x"));
+
+      const closeEvent = await waitForValue(
+        () => closeEvents[0],
+        "parked byte-budget close",
+      );
+      expect(closeEvent.code).toBe(4002);
+      expect(closeEvent.reason).toBe("Sync host handoff buffer exceeded");
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_listener.parked_peer_buffer_overflow",
+        expect.objectContaining({ nextMessageBytes: 600 * 1024 }),
+      );
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await loggedListener.close();
+    }
+  });
+});
+
+describe("sync host reliability guards", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function createReliabilityHost(
+    projectRoot: string,
+    overrides: Partial<Parameters<typeof createSyncHostService>[0]> = {},
+  ) {
+    const project = createDiscoveryProject({
+      id: "project-1",
+      rootPath: projectRoot,
+      isOpen: true,
+    });
+    const base = createHostArgs(projectRoot, [project]);
+    return createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-reliability",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      ...overrides,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+  }
+
+  it("serializes project switch handling without deadlocking later peer messages", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const project = createDiscoveryProject({
+      id: "project-1",
+      rootPath: projectRoot,
+      isOpen: true,
+    });
+    const prepareProjectConnection = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { ok: true, project, connection: null };
+    });
+    const completeProjectConnection = vi.fn(async () => {});
+    const host = createReliabilityHost(projectRoot, {
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [project] })),
+        prepareProjectConnection,
+        completeProjectConnection,
+      },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-project-switch");
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "project_switch_request",
+        requestId: "switch-serialized",
+        payload: { projectId: "project-1" },
+      }));
+      peer.ws.send(encodeSyncEnvelope({
+        type: "project_catalog_request",
+        requestId: "catalog-after-switch",
+        payload: {},
+      }));
+
+      const switchResult = await waitForEnvelope(peer.envelopes, "project_switch_result", "switch-serialized");
+      const catalog = await waitForEnvelope(peer.envelopes, "project_catalog", "catalog-after-switch");
+      expect(switchResult.payload).toMatchObject({ ok: true });
+      expect((catalog.payload as SyncProjectCatalogPayload).projects.map((entry) => entry.id)).toEqual(["project-1"]);
+      expect(completeProjectConnection).toHaveBeenCalledTimes(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("completes a prepared project switch even when result delivery fails", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const project = createDiscoveryProject({
+      id: "project-1",
+      rootPath: projectRoot,
+      isOpen: true,
+    });
+    const completeProjectConnection = vi.fn(async () => {});
+    const host = createReliabilityHost(projectRoot, {
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [project] })),
+        prepareProjectConnection: vi.fn(async () => ({ ok: true, project, connection: null })),
+        completeProjectConnection,
+      },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-project-switch-stall");
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(17 * 1024 * 1024);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "project_switch_request",
+        requestId: "switch-stalled",
+        payload: { projectId: "project-1" },
+      }));
+
+      await waitForValue(
+        () => completeProjectConnection.mock.calls[0],
+        "project switch completion after send failure",
+      );
+      expect(completeProjectConnection).toHaveBeenCalledWith(
+        { projectId: "project-1" },
+        expect.objectContaining({ ok: true }),
+      );
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("closes peers instead of queueing required sends beyond the byte budget", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-required-backpressure");
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(17 * 1024 * 1024);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "required-backpressure",
+        payload: { action: "listWorkspaces", args: {} },
+      }));
+
+      const closeEvent = await waitForValue(
+        () => peer?.closeEvents[0],
+        "required-send backpressure close",
+      );
+      expect(closeEvent.code).toBe(4001);
+      expect(closeEvent.reason).toBe("Required sync response backpressured");
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rejects oversized artifact reads with a clear file response", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "large.bin");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, Buffer.alloc(8 * 1024 * 1024 + 1));
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-artifact-cap");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "artifact-large",
+        payload: {
+          action: "readArtifact",
+          args: { path: artifactPath },
+        },
+      }));
+
+      const response = await waitForEnvelope(peer.envelopes, "file_response", "artifact-large");
+      expect(response.payload).toMatchObject({
+        ok: false,
+        action: "readArtifact",
+        error: {
+          code: "file_request_failed",
+        },
+      });
+      expect((response.payload as { error?: { message?: string } }).error?.message).toMatch(/too large to sync/i);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
     }
   });
 });

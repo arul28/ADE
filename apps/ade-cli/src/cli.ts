@@ -11250,6 +11250,33 @@ function createSocketConnection(socketPath: string): net.Socket {
   return net.createConnection(socketPath);
 }
 
+async function probeLocalSocketForLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
+  if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
+    return "unknown";
+  }
+  return await new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (value: "live" | "stale" | "unknown") => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
+    timer = setTimeout(() => finish("unknown"), 500);
+    socket.once("connect", () => finish("live"));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+        finish("stale");
+        return;
+      }
+      finish("unknown");
+    });
+  });
+}
+
 function isRetryableSocketConnectError(error: NodeJS.ErrnoException): boolean {
   return (
     error.code === "ENOENT" ||
@@ -13685,9 +13712,21 @@ async function runServe(
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
-    try {
-      fs.unlinkSync(socketPath);
-    } catch {}
+    if (fs.existsSync(socketPath)) {
+      const liveness = await probeLocalSocketForLiveness(socketPath);
+      if (liveness === "live" || liveness === "unknown") {
+        throw new CliExecutionError("ADE brain socket is already in use.", {
+          socketPath,
+          cause: liveness === "live"
+            ? "Another ADE brain is accepting connections on this socket."
+            : "ADE could not prove the existing socket is stale.",
+          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+        });
+      }
+      try {
+        fs.unlinkSync(socketPath);
+      } catch {}
+    }
   }
 
   const socketState = createHeadlessRpcServer(createHandler);

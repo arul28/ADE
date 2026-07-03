@@ -29,6 +29,7 @@ const DEFAULT_PARKED_PEER_GRACE_MS = 30_000;
 // a few in-flight requests fit comfortably; anything beyond signals a peer
 // flooding an unowned socket.
 const PARKED_MESSAGE_BUFFER_LIMIT = 256;
+const PARKED_MESSAGE_BUFFER_BYTES = 512 * 1024;
 // Mirror of the syncService preferred-port semantics: insist on the first
 // candidate for ~3.2s before drifting, so a dying listener from a previous
 // brain process can free the port paired phones have saved.
@@ -112,6 +113,7 @@ export type SharedSyncListener = {
 type ParkedEntry = {
   snapshot: SyncPeerHandoffSnapshot;
   bufferedMessages: Array<{ data: RawData; isBinary: boolean }>;
+  bufferedBytes: number;
   onMessage: (data: RawData, isBinary: boolean) => void;
   onClose: () => void;
   onError: (error: Error) => void;
@@ -121,6 +123,16 @@ type ParkedEntry = {
 function isRetryableListenerBindError(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
   return code === "EADDRINUSE" || code === "EACCES";
+}
+
+function rawDataBytes(data: RawData): number {
+  if (typeof data === "string") return Buffer.byteLength(data, "utf8");
+  if (Buffer.isBuffer(data)) return data.length;
+  if (Array.isArray(data)) {
+    return data.reduce((sum, chunk) => sum + rawDataBytes(chunk), 0);
+  }
+  if (data instanceof ArrayBuffer) return data.byteLength;
+  return Buffer.byteLength(String(data), "utf8");
 }
 
 export function createSharedSyncListener(options: {
@@ -164,17 +176,50 @@ export function createSharedSyncListener(options: {
       }
       return;
     }
-    const bufferedMessages: Array<{ data: RawData; isBinary: boolean }> = [
-      ...(snapshot.bufferedMessages ?? []),
-    ];
+    const bufferedMessages: Array<{ data: RawData; isBinary: boolean }> = [];
+    let bufferedBytes = 0;
+    for (const message of snapshot.bufferedMessages ?? []) {
+      const messageBytes = rawDataBytes(message.data);
+      if (
+        bufferedMessages.length >= PARKED_MESSAGE_BUFFER_LIMIT ||
+        bufferedBytes + messageBytes > PARKED_MESSAGE_BUFFER_BYTES
+      ) {
+        try {
+          ws.close(4002, "Sync host handoff buffer exceeded");
+        } catch {}
+        return;
+      }
+      bufferedMessages.push(message);
+      bufferedBytes += messageBytes;
+    }
     const entry: ParkedEntry = {
       snapshot: { ...snapshot, bufferedMessages },
       bufferedMessages,
+      bufferedBytes,
       onMessage: (data, isBinary) => {
         // Buffer frames that arrive while no host owns the socket so the
         // adopting host can replay them (e.g. a hello sent mid-handoff).
-        if (bufferedMessages.length >= PARKED_MESSAGE_BUFFER_LIMIT) return;
+        const messageBytes = rawDataBytes(data);
+        if (
+          bufferedMessages.length >= PARKED_MESSAGE_BUFFER_LIMIT ||
+          entry.bufferedBytes + messageBytes > PARKED_MESSAGE_BUFFER_BYTES
+        ) {
+          unpark(entry);
+          logger.warn?.("sync_listener.parked_peer_buffer_overflow", {
+            peerDeviceId: snapshot.metadata?.deviceId ?? snapshot.pairedDeviceId ?? null,
+            bufferedMessages: bufferedMessages.length,
+            bufferedBytes: entry.bufferedBytes,
+            nextMessageBytes: messageBytes,
+          });
+          try {
+            ws.close(4002, "Sync host handoff buffer exceeded");
+          } catch {
+            // ignore close failures
+          }
+          return;
+        }
         bufferedMessages.push({ data, isBinary });
+        entry.bufferedBytes += messageBytes;
       },
       onClose: () => {
         const existing = parked.get(ws);

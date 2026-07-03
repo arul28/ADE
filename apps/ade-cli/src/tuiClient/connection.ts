@@ -58,7 +58,13 @@ type EmbeddedRuntime = {
     ) => () => void;
   };
   eventBuffer?: {
-    drain?: (cursor: number, limit?: number) => { events: BufferedEvent[]; nextCursor: number; hasMore: boolean };
+    drain?: (cursor: number, limit?: number) => {
+      events: BufferedEvent[];
+      nextCursor: number;
+      hasMore: boolean;
+      gap?: boolean;
+      oldestCursor?: number | null;
+    };
     subscribe?: (listener: (event: BufferedEvent) => void) => () => void;
   };
 };
@@ -79,6 +85,9 @@ type CreateEmbeddedRpcRequestHandler = (args: {
   runtime: EmbeddedRuntime;
   serverVersion: string;
 }) => DirectHandler;
+
+const DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS = 50;
+const DAEMON_CONNECT_RETRY_MAX_DELAY_MS = 200;
 
 const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "ade/initialize",
@@ -493,6 +502,50 @@ function spawnDaemon(socketPath: string): boolean {
   return true;
 }
 
+async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
+  if (socketPath.startsWith("tcp://")) return await task();
+  const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+  const deadline = Date.now() + 10_000;
+  let fd: number | null = null;
+  while (fd == null) {
+    try {
+      fd = fs.openSync(lockPath, "wx", 0o600);
+      fs.writeFileSync(fd, `${process.pid}\n${Date.now()}\n`, "utf8");
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST") throw error;
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > 30_000) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch (statError) {
+        if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
+  try {
+    return await task();
+  } finally {
+    if (fd != null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {}
+  }
+}
+
 async function connectAttachedSocket(args: {
   socketPath: string;
   project: ProjectLaunchContext;
@@ -620,6 +673,10 @@ async function connectAttachedSocket(args: {
             limit: subscriptionArgs.limit ?? 100,
             replay: subscriptionArgs.replay,
           });
+          if (response && typeof response === "object" && "gap" in response) {
+            const gap = (response as { gap?: unknown }).gap === true;
+            if (gap) pending.length = 0;
+          }
           subscriptionId = response.subscriptionId;
           for (const payload of pending) {
             if (payload.subscriptionId === subscriptionId) {
@@ -666,10 +723,21 @@ async function connectAttachedSocketWithRetry(args: {
     } catch (error) {
       lastError = error;
       if (attempt + 1 >= args.attempts) break;
-      await new Promise((resolve) => setTimeout(resolve, args.delayMs));
+      const delayMs = retryDelayMs(args.delayMs, attempt);
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+function retryDelayMs(initialDelayMs: number, attempt: number): number {
+  if (initialDelayMs <= 0) return 0;
+  return Math.min(
+    DAEMON_CONNECT_RETRY_MAX_DELAY_MS,
+    Math.max(0, Math.floor(initialDelayMs * 2 ** attempt)),
+  );
 }
 
 export async function connectToAde(args: {
@@ -724,7 +792,7 @@ export async function connectToAde(args: {
         socketPath: machineSocketPath,
         project: args.project,
         attempts,
-        delayMs: 200,
+        delayMs: DAEMON_CONNECT_RETRY_INITIAL_DELAY_MS,
         shutdownOnStale: true,
       });
     const repairService = async (): Promise<AdeCodeConnection | null> => {
@@ -740,10 +808,13 @@ export async function connectToAde(args: {
     };
     try {
       if (!fs.existsSync(machineSocketPath)) {
-        const repaired = await repairService();
-        if (repaired) return repaired;
-        const spawned = spawnDaemon(machineSocketPath);
-        return await tryDaemon(spawned ? 25 : 1);
+        return await withSocketSpawnLock(machineSocketPath, async () => {
+          if (fs.existsSync(machineSocketPath)) return await tryDaemon(25);
+          const repaired = await repairService();
+          if (repaired) return repaired;
+          const spawned = spawnDaemon(machineSocketPath);
+          return await tryDaemon(spawned ? 25 : 1);
+        });
       }
       return await tryDaemon(1);
     } catch (firstError) {
@@ -753,8 +824,12 @@ export async function connectToAde(args: {
       const repaired = await repairService();
       if (repaired) return repaired;
       try {
-        const spawned = spawnDaemon(machineSocketPath);
+        const spawned = await withSocketSpawnLock(machineSocketPath, async () => {
+          if (fs.existsSync(machineSocketPath)) return false;
+          return spawnDaemon(machineSocketPath);
+        });
         if (spawned) return await tryDaemon(25);
+        return await tryDaemon(25);
       } catch (error) {
         attachError = error;
       }

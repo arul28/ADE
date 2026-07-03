@@ -709,6 +709,10 @@ export class RemoteConnectionPool {
             : clampCursor(request.cursor),
         hasMore: record.hasMore === true,
         ...(eventEpoch ? { eventEpoch } : {}),
+        ...(record.gap === true ? { gap: true } : {}),
+        ...(typeof record.oldestCursor === "number" && Number.isFinite(record.oldestCursor)
+          ? { oldestCursor: Math.max(0, Math.floor(record.oldestCursor)) }
+          : {}),
       };
     }
 
@@ -1164,6 +1168,10 @@ function normalizeRuntimeEventsSubscribeResult(
         : clampCursor(fallbackCursor),
     hasMore: record.hasMore === true,
     ...(eventEpoch ? { eventEpoch } : {}),
+    ...(record.gap === true ? { gap: true } : {}),
+    ...(typeof record.oldestCursor === "number" && Number.isFinite(record.oldestCursor)
+      ? { oldestCursor: Math.max(0, Math.floor(record.oldestCursor)) }
+      : {}),
   };
 }
 

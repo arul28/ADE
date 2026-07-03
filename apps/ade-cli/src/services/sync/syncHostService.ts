@@ -179,6 +179,9 @@ const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
 const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
 const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
+const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
+const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -207,6 +210,7 @@ const MAX_CHANGESET_ACK_RETRIES = 6;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
+const MAX_PROJECT_CATALOG_CHUNK_BYTES = 192 * 1024;
 const BONJOUR_PROJECT_TXT_ENTRY_LIMIT = 24;
 const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
@@ -217,6 +221,91 @@ export type NativeLanDiscoveryProcess = {
   ppid: number;
   command: string;
 };
+
+export type SyncProjectCatalogMessage =
+  | {
+      type: "project_catalog";
+      payload: SyncProjectCatalogPayload;
+      requestId?: string | null;
+    }
+  | {
+      type: "project_catalog_chunk";
+      payload: SyncProjectCatalogChunkPayload;
+      requestId?: string | null;
+    };
+
+export function splitSyncProjectCatalog(
+  projects: SyncMobileProjectSummary[],
+  maxChunkBytes = MAX_PROJECT_CATALOG_CHUNK_BYTES,
+): SyncMobileProjectSummary[][] {
+  const chunks: SyncMobileProjectSummary[][] = [];
+  let chunk: SyncMobileProjectSummary[] = [];
+  let chunkBytes = 0;
+
+  const flush = (): void => {
+    if (chunk.length === 0) return;
+    chunks.push(chunk);
+    chunk = [];
+    chunkBytes = 0;
+  };
+
+  for (const project of projects) {
+    const projectBytes = Buffer.byteLength(JSON.stringify(project), "utf8");
+    if (chunk.length > 0 && chunkBytes + projectBytes > maxChunkBytes) {
+      flush();
+    }
+    chunk.push(project);
+    chunkBytes += projectBytes;
+  }
+  flush();
+  return chunks;
+}
+
+export function buildSyncProjectCatalogMessages(args: {
+  projectCatalog: SyncProjectCatalogPayload;
+  requestId?: string | null;
+  compressionThresholdBytes?: number;
+  maxProjectCatalogEnvelopeBytes?: number;
+}): SyncProjectCatalogMessage[] {
+  const requestId = args.requestId ?? null;
+  const envelopeBytes = Buffer.byteLength(encodeSyncEnvelope({
+    type: "project_catalog",
+    payload: args.projectCatalog,
+    requestId,
+    compressionThresholdBytes: args.compressionThresholdBytes,
+  }), "utf8");
+  if (envelopeBytes <= (args.maxProjectCatalogEnvelopeBytes ?? MAX_PROJECT_CATALOG_ENVELOPE_BYTES)) {
+    return [{ type: "project_catalog", payload: args.projectCatalog, requestId }];
+  }
+
+  const chunks = splitSyncProjectCatalog(args.projectCatalog.projects);
+  const total = Math.max(1, chunks.length);
+  const catalogId = randomBytes(8).toString("hex");
+  if (chunks.length === 0) {
+    return [{
+      type: "project_catalog_chunk",
+      payload: {
+        catalogId,
+        index: 0,
+        total,
+        done: true,
+        projects: [],
+      },
+      requestId,
+    }];
+  }
+  return chunks.map((projects, index) => ({
+    type: "project_catalog_chunk",
+    payload: {
+      catalogId,
+      index,
+      total,
+      done: index === total - 1,
+      projects,
+    },
+    requestId,
+  }));
+}
 export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
   switch (payload.action) {
     case "listTree":
@@ -277,6 +366,7 @@ type PeerState = {
   latencyMs: number | null;
   awaitingHeartbeatAt: string | null;
   missedHeartbeatCount: number;
+  backpressuredSinceMs: number | null;
   remoteAddress: string | null;
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
@@ -291,6 +381,7 @@ type PeerState = {
   rosterSubscribed: boolean;
   rosterSeq: number;
   rosterBaseline: Map<string, string>;
+  messageQueue: Promise<void>;
 };
 
 type PendingChangesetBatch = {
@@ -1110,6 +1201,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     logger: args.logger,
   });
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
+  const backpressureTimeoutMs = Math.max(heartbeatIntervalMs * 3, 10_000);
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? SYNC_HOST_AUTH_TIMEOUT_MS));
@@ -1117,7 +1209,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const maxChangesetBatchBytes = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
   const maxChangesetBatchRows = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
   const maxProjectCatalogEnvelopeBytes = MAX_PROJECT_CATALOG_ENVELOPE_BYTES;
-  const maxProjectCatalogChunkBytes = 192 * 1024;
   const hostProjectIdAliases = uniqueStrings(
     (args.projectIdAliases ?? [])
       .map((alias) => toOptionalString(alias))
@@ -1644,6 +1735,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) {
+        if (isPeerBackpressuredTooLong(peer)) {
+          args.logger.warn("sync_host.peer_backpressure_timeout", {
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            bufferedAmount: peer.ws.bufferedAmount,
+            backpressuredMs: peer.backpressuredSinceMs == null ? null : Date.now() - peer.backpressuredSinceMs,
+          });
+          closeBackpressuredPeer(peer, "Backpressure timed out");
+          continue;
+        }
         args.logger.debug("sync_host.heartbeat_deferred_backpressure", {
           peerDeviceId: peer.metadata?.deviceId ?? null,
           bufferedAmount: peer.ws.bufferedAmount,
@@ -1718,6 +1818,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       latencyMs: null,
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
+      backpressuredSinceMs: null,
       remoteAddress,
       remotePort,
       subscribedSessionIds: new Set(),
@@ -1728,6 +1829,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       rosterSubscribed: false,
       rosterSeq: 0,
       rosterBaseline: new Map(),
+      messageQueue: Promise.resolve(),
     };
     peers.add(peer);
     peer.authTimeout = setTimeout(() => {
@@ -1744,12 +1846,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }, authTimeoutMs);
     peer.authTimeout.unref?.();
     ws.on("message", (raw) => {
-      void handleMessage(peer, raw).catch((error) => {
-        args.logger.warn("sync_host.message_failed", {
-          error: error instanceof Error ? error.message : String(error),
-          peerDeviceId: peer.metadata?.deviceId ?? null,
+      peer.messageQueue = peer.messageQueue
+        .catch(() => {})
+        .then(() => handleMessage(peer, raw))
+        .catch((error) => {
+          args.logger.warn("sync_host.message_failed", {
+            error: error instanceof Error ? error.message : String(error),
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+          });
         });
-      });
     });
     ws.on("close", (code, reason) => {
       clearPeerAuthTimeout(peer);
@@ -2419,8 +2524,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function sendRequired<TPayload>(peer: PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
+    const frames = encodeFramesFor(peer, type, payload, requestId);
+    const frameBytes = frames.reduce((sum, frame) => sum + Buffer.byteLength(frame, "utf8"), 0);
+    const backpressured = isPeerBackpressured(peer);
+    if (
+      ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES ||
+      (backpressured && isPeerBackpressuredTooLong(peer))
+    ) {
+      args.logger.warn("sync_host.required_send_backpressured", {
+        type,
+        requestId: requestId ?? null,
+        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+        bufferedAmount: ws.bufferedAmount,
+        frameBytes,
+      });
+      closeBackpressuredPeer(peer, "Required sync response backpressured");
+      return false;
+    }
     let reported = false;
-    for (const frame of encodeFramesFor(peer, type, payload, requestId)) {
+    for (const frame of frames) {
       ws.send(frame, (error) => {
         if (!error || reported) return;
         reported = true;
@@ -2436,7 +2558,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function isPeerBackpressured(peer: PeerState): boolean {
-    return peer.ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES;
+    const backpressured = peer.ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES;
+    if (!backpressured) {
+      peer.backpressuredSinceMs = null;
+      return false;
+    }
+    peer.backpressuredSinceMs ??= Date.now();
+    return true;
+  }
+
+  function closeBackpressuredPeer(peer: PeerState, reason: string): void {
+    try {
+      peer.ws.close(4001, reason);
+    } catch {
+      // ignore close failures
+    }
+  }
+
+  function isPeerBackpressuredTooLong(peer: PeerState): boolean {
+    if (!isPeerBackpressured(peer)) return false;
+    return peer.backpressuredSinceMs != null
+      && Date.now() - peer.backpressuredSinceMs >= backpressureTimeoutMs;
   }
 
   function shouldDeferBackgroundChangesForChat(peer: PeerState): boolean {
@@ -2456,30 +2598,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return Promise.reject(new Error("Cannot send on closed WebSocket."));
     }
     const frames = encodeFramesFor(ws, type, payload, requestId);
+    const frameBytes = frames.reduce((sum, frame) => sum + Buffer.byteLength(frame, "utf8"), 0);
+    if (ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES) {
+      return Promise.reject(new Error("WebSocket send buffer is over the required-send budget."));
+    }
     return new Promise<void>((resolve, reject) => {
       let failed = false;
       let remaining = frames.length;
+      const timer = setTimeout(() => {
+        if (failed) return;
+        failed = true;
+        reject(new Error(`Timed out sending ${type} after ${SEND_AND_WAIT_TIMEOUT_MS}ms.`));
+      }, SEND_AND_WAIT_TIMEOUT_MS);
       for (const frame of frames) {
         ws.send(frame, (error) => {
           if (failed) return;
           if (error) {
             failed = true;
+            clearTimeout(timer);
             reject(error);
             return;
           }
           remaining -= 1;
-          if (remaining === 0) resolve();
+          if (remaining === 0) {
+            clearTimeout(timer);
+            resolve();
+          }
         });
       }
     });
-  }
-
-  function encodedEnvelopeBytes<TPayload>(
-    type: SyncEnvelope["type"],
-    payload: TPayload,
-    requestId?: string | null,
-  ): number {
-    return Buffer.byteLength(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }), "utf8");
   }
 
   function closeExistingPeersForDevice(deviceId: string, currentPeer: PeerState): void {
@@ -2488,6 +2635,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (peer === currentPeer) continue;
       if (peer.metadata?.deviceId !== normalized && peer.pairedDeviceId !== normalized) continue;
+      const presenceDeviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? normalized;
+      const presenceRemoved = removeAllPresenceForDevice(presenceDeviceId, "remote");
       peer.authenticated = false;
       peer.metadata = null;
       peer.authKind = null;
@@ -2497,6 +2646,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.ws.close(4000, "Superseded by a newer connection for this device");
       } catch {
         // ignore close failures
+      }
+      if (presenceRemoved) {
+        broadcastBrainStatus();
       }
     }
   }
@@ -2564,63 +2716,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  function splitProjectCatalog(projects: SyncMobileProjectSummary[]): SyncMobileProjectSummary[][] {
-    const chunks: SyncMobileProjectSummary[][] = [];
-    let chunk: SyncMobileProjectSummary[] = [];
-    let chunkBytes = 0;
-
-    const flush = (): void => {
-      if (chunk.length === 0) return;
-      chunks.push(chunk);
-      chunk = [];
-      chunkBytes = 0;
-    };
-
-    for (const project of projects) {
-      const projectBytes = Buffer.byteLength(JSON.stringify(project), "utf8");
-      if (chunk.length > 0 && chunkBytes + projectBytes > maxProjectCatalogChunkBytes) {
-        flush();
-      }
-      chunk.push(project);
-      chunkBytes += projectBytes;
-    }
-    flush();
-    return chunks;
-  }
-
   function sendProjectCatalog(
     peer: PeerState,
     projectCatalog: SyncProjectCatalogPayload,
     requestId?: string | null,
   ): void {
-    if (encodedEnvelopeBytes("project_catalog", projectCatalog, requestId) <= maxProjectCatalogEnvelopeBytes) {
-      send(peer.ws, "project_catalog", projectCatalog, requestId);
-      return;
+    for (const message of buildSyncProjectCatalogMessages({
+      projectCatalog,
+      requestId,
+      compressionThresholdBytes,
+      maxProjectCatalogEnvelopeBytes,
+    })) {
+      send(peer.ws, message.type, message.payload, message.requestId);
     }
-
-    const chunks = splitProjectCatalog(projectCatalog.projects);
-    const total = Math.max(1, chunks.length);
-    const catalogId = randomBytes(8).toString("hex");
-    if (chunks.length === 0) {
-      send(peer.ws, "project_catalog_chunk", {
-        catalogId,
-        index: 0,
-        total,
-        done: true,
-        projects: [],
-      } satisfies SyncProjectCatalogChunkPayload, requestId);
-      return;
-    }
-
-    chunks.forEach((projects, index) => {
-      send(peer.ws, "project_catalog_chunk", {
-        catalogId,
-        index,
-        total,
-        done: index === total - 1,
-        projects,
-      } satisfies SyncProjectCatalogChunkPayload, requestId);
-    });
   }
 
   async function handleProjectSwitchRequest(
@@ -3353,10 +3461,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch {
       throw new Error("Artifact path must resolve within .ade/artifacts.");
     }
-    if (!fs.existsSync(resolvedArtifactPath) || !fs.statSync(resolvedArtifactPath).isFile()) {
+    return resolvedArtifactPath;
+  }
+
+  async function readArtifactBlob(
+    request: Extract<SyncFileRequest, { action: "readArtifact" }>["args"],
+  ): Promise<SyncFileBlob> {
+    const artifactPath = resolveArtifactPath(request);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(artifactPath);
+    } catch {
       throw new Error("Artifact file does not exist.");
     }
-    return resolvedArtifactPath;
+    if (!stat.isFile()) {
+      throw new Error("Artifact file does not exist.");
+    }
+    if (stat.size > MAX_SYNC_ARTIFACT_BYTES) {
+      throw new Error(
+        `Artifact is too large to sync (${stat.size} bytes; max ${MAX_SYNC_ARTIFACT_BYTES} bytes).`,
+      );
+    }
+    const buffer = await fs.promises.readFile(artifactPath);
+    return createBlobFromBuffer(normalizeRelative(path.relative(args.projectRoot, artifactPath)), buffer);
   }
 
   function isMobilePeer(peer: PeerState): boolean {
@@ -3453,8 +3580,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           result = await args.fileService.searchText(payload.args);
           break;
         case "readArtifact": {
-          const artifactPath = resolveArtifactPath(payload.args);
-          result = createBlobFromBuffer(normalizeRelative(path.relative(args.projectRoot, artifactPath)), fs.readFileSync(artifactPath));
+          result = await readArtifactBlob(payload.args);
           break;
         }
         default:
@@ -4513,6 +4639,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const peer of peers) {
         if (!peer.authenticated || peer.authKind !== "paired" || peer.pairedDeviceId !== deviceId) continue;
         revokedConnectedPeer = true;
+        const presenceDeviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? deviceId;
+        const presenceRemoved = removeAllPresenceForDevice(presenceDeviceId, "remote");
         peer.authenticated = false;
         peer.metadata = null;
         peer.authKind = null;
@@ -4523,6 +4651,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } catch {
           // ignore close failures
         }
+        if (presenceRemoved) revokedConnectedPeer = true;
       }
       if (revokedConnectedPeer) {
         args.onStateChanged?.();

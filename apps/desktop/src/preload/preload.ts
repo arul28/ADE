@@ -1866,6 +1866,10 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
         return;
       }
     }
+    if (batch.gap === true) {
+      resetRemoteRuntimeEventDedup(binding.key);
+      resetRemoteRuntimeEmptyPolls();
+    }
 
     remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)
       ? Math.max(0, Math.floor(batch.nextCursor))
