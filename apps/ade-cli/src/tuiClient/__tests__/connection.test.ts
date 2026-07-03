@@ -1,12 +1,15 @@
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectToAde } from "../connection";
 import { JsonRpcClient } from "../jsonRpcClient";
 import { startTuiHeartbeat, type TuiHeartbeat } from "../heartbeat";
+import { ProcessJsonRpcClient } from "../remoteBridge";
 import {
   appendDedupedTuiEvent,
   appendReservedTuiEvent,
@@ -91,6 +94,13 @@ const originalArgv1 = process.argv[1];
 const originalAdeHome = process.env.ADE_HOME;
 const originalAdeRpcSocketPath = process.env.ADE_RPC_SOCKET_PATH;
 const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
+
+class FakeRemoteRpcChild extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly stdin = new PassThrough();
+  readonly kill = vi.fn();
+}
 
 function restoreEnv(): void {
   process.argv[1] = originalArgv1;
@@ -1008,6 +1018,30 @@ describe("JsonRpcClient", () => {
       await closeServer(server);
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("ProcessJsonRpcClient", () => {
+  it("clears pending RPC timers when remote responses resolve or reject", async () => {
+    const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
+    const child = new FakeRemoteRpcChild();
+    const client = new ProcessJsonRpcClient(child as never);
+
+    const resolved = client.request("ade/ping");
+    child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } })}\n`);
+    await expect(resolved).resolves.toEqual({ ok: true });
+
+    const rejected = client.request("ade/fail");
+    child.stdout.write(`${JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      error: { code: -32000, message: "remote failed" },
+    })}\n`);
+    await expect(rejected).rejects.toThrow("remote failed");
+
+    expect(clearTimeoutSpy).toHaveBeenCalledTimes(2);
+    client.close();
+    clearTimeoutSpy.mockRestore();
   });
 });
 

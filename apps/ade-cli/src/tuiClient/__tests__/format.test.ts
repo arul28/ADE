@@ -9,6 +9,7 @@ import {
   renderChatLines,
   renderObject,
 } from "../format";
+import { formatRelativePastTime } from "../relativeTime";
 
 describe("diffLineKind", () => {
   it("classifies hunk, meta, add, del, and context lines", () => {
@@ -23,6 +24,13 @@ describe("diffLineKind", () => {
     expect(diffLineKind("-removed content")).toBe("del");
     expect(diffLineKind(" unchanged context")).toBe("context");
     expect(diffLineKind("")).toBe("context");
+  });
+});
+
+describe("formatRelativePastTime", () => {
+  it("uses a neutral fallback for missing or invalid timestamps", () => {
+    expect(formatRelativePastTime(null)).toBe("recently");
+    expect(formatRelativePastTime("not-a-date")).toBe("recently");
   });
 });
 

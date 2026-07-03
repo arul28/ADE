@@ -87,9 +87,12 @@ import {
 } from "../app";
 import { isTerminalSessionResumable } from "../closedCliSessions";
 import {
+  buildSetupRows,
+  cliProviderForModelStateProvider,
   codexApprovalSandboxLabel,
   cursorModeIdsForState,
   cursorSourceForInterfaceMode,
+  initialModelState,
   reconcileCursorModelStateForInterface,
   resolveCursorCliModelForLaunch,
 } from "../modelState";
@@ -130,6 +133,30 @@ function cursorModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeMo
     droidPermissionMode: "auto-low",
     cursorModeId: "agent",
     cursorAvailableModeIds: ["agent"],
+    cursorConfigValues: {},
+    ...overrides,
+  };
+}
+
+function setupPaneModelState(overrides: Partial<AdeCodeModelState> = {}): AdeCodeModelState {
+  return {
+    provider: "codex",
+    interfaceMode: "chat",
+    model: "gpt-5.5",
+    modelId: null,
+    displayName: "GPT-5.5",
+    reasoningEffort: "medium",
+    fastMode: false,
+    permissionMode: "default",
+    interactionMode: "default",
+    claudePermissionMode: "default",
+    codexApprovalPolicy: "on-request",
+    codexSandbox: "workspace-write",
+    codexConfigSource: "flags",
+    opencodePermissionMode: "edit",
+    droidPermissionMode: "auto-low",
+    cursorModeId: "agent",
+    cursorAvailableModeIds: [],
     cursorConfigValues: {},
     ...overrides,
   };
@@ -1028,6 +1055,52 @@ describe("inlineRowCellOrder", () => {
     // Provider locked (chat underway) drops the provider cell.
     expect(inlineRowCellOrder({ providerLocked: true, fastSupported: true, reasoningSupported: false, subagentsVisible: false }))
       .toEqual(["model", "fast", "permission"]);
+  });
+});
+
+describe("interface draft setup", () => {
+  function interfaceRows(interfaceMode: AdeCodeModelState["interfaceMode"], interfaceEditable: boolean) {
+    return buildSetupRows({
+      modelState: setupPaneModelState({ interfaceMode }),
+      models: [],
+      includeRefresh: false,
+      includeApply: true,
+      interfaceMode,
+      interfaceEditable,
+    });
+  }
+
+  it("maps tracked CLI providers and rejects chat-only providers", () => {
+    for (const provider of ["claude", "codex", "cursor", "droid", "opencode"] as const) {
+      expect(cliProviderForModelStateProvider(provider)).toBe(provider);
+    }
+    expect(cliProviderForModelStateProvider("ollama")).toBeNull();
+    expect(cliProviderForModelStateProvider("lmstudio")).toBeNull();
+  });
+
+  it("keeps the Interface setup row after Provider and labels the active mode", () => {
+    const chatRows = interfaceRows("chat", true);
+    const cliRows = interfaceRows("cli", true);
+
+    expect(chatRows.map((row) => row.kind).slice(0, 2)).toEqual(["provider", "interface"]);
+    expect(chatRows.find((row) => row.kind === "interface")).toMatchObject({
+      value: "Chat",
+      disabled: false,
+      cyclable: true,
+      detail: "Chat · CLI",
+    });
+    expect(cliRows.find((row) => row.kind === "interface")?.value).toBe("CLI");
+  });
+
+  it("locks Interface after launch and remembers the draft default", () => {
+    expect(interfaceRows("cli", false).find((row) => row.kind === "interface")).toMatchObject({
+      value: "CLI",
+      disabled: true,
+      cyclable: false,
+      detail: "tracked CLI session",
+    });
+    expect(initialModelState("cli").interfaceMode).toBe("cli");
+    expect(initialModelState("chat").interfaceMode).toBe("chat");
   });
 });
 
