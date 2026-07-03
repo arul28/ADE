@@ -185,7 +185,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   limiter, and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
-  `desktop`, `daemon`, or `remote`. It also owns the all-projects chat
+  `desktop`, `daemon`, or `remote`. It also owns the all-projects session
   roster push for the mobile Hub: per subscribed peer it tracks
   `rosterSubscribed` / `rosterSeq` / a `rosterBaseline` map, debounces
   rebuilds (trailing-edge with a hard cadence ceiling), and forces a
@@ -200,13 +200,22 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   pump, tracked per peer in `foreignChatTranscriptPaths`) with no runtime
   boot; the presence of the provider is what flips the advertised
   `crossProjectChat` hello feature flag.
-- `rosterBuilder.ts` — builds the machine-wide all-projects chat roster
-  (`SyncRosterProject[]`) consumed by the Hub. Opens each project's
+- `rosterBuilder.ts` — builds the machine-wide all-projects session roster
+  (`SyncRosterProject[]`) consumed by the Hub: agent chats, their attached
+  shell rows, and **standalone CLI (tracked terminal) sessions — live and
+  ended** (`run-shell` infrastructure rows are excluded, mirroring
+  `isRunOwnedSession` on desktop/iOS). Opens each project's
   `<root>/.ade/ade.db` **read-only** with `node:sqlite` (no cr-sqlite, no
   runtime boot — the same cheap cross-project read pattern as
   `recentProjectSummary.ts`) and merges cached `chat-sessions/*.json`, so an
   all-projects feed never activates every project. Live running/awaiting
-  status is overlaid only for scopes already booted on the runtime; previews
+  status is overlaid only for scopes already booted on the runtime; a booted
+  scope also overlays **PTY liveness** for CLI rows (they never appear in
+  `agentChatService`, so `ptyService.hasLivePty` is what flips them to
+  `running`). `attentionCount` (which drives hub badges and attention-first
+  project sorting) counts only chat rows and shells attached to a chat — a
+  standalone CLI session that exited non-zero must not pin its project to
+  the top forever, since mobile has no way to clear it. Previews
   are hard-truncated (~120 chars). Also exports
   `createForeignChatTranscriptResolver({ projectRegistry })` — the resolver
   behind cross-project chat quick-look and its security boundary: it maps a
@@ -238,6 +247,25 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   per-project host, applies the same failed-PIN cooldown, and serves
   project catalog plus runtime-scoped project actions so a phone can
   add/open/create/clone/remove a project even from the project-home state.
+  It also answers `command` envelopes: when no project host owns the peer
+  (host restarting, or blocked by a conflicting sync listener) it replies
+  immediately with a `command_result` carrying
+  `error.code: "host_unavailable"` instead of silently dropping the
+  command — a dropped command used to leave the phone staring at a 30 s
+  timeout with a vague "took too long" banner. iOS treats that code as
+  transient (retryable and queueable, like a timeout), so queued
+  operations survive host restarts instead of being deleted on replay.
+- `syncHostStartupLoop.ts` — retry loop around mobile sync host startup
+  for the brain. Same-channel singleton conflicts (update races, restart
+  overlap, a stale sibling) always retry — the loop may evict a stale
+  same-channel squatter, but only when this brain is the channel's
+  installed runtime service child. A conflict with **another channel's**
+  live brain is rethrown only on the first attempt, so brain startup can
+  fail loudly with quit instructions; after the first attempt (the brain
+  is already serving) cross-channel conflicts keep retrying on the slow
+  cadence and auto-recover the moment the foreign owner exits, instead of
+  permanently giving up and stranding paired phones on the ingress
+  fallback.
 - `changesetPump.ts` — batch-chunk selection for changeset fan-out.
   Splits an export into `changeset_batch` envelopes at ~256 KB / 250
   rows while never splitting rows that share a `db_version` (the ack
@@ -256,7 +284,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `chunkedEnvelopes` hello capability
   (`SYNC_CHUNKED_ENVELOPES_CAPABILITY`); legacy peers get the single
   full frame. Protocol version is `1`. Default host port is `8787`.
-- `syncRemoteCommandService.ts` (~2,840 lines) — command registry
+- `syncRemoteCommandService.ts` (~3,280 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
   `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
   `work.startCliSession`, `modelPicker.*`, …). Each registration carries a
@@ -279,6 +307,14 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   override and forward it to the runtime lane service so controllers can
   pick a specific branch to stack onto instead of always using the
   selected parent lane's branch.
+  `lanes.create` calls that omit `baseBranch` / `startPoint` /
+  `parentLaneId` (hub-composer auto-create, the mobile create sheet's
+  default) resolve a **remote-first default base** on the host before
+  creation: the project's `git.newLaneBaseSource` config (effective
+  default `"remote"`) selects between a bounded remote fetch +
+  `origin/<primary base>` mapping and the legacy local primary tip; the
+  resolution helper is `apps/desktop/src/shared/defaultRemoteLaneBase.ts`
+  (shared with the desktop create-lane dialog's renderer-side default).
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
   `sync_cluster_state` singleton. When the local runtime joins another
   runtime as a viewer (`syncService.connect`), it wipes its existing
@@ -650,7 +686,7 @@ payload.
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session); per-session history is evicted with a 64-session LRU so a phone that has opened many chats cannot pin unbounded host memory. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). **Cross-project "quick look":** `chat_subscribe` / `chat_unsubscribe` accept an optional `projectId` / `projectRootPath` override. When it names a registered project OTHER than the socket's active one — and the host advertised the `crossProjectChat` feature flag — the host serves that session's transcript **read-only straight off the foreign project's `.ade` transcript JSONL** (byte-capped tail snapshot, then the pump tails the same file for live events), with no project switch and no runtime boot for that project. Such sessions have no live agent chat service here, so `turnActive` is omitted and the client derives turn state from the streamed `status` events. The transcript resolver is the security boundary — it validates the project is registered and confines the path to that project's transcripts dir. A host without a foreign-chat provider never sets `crossProjectChat`, so the phone falls back to a full project activation | iOS Work tab, iOS Hub, controller chat |
-| Chat roster | Machine-wide all-projects projection of every project's lanes + chats-grouped-by-lane, so the mobile Hub renders every project's chats at once **without activating each project**. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their chat status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime. Transcripts are excluded from the roster (they load on demand when a chat opens): on a host advertising `crossProjectChat` the phone opens a foreign-project chat as a read-only cross-project quick look (see the Chat stream row) without activating that project; only on older hosts lacking the flag does opening the chat fall back to activating the project's full sync. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
+| Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended (`run-shell` infrastructure rows excluded) — so the mobile Hub renders every project's sessions at once **without activating each project**. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Transcripts are excluded from the roster (they load on demand when a chat opens): on a host advertising `crossProjectChat` the phone opens a foreign-project chat as a read-only cross-project quick look (see the Chat stream row) without activating that project; CLI rows never take the quick look (no chat JSONL — they always activate + open the terminal), and only on older hosts lacking the flag does opening a chat fall back to activating the project's full sync. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |

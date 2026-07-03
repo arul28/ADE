@@ -660,14 +660,20 @@ struct HubChatRow: View, Equatable {
     }
     .buttonStyle(.plain)
     .accessibilityLabel(row.title)
-    .accessibilityHint("Opens chat.")
+    .accessibilityHint(row.chat.isChatTool ? "Opens chat." : "Opens session.")
     // The hub uses a scrolling LazyVStack (not a List), where SwiftUI
     // `.swipeActions` are unavailable — so pin/archive/close are offered through
     // a long-press context menu instead, routed to the chat's project.
     .contextMenu {
-      Button { onOpen() } label: { Label("Open chat", systemImage: "bubble.left.and.bubble.right") }
-      Button { onArchive() } label: { Label("Archive", systemImage: "archivebox") }
-      Button(role: .destructive) { onDelete() } label: { Label("Close chat", systemImage: "xmark.circle") }
+      if row.chat.isChatTool {
+        Button { onOpen() } label: { Label("Open chat", systemImage: "bubble.left.and.bubble.right") }
+        Button { onArchive() } label: { Label("Archive", systemImage: "archivebox") }
+        Button(role: .destructive) { onDelete() } label: { Label("Close chat", systemImage: "xmark.circle") }
+      } else {
+        // CLI (terminal) sessions: `chat.archive` / `chat.delete` reject
+        // non-chat sessions on the host, so only offer Open here.
+        Button { onOpen() } label: { Label("Open session", systemImage: "terminal") }
+      }
     }
   }
 

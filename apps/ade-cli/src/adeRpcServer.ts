@@ -61,6 +61,7 @@ import type { AdeRuntime } from "./bootstrap";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
 import { normalizeAdeRuntimeRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
+import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -3438,6 +3439,24 @@ async function runTool(args: {
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     }
+    if (domain === "lane" && action === "create" && !argsList && !hasScalarArg) {
+      // Same remote-first default as the `create_lane` tool and the sync
+      // layer's `lanes.create`: a base-less `ade actions run lane.create`
+      // must branch from the configured new-lane base, not the local tip.
+      const hasExplicitBase = Boolean(
+        asOptionalTrimmedString(scopedObjectArgs.baseBranch) ||
+          asOptionalTrimmedString(scopedObjectArgs.startPoint) ||
+          asOptionalTrimmedString(scopedObjectArgs.parentLaneId),
+      );
+      if (!hasExplicitBase) {
+        const remoteBase = await resolveLaneCreateRemoteBase({
+          laneService: runtime.laneService,
+          gitService: runtime.gitService,
+          projectConfigService: runtime.projectConfigService,
+        });
+        if (remoteBase) scopedObjectArgs = { ...scopedObjectArgs, baseBranch: remoteBase };
+      }
+    }
     if (!scopedResultHandled) {
       if (argsList) {
         result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
@@ -3644,8 +3663,19 @@ async function runTool(args: {
     const nameArg = assertNonEmptyString(toolArgs.name, "name");
     const description = asOptionalTrimmedString(toolArgs.description);
     const parentLaneId = asOptionalTrimmedString(toolArgs.parentLaneId);
-    const baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
+    let baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
     const branchName = asOptionalTrimmedString(toolArgs.branchName);
+    if (!baseBranch && !parentLaneId) {
+      // Base-less creates (`ade lanes create`, agent tool calls) must branch
+      // from the project's configured new-lane base — remote-first, matching
+      // desktop's create-lane dialog and the sync layer's `lanes.create` —
+      // not from the possibly-stale LOCAL primary tip.
+      baseBranch = await resolveLaneCreateRemoteBase({
+        laneService: runtime.laneService,
+        gitService: runtime.gitService,
+        projectConfigService: runtime.projectConfigService,
+      });
+    }
     let linearIssue: LaneLinearIssue | null = null;
     if (toolArgs.linearIssue !== undefined && toolArgs.linearIssue !== null) {
       if (typeof toolArgs.linearIssue !== "object" || Array.isArray(toolArgs.linearIssue)) {

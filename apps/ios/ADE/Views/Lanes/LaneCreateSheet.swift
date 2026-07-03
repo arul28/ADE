@@ -14,6 +14,11 @@ struct LaneCreateSheet: View {
   @State private var createMode: LaneCreateMode
   @State private var selectedParentLaneId = ""
   @State private var selectedBaseBranch = ""
+  // Desktop parity: new lanes base off the remote-tracking ref by default so a
+  // stale local primary checkout never becomes the branch point. "local" is an
+  // explicit opt-in, same as desktop's create-lane dialog.
+  @State private var baseSource: LaneBaseSource = .remote
+  @State private var remoteRefsFetched = false
   @State private var selectedImportBranch = ""
   @State private var selectedRescueLaneId = ""
   @State private var templates: [LaneTemplate] = []
@@ -31,6 +36,15 @@ struct LaneCreateSheet: View {
   private enum EnvSetupPhase {
     case form
     case progress
+  }
+
+  enum LaneBaseSource: String, CaseIterable, Identifiable {
+    case remote
+    case local
+
+    var id: String { rawValue }
+    var title: String { self == .remote ? "Remote" : "Local" }
+    var subtitle: String { self == .remote ? "Use fetched upstream" : "Use your local branch tip" }
   }
 
   private var supportsTemplates: Bool {
@@ -141,9 +155,12 @@ struct LaneCreateSheet: View {
               switch createMode {
               case .primary:
                 VStack(alignment: .leading, spacing: 12) {
+                  baseSourcePicker
                   branchOptionList(
-                    branches: branches.filter { !$0.isRemote },
-                    emptyText: "No local branches found.",
+                    branches: baseBranchOptions,
+                    emptyText: baseSource == .remote
+                      ? "No remote-tracking branches found."
+                      : "No local branches found.",
                     selection: $selectedBaseBranch
                   )
                 }
@@ -363,6 +380,74 @@ struct LaneCreateSheet: View {
     }
   }
 
+  /// Options for the selected base source. Remote lists remote-tracking refs;
+  /// local lists local branches (the pre-existing behavior).
+  private var baseBranchOptions: [GitBranchSummary] {
+    baseSource == .remote
+      ? branches.filter(\.isRemote)
+      : branches.filter { !$0.isRemote }
+  }
+
+  private var baseSourcePicker: some View {
+    LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], alignment: .leading, spacing: 8) {
+      ForEach(LaneBaseSource.allCases) { source in
+        LaneOptionButton(
+          title: source.title,
+          subtitle: source.subtitle,
+          systemImage: source == .remote ? "cloud" : "internaldrive",
+          isSelected: baseSource == source
+        ) {
+          guard baseSource != source else { return }
+          baseSource = source
+          selectedBaseBranch = defaultBaseSelection(for: source)
+          if source == .remote {
+            Task { await refreshRemoteRefsIfNeeded() }
+          }
+        }
+      }
+    }
+  }
+
+  /// Default ref per source: remote prefers the primary base branch's upstream,
+  /// then `origin/<base>`, then the first remote ref; local keeps the previous
+  /// behavior (current checkout first).
+  private func defaultBaseSelection(for source: LaneBaseSource) -> String {
+    let base = normalizedPrBranchName(primaryLane?.baseRef)
+    if source == .remote {
+      let remoteNames = Set(branches.filter(\.isRemote).map(\.name))
+      if let upstream = branches.first(where: { !$0.isRemote && $0.name == base })?.upstream,
+         !upstream.isEmpty, remoteNames.contains(upstream) {
+        return upstream
+      }
+      if !base.isEmpty, remoteNames.contains("origin/\(base)") {
+        return "origin/\(base)"
+      }
+      return branches.first(where: \.isRemote)?.name ?? ""
+    }
+    let locals = branches.filter { !$0.isRemote }
+    return locals.first(where: \.isCurrent)?.name ?? locals.first?.name ?? (primaryLane?.branchRef ?? "")
+  }
+
+  /// Freshen remote-tracking refs before offering them as bases. The advisory
+  /// fetch carries its own short timeout (and is never queued), so a slow
+  /// remote just falls back to the already-listed refs rather than blocking
+  /// the sheet (desktop's create dialog uses the same fetch-with-timeout
+  /// pattern).
+  @MainActor
+  private func refreshRemoteRefsIfNeeded() async {
+    guard !remoteRefsFetched, let primaryLane else { return }
+    remoteRefsFetched = true
+    let service = syncService
+    let laneId = primaryLane.id
+    try? await service.fetchGitAdvisory(laneId: laneId)
+    if let refreshed = try? await service.listBranches(laneId: laneId) {
+      branches = refreshed
+      if selectedBaseBranch.isEmpty || !branches.contains(where: { $0.name == selectedBaseBranch }) {
+        selectedBaseBranch = defaultBaseSelection(for: baseSource)
+      }
+    }
+  }
+
   @MainActor
   private func loadOptions() async {
     do {
@@ -377,10 +462,13 @@ struct LaneCreateSheet: View {
       }
       if let primaryLane {
         branches = try await syncService.listBranches(laneId: primaryLane.id)
-        selectedBaseBranch = branches.first(where: { $0.isCurrent })?.name ?? branches.first?.name ?? primaryLane.branchRef
+        selectedBaseBranch = defaultBaseSelection(for: baseSource)
         selectedImportBranch = primaryLane.branchRef
         selectedRescueLaneId = lanes.first(where: { $0.status.dirty && $0.laneType != "primary" })?.id
           ?? (primaryLane.status.dirty ? primaryLane.id : "")
+        if baseSource == .remote {
+          Task { await refreshRemoteRefsIfNeeded() }
+        }
       }
       if selectedRescueLaneId.isEmpty {
         selectedRescueLaneId = lanes.first(where: { $0.status.dirty && $0.laneType != "primary" })?.id

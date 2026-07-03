@@ -42,19 +42,11 @@ private enum HubChatOpenMode: Equatable {
   case activated
 }
 
-/// Chat tool type for a roster-seeded session stub. Prefers the row's own tool
-/// type; derives one from the provider only as a fallback so `isChatSession`
-/// still recognizes the stub as a chat.
+/// Chat tool type for a roster-seeded session stub. The quick-look path is
+/// gated on `chat.isChatTool`, which is only true for a non-empty chat tool
+/// type — so the row's own value is always present here.
 private func workCrossProjectChatToolType(chat: RemoteRosterChat) -> String {
-  if let raw = chat.toolType?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-    return raw
-  }
-  let provider = chat.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-  switch provider {
-  case "cursor": return "cursor"
-  case "": return "claude-chat"
-  default: return "\(provider)-chat"
-  }
+  chat.toolType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 }
 
 /// Synthesize a `TerminalSessionSummary` from the hub roster stub so the chat

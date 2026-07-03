@@ -3221,6 +3221,73 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("defaults a base-less create_lane to the fetched remote-tracking ref", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
+    ]) as any;
+    fixture.runtime.gitService.listBranches = vi.fn(async () => [
+      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
+      { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
+    ]) as any;
+    fixture.runtime.projectConfigService = {
+      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
+    } as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "create_lane", { name: "new-feature" });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.gitService.fetch).toHaveBeenCalledWith({ laneId: "lane-primary" });
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "new-feature", baseBranch: "origin/main" })
+    );
+  });
+
+  it("defaults a base-less run_ade_action lane.create to the remote-tracking ref", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
+    ]) as any;
+    fixture.runtime.gitService.listBranches = vi.fn(async () => [
+      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
+      { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
+    ]) as any;
+    fixture.runtime.projectConfigService = {
+      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
+    } as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "lane",
+      action: "create",
+      args: { name: "action-lane" },
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "action-lane", baseBranch: "origin/main" })
+    );
+  });
+
+  it("skips the remote default when create_lane has an explicit base or parent", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.laneService.list = vi.fn(async () => [
+      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
+    ]) as any;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
+    await callTool(handler, "create_lane", { name: "explicit-base", baseBranch: "develop" });
+    await callTool(handler, "create_lane", { name: "child", parentLaneId: "lane-primary" });
+
+    expect(fixture.runtime.gitService.fetch).not.toHaveBeenCalled();
+    expect((fixture.runtime.laneService.create as any).mock.calls[0][0].baseBranch).toBe("develop");
+    expect((fixture.runtime.laneService.create as any).mock.calls[1][0].baseBranch).toBeUndefined();
+  });
+
   it("passes branch and Linear issue data through create_lane", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });

@@ -14413,3 +14413,145 @@ final class RosterDeltaTests: XCTestCase {
     XCTAssertEqual(projects.map(\.projectId).sorted(), ["a"])
   }
 }
+
+// MARK: - Roster attention scoping + brain host_unavailable handling
+
+final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
+  private func rosterChat(
+    id: String = "s-1",
+    toolType: String?,
+    chatSessionId: String? = nil,
+    status: RemoteRosterChatStatus = .failed,
+    awaitingInput: Bool? = nil
+  ) -> RemoteRosterChat {
+    RemoteRosterChat(
+      id: id,
+      laneId: "lane-1",
+      chatSessionId: chatSessionId,
+      title: nil,
+      provider: nil,
+      model: nil,
+      toolType: toolType,
+      status: status,
+      awaitingInput: awaitingInput,
+      pinned: nil,
+      archived: nil,
+      lastActivityAt: nil,
+      preview: nil
+    )
+  }
+
+  private func session(
+    id: String = "s-1",
+    toolType: String?,
+    status: String,
+    runtimeState: String,
+    chatSessionId: String? = nil
+  ) -> TerminalSessionSummary {
+    TerminalSessionSummary(
+      id: id,
+      laneId: "lane-1",
+      laneName: "feature/work",
+      ptyId: nil,
+      tracked: true,
+      pinned: false,
+      manuallyNamed: nil,
+      goal: nil,
+      toolType: toolType,
+      title: "Session",
+      status: status,
+      startedAt: "2026-03-25T00:00:00.000Z",
+      endedAt: nil,
+      exitCode: nil,
+      transcriptPath: "",
+      headShaStart: nil,
+      headShaEnd: nil,
+      lastOutputPreview: nil,
+      summary: nil,
+      runtimeState: runtimeState,
+      resumeCommand: nil,
+      resumeMetadata: nil,
+      chatIdleSinceAt: nil,
+      chatSessionId: chatSessionId
+    )
+  }
+
+  private func hostUnavailableError() -> NSError {
+    NSError(
+      domain: "ADE",
+      code: 17,
+      userInfo: [
+        NSLocalizedDescriptionKey: "This machine's project sync host is not running yet.",
+        "ADEErrorCode": "host_unavailable",
+      ]
+    )
+  }
+
+  // The brain ingress answers `host_unavailable` while the project host is
+  // restarting — transient, so it must queue like a timeout, never be deleted
+  // like an application rejection.
+  func testHostUnavailableErrorIsRetryableAndQueueable() {
+    XCTAssertTrue(isSyncHostUnavailableError(hostUnavailableError()))
+    XCTAssertFalse(isRemoteCommandApplicationError(hostUnavailableError()))
+    XCTAssertFalse(
+      isSyncHostUnavailableError(NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: ["ADEErrorCode": "command_failed"]
+      ))
+    )
+
+    XCTAssertTrue(
+      syncShouldQueueCommandAfterSendFailure(
+        error: hostUnavailableError(),
+        canSendLiveRequests: true,
+        queueable: true
+      )
+    )
+    XCTAssertFalse(
+      syncShouldQueueCommandAfterSendFailure(
+        error: hostUnavailableError(),
+        canSendLiveRequests: true,
+        queueable: false
+      )
+    )
+  }
+
+  // Mirrors the host rosterBuilder: only chat rows and chat-attached shells
+  // drive attention — a standalone CLI session that exited non-zero must not
+  // pin its project to the top of the hub forever.
+  func testRosterNeedsAttentionCountsChatsAndChatChildrenOnly() {
+    XCTAssertFalse(rosterChat(toolType: "cli", status: .failed).needsAttention)
+    XCTAssertTrue(rosterChat(toolType: "claude-chat", status: .failed).needsAttention)
+    XCTAssertTrue(
+      rosterChat(id: "shell-1", toolType: "shell", chatSessionId: "chat-parent", status: .failed).needsAttention
+    )
+    // Unknown/missing toolType must not read as a chat (blank-transcript bug).
+    XCTAssertFalse(rosterChat(toolType: nil, status: .failed).isChatTool)
+    XCTAssertFalse(rosterChat(toolType: nil, status: .failed).needsAttention)
+  }
+
+  func testWorkListShowsEndedStandaloneCliButHidesRunShellAndOrphanedEndedChildren() {
+    let endedCli = session(toolType: "cli", status: "completed", runtimeState: "exited")
+    XCTAssertTrue(workSessionShouldAppearInWorkList(endedCli, parentChatSessionIds: []))
+
+    let runShell = session(toolType: "run-shell", status: "running", runtimeState: "running")
+    XCTAssertFalse(workSessionShouldAppearInWorkList(runShell, parentChatSessionIds: []))
+
+    let orphanedEndedChild = session(
+      toolType: "shell",
+      status: "completed",
+      runtimeState: "exited",
+      chatSessionId: "chat-gone"
+    )
+    XCTAssertFalse(workSessionShouldAppearInWorkList(orphanedEndedChild, parentChatSessionIds: []))
+
+    let orphanedLiveChild = session(
+      toolType: "shell",
+      status: "running",
+      runtimeState: "running",
+      chatSessionId: "chat-gone"
+    )
+    XCTAssertTrue(workSessionShouldAppearInWorkList(orphanedLiveChild, parentChatSessionIds: []))
+  }
+}

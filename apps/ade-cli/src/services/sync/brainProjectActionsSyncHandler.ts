@@ -510,6 +510,31 @@ export function createBrainProjectActionsSyncHandler(
         }
         break;
       }
+      case "command": {
+        // No project sync host owns this peer (it is parked on the brain-level
+        // ingress — e.g. the host is restarting or was blocked by a conflicting
+        // sync listener). Silently dropping the command leaves the phone
+        // staring at a 30s timeout and a vague "took too long" banner for
+        // EVERY surface; answer immediately with a self-describing failure so
+        // the app can show what actually happened and retry.
+        const payload = envelope.payload as { commandId?: string; action?: string } | null;
+        const commandId = typeof payload?.commandId === "string" && payload.commandId
+          ? payload.commandId
+          : envelope.requestId ?? "";
+        args.logger.warn("sync_brain.command_without_project_host", {
+          action: typeof payload?.action === "string" ? payload.action : null,
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+        });
+        send(peer.ws, "command_result", {
+          commandId,
+          ok: false,
+          error: {
+            code: "host_unavailable",
+            message: "This machine's project sync host is not running yet. It usually restarts within a few seconds — retry shortly, or reopen the project.",
+          },
+        }, envelope.requestId);
+        break;
+      }
       default:
         args.logger.warn("sync_brain.unsupported_envelope", {
           type: envelope.type,

@@ -8,7 +8,7 @@ action against its in-process services, and replies with `command_ack`
 and then `command_result`.
 
 Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
-(~2,840 lines). The desktop tree's
+(~3,280 lines). The desktop tree's
 `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
 one-line re-export of the canonical module.
 
@@ -95,6 +95,18 @@ this with explicit error codes:
   retry.
 - `code: project_not_open` — caller asked for a project the brain does
   not currently have open. Drive a `project_switch_request` first.
+
+One more error code originates **outside** the registry:
+`code: host_unavailable`. When a `command` envelope reaches the
+brain-level ingress while **no project sync host owns the peer** (the
+host is restarting, or was blocked by a conflicting sync listener),
+`brainProjectActionsSyncHandler` answers immediately with a failed
+`command_result` carrying that code instead of silently dropping the
+command into a 30 s client timeout. The state is transient by
+definition, so controllers must treat it like a timeout: iOS marks it
+retryable and queueable (`isSyncHostUnavailableError`), and queued
+operations are preserved — not deleted — when a replay hits it during
+a host restart window.
 
 Controllers read `SyncRemoteCommandDescriptor`s from the brain (via the
 `getSupportedActions` / `getDescriptors` surface) and gate UI
@@ -286,12 +298,31 @@ error reaches the controller as `command_result.error.message`.
 Handlers are thin glue onto the brain's in-process services. Most look like:
 
 ```ts
-register("lanes.create",
+register("lanes.archive",
   { viewerAllowed: true, queueable: true },
-  async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
+  async (payload) => {
+    await args.laneService.archive(parseArchiveLaneArgs(payload, "lanes.archive"));
+    return { ok: true };
+  });
 ```
 
 A handful have more logic:
+
+- **`lanes.create`** — when the caller omits `baseBranch`, `startPoint`,
+  **and** `parentLaneId` (the mobile hub composer's auto-create and the
+  iOS create sheet's default), the handler resolves a **remote-first
+  default base** before delegating to `laneService.create`. It reads the
+  project's `git.newLaneBaseSource` config (effective default
+  `"remote"`; `"local"` short-circuits), then calls
+  `resolveDefaultRemoteLaneBase` from
+  `apps/desktop/src/shared/defaultRemoteLaneBase.ts` — a bounded remote
+  fetch (4 s timeout so a slow remote never stalls creation) followed by
+  mapping the primary lane's base branch to its remote-tracking ref
+  (upstream first, then `origin/<base>`). Any failure or missing remote
+  ref resolves to null and creation proceeds with the legacy local
+  default. This matches the desktop create-lane dialog, which resolves
+  the same remote-first default renderer-side, so a lane created from a
+  phone no longer silently branches from a stale local primary tip.
 
 - **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
   `ptyService.create`, and returns the PTY handle for the controller

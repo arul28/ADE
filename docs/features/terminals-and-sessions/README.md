@@ -493,7 +493,13 @@ iOS Work surfaces:
 - `apps/ios/ADE/Views/Work/WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
   `WorkRootComponents.swift` — mobile Work list, filters, grouped
-  session rows, and live-count/status pills. Agent CLI continuation is
+  session rows, and live-count/status pills. Visibility mirrors desktop
+  (`workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift`):
+  standalone CLI sessions are always listed — **including ended ones**,
+  which stay visible and resumable; chat-owned shell rows ride their
+  parent chat's entry (an orphaned child whose parent chat isn't listed
+  surfaces only while it is actually live); `run-shell` infrastructure
+  rows never appear. Agent CLI continuation is
   driven by sending text to the durable session, not a standalone
   row action. The earlier
   in-list activity feed is gone — running chats surface through the

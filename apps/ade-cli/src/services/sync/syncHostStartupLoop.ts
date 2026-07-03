@@ -69,12 +69,15 @@ async function terminatePidAsync(
 // restart overlap, a stale sibling about to be evicted), so they retry:
 // squatters die, upgrades finish, and the next attempt should win.
 //
-// A conflict with ANOTHER channel's live brain is different — it means a
-// human deliberately launched a second build. Waiting would leave this brain
-// running without mobile sync, which reads as "phone mysteriously frozen /
-// talking to old code" rather than an error. Real builds never run sync-less:
-// the conflict is rethrown so the caller can fail brain startup with the
-// quit instructions in the message.
+// A conflict with ANOTHER channel's live brain gets one rethrow so brain
+// STARTUP can fail loudly with quit instructions — but only while startup can
+// still abort (attempt 1). Once this brain is serving (or when the caller
+// survives the throw and keeps running), permanently giving up would strand
+// every paired phone on the ingress fallback — connected but with all
+// requests dropped — until a manual brain restart. A dev-build brain that
+// grabs the singleton and later exits must hand sync back automatically, so
+// cross-channel conflicts after the first attempt keep retrying on the slow
+// cadence and recover the moment the foreign owner disappears.
 export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Promise<void> {
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
@@ -100,7 +103,15 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         const owner = error.conflict.owner;
         const sameChannelOwner = isSameChannelSyncHostOwner(owner, deps.env);
         if (owner.pid !== process.pid && !sameChannelOwner) {
-          throw error;
+          // First attempt: let brain startup fail loudly (caller shows quit
+          // instructions). Later attempts: the brain is already serving —
+          // keep watching so sync recovers when the foreign owner exits.
+          if (attempt === 1) {
+            throw error;
+          }
+          if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
+          await sleep(slowRetryDelayMs);
+          continue;
         }
         const serviceMainPid = deps.getServiceMainPid?.() ?? null;
         if (

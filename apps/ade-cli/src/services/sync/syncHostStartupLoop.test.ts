@@ -118,9 +118,9 @@ describe("runSyncHostStartupLoop", () => {
     expect(killed).toEqual([]);
   });
 
-  it("rethrows a cross-channel conflict immediately instead of retrying", async () => {
-    // Another build's live brain owning sync is a deliberate human state, not
-    // a transient race — the brain must fail startup, never run sync-less.
+  it("rethrows a first-attempt cross-channel conflict so startup fails loudly", async () => {
+    // Another build's live brain owning sync at STARTUP is a deliberate human
+    // state — fail with quit instructions rather than silently running sync-less.
     const killed: number[] = [];
     let attempts = 0;
     const error = conflictError(makeOwner({
@@ -146,6 +146,41 @@ describe("runSyncHostStartupLoop", () => {
     })).rejects.toBe(error);
     expect(attempts).toBe(1);
     expect(killed).toEqual([]);
+  });
+
+  it("recovers when a cross-channel conflict appears after startup and later clears", async () => {
+    // A dev-build brain that grabs the singleton mid-flight must not strand
+    // phones on the ingress fallback forever: once it exits, the next slow
+    // retry re-hosts. (Previously this rethrew and the loop died permanently.)
+    const logs: string[] = [];
+    const killed: number[] = [];
+    let attempts = 0;
+    const crossChannel = conflictError(makeOwner({
+      packageChannel: null,
+      adeHome: "/Users/example/.ade",
+      serviceName: "com.ade.runtime",
+      appName: "ADE",
+    }));
+    await runSyncHostStartupLoop({
+      startSyncHost: () => {
+        attempts += 1;
+        if (attempts === 1) return Promise.reject(new Error("port busy"));
+        if (attempts < 4) return Promise.reject(crossChannel);
+        return Promise.resolve();
+      },
+      isDone: () => false,
+      log: (message) => logs.push(message),
+      getServiceMainPid: () => process.pid,
+      kill: (pid) => {
+        killed.push(pid);
+      },
+      sleep: instantSleep,
+      env: betaEnv,
+    });
+    expect(attempts).toBe(4);
+    // Never kills a foreign-channel owner; just waits it out.
+    expect(killed).toEqual([]);
+    expect(logs.at(-1)).toBe("ADE brain mobile sync host recovered.");
   });
 
   it("stops once the brain is shutting down", async () => {

@@ -113,18 +113,31 @@ func rosterApplyDelta(
 // MARK: - Convenience
 
 extension RemoteRosterChat {
+  /// Only explicit chat tool types stream the chat-event surface. An unknown or
+  /// missing toolType must NOT read as a chat: routing a CLI (terminal) session
+  /// through the chat transcript path yields a permanently blank screen (CLI
+  /// sessions have no chat JSONL). The activation/terminal path handles both
+  /// kinds, so it is the safe default.
   var isChatTool: Bool {
-    guard let toolType = toolType?
+    let raw = toolType?
       .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased() else { return true }
-    return toolType == "cursor"
-      || toolType.hasSuffix("-chat")
-      || toolType == "chat"
+      .lowercased() ?? ""
+    guard !raw.isEmpty else { return false }
+    return raw == "cursor"
+      || raw.hasSuffix("-chat")
+      || raw == "chat"
   }
 
-  /// Whether this row should drive an attention bubble on the hub.
+  /// Whether this row should drive an attention bubble on the hub. Only chat
+  /// rows (and shells attached to a chat) count — attention feeds the hub's
+  /// attention-first project sort, and a standalone CLI session that exited
+  /// non-zero long ago must not pin its project to the top forever (CLI rows
+  /// have no mobile archive/clear affordance). Mirrors the host rosterBuilder.
   var needsAttention: Bool {
-    awaitingInput == true || status == .awaiting || status == .failed
+    guard awaitingInput == true || status == .awaiting || status == .failed else { return false }
+    if isChatTool { return true }
+    let parentId = chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return !parentId.isEmpty && parentId != id
   }
 
   var isRunning: Bool {

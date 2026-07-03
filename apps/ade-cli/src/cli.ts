@@ -1232,6 +1232,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Create a lane from an issue, optionally auto-launching an agent
     $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
                                                     Create one lane per issue (partial success, no orphans)
+    $ ade lanes create --base <ref>                 Override the base ref (omit to use the configured new-lane base, remote-first by default)
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
     $ ade lanes import --branch <branch>            Register an existing branch/worktree

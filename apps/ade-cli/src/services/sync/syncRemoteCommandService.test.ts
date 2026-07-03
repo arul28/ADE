@@ -430,3 +430,80 @@ describe("lanes.refreshSnapshots conditional responses", () => {
     expect(result.signature).not.toBe("0".repeat(64));
   });
 });
+
+describe("lanes.create default base resolution", () => {
+  function createLaneCreateService(options?: {
+    newLaneBaseSource?: "remote" | "local";
+    branches?: Array<{ name: string; isCurrent: boolean; isRemote: boolean; upstream: string | null }>;
+  }) {
+    const laneService = {
+      create: vi.fn().mockResolvedValue({ id: "lane-new", name: "fresh" }),
+      list: vi.fn().mockResolvedValue([
+        { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
+      ]),
+    };
+    const gitService = {
+      fetch: vi.fn().mockResolvedValue({ ok: true }),
+      listBranches: vi.fn().mockResolvedValue(options?.branches ?? [
+        { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
+        { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
+      ]),
+    };
+    const projectConfigService = {
+      getEffective: vi.fn().mockReturnValue({ git: { newLaneBaseSource: options?.newLaneBaseSource ?? "remote" } }),
+    };
+    const service = createSyncRemoteCommandService({
+      laneService,
+      gitService,
+      projectConfigService,
+      prService: {},
+      ptyService: {},
+      sessionService: {},
+      fileService: {},
+      logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+    } as any);
+    return { service, laneService, gitService };
+  }
+
+  it("defaults a base-less create to the fetched remote-tracking ref", async () => {
+    const { service, laneService, gitService } = createLaneCreateService();
+
+    await service.execute(makePayload("lanes.create", { name: "fresh", description: "" }));
+
+    expect(gitService.fetch).toHaveBeenCalledWith({ laneId: "lane-primary" });
+    expect(laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "fresh", baseBranch: "origin/main" }),
+    );
+  });
+
+  it("leaves an explicit baseBranch untouched and never fetches", async () => {
+    const { service, laneService, gitService } = createLaneCreateService();
+
+    await service.execute(makePayload("lanes.create", { name: "fresh", description: "", baseBranch: "develop" }));
+
+    expect(gitService.fetch).not.toHaveBeenCalled();
+    expect(laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ baseBranch: "develop" }),
+    );
+    expect(laneService.create.mock.calls[0]![0].baseBranch).toBe("develop");
+  });
+
+  it("respects newLaneBaseSource=local (no fetch, no injected base)", async () => {
+    const { service, laneService, gitService } = createLaneCreateService({ newLaneBaseSource: "local" });
+
+    await service.execute(makePayload("lanes.create", { name: "fresh", description: "" }));
+
+    expect(gitService.fetch).not.toHaveBeenCalled();
+    expect(laneService.create.mock.calls[0]![0].baseBranch).toBeUndefined();
+  });
+
+  it("keeps the local default when no remote-tracking ref exists", async () => {
+    const { service, laneService } = createLaneCreateService({
+      branches: [{ name: "main", isCurrent: true, isRemote: false, upstream: null }],
+    });
+
+    await service.execute(makePayload("lanes.create", { name: "fresh", description: "" }));
+
+    expect(laneService.create.mock.calls[0]![0].baseBranch).toBeUndefined();
+  });
+});
