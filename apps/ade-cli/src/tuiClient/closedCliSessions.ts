@@ -134,12 +134,16 @@ export function drawerChatActionForItem(item: DrawerChatListItem | null | undefi
   return item?.kind === "closed-toggle" ? "closed-toggle" : null;
 }
 
+// Exit 130 (Ctrl+C) and 143 (SIGTERM) are user-initiated closes — the daemon
+// classifies them as disposed/killed, not failed (ptyService.statusFromExit),
+// so only genuine failures may render the failed glyph here.
+const USER_CLOSE_EXIT_CODES = new Set([0, 130, 143]);
+
 export function closedCliSessionStatusKind(session: AgentChatSessionSummary): StatusKind {
   const closed = session as ClosedCliSessionSummary;
   if (
     closed.terminalStatus === "failed"
-    || (closed.terminalExitCode != null && closed.terminalExitCode !== 0)
-    || closed.terminalRuntimeState === "killed"
+    || (closed.terminalExitCode != null && !USER_CLOSE_EXIT_CODES.has(closed.terminalExitCode))
   ) {
     return "failed";
   }

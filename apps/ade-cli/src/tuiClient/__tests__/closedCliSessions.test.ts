@@ -43,6 +43,28 @@ describe("closedCliSessions", () => {
     expect(closedCliRightPaneRow(session!, null)).toContain("✗");
   });
 
+  it("treats user-initiated closes as idle, not failed", () => {
+    const sessions = deriveClosedCliSessions([
+      terminal({ terminalId: "t-sigint", status: "disposed", exitCode: 130, runtimeState: "killed" }),
+      terminal({ terminalId: "t-sigterm", status: "disposed", exitCode: 143, runtimeState: "killed" }),
+      terminal({ terminalId: "t-clean", status: "completed", exitCode: 0, runtimeState: "exited" }),
+      terminal({ terminalId: "t-ui-close", status: "disposed", exitCode: null, runtimeState: "killed" }),
+    ]);
+
+    for (const session of sessions) {
+      expect(closedCliSessionStatusKind(session)).toBe("idle");
+    }
+  });
+
+  it("flags genuine non-zero exits as failed", () => {
+    const [session] = deriveClosedCliSessions([
+      terminal({ terminalId: "t-crash", status: "completed", exitCode: 2, runtimeState: "exited" }),
+    ]);
+
+    expect(session).toBeDefined();
+    expect(closedCliSessionStatusKind(session!)).toBe("failed");
+  });
+
   it("filters closed CLI sessions out of the open drawer list", () => {
     const [closed] = deriveClosedCliSessions([terminal()]);
     const open = {
