@@ -625,6 +625,22 @@ function CopyPanel({ tab }: { tab: ShowcaseTab }) {
 export function ShipShowcase() {
   const reduceMotion = useReducedMotion() ?? true;
   const [active, setActive] = useState(0);
+  // Tabs mount on first activation — plus the next tab in rotation, prefetched
+  // a full cycle ahead so its images are fetched and decoded before the
+  // crossfade — and stay mounted afterward. Bounds the initial image load to
+  // two tabs instead of all four while keeping switches decode-jank-free.
+  const [mountedTabs, setMountedTabs] = useState(() => new Set([0, 1]));
+
+  useEffect(() => {
+    setMountedTabs((prev) => {
+      const upcoming = (active + 1) % TABS.length;
+      if (prev.has(active) && prev.has(upcoming)) return prev;
+      const grown = new Set(prev);
+      grown.add(active);
+      grown.add(upcoming);
+      return grown;
+    });
+  }, [active]);
 
   const selectTab = useCallback((index: number) => {
     setActive(index);
@@ -764,12 +780,16 @@ export function ShipShowcase() {
               className={cn(
                 "col-start-1 row-start-1 grid gap-[clamp(18px,2.2vw,40px)] transition-[opacity,transform] duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:grid-cols-[minmax(0,0.44fr)_minmax(0,1.56fr)] lg:items-center",
                 selected
-                  ? "opacity-100 motion-safe:translate-y-0"
-                  : "pointer-events-none opacity-0 motion-safe:translate-y-[10px]"
+                  ? "z-[1] opacity-100 motion-safe:translate-y-0"
+                  : "z-0 pointer-events-none opacity-0 motion-safe:translate-y-[10px]"
               )}
             >
-              <CopyPanel tab={item} />
-              <ImageStage tab={item} />
+              {mountedTabs.has(index) ? (
+                <>
+                  <CopyPanel tab={item} />
+                  <ImageStage tab={item} />
+                </>
+              ) : null}
             </div>
           );
         })}
