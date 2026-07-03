@@ -104,7 +104,7 @@ export function spawnRemoteRpcProcess(attempt: RemoteRpcAttempt): ChildProcessWi
 export class ProcessJsonRpcClient {
   private nextId = 1;
   private buffer = Buffer.alloc(0);
-  private readonly pending = new Map<number | string, PendingRequest>();
+  private readonly pending = new Map<string, PendingRequest>();
   private readonly stderrTail = new ByteRingBuffer(MAX_STDERR_TAIL_BYTES);
   private closed = false;
 
@@ -129,15 +129,16 @@ export class ProcessJsonRpcClient {
       ...(params !== undefined ? { params } : {}),
     };
     return new Promise<T>((resolve, reject) => {
+      const pendingKey = String(id);
       const timer = setTimeout(() => {
-        if (!this.pending.has(id)) return;
+        if (!this.pending.has(pendingKey)) return;
         this.handleClosed(
           new Error(`Remote ADE RPC timed out waiting for method ${method} (${REMOTE_RPC_REQUEST_TIMEOUT_MS}ms).`),
         );
         this.child.kill();
       }, REMOTE_RPC_REQUEST_TIMEOUT_MS);
       timer.unref?.();
-      this.pending.set(id, {
+      this.pending.set(pendingKey, {
         method,
         resolve: (value) => resolve(value as T),
         reject,
@@ -145,9 +146,9 @@ export class ProcessJsonRpcClient {
       });
       this.child.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
         if (!error) return;
-        const pending = this.pending.get(id);
+        const pending = this.pending.get(pendingKey);
         if (pending) clearTimeout(pending.timer);
-        this.pending.delete(id);
+        this.pending.delete(pendingKey);
         reject(error);
       });
     });
@@ -257,9 +258,10 @@ export class ProcessJsonRpcClient {
 
   private handleResponse(response: JsonRpcResponse): void {
     if (response.id == null) return;
-    const pending = this.pending.get(response.id);
+    const pendingKey = String(response.id);
+    const pending = this.pending.get(pendingKey);
     if (!pending) return;
-    this.pending.delete(response.id);
+    this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (response.error) {
       pending.reject(new Error(response.error.message));

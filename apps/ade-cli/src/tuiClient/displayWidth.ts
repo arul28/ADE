@@ -84,11 +84,17 @@ export function splitByDisplayCells(
 ): { before: string; selected: string; after: string } {
   const start = Math.max(0, Math.min(startCell, terminalDisplayWidth(value)));
   const end = Math.max(start, Math.min(endCell, terminalDisplayWidth(value)));
-  return {
-    before: sliceByDisplayCells(value, 0, start),
-    selected: sliceByDisplayCells(value, start, end),
-    after: sliceByDisplayCells(value, end, Number.POSITIVE_INFINITY),
-  };
+  let cells = 0;
+  let before = "";
+  let selected = "";
+  let after = "";
+  for (const cluster of displayClusters(value)) {
+    if (cells < start) before += cluster.text;
+    else if (cells < end) selected += cluster.text;
+    else after += cluster.text;
+    cells += cluster.width;
+  }
+  return { before, selected, after };
 }
 
 export function truncateDisplayEnd(value: string, maxCells: number): string {

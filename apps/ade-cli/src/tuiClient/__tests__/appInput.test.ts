@@ -93,6 +93,8 @@ import {
   cursorModeIdsForState,
   cursorSourceForInterfaceMode,
   initialModelState,
+  applyProviderPermissionMode,
+  permissionSummary,
   reconcileCursorModelStateForInterface,
   resolveCursorCliModelForLaunch,
 } from "../modelState";
@@ -1115,6 +1117,31 @@ describe("provider permission helpers", () => {
   it("uses Cursor runtime snapshot modes before falling back to static modes", () => {
     expect(cursorModeIdsForState({ cursorAvailableModeIds: ["ask", "plan"] })).toEqual(["ask", "plan"]);
     expect(cursorModeIdsForState({ cursorAvailableModeIds: [] })).toContain("agent");
+  });
+
+  it("uses OpenCode permissions for Ollama and LM Studio chat providers", () => {
+    for (const provider of ["ollama", "lmstudio"] as const) {
+      const modelState = setupPaneModelState({
+        provider,
+        opencodePermissionMode: "plan",
+        cursorModeId: "ask",
+      });
+      const permissionRow = buildSetupRows({
+        modelState,
+        models: [],
+        includeRefresh: false,
+        includeApply: true,
+        interfaceMode: "chat",
+        interfaceEditable: true,
+      }).find((row) => row.kind === "permission");
+
+      expect(permissionSummary(modelState)).toBe("plan");
+      expect(applyProviderPermissionMode(modelState)).toEqual({ permissionMode: "plan" });
+      expect(permissionRow).toMatchObject({
+        value: "plan",
+        detail: "plan · edit · full-auto · config-toml",
+      });
+    }
   });
 });
 

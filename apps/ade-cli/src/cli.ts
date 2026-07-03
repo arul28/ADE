@@ -11368,7 +11368,7 @@ class SocketJsonRpcClient {
   private nextId = 1;
   private closedError: Error | null = null;
   private pending = new Map<
-    number,
+    string,
     {
       resolve: (value: unknown) => void;
       reject: (error: Error) => void;
@@ -11418,15 +11418,16 @@ class SocketJsonRpcClient {
     };
     const body = `${JSON.stringify(payload)}\n`;
     return new Promise((resolve, reject) => {
+      const pendingKey = String(id);
       const timer = setTimeout(() => {
-        this.pending.delete(id);
+        this.pending.delete(pendingKey);
         reject(new Error(`Timed out waiting for ${method}.`));
       }, this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(pendingKey, { resolve, reject, timer });
       this.socket.write(body, "utf8", (error) => {
         if (!error) return;
         clearTimeout(timer);
-        this.pending.delete(id);
+        this.pending.delete(pendingKey);
         reject(error);
       });
     });
@@ -11509,7 +11510,7 @@ class SocketJsonRpcClient {
       return;
     }
     if (!isRecord(parsed)) return;
-    const id = typeof parsed.id === "number" ? parsed.id : null;
+    const id = typeof parsed.id === "number" || typeof parsed.id === "string" ? parsed.id : null;
     if (id == null) {
       const method = asString(parsed.method);
       if (!method) return;
@@ -11521,9 +11522,10 @@ class SocketJsonRpcClient {
       }
       return;
     }
-    const pending = this.pending.get(id);
+    const pendingKey = String(id);
+    const pending = this.pending.get(pendingKey);
     if (!pending) return;
-    this.pending.delete(id);
+    this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (isRecord(parsed.error)) {
       pending.reject(

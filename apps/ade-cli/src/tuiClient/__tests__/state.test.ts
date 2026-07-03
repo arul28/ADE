@@ -2,7 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadAdeCodeState, normalizeAdeCodeState, saveAdeCodeProjectStateAsync, scopedAdeCodeState } from "../state";
+import {
+  flushAdeCodeStateWrites,
+  loadAdeCodeState,
+  normalizeAdeCodeState,
+  saveAdeCodeProjectState,
+  saveAdeCodeProjectStateAsync,
+  scopedAdeCodeState,
+} from "../state";
 
 afterEach(() => {
   delete process.env.ADE_CODE_STATE_DIR;
@@ -148,5 +155,22 @@ describe("ade code persisted state", () => {
       [path.resolve("/repo-a")]: "cli",
     });
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("flushes fire-and-forget project state saves before shutdown", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-state-"));
+    process.env.ADE_CODE_STATE_DIR = stateDir;
+
+    saveAdeCodeProjectState("/repo-a", {
+      lastChatByLane: { main: "repo-a-chat" },
+      lastLaneId: "repo-a-lane",
+      draftKind: "cli",
+    });
+    await flushAdeCodeStateWrites();
+
+    const persisted = loadAdeCodeState();
+    expect(persisted.lastChatByProjectLane[path.resolve("/repo-a")]).toEqual({ main: "repo-a-chat" });
+    expect(persisted.lastLaneByProject[path.resolve("/repo-a")]).toBe("repo-a-lane");
+    expect(persisted.draftKindByProject[path.resolve("/repo-a")]).toBe("cli");
   });
 });

@@ -1889,7 +1889,6 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     if (batch.gap === true) {
       resetRemoteRuntimeEventDedup(binding.key);
       resetRemoteRuntimeEmptyPolls();
-      notifyProjectBindingChangedCallbacks(binding);
     }
 
     remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)

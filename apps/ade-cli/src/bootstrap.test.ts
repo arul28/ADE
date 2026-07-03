@@ -89,6 +89,19 @@ describe("createEventBuffer", () => {
     expect(result.nextCursor).toBe(1);
   });
 
+  it("reports a replay gap when an oversized event is skipped between retained events", () => {
+    const buffer = createEventBuffer(10, { maxBytes: 4096, maxEventBytes: 180 });
+
+    buffer.push({ timestamp: "2026-03-01T00:00:00Z", category: "runtime", payload: { data: "small-1" } });
+    buffer.push({ timestamp: "2026-03-01T00:00:01Z", category: "runtime", payload: { data: "x".repeat(500) } });
+    buffer.push({ timestamp: "2026-03-01T00:00:02Z", category: "runtime", payload: { data: "small-2" } });
+
+    const result = buffer.drain(1);
+    expect(result.events.map((event) => event.id)).toEqual([3]);
+    expect(result.gap).toBe(true);
+    expect(result.oldestCursor).toBe(3);
+  });
+
   it("drains events after cursor", () => {
     const buffer = createEventBuffer();
 

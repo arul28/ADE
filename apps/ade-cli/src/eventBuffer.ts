@@ -49,6 +49,7 @@ export function createEventBuffer(
   const maxEventBytes = Math.max(0, Math.floor(options.maxEventBytes ?? DEFAULT_EVENT_BUFFER_MAX_EVENT_BYTES));
   let nextId = 1;
   let retainedBytes = 0;
+  let lastSkippedCursor: number | null = null;
 
   const evictOldest = (): void => {
     const evicted = events.shift();
@@ -57,15 +58,20 @@ export function createEventBuffer(
 
   const drainMetadata = (cursor: number): Pick<EventBufferDrainResult, "gap" | "oldestCursor"> => {
     const oldest = events[0]?.event.id ?? null;
+    const skippedGap = lastSkippedCursor != null && cursor < lastSkippedCursor;
     if (oldest == null) {
+      const gap = cursor < nextId - 1 || skippedGap;
       return {
-        gap: cursor < nextId - 1,
-        oldestCursor: cursor < nextId - 1 ? nextId : null,
+        gap,
+        oldestCursor: gap ? nextId : null,
       };
     }
+    const retainedGap = cursor < oldest - 1;
     return {
-      gap: cursor < oldest - 1,
-      oldestCursor: oldest,
+      gap: retainedGap || skippedGap,
+      oldestCursor: skippedGap
+        ? Math.max(oldest, (lastSkippedCursor ?? 0) + 1)
+        : oldest,
     };
   };
 
@@ -73,6 +79,9 @@ export function createEventBuffer(
     push(event) {
       const entry: BufferedEvent = { id: nextId++, ...event };
       const bytes = Buffer.byteLength(JSON.stringify(entry), "utf8");
+      if (bytes > maxEventBytes) {
+        lastSkippedCursor = entry.id;
+      }
       if (capacity > 0 && maxBytes > 0 && bytes <= maxEventBytes) {
         events.push({ event: entry, bytes });
         retainedBytes += bytes;

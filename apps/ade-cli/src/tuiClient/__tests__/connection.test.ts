@@ -615,6 +615,30 @@ describe("connectToAde embedded mode", () => {
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
+  it("unlinks stale machine socket files before retrying daemon startup", async () => {
+    const socketPath = useMissingMachineSocket();
+    fs.mkdirSync(path.dirname(socketPath), { recursive: true });
+    fs.writeFileSync(socketPath, "");
+    expect(fs.existsSync(socketPath)).toBe(true);
+
+    const client = mockAttachedClient();
+    let connectAttempts = 0;
+    vi.mocked(JsonRpcClient.connect).mockImplementation(async () => {
+      connectAttempts += 1;
+      if (connectAttempts === 1) {
+        throw Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+      }
+      return client as unknown as JsonRpcClient;
+    });
+
+    const connection = await connectToAde({ project });
+    await connection.close();
+
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    expect(connectAttempts).toBeGreaterThan(1);
+    expect(fs.existsSync(socketPath)).toBe(false);
+  });
+
   it("repairs the packaged service before spawning an unmanaged machine daemon", async () => {
     useMissingMachineSocket();
     const installEnvRoles: Array<string | undefined> = [];
@@ -1022,13 +1046,13 @@ describe("JsonRpcClient", () => {
 });
 
 describe("ProcessJsonRpcClient", () => {
-  it("clears pending RPC timers when remote responses resolve or reject", async () => {
+  it("matches string response ids and clears pending RPC timers", async () => {
     const clearTimeoutSpy = vi.spyOn(global, "clearTimeout");
     const child = new FakeRemoteRpcChild();
     const client = new ProcessJsonRpcClient(child as never);
 
     const resolved = client.request("ade/ping");
-    child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, result: { ok: true } })}\n`);
+    child.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id: "1", result: { ok: true } })}\n`);
     await expect(resolved).resolves.toEqual({ ok: true });
 
     const rejected = client.request("ade/fail");

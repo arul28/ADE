@@ -1916,6 +1916,69 @@ describe("sync host reliability guards", () => {
     }
   });
 
+  it("times out a hung queued message and continues with later messages", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const sendMessage = vi.fn((): Promise<void> => new Promise<void>(() => {}));
+    const host = createReliabilityHost(projectRoot, {
+      logger,
+      messageTimeoutMs: 100,
+      agentChatService: {
+        sendMessage,
+        subscribeToEvents: vi.fn(() => vi.fn()),
+      } as unknown as Parameters<typeof createSyncHostService>[0]["agentChatService"],
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "hung-command",
+        projectId: "project-1",
+        payload: {
+          commandId: "hung-command",
+          action: "chat.send",
+          projectId: "project-1",
+          args: {
+            sessionId: "session-1",
+            text: "hello",
+          },
+        },
+      }));
+      await waitForEnvelope(peer.envelopes, "command_ack", "hung-command");
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "project_catalog_request",
+        requestId: "catalog-after-timeout",
+        payload: {},
+      }));
+
+      const catalog = await waitForEnvelope(peer.envelopes, "project_catalog", "catalog-after-timeout");
+      expect((catalog.payload as SyncProjectCatalogPayload).projects.map((project) => project.id)).toEqual(["project-1"]);
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event]) => event === "sync_host.message_failed") ?? null,
+        "message timeout warning",
+      );
+      expect(logger.warn).toHaveBeenCalledWith("sync_host.message_failed", expect.objectContaining({
+        error: expect.stringContaining("Timed out handling sync message command"),
+        messageType: "command",
+        peerDeviceId: "desktop-timeout",
+        requestId: "hung-command",
+      }));
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("rejects oversized artifact reads with a clear file response", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const artifactPath = path.join(projectRoot, ".ade", "artifacts", "large.bin");

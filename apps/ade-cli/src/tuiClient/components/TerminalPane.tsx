@@ -381,8 +381,7 @@ function styledRowsFromTerminal(
     }
     const cells: TerminalSnapshotCell[] = [];
     let lastContentColumn = -1;
-    const scanColumns = Math.min(terminal.cols, fallbackText.length);
-    for (let column = 0; column < scanColumns; column += 1) {
+    for (let column = 0; column < terminal.cols; column += 1) {
       const cell = snapshotCellFromXtermCell(line.getCell(column) as unknown as XtermBufferCell | undefined);
       cells.push(cell);
       if (!isBlankDefaultCell(cell)) lastContentColumn = column;

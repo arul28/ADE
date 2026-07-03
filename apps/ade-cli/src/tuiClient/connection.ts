@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
@@ -526,29 +527,134 @@ function spawnDaemon(socketPath: string): boolean {
   return true;
 }
 
+type SocketSpawnLockOwner = {
+  id: string | null;
+  pid: number | null;
+};
+
+function createSocketSpawnLockOwner(): SocketSpawnLockOwner {
+  return {
+    id: `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    pid: process.pid,
+  };
+}
+
+function serializeSocketSpawnLockOwner(owner: SocketSpawnLockOwner): string {
+  return JSON.stringify({
+    id: owner.id,
+    pid: owner.pid,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+function readSocketSpawnLockOwner(lockPath: string): SocketSpawnLockOwner {
+  const raw = fs.readFileSync(lockPath, "utf8");
+  try {
+    const parsed = JSON.parse(raw) as { id?: unknown; pid?: unknown };
+    return {
+      id: typeof parsed.id === "string" ? parsed.id : null,
+      pid: typeof parsed.pid === "number" && Number.isInteger(parsed.pid) && parsed.pid > 0
+        ? parsed.pid
+        : null,
+    };
+  } catch {
+    const [pidLine] = raw.split(/\r?\n/u);
+    const pid = Number.parseInt(pidLine ?? "", 10);
+    return {
+      id: null,
+      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+    };
+  }
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {
+  try {
+    const stat = fs.statSync(lockPath);
+    const owner = readSocketSpawnLockOwner(lockPath);
+    if (owner.pid != null && processExists(owner.pid)) return false;
+    if (owner.pid == null && Date.now() - stat.mtimeMs <= 30_000) return false;
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+function unlinkSocketSpawnLockIfOwner(lockPath: string, ownerId: string | null): void {
+  if (!ownerId) return;
+  try {
+    const owner = readSocketSpawnLockOwner(lockPath);
+    if (owner.id !== ownerId) return;
+    fs.unlinkSync(lockPath);
+  } catch {
+    // ignore cleanup races
+  }
+}
+
+async function probeLocalSocketLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
+  if (socketPath.startsWith("tcp://")) return "unknown";
+  return await new Promise((resolve) => {
+    const socket = net.createConnection(socketPath);
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (result: "live" | "stale" | "unknown") => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    timer = setTimeout(() => finish("unknown"), 500);
+    timer.unref?.();
+    socket.once("connect", () => finish("live"));
+    socket.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ECONNREFUSED") {
+        finish("stale");
+        return;
+      }
+      finish("unknown");
+    });
+  });
+}
+
+async function unlinkStaleLocalSocket(socketPath: string): Promise<boolean> {
+  if (socketPath.startsWith("tcp://")) return false;
+  try {
+    const stat = fs.lstatSync(socketPath);
+    if (!stat.isSocket() && !stat.isFile()) return false;
+    if (stat.isSocket() && await probeLocalSocketLiveness(socketPath) !== "stale") return false;
+    fs.unlinkSync(socketPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
   if (socketPath.startsWith("tcp://")) return await task();
   const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + 10_000;
+  const owner = createSocketSpawnLockOwner();
   let fd: number | null = null;
   while (fd == null) {
     try {
       fd = fs.openSync(lockPath, "wx", 0o600);
-      fs.writeFileSync(fd, `${process.pid}\n${Date.now()}\n`, "utf8");
+      fs.writeFileSync(fd, serializeSocketSpawnLockOwner(owner), "utf8");
       break;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw error;
-      try {
-        const stat = fs.statSync(lockPath);
-        if (Date.now() - stat.mtimeMs > 30_000) {
-          fs.unlinkSync(lockPath);
-          continue;
-        }
-      } catch (statError) {
-        if ((statError as NodeJS.ErrnoException).code === "ENOENT") continue;
-      }
+      if (unlinkSocketSpawnLockIfStale(lockPath)) continue;
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`);
       }
@@ -564,9 +670,7 @@ async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>
         fs.closeSync(fd);
       } catch {}
     }
-    try {
-      fs.unlinkSync(lockPath);
-    } catch {}
+    unlinkSocketSpawnLockIfOwner(lockPath, owner.id);
   }
 }
 
@@ -850,7 +954,7 @@ export async function connectToAde(args: {
       if (repaired) return repaired;
       try {
         const spawned = await withSocketSpawnLock(machineSocketPath, async () => {
-          if (fs.existsSync(machineSocketPath)) return false;
+          if (fs.existsSync(machineSocketPath) && !(await unlinkStaleLocalSocket(machineSocketPath))) return false;
           return spawnDaemon(machineSocketPath);
         });
         if (spawned) return await tryDaemon(25);

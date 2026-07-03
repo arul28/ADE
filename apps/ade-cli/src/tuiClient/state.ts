@@ -102,6 +102,10 @@ export function saveAdeCodeProjectStateAsync(
   }));
 }
 
+export function flushAdeCodeStateWrites(): Promise<void> {
+  return stateWriteQueue;
+}
+
 export function normalizeAdeCodeState(value: unknown): AdeCodeState {
   const parsed = value && typeof value === "object" && !Array.isArray(value)
     ? value as Partial<AdeCodeState>

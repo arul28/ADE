@@ -232,7 +232,7 @@ import {
   splitByDisplayCells,
   terminalDisplayWidth,
 } from "./displayWidth";
-import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
+import { flushAdeCodeStateWrites, loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
 import {
@@ -3026,6 +3026,28 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const streaming = activeSessionId ? !!streamingBySessionId[activeSessionId] : false;
 
+  const saveCurrentAdeCodeState = useCallback(() => {
+    if (remoteLaunch) return;
+    const lastChatByLane: Record<string, string> = {};
+    for (const [laneId, sessionId] of lastChatByLaneRef.current) {
+      lastChatByLane[laneId] = sessionId;
+    }
+    saveAdeCodeProjectState(project.projectRoot, {
+      lastChatByLane,
+      lastLaneId: lastLaneIdRef.current,
+      draftKind: draftKindRef.current,
+    });
+  }, [project.projectRoot, remoteLaunch]);
+
+  const flushPendingAdeCodeState = useCallback(async () => {
+    if (lastChatByLaneWriteTimerRef.current) {
+      clearTimeout(lastChatByLaneWriteTimerRef.current);
+      lastChatByLaneWriteTimerRef.current = null;
+      saveCurrentAdeCodeState();
+    }
+    await flushAdeCodeStateWrites();
+  }, [saveCurrentAdeCodeState]);
+
   const persistAdeCodeState = useCallback(() => {
     if (remoteLaunch) return;
     if (lastChatByLaneWriteTimerRef.current) {
@@ -3033,17 +3055,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     lastChatByLaneWriteTimerRef.current = setTimeout(() => {
       lastChatByLaneWriteTimerRef.current = null;
-      const lastChatByLane: Record<string, string> = {};
-      for (const [laneId, sessionId] of lastChatByLaneRef.current) {
-        lastChatByLane[laneId] = sessionId;
-      }
-      saveAdeCodeProjectState(project.projectRoot, {
-        lastChatByLane,
-        lastLaneId: lastLaneIdRef.current,
-        draftKind: draftKindRef.current,
-      });
+      saveCurrentAdeCodeState();
     }, 500);
-  }, [project.projectRoot, remoteLaunch]);
+  }, [remoteLaunch, saveCurrentAdeCodeState]);
 
   const persistExplicitDraftKind = useCallback((draftKind: AdeCodeInterfaceMode) => {
     draftKindRef.current = draftKind;
@@ -6952,10 +6966,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         heartbeatRef.current = remoteLaunch
           ? null
           : startTuiHeartbeat(project.projectRoot, {
-            beforeSignalExit: () => {
+            beforeSignalExit: async () => {
               restoreTerminalInteractiveModes();
               signalActiveTerminalForExitSync();
-              return signalActiveTerminalForExit();
+              await Promise.allSettled([
+                flushPendingAdeCodeState(),
+                signalActiveTerminalForExit(),
+              ]);
             },
           });
         connectionRef.current = conn;
@@ -6992,21 +7009,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       heartbeatRef.current?.stop();
       heartbeatRef.current = null;
-      if (lastChatByLaneWriteTimerRef.current) {
-        clearTimeout(lastChatByLaneWriteTimerRef.current);
-        lastChatByLaneWriteTimerRef.current = null;
-        if (!remoteLaunch) {
-          const lastChatByLane: Record<string, string> = {};
-          for (const [laneId, sessionId] of lastChatByLaneRef.current) {
-            lastChatByLane[laneId] = sessionId;
-          }
-          saveAdeCodeProjectState(project.projectRoot, {
-            lastChatByLane,
-            lastLaneId: lastLaneIdRef.current,
-            draftKind: draftKindRef.current,
-          });
-        }
-      }
+      void flushPendingAdeCodeState().catch(() => {});
       if (pendingModelCommitTimerRef.current) {
         clearTimeout(pendingModelCommitTimerRef.current);
         pendingModelCommitTimerRef.current = null;
@@ -7020,7 +7023,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       connectionRef.current = null;
       void conn?.close().catch(() => {});
     };
-  }, [connectionRetrySeq, forceEmbedded, preferServiceRepair, project, remoteLaunch, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
+  }, [connectionRetrySeq, flushPendingAdeCodeState, forceEmbedded, preferServiceRepair, project, remoteLaunch, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
   // Stable handle to the latest refreshState so the chat-event subscription can
   // call it without listing refreshState as a dependency (its identity churns on

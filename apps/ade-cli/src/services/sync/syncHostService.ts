@@ -181,6 +181,7 @@ const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
+const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
@@ -626,6 +627,7 @@ type SyncHostServiceArgs = {
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
   authTimeoutMs?: number;
+  messageTimeoutMs?: number;
   brainStatusIntervalMs?: number;
   compressionThresholdBytes?: number;
   deviceRegistryService?: DeviceRegistryService;
@@ -1242,6 +1244,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? SYNC_HOST_AUTH_TIMEOUT_MS));
+  const messageTimeoutMs = Math.max(100, Math.floor(args.messageTimeoutMs ?? DEFAULT_SYNC_MESSAGE_TIMEOUT_MS));
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
   const maxChangesetBatchBytes = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
   const maxChangesetBatchRows = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
@@ -1899,11 +1902,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (handleImmediateControlEnvelope(peer, envelope)) return;
       peer.messageQueue = peer.messageQueue
         .catch(() => {})
-        .then(() => handleMessage(peer, envelope))
+        .then(() => handleMessageWithTimeout(peer, envelope))
         .catch((error) => {
           args.logger.warn("sync_host.message_failed", {
             error: error instanceof Error ? error.message : String(error),
             peerDeviceId: peer.metadata?.deviceId ?? null,
+            peerDeviceName: peer.metadata?.deviceName ?? null,
+            remoteAddress: peer.remoteAddress ?? null,
+            remotePort: peer.remotePort ?? null,
+            messageType: envelope.type,
+            requestId: envelope.requestId ?? null,
           });
         });
     });
@@ -4036,6 +4044,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
     handleHeartbeatEnvelope(peer, envelope, heartbeatAwaitedAt);
     return true;
+  }
+
+  function handleMessageWithTimeout(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`Timed out handling sync message ${envelope.type} after ${messageTimeoutMs}ms.`));
+      }, messageTimeoutMs);
+      timer.unref?.();
+    });
+    return Promise.race([handleMessage(peer, envelope), timeout]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
   }
 
   async function handleMessage(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {

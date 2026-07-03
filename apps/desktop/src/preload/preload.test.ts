@@ -4138,7 +4138,7 @@ describe("preload OAuth bridge", () => {
     }
 	  });
 
-  it("notifies the existing project binding refresh path when event polling reports a gap", async () => {
+  it("does not notify project binding listeners for same-binding event polling gaps", async () => {
     vi.useFakeTimers();
     try {
       const binding = {
@@ -4160,7 +4160,6 @@ describe("preload OAuth bridge", () => {
             nextCursor: 42,
             hasMore: false,
             gap: true,
-            oldestCursor: 12,
             eventEpoch: "epoch-a",
           };
         }
@@ -4192,7 +4191,7 @@ describe("preload OAuth bridge", () => {
 
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(bindingChanged).toHaveBeenCalledWith(binding);
+      expect(bindingChanged).not.toHaveBeenCalled();
       expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeStreamEvents, {
         id: "target-1",
         projectId: "project-1",

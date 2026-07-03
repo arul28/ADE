@@ -368,7 +368,7 @@ export function permissionSummary(modelState: AdeCodeModelState): string {
     if (modelState.claudePermissionMode === "bypassPermissions") return "bypass";
     return "default";
   }
-  if (modelState.provider === "opencode") return modelState.opencodePermissionMode;
+  if (runtimeProviderForUiProvider(modelState.provider) === "opencode") return modelState.opencodePermissionMode;
   if (modelState.provider === "droid") return modelState.droidPermissionMode;
   return cursorModeLabel(modelState.cursorModeId);
 }
@@ -404,7 +404,7 @@ export function modeAccentColor(summary: string): string {
 function permissionOptionsDetail(modelState: AdeCodeModelState): string {
   if (modelState.provider === "codex") return CODEX_PRESETS.join(" · ");
   if (modelState.provider === "claude") return "default · plan · auto · bypass";
-  if (modelState.provider === "opencode") return OPENCODE_PERMISSION_OPTIONS.join(" · ");
+  if (runtimeProviderForUiProvider(modelState.provider) === "opencode") return OPENCODE_PERMISSION_OPTIONS.join(" · ");
   if (modelState.provider === "droid") return DROID_PERMISSION_OPTIONS.join(" · ");
   return cursorModeIdsForState(modelState).map((modeId) => cursorModeLabel(modeId)).join(" · ");
 }
@@ -423,7 +423,7 @@ export function applyProviderPermissionMode(modelState: AdeCodeModelState): Part
     if (modelState.claudePermissionMode === "bypassPermissions") return { permissionMode: "full-auto", interactionMode: "default" };
     return { permissionMode: "default", interactionMode: "default" };
   }
-  if (modelState.provider === "opencode") return { permissionMode: modelState.opencodePermissionMode };
+  if (runtimeProviderForUiProvider(modelState.provider) === "opencode") return { permissionMode: modelState.opencodePermissionMode };
   if (modelState.provider === "droid") return { permissionMode: droidPermissionToLegacy(modelState.droidPermissionMode) };
   if (modelState.provider === "cursor") {
     if (modelState.cursorModeId === "plan") return { permissionMode: "plan" };
