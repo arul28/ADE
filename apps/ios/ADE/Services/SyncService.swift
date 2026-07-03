@@ -1807,8 +1807,14 @@ final class SyncService: ObservableObject {
       }
       // Give up early on a switch that failed to establish a live socket; the
       // cover falls back to its own offline/empty handling rather than spinning
-      // for the full timeout.
+      // for the full timeout. A `.disconnected` work phase is only worth
+      // waiting on while a reconnect is actually in flight — when the
+      // connection itself has settled into disconnected/error, no hydration is
+      // coming and the full 6s spin would just delay the cover's empty state.
       if connectionState.isHostUnreachable {
+        return
+      }
+      if connectionState == .disconnected || connectionState == .error {
         return
       }
       try? await Task.sleep(nanoseconds: 200_000_000)

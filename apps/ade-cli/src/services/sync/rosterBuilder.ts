@@ -436,7 +436,6 @@ export function createForeignChatTranscriptResolver(args: {
       const filePath = path.resolve(path.join(transcriptsDir, `${safeSessionId}.jsonl`));
       // Defense in depth: a validated session id already can't traverse, but
       // confirm the resolved path stays inside the transcripts dir.
-      if (filePath !== path.join(transcriptsDir, `${safeSessionId}.jsonl`)) return null;
       if (!filePath.startsWith(transcriptsDir + path.sep)) return null;
       return filePath;
     },

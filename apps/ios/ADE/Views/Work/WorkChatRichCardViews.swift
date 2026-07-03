@@ -1197,10 +1197,11 @@ struct WorkResolvedQuestionCard: View {
 
   /// The option the user picked, matched by value or label against the
   /// resolution word. Nil when the resolution is a plain status ("accepted"),
-  /// a freeform/typed answer, or a decline.
+  /// a freeform/typed answer, a decline, or a secure-response question (a
+  /// secret answer must never surface, even as a matched option label).
   private var chosenOption: WorkPendingQuestionOption? {
     guard let model, !isDeclined else { return nil }
-    for question in model.questions {
+    for question in model.questions where !question.isSecret {
       if let match = question.options.first(where: { isSelected($0) }) {
         return match
       }
@@ -1271,7 +1272,9 @@ struct WorkResolvedQuestionCard: View {
           .foregroundStyle(ADEColor.textPrimary)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
-      if !question.options.isEmpty {
+      // Secure-response questions mask more than the prompt: option labels and
+      // descriptions can restate the secret, so the whole option list is hidden.
+      if !question.isSecret, !question.options.isEmpty {
         VStack(alignment: .leading, spacing: 6) {
           ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
             optionRow(option)

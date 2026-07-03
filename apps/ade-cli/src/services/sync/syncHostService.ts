@@ -3159,27 +3159,32 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   // Resolve a foreign-project subscription's transcript path via the provider
   // (the security boundary — validates the project is registered and confines
-  // the path to that project's `.ade` transcripts). Returns null when the
-  // payload targets this host's own project (caller uses the local path) or
-  // when the provider rejects/omits it.
-  function resolveForeignChatTranscriptPath(
+  // the path to that project's `.ade` transcripts). `kind: "local"` means the
+  // payload carried no foreign scope (or named this host's own project);
+  // `kind: "rejected"` means the payload EXPLICITLY named a foreign project
+  // the provider could not confirm — the caller must fail closed rather than
+  // fall back to serving whichever local session shares the sessionId.
+  function resolveForeignChatScope(
     payload: { projectId?: string | null; projectRootPath?: string | null } | null,
     sessionId: string,
-  ): string | null {
-    if (!args.foreignChatProvider) return null;
+  ): { kind: "local" } | { kind: "foreign"; transcriptPath: string } | { kind: "rejected" } {
     const requestedProjectId = toOptionalString(payload?.projectId);
     const requestedRootPath = toOptionalString(payload?.projectRootPath);
-    if (!requestedProjectId && !requestedRootPath) return null;
-    // A payload that names THIS host's project is an ordinary subscribe — let
-    // the local sessionService path serve it.
+    if (!requestedProjectId && !requestedRootPath) return { kind: "local" };
+    // A payload that names THIS host's project (by id, or by rootPath alone)
+    // is an ordinary subscribe — let the local sessionService path serve it.
     if (requestedProjectId && projectIdMatchesHost(requestedProjectId, args.projectId, hostProjectIdAliases)) {
-      return null;
+      return { kind: "local" };
     }
-    return args.foreignChatProvider.resolveTranscriptPath({
+    if (!requestedProjectId && requestedRootPath && path.resolve(requestedRootPath) === path.resolve(args.projectRoot)) {
+      return { kind: "local" };
+    }
+    const transcriptPath = args.foreignChatProvider?.resolveTranscriptPath({
       projectId: requestedProjectId,
       projectRootPath: requestedRootPath,
       sessionId,
-    });
+    }) ?? null;
+    return transcriptPath ? { kind: "foreign", transcriptPath } : { kind: "rejected" };
   }
 
   // Per-session replay buffers for resumable chat event streams. Map insertion
@@ -4396,15 +4401,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // project is served read-only from that project's `.ade` transcript
         // JSONL — no local session row, no runtime boot. The pump tails the
         // same path for live events. The provider is the security boundary
-        // (validates the project, sandboxes the path).
-        const foreignTranscriptPath = resolveForeignChatTranscriptPath(payload, sessionId);
+        // (validates the project, sandboxes the path). An explicitly-foreign
+        // scope the provider can't confirm fails CLOSED (served as unknown),
+        // never falls back to a local session that happens to share the id.
+        const foreignScope = resolveForeignChatScope(payload, sessionId);
+        const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
         if (foreignTranscriptPath) {
           peer.foreignChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
         } else {
           peer.foreignChatTranscriptPaths.delete(sessionId);
         }
 
-        const session = foreignTranscriptPath ? null : args.sessionService.get(sessionId);
+        const session = foreignScope.kind === "local" ? args.sessionService.get(sessionId) : null;
         const transcriptPath = foreignTranscriptPath ?? session?.transcriptPath ?? null;
         // Snapshots are byte-capped transcript tails — a long-running turn's
         // `status: started` event can sit outside the tail, leaving a client
@@ -4417,7 +4425,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Foreign quick-looks have no live agent chat service here, so they
         // derive turn state from the streamed status events instead.
         const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
-          if (foreignTranscriptPath) return {};
+          if (foreignScope.kind !== "local") return {};
           const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
         };
@@ -4465,6 +4473,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           events = foreignSnapshot.events;
           truncated = foreignSnapshot.truncated;
           transcriptSize = foreignSnapshot.transcriptSize;
+        } else if (foreignScope.kind === "rejected") {
+          // Unresolvable explicit-foreign scope: serve an empty snapshot, never
+          // this host's local history for the same session id.
+          events = [];
+          truncated = false;
+          transcriptSize = 0;
         } else {
           const history: AgentChatEventHistorySnapshot | null = args.agentChatService?.getChatEventHistory(sessionId, {
             maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,

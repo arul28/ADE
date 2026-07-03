@@ -69,6 +69,11 @@ struct LaneSectionDisclosure {
   var expanded = false
   private var pinnedByUser = false
 
+  // Explicit: the synthesized memberwise init's access is dragged down by the
+  // private stored property; keep the zero-arg init unambiguously internal for
+  // the @State call sites in other files.
+  init() {}
+
   mutating func syncAuto(hasContent: Bool) {
     guard !pinnedByUser else { return }
     expanded = hasContent
