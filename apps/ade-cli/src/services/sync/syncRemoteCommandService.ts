@@ -119,7 +119,6 @@ import type {
   SyncRunQuickCommandArgs,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
-  NewLaneBaseSource,
   TerminalToolType,
   UpdateBranchArgs,
   UpdateLaneAppearanceArgs,
@@ -140,7 +139,7 @@ import {
 } from "../../../../desktop/src/shared/cliLaunch";
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
-import { resolveDefaultRemoteLaneBase } from "../../../../desktop/src/shared/defaultRemoteLaneBase";
+import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -707,40 +706,6 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
   const t = toolType.trim().toLowerCase();
   return t === "cursor" || t.endsWith("-chat");
-}
-
-/**
- * Remote-first default base for `lanes.create` calls that omit `baseBranch`.
- * Reads the project's `git.newLaneBaseSource` (effective default "remote"),
- * fetches the primary lane's remote (bounded), and maps the primary base branch
- * to its remote-tracking ref. Returns null — keep the local default — when the
- * source is "local", services are unavailable, or no remote ref exists.
- */
-async function resolveLaneCreateRemoteBase(args: SyncRemoteCommandServiceArgs): Promise<string | null> {
-  const gitService = args.gitService;
-  if (!gitService) return null;
-  let source: NewLaneBaseSource | null = null;
-  try {
-    source = args.projectConfigService?.getEffective().git?.newLaneBaseSource ?? null;
-  } catch {
-    source = null;
-  }
-  // "local" short-circuits before the lane/branch lookups; the callee re-checks
-  // as its own contract.
-  if (source === "local") return null;
-  try {
-    const lanes = await args.laneService.list({ includeStatus: false });
-    const primary = lanes.find((lane) => lane.laneType === "primary");
-    if (!primary) return null;
-    return await resolveDefaultRemoteLaneBase({
-      newLaneBaseSource: source,
-      primaryBaseRef: primary.baseRef || primary.branchRef,
-      fetchRemote: () => gitService.fetch({ laneId: primary.id }),
-      listBranches: () => gitService.listBranches({ laneId: primary.id }),
-    });
-  } catch {
-    return null;
-  }
 }
 
 async function listRemoteWorkSessions(

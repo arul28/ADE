@@ -110,6 +110,7 @@ Renderer components:
 Shared code:
 
 - `src/shared/laneBaseResolution.ts` — `shouldLaneTrackParent`, `branchNameFromLaneRef`, `resolveStableLaneBaseBranch`. Used by `laneService`, `conflictService`, `autoRebaseService`, `rebaseSuggestionService`, `prService`, and renderer helpers so base-ref resolution stays consistent.
+- `src/shared/defaultRemoteLaneBase.ts` — remote-first default-base resolution for new lanes: `remoteLaneBaseCandidate` (`main` → `origin/main`; SHAs yield `""`), `selectRemoteLaneBaseRef` (prefers the local base branch's configured upstream), and `resolveDefaultRemoteLaneBase` (bounded fetch + selection, null on any failure so creation falls back to the local default). Consumed by the renderer's `newLaneBaseSource.ts` (which re-exports `remoteLaneBaseCandidate` under its historical `remoteNewLaneBaseFallback` name) and by the sync command layer's `lanes.create` default-base path in `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`.
 - `src/shared/prStrategy.ts` — `resolvePrRebaseMode(creationStrategy)` maps a PR's `PrCreationStrategy` to `"auto" | "manual"`. Used by `autoRebaseService` and `conflictService` to decide whether drift against a linked PR's base branch should trigger auto-rebase (`pr_target`) or only surface as manual attention (`lane_base`).
 - `src/shared/laneLinearIssue.ts` — `parseLaneLinearIssueValue`, `parseLaneLinearIssueJson`, `finalizeLaneLinearIssue`, `laneLinearIssueMissingFields`, `isLinkableLaneLinearIssue`. Validates, normalizes, and checks completeness of `LaneLinearIssue` payloads. Used by `laneService` (create, link), `chatContextAttachments` (attachment hydration), and the TUI/CLI.
 - `src/shared/chatContextAttachments.ts` — Chat context attachment helpers for Linear issues. Delegates Linear issue parsing to `laneLinearIssue.ts`.
@@ -125,7 +126,14 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   routing, search/filter state, selected-lane navigation.
 - `LaneCreateSheet.swift` and `LaneEnvInitProgressView.swift` —
   create/import/rescue flows plus template-backed host environment
-  setup progress polling.
+  setup progress polling. The create form has a **Remote/Local
+  base-source picker defaulting to Remote** (desktop parity): Remote
+  lists remote-tracking refs, preselects the primary base branch's
+  upstream (then `origin/<base>`), and freshens refs once via
+  `SyncService.fetchGitAdvisory` — a `git.fetch` with its own short
+  timeout that is never queued, so a slow remote just falls back to the
+  already-listed refs; Local keeps the previous local-branch behavior
+  as an explicit opt-in.
 - `AddLaneSheet.swift`, `LaneAttachSheet.swift`,
   `LaneMultiAttachSheet.swift` — mobile add/attach entry points,
   including discovery and batch attachment of unregistered worktrees
@@ -289,7 +297,30 @@ a lane parented to primary would always show zero behind.
 1. **Create** — `laneService.create()` resolves the base ref (explicit
    or parent's branch), normalizes the branch name, computes a unique
    worktree path under `.ade/worktrees/<slug>/`, runs `git worktree
-   add`, inserts the lane row, and returns a `LaneSummary`. When
+   add`, inserts the lane row, and returns a `LaneSummary`.
+
+   **Default base is remote-first.** The base a new unparented lane
+   branches from when the user didn't pick one is governed by the
+   project's `git.newLaneBaseSource` config (`"remote"` — the effective
+   default — or `"local"`). Desktop's create-lane dialog resolves this
+   renderer-side (`renderer/components/lanes/newLaneBaseSource.ts`):
+   with the remote source it defaults the picker to the primary base
+   branch's remote-tracking ref (upstream first, then `origin/<base>`)
+   after a bounded fetch. Callers with no picker UI go through the sync
+   command layer instead: `lanes.create` commands that omit
+   `baseBranch` / `startPoint` / `parentLaneId` (mobile hub-composer
+   auto-create, the iOS create sheet default, headless CLI) get the
+   same remote-first default resolved host-side via
+   `resolveDefaultRemoteLaneBase` in
+   `src/shared/defaultRemoteLaneBase.ts` — bounded fetch (4 s), map the
+   primary base branch to its remote-tracking ref, and fall back to the
+   legacy local primary tip when the source is `"local"`, the fetch
+   fails, or no remote ref exists. This keeps a phone-created lane from
+   silently branching off a stale local checkout. The iOS
+   `LaneCreateSheet` additionally exposes the choice as a Remote/Local
+   base-source picker defaulting to Remote.
+
+   When
    `CreateLaneArgs.startPoint` is supplied (e.g. from the History
    tab's "Create lane here" affordance on a commit), the service
    verifies the ref with `git rev-parse --verify` in the parent
