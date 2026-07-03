@@ -671,7 +671,10 @@ func laneStackCardRenderSignature(
   hasher.combine(lane.status.ahead)
   hasher.combine(lane.status.behind)
   hasher.combine(lane.childCount)
-  hasher.combine(lane.devicesOpen?.count ?? 0)
+  // The card's presence icon derives from device PLATFORMS, not just how many
+  // devices are open — hash the sorted platform list so swapping a mac peer
+  // for an iPhone (same count) still re-renders the row.
+  hasher.combine((lane.devicesOpen ?? []).map(\.platform).sorted())
   hasher.combine(primaryLaneLinearIssue(for: lane)?.identifier)
   hasher.combine(laneLinearIssueLinkCount(for: lane))
   hasher.combine(isPinned)

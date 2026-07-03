@@ -6657,6 +6657,17 @@ final class ADETests: XCTestCase {
       ("linearIssue", { $0.lane.linearIssue = issue }),
       ("linearIssueLinks", { $0.lane.linearIssueLinks = [link, secondLink] }),
     ]
+    // Same device COUNT, different platform — the presence icon derives from
+    // the platform, so the signature must still flip.
+    var macSnapshot = makeSnapshot()
+    macSnapshot.lane.devicesOpen = [DeviceMarker(deviceId: "d1", displayName: "Studio", platform: "macos")]
+    var iosSnapshot = makeSnapshot()
+    iosSnapshot.lane.devicesOpen = [DeviceMarker(deviceId: "d1", displayName: "Phone", platform: "ios")]
+    XCTAssertNotEqual(
+      signature(macSnapshot),
+      signature(iosSnapshot),
+      "renderSignature must change when a device platform swaps at the same count"
+    )
     for (field, mutate) in laneMutations {
       var mutated = makeSnapshot()
       mutate(&mutated)

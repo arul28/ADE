@@ -107,8 +107,12 @@ struct HubScreen: View {
   private func openCreated(_ created: HubCreatedChat) {
     dismissToast()
     guard let project = syncService.projects.first(where: { $0.id == created.projectId }) else { return }
+    // Carry the CLI marker: toolType nil reads as a chat (isChatTool defaults
+    // true), and a CLI session must not take the cross-project chat quick-look
+    // (CLI sessions have no chat transcript to stream — they need activation).
     let chat = RemoteRosterChat(
-      id: created.sessionId, laneId: "", chatSessionId: nil, title: nil, provider: nil, model: nil, toolType: nil,
+      id: created.sessionId, laneId: "", chatSessionId: nil, title: nil, provider: nil, model: nil,
+      toolType: created.isCli ? "cli" : nil,
       status: .running, awaitingInput: nil, pinned: nil, archived: nil, lastActivityAt: nil, preview: nil
     )
     openChatTarget = HubChatTarget(project: project, lane: nil, chat: chat)

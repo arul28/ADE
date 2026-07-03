@@ -158,8 +158,10 @@ private struct HubChatCover: View {
       return
     }
     // Cross-project quick look when the host supports it (newer brain): stream
-    // the foreign chat in place, no project switch.
-    if syncService.supportsCrossProjectChat {
+    // the foreign chat in place, no project switch. Chat sessions only — CLI
+    // sessions have no chat transcript JSONL to stream, so they take the
+    // activation path below and open as a terminal.
+    if syncService.supportsCrossProjectChat, target.chat.isChatTool {
       mode = .crossProject(
         WorkChatCrossProjectContext(
           projectId: target.project.id,
