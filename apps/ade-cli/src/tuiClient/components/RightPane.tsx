@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import type {
+  AdeCodeInterfaceMode,
   AdeCodeProvider,
   ChatInfoPlanStep,
   ChatInfoSnapshot,
@@ -1855,6 +1856,7 @@ export function RightPane({
 	    activeModelId: string | null;
 	    activeReasoningEffort?: string | null;
 	    aiStatus?: AiSettingsStatus | null;
+	    interfaceMode?: AdeCodeInterfaceMode;
 	  };
 }) {
   const { title, hint, branch } = paneTitle(content);
@@ -2004,6 +2006,7 @@ export function RightPane({
 			            activeModelId: modelPickerInputs.activeModelId,
 			            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
 			            aiStatus: modelPickerInputs.aiStatus,
+			            interfaceMode: modelPickerInputs.interfaceMode,
 			            settingsRows: content.settingsRows,
 		            footerFocus: content.footerFocus ?? null,
 		            laneLabel: content.laneLabel ?? null,

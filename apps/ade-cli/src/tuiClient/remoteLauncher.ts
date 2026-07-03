@@ -845,13 +845,27 @@ function terminalToChoice(session: ChatTerminalSession): RemoteSessionChoice {
   };
 }
 
+const TRACKED_CLI_REMOTE_PROVIDERS = new Set(["claude", "codex", "cursor", "droid", "opencode"]);
+
 function isTerminalSessionLaunchable(session: ChatTerminalSession): boolean {
   const toolType = session.toolType ?? "";
+  // Chat-backed terminals surface through the chat session list instead.
   if (toolType === "codex-chat" || toolType === "claude-chat" || toolType === "opencode-chat" || toolType === "cursor" || toolType === "droid-chat") {
     return false;
   }
-  if (toolType === "claude" || toolType === "claude-orchestrated") return true;
-  if (isRecord(session.resumeMetadata) && session.resumeMetadata.provider === "claude") return true;
+  // Any tracked provider CLI (claude/codex/cursor-cli/droid/opencode) is
+  // launchable — mirrors trackedCliTerminalProvider in adeApi.ts.
+  if (
+    toolType.startsWith("codex")
+    || toolType.startsWith("cursor")
+    || toolType.startsWith("droid")
+    || toolType.startsWith("opencode")
+    || toolType.startsWith("claude")
+  ) {
+    return true;
+  }
+  const provider = isRecord(session.resumeMetadata) ? session.resumeMetadata.provider : null;
+  if (typeof provider === "string" && TRACKED_CLI_REMOTE_PROVIDERS.has(provider)) return true;
   const resumeCommand = typeof session.resumeCommand === "string" ? session.resumeCommand.trim().toLowerCase() : "";
   return Boolean(resumeCommand && /\bclaude\b/.test(resumeCommand));
 }

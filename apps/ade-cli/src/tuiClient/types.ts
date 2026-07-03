@@ -71,8 +71,18 @@ export type AdeCodeConnection = {
 
 export type AdeCodeProvider = Extract<AgentChatProvider, "codex" | "claude" | "opencode" | "cursor" | "droid"> | "ollama" | "lmstudio";
 
+/**
+ * How a new chat draft is launched. `chat` creates an SDK chat via
+ * `chat.createSession`; `cli` starts a tracked provider CLI terminal via the
+ * `start_cli_session` action. Mirrors the desktop/iOS Chat/CLI switcher and
+ * defaults to `chat`.
+ */
+export type AdeCodeInterfaceMode = "chat" | "cli";
+
 export type AdeCodeModelState = {
   provider: AdeCodeProvider;
+  /** Draft-only: whether the next chat launches as an SDK chat or a tracked CLI terminal. */
+  interfaceMode: AdeCodeInterfaceMode;
   model: string;
   modelId: string | null;
   displayName: string;
@@ -101,6 +111,7 @@ export type ProviderReadinessRow = {
 
 export type SetupPaneRowKind =
   | "provider"
+  | "interface"
   | "model"
   | "reasoning"
   | "permission"

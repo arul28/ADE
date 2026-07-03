@@ -11,7 +11,7 @@ import {
   type ProviderFamily,
   type ModelProviderGroup,
 } from "../../../../../desktop/src/shared/modelRegistry";
-import type { AdeCodeProvider } from "../../types";
+import type { AdeCodeInterfaceMode, AdeCodeProvider } from "../../types";
 import type {
   ModelPickerEntry,
   ModelPickerRailEntry,
@@ -310,7 +310,25 @@ export type BuildLayoutInput = {
   providerTabKey?: string | null;
   focusedIndex: number;
   searchMode: boolean;
+  /**
+   * Draft interface (Chat vs CLI). Gates Cursor model availability: Chat mode
+   * disables Cursor models that only support the CLI (and vice versa), mirroring
+   * desktop's AgentChatPane behavior. Defaults to Chat.
+   */
+  interfaceMode?: AdeCodeInterfaceMode;
 };
+
+/**
+ * Cursor exposes separate SDK (chat) and CLI availability per model. Mark a
+ * Cursor entry unavailable when the active interface can't launch it.
+ */
+function applyInterfaceAvailability(entry: ModelPickerEntry, interfaceMode: AdeCodeInterfaceMode): ModelPickerEntry {
+  if (entry.family !== "cursor" || !entry.cursorAvailability) return entry;
+  const supported = interfaceMode === "cli"
+    ? entry.cursorAvailability.cli === true
+    : entry.cursorAvailability.sdk !== false;
+  return supported ? entry : { ...entry, isAvailable: false };
+}
 
 export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerState {
   const favoritesSet = new Set(input.favorites);
@@ -324,7 +342,8 @@ export function buildModelPickerLayout(input: BuildLayoutInput): ModelPickerStat
   for (const entry of runtimeEntries) {
     entriesById.set(entry.modelId, entry);
   }
-  const allEntries = [...entriesById.values()];
+  const interfaceMode = input.interfaceMode ?? "chat";
+  const allEntries = [...entriesById.values()].map((entry) => applyInterfaceAvailability(entry, interfaceMode));
   // The TUI picker always shows the full provider catalog. Availability is
   // represented on each row (dimmed/SIGN IN), matching desktop, instead of
   // hiding models behind a separate "show all" switch.

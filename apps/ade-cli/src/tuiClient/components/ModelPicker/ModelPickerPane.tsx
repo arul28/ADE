@@ -230,6 +230,7 @@ function RailLogoSlot({ mark, dim = false }: { mark: ProviderMark; dim?: boolean
 
 function settingIcon(kind: SetupPaneRowKind): string {
   switch (kind) {
+    case "interface": return "⇄";
     case "reasoning": return "✦";
     case "permission": return "◆";
     case "codex-fast": return "↯";

@@ -168,6 +168,7 @@ export function FooterControls({
   planMode,
   terminalControlAvailable,
   terminalControlActive,
+  terminalControlLabel,
   gridTerminalControlHint,
   multiViewActive,
   multiViewMap,
@@ -190,7 +191,9 @@ export function FooterControls({
   planMode?: boolean;
   terminalControlAvailable?: boolean;
   terminalControlActive?: boolean;
-  /** Grid view, focused tile is a running Claude terminal: Ctrl+T opens it in single view to control. */
+  /** Provider label for the terminal control chrome (e.g. "Claude", "Codex"). */
+  terminalControlLabel?: string | null;
+  /** Grid view, focused tile is a running provider CLI terminal: Ctrl+T opens it in single view to control. */
   gridTerminalControlHint?: boolean;
   multiViewActive?: boolean;
   multiViewMap?: { count: number; focusedIndex: number; notice?: string | null } | null;
@@ -201,6 +204,7 @@ export function FooterControls({
   const agents = liveAgentCount ?? 0;
   const showSubagents = subagentsButtonVisible === true;
   const providerIsLocked = providerLocked === true;
+  const cliLabel = terminalControlLabel?.trim() || "Claude";
   const hoveredId = useHoveredHitId();
   const inlineHovered = (name: string) => hoveredId === `footer:inline:${name}`;
   const footerHovered = (id: string) => hoveredId === id;
@@ -348,7 +352,7 @@ export function FooterControls({
       <Text wrap="truncate-start">
         {terminalControlActive ? (
           <>
-            <Text color={theme.color.warning} bold>CLAUDE CONTROL</Text>
+            <Text color={theme.color.warning} bold>{`${cliLabel.toUpperCase()} CONTROL`}</Text>
             <Text dimColor>{" · "}</Text>
             <Hint keyLabel="^t" action="ADE" />
             <Text dimColor>{"  "}</Text>
@@ -405,7 +409,7 @@ export function FooterControls({
             {terminalControlAvailable ? (
               <>
                 <Text dimColor>{"  "}</Text>
-                <Hint keyLabel="^t" action="Claude" />
+                <Hint keyLabel="^t" action={cliLabel} />
               </>
             ) : null}
           </>

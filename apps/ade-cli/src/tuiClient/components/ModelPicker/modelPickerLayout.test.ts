@@ -47,6 +47,36 @@ describe("buildModelPickerLayout", () => {
     expect(layout.entries.every((entry) => entry.family === "codex")).toBe(true);
   });
 
+  it("gates Cursor model availability on the interface mode", () => {
+    const cursorModels: AgentChatModelInfo[] = [
+      modelInfo({ id: "cursor/sdk-only", displayName: "Cursor SDK Only", family: "cursor", cursorAvailability: { sdk: true, cli: false } }),
+      modelInfo({ id: "cursor/cli-only", displayName: "Cursor CLI Only", family: "cursor", cursorAvailability: { sdk: false, cli: true } }),
+    ];
+    const build = (interfaceMode: "chat" | "cli") => {
+      const layout = buildModelPickerLayout({
+        models: cursorModels,
+        favorites: [],
+        recents: [],
+        activeModelId: null,
+        query: "",
+        selection: { kind: "provider", provider: "cursor" },
+        focusedIndex: 0,
+        searchMode: false,
+        interfaceMode,
+      });
+      const byId = new Map(layout.entries.map((entry) => [entry.modelId, entry] as const));
+      return {
+        sdkOnly: byId.get("cursor/sdk-only")?.isAvailable,
+        cliOnly: byId.get("cursor/cli-only")?.isAvailable,
+      };
+    };
+
+    // Chat interface: SDK-capable models available, CLI-only disabled.
+    expect(build("chat")).toEqual({ sdkOnly: true, cliOnly: false });
+    // CLI interface: the mirror image.
+    expect(build("cli")).toEqual({ sdkOnly: false, cliOnly: true });
+  });
+
   it("shows static Anthropic rows immediately before the runtime catalog warms", () => {
     const layout = buildModelPickerLayout({
       models: [modelInfo({ id: "openai/gpt-5", displayName: "GPT-5" })],

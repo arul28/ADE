@@ -18,6 +18,13 @@ const { Terminal: HeadlessTerminal } = headlessXtermModule;
 type TerminalPaneProps = {
   title: string;
   terminalId?: string | null;
+  /** Provider label shown in the control/preview status ("Claude", "Codex", …). Defaults to Claude Code. */
+  cliLabel?: string | null;
+  /**
+   * Apply the Claude-specific closed-transcript chrome stripping (spinner/box
+   * noise filters). Off for other providers, which get a plain control strip.
+   */
+  claudeChrome?: boolean;
   preview: ChatTerminalPreviewResult | null;
   liveChunks: string[];
   attached: boolean;
@@ -212,6 +219,26 @@ function compactClosedTerminalTranscript(value: string): string[] {
   return compacted;
 }
 
+/**
+ * Provider-neutral closed-transcript cleanup: strip terminal control codes and
+ * collapse blank runs, without the Claude-specific spinner/box noise filters.
+ */
+function compactTerminalTranscript(value: string): string[] {
+  const lines = stripTerminalControls(value).split(/\r\n|\n|\r/);
+  const compacted: string[] = [];
+  let lastWasBlank = false;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\u00a0/g, " ").trimEnd();
+    const blank = line.trim().length === 0;
+    if (blank && lastWasBlank) continue;
+    compacted.push(line);
+    lastWasBlank = blank;
+  }
+  while (compacted.length && compacted[0]!.trim().length === 0) compacted.shift();
+  while (compacted.length && compacted[compacted.length - 1]!.trim().length === 0) compacted.pop();
+  return compacted;
+}
+
 function rgbColor(value: number | null | undefined): string | undefined {
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const safe = Math.max(0, Math.min(0xffffff, Math.floor(value)));
@@ -354,20 +381,22 @@ export function styledRowsFromSnapshotRows(rows: TerminalSnapshotRow[], maxRows:
   return rows.slice(0, Math.max(0, maxRows)).map((row) => styledRowFromCells(row.cells, row.text));
 }
 
-function transcriptPreviewRows(transcript: string | null | undefined, maxRows: number): TerminalStyledRow[] {
-  const lines = compactClosedTerminalTranscript(transcript ?? "");
+function transcriptPreviewRows(transcript: string | null | undefined, maxRows: number, claudeChrome: boolean): TerminalStyledRow[] {
+  const lines = claudeChrome
+    ? compactClosedTerminalTranscript(transcript ?? "")
+    : compactTerminalTranscript(transcript ?? "");
   if (!lines.length) {
     return [{ runs: [{ text: "Terminal closed. Resume the chat to view live output.", style: {} }] }];
   }
   return lines.slice(-maxRows).map((line) => ({ runs: [{ text: line || " ", style: {} }] }));
 }
 
-function fallbackPreviewRows(preview: ChatTerminalPreviewResult | null, maxRows: number): TerminalStyledRow[] {
+function fallbackPreviewRows(preview: ChatTerminalPreviewResult | null, maxRows: number, claudeChrome: boolean): TerminalStyledRow[] {
   if (!preview) return [{ runs: [{ text: "No terminal preview yet.", style: {} }] }];
   if (preview.snapshot?.visibleRows?.length) {
     return styledRowsFromSnapshotRows(preview.snapshot.visibleRows, maxRows);
   }
-  return transcriptPreviewRows(preview.transcript, maxRows);
+  return transcriptPreviewRows(preview.transcript, maxRows, claudeChrome);
 }
 
 function terminalControlBorderColor(frame: string): string {
@@ -377,6 +406,8 @@ function terminalControlBorderColor(frame: string): string {
 export function TerminalPane({
   title,
   terminalId,
+  cliLabel,
+  claudeChrome = true,
   preview,
   liveChunks,
   attached,
@@ -510,12 +541,12 @@ export function TerminalPane({
   const lines = useMemo(() => {
     if (snapshotRows?.length && liveChunks.length === 0) return snapshotRows.slice(0, rows);
     if (preview?.transcript && preview.session.status !== "running" && !liveChunks.length) {
-      return transcriptPreviewRows(preview.transcript, rows);
+      return transcriptPreviewRows(preview.transcript, rows, claudeChrome);
     }
     const terminal = terminalRef.current;
     if (terminal) return styledRowsFromTerminal(terminal, rows, effectiveScrollOffset);
-    return fallbackPreviewRows(preview, rows);
-  }, [effectiveScrollOffset, liveChunks.length, preview, renderTick, rows, snapshotRows]);
+    return fallbackPreviewRows(preview, rows, claudeChrome);
+  }, [claudeChrome, effectiveScrollOffset, liveChunks.length, preview, renderTick, rows, snapshotRows]);
 
   // Surface scrollback bounds + the current visible text to the owner so it can
   // clamp keyboard scroll requests and copy the visible region. Cheap: gated on
@@ -529,10 +560,11 @@ export function TerminalPane({
     reportMetrics({ maxScrollable, visibleText: plainTextFromStyledRows(lines) });
   }, [lines, reportMetrics, snapshotRows]);
 
+  const controlLabel = cliLabel?.trim() || "Claude";
   const status = attached
-    ? "CLAUDE CONTROL · Ctrl+T returns to ADE · Ctrl+] escape"
+    ? `${controlLabel.toUpperCase()} CONTROL · Ctrl+T returns to ADE · Ctrl+] escape`
     : preview?.session.status === "running"
-      ? effectiveHiddenBottomRows > 0 ? "ADE prompt sends to Claude Code" : "live preview"
+      ? effectiveHiddenBottomRows > 0 ? `ADE prompt sends to ${controlLabel}` : "live preview"
       : preview?.session.resumeCommand
         ? "closed, resumable · Enter resumes"
         : "closed";

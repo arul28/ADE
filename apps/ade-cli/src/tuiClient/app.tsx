@@ -14,7 +14,7 @@ import {
   resolveProviderGroupForModel,
   type ModelProviderGroup,
 } from "../../../desktop/src/shared/modelRegistry";
-import { resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
+import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { CURSOR_AVAILABLE_MODE_IDS, CURSOR_MODE_LABELS } from "../../../desktop/src/shared/cursorModes";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import type {
@@ -30,6 +30,7 @@ import type {
 	  AgentChatModelCatalogRefreshProvider,
 	  AgentChatModelInfo,
   AgentChatPermissionMode,
+  AgentChatProvider,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
@@ -91,7 +92,8 @@ import {
   sendToTerminalSession,
   signalTerminal,
   setClaudeOutputStyle,
-  startClaudeTerminalSession,
+  startCliTerminalSession,
+  type CliTerminalProvider,
   steerChatMessage,
   tagChat,
   unarchiveChatSession,
@@ -240,6 +242,7 @@ import {
 import type {
   AdeCodeConnection,
   AdeCodeProvider,
+  AdeCodeInterfaceMode,
   AdeCodeModelState,
   LocalNotice,
   MentionSuggestion,
@@ -710,15 +713,24 @@ export function shouldToggleLatestFailedLineOnBlankEnter(args: {
     && !isTerminalSessionResumable(args.activeTerminalSession);
 }
 
+/** Narrow a terminal session's derived provider to an AgentChatProvider (CLI terminals are always one of the five). */
+function terminalSummaryProvider(session: ChatTerminalSession): AgentChatProvider {
+  const provider = terminalSessionProvider(session);
+  return provider === "codex" || provider === "claude" || provider === "opencode" || provider === "cursor" || provider === "droid"
+    ? provider
+    : "claude";
+}
+
 function terminalSessionToChatSummary(session: ChatTerminalSession): AgentChatSessionSummary {
   const status: AgentChatSessionSummary["status"] = session.status === "running"
     ? session.runtimeState === "idle" ? "idle" : "active"
     : "ended";
+  const provider = terminalSummaryProvider(session);
   return {
     sessionId: session.terminalId,
     laneId: session.laneId,
-    provider: "claude",
-    model: "claude-code",
+    provider,
+    model: provider === "claude" ? "claude-code" : `${provider} cli`,
     title: session.title,
     goal: session.goal,
     permissionMode: session.resumeMetadata?.launch?.permissionMode ?? "default",
@@ -862,6 +874,7 @@ function initialModelState(): AdeCodeModelState {
   const descriptor = getDefaultModelDescriptor("codex");
   return {
     provider: "codex",
+    interfaceMode: "chat",
     model: descriptor?.providerModelId ?? "gpt-5.5",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? "GPT-5.5",
@@ -901,6 +914,17 @@ export function normalizeCatalogProvider(value: string | null | undefined): AdeC
 
 function runtimeProviderForUiProvider(provider: AdeCodeProvider): ModelProviderGroup {
   return provider === "ollama" || provider === "lmstudio" ? "opencode" : provider;
+}
+
+/**
+ * The provider CLI a modelState provider launches as, or null when it has no
+ * tracked CLI (Ollama / LM Studio are OpenCode-backed chat only). Gates the
+ * Interface=CLI launch path.
+ */
+export function cliProviderForModelStateProvider(provider: AdeCodeProvider): CliTerminalProvider | null {
+  return provider === "claude" || provider === "codex" || provider === "cursor" || provider === "droid" || provider === "opencode"
+    ? provider
+    : null;
 }
 
 function claudeModelCommandKey(state: AdeCodeModelState, terminalId: string | null | undefined): string {
@@ -1681,13 +1705,17 @@ function formatDoctorReport(args: {
   ].join("\n");
 }
 
-function buildSetupRows(args: {
+export function buildSetupRows(args: {
   modelState: AdeCodeModelState;
   models: AgentChatModelInfo[];
   includeRefresh: boolean;
   includeApply: boolean;
   outputStyle?: string | null;
   outputStyleEditable?: boolean;
+  /** Draft/next-chat interface (Chat = SDK chat, CLI = tracked terminal). */
+  interfaceMode: AdeCodeInterfaceMode;
+  /** False once a session exists — interface is fixed by the session type. */
+  interfaceEditable: boolean;
 }): SetupPaneRow[] {
   const efforts = modelReasoningEfforts(args.modelState, args.models);
   const descriptor = args.modelState.modelId ? getModelById(args.modelState.modelId) : undefined;
@@ -1701,6 +1729,18 @@ function buildSetupRows(args: {
       label: "Provider",
       value: providerLabel(args.modelState.provider),
       cyclable: true,
+    },
+    {
+      kind: "interface",
+      label: "Interface",
+      value: args.interfaceMode === "cli" ? "CLI" : "Chat",
+      detail: args.interfaceEditable
+        ? "Chat · CLI"
+        : args.interfaceMode === "cli"
+          ? "tracked CLI session"
+          : "ADE chat",
+      disabled: !args.interfaceEditable,
+      cyclable: args.interfaceEditable,
     },
     {
       kind: "model",
@@ -3742,13 +3782,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return { ...prev, [activeSessionId]: events };
     });
   }, [activeSessionId, events]);
-  const claudeTerminalControlAvailable = Boolean(
+  // Ctrl+T raw control works for any running tracked provider CLI (Claude,
+  // Codex, Cursor, Droid, OpenCode) — activeTerminalProvider is non-null for
+  // every terminal the TUI surfaces.
+  const terminalControlAvailable = Boolean(
     activeTerminalSession
       && activeTerminalSession.status === "running"
-      && activeTerminalProvider === "claude",
+      && activeTerminalProvider,
   );
-  const claudeTerminalControlActive = claudeTerminalControlAvailable
+  const terminalControlActive = terminalControlAvailable
     && attachedTerminalId === activeTerminalSession?.terminalId;
+  // Provider-neutral label for the terminal control chrome (footer "^t <label>",
+  // "<LABEL> CONTROL", pane status). Falls back to Claude for legacy sessions.
+  const terminalControlLabel = providerLabel(activeTerminalProvider ?? "claude");
   const activeCommandProvider = activeTerminalProvider ?? activeSession?.provider ?? modelState.provider;
   // Once a chat has any sent user message, the provider is locked — swapping
   // mid-thread breaks runtime continuity. Derived from events; persists across reloads.
@@ -4469,9 +4515,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       includeApply: true,
       outputStyle: "default",
       outputStyleEditable: false,
+      // Draft: the interface is the user's editable Chat/CLI choice.
+      interfaceMode: modelState.interfaceMode,
+      interfaceEditable: true,
     }),
     [modelState, models],
   );
+  // Once a session exists the interface is fixed by its type (a CLI terminal is
+  // active ⇒ CLI; an SDK chat ⇒ Chat). With no committed session yet (/model on a
+  // bare lane), it stays the editable draft pick.
+  const modelSetupInterfaceMode: AdeCodeInterfaceMode = activeTerminalSession
+    ? "cli"
+    : activeSession?.sessionId
+      ? "chat"
+      : modelState.interfaceMode;
+  const modelSetupInterfaceEditable = !activeSession?.sessionId && !activeTerminalSession;
   const modelSetupRows = useMemo(
     () => buildSetupRows({
       modelState,
@@ -4480,8 +4538,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       includeApply: true,
       outputStyle: activeSession?.claudeOutputStyle ?? "default",
       outputStyleEditable: Boolean(activeSession?.sessionId && activeSession.provider === "claude"),
+      interfaceMode: modelSetupInterfaceMode,
+      interfaceEditable: modelSetupInterfaceEditable,
     }),
-    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelState, models],
+    [activeSession?.claudeOutputStyle, activeSession?.provider, activeSession?.sessionId, modelSetupInterfaceEditable, modelSetupInterfaceMode, modelState, models],
   );
   const modelPickerRows = useMemo(() => {
     if (!providerLocked) return modelSetupRows;
@@ -4552,8 +4612,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // In grid view the per-tile resize effect owns terminal sizing; running the
     // single-view (full-pane) resize too would thrash the PTY between sizes.
     if (gridViewActive) return;
-    const cols = clampTerminalPaneCols(claudeTerminalControlActive ? terminalPaneWidth - 2 : terminalPaneWidth);
-    const terminalRows = claudeTerminalControlActive
+    const cols = clampTerminalPaneCols(terminalControlActive ? terminalPaneWidth - 2 : terminalPaneWidth);
+    const terminalRows = terminalControlActive
       ? Math.max(4, chatRowBudget - 1)
       : claudeTerminalRowsForPane(chatRowBudget);
     let cancelled = false;
@@ -4568,11 +4628,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return () => {
       cancelled = true;
     };
-  }, [activeTerminalSession, chatRowBudget, claudeTerminalControlActive, connection, gridViewActive, terminalPaneWidth]);
+  }, [activeTerminalSession, chatRowBudget, terminalControlActive, connection, gridViewActive, terminalPaneWidth]);
 
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
-    if (claudeTerminalControlActive) return;
+    if (terminalControlActive) return;
     // Single-view preview poll only; grid tiles follow live pty chunks instead.
     if (gridViewActive) return;
     let cancelled = false;
@@ -4595,7 +4655,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cancelled = true;
       clearInterval(timer);
     };
-  }, [activeTerminalSession, chatRowBudget, claudeTerminalControlActive, connection, gridViewActive, terminalPaneWidth]);
+  }, [activeTerminalSession, chatRowBudget, terminalControlActive, connection, gridViewActive, terminalPaneWidth]);
 
   useEffect(() => {
     modelStateRef.current = modelState;
@@ -6181,6 +6241,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         activeModelId: modelState.modelId,
         activeReasoningEffort: modelState.reasoningEffort,
         aiStatus,
+        interfaceMode: modelState.interfaceMode,
 		        query: "",
 	        selection: { kind: "provider", provider },
 	        providerTabKey: null,
@@ -6832,7 +6893,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const activeLane = activeLaneIdRef.current;
     return terminalSessionsRef.current.find((session) => (
       session.status === "running"
-      && terminalSessionProvider(session) === "claude"
+      && terminalSessionProvider(session) != null
       && (!activeLane || session.laneId === activeLane)
     )) ?? null;
   }, []);
@@ -7625,8 +7686,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     laneId: string;
     title?: string | null;
     session?: ChatTerminalSession | null;
+    /** Provider of the tracked CLI, so the optimistic fallback row derives correctly. */
+    provider?: CliTerminalProvider;
   }) => {
     const lane = lanesById[args.laneId] ?? null;
+    const provider = args.provider ?? "claude";
     const optimistic: ChatTerminalSession = args.session
       ? { ...args.session, terminalId: args.sessionId }
       : {
@@ -7635,8 +7699,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         chatSessionId: null,
         laneId: args.laneId,
         laneName: lane?.name ?? args.laneId,
-        title: args.title?.trim() || "Claude Code",
-        toolType: "claude",
+        title: args.title?.trim() || LAUNCH_PROFILE_TITLE[provider],
+        // Drives terminalSessionProvider until terminal.list backfills the row.
+        toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
         goal: null,
         status: "running",
         runtimeState: "running",
@@ -7663,15 +7728,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const cols = clampTerminalPaneCols(terminalPaneWidth);
       const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
       if (terminal.status === "running") {
-        await writeTerminal(conn, terminal.terminalId, encodeTerminalPromptSubmit(text));
-        // Claude Code occasionally leaves a programmatic `text + Enter` sitting
-        // in its prompt editor. New/resumed launches already send a delayed
-        // confirm Enter; do the same for live embedded sessions so submitting
-        // from ADE behaves like manually focusing Claude with Ctrl+T and
-        // pressing Enter.
-        await delay(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS);
-        await writeTerminal(conn, terminal.terminalId, encodeTerminalPromptSubmitConfirm());
-        await delay(CLAUDE_TERMINAL_SUBMIT_REFRESH_DELAY_MS);
+        if (terminalSessionProvider(terminal) === "claude") {
+          await writeTerminal(conn, terminal.terminalId, encodeTerminalPromptSubmit(text));
+          // Claude Code occasionally leaves a programmatic `text + Enter` sitting
+          // in its prompt editor. New/resumed launches already send a delayed
+          // confirm Enter; do the same for live embedded sessions so submitting
+          // from ADE behaves like manually focusing Claude with Ctrl+T and
+          // pressing Enter.
+          await delay(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS);
+          await writeTerminal(conn, terminal.terminalId, encodeTerminalPromptSubmitConfirm());
+          await delay(CLAUDE_TERMINAL_SUBMIT_REFRESH_DELAY_MS);
+          await refreshTerminalPreview(conn, terminal.terminalId);
+          return true;
+        }
+        // Other providers: ptyService.sendToSession owns provider-specific live
+        // input delivery + submit timing (Codex/Cursor paste delays, Cursor
+        // input-ready wait), so no Claude-style double-enter here.
+        await sendToTerminalSession({
+          connection: conn,
+          sessionId: terminal.terminalId,
+          text,
+          cols,
+          rows: terminalRows,
+        });
         await refreshTerminalPreview(conn, terminal.terminalId);
         return true;
       }
@@ -7730,10 +7809,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return true;
   }, [chatRowBudget, refreshState, registerOptimisticTerminalSession, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
-  const startClaudeTerminalForPrompt = useCallback(async (text: string): Promise<string | null> => {
+  const startCliTerminalForPrompt = useCallback(async (text: string): Promise<string | null> => {
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
     if (!conn || !laneId) return null;
+    const provider = cliProviderForModelStateProvider(modelStateRef.current.provider);
+    if (!provider) {
+      addNotice(`${providerLabel(modelStateRef.current.provider)} has no CLI session — switch the interface to Chat.`, "error");
+      return null;
+    }
     const lane = lanes.find((entry) => entry.id === laneId) ?? null;
     const unavailableMessage = laneWorktreeUnavailableMessage(lane);
     if (unavailableMessage) {
@@ -7748,16 +7832,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const normalized = { ...modelStateRef.current, ...applyProviderPermissionMode(modelStateRef.current) };
     const cols = clampTerminalPaneCols(terminalPaneWidth);
     const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
-    const activeClaudeChat = activeSessionRef.current?.provider === "claude" ? activeSessionRef.current : null;
+    const activeProviderChat = activeSessionRef.current?.provider === provider ? activeSessionRef.current : null;
     const title = pendingNewChatTitleRef.current
-      ?? activeClaudeChat?.title
-      ?? "Claude Code";
-    const created = await startClaudeTerminalSession({
+      ?? activeProviderChat?.title
+      ?? LAUNCH_PROFILE_TITLE[provider];
+    const created = await startCliTerminalSession({
       connection: conn,
+      provider,
       laneId,
       title,
       model: normalized.modelId ?? normalized.model,
       reasoningEffort: normalized.reasoningEffort,
+      fastMode: normalized.fastMode,
       permissionMode: normalized.permissionMode,
       initialInput: text.trim() ? text : null,
       cols,
@@ -7771,8 +7857,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       laneId,
       title,
       session: created.session,
+      provider,
     });
-    if (!claudeAutoNamingHintShownRef.current) {
+    if (provider === "claude" && !claudeAutoNamingHintShownRef.current) {
       claudeAutoNamingHintShownRef.current = true;
       addNotice("Claude sessions auto-name in the background when enabled — toggle in ADE desktop → Settings → AI Features.", "info");
     }
@@ -9756,8 +9843,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
         return;
       }
-      if (!gridViewActiveRef.current && modelStateRef.current.provider === "claude") {
-        const terminalId = await startClaudeTerminalForPrompt(terminalPrompt || " ");
+      // Interface=CLI draft (any provider): create a tracked CLI terminal. Chat
+      // interface falls through to createChatSession (below) for all providers,
+      // including Claude. Grid view never spawns a new terminal from a submit.
+      if (!gridViewActiveRef.current && modelStateRef.current.interfaceMode === "cli") {
+        const terminalId = await startCliTerminalForPrompt(terminalPrompt || " ");
         if (terminalId) {
           setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
         }
@@ -9781,7 +9871,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       addNotice(message, "error");
     }
-  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startCliTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion]);
 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();
@@ -9824,17 +9914,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setError(null);
       const normalized = { ...modelStateRef.current, ...applyProviderPermissionMode(modelStateRef.current) };
       const runtimeProvider = runtimeProviderForUiProvider(normalized.provider);
-      if (runtimeProvider === "claude") {
+      // Interface=CLI (with a provider that has a CLI) launches a tracked
+      // terminal; everything else — including Claude Chat — creates an SDK chat.
+      const cliProvider = normalized.interfaceMode === "cli"
+        ? cliProviderForModelStateProvider(normalized.provider)
+        : null;
+      if (cliProvider) {
         const cols = clampTerminalPaneCols(terminalPaneWidth);
         const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
         const terminalPrompt = promptTextForTerminal(text, promptAttachments);
-        const claudeTitle = pendingNewChatTitleRef.current ?? "Claude Code";
-        const createdTerminal = await startClaudeTerminalSession({
+        const cliTitle = pendingNewChatTitleRef.current ?? LAUNCH_PROFILE_TITLE[cliProvider];
+        const createdTerminal = await startCliTerminalSession({
           connection: conn,
+          provider: cliProvider,
           laneId,
-          title: claudeTitle,
+          title: cliTitle,
           model: normalized.modelId ?? normalized.model,
           reasoningEffort: normalized.reasoningEffort,
+          fastMode: normalized.fastMode,
           permissionMode: normalized.permissionMode,
           initialInput: terminalPrompt.trim() ? terminalPrompt : null,
           cols,
@@ -9843,10 +9940,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         registerOptimisticTerminalSession({
           sessionId: createdTerminal.sessionId,
           laneId,
-          title: claudeTitle,
+          title: cliTitle,
           session: createdTerminal.session,
+          provider: cliProvider,
         });
-        if (!claudeAutoNamingHintShownRef.current) {
+        if (cliProvider === "claude" && !claudeAutoNamingHintShownRef.current) {
           claudeAutoNamingHintShownRef.current = true;
           addNotice("Claude sessions auto-name in the background when enabled — toggle in ADE desktop → Settings → AI Features.", "info");
         }
@@ -10155,6 +10253,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (row.disabled) return;
     if (row.kind === "provider") {
       cycleProvider(direction);
+      return;
+    }
+    if (row.kind === "interface") {
+      // Only two values, so any cycle direction toggles Chat ↔ CLI. Editable
+      // rows only (disabled rows return above); a committed session's interface
+      // is fixed by its type.
+      applyModelState((prev) => ({ ...prev, interfaceMode: prev.interfaceMode === "cli" ? "chat" : "cli" }));
       return;
     }
     if (row.kind === "model") {
@@ -10814,8 +10919,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
     if (isTerminalControlToggle(input, key)) {
-      // Grid view: Ctrl+T pops the focused Claude terminal tile out to single view
-      // and enters control; exiting control returns to the grid (handled above).
+      // Grid view: Ctrl+T pops the focused provider CLI terminal tile out to
+      // single view and enters control; exiting control returns to the grid.
       if (gridViewActiveRef.current) {
         const focusedId = focusedSessionIdForMultiView(multiViewRef.current);
         const tile = focusedId
@@ -10824,7 +10929,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const terminal = focusedId
           ? terminalSessionsRef.current.find((entry) => entry.terminalId === focusedId) ?? null
           : null;
-        if (tile && terminal && terminal.status === "running" && terminalSessionProvider(terminal) === "claude") {
+        if (tile && terminal && terminal.status === "running" && terminalSessionProvider(terminal)) {
           controlReturnToGridRef.current = focusedId;
           setGridView(false);
           selectActiveLaneId(tile.laneId);
@@ -10838,7 +10943,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (
         terminal?.terminalId === activeSessionIdRef.current
         && terminal.status === "running"
-        && terminalSessionProvider(terminal) === "claude"
+        && terminalSessionProvider(terminal)
       ) {
         focusChat();
         setAttachedTerminalId(terminal.terminalId);
@@ -11570,6 +11675,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         activeModelId: modelState.modelId,
         activeReasoningEffort: modelState.reasoningEffort,
         aiStatus,
+        interfaceMode: modelState.interfaceMode,
         settingsRows: picker.settingsRows ?? [],
         footerFocus: picker.footerFocus ?? null,
         laneLabel: picker.laneLabel ?? null,
@@ -12259,6 +12365,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 		        activeModelId: modelState.modelId,
             activeReasoningEffort: modelState.reasoningEffort,
             aiStatus,
+            interfaceMode: modelState.interfaceMode,
             settingsRows: picker.settingsRows ?? [],
             footerFocus: picker.footerFocus ?? null,
             laneLabel: picker.laneLabel ?? null,
@@ -13170,16 +13277,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           },
         },
       );
-      if (claudeTerminalControlAvailable) {
+      if (terminalControlAvailable) {
         rightFooterItems.push({
           id: "footer:terminal-control",
-          label: "^t Claude",
+          label: `^t ${terminalControlLabel}`,
           onClick: () => {
             const terminal = activeTerminalSessionRef.current;
             if (
               terminal?.terminalId === activeSessionIdRef.current
               && terminal.status === "running"
-              && terminalSessionProvider(terminal) === "claude"
+              && terminalSessionProvider(terminal)
             ) {
               focusChat();
               setAttachedTerminalId(terminal.terminalId);
@@ -13420,6 +13527,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           activeModelId: modelState.modelId,
           activeReasoningEffort: modelState.reasoningEffort,
           aiStatus,
+          interfaceMode: modelState.interfaceMode,
           settingsRows: picker.settingsRows ?? [],
           footerFocus: picker.footerFocus ?? null,
           laneLabel: picker.laneLabel ?? null,
@@ -13889,7 +13997,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     slashRows,
     startAddMode,
     subagentPaneCommandAvailable,
-    claudeTerminalControlAvailable,
+    terminalControlAvailable,
+    terminalControlLabel,
     submitSelectedPendingQuestion,
     submitPrompt,
     tileableDisplaySessions,
@@ -13973,13 +14082,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     });
   }, [connection, gridViewActive, multiView, chatWrapWidth, gridRowBudget]);
 
-  // Whether the grid's focused tile is a running Claude terminal — drives the
-  // footer "^t control (single)" hint so the unavailable-in-grid control is clear.
-  const gridFocusedTileIsClaudeTerminal = useMemo(() => {
+  // Whether the grid's focused tile is a running provider CLI terminal — drives
+  // the footer "^t control (single)" hint so the unavailable-in-grid control is
+  // clear (Ctrl+T control needs single view).
+  const gridFocusedTileIsTerminal = useMemo(() => {
     if (!gridViewActive || !multiView) return false;
     const focusedId = multiView.tiles[multiView.focusedIndex]?.sessionId ?? null;
     const terminal = focusedId ? terminalSessionById[focusedId] ?? null : null;
-    return Boolean(terminal && terminal.status === "running" && terminalSessionProvider(terminal) === "claude");
+    return Boolean(terminal && terminal.status === "running" && terminalSessionProvider(terminal));
   }, [gridViewActive, multiView, terminalSessionById]);
 
   if (error && !connection) {
@@ -14078,6 +14188,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               <TerminalPane
                 title={activeTerminalSession.title}
                 terminalId={activeTerminalSession.terminalId}
+                cliLabel={terminalControlLabel}
+                claudeChrome={activeTerminalProvider === "claude"}
                 preview={terminalPreview}
                 liveChunks={terminalLiveChunks[activeTerminalSession.terminalId] ?? []}
                 attached={attachedTerminalId === activeTerminalSession.terminalId}
@@ -14140,6 +14252,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	                activeModelId: modelState.modelId,
                 activeReasoningEffort: modelState.reasoningEffort,
                 aiStatus,
+                interfaceMode: modelState.interfaceMode,
 	              }}
               onModelPickerMeasureOrigin={handlePickerMeasureOrigin}
             />
@@ -14261,9 +14374,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           providerLocked={providerLocked}
           subagentsButtonVisible={subagentPaneCommandAvailable}
           planMode={isPlanMode(modelState)}
-          terminalControlAvailable={claudeTerminalControlAvailable}
-          terminalControlActive={claudeTerminalControlActive}
-          gridTerminalControlHint={gridFocusedTileIsClaudeTerminal}
+          terminalControlAvailable={terminalControlAvailable}
+          terminalControlActive={terminalControlActive}
+          terminalControlLabel={terminalControlLabel}
+          gridTerminalControlHint={gridFocusedTileIsTerminal}
           multiViewActive={Boolean(multiView)}
           multiViewMap={footerMultiViewMap}
         />

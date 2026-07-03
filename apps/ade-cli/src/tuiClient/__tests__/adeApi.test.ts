@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
+import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -530,7 +531,7 @@ describe("createChatSession", () => {
   });
 });
 
-describe("startClaudeTerminalSession", () => {
+describe("startCliTerminalSession", () => {
   it("passes Claude model reasoning and permission controls to start_cli_session", async () => {
     const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
     const connection = {
@@ -544,8 +545,9 @@ describe("startClaudeTerminalSession", () => {
       },
     } as unknown as AdeCodeConnection;
 
-    await startClaudeTerminalSession({
+    await startCliTerminalSession({
       connection,
+      provider: "claude",
       laneId: "lane-1",
       title: "Claude smoke",
       model: "anthropic/claude-sonnet-4-6",
@@ -573,6 +575,101 @@ describe("startClaudeTerminalSession", () => {
         }),
       },
     ]);
+  });
+
+  it("launches every provider CLI with its selected provider + fast mode", async () => {
+    for (const provider of ["codex", "cursor", "droid", "opencode", "claude"] as const) {
+      const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
+      const connection = {
+        tool: async (name: string, args?: Record<string, unknown>) => {
+          calls.push({ name, args });
+          return { sessionId: `term-${provider}`, terminalId: `term-${provider}`, session: null };
+        },
+      } as unknown as AdeCodeConnection;
+
+      await startCliTerminalSession({
+        connection,
+        provider,
+        laneId: "lane-1",
+        model: `${provider}-model`,
+        reasoningEffort: "medium",
+        fastMode: true,
+        permissionMode: "default",
+        initialInput: "Go",
+        cols: 120,
+        rows: 36,
+      });
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.name).toBe("start_cli_session");
+      expect(calls[0]!.args).toEqual(expect.objectContaining({
+        laneId: "lane-1",
+        provider,
+        model: `${provider}-model`,
+        reasoningEffort: "medium",
+        fastMode: true,
+        permissionMode: "default",
+        initialInput: "Go",
+        tracked: true,
+      }));
+    }
+  });
+
+  it("omits fastMode from the payload when the caller does not set it", async () => {
+    const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      tool: async (name: string, args?: Record<string, unknown>) => {
+        calls.push({ name, args });
+        return { sessionId: "term-1", terminalId: "term-1", session: null };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await startCliTerminalSession({ connection, provider: "codex", laneId: "lane-1", cols: 100, rows: 28 });
+
+    expect(calls[0]!.args).not.toHaveProperty("fastMode");
+  });
+});
+
+describe("trackedCliTerminalProvider", () => {
+  const session = (overrides: Partial<ChatTerminalSession>): ChatTerminalSession => ({
+    terminalId: "t",
+    ptyId: null,
+    chatSessionId: null,
+    laneId: "lane-1",
+    laneName: "lane-1",
+    title: "t",
+    goal: null,
+    toolType: "shell",
+    status: "running",
+    runtimeState: "running",
+    active: true,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    pid: null,
+    resumeCommand: null,
+    resumeMetadata: null,
+    lastOutputPreview: null,
+    summary: null,
+    ...overrides,
+  });
+
+  it("resolves each tracked CLI tool type to its provider", () => {
+    expect(trackedCliTerminalProvider(session({ toolType: "claude" }))).toBe("claude");
+    expect(trackedCliTerminalProvider(session({ toolType: "claude-orchestrated" }))).toBe("claude");
+    expect(trackedCliTerminalProvider(session({ toolType: "codex" }))).toBe("codex");
+    expect(trackedCliTerminalProvider(session({ toolType: "cursor-cli" }))).toBe("cursor");
+    expect(trackedCliTerminalProvider(session({ toolType: "droid" }))).toBe("droid");
+    expect(trackedCliTerminalProvider(session({ toolType: "opencode" }))).toBe("opencode");
+  });
+
+  it("falls back to resume metadata / command, and rejects plain shells", () => {
+    expect(trackedCliTerminalProvider(session({
+      toolType: "shell",
+      resumeMetadata: { provider: "codex", targetKind: "session", targetId: "x", launch: {} },
+    }))).toBe("codex");
+    expect(trackedCliTerminalProvider(session({ toolType: "shell", resumeCommand: "claude --resume s1" }))).toBe("claude");
+    expect(trackedCliTerminalProvider(session({ toolType: "shell" }))).toBeNull();
   });
 });
 
@@ -664,7 +761,7 @@ describe("signalTerminal", () => {
 });
 
 describe("listTerminalSessions", () => {
-  it("only exposes Claude Code CLI sessions in the ADE code TUI", async () => {
+  it("exposes every tracked provider CLI session but hides chat-backed terminals and plain shells", async () => {
     const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
     const sessions = [
       { terminalId: "claude-1", toolType: "claude" },
@@ -674,9 +771,14 @@ describe("listTerminalSessions", () => {
       { terminalId: "codex-1", toolType: "codex" },
       { terminalId: "codex-orch-1", toolType: "codex-orchestrated" },
       { terminalId: "legacy-codex-1", toolType: "shell", resumeMetadata: { provider: "codex" } },
+      { terminalId: "cursor-cli-1", toolType: "cursor-cli" },
+      { terminalId: "droid-1", toolType: "droid" },
+      { terminalId: "opencode-1", toolType: "opencode" },
+      // Chat-backed terminals (surface via the chat session list) + plain shells stay hidden.
       { terminalId: "chat-claude-1", toolType: "claude-chat" },
       { terminalId: "chat-codex-1", toolType: "codex-chat" },
-      { terminalId: "cursor-1", toolType: "cursor" },
+      { terminalId: "chat-cursor-1", toolType: "cursor" },
+      { terminalId: "chat-droid-1", toolType: "droid-chat" },
       { terminalId: "shell-1", toolType: "shell" },
     ];
     const connection = {
@@ -700,6 +802,12 @@ describe("listTerminalSessions", () => {
       "claude-orch-1",
       "legacy-claude-1",
       "legacy-claude-command-1",
+      "codex-1",
+      "codex-orch-1",
+      "legacy-codex-1",
+      "cursor-cli-1",
+      "droid-1",
+      "opencode-1",
     ]);
   });
 });
