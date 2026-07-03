@@ -9491,14 +9491,17 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
+  private func pendingOperationMatchesActiveHost(_ operation: PendingOperation) -> Bool {
     let currentHostId = activeHostStorageKey()
     let operationHostId = normalizedHostStorageKey(operation.hostId)
     if let currentHostId {
-      guard operationHostId == currentHostId else { return false }
-    } else if operationHostId != nil {
-      return false
+      return operationHostId == currentHostId
     }
+    return operationHostId == nil
+  }
+
+  private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
+    guard pendingOperationMatchesActiveHost(operation) else { return false }
 
     if operation.projectId == nil && operation.projectRootPath == nil {
       return true
@@ -9512,6 +9515,20 @@ final class SyncService: ObservableObject {
       return true
     }
     return false
+  }
+
+  /// Which queued operations the current connection can drain. Command
+  /// envelopes carry their own project scope in the payload and the host
+  /// routes them cross-project (the same mechanism live sends use), so a
+  /// command queued for a foreign project — e.g. a cross-project quick-look
+  /// chat send that timed out — drains as soon as the HOST matches, instead of
+  /// waiting for the phone to switch active projects (which may never happen).
+  /// File requests have no cross-project routing and stay active-project-gated.
+  private func pendingOperationIsDrainable(_ operation: PendingOperation) -> Bool {
+    if operation.kind == "command" {
+      return pendingOperationMatchesActiveHost(operation)
+    }
+    return pendingOperationMatchesActiveProject(operation)
   }
 
   private func decodeQueuedArgs(_ operation: PendingOperation) throws -> [String: Any] {
@@ -9557,7 +9574,7 @@ final class SyncService: ObservableObject {
       return false
     }
 
-    while let operation = queued.first(where: pendingOperationMatchesActiveProject) {
+    while let operation = queued.first(where: pendingOperationIsDrainable) {
       do {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
@@ -9565,7 +9582,16 @@ final class SyncService: ObservableObject {
           guard commandPolicy(for: operation.action) != nil else {
             throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this machine."])
           }
-          _ = try await performCommandRequest(action: operation.action, args: args, commandId: operation.id)
+          // Replay with the operation's stored scope — a queued foreign-project
+          // command must not silently retarget to whatever project is active
+          // at drain time.
+          _ = try await performCommandRequest(
+            action: operation.action,
+            args: args,
+            commandId: operation.id,
+            targetProjectId: operation.projectId,
+            targetProjectRootPath: operation.projectRootPath
+          )
         case "file":
           guard queueableFileActions.contains(operation.action) else {
             throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Queued file action \(operation.action) is no longer supported."])
