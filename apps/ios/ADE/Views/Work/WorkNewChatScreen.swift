@@ -28,9 +28,52 @@ enum WorkNewSessionMode: String, CaseIterable, Identifiable {
   }
 }
 
+/// Per-project "last explicitly chosen" Chat vs CLI interface for the new-session
+/// composers. Restored as the default when the composer opens so the choice
+/// survives app restarts, project switches, and launching a session — desktop
+/// keeps the same choice per project in `WorkProjectViewState.draftKind`.
+/// Written ONLY on an explicit tap of the Chat/CLI switcher, never by
+/// programmatic model-availability fallbacks, so a stored CLI choice that a
+/// restored chat-only model can't honor drops to chat for that session without
+/// discarding the preference. Shared between the in-project New Chat screen and
+/// the all-projects hub composer.
+enum WorkNewSessionModePreferences {
+  /// Versioned map of projectId → mode raw value, so a future field change can
+  /// migrate rather than mis-decode.
+  private static let storageKey = "ade.work.newSessionModeByProject.v1"
+  private static var defaults: UserDefaults { ADESharedContainer.defaults }
+
+  private static func normalizedProjectId(_ projectId: String?) -> String? {
+    let trimmed = projectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  /// The last explicitly chosen interface for this project, or nil when the user
+  /// has not picked one yet (the caller then defaults to `.chat`).
+  static func load(projectId: String?) -> WorkNewSessionMode? {
+    guard let key = normalizedProjectId(projectId) else { return nil }
+    let map = defaults.dictionary(forKey: storageKey) as? [String: String]
+    guard let raw = map?[key] else { return nil }
+    return WorkNewSessionMode(rawValue: raw)
+  }
+
+  /// Persists the user's explicit interface choice for this project. No-op when
+  /// the project id is unknown so a nil-scope session can't clobber a good record.
+  static func save(_ mode: WorkNewSessionMode, projectId: String?) {
+    guard let key = normalizedProjectId(projectId) else { return }
+    var map = (defaults.dictionary(forKey: storageKey) as? [String: String]) ?? [:]
+    map[key] = mode.rawValue
+    defaults.set(map, forKey: storageKey)
+  }
+}
+
 /// Desktop `ModeSwitcherPills` parity: compact Chat/CLI toggle for the nav bar.
 struct WorkSessionTypeSwitcher: View {
   @Binding var selection: WorkNewSessionMode
+  /// Fired only on an explicit user tap that changes the selection (never on a
+  /// programmatic seed/restore), so callers can persist the choice without a
+  /// restore or availability fallback overwriting the stored preference.
+  var onUserSelect: ((WorkNewSessionMode) -> Void)? = nil
 
   var body: some View {
     HStack(spacing: 4) {
@@ -41,6 +84,7 @@ struct WorkSessionTypeSwitcher: View {
           withAnimation(.snappy(duration: 0.16)) {
             selection = mode
           }
+          onUserSelect?(mode)
         } label: {
           HStack(spacing: 6) {
             Image(systemName: mode.systemImage)
@@ -289,6 +333,10 @@ struct WorkNewChatScreen: View {
 
   let lanes: [LaneSummary]
   let preferredLaneId: String?
+  /// Project scope for the per-project Chat/CLI interface preference. Captured at
+  /// construction (the screen is pushed for the active project) so it is stable
+  /// while shown.
+  let activeProjectId: String?
   let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
@@ -315,12 +363,14 @@ struct WorkNewChatScreen: View {
   init(
     lanes: [LaneSummary],
     preferredLaneId: String?,
+    activeProjectId: String?,
     onStarted: @escaping @MainActor (AgentChatSessionSummary, String) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onRefreshLanes: @escaping @MainActor () async -> Void
   ) {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
+    self.activeProjectId = activeProjectId
     self.onStarted = onStarted
     self.onCliStarted = onCliStarted
     self.onRefreshLanes = onRefreshLanes
@@ -328,13 +378,34 @@ struct WorkNewChatScreen: View {
     // on the user's most recent choices. Seeding the @State initial values here
     // (rather than assigning in onAppear) avoids the provider/model onChange
     // handlers firing and resetting runtimeMode back to the provider default.
+    var restoredProvider = "claude"
+    var restoredModelId = "claude-sonnet-4-6"
     if let saved = WorkComposerPreferences.load() {
+      restoredProvider = saved.provider
+      restoredModelId = saved.modelId
       _provider = State(initialValue: saved.provider)
       _modelId = State(initialValue: saved.modelId)
       _runtimeMode = State(initialValue: saved.runtimeMode)
       _reasoningEffort = State(initialValue: saved.reasoningEffort)
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
+    // Restore the last explicitly chosen Chat/CLI interface for this project so
+    // the choice survives app restarts, project switches, and launching a
+    // session. Seeding the initial @State here (not onAppear) keeps the
+    // sessionMode onChange from firing and resetting runtimeMode to the provider
+    // default. A stored CLI choice is only honored when the restored model can
+    // actually run in CLI; otherwise the session opens on chat WITHOUT rewriting
+    // the stored preference (a later switcher tap overwrites it).
+    var restoredMode: WorkNewSessionMode = .chat
+    if let savedMode = WorkNewSessionModePreferences.load(projectId: activeProjectId) {
+      if savedMode == .cli,
+         !workModelAllowedForAvailabilityMode(modelId: restoredModelId, provider: restoredProvider, mode: .cli) {
+        restoredMode = .chat
+      } else {
+        restoredMode = savedMode
+      }
+    }
+    _sessionMode = State(initialValue: restoredMode)
   }
 
   /// The live composer selection. Persisted as the app-wide "last used" choice
@@ -438,7 +509,9 @@ struct WorkNewChatScreen: View {
     .adeRootTabBarHidden()
     .toolbar {
       ToolbarItem(placement: .principal) {
-        WorkSessionTypeSwitcher(selection: $sessionMode)
+        WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in
+          WorkNewSessionModePreferences.save(mode, projectId: activeProjectId)
+        })
       }
       ToolbarItem(placement: .topBarTrailing) {
         if busy {
@@ -448,10 +521,10 @@ struct WorkNewChatScreen: View {
     }
     .onAppear {
       // A restored selection (see init) can carry a model only valid in the mode
-      // it was last used in — e.g. a CLI-only Cursor model. The screen opens in
-      // .chat and normalizeSelection only runs on a sessionMode *change*, which
-      // never fires for the initial state, so a CLI-only model would otherwise
-      // reach Send → createChatSession. Normalize here, but only when the model is
+      // it was last used in — e.g. a CLI-only Cursor model. normalizeSelection
+      // only runs on a sessionMode *change*, which never fires for the seeded
+      // initial state, so a model disallowed for the (possibly restored) mode
+      // would otherwise reach Send. Normalize here, but only when the model is
       // actually disallowed, so a valid restored selection keeps its runtimeMode.
       let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
       if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) {

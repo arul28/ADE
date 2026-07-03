@@ -106,17 +106,39 @@ struct HubComposerDrawer: View {
 
   init(onCreated: @escaping (HubCreatedChat) -> Void) {
     self.onCreated = onCreated
+    var restoredProvider = "claude"
+    var restoredModelId = "claude-sonnet-4-6"
     if let saved = WorkComposerPreferences.load() {
+      restoredProvider = saved.provider
+      restoredModelId = saved.modelId
       _provider = State(initialValue: saved.provider)
       _modelId = State(initialValue: saved.modelId)
       _runtimeMode = State(initialValue: saved.runtimeMode)
       _reasoningEffort = State(initialValue: saved.reasoningEffort)
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
+    var restoredProjectId = ""
     if let dest = HubComposerDrawer.loadLastDestination() {
+      restoredProjectId = dest.projectId
       _pickedProjectId = State(initialValue: dest.projectId)
       _selectedLaneId = State(initialValue: dest.laneId)
     }
+    // Restore the last explicitly chosen Chat/CLI interface for the restored
+    // destination project (shared per-project store with the in-project New Chat
+    // screen), honoring a stored CLI choice only when the restored model can run
+    // in CLI — otherwise open on chat without discarding the preference. Seeding
+    // the initial @State here keeps the sessionMode onChange from resetting
+    // runtimeMode to the provider default.
+    var restoredMode: WorkNewSessionMode = .chat
+    if let savedMode = WorkNewSessionModePreferences.load(projectId: restoredProjectId) {
+      if savedMode == .cli,
+         !workModelAllowedForAvailabilityMode(modelId: restoredModelId, provider: restoredProvider, mode: .cli) {
+        restoredMode = .chat
+      } else {
+        restoredMode = savedMode
+      }
+    }
+    _sessionMode = State(initialValue: restoredMode)
   }
 
   // MARK: Derived state
@@ -200,7 +222,9 @@ struct HubComposerDrawer: View {
         VStack(spacing: 14) {
           destinationControl
           if !isDictating {
-            WorkSessionTypeSwitcher(selection: $sessionMode)
+            WorkSessionTypeSwitcher(selection: $sessionMode, onUserSelect: { mode in
+              WorkNewSessionModePreferences.save(mode, projectId: pickedProjectId)
+            })
               .frame(maxWidth: .infinity, alignment: .center)
           }
           if let errorMessage {

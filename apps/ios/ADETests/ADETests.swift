@@ -6805,6 +6805,34 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkComposerPreferences.load()?.modelId, "claude-opus-4-8")
   }
 
+  func testWorkNewSessionModePreferencesPerProjectPersistence() {
+    let storageKey = "ade.work.newSessionModeByProject.v1"
+    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+    defer { ADESharedContainer.defaults.removeObject(forKey: storageKey) }
+
+    // Unset → nil so the caller defaults to .chat.
+    XCTAssertNil(WorkNewSessionModePreferences.load(projectId: "project-a"))
+
+    // Per-project round-trip: a choice for one project is scoped to it.
+    WorkNewSessionModePreferences.save(.cli, projectId: "project-a")
+    WorkNewSessionModePreferences.save(.chat, projectId: "project-b")
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .cli)
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-b"), .chat)
+
+    // Overwrites are last-write-wins per project and don't touch siblings.
+    WorkNewSessionModePreferences.save(.chat, projectId: "project-a")
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .chat)
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-b"), .chat)
+
+    // Unknown/blank project scope is a no-op on save and nil on load, so a
+    // nil-scope session can never clobber a good per-project record.
+    WorkNewSessionModePreferences.save(.cli, projectId: nil)
+    WorkNewSessionModePreferences.save(.cli, projectId: "   ")
+    XCTAssertNil(WorkNewSessionModePreferences.load(projectId: nil))
+    XCTAssertNil(WorkNewSessionModePreferences.load(projectId: ""))
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .chat)
+  }
+
   func testWorkComposerRuntimeProviderCoercesLocalOpenCodeGroups() {
     // Local OpenCode-routed groups must collapse to the wireable `opencode`
     // provider so a persisted "last used" selection restores supported access

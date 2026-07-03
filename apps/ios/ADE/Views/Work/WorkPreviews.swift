@@ -499,6 +499,7 @@ private enum WorkPreviewData {
     WorkNewChatScreen(
       lanes: [WorkPreviewData.lane],
       preferredLaneId: WorkPreviewData.lane.id,
+      activeProjectId: nil,
       onStarted: { _, _ in },
       onCliStarted: { _ in },
       onRefreshLanes: {}
