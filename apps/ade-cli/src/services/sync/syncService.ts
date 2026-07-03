@@ -639,6 +639,8 @@ export function createSyncService(args: SyncServiceArgs) {
     laneTemplateService: args.laneTemplateService,
     rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
     autoRebaseService: args.autoRebaseService ?? undefined,
+    // Late-bound: the host service starts after this command service exists.
+    getLanePresenceStamp: () => hostService?.getLanePresenceStamp() ?? "",
     getModelPickerStore: args.getModelPickerStore,
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
     logger: args.logger,

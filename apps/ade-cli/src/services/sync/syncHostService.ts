@@ -1546,7 +1546,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         };
       }
       case "lanes.getDetail":
-        return result && typeof result === "object"
+        // A notModified cache-hit shell carries no lane fields — decorating it
+        // would dereference detail.lane and turn the response into command_failed.
+        return result && typeof result === "object" && (result as Partial<LaneDetailPayload>).lane
           ? decorateLaneDetailPayload(result as LaneDetailPayload)
           : result;
       case "lanes.create":
@@ -4395,7 +4397,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
-        peer.subscribedChatSessionIds.add(sessionId);
 
         // Cross-project "quick look": a payload targeting a registered FOREIGN
         // project is served read-only from that project's `.ade` transcript
@@ -4403,9 +4404,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // same path for live events. The provider is the security boundary
         // (validates the project, sandboxes the path). An explicitly-foreign
         // scope the provider can't confirm fails CLOSED (served as unknown),
-        // never falls back to a local session that happens to share the id.
+        // never falls back to a local session that happens to share the id —
+        // including in the pump: a rejected scope must not register a live
+        // subscription at all, or the periodic pump would stream the ACTIVE
+        // project's transcript for the same session id after the empty ack.
         const foreignScope = resolveForeignChatScope(payload, sessionId);
         const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
+        if (foreignScope.kind === "rejected") {
+          peer.subscribedChatSessionIds.delete(sessionId);
+        } else {
+          peer.subscribedChatSessionIds.add(sessionId);
+        }
         if (foreignTranscriptPath) {
           peer.foreignChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
         } else {
@@ -4696,6 +4705,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return getLanePresenceSnapshot();
     },
 
+    // Deterministic digest of lane presence for conditional-response
+    // signatures (see SyncRemoteCommandServiceArgs.getLanePresenceStamp).
+    getLanePresenceStamp(): string {
+      return getLanePresenceSnapshot()
+        .map((entry) => `${entry.laneId}:${entry.devicesOpen.map((d) => `${d.deviceId}|${d.displayName}|${d.platform}`).sort().join(",")}`)
+        .sort()
+        .join(";");
+    },
+
     getChatSubscriptionSnapshot(): Array<{ deviceId: string; subscribedChatSessionIds: string[] }> {
       return [...peers]
         .map((peer) => {
@@ -4807,7 +4825,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             serverDbSiteId: args.db.sync.getSiteId(),
             lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
             subscribedSessionIds: [...peer.subscribedSessionIds],
-            subscribedChatSessionIds: [...peer.subscribedChatSessionIds],
+            // Foreign quick-look subscriptions do NOT survive the handoff: the
+            // resolved transcript path isn't carried, and restoring the bare
+            // session id would make the pump fall back to a same-id LOCAL
+            // session (the exact fallback the subscribe path fails closed
+            // against). The client re-subscribes with its scope after handoff.
+            subscribedChatSessionIds: [...peer.subscribedChatSessionIds]
+              .filter((sessionId) => !peer.foreignChatTranscriptPaths.has(sessionId)),
             chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
             rosterSubscribed: peer.rosterSubscribed,
           });

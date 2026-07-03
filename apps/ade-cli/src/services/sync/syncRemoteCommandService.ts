@@ -213,6 +213,15 @@ type SyncRemoteCommandServiceArgs = {
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   /**
+   * Deterministic stamp of the sync host's in-memory lane presence
+   * (`devicesOpen`). The host decorates lane list/detail payloads with
+   * presence AFTER this service builds them, so the conditional-response
+   * signatures fold the stamp in — otherwise a presence-only change (another
+   * device opening a lane) would keep matching `ifNoneMatch` and the client
+   * would hold a stale presence indicator until an unrelated lane change.
+   */
+  getLanePresenceStamp?: () => string;
+  /**
    * Lazy accessor for the model picker store (favorites + recents, backed by
    * the per-project cr-sqlite DB). iOS hits these via the `modelPicker.*` sync
    * commands so favorites/recents stay in sync with desktop + TUI. Optional —
@@ -285,8 +294,12 @@ function respondWithSignature<T extends object, E extends object>(
   response: T,
   ifNoneMatch: string | null | undefined,
   emptyResponse: E,
+  signatureSalt = "",
 ): (T | E) & { signature: string; notModified: boolean } {
-  const signature = payloadSignature(response);
+  // The salt folds host-decorated state (lane presence) into the signature so
+  // a presence-only change invalidates the client's cached copy even though
+  // the undecorated payload is byte-identical.
+  const signature = payloadSignature(signatureSalt ? { response, signatureSalt } : response);
   if (ifNoneMatch && ifNoneMatch === signature) {
     return { ...emptyResponse, signature, notModified: true };
   }
@@ -2054,12 +2067,12 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       refreshedCount: 0,
       lanes: [],
       snapshots: null,
-    });
+    }, args.getLanePresenceStamp?.() ?? "");
   });
   register("lanes.getDetail", { viewerAllowed: true }, async (payload) => {
     const detailArgs = parseLaneDetailRequestArgs(payload);
     const response = await buildLaneDetailPayload(args, detailArgs.laneId);
-    return respondWithSignature(response, detailArgs.ifNoneMatch, {});
+    return respondWithSignature(response, detailArgs.ifNoneMatch, {}, args.getLanePresenceStamp?.() ?? "");
   });
   register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
   // Background lane naming for mobile auto-create. Deliberately NOT queueable:
