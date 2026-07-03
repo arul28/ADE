@@ -10,6 +10,7 @@ import type {
   SyncRosterProject,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import type { SyncForeignChatTranscriptResolver } from "./syncHostService";
 
 // Anchor builtin resolution to the active runtime, mirroring kvDb / the cheap
 // cross-project read in recentProjectSummary.ts. The roster opens each
@@ -392,6 +393,53 @@ async function buildRosterProject(
     attentionCount,
     lanes: visibleLanes.map(mapLane),
     chats,
+  };
+}
+
+// --- Cross-project "quick look" transcript resolver --------------------------
+
+export type ForeignChatProjectRegistry = {
+  list(): { projectId: string; rootPath: string }[];
+};
+
+// A chat session id is a filename segment: reject anything that could escape
+// the transcripts dir (path separators, `..`, nul) before it ever touches the
+// filesystem. Real ids are UUID/nanoid-shaped.
+const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * Builds a resolver that maps (registered foreign project, sessionId) to that
+ * session's on-disk chat transcript JSONL path — the security boundary for
+ * cross-project chat streaming. It ONLY resolves projects present in the
+ * registry and ONLY returns paths confined to that project's `.ade`
+ * transcripts dir; everything else yields null. Never boots a runtime.
+ */
+export function createForeignChatTranscriptResolver(args: {
+  projectRegistry: ForeignChatProjectRegistry;
+}): SyncForeignChatTranscriptResolver {
+  return {
+    resolveTranscriptPath: ({ projectId, projectRootPath, sessionId }) => {
+      const safeSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!SAFE_SESSION_ID.test(safeSessionId)) return null;
+
+      const requestedProjectId = typeof projectId === "string" ? projectId.trim() : "";
+      const requestedRootPath = normalizePath(projectRootPath);
+      const records = args.projectRegistry.list();
+      const record = records.find((entry) => {
+        if (requestedProjectId && entry.projectId === requestedProjectId) return true;
+        if (requestedRootPath && normalizePath(entry.rootPath) === requestedRootPath) return true;
+        return false;
+      });
+      if (!record) return null;
+
+      const transcriptsDir = path.resolve(resolveAdeLayout(record.rootPath).chatTranscriptsDir);
+      const filePath = path.resolve(path.join(transcriptsDir, `${safeSessionId}.jsonl`));
+      // Defense in depth: a validated session id already can't traverse, but
+      // confirm the resolved path stays inside the transcripts dir.
+      if (filePath !== path.join(transcriptsDir, `${safeSessionId}.jsonl`)) return null;
+      if (!filePath.startsWith(transcriptsDir + path.sep)) return null;
+      return filePath;
+    },
   };
 }
 

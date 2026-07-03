@@ -52,6 +52,7 @@ import {
   type SyncHostService,
   type SyncProjectCatalogProvider,
   type SyncRosterProvider,
+  type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -129,6 +130,7 @@ type SyncServiceArgs = {
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
+  foreignChatProvider?: SyncForeignChatTranscriptResolver;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
@@ -729,6 +731,7 @@ export function createSyncService(args: SyncServiceArgs) {
       deviceRegistryService,
       projectCatalogProvider: args.projectCatalogProvider,
       rosterProvider: args.rosterProvider,
+      foreignChatProvider: args.foreignChatProvider,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
       onStateChanged: () => {

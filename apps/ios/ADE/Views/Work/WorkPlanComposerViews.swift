@@ -278,6 +278,257 @@ struct WorkPlanComposerStrip: View {
   }
 }
 
+/// Pinned tool / file-change approval badge shown directly above the composer,
+/// mirroring `WorkPlanComposerStrip`. Collapsed row = provider logo + "{Provider}
+/// · Approval" + Accept / Decline; tapping the header opens a detail sheet that
+/// adds an "Accept all for session" action and the raw request detail. Wired to
+/// the same `onApproveRequest` path the plan badge uses (accept / accept_for_session
+/// / decline).
+struct WorkApprovalComposerStrip: View {
+  let approval: WorkPendingApprovalModel
+  let busy: Bool
+  var fallbackProvider: String? = nil
+  let onDecision: @MainActor (AgentChatApprovalDecision) async -> Void
+
+  @State private var detailPresented = false
+
+  private var accent: Color { ADEColor.providerChatAccent(for: fallbackProvider) }
+  private var providerName: String { workChatSurfaceProviderName(fallbackProvider) }
+
+  var body: some View {
+    compactRow
+      .padding(.horizontal, 10)
+      .padding(.vertical, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.cardBackground.opacity(0.76), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(accent.opacity(0.22), lineWidth: 1)
+      )
+      .overlay(alignment: .top) {
+        WorkPlanAccentGradient(accent: accent)
+          .padding(.horizontal, 12)
+      }
+      .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .sheet(isPresented: $detailPresented) {
+        WorkApprovalDetailSheet(
+          approval: approval,
+          busy: busy,
+          fallbackProvider: fallbackProvider,
+          onDecision: onDecision
+        )
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+      }
+      .accessibilityElement(children: .contain)
+      .accessibilityLabel("\(providerName) approval requested. \(approval.description)")
+  }
+
+  private var compactRow: some View {
+    HStack(spacing: 8) {
+      Button {
+        detailPresented = true
+      } label: {
+        HStack(spacing: 7) {
+          WorkProviderBareLogo(
+            provider: fallbackProvider,
+            fallbackSymbol: providerIcon(fallbackProvider ?? ""),
+            tint: accent,
+            size: 16
+          )
+          VStack(alignment: .leading, spacing: 1) {
+            Text("\(providerName) · Approval")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(accent)
+              .lineLimit(1)
+            Text(approval.description)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+              .truncationMode(.tail)
+          }
+          Image(systemName: "chevron.up")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(accent.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Review approval details and more options.")
+      .accessibilityHint("Opens the approval detail sheet.")
+
+      WorkApprovalCompactActionButton(
+        title: "Accept",
+        icon: "checkmark",
+        tint: ADEColor.success,
+        filled: true,
+        accessibilityLabel: "Accept and allow this action"
+      ) {
+        Task { await onDecision(.accept) }
+      }
+      .disabled(busy)
+
+      WorkApprovalCompactActionButton(
+        title: "Decline",
+        icon: "xmark",
+        tint: ADEColor.danger,
+        filled: false,
+        accessibilityLabel: "Decline this action"
+      ) {
+        Task { await onDecision(.decline) }
+      }
+      .disabled(busy)
+    }
+  }
+}
+
+/// Compact capsule button matching the plan badge's action buttons — used by the
+/// collapsed approval strip.
+private struct WorkApprovalCompactActionButton: View {
+  let title: String
+  let icon: String
+  let tint: Color
+  let filled: Bool
+  let accessibilityLabel: String
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 4) {
+        Image(systemName: icon)
+          .font(.system(size: 9, weight: .bold))
+        Text(title)
+          .font(.caption2.weight(.semibold))
+          .lineLimit(1)
+      }
+      .foregroundStyle(filled ? .white : tint)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
+      .background(
+        filled ? tint.opacity(0.86) : tint.opacity(0.08),
+        in: Capsule(style: .continuous)
+      )
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(tint.opacity(filled ? 0.18 : 0.28), lineWidth: 0.8)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(accessibilityLabel)
+  }
+}
+
+/// Expanded approval sheet: full request detail plus the three decision actions,
+/// including "Accept all for session" which doesn't fit the collapsed strip.
+struct WorkApprovalDetailSheet: View {
+  let approval: WorkPendingApprovalModel
+  let busy: Bool
+  var fallbackProvider: String? = nil
+  let onDecision: @MainActor (AgentChatApprovalDecision) async -> Void
+
+  @Environment(\.dismiss) private var dismiss
+
+  private var accent: Color { ADEColor.providerChatAccent(for: fallbackProvider) }
+  private var providerName: String { workChatSurfaceProviderName(fallbackProvider) }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 16) {
+          HStack(spacing: 7) {
+            WorkProviderBareLogo(
+              provider: fallbackProvider,
+              fallbackSymbol: providerIcon(fallbackProvider ?? ""),
+              tint: accent,
+              size: 18
+            )
+            Text("\(providerName) · Approval")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(accent)
+          }
+
+          Text(approval.description)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+          if let detail = approval.detail, !detail.isEmpty {
+            WorkStructuredOutputBlock(title: "Request detail", text: detail)
+          }
+
+          VStack(spacing: 10) {
+            actionButton(title: "Accept", icon: "checkmark", tint: ADEColor.success, filled: true) {
+              await onDecision(.accept)
+            }
+            actionButton(title: "Accept all for session", icon: "checkmark.circle", tint: accent, filled: false) {
+              await onDecision(.acceptForSession)
+            }
+            actionButton(title: "Decline", icon: "xmark", tint: ADEColor.danger, filled: false) {
+              await onDecision(.decline)
+            }
+          }
+        }
+        .padding(20)
+      }
+      .scrollIndicators(.hidden)
+      .background(workChatCanvasBackground.ignoresSafeArea())
+      .navigationTitle("Approval")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button {
+            dismiss()
+          } label: {
+            Image(systemName: "xmark")
+              .font(.system(size: 13, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .accessibilityLabel("Dismiss approval")
+        }
+      }
+    }
+  }
+
+  private func actionButton(
+    title: String,
+    icon: String,
+    tint: Color,
+    filled: Bool,
+    action: @escaping @MainActor () async -> Void
+  ) -> some View {
+    Button {
+      Task {
+        await action()
+        dismiss()
+      }
+    } label: {
+      HStack(spacing: 6) {
+        Image(systemName: icon)
+          .font(.system(size: 12, weight: .bold))
+        Text(title)
+          .font(.subheadline.weight(.semibold))
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(filled ? .white : tint)
+      .padding(.horizontal, 14)
+      .padding(.vertical, 11)
+      .frame(maxWidth: .infinity)
+      .background(
+        filled ? tint.opacity(0.86) : tint.opacity(0.08),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(tint.opacity(filled ? 0.20 : 0.28), lineWidth: 0.8)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(busy)
+    .accessibilityLabel(title)
+  }
+}
+
 struct WorkPlanFullScreenView: View {
   let plan: WorkPendingPlanApprovalModel
   var fallbackProvider: String? = nil

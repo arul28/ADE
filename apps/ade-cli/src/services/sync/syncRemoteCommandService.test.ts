@@ -375,3 +375,58 @@ describe("lanes.suggestName", () => {
     ).rejects.toThrow("lanes.suggestName requires prompt.");
   });
 });
+
+describe("lanes.refreshSnapshots conditional responses", () => {
+  function createLaneListService() {
+    const lanes = [{ id: "lane-1", name: "Lane one", status: { dirty: false, ahead: 0, behind: 0 } }];
+    const laneService = {
+      refreshSnapshots: vi.fn().mockResolvedValue({ refreshedCount: 1, lanes }),
+      listStateSnapshots: vi.fn().mockReturnValue([]),
+    };
+    const sessionService = { list: vi.fn().mockReturnValue([]) };
+    const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
+    const service = createSyncRemoteCommandService({
+      laneService,
+      prService: {},
+      ptyService: {},
+      sessionService,
+      fileService: {},
+      logger,
+    } as any);
+    return { service, laneService };
+  }
+
+  it("returns the full payload with a signature, then notModified for a matching ifNoneMatch", async () => {
+    const { service } = createLaneListService();
+
+    const first = (await service.execute(makePayload("lanes.refreshSnapshots"))) as {
+      lanes: unknown[];
+      snapshots: unknown[] | null;
+      signature: string;
+      notModified: boolean;
+    };
+    expect(first.notModified).toBe(false);
+    expect(first.signature).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.lanes).toHaveLength(1);
+    expect(first.snapshots).toHaveLength(1);
+
+    const second = (await service.execute(
+      makePayload("lanes.refreshSnapshots", { ifNoneMatch: first.signature }),
+    )) as { lanes: unknown[]; snapshots: unknown[] | null; signature: string; notModified: boolean };
+    expect(second.notModified).toBe(true);
+    expect(second.signature).toBe(first.signature);
+    expect(second.lanes).toEqual([]);
+    expect(second.snapshots).toBeNull();
+  });
+
+  it("returns the full payload again when ifNoneMatch is stale", async () => {
+    const { service } = createLaneListService();
+
+    const result = (await service.execute(
+      makePayload("lanes.refreshSnapshots", { ifNoneMatch: "0".repeat(64) }),
+    )) as { lanes: unknown[]; signature: string; notModified: boolean };
+    expect(result.notModified).toBe(false);
+    expect(result.lanes).toHaveLength(1);
+    expect(result.signature).not.toBe("0".repeat(64));
+  });
+});

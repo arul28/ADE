@@ -68,7 +68,11 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     )
   case .activity(let activity, let detail, let turnId):
     return .activity(kind: activity.rawValue, detail: detail, turnId: turnId)
-  case .plan(let steps, let explanation, let turnId):
+  // Labeled bindings on purpose: AgentChatEvent.plan orders (steps, turnId,
+  // explanation) while WorkChatEvent.plan orders (steps, explanation, turnId).
+  // A positional match here silently swaps turnId/explanation — the turn id
+  // renders as the plan body and per-delta cards stop merging.
+  case .plan(steps: let steps, turnId: let turnId, explanation: let explanation):
     let mapped = steps.map { WorkPlanStep(text: $0.text, status: $0.status) }
     return .plan(steps: mapped, explanation: explanation, turnId: turnId)
   case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):

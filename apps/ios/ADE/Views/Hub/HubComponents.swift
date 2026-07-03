@@ -1,8 +1,8 @@
 import SwiftUI
 
 // Visual building blocks for the all-projects hub: the top bar, project cards
-// (collapsible) with their lanes (collapsible) and chat rows, the bottom
-// "type to vibecode" composer trigger, and the empty/connecting states.
+// (collapsible) with their lanes (collapsible) and chat rows, and the
+// empty/connecting states. The bottom composer lives in HubComposerDrawer.swift.
 
 // MARK: - Top bar
 
@@ -115,8 +115,6 @@ struct HubProjectPresentation: Equatable, Identifiable {
   let isLoading: Bool
   let laneCount: Int
   let chatCount: Int
-  let runningCount: Int
-  let attentionCount: Int
   let lanes: [HubLanePresentation]
   let metaLine: String
   fileprivate let renderSignature: Int
@@ -130,8 +128,6 @@ struct HubProjectPresentation: Equatable, Identifiable {
     isLoading: Bool,
     laneCount: Int,
     chatCount: Int,
-    runningCount: Int,
-    attentionCount: Int,
     lanes: [HubLanePresentation]
   ) {
     self.project = project
@@ -140,8 +136,6 @@ struct HubProjectPresentation: Equatable, Identifiable {
     self.isLoading = isLoading
     self.laneCount = laneCount
     self.chatCount = chatCount
-    self.runningCount = runningCount
-    self.attentionCount = attentionCount
     self.lanes = lanes
     let lanePart = "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
     let chatPart = "\(chatCount) chat\(chatCount == 1 ? "" : "s")"
@@ -153,8 +147,6 @@ struct HubProjectPresentation: Equatable, Identifiable {
       isLoading: isLoading,
       laneCount: laneCount,
       chatCount: chatCount,
-      runningCount: runningCount,
-      attentionCount: attentionCount,
       lanes: lanes
     )
   }
@@ -168,8 +160,6 @@ struct HubLanePresentation: Equatable, Identifiable {
   let lane: RemoteRosterLane
   let rows: [HubChatRowPresentation]
   let totalCount: Int
-  let runningCount: Int
-  let attentionCount: Int
   fileprivate let renderSignature: Int
 
   var id: String { lane.id }
@@ -177,21 +167,15 @@ struct HubLanePresentation: Equatable, Identifiable {
   init(
     lane: RemoteRosterLane,
     rows: [HubChatRowPresentation],
-    totalCount: Int,
-    runningCount: Int,
-    attentionCount: Int
+    totalCount: Int
   ) {
     self.lane = lane
     self.rows = rows
     self.totalCount = totalCount
-    self.runningCount = runningCount
-    self.attentionCount = attentionCount
     self.renderSignature = hubLaneRenderSignature(
       lane: lane,
       rows: rows,
-      totalCount: totalCount,
-      runningCount: runningCount,
-      attentionCount: attentionCount
+      totalCount: totalCount
     )
   }
 
@@ -266,8 +250,6 @@ private func hubProjectRenderSignature(
   isLoading: Bool,
   laneCount: Int,
   chatCount: Int,
-  runningCount: Int,
-  attentionCount: Int,
   lanes: [HubLanePresentation]
 ) -> Int {
   var hasher = Hasher()
@@ -281,8 +263,6 @@ private func hubProjectRenderSignature(
   hasher.combine(isLoading)
   hasher.combine(laneCount)
   hasher.combine(chatCount)
-  hasher.combine(runningCount)
-  hasher.combine(attentionCount)
   hasher.combine(lanes.map(\.renderSignature))
   return hasher.finalize()
 }
@@ -298,9 +278,7 @@ private func hubProjectIconSignature(_ dataUrl: String?) -> String {
 private func hubLaneRenderSignature(
   lane: RemoteRosterLane,
   rows: [HubChatRowPresentation],
-  totalCount: Int,
-  runningCount: Int,
-  attentionCount: Int
+  totalCount: Int
 ) -> Int {
   var hasher = Hasher()
   hasher.combine(lane.id)
@@ -308,8 +286,6 @@ private func hubLaneRenderSignature(
   hasher.combine(lane.color)
   hasher.combine(lane.icon)
   hasher.combine(totalCount)
-  hasher.combine(runningCount)
-  hasher.combine(attentionCount)
   hasher.combine(rows.map(\.renderSignature))
   return hasher.finalize()
 }
@@ -353,8 +329,6 @@ func buildHubProjectPresentation(
       isLoading: isActive,
       laneCount: project.laneCount,
       chatCount: 0,
-      runningCount: 0,
-      attentionCount: 0,
       lanes: []
     )
   }
@@ -394,9 +368,7 @@ func buildHubProjectPresentation(
     return HubLanePresentation(
       lane: lane,
       rows: rows,
-      totalCount: rows.count,
-      runningCount: laneChats.filter(\.isRunning).count,
-      attentionCount: laneChats.filter(\.needsAttention).count
+      totalCount: rows.count
     )
   }
   let chatCount = lanes.reduce(0) { $0 + $1.rows.count }
@@ -408,8 +380,6 @@ func buildHubProjectPresentation(
     isLoading: false,
     laneCount: roster.lanes.count,
     chatCount: chatCount,
-    runningCount: topLevelChats.filter(\.isRunning).count,
-    attentionCount: topLevelChats.filter(\.needsAttention).count,
     lanes: lanes
   )
 }
@@ -493,16 +463,12 @@ struct HubProjectCard: View, Equatable {
 
       // Tapping the title area opens the full project tabs.
       Button(action: onOpenProject) {
-        HStack(spacing: 6) {
-          Text(project.displayName)
-            .font(.system(.title3, design: .rounded).weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          if presentation.runningCount > 0 { HubRunningPulse(count: presentation.runningCount) }
-          if presentation.attentionCount > 0 { HubAttentionBubble(count: presentation.attentionCount) }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
+        Text(project.displayName)
+          .font(.system(.title3, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
 
@@ -616,8 +582,6 @@ struct HubLaneSection: View, Equatable {
             .foregroundStyle(laneTint)
             .lineLimit(1)
           Spacer(minLength: 6)
-          if presentation.runningCount > 0 { HubRunningPulse(count: presentation.runningCount) }
-          if presentation.attentionCount > 0 { HubAttentionBubble(count: presentation.attentionCount) }
           Text("\(presentation.totalCount)")
             .font(.system(.caption2, design: .rounded).weight(.semibold).monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
@@ -719,73 +683,6 @@ struct HubStatusDot: View {
       .fill(workChatStatusTint(status))
       .frame(width: 8, height: 8)
       .accessibilityHidden(true)
-  }
-}
-
-// MARK: - Attention bubble + running pulse
-
-struct HubAttentionBubble: View {
-  let count: Int
-  var body: some View {
-    Text("\(count)")
-      .font(.system(.caption2, design: .rounded).weight(.bold))
-      .foregroundStyle(.white)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 2)
-      .background(ADEColor.warning, in: Capsule())
-      .accessibilityLabel("\(count) need\(count == 1 ? "s" : "") attention")
-  }
-}
-
-struct HubRunningPulse: View {
-  let count: Int
-
-  var body: some View {
-    HStack(spacing: 4) {
-      Circle()
-        .fill(ADEColor.success)
-        .frame(width: 7, height: 7)
-      Text("\(count)")
-        .font(.system(.caption2, design: .rounded).weight(.semibold))
-        .foregroundStyle(ADEColor.success)
-    }
-    .accessibilityLabel("\(count) running")
-  }
-}
-
-// MARK: - Bottom composer trigger
-
-struct HubComposerBar: View {
-  let onTap: () -> Void
-
-  var body: some View {
-    Button(action: onTap) {
-      HStack(spacing: 10) {
-        Image(systemName: "sparkles")
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text("Type to vibecode…")
-          .font(.system(.subheadline, design: .rounded))
-          .foregroundStyle(ADEColor.textMuted)
-        Spacer(minLength: 8)
-        Image(systemName: "arrow.up.circle.fill")
-          .font(.system(size: 24))
-          .foregroundStyle(ADEColor.accent.opacity(0.85))
-      }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
-      .background {
-        Capsule().fill(ADEColor.pageBackground)
-        Capsule().fill(ADEColor.composerBackground)
-      }
-      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
-      .contentShape(Capsule())
-    }
-    .buttonStyle(.plain)
-    .padding(.horizontal, 16)
-    .padding(.bottom, 8)
-    .accessibilityLabel("New chat")
-    .accessibilityHint("Opens the new chat composer.")
   }
 }
 

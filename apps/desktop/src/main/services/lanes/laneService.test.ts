@@ -212,6 +212,72 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
+  it("skips lane_state_snapshots writes when the lane status is unchanged", async () => {
+    // Regression: unchanged status polls used to rewrite updated_at on every
+    // summary read, replicating a CRDT row change to phones every poll and
+    // hammering the mobile Lanes list with no-op invalidations.
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-noop-snapshot-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-noop-snapshot", repoRoot });
+
+      let statusStdout = "";
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
+        if (args[0] === "status") return { exitCode: 0, stdout: statusStdout, stderr: "" };
+        if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-noop-snapshot",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      await service.getSummary("lane-child", { includeStatus: true });
+      const row = () =>
+        db.get<{ dirty: number; updated_at: string }>(
+          "select dirty, updated_at from lane_state_snapshots where lane_id = ?",
+          ["lane-child"],
+        );
+      expect(row()?.dirty).toBe(0);
+
+      // Pin updated_at to a sentinel; an unchanged-status read must not touch it.
+      const sentinel = "2026-03-11T12:34:56.000Z";
+      db.run("update lane_state_snapshots set updated_at = ? where lane_id = ?", [sentinel, "lane-child"]);
+      await service.getSummary("lane-child", { includeStatus: true });
+      expect(row()).toEqual({ dirty: 0, updated_at: sentinel });
+
+      // A real status change still writes.
+      statusStdout = " M file.txt\n";
+      await service.getSummary("lane-child", { includeStatus: true });
+      expect(row()?.dirty).toBe(1);
+      expect(row()?.updated_at).not.toBe(sentinel);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("recreates the primary lane when the only stored primary lane is archived", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-archived-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

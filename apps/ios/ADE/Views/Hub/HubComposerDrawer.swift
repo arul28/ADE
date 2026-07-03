@@ -1,18 +1,20 @@
 import SwiftUI
 
-// The hub's slide-up "new chat" drawer. Opened from the bottom "type to
-// vibecode" bar, it mirrors the in-project new-chat composer
-// (`WorkNewChatScreen`) — same model picker, access-mode pills, fast-mode
-// toggle, dictation, and Chat/CLI switch — but adds a combined Project ▸ Lane
-// destination control, because from the hub a chat isn't scoped to a project
-// yet. On send it creates the chat IN THE CHOSEN PROJECT IN PLACE (no
-// active-project switch), reports the created chat back through `onCreated`,
-// and dismisses. The hub surfaces a toast; it does NOT navigate into the chat.
+// The hub's bottom "type to vibecode" composer. The box pinned to the bottom of
+// the hub IS the real composer — focusing it raises the keyboard and expands
+// the full new-chat controls in place (Project ▸ Lane destination, Chat/CLI
+// switch, model/mode/dictation row) directly above the keyboard, mirroring the
+// in-project new-chat composer (`WorkNewChatScreen`). Collapsing the keyboard
+// hides the controls but keeps the draft text and every setting; send works
+// from the minimized box too. On send it creates the chat IN THE CHOSEN
+// PROJECT IN PLACE (no active-project switch), reports the created chat back
+// through `onCreated`, and collapses. The hub surfaces a toast; it does NOT
+// navigate into the chat.
 
 // MARK: - Public surface (the hub depends on these names)
 
-/// A chat created from the hub drawer, handed back to the hub via `onCreated`
-/// after a successful create (the drawer has already dismissed by then).
+/// A chat created from the hub composer, handed back to the hub via `onCreated`
+/// after a successful create (the composer has already collapsed by then).
 struct HubCreatedChat: Equatable {
   let projectId: String
   let projectRootPath: String?
@@ -29,44 +31,17 @@ private struct HubDestinationTopKey: PreferenceKey {
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
-extension View {
-  /// Presents the hub new-chat drawer as a sheet. `onCreated` fires after a
-  /// successful create (drawer already dismissed).
-  func hubComposerDrawer(
-    isPresented: Binding<Bool>,
-    onCreated: @escaping (HubCreatedChat) -> Void = { _ in }
-  ) -> some View {
-    modifier(HubComposerDrawerModifier(isPresented: isPresented, onCreated: onCreated))
-  }
-}
+// MARK: - Inline composer
 
-/// Hosts the drawer in a medium/large sheet. Sheets do NOT inherit environment
-/// objects from their presenter, so we read the app-level `SyncService` and
-/// `DictationController` here and re-inject them into the drawer.
-private struct HubComposerDrawerModifier: ViewModifier {
-  @Binding var isPresented: Bool
-  let onCreated: (HubCreatedChat) -> Void
+/// The one animation every hub-composer expand/collapse rides on — shared with
+/// HubScreen so a tap-outside collapse moves identically to a focus expand.
+let hubComposerSpring = Animation.spring(response: 0.34, dampingFraction: 0.86)
 
+struct HubInlineComposer: View {
   @EnvironmentObject private var syncService: SyncService
-  @EnvironmentObject private var dictationController: DictationController
 
-  func body(content: Content) -> some View {
-    content.sheet(isPresented: $isPresented) {
-      HubComposerDrawer(onCreated: onCreated)
-        .environmentObject(syncService)
-        .environmentObject(dictationController)
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
-    }
-  }
-}
-
-// MARK: - Drawer
-
-struct HubComposerDrawer: View {
-  @EnvironmentObject private var syncService: SyncService
-  @Environment(\.dismiss) private var dismiss
-
+  /// Owned by the hub so taps on the list behind the composer can collapse it.
+  @Binding var expanded: Bool
   let onCreated: (HubCreatedChat) -> Void
 
   // Composer selection (seeded from the app-wide "last used" record in init so
@@ -104,7 +79,8 @@ struct HubComposerDrawer: View {
 
   private let dictationTargetId = "hub-new-chat-drawer"
 
-  init(onCreated: @escaping (HubCreatedChat) -> Void) {
+  init(expanded: Binding<Bool>, onCreated: @escaping (HubCreatedChat) -> Void) {
+    self._expanded = expanded
     self.onCreated = onCreated
     if let saved = WorkComposerPreferences.load() {
       _provider = State(initialValue: saved.provider)
@@ -113,13 +89,28 @@ struct HubComposerDrawer: View {
       _reasoningEffort = State(initialValue: saved.reasoningEffort)
       _codexFastMode = State(initialValue: saved.codexFastMode)
     }
-    if let dest = HubComposerDrawer.loadLastDestination() {
+    if let dest = HubInlineComposer.loadLastDestination() {
       _pickedProjectId = State(initialValue: dest.projectId)
       _selectedLaneId = State(initialValue: dest.laneId)
     }
   }
 
   // MARK: Derived state
+
+  /// Expanded while the user is composing, dictating, or inside one of the
+  /// pickers (presenting a sheet/popover can resign the text field's focus —
+  /// the panel must not collapse underneath it). `expanded` is explicit state
+  /// (not derived from focus) so every change happens inside a spring
+  /// transaction instead of snapping with the focus flip.
+  private var isExpanded: Bool {
+    expanded || isDictating || modelPickerPresented || destinationPickerPresented
+  }
+
+  /// Collapses the panel, keeping the draft text and all settings.
+  private func collapse() {
+    composerFocused = false
+    withAnimation(hubComposerSpring) { expanded = false }
+  }
 
   private var composerSelection: WorkComposerPreferences.Selection {
     WorkComposerPreferences.Selection(
@@ -195,38 +186,61 @@ struct HubComposerDrawer: View {
   // MARK: Body
 
   var body: some View {
-    VStack(spacing: 0) {
-      ScrollView {
-        VStack(spacing: 14) {
-          destinationControl
-          if !isDictating {
-            WorkSessionTypeSwitcher(selection: $sessionMode)
-              .frame(maxWidth: .infinity, alignment: .center)
-          }
-          if let errorMessage {
-            HStack(spacing: 8) {
-              Image(systemName: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(ADEColor.danger)
-              Text(errorMessage)
-                .font(.caption)
-                .foregroundStyle(ADEColor.danger)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(10)
-            .background(ADEColor.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          }
-          composerCard
+    VStack(spacing: 12) {
+      if isExpanded {
+        destinationControl
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+        if !isDictating {
+          WorkSessionTypeSwitcher(selection: $sessionMode)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 16)
       }
-      .scrollBounceBehavior(.basedOnSize)
-      .scrollDismissesKeyboard(.interactively)
+      if let errorMessage {
+        HStack(spacing: 8) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .font(.caption)
+            .foregroundStyle(ADEColor.danger)
+          Text(errorMessage)
+            .font(.caption)
+            .foregroundStyle(ADEColor.danger)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(10)
+        .background(ADEColor.danger.opacity(0.1), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      }
+      composerCard
     }
-    .background(ADEColor.pageBackground.ignoresSafeArea())
+    .padding(.horizontal, 16)
+    .padding(.top, isExpanded ? 12 : 0)
+    .padding(.bottom, 8)
+    .animation(hubComposerSpring, value: isExpanded)
+    .animation(.easeOut(duration: 0.16), value: errorMessage != nil)
+    // Dragging down anywhere on the panel collapses it (the keyboard follows
+    // via the focus reset in collapse()).
+    .gesture(
+      DragGesture(minimumDistance: 16)
+        .onEnded { value in
+          if isExpanded && value.translation.height > 24 { collapse() }
+        }
+    )
     .onAppear { onAppearSetup() }
+    .onChange(of: composerFocused) { _, focused in
+      if focused { withAnimation(hubComposerSpring) { expanded = true } }
+    }
+    .onChange(of: expanded) { _, nowExpanded in
+      // The hub collapses us from the outside (tap on the list) by flipping the
+      // binding — drop focus so the keyboard goes down with the panel.
+      if !nowExpanded { composerFocused = false }
+    }
+    // The keyboard can disappear without SwiftUI clearing focus (interactive
+    // scroll dismissal, hardware-keyboard toggles). Never leave the panel
+    // expanded with no keyboard and no way out — unless a picker or dictation
+    // legitimately owns the screen.
+    .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+      guard expanded, !modelPickerPresented, !destinationPickerPresented, !isDictating else { return }
+      collapse()
+    }
     .onChange(of: provider) { _, newProvider in
       runtimeMode = workDefaultRuntimeMode(provider: newProvider)
       if !hubChatModelBelongs(modelId, to: hubNormalizedChatProvider(newProvider)) {
@@ -253,7 +267,11 @@ struct HubComposerDrawer: View {
     .onChange(of: composerSelection) { _, newValue in
       WorkComposerPreferences.save(newValue)
     }
-    .sheet(isPresented: $modelPickerPresented) {
+    // Projects/lanes can appear or vanish while the hub sits open (reconnects,
+    // roster refreshes) — keep the persisted destination honest against them.
+    .onChange(of: syncService.rosterRevision) { _, _ in reconcileDestination() }
+    .onChange(of: syncService.projects.map(\.id)) { _, _ in reconcileDestination() }
+    .sheet(isPresented: $modelPickerPresented, onDismiss: { composerFocused = true }) {
       WorkModelPickerSheet(
         currentModelId: modelId,
         currentProvider: provider,
@@ -322,6 +340,11 @@ struct HubComposerDrawer: View {
     .popover(isPresented: $destinationPickerPresented, attachmentAnchor: .rect(.bounds), arrowEdge: .bottom) {
       destinationPicker
         .presentationCompactAdaptation(.popover)
+    }
+    .onChange(of: destinationPickerPresented) { _, presented in
+      // Presenting the popover can resign the text field; bring the keyboard
+      // back when it closes so the flow stays continuous.
+      if !presented { composerFocused = true }
     }
   }
 
@@ -539,60 +562,30 @@ struct HubComposerDrawer: View {
 
   // MARK: Composer card
 
+  /// One card that morphs between two densities: minimized it reads as the old
+  /// "type to vibecode" capsule (sparkles + field + send), expanded it grows the
+  /// controls row (model/mode/fast/dictation) beneath the field.
   private var composerCard: some View {
     VStack(alignment: .leading, spacing: 12) {
-      TextField("Type to vibecode…", text: $draft, axis: .vertical)
-        .textFieldStyle(.plain)
-        .lineLimit(1...6)
-        .font(.body)
-        .foregroundStyle(ADEColor.textPrimary)
-        .tint(ADEColor.accent)
-        .textInputAutocapitalization(.sentences)
-        .focused($composerFocused)
-        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-
-      HStack(alignment: .center, spacing: 8) {
-        if !isDictating {
-          ScrollView(.horizontal, showsIndicators: false) {
-            WorkComposerControlsRow(
-              provider: provider,
-              modelDisplayName: hubPrettyModelName(modelId),
-              reasoningEffort: reasoningEffort,
-              currentMode: runtimeMode,
-              modeOptions: workRuntimeModeOptions(provider: provider),
-              modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-              isCollapsed: isControlsCollapsed,
-              fastModeSupported: fastModeSupported,
-              fastModeEnabled: codexFastMode,
-              settingsMutationInFlight: busy,
-              onOpenModelPicker: { modelPickerPresented = true },
-              onSelectMode: { runtimeMode = $0 },
-              onToggleFastMode: { codexFastMode = $0 }
-            )
-            .padding(.trailing, 4)
-          }
-          .background(
-            GeometryReader { proxy in
-              Color.clear
-                .onAppear { controlsWidth = proxy.size.width }
-                .onChange(of: proxy.size.width) { _, newValue in
-                  controlsWidth = newValue
-                }
-            }
-          )
-
-          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
+      HStack(alignment: .center, spacing: 10) {
+        if !isExpanded {
+          Image(systemName: "sparkles")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+            .transition(.opacity)
         }
 
-        DictationMicButton(
-          draft: $draft,
-          coordinator: dictationCoordinator,
-          targetId: dictationTargetId,
-          onRecordingChange: { isDictating = $0 }
-        )
-        .frame(maxWidth: isDictating ? .infinity : nil)
+        TextField("Type to vibecode…", text: $draft, axis: .vertical)
+          .textFieldStyle(.plain)
+          .lineLimit(1...6)
+          .font(.body)
+          .foregroundStyle(ADEColor.textPrimary)
+          .tint(ADEColor.accent)
+          .textInputAutocapitalization(.sentences)
+          .focused($composerFocused)
+          .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
 
-        if !isDictating {
+        if !isExpanded {
           ADEComposerSendButton(
             enabled: canSend && !busy,
             sending: busy,
@@ -601,20 +594,79 @@ struct HubComposerDrawer: View {
           ) {
             dispatch()
           }
+          .transition(.opacity)
         }
+      }
+
+      if isExpanded {
+        HStack(alignment: .center, spacing: 8) {
+          if !isDictating {
+            ScrollView(.horizontal, showsIndicators: false) {
+              WorkComposerControlsRow(
+                provider: provider,
+                modelDisplayName: hubPrettyModelName(modelId),
+                reasoningEffort: reasoningEffort,
+                currentMode: runtimeMode,
+                modeOptions: workRuntimeModeOptions(provider: provider),
+                modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
+                isCollapsed: isControlsCollapsed,
+                fastModeSupported: fastModeSupported,
+                fastModeEnabled: codexFastMode,
+                settingsMutationInFlight: busy,
+                onOpenModelPicker: { modelPickerPresented = true },
+                onSelectMode: { runtimeMode = $0 },
+                onToggleFastMode: { codexFastMode = $0 }
+              )
+              .padding(.trailing, 4)
+            }
+            .background(
+              GeometryReader { proxy in
+                Color.clear
+                  .onAppear { controlsWidth = proxy.size.width }
+                  .onChange(of: proxy.size.width) { _, newValue in
+                    controlsWidth = newValue
+                  }
+              }
+            )
+
+            DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
+          }
+
+          DictationMicButton(
+            draft: $draft,
+            coordinator: dictationCoordinator,
+            targetId: dictationTargetId,
+            onRecordingChange: { isDictating = $0 }
+          )
+          .frame(maxWidth: isDictating ? .infinity : nil)
+
+          if !isDictating {
+            ADEComposerSendButton(
+              enabled: canSend && !busy,
+              sending: busy,
+              accessibilityLabelText: "Start chat",
+              disabledAccessibilityLabel: "Enter a message to start"
+            ) {
+              dispatch()
+            }
+          }
+        }
+        .transition(.move(edge: .top).combined(with: .opacity))
       }
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 14)
-    .background(
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
+    .padding(.vertical, isExpanded ? 14 : 10)
+    .background {
+      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
+        .fill(ADEColor.pageBackground)
+      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
         .fill(ADEColor.composerBackground)
-    )
+    }
     .overlay(
-      RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 1)
+      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
+        .stroke(isExpanded ? ADEColor.glassBorder : ADEColor.border.opacity(0.8), lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(0.16), radius: 8, y: 3)
+    .shadow(color: Color.black.opacity(isExpanded ? 0.16 : 0), radius: 8, y: 3)
   }
 
   // MARK: Actions
@@ -622,7 +674,7 @@ struct HubComposerDrawer: View {
   @MainActor
   private func onAppearSetup() {
     // A restored selection (see init) can carry a model only valid in the mode
-    // it was last used in (e.g. a CLI-only Cursor model). The drawer opens in
+    // it was last used in (e.g. a CLI-only Cursor model). The composer starts in
     // .chat, so normalize only when the restored model is actually disallowed —
     // a valid restored selection keeps its runtimeMode.
     let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
@@ -633,11 +685,6 @@ struct HubComposerDrawer: View {
       runtimeMode = workDefaultRuntimeMode(provider: provider)
     }
     reconcileDestination()
-    Task {
-      // Defer focus until the sheet finishes presenting so the keyboard rises.
-      try? await Task.sleep(nanoseconds: 350_000_000)
-      composerFocused = true
-    }
   }
 
   @MainActor
@@ -772,7 +819,8 @@ struct HubComposerDrawer: View {
         sessionId: sessionId,
         isCli: isCli
       )
-      dismiss()
+      // Collapse back to the minimized box; the hub's toast takes over from here.
+      collapse()
       onCreated(created)
       return true
     } catch {
@@ -854,7 +902,7 @@ struct HubComposerDrawer: View {
     guard !trimmed.isEmpty else { return }
     let dest = HubLastDestination(projectId: trimmed, laneId: laneId)
     guard let data = try? JSONEncoder().encode(dest) else { return }
-    ADESharedContainer.defaults.set(data, forKey: HubComposerDrawer.lastDestinationKey)
+    ADESharedContainer.defaults.set(data, forKey: HubInlineComposer.lastDestinationKey)
   }
 
   // MARK: Composer normalization (self-contained mirrors of the new-chat screen)

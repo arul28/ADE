@@ -308,6 +308,17 @@ struct WorkSessionDestinationView: View {
   var navigationTitleOverride: String?
   /// Lanes forwarded to the chat composer for `@`-mention autocomplete.
   var lanes: [LaneSummary] = []
+  /// Set when this chat is opened from the hub as a cross-project "quick look":
+  /// the session lives in a project OTHER than the phone's active one and
+  /// streams read-only without a project switch. Nil for the ordinary
+  /// same-project path. When set, transcript/streaming/sends route to that
+  /// project (via the sync scope registered on appear) and active-project-only
+  /// affordances (local DB row observation, lane presence, PR badges, proof
+  /// artifacts) are gated off — the existing full-detail path is untouched.
+  var crossProjectContext: WorkChatCrossProjectContext?
+
+  /// Whether this view is a cross-project "quick look" (see `crossProjectContext`).
+  var isCrossProject: Bool { crossProjectContext != nil }
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
@@ -787,6 +798,16 @@ struct WorkSessionDestinationView: View {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
       .task {
+        // Cross-project "quick look": register the foreign scope BEFORE load()
+        // so every transcript/summary/send routes to that project without
+        // switching the phone's active project.
+        if let crossProjectContext {
+          syncService.setCrossProjectChatScope(
+            sessionId: sessionId,
+            projectId: crossProjectContext.projectId,
+            projectRootPath: crossProjectContext.projectRootPath
+          )
+        }
         mainChatRenderEpoch = 0
         liveTranscriptCache.reset(sessionId: sessionId)
         resetTranscriptHistoryState()
@@ -798,7 +819,11 @@ struct WorkSessionDestinationView: View {
         await load()
         await sendInitialOpeningPromptIfNeeded()
         refreshSubagentSnapshots()
-        await refreshRemoteSubagentSnapshots()
+        // Remote subagent probing hits the host; skip the eager pass for a
+        // cross-project quick look (the drawer still loads it on demand).
+        if !isCrossProject {
+          await refreshRemoteSubagentSnapshots()
+        }
       }
       .task(id: liveChatObservationKey) {
         syncTranscriptFromLiveEvents()
@@ -808,6 +833,10 @@ struct WorkSessionDestinationView: View {
         await hydrateEmptyTranscriptFromHostIfNeeded()
       }
       .task(id: sessionRowObservationKey) {
+        // A cross-project quick look has no local DB row for this session (only
+        // the active project is mirrored) — status comes from the streamed
+        // chat summary / turn hint instead.
+        guard !isCrossProject else { return }
         // Session rows arrive through CRDT-backed local DB updates, not chat
         // event streams. Observe work projection changes without also poking
         // proof refresh state on every normal chat revision.
@@ -823,6 +852,10 @@ struct WorkSessionDestinationView: View {
         await refreshSessionRowFromLocalStore()
       }
       .task(id: artifactObservationKey) {
+        // Proof artifacts are served from the active project's projection; a
+        // cross-project quick look has no access to the foreign project's proof
+        // drawer, so leave it empty rather than querying the wrong project.
+        guard !isCrossProject else { return }
         // Proof rows arrive through their own projection. Keep this separate
         // from work row refreshes so live chat deltas don't churn artifact
         // loading state.
@@ -834,6 +867,9 @@ struct WorkSessionDestinationView: View {
         await syncLanePresence()
       }
       .task(id: headerMenuPrLookupKey) {
+        // PR + lane presence lookups read the active project's caches; skip
+        // them for a cross-project quick look (the header hides lane/PR actions).
+        guard !isCrossProject else { return }
         await resolveLaneOpenPr(for: headerMenuLaneId)
         await loadPrCreateCapabilitiesIfNeeded()
       }
@@ -856,8 +892,15 @@ struct WorkSessionDestinationView: View {
           self.announcedLaneId = nil
         }
         cleanupLoadedArtifactContent()
+        let wasCrossProject = isCrossProject
         Task {
           try? await syncService.unsubscribeFromChatEvents(sessionId: sessionId)
+        }
+        // Drop the foreign routing so a later same-session open (e.g. after
+        // activating the project) uses the normal active-project path. The
+        // unsubscribe above doesn't need the scope (the host keys off sessionId).
+        if wasCrossProject {
+          syncService.clearCrossProjectChatScope(sessionId: sessionId)
         }
       }
   }
@@ -1045,6 +1088,9 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func syncLanePresence() async {
+    // Lane presence is an active-project concern; a cross-project quick look
+    // must not announce itself into a foreign project's lane presence.
+    guard !isCrossProject else { return }
     guard showsLaneActions else { return }
     guard let laneId = session?.laneId ?? initialSession?.laneId else { return }
     guard announcedLaneId != laneId else { return }
@@ -1064,10 +1110,20 @@ struct WorkSessionDestinationView: View {
     do {
       if let fetchedSession = try await syncService.fetchSession(id: sessionId) {
         session = fetchedSession
+      } else if session == nil, initialSession == nil, isLive, hostReachable {
+        // A chat opened straight from the hub — e.g. just created into a
+        // project activated in place — may not have its local session row yet
+        // (created on the host, still in flight over the changeset stream).
+        // Hydrate it from the host instead of flashing "Session unavailable".
+        if let hydrated = await syncService.ensureSessionRowHydrated(sessionId: sessionId) {
+          session = hydrated
+        }
       }
       lastSessionRowRefreshAt = Date()
       await refreshChatSummaryFromHost()
-      if !syncService.prefersReducedSyncLoad {
+      // Proof artifacts are active-project-scoped; skip for a cross-project
+      // quick look (the drawer stays empty rather than querying the wrong project).
+      if !isCrossProject && !syncService.prefersReducedSyncLoad {
         await refreshArtifacts(force: true)
       }
       await loadTranscript(forceRemote: shouldHydrateTranscriptFromHost, preferLightweight: syncService.prefersReducedSyncLoad)
@@ -1514,6 +1570,9 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func refreshArtifacts(force: Bool) async {
+    // Proof artifacts live in the active project's projection; a cross-project
+    // quick look has no access to the foreign project's proof drawer.
+    guard !isCrossProject else { return }
     guard let currentSession = session ?? initialSession,
           isChatSession(currentSession)
     else { return }
@@ -2055,6 +2114,7 @@ extension WorkSessionDestinationView: Equatable {
       && lhs.showsLaneActions == rhs.showsLaneActions
       && lhs.navigationTitleOverride == rhs.navigationTitleOverride
       && workLaneListRenderSignature(lhs.lanes) == workLaneListRenderSignature(rhs.lanes)
+      && lhs.crossProjectContext == rhs.crossProjectContext
   }
 }
 

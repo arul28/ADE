@@ -26,16 +26,112 @@ private struct HubChatCoverModifier: ViewModifier {
   }
 }
 
+/// Identifies the foreign project a hub chat streams from in cross-project
+/// "quick look" mode. Passed to `WorkSessionDestinationView.crossProjectContext`.
+struct WorkChatCrossProjectContext: Equatable {
+  let projectId: String
+  let projectRootPath: String?
+  let displayName: String
+}
+
+/// How the hub decided to open a chat: still deciding, a lightweight
+/// cross-project quick look (no project switch), or after a full activation.
+private enum HubChatOpenMode: Equatable {
+  case deciding
+  case crossProject(WorkChatCrossProjectContext, TerminalSessionSummary)
+  case activated
+}
+
+/// Chat tool type for a roster-seeded session stub. Prefers the row's own tool
+/// type; derives one from the provider only as a fallback so `isChatSession`
+/// still recognizes the stub as a chat.
+private func workCrossProjectChatToolType(chat: RemoteRosterChat) -> String {
+  if let raw = chat.toolType?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+    return raw
+  }
+  let provider = chat.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+  switch provider {
+  case "cursor": return "cursor"
+  case "": return "claude-chat"
+  default: return "\(provider)-chat"
+  }
+}
+
+/// Synthesize a `TerminalSessionSummary` from the hub roster stub so the chat
+/// view renders immediately in cross-project mode — the foreign session row is
+/// never mirrored into the phone's local DB. The authoritative summary/status
+/// arrives over the scoped transcript stream and `chat.getSummary`.
+func makeCrossProjectSessionStub(chat: RemoteRosterChat, lane: RemoteRosterLane?) -> TerminalSessionSummary {
+  let (statusString, runtimeState): (String, String) = {
+    switch chat.status {
+    case .running: return ("running", "running")
+    case .awaiting: return ("awaiting-input", "waiting-input")
+    case .idle: return ("idle", "idle")
+    case .ended: return ("ended", "stopped")
+    case .failed: return ("failed", "failed")
+    }
+  }()
+  return TerminalSessionSummary(
+    id: chat.id,
+    laneId: chat.laneId,
+    laneName: lane?.name ?? "",
+    ptyId: nil,
+    tracked: true,
+    pinned: chat.pinned ?? false,
+    manuallyNamed: nil,
+    goal: nil,
+    toolType: workCrossProjectChatToolType(chat: chat),
+    title: chat.title ?? "Chat",
+    status: statusString,
+    startedAt: chat.lastActivityAt ?? "",
+    endedAt: nil,
+    exitCode: nil,
+    transcriptPath: "",
+    headShaStart: nil,
+    headShaEnd: nil,
+    lastOutputPreview: chat.preview,
+    summary: nil,
+    runtimeState: runtimeState,
+    resumeCommand: nil,
+    resumeMetadata: nil,
+    chatIdleSinceAt: nil,
+    chatSessionId: chat.chatSessionId
+  )
+}
+
 private struct HubChatCover: View {
   let target: HubChatTarget
   let syncService: SyncService
   let onClose: () -> Void
-  @State private var ready = false
+  @State private var mode: HubChatOpenMode = .deciding
 
   var body: some View {
     NavigationStack {
       Group {
-        if ready {
+        switch mode {
+        case .deciding:
+          HubChatActivatingView(projectName: target.project.displayName, onClose: onClose)
+        case .crossProject(let context, let sessionStub):
+          // Lightweight cross-project quick look: stream the transcript from the
+          // foreign project WITHOUT switching the phone's active project. Lane/PR
+          // affordances are hidden (showsLaneActions: false) and gated off inside
+          // the view; sending / approving still work via scoped commands.
+          WorkSessionDestinationView(
+            sessionId: target.chat.id,
+            initialOpeningPrompt: nil,
+            initialSession: sessionStub,
+            initialChatSummary: nil,
+            initialTranscript: nil,
+            transitionNamespace: nil,
+            isLive: true,
+            navigationChrome: .pushedDetail,
+            forceFreshTranscriptOnOpen: true,
+            showsLaneActions: false,
+            lanes: target.lane.map { [$0.asLaneSummary()] } ?? [],
+            crossProjectContext: context
+          )
+          .id(target.id)
+        case .activated:
           WorkSessionDestinationView(
             sessionId: target.chat.id,
             initialOpeningPrompt: nil,
@@ -49,24 +145,38 @@ private struct HubChatCover: View {
             lanes: target.lane.map { [$0.asLaneSummary()] } ?? []
           )
           .id(target.id)
-        } else {
-          HubChatActivatingView(projectName: target.project.displayName, onClose: onClose)
         }
       }
     }
-    .task {
-      // Activate the chat's project (keeping the hub) so transcript sync targets
-      // the right project, then render the chat. No-op when already active.
-      if syncService.isActiveProject(target.project) {
-        ready = true
-        return
-      }
-      await syncService.openProjectForHubChat(target.project)
-      // Only render the chat once the project switch actually landed; otherwise
-      // the cover would open against the wrong active project (failed/offline switch).
-      guard syncService.isActiveProject(target.project) else { return }
-      ready = true
+    .task { await decideAndOpen() }
+  }
+
+  private func decideAndOpen() async {
+    // Already the active project → the full-detail path (existing infra).
+    if syncService.isActiveProject(target.project) {
+      mode = .activated
+      return
     }
+    // Cross-project quick look when the host supports it (newer brain): stream
+    // the foreign chat in place, no project switch.
+    if syncService.supportsCrossProjectChat {
+      mode = .crossProject(
+        WorkChatCrossProjectContext(
+          projectId: target.project.id,
+          projectRootPath: target.project.rootPath,
+          displayName: target.project.displayName
+        ),
+        makeCrossProjectSessionStub(chat: target.chat, lane: target.lane)
+      )
+      return
+    }
+    // Fallback for hosts without cross-project support (e.g. the currently
+    // published brain): activate the project first (keeping the hub), then
+    // render the chat once the switch lands. An offline/failed switch leaves
+    // the activating spinner so the cover never opens against the wrong project.
+    await syncService.openProjectForHubChat(target.project)
+    guard syncService.isActiveProject(target.project) else { return }
+    mode = .activated
   }
 }
 

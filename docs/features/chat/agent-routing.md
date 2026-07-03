@@ -227,7 +227,11 @@ runtime guidance as an ordinary system-context input item and keeps
 `collaborationMode.settings.developer_instructions` null, then turns
 completed Codex `plan` items (including `<proposed_plan>` wrappers) into
 ADE plan-approval requests. Accepting that request moves the session to
-edit/default mode and starts the implementation turn.
+`full-auto`/default mode and starts the implementation turn — the user
+already reviewed exactly what the plan will do, so `stageCodexPlanApprovalFollowup`
+hands the session straight to full access rather than dropping to `edit`
+and gating every file change behind another approval round that would just
+relitigate the plan.
 
 Default Codex chats map to the "Default permissions" preset
 (`workspace-write` + `on-request`). The older implicit fallback that

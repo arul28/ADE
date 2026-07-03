@@ -1159,6 +1159,433 @@ struct WorkEventCardView: View {
   }
 }
 
+/// Resolved / historical structured-question card shown in the transcript once
+/// a question is no longer pending. Replaces the flat "Question asked · Input
+/// requested" event card: renders the asking provider's logo + "{Provider}
+/// asked", the question text as the primary line, clean option rows (recommended
+/// and chosen marked), and — when resolved — the outcome inline so the separate
+/// "Input resolved" ribbon can be folded away.
+struct WorkResolvedQuestionCard: View {
+  let card: WorkEventCardModel
+  var fallbackProvider: String? = nil
+
+  private var model: WorkPendingQuestionModel? { card.questionModel }
+
+  private var resolvedProvider: String? {
+    if let source = model?.source?.trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty {
+      return source
+    }
+    return fallbackProvider
+  }
+
+  private var accent: Color { ADEColor.providerChatAccent(for: resolvedProvider) }
+
+  private var resolution: String? {
+    guard let trimmed = card.resolution?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else { return nil }
+    return trimmed
+  }
+
+  private var isResolved: Bool { resolution != nil }
+
+  private var isDeclined: Bool {
+    switch (resolution ?? "").lowercased() {
+    case "declined", "rejected", "cancelled", "canceled": return true
+    default: return false
+    }
+  }
+
+  /// The option the user picked, matched by value or label against the
+  /// resolution word. Nil when the resolution is a plain status ("accepted"),
+  /// a freeform/typed answer, or a decline.
+  private var chosenOption: WorkPendingQuestionOption? {
+    guard let model, !isDeclined else { return nil }
+    for question in model.questions {
+      if let match = question.options.first(where: { isSelected($0) }) {
+        return match
+      }
+    }
+    return nil
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      header
+
+      if let model {
+        ForEach(Array(model.questions.enumerated()), id: \.offset) { _, question in
+          questionSection(question)
+        }
+      } else if let body = card.body, !body.isEmpty {
+        Text(body)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+
+      if isResolved {
+        resolutionPill
+      }
+    }
+    .padding(14)
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(accent.opacity(0.22), lineWidth: 1)
+    )
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityText)
+  }
+
+  private var header: some View {
+    HStack(spacing: 8) {
+      WorkProviderBareLogo(
+        provider: resolvedProvider,
+        fallbackSymbol: providerIcon(resolvedProvider ?? ""),
+        tint: accent,
+        size: 16
+      )
+      Text("\(workChatSurfaceProviderName(resolvedProvider)) asked")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(accent)
+      Spacer(minLength: 8)
+      Text(relativeTimestamp(card.timestamp))
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+  }
+
+  @ViewBuilder
+  private func questionSection(_ question: WorkPendingQuestion) -> some View {
+    let questionText = question.isSecret ? "Secure response requested" : question.question
+    VStack(alignment: .leading, spacing: 8) {
+      if let header = question.header, !header.isEmpty {
+        Text(header.uppercased())
+          .font(.caption2.weight(.bold))
+          .tracking(0.6)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      if !questionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Text(questionText)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      if !question.options.isEmpty {
+        VStack(alignment: .leading, spacing: 6) {
+          ForEach(Array(question.options.enumerated()), id: \.offset) { _, option in
+            optionRow(option)
+          }
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  @ViewBuilder
+  private func optionRow(_ option: WorkPendingQuestionOption) -> some View {
+    let selected = isSelected(option)
+    HStack(alignment: .top, spacing: 8) {
+      Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(selected ? accent : ADEColor.textMuted.opacity(0.55))
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 6) {
+          Text(option.label)
+            .font(.caption.weight(selected ? .semibold : .regular))
+            .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          if option.recommended {
+            Text("Recommended")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(accent)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 2)
+              .background(accent.opacity(0.12), in: Capsule(style: .continuous))
+          }
+        }
+        if let description = option.description, !description.isEmpty {
+          Text(description)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+    }
+    .padding(.vertical, 5)
+    .padding(.horizontal, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      selected ? accent.opacity(0.08) : Color.clear,
+      in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .stroke(selected ? accent.opacity(0.30) : Color.clear, lineWidth: 1)
+    )
+    .opacity(isDeclined ? 0.55 : 1)
+  }
+
+  private func isSelected(_ option: WorkPendingQuestionOption) -> Bool {
+    guard let resolution, !isDeclined else { return false }
+    let normalized = resolution.lowercased()
+    if normalized == option.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+      return true
+    }
+    return normalized == option.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private var resolutionPill: some View {
+    let key = (resolution ?? "").lowercased()
+    let tint = pendingInputResolutionTint(for: key).color
+    let label: String = {
+      if let chosen = chosenOption {
+        return "Answered · \(chosen.label)"
+      }
+      return isDeclined ? pendingInputResolutionLabel(for: key) : "Answered"
+    }()
+    return HStack(spacing: 5) {
+      Image(systemName: pendingInputResolutionIcon(for: key))
+        .font(.system(size: 11, weight: .semibold))
+      Text(label)
+        .font(.caption2.weight(.semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(tint)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 4)
+    .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+  }
+
+  private var accessibilityText: String {
+    var parts: [String] = ["\(workChatSurfaceProviderName(resolvedProvider)) asked."]
+    if let model {
+      for question in model.questions where !question.question.isEmpty {
+        parts.append(question.isSecret ? "Secure response requested." : question.question)
+      }
+    } else if let body = card.body {
+      parts.append(body)
+    }
+    if let chosen = chosenOption {
+      parts.append("Answered \(chosen.label).")
+    } else if let resolution {
+      parts.append(pendingInputResolutionLabel(for: resolution.lowercased()) + ".")
+    }
+    return parts.joined(separator: " ")
+  }
+}
+
+/// Resolved / historical plan-approval card. Mirrors the plan-ready composer
+/// badge instead of dumping the plan markdown into per-line bullets: provider
+/// logo + "{Provider} · Plan", the plan title, a short markdown preview, and a
+/// "View full plan" affordance that presents the same `WorkPlanFullScreenView`
+/// sheet the live badge uses. Shows the approve/reject outcome inline.
+struct WorkResolvedPlanCard: View {
+  let card: WorkEventCardModel
+  var fallbackProvider: String? = nil
+
+  @State private var planExpanded = false
+
+  private var plan: WorkPendingPlanApprovalModel? { card.planApprovalModel }
+
+  private var resolvedProvider: String? {
+    workPlanResolvedProvider(source: plan?.source ?? "", fallbackProvider: fallbackProvider)
+  }
+
+  private var accent: Color { ADEColor.providerChatAccent(for: resolvedProvider) }
+
+  private var resolution: String? {
+    guard let trimmed = card.resolution?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else { return nil }
+    return trimmed
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      header
+
+      if let plan {
+        if !plan.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          Text(plan.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        WorkMarkdownRenderer(markdown: planPreviewText(plan.planText))
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        HStack(spacing: 8) {
+          Button {
+            planExpanded = true
+          } label: {
+            HStack(spacing: 4) {
+              Image(systemName: "arrow.down.left.and.arrow.up.right")
+                .font(.system(size: 9, weight: .bold))
+              Text("View full plan")
+                .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundStyle(accent)
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("View full plan")
+
+          Spacer(minLength: 8)
+
+          resolutionPill
+        }
+      } else if let body = card.body, !body.isEmpty {
+        Text(body)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        resolutionPill
+      }
+    }
+    .padding(14)
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(accent.opacity(0.22), lineWidth: 1)
+    )
+    .sheet(isPresented: $planExpanded) {
+      if let plan {
+        WorkPlanFullScreenView(plan: plan, fallbackProvider: fallbackProvider)
+          .presentationDetents([.large])
+          .presentationDragIndicator(.visible)
+      }
+    }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(accessibilityText)
+  }
+
+  private var header: some View {
+    HStack(spacing: 8) {
+      WorkProviderBareLogo(
+        provider: resolvedProvider,
+        fallbackSymbol: providerIcon(resolvedProvider ?? ""),
+        tint: accent,
+        size: 16
+      )
+      Text("\(workChatSurfaceProviderName(resolvedProvider)) · Plan")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(accent)
+      Spacer(minLength: 8)
+      Image(systemName: "list.bullet.clipboard")
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(accent.opacity(0.45))
+    }
+  }
+
+  @ViewBuilder
+  private var resolutionPill: some View {
+    if let resolution {
+      let key = resolution.lowercased()
+      let tint = pendingInputResolutionTint(for: key).color
+      HStack(spacing: 5) {
+        Image(systemName: pendingInputResolutionIcon(for: key))
+          .font(.system(size: 11, weight: .semibold))
+        Text(planResolutionLabel(key))
+          .font(.caption2.weight(.semibold))
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 4)
+      .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+    }
+  }
+
+  /// Plan approvals read as "Approved" / "Rejected" rather than the generic
+  /// "Accepted" / "Declined" the shared resolution mapping produces.
+  private func planResolutionLabel(_ key: String) -> String {
+    switch key {
+    case "accepted": return "Approved"
+    case "declined", "rejected": return "Rejected"
+    default: return pendingInputResolutionLabel(for: key)
+    }
+  }
+
+  /// A compact preview of the plan markdown for the collapsed card — the full
+  /// text is available in the expand sheet.
+  private func planPreviewText(_ text: String) -> String {
+    let lines = text.components(separatedBy: .newlines)
+    var preview = lines.prefix(6).joined(separator: "\n")
+    if preview.count > 400 {
+      preview = String(preview.prefix(400)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+    } else if lines.count > 6 {
+      preview += "\n…"
+    }
+    return preview
+  }
+
+  private var accessibilityText: String {
+    var parts: [String] = ["\(workChatSurfaceProviderName(resolvedProvider)) plan."]
+    if let plan, !plan.title.isEmpty {
+      parts.append(plan.title)
+    }
+    if let resolution {
+      parts.append(planResolutionLabel(resolution.lowercased()) + ".")
+    }
+    return parts.joined(separator: " ")
+  }
+}
+
+/// Resolved / historical generic (tool / file-change) approval, rendered as a
+/// sleek one-line chip — provider logo + a small-caps "✓ ACCEPTED" / "✕ DECLINED"
+/// outcome + the request description — instead of the old full card that printed
+/// the description three times. The standalone "Input resolved" ribbon is folded
+/// away (see `buildWorkEventCards`), so this chip is the single resolved surface.
+struct WorkResolvedApprovalChip: View {
+  let card: WorkEventCardModel
+  var fallbackProvider: String? = nil
+
+  private var accent: Color { ADEColor.providerChatAccent(for: fallbackProvider) }
+  private var resolutionKey: String { (card.resolution ?? "").lowercased() }
+  private var isResolved: Bool { card.resolution?.isEmpty == false }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      WorkProviderBareLogo(
+        provider: fallbackProvider,
+        fallbackSymbol: providerIcon(fallbackProvider ?? ""),
+        tint: accent,
+        size: 14
+      )
+      Image(systemName: isResolved ? pendingInputResolutionIcon(for: resolutionKey) : "checkmark.shield")
+        .font(.system(size: 11, weight: .bold))
+        .foregroundStyle(statusTint)
+      Text(statusLabel.uppercased())
+        .font(.caption2.monospaced().weight(.semibold))
+        .tracking(0.6)
+        .foregroundStyle(statusTint)
+      if let description = card.body, !description.isEmpty {
+        Text(description)
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      Spacer(minLength: 8)
+      Text(relativeTimestamp(card.timestamp))
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel([statusLabel, card.body].compactMap { $0 }.joined(separator: ". "))
+  }
+
+  private var statusTint: Color {
+    isResolved ? pendingInputResolutionTint(for: resolutionKey).color : ADEColor.textMuted
+  }
+
+  private var statusLabel: String {
+    isResolved ? pendingInputResolutionLabel(for: resolutionKey) : "Approval"
+  }
+}
+
 /// Rich proposed-plan card — per-step checklist with status icon/color and a
 /// progress meter. Replaces the generic "Status: text" bullet list so plans
 /// feel like a plan, not a dumped array.

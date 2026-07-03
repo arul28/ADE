@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
   buildRosterSnapshot,
+  createForeignChatTranscriptResolver,
   type RosterBootedScope,
   type RosterLiveSession,
   type RosterScopeRegistry,
@@ -186,6 +187,27 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("chat-run")!.status).toBe("running");
     expect(byId.get("chat-run")!.provider).toBe("claude");
     expect(project.runningCount).toBe(1);
+  });
+
+  it("resolves a registered foreign chat transcript path and rejects unsafe input", () => {
+    const resolver = createForeignChatTranscriptResolver({ projectRegistry });
+    const expectedDir = path.join(projectRoot, ".ade", "transcripts", "chat");
+
+    // Registered project + safe session id → path inside the transcripts dir.
+    expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "chat-run" }))
+      .toBe(path.join(expectedDir, "chat-run.jsonl"));
+    // Resolvable by rootPath too.
+    expect(resolver.resolveTranscriptPath({ projectRootPath: projectRoot, sessionId: "chat-run" }))
+      .toBe(path.join(expectedDir, "chat-run.jsonl"));
+
+    // Unknown project → null (not registered).
+    expect(resolver.resolveTranscriptPath({ projectId: "project_unknown", sessionId: "chat-run" })).toBeNull();
+    // No project reference → null.
+    expect(resolver.resolveTranscriptPath({ sessionId: "chat-run" })).toBeNull();
+    // Path-traversal / unsafe session ids → null (never touches the filesystem).
+    expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "../../etc/passwd" })).toBeNull();
+    expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "a/b" })).toBeNull();
+    expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "" })).toBeNull();
   });
 
   it("tolerates a project with no ADE database (empty lanes/chats)", async () => {

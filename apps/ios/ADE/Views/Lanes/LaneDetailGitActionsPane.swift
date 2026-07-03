@@ -14,7 +14,6 @@ struct LaneDetailGitActionsPane: View {
 
   let onRefresh: () -> Void
   let onCommit: () -> Void
-  let onGenerateMessage: () async throws -> String
   let onPull: (_ mode: String) -> Void
   let onPush: (_ forceWithLease: Bool) -> Void
   let onFetch: () -> Void
@@ -46,9 +45,10 @@ struct LaneDetailGitActionsPane: View {
 
   @State private var pullMode: String = "rebase"
   @State private var showMoreActions = false
-  @State private var isGeneratingMessage = false
-  @State private var aiSetupHint: String?
   @State private var pendingCommitConfirmation: CommitHistoryConfirmation?
+  @State private var filesDisclosure = LaneSectionDisclosure()
+  @State private var stashesDisclosure = LaneSectionDisclosure()
+  @State private var historyDisclosure = LaneSectionDisclosure()
   @FocusState private var commitFieldFocused: Bool
 
   private var stagedFiles: [FileChange] { detail.diffChanges?.staged ?? [] }
@@ -61,6 +61,9 @@ struct LaneDetailGitActionsPane: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       headerSection
+      Divider()
+        .overlay(ADEColor.border.opacity(0.55))
+        .padding(.bottom, 10)
       actionToolbar
       if showMoreActions {
         moreActionsSection
@@ -74,6 +77,11 @@ struct LaneDetailGitActionsPane: View {
         .padding(EdgeInsets(top: 12, leading: 0, bottom: 20, trailing: 0))
       }
     }
+    .onAppear { applyAutoDisclosure() }
+    .onChange(of: stagedFiles.count) { _, _ in applyAutoDisclosure() }
+    .onChange(of: unstagedFiles.count) { _, _ in applyAutoDisclosure() }
+    .onChange(of: detail.stashes.count) { _, _ in applyAutoDisclosure() }
+    .onChange(of: detail.recentCommits.count) { _, _ in applyAutoDisclosure() }
     .alert(item: $pendingCommitConfirmation) { confirmation in
       Alert(
         title: Text(confirmation.title),
@@ -93,46 +101,41 @@ struct LaneDetailGitActionsPane: View {
 
   private var headerSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
+      HStack(alignment: .top, spacing: 8) {
         Circle()
           .fill(laneAccentColor)
           .frame(width: 8, height: 8)
+          .padding(.top, 6)
         Text(snapshot.lane.name)
           .font(.headline.weight(.bold))
           .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-        if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
-          LaneLinearIssueBadge(issue: issue)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+
+      branchBadge
+
+      LaneChipFlowLayout(spacing: 6, lineSpacing: 6) {
+        cleanBadge
+        if snapshot.lane.status.ahead > 0 || snapshot.lane.status.behind > 0 {
+          LaneMicroChip(
+            icon: "arrow.up.arrow.down",
+            text: "base ↑\(snapshot.lane.status.ahead) ↓\(snapshot.lane.status.behind)",
+            tint: ADEColor.textMuted
+          )
         }
-        Spacer(minLength: 0)
-        if let syncStatus {
-          Text(compactSyncSummary(syncStatus))
+        linkedPullRequestBadge
+        if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
+          LaneLinearIssueBadge(issue: issue, compact: true)
+        }
+        if let origin = originLabel {
+          Text(origin)
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
       }
-
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          branchBadge
-          cleanBadge
-          if snapshot.lane.status.ahead > 0 || snapshot.lane.status.behind > 0 {
-            LaneMicroChip(
-              icon: "arrow.up.arrow.down",
-              text: "base ↑\(snapshot.lane.status.ahead) ↓\(snapshot.lane.status.behind)",
-              tint: ADEColor.textMuted
-            )
-          }
-          linkedPullRequestBadge
-          if let origin = originLabel {
-            Text(origin)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-          }
-        }
-      }
+      .frame(maxWidth: .infinity, alignment: .leading)
 
       if let conflictStatus = detail.conflictStatus {
         Text(conflictSummary(conflictStatus))
@@ -142,6 +145,12 @@ struct LaneDetailGitActionsPane: View {
       }
     }
     .padding(EdgeInsets(top: 4, leading: 0, bottom: 10, trailing: 0))
+  }
+
+  private func applyAutoDisclosure() {
+    filesDisclosure.syncAuto(hasContent: !(stagedFiles.isEmpty && unstagedFiles.isEmpty))
+    stashesDisclosure.syncAuto(hasContent: !detail.stashes.isEmpty)
+    historyDisclosure.syncAuto(hasContent: !detail.recentCommits.isEmpty)
   }
 
   private var laneAccentColor: Color {
@@ -207,6 +216,7 @@ struct LaneDetailGitActionsPane: View {
           .font(.system(.subheadline, design: .monospaced))
           .padding(.horizontal, 10)
           .padding(.vertical, 8)
+          .frame(maxWidth: .infinity)
           .background(ADEColor.surfaceBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -215,6 +225,13 @@ struct LaneDetailGitActionsPane: View {
           .focused($commitFieldFocused)
           .disabled(!canRunLiveActions || busyAction != nil)
 
+        gitToolbarButton(title: "Commit", tint: ADEColor.accent, emphasize: true) {
+          onCommit()
+        }
+        .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
+      }
+
+      LaneChipFlowLayout(spacing: 6, lineSpacing: 6) {
         gitToolbarButton(
           title: amendCommit ? "Amend on" : "Amend",
           tint: amendCommit ? ADEColor.warning : ADEColor.textSecondary,
@@ -223,60 +240,32 @@ struct LaneDetailGitActionsPane: View {
           amendCommit.toggle()
         }
         .disabled(!canRunLiveActions || busyAction != nil)
-
-        gitToolbarButton(title: "Commit", tint: ADEColor.accent, emphasize: true) {
-          onCommit()
+        gitToolbarButton(title: pullMode == "merge" ? "Merge" : "Rebase", tint: ADEColor.textSecondary) {
+          pullMode = pullMode == "merge" ? "rebase" : "merge"
         }
-        .disabled(!canRunLiveActions || busyAction != nil || (!amendCommit && stagedFiles.isEmpty))
-      }
-
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 6) {
-          gitToolbarButton(title: pullMode == "merge" ? "Merge" : "Rebase", tint: ADEColor.textSecondary) {
-            pullMode = pullMode == "merge" ? "rebase" : "merge"
-          }
-          gitToolbarButton(title: "Pull", tint: shouldPull ? ADEColor.warning : ADEColor.textPrimary, emphasize: shouldPull) {
-            onPull(pullMode)
-          }
-          .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
-          gitToolbarButton(title: pushTitle, tint: shouldPush ? ADEColor.success : ADEColor.textPrimary, emphasize: shouldPush) {
-            onPush(false)
-          }
-          .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
-          gitToolbarButton(title: showMoreActions ? "More ▴" : "More ▾", tint: showMoreActions ? ADEColor.accent : ADEColor.textMuted) {
-            withAnimation(.smooth(duration: 0.2)) { showMoreActions.toggle() }
-          }
-          Button(action: onRefresh) {
-            Image(systemName: "arrow.clockwise")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textMuted)
-              .frame(width: 34, height: 34)
-              .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-          }
-          .buttonStyle(.plain)
-          .disabled(busyAction != nil)
-          .accessibilityLabel("Refresh git state")
+        gitToolbarButton(title: "Pull", tint: shouldPull ? ADEColor.warning : ADEColor.textPrimary, emphasize: shouldPull) {
+          onPull(pullMode)
         }
-      }
-
-      HStack(spacing: 8) {
-        Button(action: triggerSuggest) {
-          Label("Suggest message", systemImage: "sparkles")
-            .font(.caption.weight(.semibold))
+        .disabled(!canRunLiveActions || busyAction != nil || !shouldPull)
+        gitToolbarButton(title: pushTitle, tint: shouldPush ? ADEColor.success : ADEColor.textPrimary, emphasize: shouldPush) {
+          onPush(false)
         }
-        .buttonStyle(.borderless)
-        .disabled(!canRunLiveActions || isGeneratingMessage || aiSetupHint != nil)
-        Spacer(minLength: 0)
-        Text(compactSyncSummary(syncStatus))
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
+        .disabled(!canRunLiveActions || busyAction != nil || !shouldPush || (syncStatus?.diverged ?? false))
+        gitToolbarButton(title: showMoreActions ? "More ▴" : "More ▾", tint: showMoreActions ? ADEColor.accent : ADEColor.textMuted) {
+          withAnimation(.smooth(duration: 0.2)) { showMoreActions.toggle() }
+        }
+        Button(action: onRefresh) {
+          Image(systemName: "arrow.clockwise")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 34, height: 34)
+            .background(ADEColor.surfaceBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(busyAction != nil)
+        .accessibilityLabel("Refresh git state")
       }
-
-      if let aiSetupHint {
-        Text(aiSetupHint)
-          .font(.caption2)
-          .foregroundStyle(ADEColor.warning)
-      }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
     .padding(.vertical, 10)
     .padding(.horizontal, 10)
@@ -327,26 +316,6 @@ struct LaneDetailGitActionsPane: View {
     .buttonStyle(.plain)
   }
 
-  private func triggerSuggest() {
-    guard !isGeneratingMessage else { return }
-    isGeneratingMessage = true
-    Task {
-      defer { isGeneratingMessage = false }
-      do {
-        let message = try await onGenerateMessage()
-        commitMessage = message
-        ADEHaptics.success()
-      } catch {
-        let text = error.localizedDescription
-        if text.localizedCaseInsensitiveContains("not configured") || text.localizedCaseInsensitiveContains("disabled") {
-          aiSetupHint = "Enable AI commit messages on desktop in Settings."
-        } else {
-          ADEHaptics.error()
-        }
-      }
-    }
-  }
-
   // MARK: - More actions
 
   private var moreActionsSection: some View {
@@ -391,21 +360,12 @@ struct LaneDetailGitActionsPane: View {
 
   private var filesSection: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        Text("FILES")
-          .font(.caption.weight(.bold))
-          .tracking(0.7)
-          .foregroundStyle(ADEColor.textMuted)
-        let fileCount = stagedFiles.count + unstagedFiles.count
-        if fileCount > 0 {
-          Text("\(fileCount)")
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(ADEColor.accent)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(ADEColor.accent.opacity(0.14), in: Capsule())
-        }
-        Spacer(minLength: 0)
+      disclosureHeader(
+        title: "Files",
+        badge: stagedFiles.count + unstagedFiles.count,
+        expanded: filesDisclosure.expanded,
+        onToggle: { withAnimation(.smooth(duration: 0.2)) { filesDisclosure.toggle() } }
+      ) {
         if canRescueUnstaged {
           Button("New lane with changes") {
             onCreateLaneFromChanges()
@@ -414,6 +374,15 @@ struct LaneDetailGitActionsPane: View {
           .foregroundStyle(ADEColor.accent)
         }
       }
+      if filesDisclosure.expanded {
+        filesContent
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var filesContent: some View {
+    VStack(alignment: .leading, spacing: 10) {
       if stagedFiles.isEmpty && unstagedFiles.isEmpty {
         Text("No changed files.")
           .font(.caption)
@@ -480,7 +449,21 @@ struct LaneDetailGitActionsPane: View {
 
   private var stashesSection: some View {
     VStack(alignment: .leading, spacing: 10) {
-      sectionTitle("Branch stashes", badge: detail.stashes.count)
+      disclosureHeader(
+        title: "Branch stashes",
+        badge: detail.stashes.count,
+        expanded: stashesDisclosure.expanded,
+        onToggle: { withAnimation(.smooth(duration: 0.2)) { stashesDisclosure.toggle() } }
+      )
+      if stashesDisclosure.expanded {
+        stashesContent
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var stashesContent: some View {
+    VStack(alignment: .leading, spacing: 10) {
       if detail.stashes.isEmpty {
         HStack {
           Text("None saved")
@@ -520,7 +503,21 @@ struct LaneDetailGitActionsPane: View {
 
   private var historySection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      sectionTitle("History", badge: detail.recentCommits.count)
+      disclosureHeader(
+        title: "History",
+        badge: detail.recentCommits.count,
+        expanded: historyDisclosure.expanded,
+        onToggle: { withAnimation(.smooth(duration: 0.2)) { historyDisclosure.toggle() } }
+      )
+      if historyDisclosure.expanded {
+        historyContent
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var historyContent: some View {
+    VStack(alignment: .leading, spacing: 8) {
       if detail.recentCommits.isEmpty {
         Text("No commits yet.")
           .font(.caption)
@@ -628,22 +625,45 @@ struct LaneDetailGitActionsPane: View {
       .background(tint.opacity(0.14), in: Capsule())
   }
 
-  private func sectionTitle(_ title: String, badge: Int) -> some View {
+  @ViewBuilder
+  private func disclosureHeader<Trailing: View>(
+    title: String,
+    badge: Int,
+    expanded: Bool,
+    onToggle: @escaping () -> Void,
+    @ViewBuilder trailing: () -> Trailing = { EmptyView() }
+  ) -> some View {
     HStack(spacing: 8) {
-      Text(title.uppercased())
-        .font(.caption.weight(.bold))
-        .tracking(0.7)
-        .foregroundStyle(ADEColor.textMuted)
-      if badge > 0 {
-        Text("\(badge)")
-          .font(.caption2.weight(.bold))
-          .foregroundStyle(ADEColor.accent)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(ADEColor.accent.opacity(0.14), in: Capsule())
+      Button(action: onToggle) {
+        HStack(spacing: 8) {
+          Image(systemName: "chevron.right")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+          Text(title.uppercased())
+            .font(.caption.weight(.bold))
+            .tracking(0.7)
+            .foregroundStyle(ADEColor.textMuted)
+          if badge > 0 {
+            Text("\(badge)")
+              .font(.caption2.weight(.bold))
+              .foregroundStyle(ADEColor.accent)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 2)
+              .background(ADEColor.accent.opacity(0.14), in: Capsule())
+          }
+        }
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
       Spacer(minLength: 0)
+      trailing()
     }
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(title), \(badge) item\(badge == 1 ? "" : "s")")
+    .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+    .accessibilityHint(expanded ? "Double tap to collapse" : "Double tap to expand")
+    .accessibilityAddTraits(.isButton)
   }
 }
 
