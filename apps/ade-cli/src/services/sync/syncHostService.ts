@@ -3265,6 +3265,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
+      // A peer whose subscription for this id is a FOREIGN quick-look gets its
+      // events from the transcript pump — never the active project's live
+      // broadcast, even when a local session shares the session id.
+      if (peer.foreignChatTranscriptPaths.has(event.sessionId)) continue;
       if (!rememberChatEventSent(peer, event)) continue;
       send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
     }
@@ -4438,7 +4442,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
         };
-        const resumePlan = planChatEventResume(chatEventReplayBuffers.get(sessionId), payload?.sinceSeq);
+        // Replay buffers hold the ACTIVE project's live events — a foreign
+        // quick-look whose session id collides with a local session must never
+        // resume from them (it would splice local events into the foreign feed).
+        const resumePlan = planChatEventResume(
+          foreignScope.kind === "local" ? chatEventReplayBuffers.get(sessionId) : undefined,
+          payload?.sinceSeq,
+        );
         if (resumePlan.mode === "replay") {
           // The replay buffer covers everything the peer missed: skip the
           // snapshot, fast-forward the transcript pump past content the

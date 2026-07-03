@@ -1291,11 +1291,16 @@ struct WorkSessionDestinationView: View {
     // answer, which are useful while streaming but not enough for final copy
     // or history.
     let needsInitialTailHydration = forceRemote && !initialTranscriptTailHydrated
-    let shouldFetchFallback = forceOpeningTranscriptRefresh
+    // Cross-project quick looks never take the command-based fallback fetch —
+    // chat.getTranscript routes through the project scope registry and boots
+    // the foreign runtime for a read.
+    let shouldFetchFallback = !isCrossProject && (
+      forceOpeningTranscriptRefresh
       || needsInitialTailHydration
       || !preferLightweight
       || (liveTranscript.isEmpty && transcript.isEmpty)
       || (!liveTranscript.isEmpty && transcriptStatus != "active")
+    )
     let fallbackMaxChars = transcriptStatus == "active" ? 240_000 : 600_000
     if shouldFetchFallback, let page = try? await syncService.fetchChatTranscriptPage(sessionId: sessionId, maxChars: fallbackMaxChars) {
       recordTranscriptPage(page, before: nil)
@@ -1309,7 +1314,9 @@ struct WorkSessionDestinationView: View {
     // Terminal sessions own their subscription via TerminalSessionScreen's
     // offset stream; a preview-budget subscribe here would race a second
     // replace-snapshot into that stream.
-    if forceRemote && !preferLightweight, let currentSession = session ?? initialSession, isChatSession(currentSession) {
+    // Terminal buffers are active-project scoped; a quick-look must not
+    // subscribe them (wrong project, and another read-path boot vector).
+    if forceRemote && !preferLightweight && !isCrossProject, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       try? await syncService.subscribeTerminal(sessionId: sessionId)
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)
