@@ -460,6 +460,56 @@ export function keybindingsEditorCommand(
   return { command, args };
 }
 
+// Quote-aware split so VISUAL/EDITOR values like `emacsclient -a ""` or
+// `"/Applications/Visual Studio Code.app/..." --wait` keep their quoted
+// segments as single argv entries (spawn runs with shell:false, so nothing
+// re-tokenizes downstream). Supports '..', "..", and backslash escapes;
+// an explicitly quoted empty string is preserved as an argument.
 export function splitEditorCommand(value: string): string[] {
-  return value.trim().split(/\s+/).filter(Boolean);
+  const parts: string[] = [];
+  let current = "";
+  let hasToken = false;
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else current += ch;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\" && value[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else if (ch === '"') {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < value.length) {
+      current += value[i + 1];
+      hasToken = true;
+      i += 1;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (hasToken || current) {
+        parts.push(current);
+        current = "";
+        hasToken = false;
+      }
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  if (hasToken || current) parts.push(current);
+  return parts;
 }

@@ -127,4 +127,23 @@ describe("keybindings", () => {
       args: ["/tmp/keybindings.json"],
     });
   });
+
+  it("preserves quoted segments in VISUAL/EDITOR values", () => {
+    expect(splitEditorCommand('emacsclient -a ""')).toEqual(["emacsclient", "-a", ""]);
+    expect(splitEditorCommand('"/Applications/Visual Studio Code.app/Contents/MacOS/Electron" --wait')).toEqual([
+      "/Applications/Visual Studio Code.app/Contents/MacOS/Electron",
+      "--wait",
+    ]);
+    expect(splitEditorCommand("vim -c 'set ft=json'")).toEqual(["vim", "-c", "set ft=json"]);
+    expect(splitEditorCommand('code --user-data-dir "/tmp/my dir"')).toEqual([
+      "code",
+      "--user-data-dir",
+      "/tmp/my dir",
+    ]);
+    expect(splitEditorCommand("edit\\ or --flag")).toEqual(["edit or", "--flag"]);
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", 'emacsclient -a ""', "linux")).toEqual({
+      command: "emacsclient",
+      args: ["-a", "", "/tmp/keybindings.json"],
+    });
+  });
 });
