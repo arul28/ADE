@@ -65,6 +65,24 @@ enum WorkNewSessionModePreferences {
     map[key] = mode.rawValue
     defaults.set(map, forKey: storageKey)
   }
+
+  /// Resolves the interface to actually use for a session given a stored choice
+  /// and the current model: honors the stored choice but drops a CLI preference
+  /// to chat when the model can't run in CLI. Pure — reads and writes no store —
+  /// so it is safe to reuse from init and from live per-project switches without
+  /// ever overwriting an explicit switcher choice.
+  static func resolvedMode(
+    stored: WorkNewSessionMode?,
+    modelId: String,
+    provider: String
+  ) -> WorkNewSessionMode {
+    guard let stored else { return .chat }
+    if stored == .cli,
+       !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: .cli) {
+      return .chat
+    }
+    return stored
+  }
 }
 
 /// Desktop `ModeSwitcherPills` parity: compact Chat/CLI toggle for the nav bar.
@@ -396,16 +414,11 @@ struct WorkNewChatScreen: View {
     // default. A stored CLI choice is only honored when the restored model can
     // actually run in CLI; otherwise the session opens on chat WITHOUT rewriting
     // the stored preference (a later switcher tap overwrites it).
-    var restoredMode: WorkNewSessionMode = .chat
-    if let savedMode = WorkNewSessionModePreferences.load(projectId: activeProjectId) {
-      if savedMode == .cli,
-         !workModelAllowedForAvailabilityMode(modelId: restoredModelId, provider: restoredProvider, mode: .cli) {
-        restoredMode = .chat
-      } else {
-        restoredMode = savedMode
-      }
-    }
-    _sessionMode = State(initialValue: restoredMode)
+    _sessionMode = State(initialValue: WorkNewSessionModePreferences.resolvedMode(
+      stored: WorkNewSessionModePreferences.load(projectId: activeProjectId),
+      modelId: restoredModelId,
+      provider: restoredProvider
+    ))
   }
 
   /// The live composer selection. Persisted as the app-wide "last used" choice

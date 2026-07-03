@@ -6833,6 +6833,50 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "project-a"), .chat)
   }
 
+  func testWorkNewSessionModeResolveReloadsPerProjectWithoutWriting() {
+    let storageKey = "ade.work.newSessionModeByProject.v1"
+    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+    defer { ADESharedContainer.defaults.removeObject(forKey: storageKey) }
+
+    // Switching the destination project inside an open composer reloads that
+    // project's own choice — project A saved Chat, project B saved CLI — so the
+    // mode the composer submits on tracks the targeted project rather than the
+    // one the drawer opened on (the hub project-switch regression). A CLI-capable
+    // model honors a stored CLI choice.
+    XCTAssertTrue(
+      workModelAllowedForAvailabilityMode(modelId: "claude-sonnet-4-6", provider: "claude", mode: .cli),
+      "precondition: claude-sonnet-4-6 must be CLI-capable"
+    )
+    WorkNewSessionModePreferences.save(.chat, projectId: "proj-a")
+    WorkNewSessionModePreferences.save(.cli, projectId: "proj-b")
+    XCTAssertEqual(
+      WorkNewSessionModePreferences.resolvedMode(
+        stored: WorkNewSessionModePreferences.load(projectId: "proj-a"),
+        modelId: "claude-sonnet-4-6", provider: "claude"),
+      .chat
+    )
+    XCTAssertEqual(
+      WorkNewSessionModePreferences.resolvedMode(
+        stored: WorkNewSessionModePreferences.load(projectId: "proj-b"),
+        modelId: "claude-sonnet-4-6", provider: "claude"),
+      .cli
+    )
+
+    // A project with no stored choice resolves to chat.
+    XCTAssertEqual(
+      WorkNewSessionModePreferences.resolvedMode(
+        stored: WorkNewSessionModePreferences.load(projectId: "proj-unset"),
+        modelId: "claude-sonnet-4-6", provider: "claude"),
+      .chat
+    )
+
+    // Resolving/reloading is read-only: the availability fallback and every
+    // project switch must leave the stored choices untouched (only an explicit
+    // switcher tap persists a mode).
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "proj-a"), .chat)
+    XCTAssertEqual(WorkNewSessionModePreferences.load(projectId: "proj-b"), .cli)
+  }
+
   func testWorkComposerRuntimeProviderCoercesLocalOpenCodeGroups() {
     // Local OpenCode-routed groups must collapse to the wireable `opencode`
     // provider so a persisted "last used" selection restores supported access

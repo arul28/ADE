@@ -128,17 +128,14 @@ struct HubComposerDrawer: View {
     // screen), honoring a stored CLI choice only when the restored model can run
     // in CLI — otherwise open on chat without discarding the preference. Seeding
     // the initial @State here keeps the sessionMode onChange from resetting
-    // runtimeMode to the provider default.
-    var restoredMode: WorkNewSessionMode = .chat
-    if let savedMode = WorkNewSessionModePreferences.load(projectId: restoredProjectId) {
-      if savedMode == .cli,
-         !workModelAllowedForAvailabilityMode(modelId: restoredModelId, provider: restoredProvider, mode: .cli) {
-        restoredMode = .chat
-      } else {
-        restoredMode = savedMode
-      }
-    }
-    _sessionMode = State(initialValue: restoredMode)
+    // runtimeMode to the provider default. Switching the destination project
+    // inside the open drawer reloads this per-project mode (see
+    // `reloadSessionMode(forProjectId:)`).
+    _sessionMode = State(initialValue: WorkNewSessionModePreferences.resolvedMode(
+      stored: WorkNewSessionModePreferences.load(projectId: restoredProjectId),
+      modelId: restoredModelId,
+      provider: restoredProvider
+    ))
   }
 
   // MARK: Derived state
@@ -454,6 +451,9 @@ struct HubComposerDrawer: View {
       // Switching projects resets the lane to that project's default; the user
       // can still tap a specific lane (or auto-create) below to confirm.
       selectedLaneId = defaultLaneId(forProjectId: project.id)
+      // …and restores that project's own last Chat/CLI choice so `submit` never
+      // branches on a stale mode from the previously targeted project.
+      reloadSessionMode(forProjectId: project.id)
     } label: {
       HStack(spacing: 9) {
         HubProjectIcon(iconDataUrl: project.iconDataUrl, isActive: isSelected)
@@ -847,8 +847,12 @@ struct HubComposerDrawer: View {
       return
     }
     if pickedProjectId.isEmpty || !projects.contains(where: { $0.id == pickedProjectId }) {
-      pickedProjectId = syncService.activeProject?.id ?? projects[0].id
-      selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
+      let resolvedProjectId = syncService.activeProject?.id ?? projects[0].id
+      pickedProjectId = resolvedProjectId
+      selectedLaneId = defaultLaneId(forProjectId: resolvedProjectId)
+      // The seeded mode was for the (now invalid) restored project; realign it
+      // with the project we actually fell back to.
+      reloadSessionMode(forProjectId: resolvedProjectId)
       return
     }
     if !isAutoCreateLane {
@@ -856,6 +860,22 @@ struct HubComposerDrawer: View {
       if selectedLaneId.isEmpty || !lanes.contains(where: { $0.id == selectedLaneId }) {
         selectedLaneId = defaultLaneId(forProjectId: pickedProjectId)
       }
+    }
+  }
+
+  /// Reloads the per-project Chat/CLI interface when the destination project
+  /// changes, so the switcher and the mode `submit` branches on always reflect
+  /// the project actually being targeted (e.g. project A saved Chat, project B
+  /// saved CLI). Applies the same session-only availability fallback as init and
+  /// never writes the store — only an explicit switcher tap persists a choice.
+  private func reloadSessionMode(forProjectId projectId: String) {
+    let resolved = WorkNewSessionModePreferences.resolvedMode(
+      stored: WorkNewSessionModePreferences.load(projectId: projectId),
+      modelId: modelId,
+      provider: provider
+    )
+    if resolved != sessionMode {
+      sessionMode = resolved
     }
   }
 
