@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/types";
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { mergeUnique } from "./laneUtils";
+import { isTerminalPrState } from "../../lib/prState";
 
 type CreateLaneRequest =
   | { kind: "child"; args: { name: string; parentLaneId: string } }
@@ -334,10 +335,6 @@ function mergeLaneTabPrTags(base: LaneTabPrTag, secondary: LaneTabPrTag | null):
   };
 }
 
-function isTerminalPrState(state: PrSummary["state"]): boolean {
-  return state === "merged" || state === "closed";
-}
-
 function githubPrMatchesAdePr(pr: PrSummary, githubPr: GitHubPrListItem): boolean {
   return (
     githubPr.linkedPrId === pr.id ||
@@ -365,8 +362,13 @@ function shouldPreferGithubPrTag(
   githubPr: GitHubPrListItem,
 ): boolean {
   const githubState = githubPr.isDraft ? "draft" : githubPr.state;
-  if (githubPrMatchesAdePr(pr, githubPr) && githubState !== pr.state) return true;
-  return isTerminalPrState(pr.state) && !isTerminalPrState(githubState);
+  if (!githubPrMatchesAdePr(pr, githubPr)) {
+    return isTerminalPrState(pr.state) && !isTerminalPrState(githubState);
+  }
+  if (isTerminalPrState(pr.state) && !isTerminalPrState(githubState)) {
+    return false;
+  }
+  return githubState !== pr.state;
 }
 
 export function selectLaneTabPrTag(

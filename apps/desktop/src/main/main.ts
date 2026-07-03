@@ -146,7 +146,7 @@ import { createAutomationService } from "./services/automations/automationServic
 import { createAutomationPlannerService } from "./services/automations/automationPlannerService";
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
-import { createAutomationIngressService } from "./services/automations/automationIngressService";
+import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
 import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
 import type { AutomationAdeActionRegistry } from "./services/automations/automationService";
@@ -351,14 +351,16 @@ const devStabilityMode =
   process.env.ADE_STABILITY_MODE === "1" || !!process.env.VITE_DEV_SERVER_URL;
 const enableAllBackgroundTasks =
   process.env.ADE_ENABLE_ALL_BACKGROUND_TASKS === "1";
-// In dev stability mode, only enable essential background tasks by default.
+// In startup stability mode, only enable essential background tasks by default.
 // Use ADE_ENABLE_ALL_BACKGROUND_TASKS=1 or individual flags to enable others.
 const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
   "ADE_ENABLE_HEAD_WATCHER",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
+  "ADE_ENABLE_PR_POLLING",
   "ADE_ENABLE_SYNC_INIT",
+  "ADE_ENABLE_AUTOMATION_INGRESS",
 ]);
 
 function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
@@ -3188,16 +3190,18 @@ app.whenReady().then(async () => {
       prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });
-    const automationIngressService = automationService
-      ? createAutomationIngressService({
-          logger,
-          automationService,
-          prService,
-          secretService: automationSecretService,
-          githubService,
-          listRules: () => projectConfigService.get().effective.automations ?? [],
-        })
-      : null;
+    // Constructed even when automations are unavailable (packaged builds):
+    // the relay poll feeds prService.ingestGithubWebhook for PR freshness,
+    // while automation rule dispatch stays gated on automationService.
+    const automationIngressService = createAutomationIngressService({
+      logger,
+      automationService: automationService ?? null,
+      prService,
+      secretService: automationSecretService,
+      githubService,
+      listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
+      ingressCursorStore: createKvIngressCursorStore(db),
+    });
 
     const githubPollingService = automationService
       ? createGithubPollingService({
@@ -3753,6 +3757,19 @@ app.whenReady().then(async () => {
       projectConfigService,
       usageTrackingService,
     });
+
+    scheduleBackgroundProjectTask(
+      "prs.polling_start",
+      () => prPollingService.start(),
+      (error) => {
+        logger.warn("prs.polling_start_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      0,
+      "ADE_ENABLE_PR_POLLING",
+    );
+
     if (automationIngressService) {
       scheduleBackgroundProjectTask(
         "automations.ingress_start",

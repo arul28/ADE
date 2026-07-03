@@ -970,4 +970,185 @@ describe("webhook relay", () => {
       installationId: 123,
     }));
   });
+
+  it("requires a GitHub token to heal the webhook secret", async () => {
+    const env = makeEnv();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/heal", { method: "POST" }),
+      env,
+    );
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses webhook heal for tokens without admin access", async () => {
+    const env = makeEnv();
+    env.GITHUB_APP_ID = "4180227";
+    env.GITHUB_APP_PRIVATE_KEY = await generateTestPrivateKeyPem();
+    const fetchMock = stubRepoAccessWithPermissions({ admin: false, push: true, pull: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/heal", {
+        method: "POST",
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("heals the GitHub App webhook secret to the worker's current secret", async () => {
+    const env = makeEnv();
+    env.GITHUB_APP_ID = "4180227";
+    env.GITHUB_APP_PRIVATE_KEY = await generateTestPrivateKeyPem();
+    let patchedBody: unknown = null;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.github.com/repos/owner/repo") {
+        return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo", permissions: { admin: true, push: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/repos/owner/repo/installation") {
+        expect(String((init?.headers as Record<string, string>)?.authorization)).toMatch(/^Bearer eyJ/);
+        return new Response(JSON.stringify({ id: 123, repository_selection: "selected" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/app/hook/config") {
+        expect(init?.method).toBe("PATCH");
+        expect(String((init?.headers as Record<string, string>)?.authorization)).toMatch(/^Bearer eyJ/);
+        patchedBody = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ url: "https://relay.example.com/github/webhook", content_type: "json" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/heal", {
+        method: "POST",
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    expect(patchedBody).toEqual({ secret: "github-secret" });
+    expect(await response.json()).toEqual(expect.objectContaining({
+      ok: true,
+      healed: true,
+      webhookUrl: "https://relay.example.com/github/webhook",
+    }));
+  });
+
+  it("refuses webhook heal when the app is not installed on the repository", async () => {
+    const env = makeEnv();
+    env.GITHUB_APP_ID = "4180227";
+    env.GITHUB_APP_PRIVATE_KEY = await generateTestPrivateKeyPem();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://api.github.com/repos/owner/repo") {
+        return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo", permissions: { admin: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url === "https://api.github.com/repos/owner/repo/installation") {
+        return new Response(JSON.stringify({ message: "Not Found" }), {
+          status: 404,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/heal", {
+        method: "POST",
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(409);
+    const body = await response.json() as { ok: boolean };
+    expect(body.ok).toBe(false);
+  });
+
+  it("lists webhook deliveries filtered to the requested repository", async () => {
+    const env = makeEnv();
+    env.GITHUB_APP_ID = "4180227";
+    env.GITHUB_APP_PRIVATE_KEY = await generateTestPrivateKeyPem();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.github.com/repos/owner/repo") {
+        return new Response(JSON.stringify({ id: 4242, full_name: "owner/repo", permissions: { admin: false, push: true } }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.startsWith("https://api.github.com/app/hook/deliveries")) {
+        // The GitHub fetch always pulls the max page; the caller's `limit`
+        // applies to the repo-filtered output instead.
+        expect(url).toBe("https://api.github.com/app/hook/deliveries?per_page=100");
+        expect(String((init?.headers as Record<string, string>)?.authorization)).toMatch(/^Bearer eyJ/);
+        return new Response(JSON.stringify([
+          { id: 1, guid: "g-1", event: "pull_request", action: "closed", status: "Invalid HTTP Response: 401", status_code: 401, delivered_at: "2026-07-02T00:00:00Z", redelivery: false, repository_id: 4242, installation_id: 123 },
+          { id: 2, guid: "g-2", event: "pull_request", action: "opened", status: "OK", status_code: 202, delivered_at: "2026-07-02T00:01:00Z", redelivery: false, repository_id: 999, installation_id: 456 },
+          { id: 3, guid: "g-3", event: "ping", action: null, status: "OK", status_code: 202, delivered_at: "2026-06-30T00:00:00Z", redelivery: false, repository_id: null, installation_id: null },
+          // Repo-scoped but with an unprovable repo id — must fail closed.
+          { id: 4, guid: "g-4", event: "pull_request", action: "closed", status: "OK", status_code: 202, delivered_at: "2026-07-02T00:02:00Z", redelivery: false, repository_id: "not-a-number", installation_id: 789 },
+        ]), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/deliveries?limit=50", {
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { ok: boolean; deliveries: Array<{ guid: string | null; statusCode: number | null }> };
+    expect(body.ok).toBe(true);
+    expect(body.deliveries.map((delivery) => delivery.guid)).toEqual(["g-1", "g-3"]);
+    expect(body.deliveries[0]).toEqual(expect.objectContaining({
+      event: "pull_request",
+      action: "closed",
+      statusCode: 401,
+      redelivery: false,
+      installationId: 123,
+    }));
+
+    // `limit` bounds the post-filter result, not the GitHub fetch.
+    const limited = await handleRequest(
+      new Request("https://relay.example.com/github/repos/owner/repo/webhook/deliveries?limit=1", {
+        headers: githubAuthHeaders(),
+      }),
+      env,
+    );
+    expect(limited.status).toBe(200);
+    const limitedBody = await limited.json() as { deliveries: Array<{ guid: string | null }> };
+    expect(limitedBody.deliveries.map((delivery) => delivery.guid)).toEqual(["g-1"]);
+  });
 });

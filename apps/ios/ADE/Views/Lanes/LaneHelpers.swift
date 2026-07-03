@@ -475,8 +475,15 @@ private func selectTerminalGithubUpdate(
 
 private func shouldPreferGithubTag(_ pr: PullRequestListItem, _ githubPr: GitHubPrListItem) -> Bool {
   let githubState = githubPr.isDraft ? "draft" : githubPr.state
-  if githubPrMatchesAdePr(pr, githubPr), githubState != pr.state { return true }
-  return lanePrIsTerminalState(pr.state) && !lanePrIsTerminalState(githubState)
+  guard githubPrMatchesAdePr(pr, githubPr) else {
+    return lanePrIsTerminalState(pr.state) && !lanePrIsTerminalState(githubState)
+  }
+  // A terminal ADE state (merged/closed) can never be superseded by a stale
+  // non-terminal GitHub snapshot for the SAME PR, so keep the ADE row.
+  if lanePrIsTerminalState(pr.state), !lanePrIsTerminalState(githubState) {
+    return false
+  }
+  return githubState != pr.state
 }
 
 /// Resolve the single PR tag for a lane, preferring the ADE-mapped PR but

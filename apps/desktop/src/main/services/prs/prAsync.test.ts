@@ -159,6 +159,48 @@ describe("prPollingService", () => {
     }));
   });
 
+  it("throttles empty-cache discovery to a slow cadence and stays idle-cheap", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const events: Array<{ type: string }> = [];
+    const prService = {
+      listAll: () => [],
+      discoverLanePullRequests: vi.fn(async () => []),
+      refresh: vi.fn(async () => []),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(1);
+
+    // Nine more 60s ticks stay inside the 10-minute discovery window: no
+    // repeated forced snapshot fetches while the project has no tracked PRs.
+    for (let index = 0; index < 9; index += 1) {
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(1);
+
+    // The tick that crosses the 10-minute mark discovers again.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(prService.discoverLanePullRequests).toHaveBeenCalledTimes(2);
+
+    // The empty path never runs a tracked-PR refresh and emits a single
+    // empty prs-updated event, not one per tick.
+    expect(prService.refresh).not.toHaveBeenCalled();
+    expect(events.filter((event) => event.type === "prs-updated")).toHaveLength(1);
+  });
+
   it("keeps rate-limit backoff ahead of hot wakeups", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

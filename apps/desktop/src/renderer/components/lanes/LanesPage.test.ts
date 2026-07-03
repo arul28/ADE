@@ -499,6 +499,7 @@ describe("selectLaneTabPrTag", () => {
       id: "mapped-pr",
       state: "closed",
       githubPrNumber: 123,
+      githubUrl: "https://github.com/arul28/ADE/pull/123",
       updatedAt: "2026-05-01T00:00:00.000Z",
     });
     const githubPr = makeGitHubPr({
@@ -561,6 +562,25 @@ describe("selectLaneTabPrTag", () => {
       linkedPrId: "mapped-pr",
       state: "merged",
       title: "Merged upstream",
+    });
+  });
+
+  it("keeps a terminal ADE row over a stale open GitHub snapshot for the same PR", () => {
+    const mappedPr = makePr({ id: "mapped-pr", state: "merged" });
+    const githubPr = makeGitHubPr({
+      id: "github-pr",
+      state: "open",
+      linkedPrId: "mapped-pr",
+      linkedLaneId: "lane-1",
+      title: "Stale open snapshot",
+    });
+
+    expect(selectLaneTabPrTag(makeLane(), [mappedPr], [githubPr])).toMatchObject({
+      source: "ade",
+      id: "mapped-pr",
+      linkedPrId: "mapped-pr",
+      state: "merged",
+      title: "Show merged PR state",
     });
   });
 

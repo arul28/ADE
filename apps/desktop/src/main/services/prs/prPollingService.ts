@@ -82,6 +82,9 @@ export function createPrPollingService({
   const DEFAULT_INTERVAL_MS = 60_000;
   const MIN_INTERVAL_MS = 5_000;
   const MAX_INTERVAL_MS = 5 * 60_000;
+  const EMPTY_DISCOVERY_MIN_INTERVAL_MS = 10 * 60_000;
+  // Epoch (not "never") so the first tick after start still discovers.
+  let lastEmptyDiscoveryAtMs = 0;
 
   const readIntervalMs = (): number => {
     const seconds = projectConfigService.get().effective.github?.prPollingIntervalSeconds;
@@ -167,10 +170,17 @@ export function createPrPollingService({
     try {
       let existing = prService.listAll();
       if (existing.length === 0) {
-        try {
-          existing = await prService.discoverLanePullRequests();
-        } catch (error) {
-          logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
+        // Discovery force-refreshes the whole repo snapshot, which is far
+        // heavier than a tracked-PR delta poll. With zero tracked PRs (new
+        // users, non-PR projects) run it on a slow cadence instead of every
+        // tick — user-driven surfaces discover PRs on their own reads anyway.
+        if (Date.now() - lastEmptyDiscoveryAtMs >= EMPTY_DISCOVERY_MIN_INTERVAL_MS) {
+          lastEmptyDiscoveryAtMs = Date.now();
+          try {
+            existing = await prService.discoverLanePullRequests();
+          } catch (error) {
+            logger.warn("prs.discovery_failed", { error: error instanceof Error ? error.message : String(error) });
+          }
         }
       }
       if (existing.length === 0) {

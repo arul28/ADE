@@ -8119,8 +8119,8 @@ export function registerIpc({
   };
 
   ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
-    const ctx = getCtx();
-    if (!ctx.prService) return null;
+    const ctx = ensurePrPolling();
+    if (!ctx) return null;
     return ctx.prService.getForLane(arg.laneId);
   });
 

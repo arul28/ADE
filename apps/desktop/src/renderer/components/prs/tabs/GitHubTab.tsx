@@ -29,6 +29,7 @@ import type { PrDetailRouteTab } from "../prsRouteState";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
+import { isTerminalPrState } from "../../../lib/prState";
 
 const VIRTUALIZE_AT = 50;
 const LINKED_HYDRATION_LIMIT = 8;
@@ -281,6 +282,22 @@ function upsertLaneSummary(lanes: LaneSummary[], lane: LaneSummary): LaneSummary
   const next = lanes.slice();
   next[index] = lane;
   return next;
+}
+
+function isKnownPrState(value: unknown): value is PrSummary["state"] {
+  return value === "draft" || value === "open" || value === "merged" || value === "closed";
+}
+
+function reconcileLinkedPrState(item: GitHubPrListItem, linkedPr: PrSummary | null | undefined): GitHubPrListItem {
+  if (!isKnownPrState(linkedPr?.state)) return item;
+  if (!isTerminalPrState(linkedPr.state) || isTerminalPrState(item.state)) return item;
+  return {
+    ...item,
+    state: linkedPr.state,
+    isDraft: false,
+    title: linkedPr.title || item.title,
+    updatedAt: linkedPr.updatedAt || item.updatedAt,
+  };
 }
 
 function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
@@ -955,26 +972,39 @@ export function GitHubTab({
     () => (snapshot ? mergeGitHubListItems(snapshot) : []),
     [snapshot],
   );
+  const displayedItems = React.useMemo(
+    () => allItems.map((item) =>
+      reconcileLinkedPrState(item, item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null)
+    ),
+    [allItems, prsByIdMap],
+  );
 
   const filteredItems = React.useMemo(
-    () => allItems
+    () => displayedItems
       .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
       .sort((a, b) =>
         new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
       ),
-    [allItems, filter, matchesSearch],
+    [displayedItems, filter, matchesSearch],
   );
   const hydrationItems = filteredItems.length > VIRTUALIZE_AT ? renderedHydrationItems : filteredItems;
 
   const filterCounts = React.useMemo(() => {
-    const listedCounts = countGitHubItemsByState(allItems);
+    const listedCounts = countGitHubItemsByState(displayedItems);
     const snapshotCounts = snapshot?.history?.repoPullRequestCounts;
+    // Snapshot totals were computed server-side from the raw snapshot, so a
+    // row that reconciliation moved between states (stale open → merged)
+    // must move in the badge totals too — otherwise the item changes tabs
+    // while the counts still bucket it under its stale state.
+    const rawCounts = countGitHubItemsByState(allItems);
+    const withReconcileDelta = (base: number | null | undefined, key: keyof GitHubFilterCounts, fallback: number): number =>
+      base == null ? fallback : Math.max(0, base + listedCounts[key] - rawCounts[key]);
     return {
-      open: snapshotCounts?.open ?? listedCounts.open,
-      closed: snapshotCounts?.closed ?? listedCounts.closed,
-      merged: snapshotCounts?.merged ?? listedCounts.merged,
+      open: withReconcileDelta(snapshotCounts?.open, "open", listedCounts.open),
+      closed: withReconcileDelta(snapshotCounts?.closed, "closed", listedCounts.closed),
+      merged: withReconcileDelta(snapshotCounts?.merged, "merged", listedCounts.merged),
     };
-  }, [allItems, snapshot?.history?.repoPullRequestCounts]);
+  }, [allItems, displayedItems, snapshot?.history?.repoPullRequestCounts]);
   const canLoadOlderHistory =
     filter !== "open"
     && Boolean(snapshot?.history?.repoPullRequestsMayHaveMore)
@@ -991,7 +1021,7 @@ export function GitHubTab({
       return;
     }
 
-    const linkedItem = allItems.find((item) => item.linkedPrId === selectedPrId);
+    const linkedItem = displayedItems.find((item) => item.linkedPrId === selectedPrId);
     if (!linkedItem) {
       pendingSelectedItemIdRef.current = null;
       return;
@@ -1005,7 +1035,7 @@ export function GitHubTab({
     }
     setSelectedItemId(linkedItem.id);
     hasInitializedSelectionRef.current = true;
-  }, [allItems, snapshot, selectedPrId, filter]);
+  }, [displayedItems, snapshot, selectedPrId, filter]);
 
   React.useEffect(() => {
     if (!snapshot) return;
@@ -1031,10 +1061,10 @@ export function GitHubTab({
 
   const selectedItem = React.useMemo(
     () => {
-      const item = allItems.find((candidate) => candidate.id === selectedItemId) ?? null;
+      const item = displayedItems.find((candidate) => candidate.id === selectedItemId) ?? null;
       return item && matchesFilter(item, filter) ? item : null;
     },
-    [allItems, filter, selectedItemId],
+    [displayedItems, filter, selectedItemId],
   );
 
   React.useEffect(() => {
@@ -1256,7 +1286,7 @@ export function GitHubTab({
     }
     const cachedSelectedItemId = selectedItemIdsByFilter[state] ?? null;
     const cachedSelectedItem = cachedSelectedItemId
-      ? allItems.find((item) => item.id === cachedSelectedItemId) ?? null
+      ? displayedItems.find((item) => item.id === cachedSelectedItemId) ?? null
       : null;
     const nextSelectedItemId = cachedSelectedItem && !matchesFilter(cachedSelectedItem, state)
       ? null
@@ -1274,7 +1304,7 @@ export function GitHubTab({
       onSelectPr(nextSelectedItem?.linkedPrId ?? null);
     }
     setLinkLaneId("");
-  }, [allItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter]);
+  }, [displayedItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter]);
 
   const handleLink = React.useCallback(async () => {
     if (!selectedItem || !linkLaneId) return;
