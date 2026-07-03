@@ -97,10 +97,24 @@ export function splitByDisplayCells(
   return { before, selected, after };
 }
 
+// A cluster-boundary-safe prefix: never includes a cluster that would push the
+// prefix past `budget` cells (sliceByDisplayCells keeps a straddling wide
+// cluster, which would overflow the allocated width here).
+function displayPrefixWithinCells(value: string, budget: number): string {
+  let out = "";
+  let cells = 0;
+  for (const cluster of displayClusters(value)) {
+    if (cells + cluster.width > budget) break;
+    out += cluster.text;
+    cells += cluster.width;
+  }
+  return out;
+}
+
 export function truncateDisplayEnd(value: string, maxCells: number): string {
   if (terminalDisplayWidth(value) <= maxCells) return value;
-  if (maxCells <= 1) return sliceByDisplayCells(value, 0, Math.max(0, maxCells));
-  return `${sliceByDisplayCells(value, 0, maxCells - 1)}…`;
+  if (maxCells <= 1) return displayPrefixWithinCells(value, Math.max(0, maxCells));
+  return `${displayPrefixWithinCells(value, maxCells - 1)}…`;
 }
 
 export function hardWrapDisplayText(value: string, width: number): string[] {
