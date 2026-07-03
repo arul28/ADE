@@ -1081,6 +1081,7 @@ export function createLaneService({
     updatedAt?: string;
   }): void => {
     const shouldUpdateAgentSummary = Object.prototype.hasOwnProperty.call(args, "agentSummary");
+    const agentSummaryJson = args.agentSummary == null ? null : JSON.stringify(args.agentSummary);
     db.run(
       `
         insert into lane_state_snapshots(
@@ -1098,6 +1099,12 @@ export function createLaneService({
             else lane_state_snapshots.agent_summary_json
           end,
           updated_at = excluded.updated_at
+        where lane_state_snapshots.dirty is not excluded.dirty
+           or lane_state_snapshots.ahead is not excluded.ahead
+           or lane_state_snapshots.behind is not excluded.behind
+           or lane_state_snapshots.remote_behind is not excluded.remote_behind
+           or lane_state_snapshots.rebase_in_progress is not excluded.rebase_in_progress
+           or (? = 1 and lane_state_snapshots.agent_summary_json is not excluded.agent_summary_json)
       `,
       [
         args.laneId,
@@ -1106,8 +1113,9 @@ export function createLaneService({
         args.status.behind,
         args.status.remoteBehind,
         args.status.rebaseInProgress ? 1 : 0,
-        args.agentSummary == null ? null : JSON.stringify(args.agentSummary),
+        agentSummaryJson,
         args.updatedAt ?? new Date().toISOString(),
+        shouldUpdateAgentSummary ? 1 : 0,
         shouldUpdateAgentSummary ? 1 : 0,
       ],
     );

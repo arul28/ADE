@@ -43,18 +43,17 @@ func workSessionDeepLink(sessionId: String, laneId: String?) -> String {
   return "ade://session/\(encodedSessionId)?lane=\(encodedLaneId)"
 }
 
+/// Whether the composer gates freeform typing behind a structured reply. Only a
+/// live pending-input card (question / plan / permission) blocks — a bare
+/// `awaiting-input` session status with no derived pending input does NOT lock
+/// the composer, since that state can transiently lag after a plan is approved
+/// (pending inputs clear a beat before the status does) and the user should keep
+/// typing normally through it.
 func workChatComposerBlocksFreeformInput(pendingInputCount: Int, sessionStatus: String) -> Bool {
-  pendingInputCount > 0 || sessionStatus == "awaiting-input"
-}
-
-func workChatAwaitingPromptDetailsMissing(pendingInputCount: Int, sessionStatus: String) -> Bool {
-  pendingInputCount == 0 && sessionStatus == "awaiting-input"
+  pendingInputCount > 0
 }
 
 func workChatComposerPlaceholder(pendingInputCount: Int, sessionStatus: String) -> String {
-  if workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputCount, sessionStatus: sessionStatus) {
-    return "Waiting for prompt details..."
-  }
   if workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputCount, sessionStatus: sessionStatus) {
     return "Answer the prompt above..."
   }
@@ -62,9 +61,6 @@ func workChatComposerPlaceholder(pendingInputCount: Int, sessionStatus: String) 
 }
 
 func workChatComposerPlaceholder(pendingInputs: [WorkPendingInputItem], sessionStatus: String) -> String {
-  if workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus) {
-    return "Waiting for prompt details..."
-  }
   if pendingInputs.count == 1,
      case .planApproval = pendingInputs[0] {
     return "Review the plan above..."
@@ -1056,6 +1052,9 @@ func noticeTitle(for kind: String) -> String {
   case "file_persist": return "File persistence"
   case "provider_health": return "Provider health"
   case "thread_error": return "Thread notice"
+  case "warning": return "Warning"
+  case "error": return "Error"
+  case "config": return "Configuration notice"
   default: return "System notice"
   }
 }
@@ -1068,14 +1067,17 @@ func noticeIcon(for kind: String) -> String {
   case "file_persist": return "externaldrive.badge.checkmark"
   case "provider_health": return "waveform.path.ecg"
   case "thread_error": return "exclamationmark.bubble"
+  case "warning": return "exclamationmark.triangle"
+  case "error": return "xmark.octagon"
+  case "config": return "gearshape"
   default: return "info.circle"
   }
 }
 
 func noticeTint(for kind: String) -> ColorToken {
   switch kind {
-  case "auth", "thread_error": return .danger
-  case "rate_limit", "hook": return .warning
+  case "auth", "thread_error", "error": return .danger
+  case "rate_limit", "hook", "warning": return .warning
   case "provider_health": return .secondary
   default: return .accent
   }

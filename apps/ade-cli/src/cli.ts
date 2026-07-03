@@ -13260,7 +13260,7 @@ async function runServe(
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler },
-    { buildRosterSnapshot },
+    { buildRosterSnapshot, createForeignChatTranscriptResolver },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -13640,6 +13640,11 @@ async function runServe(
             logger: headlessProjectLogger,
           }),
       },
+      // Cross-project chat "quick look": lets the phone stream a foreign
+      // project's chat transcript read-only without a project switch. Reads
+      // straight off that project's `.ade` transcripts dir (registry-validated,
+      // no runtime boot) — the counterpart to the roster feed above.
+      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
     },
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;

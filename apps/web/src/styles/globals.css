@@ -168,6 +168,12 @@ body {
   to { background-position: 250% center; }
 }
 
+/* ShipShowcase tab-rotation progress bar — compositor-only transform fill. */
+@keyframes ship-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee,
   .animate-marquee-reverse,

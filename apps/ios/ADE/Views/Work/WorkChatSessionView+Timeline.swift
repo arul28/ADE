@@ -236,6 +236,12 @@ extension WorkChatSessionView {
       )
     } else if card.kind == "plan" {
       WorkProposedPlanCard(card: card)
+    } else if card.kind == "question" {
+      WorkResolvedQuestionCard(card: card, fallbackProvider: chatSummaryContext.provider)
+    } else if card.kind == "planApproval" {
+      WorkResolvedPlanCard(card: card, fallbackProvider: chatSummaryContext.provider)
+    } else if card.kind == "approval" {
+      WorkResolvedApprovalChip(card: card, fallbackProvider: chatSummaryContext.provider)
     } else {
       WorkEventCardView(
         card: card,

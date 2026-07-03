@@ -436,6 +436,10 @@ Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:deskto
 
 [Quickstart](https://www.ade-app.dev/docs/quickstart) · [Key concepts](https://www.ade-app.dev/docs/key-concepts) · [Worktrees](https://www.ade-app.dev/docs/lanes/overview) · [Computer use](https://www.ade-app.dev/docs/computer-use/overview) · [Changelog](https://www.ade-app.dev/docs/changelog) · [Contributing](CONTRIBUTING.md)
 
+## Commit Chart
+
+[![arul28/ADE GitStock K-Line Chart](https://gitstock.org/arul28/ADE/stock.svg)](https://gitstock.org/arul28/ADE)
+
 ## License
 
 [AGPL-3.0](LICENSE) — © 2025 Arul Sharma. Free forever. Source on GitHub.

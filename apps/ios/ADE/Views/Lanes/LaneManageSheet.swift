@@ -174,6 +174,11 @@ struct LaneManageSheet: View {
               .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             appearanceTab
           } else {
+            // Matches the host's adoptableAttached derivation (attached AND not
+            // archived) — an archived attached lane can't be adopted.
+            if snapshot.adoptableAttached {
+              adoptSection
+            }
             manageTabBar
             tabContent
           }
@@ -571,6 +576,34 @@ struct LaneManageSheet: View {
     }
   }
 
+  private var adoptSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: "arrow.up.forward.app")
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(ADEColor.accent)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("Move to ADE-managed worktree")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("Copies registration into .ade/worktrees so ADE can manage this lane's lifecycle like the others. Does not rewrite git history.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+      LaneActionButton(title: "Move", symbol: "arrow.up.forward.app", tint: ADEColor.accent) {
+        Task { await performAdopt() }
+      }
+      .disabled(!canRunLiveActions || busyAction != nil)
+    }
+    .padding(14)
+    .background(ADEColor.accent.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.accent.opacity(0.22), lineWidth: 1)
+    )
+  }
+
   private var archiveTab: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 10) {
@@ -681,6 +714,11 @@ struct LaneManageSheet: View {
       errorMessage = error.localizedDescription
     }
     busyAction = nil
+  }
+
+  @MainActor
+  private func performAdopt() async {
+    await performAction("move lane") { _ = try await syncService.adoptAttachedLane(snapshot.lane.id) }
   }
 
   @MainActor

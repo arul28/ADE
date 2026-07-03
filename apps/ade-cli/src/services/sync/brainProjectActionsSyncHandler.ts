@@ -690,6 +690,7 @@ export function createBrainProjectActionsSyncHandler(
             pollIntervalMs,
             projectCatalog: catalog,
             projectCatalogEnabled: true,
+            crossProjectChatEnabled: false,
             projectActionsEnabled: projectActionsEnabled(args.projectCatalogProvider),
             remoteCommandSupportedActions: [],
             remoteCommandDescriptors: [],

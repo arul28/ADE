@@ -2102,6 +2102,88 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(turnId, "turn-1")
   }
 
+  func testSystemNoticeDecodesSeverityKindsAndFallsBackForUnknown() throws {
+    // The host emits noticeKind "warning"/"error"/"config"; the phone must decode
+    // them rather than throw. Unknown future kinds fall back to `.info`.
+    for (raw, expected): (String, AgentChatNoticeKind) in [
+      ("warning", .warning),
+      ("error", .error),
+      ("config", .config),
+      ("some_future_kind", .info),
+    ] {
+      let json = """
+      {
+        "sessionId": "s",
+        "timestamp": "2026-03-17T00:00:00.000Z",
+        "event": { "type": "system_notice", "noticeKind": "\(raw)", "message": "m" }
+      }
+      """
+      let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+      guard case .systemNotice(let kind, _, _, _, _) = envelope.event else {
+        return XCTFail("Expected system notice for raw kind \(raw).")
+      }
+      XCTAssertEqual(kind, expected, "noticeKind \(raw) should decode to \(expected)")
+    }
+  }
+
+  func testChatEventHistorySnapshotSurvivesWarningNoticeAlongsidePlanApproval() throws {
+    // Regression: a single `system_notice` with an out-of-enum noticeKind used to
+    // throw during the strict `[AgentChatEventEnvelope]` array decode, discarding
+    // the whole snapshot — including the pending plan-approval — and stranding the
+    // phone on "Waiting for prompt details from the machine."
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-03-25T00:00:00.000Z",
+          "sequence": 1,
+          "event": { "type": "system_notice", "noticeKind": "warning", "message": "heads up" }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-03-25T00:00:01.000Z",
+          "sequence": 2,
+          "event": {
+            "type": "approval_request",
+            "itemId": "plan-1",
+            "kind": "tool_call",
+            "description": "Plan ready",
+            "turnId": "turn-1",
+            "detail": {
+              "request": {
+                "kind": "plan_approval",
+                "source": "codex",
+                "title": "Plan Ready for Review",
+                "questions": [
+                  { "id": "plan_decision", "question": "## Plan\\n1. Ship it." }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-03-25T00:00:02.000Z",
+          "sequence": 3,
+          "event": { "type": "done", "turnId": "turn-1", "status": "completed" }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    XCTAssertEqual(snapshot.events.count, 3, "No event should be dropped by the array decode.")
+
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+    let pendingInputs = derivePendingWorkInputs(from: transcript)
+    guard case .planApproval = pendingInputs.first else {
+      return XCTFail("Expected the plan approval to survive the completed turn.")
+    }
+  }
+
   func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
     let json = """
     {
@@ -6501,44 +6583,124 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(try? results[2].result.get(), "lane-c-done")
   }
 
-  func testLaneCardRebaseWarningPrefersAutoRebaseStatusOverSuggestion() {
-    var snapshot = makeLaneListSnapshot(
-      id: "lane-rebase",
-      name: "iOS simulator",
-      laneType: "worktree",
-      baseRef: "main",
-      branchRef: "ade/ios-sim",
-      worktreePath: "/project/.ade/worktrees/ios-sim",
-      description: nil,
-      status: LaneStatus(dirty: false, ahead: 0, behind: 2, remoteBehind: 0, rebaseInProgress: false),
-      runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
-      createdAt: "2026-03-20T00:00:00.000Z",
-      archivedAt: nil
-    )
-    snapshot.rebaseSuggestion = RebaseSuggestion(
-      laneId: "lane-rebase",
-      parentLaneId: "lane-main",
-      parentHeadSha: "parent-sha",
-      behindCount: 2,
-      lastSuggestedAt: "2026-03-20T00:01:00.000Z",
-      deferredUntil: nil,
-      dismissedAt: nil,
-      hasPr: true
-    )
-    snapshot.autoRebaseStatus = AutoRebaseLaneStatus(
-      laneId: "lane-rebase",
-      parentLaneId: "lane-main",
-      parentHeadSha: "parent-sha",
-      state: "rebaseConflict",
-      updatedAt: "2026-03-20T00:02:00.000Z",
-      conflictCount: 3,
-      message: "Resolve conflicts in the Rebase/Merge tab."
-    )
+  func testLaneStackCardRenderSignatureFlipsForEveryRenderedField() throws {
+    // Guards the hand-listed field set in laneStackCardRenderSignature: the
+    // card's Equatable gates SwiftUI re-render on this hash, so a rendered
+    // field missing from it means silent under-invalidation (stale rows).
+    func makeSnapshot() -> LaneListSnapshot {
+      makeLaneListSnapshot(
+        id: "lane-sig",
+        name: "Signature lane",
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "ade/signature-lane",
+        worktreePath: "/project/.ade/worktrees/signature-lane",
+        description: nil,
+        status: LaneStatus(dirty: false, ahead: 1, behind: 2, remoteBehind: 0, rebaseInProgress: false),
+        runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
+        createdAt: "2026-03-20T00:00:00.000Z",
+        archivedAt: nil
+      )
+    }
+    func signature(
+      _ snapshot: LaneListSnapshot,
+      isPinned: Bool = false,
+      isOpen: Bool = false,
+      depth: Int = 0,
+      pullRequest: LanePrTag? = nil,
+      isSelectedTransitionSource: Bool = false
+    ) -> Int {
+      laneStackCardRenderSignature(
+        snapshot: snapshot,
+        isPinned: isPinned,
+        isOpen: isOpen,
+        depth: depth,
+        pullRequest: pullRequest,
+        isSelectedTransitionSource: isSelectedTransitionSource
+      )
+    }
 
-    let warning = laneCardRebaseWarningPresentation(for: snapshot)
+    let base = signature(makeSnapshot())
 
-    XCTAssertEqual(warning, .autoRebase(state: "rebaseConflict", message: "Resolve conflicts in the Rebase/Merge tab."))
-    XCTAssertEqual(warning?.accessibilitySummary, "Auto-rebase conflict. Resolve conflicts in the Rebase/Merge tab.")
+    // These models are decode-only in the app (no memberwise call sites), so
+    // build fixtures the same way production data arrives.
+    let decoder = JSONDecoder()
+    let issue = try decoder.decode(
+      LaneLinearIssue.self,
+      from: Data(#"{"id":"iss-1","identifier":"ADE-123","title":"Issue"}"#.utf8)
+    )
+    let linkJSON = #"""
+    {"id":"link-1","laneId":"lane-sig","role":"primary","source":"manual",
+     "includeInPr":true,"closeOnMerge":false,
+     "createdAt":"2026-03-20T00:00:00.000Z","updatedAt":"2026-03-20T00:00:00.000Z",
+     "issue":{"id":"iss-1","identifier":"ADE-123","title":"Issue"}}
+    """#
+    let link = try decoder.decode(LaneLinearIssueLink.self, from: Data(linkJSON.utf8))
+    var secondLink = link
+    secondLink.id = "link-2"
+    secondLink.issue.id = "iss-2"
+    secondLink.issue.identifier = "ADE-124"
+
+    let laneMutations: [(String, (inout LaneListSnapshot) -> Void)] = [
+      ("id", { $0.lane.id = "lane-sig-2" }),
+      ("name", { $0.lane.name = "Renamed lane" }),
+      ("color", { $0.lane.color = "#ff00ff" }),
+      ("icon", { $0.lane.icon = .bolt }),
+      ("laneType", { $0.lane.laneType = "attached" }),
+      ("archivedAt", { $0.lane.archivedAt = "2026-03-21T00:00:00.000Z" }),
+      ("branchRef", { $0.lane.branchRef = "ade/other-branch" }),
+      ("status.dirty", { $0.lane.status.dirty = true }),
+      ("status.ahead", { $0.lane.status.ahead = 5 }),
+      ("status.behind", { $0.lane.status.behind = 7 }),
+      ("childCount", { $0.lane.childCount = 3 }),
+      ("devicesOpen", { $0.lane.devicesOpen = [DeviceMarker(deviceId: "d1", displayName: "Phone", platform: "ios")] }),
+      ("linearIssue", { $0.lane.linearIssue = issue }),
+      ("linearIssueLinks", { $0.lane.linearIssueLinks = [link, secondLink] }),
+    ]
+    // Same device COUNT, different platform — the presence icon derives from
+    // the platform, so the signature must still flip.
+    var macSnapshot = makeSnapshot()
+    macSnapshot.lane.devicesOpen = [DeviceMarker(deviceId: "d1", displayName: "Studio", platform: "macos")]
+    var iosSnapshot = makeSnapshot()
+    iosSnapshot.lane.devicesOpen = [DeviceMarker(deviceId: "d1", displayName: "Phone", platform: "ios")]
+    XCTAssertNotEqual(
+      signature(macSnapshot),
+      signature(iosSnapshot),
+      "renderSignature must change when a device platform swaps at the same count"
+    )
+    for (field, mutate) in laneMutations {
+      var mutated = makeSnapshot()
+      mutate(&mutated)
+      XCTAssertNotEqual(signature(mutated), base, "renderSignature must change when \(field) changes")
+    }
+
+    XCTAssertNotEqual(signature(makeSnapshot(), isPinned: true), base, "renderSignature must change when isPinned changes")
+    XCTAssertNotEqual(signature(makeSnapshot(), isOpen: true), base, "renderSignature must change when isOpen changes")
+    XCTAssertNotEqual(signature(makeSnapshot(), depth: 2), base, "renderSignature must change when depth changes")
+    XCTAssertNotEqual(
+      signature(makeSnapshot(), isSelectedTransitionSource: true),
+      base,
+      "renderSignature must change when isSelectedTransitionSource changes"
+    )
+    let pr = LanePrTag(
+      source: .github,
+      prId: nil,
+      githubPrNumber: 42,
+      githubUrl: "https://github.com/org/repo/pull/42",
+      title: "PR",
+      state: "open",
+      headBranch: "ade/signature-lane",
+      updatedAt: "2026-03-20T01:00:00.000Z"
+    )
+    let withPr = signature(makeSnapshot(), pullRequest: pr)
+    XCTAssertNotEqual(withPr, base, "renderSignature must change when a PR appears")
+    var mergedPr = pr
+    mergedPr.state = "merged"
+    XCTAssertNotEqual(
+      signature(makeSnapshot(), pullRequest: mergedPr),
+      withPr,
+      "renderSignature must change when the PR state changes"
+    )
   }
 
   func testSelectLanePrTagPrefersOpenPrOnMatchingBranch() {
@@ -6919,91 +7081,10 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testLaneStackCardAccessibilityLabelIncludesRebaseWarningSummary() {
-    var snapshot = makeLaneListSnapshot(
-      id: "lane-warning",
-      name: "Sync polish",
-      laneType: "worktree",
-      baseRef: "main",
-      branchRef: "ade/sync-polish",
-      worktreePath: "/project/.ade/worktrees/sync-polish",
-      description: nil,
-      status: LaneStatus(dirty: false, ahead: 1, behind: 4, remoteBehind: 0, rebaseInProgress: false),
-      runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
-      createdAt: "2026-03-20T00:00:00.000Z",
-      archivedAt: nil
-    )
-    snapshot.rebaseSuggestion = RebaseSuggestion(
-      laneId: "lane-warning",
-      parentLaneId: "lane-main",
-      parentHeadSha: "parent-sha",
-      behindCount: 4,
-      lastSuggestedAt: "2026-03-20T00:01:00.000Z",
-      deferredUntil: nil,
-      dismissedAt: nil,
-      hasPr: true
-    )
-    let warning = laneCardRebaseWarningPresentation(for: snapshot)
-
-    let label = laneStackCardAccessibilityLabel(
-      snapshot: snapshot,
-      isPinned: false,
-      isOpen: true,
-      rebaseWarning: warning
-    )
-
-    XCTAssertTrue(label.contains("Rebase suggested"))
-    XCTAssertTrue(label.contains("4 commits behind"))
-    XCTAssertTrue(label.contains("PR open"))
-  }
-
   func testLaneDetailRebaseBannerAccessibilityLabelIncludesVisibleBadges() {
     XCTAssertEqual(
       laneDetailRebaseBannerAccessibilityLabel(behindCount: 1, parentLabel: "main", hasPr: true),
       "Rebase suggested. 1 commit behind. PR open. Rebase this lane onto main to pick up new commits."
-    )
-  }
-
-  func testCompactSyncSummaryUsesRemoteUpstreamState() {
-    XCTAssertEqual(compactSyncSummary(nil), "Checking remote")
-    XCTAssertEqual(
-      compactSyncSummary(
-        GitUpstreamSyncStatus(
-          hasUpstream: true,
-          upstreamRef: "origin/feature",
-          ahead: 0,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "none"
-        )
-      ),
-      "In sync with remote"
-    )
-    XCTAssertEqual(
-      compactSyncSummary(
-        GitUpstreamSyncStatus(
-          hasUpstream: true,
-          upstreamRef: "origin/feature",
-          ahead: 2,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "push"
-        )
-      ),
-      "2 ahead remote"
-    )
-    XCTAssertEqual(
-      compactSyncSummary(
-        GitUpstreamSyncStatus(
-          hasUpstream: false,
-          upstreamRef: nil,
-          ahead: 0,
-          behind: 0,
-          diverged: false,
-          recommendedAction: "publish"
-        )
-      ),
-      "No upstream"
     )
   }
 
@@ -8819,13 +8900,18 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(normalizedWorkChatSessionStatus(session: crdtOnlySession, summary: staleCompletedSummary), "awaiting-input")
   }
 
-  func testWorkChatComposerPlaceholderDistinguishesMissingPromptDetails() {
-    XCTAssertTrue(workChatComposerBlocksFreeformInput(pendingInputCount: 0, sessionStatus: "awaiting-input"))
-    XCTAssertTrue(workChatAwaitingPromptDetailsMissing(pendingInputCount: 0, sessionStatus: "awaiting-input"))
+  func testWorkChatComposerStaysUnlockedWhenAwaitingInputHasNoPendingCard() {
+    // A bare `awaiting-input` status with no derived pending input must NOT lock
+    // the composer or show a "waiting for prompt details" placeholder — that
+    // state transiently lags right after a plan is approved, and the user should
+    // keep typing normally through it.
+    XCTAssertFalse(workChatComposerBlocksFreeformInput(pendingInputCount: 0, sessionStatus: "awaiting-input"))
     XCTAssertEqual(
       workChatComposerPlaceholder(pendingInputCount: 0, sessionStatus: "awaiting-input"),
-      "Waiting for prompt details..."
+      "Type to vibecode..."
     )
+    // A real pending input still gates freeform typing behind the structured card.
+    XCTAssertTrue(workChatComposerBlocksFreeformInput(pendingInputCount: 1, sessionStatus: "awaiting-input"))
     XCTAssertEqual(
       workChatComposerPlaceholder(pendingInputCount: 1, sessionStatus: "awaiting-input"),
       "Answer the prompt above..."
@@ -13832,9 +13918,20 @@ final class ADETests: XCTestCase {
     )
     let questionCard = snapshot.eventCards.first { $0.kind == "question" }
     XCTAssertEqual(questionCard?.title, "Question asked")
-    XCTAssertEqual(questionCard?.body, "Mobile question fixture\nPick a mobile verification path.")
-    XCTAssertEqual(questionCard?.bullets.first, "Flow: Which Work prompt flow should continue? Options: Question flow, Approval flow")
-    XCTAssertEqual(questionCard?.bullets.last, "Notes: Add an optional note for the mobile audit. Freeform response allowed.")
+    // The redesigned resolved-question card carries the structured question so
+    // the view can render provider logo + option rows instead of a raw
+    // "Flow: … Options: …" bullet dump.
+    XCTAssertTrue(questionCard?.bullets.isEmpty ?? false, "Resolved question must not dump options into bullets.")
+    let questionModel = questionCard?.questionModel
+    XCTAssertEqual(questionModel?.questions.count, 2)
+    XCTAssertEqual(questionModel?.questions.first?.question, "Which Work prompt flow should continue?")
+    XCTAssertEqual(questionModel?.questions.first?.options.map(\.label), ["Question flow", "Approval flow"])
+    XCTAssertEqual(questionModel?.questions.first?.options.first?.value, "question_flow")
+    XCTAssertEqual(questionModel?.questions.last?.question, "Add an optional note for the mobile audit.")
+    // The resolution is joined onto the card so it can show the outcome inline,
+    // and the standalone "Input resolved" ribbon is folded away.
+    XCTAssertEqual(questionCard?.resolution, "accepted")
+    XCTAssertFalse(snapshot.eventCards.contains { $0.kind == "pendingInputResolved" })
     XCTAssertFalse(snapshot.eventCards.contains { $0.kind == "approval" })
     XCTAssertFalse(snapshot.eventCards.flatMap { [$0.body ?? ""] + $0.bullets }.contains { $0.contains("{") || $0.contains("\"request\"") })
   }
@@ -13895,6 +13992,62 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(permissionCard?.body, "Allow\nAllow GitHub MCP")
     XCTAssertEqual(permissionCard?.metadata, ["functions.GitHub"])
     XCTAssertFalse(snapshot.eventCards.flatMap { [$0.body ?? ""] + $0.bullets }.contains { $0.contains("{") || $0.contains("\"request\"") })
+  }
+
+  func testFileChangeApprovalDerivesAsApprovalPendingInput() {
+    // Codex file-change approval: request.kind == "approval", no options. It must
+    // derive as a `.approval` pending input so the composer-pinned badge renders.
+    let detail = """
+    {"grantRoot":null,"reason":null,"request":{"requestId":"3","itemId":"call_abc","source":"codex","kind":"approval","description":"Approve file changes","questions":[],"allowsFreeform":false,"blocking":true}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-02T20:14:18.125Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Approve file changes", detail: detail, itemId: "call_abc", turnId: "t-1")
+      ),
+    ]
+    let pendingInputs = derivePendingWorkInputs(from: transcript)
+    guard case .approval(let approval)? = pendingInputs.first else {
+      return XCTFail("Expected a .approval pending input for the file-change gate.")
+    }
+    XCTAssertEqual(approval.id, "call_abc")
+    XCTAssertEqual(approval.description, "Approve file changes")
+  }
+
+  func testResolvedFileChangeApprovalCollapsesToCompactChipAndFoldsRibbon() {
+    // Dedupe: the resolved file-change approval must carry its description once
+    // (no redundant bullet/metadata) and fold the standalone "Input resolved" row.
+    let detail = """
+    {"grantRoot":null,"reason":null,"request":{"requestId":"3","itemId":"call_abc","source":"codex","kind":"approval","description":"Approve file changes","questions":[],"allowsFreeform":false,"blocking":true}}
+    """
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-02T20:14:18.125Z",
+        sequence: 1,
+        event: .approvalRequest(description: "Approve file changes", detail: detail, itemId: "call_abc", turnId: "t-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-02T20:14:25.000Z",
+        sequence: 2,
+        event: .pendingInputResolved(itemId: "call_abc", resolution: "accepted", turnId: "t-1")
+      ),
+    ]
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let approvalCard = snapshot.eventCards.first { $0.kind == "approval" }
+    XCTAssertEqual(approvalCard?.body, "Approve file changes")
+    XCTAssertTrue(approvalCard?.bullets.isEmpty ?? false, "Resolved approval must not repeat its description as a bullet.")
+    XCTAssertTrue(approvalCard?.metadata.isEmpty ?? false)
+    XCTAssertEqual(approvalCard?.resolution, "accepted")
+    XCTAssertFalse(snapshot.eventCards.contains { $0.kind == "pendingInputResolved" })
   }
 
   func testBuildWorkTimelineSuppressesRawToolCardWhenPermissionRequestIsPending() {

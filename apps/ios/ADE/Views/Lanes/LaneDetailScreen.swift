@@ -35,7 +35,10 @@ struct LaneDetailScreen: View {
   @State private var lastLaneDetailLocalReload = Date.distantPast
 
   var laneDetailProjectionReloadKey: String {
-    "\(laneId)-\(syncService.laneDetailProjectionRevision)"
+    // Per-lane revision keeps this screen from reloading when an unrelated lane's
+    // local detail cache changes; the global revision still catches broad triggers
+    // (CRR-synced lanes/PR/linear rows, project-scope changes).
+    "\(laneId)-\(syncService.laneDetailProjectionRevision)-\(syncService.laneDetailRevisions[laneId] ?? 0)"
   }
   @State private var copiedLinkNotice: String?
   @State private var showRescueSheet = false
@@ -282,9 +285,6 @@ struct LaneDetailScreen: View {
             amendCommit = false
           }
         }
-      },
-      onGenerateMessage: {
-        try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
       },
       onPull: { mode in
         Task { await performAction("pull \(mode)") { try await syncService.syncGit(laneId: laneId, mode: mode) } }

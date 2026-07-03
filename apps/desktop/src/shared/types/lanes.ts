@@ -203,6 +203,8 @@ export type LaneDetailPayload = {
   envInitProgress: LaneEnvInitProgress | null;
   sessions: TerminalSessionSummary[];
   chatSessions: AgentChatSessionSummary[];
+  signature?: string;
+  notModified?: boolean;
 };
 
 export type LaneIcon = "star" | "flag" | "bolt" | "shield" | "tag" | null;

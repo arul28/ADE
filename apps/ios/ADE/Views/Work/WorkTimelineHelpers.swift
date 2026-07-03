@@ -1201,6 +1201,51 @@ func buildWorkFileChangeCards(from transcript: [WorkChatEnvelope]) -> [WorkFileC
   return order.compactMap { byId[$0] }
 }
 
+/// Map each resolved pending-input `itemId` to its resolution word so the
+/// question / plan / approval cards can render the outcome inline. When several
+/// resolutions share an itemId the last one wins (a re-answer supersedes).
+private func workPendingInputResolutions(from transcript: [WorkChatEnvelope]) -> [String: String] {
+  var result: [String: String] = [:]
+  for envelope in transcript {
+    guard case .pendingInputResolved(let itemId, let resolution, _) = envelope.event else { continue }
+    let trimmed = resolution.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { continue }
+    result[itemId] = trimmed
+  }
+  return result
+}
+
+/// Set of pending-input `itemId`s whose resolution is rendered inline on a
+/// question, plan-approval, or generic-approval card. Their standalone "Input
+/// resolved" ribbon is folded away in `buildWorkEventCards`. Permission and
+/// model-selection gates are excluded — they don't surface the resolution
+/// inline, so their ribbon stays.
+private func workResolvedInlineItemIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
+  var ids = Set<String>()
+  for envelope in transcript {
+    switch envelope.event {
+    case .approvalRequest(let description, let detail, let itemId, _):
+      if pendingWorkModelSelectionFromApproval(description: description, detail: detail, itemId: itemId) != nil {
+        continue
+      }
+      if pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) != nil {
+        ids.insert(itemId)
+      } else if pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) != nil {
+        ids.insert(itemId)
+      } else if pendingWorkPermissionFromApproval(description: description, detail: detail, itemId: itemId) != nil {
+        continue
+      } else {
+        ids.insert(itemId)
+      }
+    case .structuredQuestion(_, _, let itemId, _):
+      ids.insert(itemId)
+    default:
+      continue
+    }
+  }
+  return ids
+}
+
 func buildWorkEventCards(
   from transcript: [WorkChatEnvelope],
   suppressedItemIds: Set<String> = []
@@ -1208,6 +1253,12 @@ func buildWorkEventCards(
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
   let terminalDoneTurnIds = workTerminalDoneTurnIds(from: transcript)
+  // Join `pending_input_resolved` events onto the question / plan / approval
+  // card they resolve so those cards can show the outcome inline. Any resolved
+  // itemId that lands on such a card gets its standalone "Input resolved" ribbon
+  // folded away (below) to avoid rendering the resolution twice.
+  let resolutionByItemId = workPendingInputResolutions(from: transcript)
+  let foldedResolutionItemIds = workResolvedInlineItemIds(from: transcript)
   for envelope in transcript {
     if !suppressedItemIds.isEmpty {
       switch envelope.event {
@@ -1219,10 +1270,14 @@ func buildWorkEventCards(
         break
       }
     }
+    if case .pendingInputResolved(let itemId, _, _) = envelope.event,
+       foldedResolutionItemIds.contains(itemId) {
+      continue
+    }
     if redundantWorkTerminalStatus(envelope.event, terminalDoneTurnIds: terminalDoneTurnIds) {
       continue
     }
-    guard let card = eventCard(for: envelope) else { continue }
+    guard let card = eventCard(for: envelope, resolutionByItemId: resolutionByItemId) else { continue }
     if let existing = byId[card.id], let merged = mergedWorkEventCard(existing, with: card) {
       byId[card.id] = merged
     } else {
@@ -1342,9 +1397,12 @@ private func approvalRequestEventCard(
   timestamp: String,
   description: String,
   detail: String?,
-  itemId: String
+  itemId: String,
+  resolution: String? = nil
 ) -> WorkEventCardModel {
   if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
+    // The resolved plan card renders a markdown preview + expand-to-sheet from
+    // `planApprovalModel`, so we no longer split the plan into per-line bullets.
     return WorkEventCardModel(
       id: id,
       kind: "planApproval",
@@ -1353,12 +1411,17 @@ private func approvalRequestEventCard(
       tint: .warning,
       timestamp: timestamp,
       body: nonEmptyWorkTimelineText(planApproval.title) ?? nonEmptyWorkTimelineText(description),
-      bullets: workTimelinePlanBullets(from: planApproval.planText),
-      metadata: nonEmptyWorkTimelineText(planApproval.source).map { [$0] } ?? []
+      bullets: [],
+      metadata: nonEmptyWorkTimelineText(planApproval.source).map { [$0] } ?? [],
+      planApprovalModel: planApproval,
+      resolution: resolution
     )
   }
 
   if let question = pendingWorkQuestionFromApproval(description: description, detail: detail, itemId: itemId) {
+    // The resolved question card renders provider logo + question text + option
+    // rows from `questionModel`, so title/body/bullets are only fallbacks for
+    // the (now-unused) generic path and accessibility text.
     return WorkEventCardModel(
       id: id,
       kind: "question",
@@ -1366,9 +1429,11 @@ private func approvalRequestEventCard(
       icon: "questionmark.circle",
       tint: .warning,
       timestamp: timestamp,
-      body: workApprovalRequestBody(primary: question.title, secondary: question.body, fallback: description),
-      bullets: workTimelineQuestionBullets(from: question),
-      metadata: []
+      body: nonEmptyWorkTimelineText(question.body),
+      bullets: [],
+      metadata: [],
+      questionModel: question,
+      resolution: resolution
     )
   }
 
@@ -1386,6 +1451,10 @@ private func approvalRequestEventCard(
     )
   }
 
+  // Resolved generic / file-change approvals collapse to a compact chip
+  // (`WorkResolvedApprovalChip`) showing the description once + the outcome, so
+  // we drop the redundant detail bullets/metadata that used to print the
+  // description three times (title, body, and a bullet).
   return WorkEventCardModel(
     id: id,
     kind: "approval",
@@ -1394,8 +1463,9 @@ private func approvalRequestEventCard(
     tint: .warning,
     timestamp: timestamp,
     body: nonEmptyWorkTimelineText(description),
-    bullets: genericApprovalDetailBullets(from: detail),
-    metadata: []
+    bullets: [],
+    metadata: [],
+    resolution: resolution
   )
 }
 
@@ -1412,53 +1482,6 @@ private func workApprovalRequestBody(primary: String?, secondary: String?, fallb
   }
   guard !pieces.isEmpty else { return nil }
   return pieces.prefix(2).joined(separator: "\n")
-}
-
-private func workTimelineQuestionBullets(from model: WorkPendingQuestionModel) -> [String] {
-  model.questions.prefix(4).map { question in
-    let questionText = question.isSecret
-      ? "Secure response requested"
-      : (nonEmptyWorkTimelineText(question.question) ?? "Response requested")
-    var text = question.header.map { "\($0): \(questionText)" } ?? questionText
-    let options = question.options
-      .compactMap { nonEmptyWorkTimelineText($0.label) }
-      .prefix(4)
-      .joined(separator: ", ")
-    if !options.isEmpty {
-      text += " Options: \(options)"
-    } else if question.allowsFreeform {
-      text += " Freeform response allowed."
-    }
-    return truncatedWorkTimelineText(text, limit: 220)
-  }
-}
-
-private func workTimelinePlanBullets(from planText: String) -> [String] {
-  planText
-    .components(separatedBy: .newlines)
-    .compactMap { raw -> String? in
-      let text = raw
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .replacingOccurrences(of: #"^[-*]\s+"#, with: "", options: .regularExpression)
-        .replacingOccurrences(of: #"^\d+\.\s+"#, with: "", options: .regularExpression)
-      return nonEmptyWorkTimelineText(text)
-    }
-    .prefix(4)
-    .map { truncatedWorkTimelineText($0, limit: 180) }
-}
-
-private func genericApprovalDetailBullets(from detail: String?) -> [String] {
-  guard let detail = nonEmptyWorkTimelineText(detail) else { return [] }
-  if let object = workJSONObject(from: detail) {
-    let request = object["request"] as? [String: Any] ?? object
-    return [
-      optionalString(request["description"]),
-      optionalString(request["tool"]) ?? optionalString(request["toolName"]),
-    ]
-    .compactMap(nonEmptyWorkTimelineText)
-    .map { truncatedWorkTimelineText($0, limit: 180) }
-  }
-  return [truncatedWorkTimelineText(detail, limit: 240)]
 }
 
 private func nonEmptyWorkTimelineText(_ value: String?) -> String? {
@@ -1540,7 +1563,10 @@ func workPendingInputTimestamps(from transcript: [WorkChatEnvelope]) -> [String:
   return result
 }
 
-private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
+private func eventCard(
+  for envelope: WorkChatEnvelope,
+  resolutionByItemId: [String: String] = [:]
+) -> WorkEventCardModel? {
   switch envelope.event {
     case .activity:
       // Activity events ("searching_glob", "running_bash", etc.) are pre-tool
@@ -1584,7 +1610,8 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         timestamp: envelope.timestamp,
         description: description,
         detail: detail,
-        itemId: itemId
+        itemId: itemId,
+        resolution: resolutionByItemId[itemId]
       )
     case .pendingInputResolved(_, let resolution, _):
       return WorkEventCardModel(
@@ -1598,7 +1625,18 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         bullets: [],
         metadata: [pendingInputResolutionLabel(for: resolution)]
       )
-    case .structuredQuestion(let question, let options, _, _):
+    case .structuredQuestion(let question, let options, let itemId, _):
+      let questionModel = WorkPendingQuestionModel(
+        id: itemId,
+        questions: [
+          WorkPendingQuestion(
+            questionId: "response",
+            question: question,
+            options: options,
+            allowsFreeform: options.isEmpty
+          )
+        ]
+      )
       return WorkEventCardModel(
         id: envelope.id,
         kind: "question",
@@ -1608,7 +1646,9 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         timestamp: envelope.timestamp,
         body: question,
         bullets: options.map { $0.label },
-        metadata: []
+        metadata: [],
+        questionModel: questionModel,
+        resolution: resolutionByItemId[itemId]
       )
     case .todoUpdate(let items, _):
       return WorkEventCardModel(

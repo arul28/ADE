@@ -1235,6 +1235,15 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
   return syncNormalizedCommandScopeValue(activeProjectId)
 }
 
+/// The foreign project a cross-project chat "quick look" streams from. The
+/// envelope stays stamped with the active project (host-scoped); this override
+/// rides inside the chat_subscribe payload / command args, mirroring how a
+/// foreign `command` carries its target.
+struct SyncCrossProjectChatScope: Equatable {
+  let projectId: String?
+  let projectRootPath: String?
+}
+
 /// Delivery events for the full-screen terminal. The active screen attaches a
 /// handler per session id and receives hydration snapshots, ordered live
 /// chunks, and process exit without polling `terminalBuffers`.
@@ -1279,6 +1288,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var localStateRevision = 0
   @Published private(set) var lanesProjectionRevision = 0
   @Published private(set) var laneDetailProjectionRevision = 0
+  /// Per-lane detail revisions bumped only for local `lane_detail_snapshots`
+  /// writes with a known lane id, so an open lane detail stops reloading when an
+  /// unrelated lane's cached detail changes. Broad triggers (CRR-synced lanes /
+  /// PR / linear rows, or project-scope changes) still bump
+  /// `laneDetailProjectionRevision`, which every open detail also observes.
+  @Published private(set) var laneDetailRevisions: [String: Int] = [:]
   @Published private(set) var workProjectionRevision = 0
   @Published private(set) var filesProjectionRevision = 0
   @Published private(set) var prsProjectionRevision = 0
@@ -1483,7 +1498,10 @@ final class SyncService: ObservableObject {
   /// reloads do not fire on every CRDT row during host sync.
   private var databaseRevisionDebounceTask: Task<Void, Never>?
   private var pendingDatabaseTouchedTables: Set<String> = []
+  private var pendingLaneDetailIds: Set<String> = []
   private var pendingDatabaseChangeAffectsAll = false
+  private var laneSnapshotSignatures: [String: String] = [:]
+  private var laneDetailSignatures: [String: String] = [:]
   private var latestRemoteDbVersion = 0
   private var outboundLocalDbVersion = 0
   private var outboundCursorPersistTask: Task<Void, Never>?
@@ -1523,6 +1541,19 @@ final class SyncService: ObservableObject {
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
   private var supportsChangesetAck = false
+  /// Host advertises cross-project chat "quick look": a `chat_subscribe` (and
+  /// the chat command actions) may carry a `projectId`/`projectRootPath`
+  /// override so a foreign project's chat streams read-only without switching
+  /// the phone's active project. Absent on the currently-published brain, so
+  /// the hub falls back to a full project activation. `private(set)` so the hub
+  /// can decide which open path to take.
+  private(set) var supportsCrossProjectChat = false
+  /// Foreign-project routing for the cross-project chat feature: sessionId ->
+  /// the project that session lives in. Present ONLY while a foreign chat is
+  /// open (registered by the chat view, cleared on close); empty in the common
+  /// same-project case, so it adds no work when the feature is unused. Every
+  /// chat read/write for a listed session routes to that project.
+  private var crossProjectChatScopeBySession: [String: SyncCrossProjectChatScope] = [:]
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
   private var healthyConnectionSampleCount = 0
@@ -1642,6 +1673,16 @@ final class SyncService: ObservableObject {
 
     if isActiveProject(project) {
       projectHomePresented = false
+      // An in-place hub activation can leave a project marked active while its
+      // work domain never finished hydrating (or landed in a failed/dropped
+      // state). Re-entering the project must repair that rather than no-op,
+      // otherwise its chats render blank until a manual reconnect.
+      if canSendLiveRequests() {
+        let workPhase = domainStatuses[.work]?.phase
+        if workPhase == .failed || workPhase == .disconnected {
+          startInitialHydrationTask(for: connectionGeneration)
+        }
+      }
       return
     }
 
@@ -1725,6 +1766,58 @@ final class SyncService: ObservableObject {
     }
     if isCurrentProjectSelection(selectionGeneration) {
       projectSwitchInFlightRootPath = nil
+    }
+    // The hub chat cover renders the chat as soon as this returns, then reads
+    // the session row from the local DB. The switch flips `activeProjectId`
+    // immediately, but the project's work rows + chat subscriptions only land
+    // once the (re)connect completes its hello handshake and initial
+    // hydration. Wait (bounded) for that fresh hydration so the cover — and any
+    // follow-up project open, which no-ops because the project is already
+    // active — sees a hydrated project instead of a momentarily empty one.
+    await awaitFreshActiveProjectWorkHydration(selectionGeneration: selectionGeneration)
+  }
+
+  /// Wait until the active project's work domain reports a *fresh* successful
+  /// hydration (a `lastHydratedAt` newer than when the caller started), or the
+  /// connection settles into a terminal non-hydrating state, or `timeout`
+  /// elapses. Used to hold the hub chat cover on its activating spinner until
+  /// an in-place project activation has actually loaded data.
+  private func awaitFreshActiveProjectWorkHydration(
+    selectionGeneration: UInt64,
+    timeout: TimeInterval = 6
+  ) async {
+    let baselineHydratedAt = domainStatuses[.work]?.lastHydratedAt
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+      guard isCurrentProjectSelection(selectionGeneration) else { return }
+      if canSendLiveRequests() {
+        let workPhase = domainStatuses[.work]?.phase
+        // `.ready` (with a fresh timestamp) means the reconnect's hello landed
+        // AND the work list loaded for the new project. `.failed` also implies
+        // the hello completed and the socket is now scoped to the new project —
+        // the transcript reads (which is what the cover needs) will resolve even
+        // though the work-list fetch itself hiccuped — so stop waiting rather
+        // than spinning to the timeout.
+        if workPhase == .ready, domainStatuses[.work]?.lastHydratedAt != baselineHydratedAt {
+          return
+        }
+        if workPhase == .failed {
+          return
+        }
+      }
+      // Give up early on a switch that failed to establish a live socket; the
+      // cover falls back to its own offline/empty handling rather than spinning
+      // for the full timeout. A `.disconnected` work phase is only worth
+      // waiting on while a reconnect is actually in flight — when the
+      // connection itself has settled into disconnected/error, no hydration is
+      // coming and the full 6s spin would just delay the cover's empty state.
+      if connectionState.isHostUnreachable {
+        return
+      }
+      if connectionState == .disconnected || connectionState == .error {
+        return
+      }
+      try? await Task.sleep(nanoseconds: 200_000_000)
     }
   }
 
@@ -2344,6 +2437,7 @@ final class SyncService: ObservableObject {
     let scopeChanged = previousProjectId != nextProjectId || previousRootPath != nextRootPath
     if scopeChanged {
       prepareOutboundStateForProjectScopeChange()
+      resetLanePayloadSignatures()
     }
     activeProjectId = projectId
     activeProjectRootPath = nextRootPath
@@ -2377,6 +2471,12 @@ final class SyncService: ObservableObject {
     if scopeChanged {
       resetOutboundCursorStateForActiveProject()
     }
+  }
+
+  private func resetLanePayloadSignatures() {
+    laneSnapshotSignatures.removeAll()
+    laneDetailSignatures.removeAll()
+    laneDetailRevisions.removeAll()
   }
 
   private func normalizeActiveProjectSelection(allowSingleProjectFallback: Bool) {
@@ -2617,8 +2717,13 @@ final class SyncService: ObservableObject {
           .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
           .filter { !$0.isEmpty }
       )
+      let laneDetailIds = Set(
+        (notification.userInfo?[ADEDatabaseChangeNotification.laneDetailIdsUserInfoKey] as? [String] ?? [])
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty }
+      )
       Task { @MainActor in
-        self.scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: touchedTables)
+        self.scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: touchedTables, laneDetailIds: laneDetailIds)
       }
     }
     socketSessionDelegate.service = self
@@ -2656,12 +2761,14 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: Set<String>) {
+  private func scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: Set<String>, laneDetailIds: Set<String> = []) {
     if touchedTables.isEmpty {
       pendingDatabaseChangeAffectsAll = true
       pendingDatabaseTouchedTables.removeAll()
+      pendingLaneDetailIds.removeAll()
     } else if !pendingDatabaseChangeAffectsAll {
       pendingDatabaseTouchedTables.formUnion(touchedTables)
+      pendingLaneDetailIds.formUnion(laneDetailIds)
     }
     databaseRevisionDebounceTask?.cancel()
     databaseRevisionDebounceTask = Task { @MainActor [weak self] in
@@ -2669,7 +2776,9 @@ final class SyncService: ObservableObject {
       try? await Task.sleep(nanoseconds: 280_000_000)
       guard !Task.isCancelled else { return }
       let touchedTables = self.pendingDatabaseChangeAffectsAll ? Set<String>() : self.pendingDatabaseTouchedTables
+      let laneDetailIds = self.pendingDatabaseChangeAffectsAll ? Set<String>() : self.pendingLaneDetailIds
       self.pendingDatabaseTouchedTables.removeAll()
+      self.pendingLaneDetailIds.removeAll()
       self.pendingDatabaseChangeAffectsAll = false
 
       let affectsAll = touchedTables.isEmpty
@@ -2688,7 +2797,7 @@ final class SyncService: ObservableObject {
       }
       if affectsAnyProjection {
         localStateRevision += 1
-        self.bumpProjectionRevisions(for: touchedTables)
+        self.bumpProjectionRevisions(for: touchedTables, laneDetailIds: laneDetailIds)
       }
       if affectsActiveSessions {
         self.refreshActiveSessionsAndSnapshot()
@@ -2712,14 +2821,12 @@ final class SyncService: ObservableObject {
     ].contains(table)
   }
 
-  private func bumpProjectionRevisions(for touchedTables: Set<String>) {
+  private func bumpProjectionRevisions(for touchedTables: Set<String>, laneDetailIds: Set<String> = []) {
     let affectsAll = touchedTables.isEmpty
     if affectsAll || touchedTables.contains(where: Self.tableAffectsLanesProjection) {
       lanesProjectionRevision += 1
     }
-    if affectsAll || touchedTables.contains(where: Self.tableAffectsLaneDetailProjection) {
-      laneDetailProjectionRevision += 1
-    }
+    bumpLaneDetailRevisions(touchedTables: touchedTables, laneDetailIds: laneDetailIds, affectsAll: affectsAll)
     if affectsAll || touchedTables.contains(where: Self.tableAffectsWorkProjection) {
       workProjectionRevision += 1
     }
@@ -2734,6 +2841,28 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Route lane-detail invalidation per-lane when the sole trigger is a local
+  /// `lane_detail_snapshots` write with a known lane id; otherwise fall back to
+  /// the global `laneDetailProjectionRevision`. `lane_detail_snapshots` is a
+  /// phone-local cache (never CRR-synced), so its writes always carry an id; the
+  /// other lane-detail tables (lanes / PR / linear) arrive over CRR without a
+  /// cheap lane id and must stay broad.
+  private func bumpLaneDetailRevisions(touchedTables: Set<String>, laneDetailIds: Set<String>, affectsAll: Bool) {
+    if affectsAll {
+      laneDetailProjectionRevision += 1
+      return
+    }
+    let laneDetailTables = touchedTables.filter(Self.tableAffectsLaneDetailProjection)
+    guard !laneDetailTables.isEmpty else { return }
+    if laneDetailTables == ["lane_detail_snapshots"], !laneDetailIds.isEmpty {
+      for laneId in laneDetailIds {
+        laneDetailRevisions[laneId, default: 0] += 1
+      }
+    } else {
+      laneDetailProjectionRevision += 1
+    }
+  }
+
   private static func tableAffectsLanesProjection(_ table: String) -> Bool {
     if table == "projects" { return true }
     return [
@@ -2742,7 +2871,6 @@ final class SyncService: ObservableObject {
       "lane_state_snapshots",
       "pull_requests",
       "pull_request_snapshots",
-      "terminal_sessions",
       "lane_linear_issues",
       "lane_linear_issue_links",
     ].contains(table)
@@ -3740,14 +3868,26 @@ final class SyncService: ObservableObject {
   func refreshLaneSnapshots(includeStatus: Bool = true, includeDecorations: Bool = true) async throws {
     setDomainStatus([.lanes, .files], phase: .hydrating)
     do {
-      let raw = try await sendCommand(action: "lanes.refreshSnapshots", args: [
+      let signatureKey = laneSnapshotSignatureKey(includeStatus: includeStatus, includeDecorations: includeDecorations)
+      var args: [String: Any] = [
         "includeArchived": true,
         "includeStatus": includeStatus,
         "includeConflictStatus": includeDecorations,
         "includeRebaseSuggestions": includeDecorations,
         "includeAutoRebaseStatus": includeDecorations,
-      ])
+      ]
+      if let signature = laneSnapshotSignatures[signatureKey] {
+        args["ifNoneMatch"] = signature
+      }
+      let raw = try await sendCommand(action: "lanes.refreshSnapshots", args: args)
       let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
+      if payload.notModified == true {
+        if let signature = payload.signature {
+          laneSnapshotSignatures[signatureKey] = signature
+        }
+        setDomainStatus([.lanes, .files], phase: .ready)
+        return
+      }
       let lanes = includeStatus
         ? payload.lanes
         : lanesPreservingStatus(payload.lanes)
@@ -3758,6 +3898,9 @@ final class SyncService: ObservableObject {
         ? decoratedSnapshots
         : laneSnapshotsPreservingStatus(decoratedSnapshots)
       try database.replaceLaneSnapshots(lanes, snapshots: snapshots)
+      if let signature = payload.signature {
+        laneSnapshotSignatures[signatureKey] = signature
+      }
       setDomainStatus([.lanes, .files], phase: .ready)
     } catch {
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -3768,6 +3911,10 @@ final class SyncService: ObservableObject {
       }
       throw error
     }
+  }
+
+  private func laneSnapshotSignatureKey(includeStatus: Bool, includeDecorations: Bool) -> String {
+    "archived:true|status:\(includeStatus)|decorations:\(includeDecorations)"
   }
 
   private func lanesPreservingStatus(_ lanes: [LaneSummary]) -> [LaneSummary] {
@@ -4032,8 +4179,34 @@ final class SyncService: ObservableObject {
       setDomainStatus([.lanes], phase: .hydrating)
     }
     do {
-      let detail = try await sendDecodableCommand(action: "lanes.getDetail", args: ["laneId": laneId], as: LaneDetailPayload.self)
+      var args: [String: Any] = ["laneId": laneId]
+      let hasCachedDetail = database.fetchLaneDetail(laneId: laneId) != nil
+      if hasCachedDetail, let signature = laneDetailSignatures[laneId] {
+        args["ifNoneMatch"] = signature
+      }
+      var raw = try await sendCommand(action: "lanes.getDetail", args: args)
+      if let envelope = try? decodeHydrationPayload(raw, as: LaneNotModifiedEnvelope.self, domainLabel: "lane detail", decoder: decoder),
+         envelope.notModified == true {
+        if let signature = envelope.signature {
+          laneDetailSignatures[laneId] = signature
+        }
+        if let cachedDetail = database.fetchLaneDetail(laneId: laneId) {
+          setDomainStatus([.lanes], phase: .ready)
+          return cachedDetail
+        }
+        // The cached row vanished between request and response (a concurrent
+        // full re-hydration can prune lane_detail_snapshots). The notModified
+        // shell has no detail fields, so re-request the full payload instead
+        // of failing the screen on a field-less decode.
+        laneDetailSignatures[laneId] = nil
+        args["ifNoneMatch"] = nil
+        raw = try await sendCommand(action: "lanes.getDetail", args: args)
+      }
+      let detail = try decodeHydrationPayload(raw, as: LaneDetailPayload.self, domainLabel: "lane detail", decoder: decoder)
       try database.replaceLaneDetail(detail)
+      if let signature = detail.signature {
+        laneDetailSignatures[laneId] = signature
+      }
       setDomainStatus([.lanes], phase: .ready)
       return detail
     } catch {
@@ -4079,6 +4252,33 @@ final class SyncService: ObservableObject {
     database.fetchSession(id: sessionId)
   }
 
+  /// Best-effort hydration for a session whose local DB row may not have synced
+  /// yet — e.g. a chat just created into (or opened from the hub against) a
+  /// project that was activated in place, where the switch flips the active
+  /// project before the reconnect's changeset stream has delivered its rows.
+  /// Pulls the authoritative session list from the host (which rewrites the
+  /// local rows) and, failing that, briefly waits for the changeset stream to
+  /// deliver the row. Returns the row once it resolves, or nil if it never does
+  /// (genuinely absent session) so callers still fall through to their empty
+  /// state.
+  @discardableResult
+  func ensureSessionRowHydrated(sessionId: String) async -> TerminalSessionSummary? {
+    if let existing = database.fetchSession(id: sessionId) { return existing }
+    if canSendLiveRequests() {
+      try? await refreshWorkSessions()
+      if let refreshed = database.fetchSession(id: sessionId) { return refreshed }
+    }
+    // Absorb changeset lag right after an in-place project activation: the row
+    // arrives via CRDT sync a beat after the switch. Bounded so a genuinely
+    // missing session still falls through to the empty state.
+    for _ in 0..<6 {
+      try? await Task.sleep(nanoseconds: 300_000_000)
+      if Task.isCancelled { break }
+      if let row = database.fetchSession(id: sessionId) { return row }
+    }
+    return nil
+  }
+
   func listProcessDefinitions() async throws -> [ProcessDefinition] {
     try await sendDecodableCommand(action: "processes.listDefinitions", as: [ProcessDefinition].self)
   }
@@ -4108,13 +4308,16 @@ final class SyncService: ObservableObject {
   }
 
   func setSessionPinned(sessionId: String, pinned: Bool) async throws {
+    // Local DB write no-ops for a cross-project quick look (no mirrored row);
+    // the meta command routes to the session's project via its scope.
     try database.setSessionPinned(sessionId: sessionId, pinned: pinned)
     if supportsRemoteAction("work.updateSessionMeta") {
+      let scope = chatCommandScope(for: sessionId)
       do {
         _ = try await sendCommand(action: "work.updateSessionMeta", args: [
           "sessionId": sessionId,
           "pinned": pinned,
-        ])
+        ], targetProjectId: scope.projectId, targetProjectRootPath: scope.rootPath)
       } catch {
         syncConnectLog.info(
           "work setSessionPinned deferred session=\(sessionId, privacy: .public) error=\(String(describing: error), privacy: .public)"
@@ -4146,8 +4349,16 @@ final class SyncService: ObservableObject {
       manuallyNamed: manuallyNamed
     )
     if supportsRemoteAction("work.updateSessionMeta") {
+      // Route to the session's project (cross-project quick look) — a foreign
+      // session's rename must not target the active project's scope.
+      let scope = chatCommandScope(for: sessionId)
       do {
-        _ = try await sendCommand(action: "work.updateSessionMeta", args: args)
+        _ = try await sendCommand(
+          action: "work.updateSessionMeta",
+          args: args,
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath
+        )
       } catch {
         syncConnectLog.info(
           "work updateSessionMeta deferred session=\(sessionId, privacy: .public) error=\(String(describing: error), privacy: .public)"
@@ -4780,6 +4991,46 @@ final class SyncService: ObservableObject {
     ])
   }
 
+  /// Registers a chat session as living in a FOREIGN project (cross-project
+  /// "quick look"). While registered, every chat read/write for this session
+  /// routes to that project without switching the phone's active project. The
+  /// chat view sets this before it loads and clears it on close. No-ops (and
+  /// clears any stale scope) when the host doesn't support the feature or the
+  /// target is actually the active project, so the normal same-project path is
+  /// used instead.
+  func setCrossProjectChatScope(sessionId: String, projectId: String?, projectRootPath: String?) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    let normalizedProjectId = syncNormalizedCommandScopeValue(projectId)
+    let normalizedRootPath = syncNormalizedProjectRootScope(projectRootPath)
+    let matchesActive: Bool = {
+      if let normalizedProjectId, let activeProjectId, normalizedProjectId == activeProjectId { return true }
+      if let normalizedRootPath, let activeProjectRootPath, normalizedRootPath == activeProjectRootPath { return true }
+      return false
+    }()
+    guard supportsCrossProjectChat, !matchesActive, normalizedProjectId != nil || normalizedRootPath != nil else {
+      crossProjectChatScopeBySession.removeValue(forKey: trimmedSessionId)
+      return
+    }
+    crossProjectChatScopeBySession[trimmedSessionId] = SyncCrossProjectChatScope(
+      projectId: normalizedProjectId,
+      projectRootPath: normalizedRootPath
+    )
+  }
+
+  func clearCrossProjectChatScope(sessionId: String) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    crossProjectChatScopeBySession.removeValue(forKey: trimmedSessionId)
+  }
+
+  /// The foreign project a chat command for this session must target, or
+  /// (nil, nil) for the active project (the common case).
+  private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
+    guard let scope = crossProjectChatScopeBySession[sessionId] else { return (nil, nil) }
+    return (scope.projectId, scope.projectRootPath)
+  }
+
   func subscribeToChatEvents(sessionId: String, requestSnapshot: Bool = false, maxBytes: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
@@ -4951,7 +5202,15 @@ final class SyncService: ObservableObject {
   }
 
   func stopWorkRuntime(sessionId: String) async throws {
-    _ = try await sendCommand(action: "work.stopRuntime", args: ["sessionId": sessionId])
+    // Scope to the session's project so a stop issued from a cross-project
+    // quick look reaches the right runtime.
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendCommand(
+      action: "work.stopRuntime",
+      args: ["sessionId": sessionId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   func createLane(
@@ -5343,15 +5602,6 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "git.commit", args: ["laneId": laneId, "message": message, "amend": amend])
   }
 
-  func generateCommitMessage(laneId: String, amend: Bool = false) async throws -> String {
-    let result = try await sendDecodableCommand(
-      action: "git.generateCommitMessage",
-      args: ["laneId": laneId, "amend": amend],
-      as: GitGenerateCommitMessageResult.self
-    )
-    return result.message
-  }
-
   func listRecentCommits(laneId: String) async throws -> [GitCommitSummary] {
     try await sendDecodableCommand(action: "git.listRecentCommits", args: ["laneId": laneId], as: [GitCommitSummary].self)
   }
@@ -5706,13 +5956,23 @@ final class SyncService: ObservableObject {
   }
 
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
-    try await sendDecodableCommand(action: "chat.getSummary", args: ["sessionId": sessionId], as: AgentChatSessionSummary.self)
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableCommand(
+      action: "chat.getSummary",
+      args: ["sessionId": sessionId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatSessionSummary.self
+    )
   }
 
   func fetchChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
-    try await sendDecodableCommand(
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableCommand(
       action: "chat.getChatEventHistory",
       args: ["sessionId": sessionId, "maxEvents": max(1, min(chatEventHistoryMaxEvents, maxEvents))],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
       as: AgentChatEventHistorySnapshot.self
     )
   }
@@ -5746,17 +6006,23 @@ final class SyncService: ObservableObject {
     if let maxBytes, maxBytes > 0 {
       args["maxBytes"] = maxBytes
     }
+    let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
       action: "chat.getChatEventHistoryPage",
       args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
       as: AgentChatEventHistoryPage.self
     )
   }
 
   func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
-    try await sendDecodableCommand(
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableCommand(
       action: "chat.getTranscript",
       args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
       as: AgentChatTranscriptResponse.self
     )
   }
@@ -5821,7 +6087,13 @@ final class SyncService: ObservableObject {
     if let cursor, cursor > 0 {
       args["cursor"] = String(cursor)
     }
-    let response = try await sendCommand(action: "chat.getTranscript", args: args)
+    let scope = chatCommandScope(for: sessionId)
+    let response = try await sendCommand(
+      action: "chat.getTranscript",
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: "chat.getTranscript")
     }
@@ -5867,7 +6139,13 @@ final class SyncService: ObservableObject {
     if let offset {
       args["offset"] = offset
     }
-    let response = try await sendCommand(action: "chat.getSubagentTranscript", args: args)
+    let scope = chatCommandScope(for: sessionId)
+    let response = try await sendCommand(
+      action: "chat.getSubagentTranscript",
+      args: args,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
     if response is NSNull {
       return nil
     }
@@ -5878,9 +6156,12 @@ final class SyncService: ObservableObject {
   }
 
   func fetchSubagents(sessionId: String) async throws -> [AgentChatSubagentSnapshot] {
+    let scope = chatCommandScope(for: sessionId)
     let response = try await sendCommand(
       action: "chat.listSubagents",
-      args: ["sessionId": sessionId]
+      args: ["sessionId": sessionId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: "chat.listSubagents")
@@ -5895,53 +6176,81 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws -> SyncChatMessageDelivery {
+    // Auto-route to the session's foreign project (cross-project "quick look")
+    // unless the caller already named a target explicitly (e.g. the hub
+    // composer creating into a chosen project).
+    let scope = chatCommandScope(for: sessionId)
     let response = try await sendCommand(
       action: "chat.send",
       args: ["sessionId": sessionId, "text": text],
       disconnectOnTimeout: false,
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
       timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath
+      targetProjectId: targetProjectId ?? scope.projectId,
+      targetProjectRootPath: targetProjectRootPath ?? scope.rootPath
     )
     return syncChatMessageDelivery(from: response)
   }
 
   func interruptChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.interrupt", payload: AgentChatInterruptRequest(sessionId: sessionId))
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: "chat.interrupt",
+      payload: AgentChatInterruptRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   @discardableResult
   func steerChatSession(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
-    let response = try await sendChatCommand(action: "chat.steer", payload: AgentChatSteerRequest(sessionId: sessionId, text: text))
+    let scope = chatCommandScope(for: sessionId)
+    let response = try await sendChatCommand(
+      action: "chat.steer",
+      payload: AgentChatSteerRequest(sessionId: sessionId, text: text),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
     return syncChatMessageDelivery(from: response)
   }
 
   func cancelChatSteer(sessionId: String, steerId: String) async throws {
+    let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: "chat.cancelSteer",
-      payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId)
+      payload: AgentChatCancelSteerRequest(sessionId: sessionId, steerId: steerId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
   }
 
   func editChatSteer(sessionId: String, steerId: String, text: String) async throws {
+    let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: "chat.editSteer",
-      payload: AgentChatEditSteerRequest(sessionId: sessionId, steerId: steerId, text: text)
+      payload: AgentChatEditSteerRequest(sessionId: sessionId, steerId: steerId, text: text),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
   }
 
   func dispatchChatSteer(sessionId: String, steerId: String, mode: String) async throws {
+    let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: "chat.dispatchSteer",
-      payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode)
+      payload: AgentChatDispatchSteerRequest(sessionId: sessionId, steerId: steerId, mode: mode),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
   }
 
   func cancelDispatchedChatSteer(sessionId: String, steerId: String) async throws {
+    let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: "chat.cancelDispatchedSteer",
-      payload: AgentChatCancelDispatchedSteerRequest(sessionId: sessionId, steerId: steerId)
+      payload: AgentChatCancelDispatchedSteerRequest(sessionId: sessionId, steerId: steerId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
   }
 
@@ -5951,9 +6260,12 @@ final class SyncService: ObservableObject {
     decision: AgentChatApprovalDecision,
     responseText: String? = nil
   ) async throws {
+    let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: "chat.approve",
-      payload: AgentChatApproveRequest(sessionId: sessionId, itemId: itemId, decision: decision, responseText: responseText)
+      payload: AgentChatApproveRequest(sessionId: sessionId, itemId: itemId, decision: decision, responseText: responseText),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
   }
 
@@ -5964,6 +6276,7 @@ final class SyncService: ObservableObject {
     answers: [String: AgentChatInputAnswerValue]? = nil,
     responseText: String? = nil
   ) async throws {
+    let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(
       action: "chat.respondToInput",
       payload: AgentChatRespondToInputRequest(
@@ -5972,7 +6285,9 @@ final class SyncService: ObservableObject {
         decision: decision,
         answers: answers,
         responseText: responseText
-      )
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
     )
   }
 
@@ -5996,7 +6311,8 @@ final class SyncService: ObservableObject {
     computerUse: RemoteJSONValue? = nil,
     manuallyNamed: Bool? = nil
   ) async throws -> AgentChatSession {
-    try await sendDecodableChatCommand(
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
       action: "chat.updateSession",
       payload: AgentChatUpdateSessionRequest(
         sessionId: sessionId,
@@ -6018,20 +6334,40 @@ final class SyncService: ObservableObject {
         computerUse: computerUse,
         manuallyNamed: manuallyNamed
       ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
       as: AgentChatSession.self
     )
   }
 
   func archiveChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.archive", payload: AgentChatSessionIdRequest(sessionId: sessionId))
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: "chat.archive",
+      payload: AgentChatSessionIdRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   func unarchiveChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.unarchive", payload: AgentChatSessionIdRequest(sessionId: sessionId))
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: "chat.unarchive",
+      payload: AgentChatSessionIdRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   func deleteChatSession(sessionId: String) async throws {
-    _ = try await sendChatCommand(action: "chat.delete", payload: AgentChatSessionIdRequest(sessionId: sessionId))
+    let scope = chatCommandScope(for: sessionId)
+    _ = try await sendChatCommand(
+      action: "chat.delete",
+      payload: AgentChatSessionIdRequest(sessionId: sessionId),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   func readArtifact(artifactId: String? = nil, uri: String? = nil, path: String? = nil) async throws -> SyncFileBlob {
@@ -8120,6 +8456,7 @@ final class SyncService: ObservableObject {
       return false
     }
     supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
+    supportsCrossProjectChat = featureEnabled("crossProjectChat", "cross_project_chat")
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
@@ -9069,12 +9406,36 @@ final class SyncService: ObservableObject {
     return args
   }
 
-  private func sendChatCommand<T: Encodable>(action: String, payload: T) async throws -> Any {
-    try await sendCommand(action: action, args: try encodedCommandArgs(from: payload))
+  private func sendChatCommand<T: Encodable>(
+    action: String,
+    payload: T,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> Any {
+    try await sendCommand(
+      action: action,
+      args: try encodedCommandArgs(from: payload),
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
   }
 
-  private func sendDecodableChatCommand<T: Encodable, U: Decodable>(action: String, payload: T, as type: U.Type) async throws -> U {
-    try decode(try await sendChatCommand(action: action, payload: payload), as: type)
+  private func sendDecodableChatCommand<T: Encodable, U: Decodable>(
+    action: String,
+    payload: T,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil,
+    as type: U.Type
+  ) async throws -> U {
+    try decode(
+      try await sendChatCommand(
+        action: action,
+        payload: payload,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      ),
+      as: type
+    )
   }
 
   private func jsonObject<T: Encodable>(from value: T) throws -> Any {
@@ -9146,14 +9507,17 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
+  private func pendingOperationMatchesActiveHost(_ operation: PendingOperation) -> Bool {
     let currentHostId = activeHostStorageKey()
     let operationHostId = normalizedHostStorageKey(operation.hostId)
     if let currentHostId {
-      guard operationHostId == currentHostId else { return false }
-    } else if operationHostId != nil {
-      return false
+      return operationHostId == currentHostId
     }
+    return operationHostId == nil
+  }
+
+  private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
+    guard pendingOperationMatchesActiveHost(operation) else { return false }
 
     if operation.projectId == nil && operation.projectRootPath == nil {
       return true
@@ -9167,6 +9531,20 @@ final class SyncService: ObservableObject {
       return true
     }
     return false
+  }
+
+  /// Which queued operations the current connection can drain. Command
+  /// envelopes carry their own project scope in the payload and the host
+  /// routes them cross-project (the same mechanism live sends use), so a
+  /// command queued for a foreign project — e.g. a cross-project quick-look
+  /// chat send that timed out — drains as soon as the HOST matches, instead of
+  /// waiting for the phone to switch active projects (which may never happen).
+  /// File requests have no cross-project routing and stay active-project-gated.
+  private func pendingOperationIsDrainable(_ operation: PendingOperation) -> Bool {
+    if operation.kind == "command" {
+      return pendingOperationMatchesActiveHost(operation)
+    }
+    return pendingOperationMatchesActiveProject(operation)
   }
 
   private func decodeQueuedArgs(_ operation: PendingOperation) throws -> [String: Any] {
@@ -9212,7 +9590,7 @@ final class SyncService: ObservableObject {
       return false
     }
 
-    while let operation = queued.first(where: pendingOperationMatchesActiveProject) {
+    while let operation = queued.first(where: pendingOperationIsDrainable) {
       do {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
@@ -9220,7 +9598,16 @@ final class SyncService: ObservableObject {
           guard commandPolicy(for: operation.action) != nil else {
             throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Queued action \(operation.action) is no longer available on this machine."])
           }
-          _ = try await performCommandRequest(action: operation.action, args: args, commandId: operation.id)
+          // Replay with the operation's stored scope — a queued foreign-project
+          // command must not silently retarget to whatever project is active
+          // at drain time.
+          _ = try await performCommandRequest(
+            action: operation.action,
+            args: args,
+            commandId: operation.id,
+            targetProjectId: operation.projectId,
+            targetProjectRootPath: operation.projectRootPath
+          )
         case "file":
           guard queueableFileActions.contains(operation.action) else {
             throw NSError(domain: "ADE", code: 17, userInfo: [NSLocalizedDescriptionKey: "Queued file action \(operation.action) is no longer supported."])
@@ -9371,6 +9758,16 @@ final class SyncService: ObservableObject {
     ]
     if includeSinceSeq, let lastSeq = chatEventLastSeqBySession[sessionId] {
       payload["sinceSeq"] = lastSeq
+    }
+    // Cross-project "quick look": ride the foreign target inside the payload so
+    // the host serves that project's transcript while the envelope stays
+    // stamped with the active project (mirrors a foreign command). Only when
+    // the host advertised support — otherwise the field would be ignored and
+    // the subscribe would silently bind to the wrong (active) project.
+    if supportsCrossProjectChat {
+      let scope = chatCommandScope(for: sessionId)
+      if let projectId = scope.projectId { payload["projectId"] = projectId }
+      if let projectRootPath = scope.rootPath { payload["projectRootPath"] = projectRootPath }
     }
     return payload
   }

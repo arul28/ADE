@@ -301,6 +301,17 @@ struct WorkChatSessionView: View {
     }.first
   }
 
+  /// First open generic / file-change approval gate (Codex `approval` kind).
+  /// Rendered as a pinned badge above the composer, like the plan-ready badge.
+  var pendingApproval: WorkPendingApprovalModel? {
+    pendingInputs.compactMap { item -> WorkPendingApprovalModel? in
+      if case .approval(let model) = item {
+        return model
+      }
+      return nil
+    }.first
+  }
+
   var hasPendingInputGate: Bool {
     workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
   }
@@ -343,26 +354,6 @@ struct WorkChatSessionView: View {
         proxy.scrollTo(anchor, anchor: .center)
       }
     }
-  }
-
-  var awaitingPromptDetailsMissing: Bool {
-    workChatAwaitingPromptDetailsMissing(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
-  }
-
-  var awaitingPromptDetailsMessage: String {
-    let fallback = "The session is marked as needing input, but the prompt details have not synced to this iPhone yet. Keep the machine connected and try again when the prompt appears."
-    guard let preview = awaitingPromptPreview else { return fallback }
-    return "\(preview)\n\(fallback)"
-  }
-
-  private var awaitingPromptPreview: String? {
-    [chatSummaryContext.lastOutputPreview, session.lastOutputPreview]
-      .compactMap { value -> String? in
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
-      }
-      .first
   }
 
   @MainActor
@@ -486,14 +477,13 @@ struct WorkChatSessionView: View {
     if !canSendMessages {
       return "Reconnect to send messages."
     }
-    if pendingInputs.count == 1, pendingPlanApproval != nil {
-      return "Review the plan above the composer, or reject it before sending another message."
+    if pendingInputs.count == 1, pendingPlanApproval != nil || pendingApproval != nil {
+      // The plan-ready / approval badge (Approve · Decline) sits directly above
+      // the composer and is self-explanatory, so it carries no guidance banner.
+      return nil
     }
     if !pendingInputs.isEmpty {
       return "Answer the waiting prompt above, or decline it before sending another message."
-    }
-    if awaitingPromptDetailsMissing {
-      return "Waiting for prompt details from the machine."
     }
     return nil
   }
@@ -518,32 +508,10 @@ struct WorkChatSessionView: View {
     // pending cards themselves stay visible in the timeline in a read-only
     // state, so duplicating the reconnect nag at the top added noise
     // without new information.
-    if isLive {
-      ForEach(pendingInputs) { item in
-        if case .approval(let approval) = item {
-          WorkApprovalRequestCard(
-            approval: approval,
-            busy: actionInFlight,
-            onDecision: { decision in
-              await runSessionAction {
-                await onApproveRequest(approval.id, decision, nil)
-              }
-            }
-          )
-        }
-      }
-    }
-
-    if awaitingPromptDetailsMissing {
-      ADENoticeCard(
-        title: "Prompt details syncing",
-        message: awaitingPromptDetailsMessage,
-        icon: "exclamationmark.bubble.fill",
-        tint: ADEColor.warning,
-        actionTitle: nil,
-        action: nil
-      )
-    }
+    // Tool/file-change approval gates now render as a pinned badge directly
+    // above the composer (see `composerInset`), mirroring the plan-ready badge,
+    // so the Accept / Decline actions are always in reach instead of scrolled
+    // off the top of the transcript.
 
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
@@ -715,6 +683,20 @@ struct WorkChatSessionView: View {
         .id(planApproval.id)
       }
 
+      if let approval = pendingApproval {
+        WorkApprovalComposerStrip(
+          approval: approval,
+          busy: actionInFlight || !isLive,
+          fallbackProvider: chatSummaryContext.provider,
+          onDecision: { decision in
+            await runSessionAction {
+              await onApproveRequest(approval.id, decision, nil)
+            }
+          }
+        )
+        .id(approval.id)
+      }
+
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
         usageViewModel: workContextUsageViewModel(
@@ -723,7 +705,6 @@ struct WorkChatSessionView: View {
           fallbackContextWindow: chatSummaryContext.contextWindowFallback
         ),
         dictationTargetId: "work-chat:\(session.id)",
-        pendingInputCount: pendingInputs.count,
         awaitingInputGate: hasPendingInputGate,
         composerPlaceholder: composerPlaceholderText,
         canCompose: canCompose,
@@ -1586,7 +1567,6 @@ private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
   let dictationTargetId: String
-  let pendingInputCount: Int
   let awaitingInputGate: Bool
   let composerPlaceholder: String
   let canCompose: Bool
@@ -1612,7 +1592,6 @@ private struct WorkChatComposerCard: View {
       chatSummary: chatSummary,
       usageViewModel: usageViewModel,
       dictationTargetId: dictationTargetId,
-      pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
       composerPlaceholder: composerPlaceholder,
       canCompose: canCompose,
@@ -1648,7 +1627,6 @@ private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
   let dictationTargetId: String
-  let pendingInputCount: Int
   let awaitingInputGate: Bool
   let composerPlaceholder: String
   let canCompose: Bool
@@ -1692,7 +1670,6 @@ private struct WorkChatComposerDraftInput: View {
         if !isDictating {
           WorkComposerChipStrip(
             chatSummary: chatSummary,
-            pendingInputCount: pendingInputCount,
             settingsMutationInFlight: settingsMutationInFlight,
             codexFastModeOverride: codexFastModeOverride,
             onOpenModelPicker: onOpenModelPicker,

@@ -373,6 +373,12 @@ type PeerState = {
   subscribedChatSessionIds: Set<string>;
   chatTranscriptOffsets: Map<string, number>;
   chatEventIdsSent: Map<string, Set<string>>;
+  // Cross-project "quick look" subscriptions: sessionId -> resolved foreign
+  // transcript path. Present only for sessions in a project OTHER than this
+  // socket's active one; the chat pump tails these paths directly (the local
+  // sessionService has no row for them). Empty in the common single-project
+  // case, so it adds no cost when the feature is unused.
+  foreignChatTranscriptPaths: Map<string, string>;
   pendingChangesetBatch: PendingChangesetBatch | null;
   // All-projects roster (mobile hub): whether this peer is subscribed, the
   // monotonic seq last sent to THIS peer (per-peer so a peer that skips a
@@ -540,6 +546,27 @@ export type SyncRosterProvider = {
   buildSnapshot: () => Promise<SyncRosterProject[]>;
 };
 
+/**
+ * Resolves the on-disk chat transcript path for a session in a REGISTERED
+ * FOREIGN project so the host can stream a cross-project "quick look" without
+ * switching the socket's active project or booting that project's runtime.
+ * Lives where the project registry is in scope (ade-cli brain / multi-project
+ * server). Optional: a host without a foreign-chat provider (e.g. single
+ * project desktop) simply never advertises `crossProjectChat`, so the phone
+ * falls back to a full project activation.
+ *
+ * The resolver is the SECURITY BOUNDARY: it must validate that the requested
+ * project is registered and only return paths inside that project's `.ade`
+ * transcripts dir, returning null for anything unknown or unsafe.
+ */
+export type SyncForeignChatTranscriptResolver = {
+  resolveTranscriptPath: (args: {
+    projectId?: string | null;
+    projectRootPath?: string | null;
+    sessionId: string;
+  }) => string | null;
+};
+
 type SyncHostServiceArgs = {
   db: AdeDb;
   logger: Logger;
@@ -604,6 +631,7 @@ type SyncHostServiceArgs = {
   deviceRegistryService?: DeviceRegistryService;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
+  foreignChatProvider?: SyncForeignChatTranscriptResolver;
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
@@ -834,6 +862,7 @@ export function buildSyncHostHelloOkPayload(args: {
   projectCatalog: SyncProjectCatalogPayload;
   projectCatalogEnabled: boolean;
   projectActionsEnabled: boolean;
+  crossProjectChatEnabled: boolean;
   remoteCommandSupportedActions: string[];
   remoteCommandDescriptors: SyncRemoteCommandDescriptor[];
   localCommandDescriptors: SyncRemoteCommandDescriptor[];
@@ -857,6 +886,9 @@ export function buildSyncHostHelloOkPayload(args: {
       terminalStreaming: true,
       chatStreaming: {
         enabled: true,
+      },
+      crossProjectChat: {
+        enabled: args.crossProjectChatEnabled,
       },
       projectCatalog: {
         enabled: args.projectCatalogEnabled,
@@ -1197,6 +1229,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     laneTemplateService: args.laneTemplateService,
     rebaseSuggestionService: args.rebaseSuggestionService,
     autoRebaseService: args.autoRebaseService,
+    // Lane presence lives in this closure; without the stamp, a presence-only
+    // change (devicesOpen) would keep matching ifNoneMatch and serve stale
+    // presence via notModified. The injected-service path (syncService.ts)
+    // wires the same stamp from the outside.
+    getLanePresenceStamp: () => computeLanePresenceStamp(),
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
     logger: args.logger,
   });
@@ -1605,7 +1642,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         };
       }
       case "lanes.getDetail":
-        return result && typeof result === "object"
+        // A notModified cache-hit shell carries no lane fields — decorating it
+        // would dereference detail.lane and turn the response into command_failed.
+        return result && typeof result === "object" && (result as Partial<LaneDetailPayload>).lane
           ? decorateLaneDetailPayload(result as LaneDetailPayload)
           : result;
       case "lanes.create":
@@ -1825,6 +1864,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       subscribedChatSessionIds: new Set(),
       chatTranscriptOffsets: new Map(),
       chatEventIdsSent: new Map(),
+      foreignChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
       rosterSubscribed: false,
       rosterSeq: 0,
@@ -3203,6 +3243,76 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  // Reads a byte-capped TAIL snapshot of a chat transcript straight off disk —
+  // the cross-project analogue of agentChatService.getChatEventHistory, used
+  // when the session lives in a foreign project this host has no runtime for.
+  // Reuses the same tail-truncation semantics as a local snapshot (a leading
+  // partial line at the cut point is dropped by the JSONL parser).
+  async function readForeignChatSnapshot(
+    transcriptPath: string,
+    maxBytes: number,
+  ): Promise<{ events: AgentChatEventEnvelope[]; transcriptSize: number; truncated: boolean }> {
+    let fh: fs.promises.FileHandle | null = null;
+    try {
+      fh = await fs.promises.open(transcriptPath, "r");
+      const stat = await fh.stat();
+      const size = stat.size;
+      const start = Math.max(0, size - Math.max(1_024, maxBytes));
+      if (size <= start) {
+        return { events: [], transcriptSize: size, truncated: false };
+      }
+      const out = Buffer.alloc(size - start);
+      await fh.read(out, 0, out.length, start);
+      // Drop a leading partial line when starting mid-file so the parser never
+      // sees a truncated JSON object as the first record.
+      let sliceStart = 0;
+      if (start > 0) {
+        const firstNewline = out.indexOf(0x0a);
+        sliceStart = firstNewline >= 0 ? firstNewline + 1 : out.length;
+      }
+      const raw = out.subarray(sliceStart).toString("utf8");
+      return {
+        events: parseAgentChatTranscript(raw),
+        transcriptSize: size,
+        truncated: start > 0,
+      };
+    } catch {
+      return { events: [], transcriptSize: 0, truncated: false };
+    } finally {
+      await fh?.close().catch(() => {});
+    }
+  }
+
+  // Resolve a foreign-project subscription's transcript path via the provider
+  // (the security boundary — validates the project is registered and confines
+  // the path to that project's `.ade` transcripts). `kind: "local"` means the
+  // payload carried no foreign scope (or named this host's own project);
+  // `kind: "rejected"` means the payload EXPLICITLY named a foreign project
+  // the provider could not confirm — the caller must fail closed rather than
+  // fall back to serving whichever local session shares the sessionId.
+  function resolveForeignChatScope(
+    payload: { projectId?: string | null; projectRootPath?: string | null } | null,
+    sessionId: string,
+  ): { kind: "local" } | { kind: "foreign"; transcriptPath: string } | { kind: "rejected" } {
+    const requestedProjectId = toOptionalString(payload?.projectId);
+    const requestedRootPath = toOptionalString(payload?.projectRootPath);
+    if (!requestedProjectId && !requestedRootPath) return { kind: "local" };
+    // A payload that names THIS host's project (by id, or by rootPath alone)
+    // is an ordinary subscribe — let the local sessionService path serve it.
+    if (requestedProjectId && projectIdMatchesHost(requestedProjectId, args.projectId, hostProjectIdAliases)) {
+      return { kind: "local" };
+    }
+    if (!requestedProjectId && requestedRootPath && path.resolve(requestedRootPath) === path.resolve(args.projectRoot)) {
+      return { kind: "local" };
+    }
+    const transcriptPath = args.foreignChatProvider?.resolveTranscriptPath({
+      projectId: requestedProjectId,
+      projectRootPath: requestedRootPath,
+      sessionId,
+    }) ?? null;
+    return transcriptPath ? { kind: "foreign", transcriptPath } : { kind: "rejected" };
+  }
+
   // Per-session replay buffers for resumable chat event streams. Map insertion
   // order doubles as the LRU order — recordChatEventSeq re-inserts on touch.
   const chatEventReplayBuffers = new Map<string, ChatEventReplayBuffer>();
@@ -3251,11 +3361,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       for (const sessionId of peer.subscribedChatSessionIds) {
-        const session = args.sessionService.get(sessionId);
-        if (!session?.transcriptPath) continue;
+        // A foreign quick-look session has no local row; tail its resolved
+        // transcript path directly. Local sessions resolve via sessionService.
+        const foreignTranscriptPath = peer.foreignChatTranscriptPaths.get(sessionId);
+        const transcriptPath = foreignTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+        if (!transcriptPath) continue;
 
         const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
-        const { events, nextOffset } = await readChatTranscriptEventsSince(session.transcriptPath, startOffset);
+        const { events, nextOffset } = await readChatTranscriptEventsSince(transcriptPath, startOffset);
         if (nextOffset !== startOffset) {
           peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
@@ -3276,6 +3389,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
+      // A peer whose subscription for this id is a FOREIGN quick-look gets its
+      // events from the transcript pump — never the active project's live
+      // broadcast, even when a local session shares the session id.
+      if (peer.foreignChatTranscriptPaths.has(event.sessionId)) continue;
       if (!rememberChatEventSent(peer, event)) continue;
       send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
     }
@@ -4106,6 +4223,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         projectCatalog,
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
         projectActionsEnabled,
+        crossProjectChatEnabled: Boolean(args.foreignChatProvider),
         remoteCommandSupportedActions: remoteCommandService.getSupportedActions(),
         remoteCommandDescriptors: remoteCommandService.getDescriptors(),
         localCommandDescriptors: localPresenceCommandDescriptors,
@@ -4443,9 +4561,32 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as SyncChatSubscribePayload | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
-        peer.subscribedChatSessionIds.add(sessionId);
 
-        const session = args.sessionService.get(sessionId);
+        // Cross-project "quick look": a payload targeting a registered FOREIGN
+        // project is served read-only from that project's `.ade` transcript
+        // JSONL — no local session row, no runtime boot. The pump tails the
+        // same path for live events. The provider is the security boundary
+        // (validates the project, sandboxes the path). An explicitly-foreign
+        // scope the provider can't confirm fails CLOSED (served as unknown),
+        // never falls back to a local session that happens to share the id —
+        // including in the pump: a rejected scope must not register a live
+        // subscription at all, or the periodic pump would stream the ACTIVE
+        // project's transcript for the same session id after the empty ack.
+        const foreignScope = resolveForeignChatScope(payload, sessionId);
+        const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
+        if (foreignScope.kind === "rejected") {
+          peer.subscribedChatSessionIds.delete(sessionId);
+        } else {
+          peer.subscribedChatSessionIds.add(sessionId);
+        }
+        if (foreignTranscriptPath) {
+          peer.foreignChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
+        } else {
+          peer.foreignChatTranscriptPaths.delete(sessionId);
+        }
+
+        const session = foreignScope.kind === "local" ? args.sessionService.get(sessionId) : null;
+        const transcriptPath = foreignTranscriptPath ?? session?.transcriptPath ?? null;
         // Snapshots are byte-capped transcript tails — a long-running turn's
         // `status: started` event can sit outside the tail, leaving a client
         // that subscribes mid-turn unable to tell the session is streaming.
@@ -4454,18 +4595,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // immediately before each send (getSessionSummary is microtask-only):
         // computing it earlier leaves an I/O window (readTranscriptTail) where
         // a terminal chat_event could overtake a stale `turnActive: true`.
+        // Foreign quick-looks have no live agent chat service here, so they
+        // derive turn state from the streamed status events instead.
         const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
+          if (foreignScope.kind !== "local") return {};
           const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
         };
-        const resumePlan = planChatEventResume(chatEventReplayBuffers.get(sessionId), payload?.sinceSeq);
+        // Replay buffers hold the ACTIVE project's live events — a foreign
+        // quick-look whose session id collides with a local session must never
+        // resume from them (it would splice local events into the foreign feed).
+        const resumePlan = planChatEventResume(
+          foreignScope.kind === "local" ? chatEventReplayBuffers.get(sessionId) : undefined,
+          payload?.sinceSeq,
+        );
         if (resumePlan.mode === "replay") {
           // The replay buffer covers everything the peer missed: skip the
           // snapshot, fast-forward the transcript pump past content the
           // replay already carries, and re-send just the missed events as
           // ordinary chat_event envelopes (in order, after the ack).
-          const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
-            ? fs.statSync(session.transcriptPath).size
+          const transcriptSize = transcriptPath && fs.existsSync(transcriptPath)
+            ? fs.statSync(transcriptPath).size
             : 0;
           peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
           const resumeAck: SyncChatSubscribeSnapshotPayload = {
@@ -4494,19 +4644,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           1_024,
           Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
         );
-        const history: AgentChatEventHistorySnapshot | null = args.agentChatService?.getChatEventHistory(sessionId, {
-          maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
-          maxBytes,
-        }) ?? null;
-        const events = history?.events ?? [];
-        const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
-          ? fs.statSync(session.transcriptPath).size
-          : 0;
+        let events: AgentChatEventEnvelope[];
+        let truncated: boolean;
+        let transcriptSize: number;
+        if (foreignTranscriptPath) {
+          const foreignSnapshot = await readForeignChatSnapshot(foreignTranscriptPath, maxBytes);
+          events = foreignSnapshot.events;
+          truncated = foreignSnapshot.truncated;
+          transcriptSize = foreignSnapshot.transcriptSize;
+        } else if (foreignScope.kind === "rejected") {
+          // Unresolvable explicit-foreign scope: serve an empty snapshot, never
+          // this host's local history for the same session id.
+          events = [];
+          truncated = false;
+          transcriptSize = 0;
+        } else {
+          const history: AgentChatEventHistorySnapshot | null = args.agentChatService?.getChatEventHistory(sessionId, {
+            maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
+            maxBytes,
+          }) ?? null;
+          events = history?.events ?? [];
+          transcriptSize = transcriptPath && fs.existsSync(transcriptPath)
+            ? fs.statSync(transcriptPath).size
+            : 0;
+          truncated = history?.truncated ?? (transcriptSize > maxBytes);
+        }
         peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
         const snapshot: SyncChatSubscribeSnapshotPayload = {
           sessionId,
           capturedAt: nowIso(),
-          truncated: history?.truncated ?? (transcriptSize > maxBytes),
+          truncated,
           events,
           ...(await resolveLiveStatusFields()),
         };
@@ -4523,6 +4690,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.subscribedChatSessionIds.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
+          peer.foreignChatTranscriptPaths.delete(sessionId);
         }
         break;
       }
@@ -4556,6 +4724,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }))
       .filter((entry) => entry.devicesOpen.length > 0);
   };
+
+  // Hoisted so the fallback remoteCommandService args (declared earlier in
+  // this closure) can reference it lazily without TDZ concerns.
+  function computeLanePresenceStamp(): string {
+    return getLanePresenceSnapshot()
+      .map((entry) => `${entry.laneId}:${entry.devicesOpen.map((d) => `${d.deviceId}|${d.displayName}|${d.platform}`).sort().join(",")}`)
+      .sort()
+      .join(";");
+  }
 
   function getListeningPort(): number | null {
     if (!server) return sharedListener?.getPort() ?? null;
@@ -4710,6 +4887,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return getLanePresenceSnapshot();
     },
 
+    // Deterministic digest of lane presence for conditional-response
+    // signatures (see SyncRemoteCommandServiceArgs.getLanePresenceStamp).
+    getLanePresenceStamp(): string {
+      return computeLanePresenceStamp();
+    },
+
     getChatSubscriptionSnapshot(): Array<{ deviceId: string; subscribedChatSessionIds: string[] }> {
       return [...peers]
         .map((peer) => {
@@ -4821,7 +5004,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             serverDbSiteId: args.db.sync.getSiteId(),
             lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
             subscribedSessionIds: [...peer.subscribedSessionIds],
-            subscribedChatSessionIds: [...peer.subscribedChatSessionIds],
+            // Foreign quick-look subscriptions do NOT survive the handoff: the
+            // resolved transcript path isn't carried, and restoring the bare
+            // session id would make the pump fall back to a same-id LOCAL
+            // session (the exact fallback the subscribe path fails closed
+            // against). The client re-subscribes with its scope after handoff.
+            subscribedChatSessionIds: [...peer.subscribedChatSessionIds]
+              .filter((sessionId) => !peer.foreignChatTranscriptPaths.has(sessionId)),
             chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
             rosterSubscribed: peer.rosterSubscribed,
           });

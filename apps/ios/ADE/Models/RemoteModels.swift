@@ -637,11 +637,6 @@ struct LaneBranchSwitchPreview: Codable, Equatable {
   var targetProfile: LaneBranchProfile?
 }
 
-struct GitGenerateCommitMessageResult: Codable, Equatable {
-  var message: String
-  var model: String?
-}
-
 struct FileChange: Codable, Identifiable, Equatable {
   var id: String { path }
   var path: String
@@ -1766,6 +1761,21 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   case info
   case providerHealth = "provider_health"
   case threadError = "thread_error"
+  case warning
+  case error
+  case config
+
+  // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
+  // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
+  // unrecognized value would throw — and because chat-event snapshots decode as a
+  // single `[AgentChatEventEnvelope]` array, one bad notice discards the WHOLE
+  // history, stranding pending-input cards (plan approvals, questions) behind the
+  // plain-text fallback. Fall back to `.info` for unknown kinds so future additions
+  // degrade to a generic notice instead of nuking the transcript.
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatNoticeKind(rawValue: raw) ?? .info
+  }
 }
 
 enum AgentChatApprovalRequestKind: String, Codable, Equatable {
@@ -1915,9 +1925,41 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   var provenance: AgentChatEventProvenance?
 }
 
+/// Decodes an array element-by-element, dropping elements that fail to decode
+/// instead of failing the whole array. Chat-event history arrives as one big
+/// snapshot array; a single envelope the phone can't decode (e.g. a host that
+/// has since grown a new enum value somewhere inside an event payload) must
+/// degrade to "that one event is missing", never "the entire transcript is
+/// gone" — the latter strands pending-input cards behind the plain-text
+/// fallback and locks the composer.
+@propertyWrapper
+struct ADELossyArray<Element: Decodable & Equatable>: Decodable, Equatable {
+  var wrappedValue: [Element]
+
+  init(wrappedValue: [Element]) {
+    self.wrappedValue = wrappedValue
+  }
+
+  init(from decoder: Decoder) throws {
+    var container = try decoder.unkeyedContainer()
+    var elements: [Element] = []
+    while !container.isAtEnd {
+      if let element = try? container.decode(Element.self) {
+        elements.append(element)
+      } else if (try? container.decode(RemoteJSONValue.self)) == nil {
+        // A failed element decode does not advance the container; consume the
+        // raw value to move past it. RemoteJSONValue accepts any JSON, so this
+        // only fails on a corrupt stream — bail rather than loop forever.
+        break
+      }
+    }
+    wrappedValue = elements
+  }
+}
+
 struct AgentChatEventHistorySnapshot: Decodable, Equatable {
   var sessionId: String
-  var events: [AgentChatEventEnvelope]
+  @ADELossyArray var events: [AgentChatEventEnvelope]
   var truncated: Bool
   var transcriptTruncated: Bool?
   var windowTruncated: Bool?
@@ -1927,7 +1969,7 @@ struct AgentChatEventHistorySnapshot: Decodable, Equatable {
 
 struct AgentChatEventHistoryPage: Decodable, Equatable {
   var sessionId: String
-  var events: [AgentChatEventEnvelope]
+  @ADELossyArray var events: [AgentChatEventEnvelope]
   var startOffset: Int
   var hasMore: Bool
   var sessionFound: Bool
@@ -2357,7 +2399,7 @@ struct SyncChatSubscribeSnapshotPayload: Decodable, Equatable {
   var sessionId: String
   var capturedAt: String
   var truncated: Bool
-  var events: [AgentChatEventEnvelope]
+  @ADELossyArray var events: [AgentChatEventEnvelope]
   /// Live turn state from the host's agent chat service at subscribe time.
   /// Snapshots are byte-capped transcript tails, so a long turn's
   /// `status: started` event can fall outside the tail; this flag is fresher
@@ -2611,12 +2653,25 @@ struct LaneDetailPayload: Codable, Equatable {
   var envInitProgress: LaneEnvInitProgress?
   var sessions: [TerminalSessionSummary]
   var chatSessions: [AgentChatSessionSummary]
+  var signature: String? = nil
+  var notModified: Bool? = nil
 }
 
 struct LaneRefreshPayload: Codable, Equatable {
   var refreshedCount: Int
   var lanes: [LaneSummary]
   var snapshots: [LaneListSnapshot]?
+  var signature: String? = nil
+  var notModified: Bool? = nil
+}
+
+/// The host's conditional-response shell for signature-checked lane commands.
+/// A notModified response carries ONLY these fields (no payload body), so it
+/// cannot decode as the full payload type — decode this first and fall through
+/// to the full decode when `notModified` isn't true.
+struct LaneNotModifiedEnvelope: Codable, Equatable {
+  var signature: String? = nil
+  var notModified: Bool? = nil
 }
 
 struct LaneEnvInitStep: Codable, Equatable, Identifiable {

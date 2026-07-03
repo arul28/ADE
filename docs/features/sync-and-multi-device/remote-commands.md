@@ -149,6 +149,19 @@ requested lane through the scoped lane-summary path and then fetches the
 detail overlays for that lane, instead of forcing a full lane list as a
 side effect of opening a detail screen.
 
+`lanes.getDetail` and `lanes.refreshSnapshots` are **conditional
+responses**. Both compute their full payload, then hash it
+(`sha256(JSON.stringify(response))`) into a `signature` field. A caller
+that already holds a payload can send its cached `ifNoneMatch`
+signature; when it equals the freshly computed one the runtime replies
+with a lightweight `{ signature, notModified: true }` shell carrying no
+payload body, so the phone skips both the transport of an unchanged
+lane detail / snapshot set and the client-side re-decode. A mismatched
+or absent `ifNoneMatch` returns the full payload with
+`notModified: false` and the current `signature` to cache. The full
+payload is still computed either way (the signature derives from it),
+so the win is transport and decode, not host compute.
+
 **Work** (`work.*`)
 - `listSessions`, `updateSessionMeta`, `runQuickCommand`,
   `startCliSession`, `sendToSession`, `stopRuntime`
