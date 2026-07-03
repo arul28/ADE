@@ -8,3 +8,4 @@ dist/
 # OG image preview renders (generated via scripts/generate-og-image.mjs)
 scripts/*-preview.png
 
+.vite-dev.log

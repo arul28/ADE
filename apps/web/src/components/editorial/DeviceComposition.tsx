@@ -37,17 +37,18 @@ export function DeviceComposition() {
         style={{
           background:
             "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(124,58,237,0.45) 0%, rgba(124,58,237,0.12) 45%, transparent 78%)",
-          filter: "blur(14px)",
           zIndex: 0,
         }}
       />
 
       <div className="@container relative isolate mx-auto w-full max-w-[1650px] min-w-0 overflow-visible pb-[8%] @md:pb-[10%] @xl:pb-[12%]">
-        {/* Desktop — primary layer; container height follows this image */}
+        {/* Desktop — primary layer; container height follows this image.
+            Slightly narrower than the container so the TUI + phone overlap it
+            inside the viewport instead of hanging off-screen on laptops. */}
         <motion.div
           {...panel(0.65)}
-          className="relative z-0 motion-safe:transition-transform motion-safe:duration-500"
-          style={{ filter: "drop-shadow(0 36px 64px rgba(0,0,0,0.58))" }}
+          className="relative z-0 mx-auto w-[94%] @md:w-[91%] motion-safe:transition-transform motion-safe:duration-500"
+          style={{ boxShadow: "0 36px 64px rgba(0,0,0,0.58)" }}
         >
           <div className={`${panelFrame} rounded-[clamp(8px,1vw,14px)]`}>
             <img
@@ -64,8 +65,8 @@ export function DeviceComposition() {
         {/* TUI — bottom-left corner of desktop; sizes track container, not viewport */}
         <motion.div
           {...panel(0.8)}
-          className="absolute bottom-[16%] left-[-4%] z-20 w-[44%] origin-bottom-left -rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out @md:bottom-[18%] @md:left-[-10%] @md:w-[50%] @xl:bottom-[20%] @xl:left-[-18%] @xl:w-[54%] [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.14] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 24px 40px rgba(0,0,0,0.65))" }}
+          className="absolute bottom-[18%] left-[-2%] z-20 w-[44%] origin-bottom-left -rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out @md:bottom-[20%] @md:w-[46%] [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.14] [@media(hover:hover)]:hover:rotate-0"
+          style={{ boxShadow: "0 24px 40px rgba(0,0,0,0.65)" }}
         >
           <div className={`${panelFrame} rounded-[clamp(6px,0.7vw,10px)]`}>
             <img
@@ -82,8 +83,8 @@ export function DeviceComposition() {
             Dynamic Island, inner violet glow. */}
         <motion.div
           {...panel(0.9)}
-          className="absolute bottom-[10%] right-[-2%] z-30 w-[17%] origin-bottom-right rotate-[3deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out @md:bottom-[12%] @md:right-[-6%] @md:w-[19%] @xl:bottom-[14%] @xl:right-[-10%] @xl:w-[21%] [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.14] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 28px 48px rgba(124,58,237,0.45))" }}
+          className="absolute bottom-[8%] right-0 z-30 w-[17%] origin-bottom-right rotate-[3deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out @md:bottom-[10%] @md:w-[18%] [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.14] [@media(hover:hover)]:hover:rotate-0"
+          style={{ boxShadow: "0 28px 48px rgba(124,58,237,0.45)", borderRadius: "clamp(22px,2.6vw,40px)" }}
         >
           <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(22px,2.6vw,40px)] border-[clamp(4px,0.55vw,8px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
             {/* Dynamic Island */}

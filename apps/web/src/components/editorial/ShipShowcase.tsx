@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { useReducedMotion } from "framer-motion";
 import { cn } from "../../lib/cn";
 
 const ROTATE_MS = 18000;
@@ -236,7 +236,6 @@ function ShowcaseComposition({ trio }: { trio: DeviceTrio }) {
         style={{
           background:
             "radial-gradient(ellipse 70% 60% at 50% 52%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
-          filter: "blur(16px)",
           zIndex: 0,
         }}
       />
@@ -245,7 +244,7 @@ function ShowcaseComposition({ trio }: { trio: DeviceTrio }) {
         {/* Desktop — base layer; defines composition height */}
         <div
           className="relative z-0 motion-safe:transition-transform motion-safe:duration-500"
-          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+          style={{ boxShadow: "0 30px 56px rgba(0,0,0,0.6)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
             <img
@@ -261,7 +260,7 @@ function ShowcaseComposition({ trio }: { trio: DeviceTrio }) {
         {/* TUI — bottom-left corner */}
         <div
           className="absolute bottom-[12%] left-[-3%] z-20 w-[50%] origin-bottom-left -rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.06] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+          style={{ boxShadow: "0 22px 40px rgba(0,0,0,0.66)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(6px,0.7vw,10px)]`}>
             <img
@@ -277,7 +276,7 @@ function ShowcaseComposition({ trio }: { trio: DeviceTrio }) {
         {/* iPhone — bottom-right corner, real bezel */}
         <div
           className="absolute bottom-[1%] right-[-1%] z-30 w-[18%] origin-bottom-right rotate-[3deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.08] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 24px 44px rgba(124,58,237,0.45))" }}
+          style={{ boxShadow: "0 24px 44px rgba(124,58,237,0.45)", borderRadius: "clamp(16px,1.9vw,30px)" }}
         >
           <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(16px,1.9vw,30px)] border-[clamp(3px,0.45vw,7px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
             <div
@@ -318,7 +317,6 @@ function ChatComposition({ shots }: { shots: ChatShots }) {
         style={{
           background:
             "radial-gradient(ellipse 72% 62% at 50% 50%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
-          filter: "blur(16px)",
           zIndex: 0,
         }}
       />
@@ -327,7 +325,7 @@ function ChatComposition({ shots }: { shots: ChatShots }) {
         {/* #6 Desktop — base hero; defines composition height (largest) */}
         <div
           className="relative z-0 mx-auto w-[95%] motion-safe:transition-transform motion-safe:duration-500"
-          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+          style={{ boxShadow: "0 30px 56px rgba(0,0,0,0.6)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
             <img
@@ -343,7 +341,7 @@ function ChatComposition({ shots }: { shots: ChatShots }) {
         {/* #7 TUI — bottom-left (large) */}
         <div
           className="absolute bottom-[5%] left-[-1%] z-20 w-[48%] origin-bottom-left -rotate-[1deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.05] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+          style={{ boxShadow: "0 22px 40px rgba(0,0,0,0.66)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(6px,0.7vw,10px)]`}>
             <img
@@ -359,7 +357,7 @@ function ChatComposition({ shots }: { shots: ChatShots }) {
         {/* #4 Model picker — top-right accent (smallest card) */}
         <div
           className="absolute right-[-3%] top-[3%] z-40 w-[23%] origin-top-right rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:scale-[1.06] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 18px 34px rgba(124,58,237,0.38))" }}
+          style={{ boxShadow: "0 18px 34px rgba(124,58,237,0.38)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(5px,0.6vw,9px)]`}>
             <img
@@ -375,7 +373,7 @@ function ChatComposition({ shots }: { shots: ChatShots }) {
         {/* #8 iPhone — bottom-right bezel (mobile) */}
         <div
           className="absolute bottom-[2%] right-[0%] z-30 w-[16.5%] origin-bottom-right rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.08] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 24px 44px rgba(124,58,237,0.45))" }}
+          style={{ boxShadow: "0 24px 44px rgba(124,58,237,0.45)", borderRadius: "clamp(14px,1.6vw,26px)" }}
         >
           <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(14px,1.6vw,26px)] border-[clamp(3px,0.4vw,6px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
             <div
@@ -415,7 +413,6 @@ function PrComposition({ shots }: { shots: PrShots }) {
         style={{
           background:
             "radial-gradient(ellipse 72% 62% at 48% 50%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
-          filter: "blur(16px)",
           zIndex: 0,
         }}
       />
@@ -424,7 +421,7 @@ function PrComposition({ shots }: { shots: PrShots }) {
         {/* Desktop — hero (largest) */}
         <div
           className="relative z-0 mx-auto w-[97%] motion-safe:transition-transform motion-safe:duration-500"
-          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+          style={{ boxShadow: "0 30px 56px rgba(0,0,0,0.6)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
             <img
@@ -440,7 +437,7 @@ function PrComposition({ shots }: { shots: PrShots }) {
         {/* iPhone — bottom-right bezel */}
         <div
           className="absolute bottom-[1%] right-[1%] z-30 w-[17.5%] origin-bottom-right rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.08] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 24px 44px rgba(124,58,237,0.45))" }}
+          style={{ boxShadow: "0 24px 44px rgba(124,58,237,0.45)", borderRadius: "clamp(14px,1.6vw,26px)" }}
         >
           <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(14px,1.6vw,26px)] border-[clamp(3px,0.4vw,6px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
             <div
@@ -481,7 +478,6 @@ function WorkToolsComposition({ shots }: { shots: ToolsShots }) {
         style={{
           background:
             "radial-gradient(ellipse 74% 64% at 50% 48%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
-          filter: "blur(16px)",
           zIndex: 0,
         }}
       />
@@ -490,7 +486,7 @@ function WorkToolsComposition({ shots }: { shots: ToolsShots }) {
         {/* Hero — browser pane (largest) */}
         <div
           className="relative z-0 mx-auto w-[88%] motion-safe:transition-transform motion-safe:duration-500"
-          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+          style={{ boxShadow: "0 30px 56px rgba(0,0,0,0.6)" }}
         >
           <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
             <img
@@ -506,7 +502,7 @@ function WorkToolsComposition({ shots }: { shots: ToolsShots }) {
         {/* Git pane — bottom-left */}
         <div
           className="absolute bottom-[2%] left-[-1%] z-20 w-[49%] origin-bottom-left -rotate-[1.5deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.05] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+          style={{ boxShadow: "0 22px 40px rgba(0,0,0,0.66)" }}
         >
           <div className={frame}>
             <img
@@ -522,7 +518,7 @@ function WorkToolsComposition({ shots }: { shots: ToolsShots }) {
         {/* Files pane — bottom-right */}
         <div
           className="absolute bottom-[2%] right-[-1%] z-30 w-[49%] origin-bottom-right rotate-[1.5deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.05] [@media(hover:hover)]:hover:rotate-0"
-          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+          style={{ boxShadow: "0 22px 40px rgba(0,0,0,0.66)" }}
         >
           <div className={frame}>
             <img
@@ -629,8 +625,22 @@ function CopyPanel({ tab }: { tab: ShowcaseTab }) {
 export function ShipShowcase() {
   const reduceMotion = useReducedMotion() ?? true;
   const [active, setActive] = useState(0);
+  // Tabs mount on first activation — plus the next tab in rotation, prefetched
+  // a full cycle ahead so its images are fetched and decoded before the
+  // crossfade — and stay mounted afterward. Bounds the initial image load to
+  // two tabs instead of all four while keeping switches decode-jank-free.
+  const [mountedTabs, setMountedTabs] = useState(() => new Set([0, 1]));
 
-  const tab = TABS[active]!;
+  useEffect(() => {
+    setMountedTabs((prev) => {
+      const upcoming = (active + 1) % TABS.length;
+      if (prev.has(active) && prev.has(upcoming)) return prev;
+      const grown = new Set(prev);
+      grown.add(active);
+      grown.add(upcoming);
+      return grown;
+    });
+  }, [active]);
 
   const selectTab = useCallback((index: number) => {
     setActive(index);
@@ -672,19 +682,19 @@ export function ShipShowcase() {
             "radial-gradient(ellipse 50% 46% at 78% 42%, rgba(124,58,237,0.36) 0%, transparent 72%)",
             "radial-gradient(ellipse 44% 42% at 10% 72%, rgba(99,102,241,0.18) 0%, transparent 74%)",
           ].join(", "),
-          filter: "blur(22px)",
         }}
       />
 
-      {/* Heading on the left, tab rail beside it (aligned to the headline) on wide screens */}
-      <div className="grid gap-x-[clamp(28px,3vw,56px)] gap-y-[clamp(24px,3vw,38px)] 2xl:grid-cols-[auto_auto] 2xl:items-start 2xl:justify-start">
-        <header className="max-w-[60ch] 2xl:max-w-none">
+      {/* Heading on the left, tab rail to its right so the whole section header
+          fits one row on laptop screens and the stage starts higher. */}
+      <div className="grid gap-x-[clamp(28px,3vw,56px)] gap-y-[clamp(24px,3vw,38px)] lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <header className="max-w-[60ch]">
           <p className="text-[11px] uppercase tracking-[0.26em] text-[color:var(--color-violet-bright)]">
             One repo, every surface
           </p>
           <h2
-            className="mt-4 font-serif font-normal tracking-[-0.02em] text-[color:var(--color-cream)] 2xl:whitespace-nowrap"
-            style={{ fontSize: "clamp(38px, 4vw, 62px)", lineHeight: 1.02 }}
+            className="mt-4 font-serif font-normal tracking-[-0.02em] text-[color:var(--color-cream)]"
+            style={{ fontSize: "clamp(34px, 3.4vw, 56px)", lineHeight: 1.02 }}
           >
             Ship code from{" "}
             <em className="bg-gradient-to-r from-[#b6a3ff] via-[#dcc9ff] to-[#7c3aed] bg-clip-text text-transparent">
@@ -700,8 +710,8 @@ export function ShipShowcase() {
           </p>
         </header>
 
-        {/* Tab rail — nudged down + slightly right on wide screens to line up with the headline row */}
-        <div className="w-full 2xl:ml-[clamp(14px,1.8vw,40px)] 2xl:w-auto 2xl:pt-[clamp(30px,2.2vw,42px)]">
+        {/* Tab rail — sits to the right of the headline, bottom-aligned with it */}
+        <div className="w-full lg:w-auto lg:pb-1">
           <div
             role="tablist"
             aria-label="Product walkthrough"
@@ -745,32 +755,44 @@ export function ShipShowcase() {
           className="mt-3 h-[2px] overflow-hidden rounded-full bg-[color:var(--color-hairline)]"
           aria-hidden
         >
-          <motion.div
+          {/* Pure CSS fill — runs on the compositor, immune to main-thread jank. */}
+          <div
             key={active}
             className="h-full w-full origin-left rounded-full bg-[color:var(--color-violet-bright)] shadow-[0_0_10px_rgba(124,58,237,0.7)]"
-            initial={{ scaleX: reduceMotion ? 1 : 0 }}
-            animate={{ scaleX: 1 }}
-            transition={{ duration: reduceMotion ? 0 : ROTATE_MS / 1000, ease: "linear" }}
+            style={{
+              animation: reduceMotion ? "none" : `ship-progress ${ROTATE_MS}ms linear forwards`,
+            }}
           />
         </div>
         </div>
       </div>
 
-      {/* Stage — copy + big image deck, crossfaded on tab change */}
-      <div className="relative mt-[clamp(10px,1.4vw,22px)] min-h-[clamp(520px,56vw,820px)]">
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={tab.id}
-            initial={reduceMotion ? false : { opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -10 }}
-            transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-            className="grid gap-[clamp(14px,1.8vw,32px)] lg:grid-cols-[minmax(0,0.24fr)_minmax(0,1.76fr)] lg:items-center"
-          >
-            <CopyPanel tab={tab} />
-            <ImageStage tab={tab} />
-          </motion.div>
-        </AnimatePresence>
+      {/* Stage — copy + big image deck. All four tabs stay mounted and stacked
+          in the same grid cell; switching only crossfades opacity, so the big
+          screenshots decode once instead of re-decoding on every tab change. */}
+      <div className="relative mt-[clamp(12px,1.6vw,26px)] grid min-h-[clamp(460px,48vw,740px)]">
+        {TABS.map((item, index) => {
+          const selected = index === active;
+          return (
+            <div
+              key={item.id}
+              aria-hidden={!selected}
+              className={cn(
+                "col-start-1 row-start-1 grid gap-[clamp(18px,2.2vw,40px)] transition-[opacity,transform] duration-[420ms] ease-[cubic-bezier(0.22,1,0.36,1)] lg:grid-cols-[minmax(0,0.44fr)_minmax(0,1.56fr)] lg:items-center",
+                selected
+                  ? "z-[1] opacity-100 motion-safe:translate-y-0"
+                  : "z-0 pointer-events-none opacity-0 motion-safe:translate-y-[10px]"
+              )}
+            >
+              {selected || mountedTabs.has(index) ? (
+                <>
+                  <CopyPanel tab={item} />
+                  <ImageStage tab={item} />
+                </>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </section>
   );
