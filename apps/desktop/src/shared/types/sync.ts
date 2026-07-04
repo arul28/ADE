@@ -474,6 +474,18 @@ export type SyncHelloOkPayload = {
 export type SyncHelloErrorPayload = {
   code: "auth_failed" | "invalid_hello";
   message: string;
+  /**
+   * Identity of the machine that rejected this hello. Lets a client tell
+   * "the machine I'm paired with revoked this device" (safe to drop the
+   * saved pairing) apart from "a different machine answered on a reused
+   * address" (keep the pairing and try other routes). Older hosts omit it,
+   * in which case clients must treat the rejection as unattributed and
+   * never destroy saved credentials over it.
+   */
+  host?: {
+    deviceId: string;
+    name?: string;
+  };
 };
 
 export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback";

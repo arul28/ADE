@@ -1329,7 +1329,11 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(
       syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(SyncDirectHostPorts.fallbackMaxPort)
     )
-    XCTAssertEqual(SyncTailnetDiscovery.portCandidates, SyncDirectHostPorts.portCandidates)
+    // The tailnet discovery probe must stay a bounded sweep: probing the full
+    // stale-port recovery range (213 ports, sequentially, 2 s timeout each)
+    // overruns the 45 s refresh interval whenever the host drops packets.
+    XCTAssertEqual(SyncTailnetDiscovery.probePortCandidates.first, SyncDirectHostPorts.defaultPort)
+    XCTAssertLessThanOrEqual(SyncTailnetDiscovery.probePortCandidates.count, 16)
   }
 
   func testSyncConnectionEndpointAttemptsTryPrimaryPortForEveryAddressFirst() {
@@ -1658,13 +1662,90 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncAuthFailureOnAmbiguousSavedLanRouteKeepsPairing() {
+  func testSyncAuthFailureOnlyInvalidatesPairingWhenRejectionIsAttributedToPairedMachine() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
+    // Unattributed rejections (older host, or a stranger machine on a reused
+    // address) must never destroy the saved pairing — on any route shape.
     XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "192.168.1.8"))
     XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "mac.local"))
     XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "ade-sync"))
-    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "macbook.tailnet.ts.net"))
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "macbook.tailnet.ts.net"))
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "100.75.20.63"))
+
+    // A rejection from a machine whose identity differs from the pairing is a
+    // wrong-machine dial, not a revocation.
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+      address: "100.75.20.63",
+      respondingHostIdentity: "some-other-machine",
+      expectedHostIdentity: "host-1"
+    ))
+
+    // Only the paired machine itself rejecting this device may drop the
+    // saved credentials — and then on every route shape, including LAN.
+    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+      address: "macbook.tailnet.ts.net",
+      respondingHostIdentity: "host-1",
+      expectedHostIdentity: "host-1"
+    ))
+    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+      address: "192.168.1.8",
+      respondingHostIdentity: "host-1",
+      expectedHostIdentity: "host-1"
+    ))
+  }
+
+  func testSyncTailscaleIPv6RouteClassification() {
+    XCTAssertTrue(syncIsTailscaleIPv6Address("fd7a:115c:a1e0::1234"))
+    XCTAssertTrue(syncIsTailscaleRoute("ws://[fd7a:115c:a1e0:ab12::42]:8787"))
+    XCTAssertFalse(syncIsTailscaleIPv6Address("fd00::1"))
+    XCTAssertFalse(syncIsTailscaleIPv6Address("fe80::1"))
+    XCTAssertFalse(syncIsTailscaleRoute("fd00::1"))
+  }
+
+  func testSyncTailnetSelfAddressRequiresTunnelInterface() {
+    // Carrier CGNAT on the cellular interface must not read as "on Tailscale".
+    XCTAssertFalse(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "pdp_ip0", address: "100.85.12.9"),
+      SyncNetworkInterfaceAddress(interfaceName: "en0", address: "192.168.1.20"),
+    ]))
+    XCTAssertTrue(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "utun4", address: "100.85.12.9"),
+    ]))
+    XCTAssertTrue(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "utun2", address: "fd7a:115c:a1e0::4"),
+    ]))
+    // A non-Tailscale VPN tunnel is not a tailnet.
+    XCTAssertFalse(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "utun1", address: "10.8.0.2"),
+    ]))
+  }
+
+  func testSyncTailscaleOffHintGating() {
+    func hint(
+      transport: SyncTransportHealth,
+      hasSavedMachine: Bool = true,
+      tailnetRoute: Bool = true,
+      phoneOnTailnet: Bool = false,
+      nearby: Bool = false
+    ) -> Bool {
+      syncShouldShowTailscaleOffHint(
+        transport: transport,
+        hasSavedMachine: hasSavedMachine,
+        savedMachineHasTailnetRoute: tailnetRoute,
+        phoneHasTailnetInterface: phoneOnTailnet,
+        machineDiscoveredNearby: nearby
+      )
+    }
+
+    XCTAssertTrue(hint(transport: .connecting))
+    XCTAssertTrue(hint(transport: .unreachable))
+    XCTAssertTrue(hint(transport: .disconnected))
+    XCTAssertFalse(hint(transport: .connected))
+    XCTAssertFalse(hint(transport: .unreachable, hasSavedMachine: false))
+    XCTAssertFalse(hint(transport: .unreachable, tailnetRoute: false))
+    XCTAssertFalse(hint(transport: .unreachable, phoneOnTailnet: true))
+    XCTAssertFalse(hint(transport: .unreachable, nearby: true))
   }
 
   @MainActor
@@ -14706,5 +14787,36 @@ final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
       chatSessionId: "chat-gone"
     )
     XCTAssertTrue(workSessionShouldAppearInWorkList(orphanedLiveChild, parentChatSessionIds: []))
+  }
+}
+
+final class TerminalLiveTailPinningTests: XCTestCase {
+  func testViewportRestingAtTailIsAtLiveTail() {
+    // Exactly at the bottom, and within the one-line slack band.
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 4200, viewportHeight: 800, contentHeight: 5000))
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 4170, viewportHeight: 800, contentHeight: 5000))
+    // A real scroll-up past the slack band leaves the tail.
+    XCTAssertFalse(TerminalSessionController.isAtLiveTail(offsetY: 4100, viewportHeight: 800, contentHeight: 5000))
+  }
+
+  func testKeyboardShrinkFlipsTailPredicateWithUnchangedOffset() {
+    // Regression anchor for the keyboard-avoidance bug: with large scrollback,
+    // a pinned viewport (offset unchanged) reads as off-tail purely because the
+    // keyboard shrank the viewport height. The pin state must therefore never
+    // be derived from a layout resize — the controller re-asserts the live
+    // tail on layout size changes instead of consulting this predicate.
+    let offsetAtTailBeforeKeyboard: CGFloat = 4200
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(
+      offsetY: offsetAtTailBeforeKeyboard, viewportHeight: 800, contentHeight: 5000
+    ))
+    XCTAssertFalse(TerminalSessionController.isAtLiveTail(
+      offsetY: offsetAtTailBeforeKeyboard, viewportHeight: 460, contentHeight: 5000
+    ))
+  }
+
+  func testShortTranscriptStaysAtLiveTailThroughKeyboardShrink() {
+    // Content shorter than the shrunken viewport can never leave the tail —
+    // why short/new sessions always survived the keyboard.
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 0, viewportHeight: 460, contentHeight: 300))
   }
 }

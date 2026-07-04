@@ -762,6 +762,7 @@ struct HubInlineComposer: View {
     let targetLaneId: String
     let targetLaneName: String
     var createdLaneId: String?
+    var autoCreatedFallbackName: String?
     if isAutoCreateLane {
       let name = workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix())
       do {
@@ -774,6 +775,7 @@ struct HubInlineComposer: View {
         targetLaneId = lane.id
         targetLaneName = lane.name
         createdLaneId = lane.id
+        autoCreatedFallbackName = name
       } catch {
         ADEHaptics.error()
         errorMessage = error.localizedDescription
@@ -859,6 +861,15 @@ struct HubInlineComposer: View {
       // Collapse back to the minimized box; the hub's toast takes over from here.
       collapse()
       onCreated(created)
+      if let createdLaneId, let autoCreatedFallbackName {
+        startBackgroundLaneNaming(
+          laneId: createdLaneId,
+          opener: opener,
+          fallbackName: autoCreatedFallbackName,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        )
+      }
       return true
     } catch {
       ADEHaptics.error()
@@ -874,6 +885,44 @@ struct HubInlineComposer: View {
       }
       busy = false
       return false
+    }
+  }
+
+  /// Desktop-parity background lane naming (`startBackgroundLaneNaming` in
+  /// AgentChatPane): the lane was already created with the deterministic
+  /// fallback name, so this runs fire-and-forget after the session launch and
+  /// any failure/timeout/offline is a no-op. `lanes.suggestName` honors the
+  /// host's own titleGenerationEnabled setting and clamps the name; the rename
+  /// applies only when the suggestion differs from the fallback. Both calls
+  /// carry the picked project's scope since the hub can launch into a project
+  /// other than the active one (same envelope routing as createLane above).
+  private func startBackgroundLaneNaming(
+    laneId: String,
+    opener: String,
+    fallbackName: String,
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) {
+    let syncService = syncService
+    let modelId = modelId
+    Task {
+      guard
+        let suggested = try? await syncService.suggestLaneName(
+          laneId: laneId,
+          prompt: opener,
+          modelId: modelId,
+          fallbackName: fallbackName,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        ),
+        suggested != fallbackName
+      else { return }
+      try? await syncService.renameLane(
+        laneId,
+        name: suggested,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
     }
   }
 
