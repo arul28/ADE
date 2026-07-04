@@ -265,14 +265,27 @@ struct PrOverviewMergeRail: View {
 
   private var activeSection: some View {
     VStack(alignment: .leading, spacing: 12) {
-      // Mergeability status line (desktop checklist header pill).
+      // Mergeability status line (desktop checklist header pill). Red and
+      // amber carry the gate subline: blockers like unresolved review threads
+      // or a host mergeBlockedReason have no checklist row, so without the
+      // subline the rail would say "blocked" over all-passing rows.
       switch model.gate.tone {
       case .green:
         statusLine(icon: "checkmark.seal.fill", tint: ADEColor.success, title: "Ready to merge")
       case .amber:
-        statusLine(icon: "clock.fill", tint: ADEColor.warning, title: model.isDraft ? "Draft — not ready" : "Checking…")
+        statusLine(
+          icon: "clock.fill",
+          tint: ADEColor.warning,
+          title: model.isDraft ? "Draft — not ready" : "Checking…",
+          subline: model.gate.subline
+        )
       case .red:
-        statusLine(icon: "exclamationmark.octagon.fill", tint: ADEColor.danger, title: "Merging is blocked")
+        statusLine(
+          icon: "exclamationmark.octagon.fill",
+          tint: ADEColor.danger,
+          title: "Merging is blocked",
+          subline: model.gate.subline
+        )
       }
 
       // Requirement checklist (review / checks / conflicts / behind / rules).
@@ -349,15 +362,24 @@ struct PrOverviewMergeRail: View {
 
   // MARK: Pieces
 
-  private func statusLine(icon: String, tint: Color, title: String) -> some View {
-    HStack(spacing: 9) {
-      Image(systemName: icon)
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(tint)
-      Text(title)
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(tint)
-      Spacer(minLength: 0)
+  private func statusLine(icon: String, tint: Color, title: String, subline: String? = nil) -> some View {
+    VStack(alignment: .leading, spacing: 3) {
+      HStack(spacing: 9) {
+        Image(systemName: icon)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(tint)
+        Text(title)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(tint)
+        Spacer(minLength: 0)
+      }
+      if let subline = subline?.trimmingCharacters(in: .whitespacesAndNewlines), !subline.isEmpty {
+        Text(subline)
+          .font(.system(size: 11.5, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.leading, 23)
+      }
     }
   }
 
