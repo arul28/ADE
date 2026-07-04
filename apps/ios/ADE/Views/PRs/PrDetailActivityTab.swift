@@ -804,7 +804,10 @@ private struct PrTimelineCommentCard: View {
       PrInlineCodeText(text: bodyText)
         .lineLimit(expanded ? nil : Self.collapsedLineLimit)
 
-      if !expanded, bodyText.count > 600 || bodyText.filter({ $0 == "\n" }).count >= Self.collapsedLineLimit {
+      // Offer expansion whenever the clamp could plausibly truncate: at
+      // footnote size a phone renders ~35+ chars/line, so <280 chars with
+      // fewer than 10 hard newlines cannot exceed the 10-line clamp.
+      if !expanded, bodyText.count > 280 || bodyText.filter({ $0 == "\n" }).count >= Self.collapsedLineLimit {
         Button {
           expanded = true
         } label: {

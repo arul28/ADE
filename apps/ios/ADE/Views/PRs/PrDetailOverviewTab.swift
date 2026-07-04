@@ -675,21 +675,38 @@ struct PrOverviewPeopleCard: View {
   }
 
   private var reviewerEntries: [ReviewerEntry] {
+    // A requested reviewer may already have a submitted review (re-request,
+    // stale request list) — the submitted state must win over "pending".
+    var latestReviewByReviewer: [String: PrReview] = [:]
+    for review in reviews where prBotProvider(from: review.reviewer) == nil {
+      latestReviewByReviewer[review.reviewer] = review
+    }
+
+    func reviewedEntry(_ review: PrReview) -> ReviewerEntry {
+      switch review.state {
+      case "approved":
+        return ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "approved", stateTint: ADEColor.success)
+      case "changes_requested":
+        return ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "changes", stateTint: ADEColor.danger)
+      default:
+        return ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "commented", stateTint: ADEColor.textSecondary)
+      }
+    }
+
     var seen = Set<String>()
     var entries: [ReviewerEntry] = []
     for user in detail?.requestedReviewers ?? [] where seen.insert(user.login).inserted {
-      entries.append(ReviewerEntry(id: "req-\(user.login)", login: user.login, stateLabel: "pending", stateTint: ADEColor.warning))
-    }
-    for review in reviews where prBotProvider(from: review.reviewer) == nil {
-      guard seen.insert(review.reviewer).inserted else { continue }
-      switch review.state {
-      case "approved":
-        entries.append(ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "approved", stateTint: ADEColor.success))
-      case "changes_requested":
-        entries.append(ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "changes", stateTint: ADEColor.danger))
-      default:
-        entries.append(ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "commented", stateTint: ADEColor.textSecondary))
+      if let review = latestReviewByReviewer[user.login] {
+        entries.append(reviewedEntry(review))
+      } else {
+        entries.append(ReviewerEntry(id: "req-\(user.login)", login: user.login, stateLabel: "pending", stateTint: ADEColor.warning))
       }
+    }
+    for review in reviews {
+      // Dict membership doubles as the bot filter — only human reviewers were indexed.
+      guard let latest = latestReviewByReviewer[review.reviewer],
+            seen.insert(review.reviewer).inserted else { continue }
+      entries.append(reviewedEntry(latest))
     }
     return entries
   }
