@@ -1,486 +1,27 @@
 import SwiftUI
 import UIKit
 
-// MARK: - Overview tab (rebuilt)
+// MARK: - Overview thread row components (desktop Timeline+Rails parity)
 //
-// The Overview tab renders four stacked sections wrapped in `adeListCard`s:
-// AI summary, Checks summary, Commits rail, Files summary. Merge/rebase
-// actions live on the sticky bar in `PrDetailScreen` so the tab body stays
-// focused on *signal*, not controls.
+// The Overview tab used to render ONE monolithic `PrUnifiedOverviewThread`
+// view inside a single List row, which defeated list virtualization and was
+// the primary source of scroll lag on long PRs. It is now a set of standalone
+// row components that `PrDetailScreen.overviewThreadRows` emits as SIBLING
+// List rows:
+//
+//   unmapped banner → AI summary → description → chronological event feed →
+//   review threads → composer → merge rail (with requirement checklist) →
+//   metadata cards (checks / commits / files / people / stack / cleanup).
+//
+// All surfaces use the flat adaptive PR tokens (`PrGlassPalette` /
+// `prGlassCard`) — no materials, no blend modes, no blur.
 
-/// Destinations used by the Checks / Files "see all" affordances. The parent
-/// screen maps these onto its sub-tab selection state.
-enum PrOverviewNavTarget: Equatable {
-  case checks
-  case files
-}
-
-/// Maps the AI summary's freeform merge-readiness string onto a status tint.
-/// Used by the Overview eyebrow so readers see "ready for merge" / "needs
-/// attention" / "blocked" at a glance in the right colour.
-func prReadinessTint(_ readiness: String?) -> Color {
-  let raw = (readiness ?? "").lowercased()
-  if raw.contains("block") || raw.contains("high") {
-    return ADEColor.danger
-  }
-  if raw.contains("needs") || raw.contains("medium") || raw.contains("warn") || raw.contains("attention") {
-    return ADEColor.warning
-  }
-  if raw.contains("ready") || raw.contains("low") {
-    return ADEColor.success
-  }
-  return ADEColor.textMuted
-}
-
-struct PrOverviewTab: View {
-  let pr: PullRequestListItem
-  let snapshot: PullRequestSnapshot?
-  let aiSummary: AiReviewSummary?
-  let isLive: Bool
-  let isAiSummaryLoading: Bool
-  let groupMembers: [PrGroupMemberSummary]
-  let onNavigate: (PrOverviewNavTarget) -> Void
-  let onRegenerateAiSummary: () -> Void
-  let onOpenStack: (String, String?) -> Void
-  let onArchiveLane: () -> Void
-  let onDeleteBranch: () -> Void
-
-  private var checks: [PrCheck] { snapshot?.checks ?? [] }
-  private var files: [PrFile] { snapshot?.files ?? [] }
-  private var commits: [PrCommit] { snapshot?.commits ?? [] }
-
-  private var additions: Int {
-    files.reduce(0) { $0 + $1.additions }
-  }
-
-  private var deletions: Int {
-    files.reduce(0) { $0 + $1.deletions }
-  }
+/// Uppercase section header row used between thread segments.
+struct PrThreadSectionHeader: View {
+  let title: String
+  var trailing: String?
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      mergeSignalStrip
-      aiSummarySection
-      if !checks.isEmpty {
-        checksSummarySection
-      }
-      if !commits.isEmpty {
-        commitsSummarySection
-      }
-      if !files.isEmpty {
-        filesSummarySection
-      }
-
-      if !groupMembers.isEmpty, let groupId = pr.linkedGroupId {
-        stackSection(groupId: groupId)
-      }
-
-      if pr.state == "merged" {
-        PrLaneCleanupBanner(
-          laneName: pr.laneName,
-          isLive: isLive,
-          onArchive: onArchiveLane,
-          onDeleteBranch: onDeleteBranch
-        )
-      }
-    }
-  }
-
-  // MARK: - Merge signal strip
-  //
-  // Mirrors the desktop Overview's 6-signal row. We collapse to a 3+3 grid for
-  // narrow widths so each tile keeps its big number readable. Order matches
-  // desktop: state-of-merge first, then size of change.
-
-  @ViewBuilder
-  private var mergeSignalStrip: some View {
-    let status = snapshot?.status
-    let behind = status?.behindBaseBy ?? 0
-    let conflicts = status?.mergeConflicts ?? false
-    let mergeable = status?.isMergeable ?? false
-
-    let stateTuple: (String, String, Color) = {
-      if conflicts { return ("MERGE", "Conflicts", ADEColor.danger) }
-      if behind > 0 { return ("BEHIND", "\(behind)", ADEColor.warning) }
-      if mergeable { return ("MERGE", "Ready", ADEColor.success) }
-      return ("MERGE", "Pending", ADEColor.textMuted)
-    }()
-    let stateLabel = stateTuple.0
-    let stateValue = stateTuple.1
-    let stateTint = stateTuple.2
-
-    let pass = checks.filter { $0.status == "completed" && ($0.conclusion == "success" || $0.conclusion == "neutral" || $0.conclusion == "skipped") }.count
-    let total = checks.count
-
-    VStack(spacing: 6) {
-      HStack(spacing: 6) {
-        PrSignalTile(label: stateLabel, value: stateValue, tint: stateTint)
-        PrSignalTile(label: "CHECKS", value: total == 0 ? "—" : "\(pass)/\(total)", tint: total == 0 ? ADEColor.textMuted : (pass == total ? ADEColor.success : ADEColor.warning))
-        PrSignalTile(label: "FILES", value: files.isEmpty ? "—" : "\(files.count)", tint: ADEColor.tintPRs)
-      }
-      HStack(spacing: 6) {
-        PrSignalTile(label: "ADDED", value: "+\(additions)", tint: ADEColor.success)
-        PrSignalTile(label: "DELETED", value: "−\(deletions)", tint: ADEColor.danger)
-        PrSignalTile(label: "COMMITS", value: commits.isEmpty ? "—" : "\(commits.count)", tint: ADEColor.accent)
-      }
-    }
-  }
-
-  // MARK: AI summary
-  private var aiSummarySection: some View {
-    let summary = aiSummary
-    let trailingText: String = {
-      if let readiness = summary?.mergeReadiness.replacingOccurrences(of: "_", with: " "), !readiness.isEmpty {
-        return readiness
-      }
-      return isAiSummaryLoading ? "generating" : "not generated"
-    }()
-    let trailingTint = prReadinessTint(summary?.mergeReadiness)
-
-    return VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text("AI SUMMARY")
-          .font(.system(size: 10, weight: .bold))
-          .tracking(1.0)
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 8)
-        Text(trailingText)
-          .font(.system(size: 10, weight: .bold))
-          .tracking(0.8)
-          .foregroundStyle(trailingTint)
-      }
-      .padding(.horizontal, 4)
-
-      PrAiSummaryCard(
-        summary: summary,
-        additions: additions,
-        deletions: deletions,
-        fileCount: files.count,
-        isLoading: isAiSummaryLoading,
-        isLive: isLive,
-        onRegenerate: onRegenerateAiSummary
-      )
-      .padding(14)
-      .prGlassCard(cornerRadius: 18)
-    }
-  }
-
-  // MARK: Checks summary
-  private var checksSummarySection: some View {
-    let groups = prGroupChecks(checks)
-    let trailing = checks.isEmpty ? "no checks" : "\(checks.count) check\(checks.count == 1 ? "" : "s")"
-
-    return VStack(alignment: .leading, spacing: 10) {
-      PrSectionHdr(title: "Checks") {
-        Text(trailing)
-      }
-
-      VStack(spacing: 0) {
-        if groups.isEmpty {
-          HStack(spacing: 10) {
-            Circle()
-              .fill(ADEColor.textMuted.opacity(0.4))
-              .frame(width: 8, height: 8)
-            Text("No check signals synced yet")
-              .font(.system(size: 12.5))
-              .foregroundStyle(ADEColor.textSecondary)
-            Spacer(minLength: 0)
-          }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 11)
-        } else {
-          ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
-            PrOverviewCheckRow(group: group) {
-              onNavigate(.checks)
-            }
-            if index < groups.count - 1 {
-              Divider()
-                .background(ADEColor.textMuted.opacity(0.15))
-            }
-          }
-        }
-      }
-      .prGlassCard(cornerRadius: 18)
-    }
-  }
-
-  // MARK: Commits summary
-  private var commitsSummarySection: some View {
-    let total = commits.count
-    let top = Array(commits.prefix(8))
-    let entries: [PrCommitRailEntry] = top.map { commit in
-      PrCommitRailEntry(
-        id: commit.id,
-        sha: commit.sha,
-        message: commit.message,
-        author: commit.authorLogin ?? commit.authorName,
-        timestampIso: commit.committedDate,
-        checksState: commit.checkStatus ?? "none"
-      )
-    }
-
-    return VStack(alignment: .leading, spacing: 10) {
-      PrSectionHdr(title: "Commits") {
-        Text(total == 1 ? "1 commit" : "\(total) commits")
-      }
-      PrCommitRailView(commits: entries)
-        .prGlassCard(cornerRadius: 18)
-    }
-  }
-
-  // MARK: Files summary
-  private var filesSummarySection: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      PrSectionHdr(title: "Files") {
-        Text(files.isEmpty ? "—" : "+\(additions) / −\(deletions)")
-      }
-
-      VStack(spacing: 0) {
-        if files.isEmpty {
-          HStack(spacing: 10) {
-            Image(systemName: "doc")
-              .font(.system(size: 12))
-              .foregroundStyle(ADEColor.textMuted)
-            Text("No file changes synced yet")
-              .font(.system(size: 12.5))
-              .foregroundStyle(ADEColor.textSecondary)
-            Spacer(minLength: 0)
-          }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 11)
-        } else {
-          let top = Array(files.prefix(4))
-          ForEach(Array(top.enumerated()), id: \.element.id) { index, file in
-            PrOverviewFileRow(file: file)
-            if index < top.count - 1 || files.count > top.count {
-              Divider()
-                .background(ADEColor.textMuted.opacity(0.15))
-            }
-          }
-
-          if files.count > 4 {
-            Button {
-              onNavigate(.files)
-            } label: {
-              Text("+ \(files.count - 4) more files")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(ADEColor.tintPRs)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 11)
-            }
-            .buttonStyle(.plain)
-          }
-        }
-      }
-      .prGlassCard(cornerRadius: 18)
-    }
-  }
-
-  private func stackSection(groupId: String) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
-      PrSectionHdr(title: "Stack") {
-        Text("\(groupMembers.count) PRs")
-      }
-
-      VStack(alignment: .leading, spacing: 8) {
-        ForEach(groupMembers) { member in
-          HStack(spacing: 10) {
-            Text("\(member.position + 1)")
-              .font(.caption.weight(.bold))
-              .foregroundStyle(ADEColor.accent)
-              .frame(width: 22, height: 22)
-              .background(ADEColor.accent.opacity(0.12), in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-              Text(member.title)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              Text("#\(member.githubPrNumber) · \(member.headBranch) → \(member.baseBranch)")
-                .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
-            }
-          }
-        }
-
-        Button("Open stack") {
-          onOpenStack(groupId, pr.laneName)
-        }
-        .buttonStyle(.glass)
-        .disabled(!isLive)
-      }
-      .prGlassCard(cornerRadius: 18)
-    }
-  }
-}
-
-// MARK: - Unified Overview thread (desktop parity)
-//
-// Folds the former Overview + Activity tabs into ONE top→bottom thread:
-//   1. (optional) Unmapped banner — create-lane / map-to-lane CTAs
-//   2. Summary content (merge signals, AI summary, checks/commits/files)
-//      via the existing `PrOverviewTab`
-//   3. PR description (body) as the first feed card
-//   4. Chronological event feed (commits / reviews / comments / deploys / …)
-//   5. Review threads (unresolved + collapsed resolved)
-//   6. Chat composer (locked when the PR is unmapped)
-//   7. Inline merge rail (terminal states + blockers + merge/close actions)
-//
-// It reuses the existing `PrOverviewTab`, `PrActivityTimelineList`,
-// `PrReviewThreadCard`, `PrReplyComposerInline`, and the shared merge-gate
-// derivation so no data fetching or rendering is duplicated.
-
-struct PrUnifiedOverviewThread: View {
-  // Summary / overview content
-  let pr: PullRequestListItem
-  let snapshot: PullRequestSnapshot?
-  let aiSummary: AiReviewSummary?
-  let isLive: Bool
-  let isAiSummaryLoading: Bool
-  let groupMembers: [PrGroupMemberSummary]
-  let onNavigate: (PrOverviewNavTarget) -> Void
-  let onRegenerateAiSummary: () -> Void
-  let onOpenStack: (String, String?) -> Void
-  let onArchiveLane: () -> Void
-  let onDeleteBranch: () -> Void
-
-  // Thread content
-  let timeline: [PrTimelineEvent]
-  let reviewThreads: [PrReviewThread]
-  let descriptionBody: String?
-  let descriptionAuthor: String?
-
-  // Composer
-  @Binding var commentInput: String
-  let canAddComment: Bool
-  let isMapped: Bool
-  let onSubmitComment: () -> Void
-  let onReplyToThread: (String, String) -> Void
-  let onSetThreadResolved: (String, Bool) -> Void
-
-  // Unmapped affordance
-  let canAutoMap: Bool
-  let onAutoMap: () -> Void
-  let onOpenInGitHub: () -> Void
-
-  // Inline merge rail
-  let mergeRail: PrOverviewMergeRailModel
-
-  @State private var focusedThreadId: String?
-  @State private var replyDraft: [String: String] = [:]
-
-  private var sortedThreads: [PrReviewThread] {
-    reviewThreads.sorted {
-      if $0.isResolved != $1.isResolved { return !$0.isResolved && $1.isResolved }
-      let l = prParsedDate($0.updatedAt ?? $0.createdAt) ?? .distantPast
-      let r = prParsedDate($1.updatedAt ?? $1.createdAt) ?? .distantPast
-      return l > r
-    }
-  }
-  private var unresolvedThreads: [PrReviewThread] { sortedThreads.filter { !$0.isResolved } }
-  private var resolvedThreads: [PrReviewThread] { sortedThreads.filter { $0.isResolved } }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      if !isMapped {
-        PrUnmappedThreadBanner(
-          canAutoMap: canAutoMap,
-          onAutoMap: onAutoMap,
-          onOpenInGitHub: onOpenInGitHub
-        )
-      }
-
-      // Summary cards (AI summary pinned near top, merge signals, checks).
-      PrOverviewTab(
-        pr: pr,
-        snapshot: snapshot,
-        aiSummary: aiSummary,
-        isLive: isLive,
-        isAiSummaryLoading: isAiSummaryLoading,
-        groupMembers: groupMembers,
-        onNavigate: onNavigate,
-        onRegenerateAiSummary: onRegenerateAiSummary,
-        onOpenStack: onOpenStack,
-        onArchiveLane: onArchiveLane,
-        onDeleteBranch: onDeleteBranch
-      )
-
-      // Description (PR body) — the first card of the chronological thread.
-      if let body = descriptionBody?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
-        PrThreadDescriptionCard(author: descriptionAuthor, text: body)
-      }
-
-      // Chronological event feed.
-      if !timeline.isEmpty {
-        PrActivityTimelineList(events: timeline)
-      }
-
-      // Review threads.
-      if !unresolvedThreads.isEmpty {
-        threadSectionHeader(title: "Threads", trailing: "\(unresolvedThreads.count) unresolved")
-        ForEach(unresolvedThreads) { thread in
-          PrReviewThreadCard(
-            thread: thread,
-            isLive: isLive,
-            isFocused: focusedThreadId == thread.id,
-            replyDraft: Binding(
-              get: { replyDraft[thread.id] ?? "" },
-              set: { replyDraft[thread.id] = $0 }
-            ),
-            onFocus: { focusedThreadId = thread.id },
-            onReply: { body in
-              onReplyToThread(thread.id, body)
-              replyDraft[thread.id] = ""
-            },
-            onResolve: { resolved in onSetThreadResolved(thread.id, resolved) }
-          )
-        }
-      }
-
-      if !resolvedThreads.isEmpty {
-        PrCollapsibleResolvedSection(
-          threads: resolvedThreads,
-          isLive: isLive,
-          onReopen: { threadId in onSetThreadResolved(threadId, false) }
-        )
-      }
-
-      // Chat composer — locked when the PR is unmapped.
-      if isMapped {
-        PrReplyComposer(
-          text: $commentInput,
-          placeholder: focusedThreadId != nil ? "Reply…" : "Comment on PR…",
-          isLive: isLive && canAddComment,
-          onSend: {
-            if let focusedThreadId {
-              onReplyToThread(focusedThreadId, commentInput)
-              commentInput = ""
-            } else {
-              onSubmitComment()
-            }
-          },
-          onClearFocus: focusedThreadId != nil ? { focusedThreadId = nil } : nil
-        )
-        if !canAddComment {
-          Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-      } else {
-        PrLockedComposerBar()
-      }
-
-      // Inline merge rail.
-      PrOverviewMergeRail(model: mergeRail)
-
-      Color.clear
-        .frame(height: 88)
-        .accessibilityHidden(true)
-    }
-  }
-
-  @ViewBuilder
-  private func threadSectionHeader(title: String, trailing: String?) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 6) {
       Text(title.uppercased())
         .font(.system(size: 10, weight: .bold))
@@ -498,7 +39,7 @@ struct PrUnifiedOverviewThread: View {
 }
 
 /// PR description rendered as the first card of the thread.
-private struct PrThreadDescriptionCard: View {
+struct PrThreadDescriptionCard: View {
   let author: String?
   let text: String
 
@@ -507,7 +48,7 @@ private struct PrThreadDescriptionCard: View {
       HStack(spacing: 6) {
         Image(systemName: "text.alignleft")
           .font(.system(size: 10, weight: .bold))
-          .foregroundStyle(PrGlassPalette.purpleBright)
+          .foregroundStyle(ADEColor.accent)
         Text("DESCRIPTION")
           .font(.system(size: 10, weight: .bold))
           .tracking(1.0)
@@ -519,11 +60,7 @@ private struct PrThreadDescriptionCard: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       }
-      Text(text)
-        .font(.system(size: 13))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineSpacing(3)
-        .fixedSize(horizontal: false, vertical: true)
+      PrInlineCodeText(text: text)
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -535,7 +72,7 @@ private struct PrThreadDescriptionCard: View {
 /// ADE lane. Primary action is auto-map ("Create lane from PR branch", gated on
 /// host support); the secondary action opens the PR on GitHub. (Linking to an
 /// existing lane lives on the root unmapped-PR sheet.)
-private struct PrUnmappedThreadBanner: View {
+struct PrUnmappedThreadBanner: View {
   let canAutoMap: Bool
   let onAutoMap: () -> Void
   let onOpenInGitHub: () -> Void
@@ -545,7 +82,7 @@ private struct PrUnmappedThreadBanner: View {
       HStack(alignment: .top, spacing: 10) {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.system(size: 14))
-          .foregroundStyle(PrGlassPalette.warning)
+          .foregroundStyle(ADEColor.warning)
           .padding(.top, 1)
         VStack(alignment: .leading, spacing: 3) {
           Text("Not mapped to a lane")
@@ -567,24 +104,24 @@ private struct PrUnmappedThreadBanner: View {
               .foregroundStyle(.white)
               .frame(maxWidth: .infinity)
               .padding(.vertical, 9)
-              .background(PrGlassPalette.accentGradient, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+              .background(ADEColor.accentDeep, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
           }
           .buttonStyle(.plain)
         }
         Button(action: onOpenInGitHub) {
           Label("Open in GitHub", systemImage: "arrow.up.right.square")
             .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(PrGlassPalette.purpleBright)
+            .foregroundStyle(ADEColor.accent)
             .frame(maxWidth: canAutoMap ? nil : .infinity)
             .padding(.horizontal, canAutoMap ? 12 : 0)
             .padding(.vertical, 9)
             .background(
               RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(PrGlassPalette.purple.opacity(0.14))
+                .fill(ADEColor.accent.opacity(0.12))
             )
             .overlay(
               RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(PrGlassPalette.purple.opacity(0.35), lineWidth: 0.5)
+                .strokeBorder(ADEColor.accent.opacity(0.35), lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -592,12 +129,12 @@ private struct PrUnmappedThreadBanner: View {
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .prGlassCard(cornerRadius: 16, tint: PrGlassPalette.warning.opacity(0.5), shadow: false)
+    .prGlassCard(cornerRadius: 16, tint: ADEColor.warning, shadow: false)
   }
 }
 
 /// Locked comment composer shown when the PR is unmapped (desktop parity).
-private struct PrLockedComposerBar: View {
+struct PrLockedComposerBar: View {
   var body: some View {
     HStack(spacing: 10) {
       Image(systemName: "lock.fill")
@@ -613,11 +150,11 @@ private struct PrLockedComposerBar: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .fill(Color.white.opacity(0.04))
+        .fill(PrGlassPalette.threadCard)
     )
     .overlay(
       RoundedRectangle(cornerRadius: 22, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+        .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.5)
     )
   }
 }
@@ -625,9 +162,9 @@ private struct PrLockedComposerBar: View {
 // MARK: - Inline merge rail (unified thread bottom)
 
 /// Drives the inline merge rail at the bottom of the unified Overview thread.
-/// Mirrors desktop's `PrDetailMergeRail`: terminal states, a derived blockers
-/// list, a merge split-button, a close action, and a copyable command-line
-/// instruction. Built from the already-fetched PR status / checks / reviews.
+/// Mirrors desktop's `PrDetailMergeRail`: terminal states, the requirement
+/// checklist, a merge split-button, a close action, and a copyable
+/// command-line instruction.
 struct PrOverviewMergeRailModel {
   enum Phase {
     case merged
@@ -641,8 +178,6 @@ struct PrOverviewMergeRailModel {
   let prNumber: Int
   /// Merge-gate summary (green/amber/red) for the active state.
   let gate: PrMergeGateInfo
-  /// Bulleted blocker reasons when merging is blocked.
-  let blockers: [String]
   let isDraft: Bool
   let canMerge: Bool
   let canClose: Bool
@@ -664,6 +199,8 @@ struct PrOverviewMergeRailModel {
 
 struct PrOverviewMergeRail: View {
   let model: PrOverviewMergeRailModel
+  /// GitHub-style requirement rows (desktop `buildMergeChecklist` parity).
+  var checklist: [PrMergeChecklistItem] = []
 
   @State private var showCommandLine = false
   @State private var confirmClose = false
@@ -728,33 +265,19 @@ struct PrOverviewMergeRail: View {
 
   private var activeSection: some View {
     VStack(alignment: .leading, spacing: 12) {
-      // Mergeability status line.
+      // Mergeability status line (desktop checklist header pill).
       switch model.gate.tone {
       case .green:
         statusLine(icon: "checkmark.seal.fill", tint: ADEColor.success, title: "Ready to merge")
       case .amber:
         statusLine(icon: "clock.fill", tint: ADEColor.warning, title: model.isDraft ? "Draft — not ready" : "Checking…")
       case .red:
-        VStack(alignment: .leading, spacing: 8) {
-          statusLine(icon: "exclamationmark.octagon.fill", tint: ADEColor.danger, title: "Merging is blocked")
-          if !model.blockers.isEmpty {
-            VStack(alignment: .leading, spacing: 5) {
-              ForEach(Array(model.blockers.enumerated()), id: \.offset) { _, blocker in
-                HStack(alignment: .top, spacing: 7) {
-                  Circle()
-                    .fill(ADEColor.danger.opacity(0.7))
-                    .frame(width: 5, height: 5)
-                    .padding(.top, 5)
-                  Text(blocker)
-                    .font(.system(size: 12))
-                    .foregroundStyle(ADEColor.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-              }
-            }
-            .padding(.leading, 2)
-          }
-        }
+        statusLine(icon: "exclamationmark.octagon.fill", tint: ADEColor.danger, title: "Merging is blocked")
+      }
+
+      // Requirement checklist (review / checks / conflicts / behind / rules).
+      if !checklist.isEmpty {
+        PrMergeChecklistView(items: checklist)
       }
 
       // Merge split-button (primary action + method menu).
@@ -777,12 +300,7 @@ struct PrOverviewMergeRail: View {
           .padding(.vertical, 13)
           .background(
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-              .fill(
-                LinearGradient(
-                  colors: [ADEColor.success, ADEColor.success.opacity(0.82)],
-                  startPoint: .top, endPoint: .bottom
-                )
-              )
+              .fill(ADEColor.success)
           )
           .opacity(model.canMerge && !model.isBusy ? 1 : 0.5)
         }
@@ -796,11 +314,11 @@ struct PrOverviewMergeRail: View {
             .frame(width: 44, height: 46)
             .background(
               RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(Color.white.opacity(0.06))
+                .fill(ADEColor.recessedBackground)
             )
             .overlay(
               RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+                .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.5)
             )
         }
         .buttonStyle(.plain)
@@ -933,7 +451,7 @@ struct PrOverviewMergeRail: View {
         .padding(.vertical, 9)
         .background(
           RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .fill(Color.black.opacity(0.25))
+            .fill(ADEColor.recessedBackground)
         )
       }
     }
@@ -968,7 +486,6 @@ private struct PrOverviewCheckRow: View {
         Circle()
           .fill(group.dotColor)
           .frame(width: 8, height: 8)
-          .shadow(color: group.dotColor.opacity(0.5), radius: 3)
         Text(group.name)
           .font(.system(size: 12.5, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
@@ -1053,6 +570,279 @@ private func prCheckOutcome(_ check: PrCheck) -> PrCheckOutcome {
   }
 }
 
+// MARK: - Metadata cards (desktop right rail, stacked)
+
+/// Checks summary card — grouped CI/Bots/Security rows, tap → Checks tab.
+struct PrOverviewChecksCard: View {
+  let checks: [PrCheck]
+  let onSeeAll: () -> Void
+
+  var body: some View {
+    let groups = prGroupChecks(checks)
+    VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "Checks") {
+        Text("\(checks.count) check\(checks.count == 1 ? "" : "s")")
+      }
+      VStack(spacing: 0) {
+        ForEach(Array(groups.enumerated()), id: \.element.id) { index, group in
+          PrOverviewCheckRow(group: group, onTap: onSeeAll)
+          if index < groups.count - 1 {
+            Divider()
+              .background(PrGlassPalette.cardBorder)
+          }
+        }
+      }
+    }
+    .padding(.bottom, 4)
+    .prGlassCard(cornerRadius: 16)
+  }
+}
+
+/// Commits card — vertical rail of the most recent commits (desktop left rail).
+struct PrOverviewCommitsCard: View {
+  let commits: [PrCommit]
+
+  var body: some View {
+    let entries: [PrCommitRailEntry] = commits.prefix(8).map { commit in
+      PrCommitRailEntry(
+        id: commit.id,
+        sha: commit.sha,
+        message: commit.message,
+        author: commit.authorLogin ?? commit.authorName,
+        timestampIso: commit.committedDate,
+        checksState: commit.checkStatus ?? "none"
+      )
+    }
+    VStack(alignment: .leading, spacing: 0) {
+      PrSectionHdr(title: "Commits") {
+        Text(commits.count == 1 ? "1 commit" : "\(commits.count) commits")
+      }
+      PrCommitRailView(commits: entries)
+    }
+    .padding(.bottom, 4)
+    .prGlassCard(cornerRadius: 16)
+  }
+}
+
+/// Files-changed card — top files with +/- counts, tap → Files tab.
+struct PrOverviewFilesCard: View {
+  let files: [PrFile]
+  let onSeeAll: () -> Void
+
+  var body: some View {
+    let additions = files.reduce(0) { $0 + $1.additions }
+    let deletions = files.reduce(0) { $0 + $1.deletions }
+    let top = Array(files.prefix(4))
+    VStack(alignment: .leading, spacing: 0) {
+      PrSectionHdr(title: "Files") {
+        Text("+\(additions) / −\(deletions)")
+      }
+      ForEach(Array(top.enumerated()), id: \.element.id) { index, file in
+        PrOverviewFileRow(file: file)
+        if index < top.count - 1 || files.count > top.count {
+          Divider()
+            .background(PrGlassPalette.cardBorder)
+        }
+      }
+      if files.count > top.count {
+        Button(action: onSeeAll) {
+          Text("+ \(files.count - top.count) more files")
+            .font(.system(size: 11, design: .monospaced))
+            .foregroundStyle(ADEColor.accent)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(.bottom, 4)
+    .prGlassCard(cornerRadius: 16)
+  }
+}
+
+/// People card — author, reviewers with state, labels, assignees, and linked
+/// issues (desktop right-rail People + Development cards).
+struct PrOverviewPeopleCard: View {
+  let detail: PrDetail?
+  let reviews: [PrReview]
+  let authorLogin: String?
+
+  private struct ReviewerEntry: Identifiable {
+    let id: String
+    let login: String
+    let stateLabel: String
+    let stateTint: Color
+  }
+
+  private var reviewerEntries: [ReviewerEntry] {
+    var seen = Set<String>()
+    var entries: [ReviewerEntry] = []
+    for user in detail?.requestedReviewers ?? [] where seen.insert(user.login).inserted {
+      entries.append(ReviewerEntry(id: "req-\(user.login)", login: user.login, stateLabel: "pending", stateTint: ADEColor.warning))
+    }
+    for review in reviews where prBotProvider(from: review.reviewer) == nil {
+      guard seen.insert(review.reviewer).inserted else { continue }
+      switch review.state {
+      case "approved":
+        entries.append(ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "approved", stateTint: ADEColor.success))
+      case "changes_requested":
+        entries.append(ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "changes", stateTint: ADEColor.danger))
+      default:
+        entries.append(ReviewerEntry(id: "rev-\(review.reviewer)", login: review.reviewer, stateLabel: "commented", stateTint: ADEColor.textSecondary))
+      }
+    }
+    return entries
+  }
+
+  var body: some View {
+    let labels = detail?.labels ?? []
+    let assignees = detail?.assignees ?? []
+    let linkedIssues = detail?.linkedIssues ?? []
+    let reviewers = reviewerEntries
+
+    VStack(alignment: .leading, spacing: 0) {
+      PrSectionHdr(title: "People")
+
+      if let authorLogin, !authorLogin.isEmpty {
+        peopleRow(login: authorLogin, roleLabel: "author", roleTint: ADEColor.textSecondary)
+      }
+      ForEach(reviewers) { reviewer in
+        peopleRow(login: reviewer.login, roleLabel: reviewer.stateLabel, roleTint: reviewer.stateTint)
+      }
+      ForEach(assignees) { assignee in
+        peopleRow(login: assignee.login, roleLabel: "assignee", roleTint: ADEColor.info)
+      }
+
+      if !labels.isEmpty {
+        Divider().background(PrGlassPalette.cardBorder)
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 6) {
+            ForEach(labels) { label in
+              let tint = prLabelColor(label.color)
+              Text(label.name)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(tint)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Capsule(style: .continuous).fill(tint.opacity(0.14)))
+                .overlay(Capsule(style: .continuous).strokeBorder(tint.opacity(0.35), lineWidth: 0.5))
+            }
+          }
+          .padding(.horizontal, 14)
+        }
+        .padding(.vertical, 10)
+      }
+
+      if !linkedIssues.isEmpty {
+        Divider().background(PrGlassPalette.cardBorder)
+        ForEach(linkedIssues) { issue in
+          HStack(spacing: 8) {
+            Image(systemName: issue.state == "closed" ? "checkmark.circle" : "smallcircle.filled.circle")
+              .font(.system(size: 11))
+              .foregroundStyle(issue.state == "closed" ? ADEColor.accent : ADEColor.success)
+            Text("#\(issue.number)")
+              .font(.system(size: 11, weight: .semibold, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+            Text(issue.title)
+              .font(.system(size: 12))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            Spacer(minLength: 0)
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 8)
+        }
+      }
+    }
+    .padding(.bottom, 6)
+    .prGlassCard(cornerRadius: 16)
+  }
+
+  private func peopleRow(login: String, roleLabel: String, roleTint: Color) -> some View {
+    HStack(spacing: 10) {
+      ZStack {
+        Circle().fill(ADEColor.accent.opacity(0.14))
+        Circle().strokeBorder(ADEColor.accent.opacity(0.3), lineWidth: 0.5)
+        Text(String(login.prefix(1)).uppercased())
+          .font(.system(size: 10, weight: .heavy))
+          .foregroundStyle(ADEColor.accent)
+      }
+      .frame(width: 24, height: 24)
+      Text(login)
+        .font(.system(size: 12.5, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+      Spacer(minLength: 8)
+      PrTagChip(label: roleLabel, color: roleTint)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 7)
+  }
+}
+
+/// Parses a GitHub label hex string (e.g. "d73a4a") into a Color; falls back
+/// to the accent for malformed values.
+func prLabelColor(_ hex: String) -> Color {
+  var value: UInt64 = 0
+  let cleaned = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+  guard cleaned.count == 6, Scanner(string: cleaned).scanHexInt64(&value) else {
+    return ADEColor.accent
+  }
+  return Color(
+    red: Double((value >> 16) & 0xFF) / 255,
+    green: Double((value >> 8) & 0xFF) / 255,
+    blue: Double(value & 0xFF) / 255
+  )
+}
+
+/// Stack card — sibling PRs in the same lane chain.
+struct PrOverviewStackCard: View {
+  let groupMembers: [PrGroupMemberSummary]
+  let groupId: String
+  let laneName: String?
+  let isLive: Bool
+  let onOpenStack: (String, String?) -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      PrSectionHdr(title: "Stack") {
+        Text("\(groupMembers.count) PRs")
+      }
+
+      VStack(alignment: .leading, spacing: 8) {
+        ForEach(groupMembers) { member in
+          HStack(spacing: 10) {
+            Text("\(member.position + 1)")
+              .font(.caption.weight(.bold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(width: 22, height: 22)
+              .background(ADEColor.accent.opacity(0.12), in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+              Text(member.title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(ADEColor.textPrimary)
+                .lineLimit(1)
+              Text("#\(member.githubPrNumber) · \(member.headBranch) → \(member.baseBranch)")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(ADEColor.textSecondary)
+                .lineLimit(1)
+            }
+          }
+        }
+
+        Button("Open stack") {
+          onOpenStack(groupId, laneName)
+        }
+        .buttonStyle(.glass)
+        .disabled(!isLive)
+      }
+      .padding(.horizontal, 14)
+      .padding(.bottom, 12)
+    }
+    .prGlassCard(cornerRadius: 16)
+  }
+}
+
 // MARK: - File row
 
 private struct PrOverviewFileRow: View {
@@ -1110,89 +900,10 @@ private struct PrOverviewInlineChip: View {
   }
 }
 
-// MARK: - Legacy helpers retained
+// MARK: - Shared helpers retained
 //
-// These types are shared with other screens (PrDetailChecksTab / Activity /
-// CreatePrWizard / PrsRootScreen). They are kept
-// intact to avoid churn across other agents' files.
-
-struct PrHeaderCard: View {
-  let pr: PullRequestListItem
-  let transitionNamespace: Namespace.ID?
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .top, spacing: 10) {
-        VStack(alignment: .leading, spacing: 6) {
-          Text(pr.title)
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-            .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-title-\(pr.id)", in: transitionNamespace)
-          Text("#\(pr.githubPrNumber) · \(pr.headBranch) → \(pr.baseBranch)")
-            .font(.system(.caption, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 8)
-        ADEStatusPill(text: pr.state.uppercased(), tint: prStateTint(pr.state))
-          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(pr.id)", in: transitionNamespace)
-      }
-
-      HStack(spacing: 8) {
-        if let laneName = pr.laneName, !laneName.isEmpty {
-          ADEStatusPill(text: laneName.uppercased(), tint: ADEColor.textSecondary)
-        }
-        if let label = prAdeKindLabel(pr.adeKind) {
-          ADEStatusPill(text: label, tint: ADEColor.accent)
-        }
-        Spacer(minLength: 0)
-        Text("Updated \(prRelativeTime(pr.updatedAt))")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .adeListCard()
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("PR #\(pr.githubPrNumber), \(pr.title), state \(pr.state)")
-  }
-}
-
-/// Compact signal tile shown on the Overview merge-signal strip. Three of
-/// these fit comfortably in one mobile row; we run two rows for the six
-/// signals that mirror desktop's merge status bar.
-struct PrSignalTile: View {
-  let label: String
-  let value: String
-  let tint: Color
-
-  var body: some View {
-    VStack(spacing: 2) {
-      Text(label)
-        .font(.system(size: 9, weight: .bold))
-        .tracking(0.7)
-        .foregroundStyle(tint.opacity(0.9))
-      Text(value)
-        .font(.system(size: 17, weight: .bold, design: .rounded))
-        .foregroundStyle(tint)
-        .shadow(color: tint.opacity(0.4), radius: 4)
-        .lineLimit(1)
-        .minimumScaleFactor(0.7)
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 8)
-    .background(
-      ZStack {
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .fill(.ultraThinMaterial)
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
-          .fill(tint.opacity(0.12))
-      }
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .strokeBorder(tint.opacity(0.32), lineWidth: 0.5)
-    )
-  }
-}
+// `PrDetailSectionCard` is shared with `PrDetailChecksTab`; `PrLaneCleanupBanner`
+// is emitted by the Overview thread for merged PRs.
 
 struct PrDetailSectionCard<Content: View>: View {
   let title: String
@@ -1211,21 +922,6 @@ struct PrDetailSectionCard<Content: View>: View {
       content
     }
     .adeGlassCard(cornerRadius: 18)
-  }
-}
-
-struct PrChipWrap: View {
-  let users: [String]
-  let tint: Color
-
-  var body: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        ForEach(users, id: \.self) { user in
-          ADEStatusPill(text: user.uppercased(), tint: tint)
-        }
-      }
-    }
   }
 }
 

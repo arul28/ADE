@@ -34,6 +34,30 @@ struct PrDetailView: View {
   @State private var hasAttemptedInitialLoad = false
   @State private var hasSeededFromWarmCache = false
 
+  // MARK: - Derived models (computed off the render path)
+  //
+  // The timeline and the synthesized fallback PR are rebuilt ONCE per data
+  // change (reload / warm-cache seed), never inside `body`. Rebuilding +
+  // re-sorting the timeline on every body evaluation was a primary source of
+  // scroll lag on long PRs.
+
+  /// Fallback list item synthesized from the GitHub item + snapshot when the
+  /// PR has no lane-PR row. Cached so `currentPr` stops allocating per access.
+  @State private var synthesizedPr: PullRequestListItem?
+  /// Unified timeline, sorted ascending (oldest → newest, GitHub-style —
+  /// desktop parity). Fed to the Overview thread rows.
+  @State private var timelineEvents: [PrTimelineEvent] = []
+  /// Timeline folded for display: runs of consecutive same-author commits
+  /// collapse into a single group row (desktop `PrTimeline` parity).
+  @State private var timelineDisplayItems: [PrTimelineDisplayItem] = []
+  /// Review threads split + sorted once per data change (most recent first).
+  @State private var unresolvedThreads: [PrReviewThread] = []
+  @State private var resolvedThreads: [PrReviewThread] = []
+
+  // Thread reply state (was owned by the removed PrUnifiedOverviewThread).
+  @State private var focusedThreadId: String?
+  @State private var replyDraft: [String: String] = [:]
+
   /// How long a warm detail cache entry is considered fresh. Within this window
   /// a PR projection bump renders from cache without re-firing the cold sidecar
   /// fan-out. The pull-to-refresh and explicit retry paths bypass this.
@@ -151,6 +175,22 @@ struct PrDetailView: View {
 
   private var currentPr: PullRequestListItem {
     if let pr { return pr }
+    if let synthesizedPr { return synthesizedPr }
+    // Cold path: only hit before the first `recomputeDerivedModels()` runs.
+    return Self.synthesizePlaceholderPr(
+      prId: prId,
+      routedPrNumber: routedPrNumber,
+      githubItem: githubItem,
+      snapshot: snapshot
+    )
+  }
+
+  private static func synthesizePlaceholderPr(
+    prId: String,
+    routedPrNumber: Int?,
+    githubItem: GitHubPrListItem?,
+    snapshot: PullRequestSnapshot?
+  ) -> PullRequestListItem {
     let detail = snapshot?.detail
     let status = snapshot?.status
     let files = snapshot?.files ?? []
@@ -188,6 +228,38 @@ struct PrDetailView: View {
       workflowDisplayState: githubItem?.workflowDisplayState,
       cleanupState: githubItem?.cleanupState
     )
+  }
+
+  /// Rebuilds every render-path-expensive derived model. Call after any
+  /// mutation of `pr` / `githubItem` / `snapshot` / `activityEvents`.
+  @MainActor
+  private func recomputeDerivedModels() {
+    synthesizedPr = pr == nil
+      ? Self.synthesizePlaceholderPr(
+          prId: prId,
+          routedPrNumber: routedPrNumber,
+          githubItem: githubItem,
+          snapshot: snapshot
+        )
+      : nil
+    let snap = snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: [])
+    // Ascending (oldest → newest), undated events sink to the end — mirrors
+    // desktop `stableSortByTs`.
+    timelineEvents = buildPullRequestTimeline(pr: currentPr, snapshot: snap, activity: activityEvents)
+      .sorted { lhs, rhs in
+        let l = prParsedDate(lhs.timestamp) ?? .distantFuture
+        let r = prParsedDate(rhs.timestamp) ?? .distantFuture
+        if l != r { return l < r }
+        return lhs.id < rhs.id
+      }
+    timelineDisplayItems = buildPrTimelineDisplayItems(timelineEvents)
+    let sortedThreads = reviewThreads.sorted { lhs, rhs in
+      let l = prParsedDate(lhs.updatedAt ?? lhs.createdAt) ?? .distantPast
+      let r = prParsedDate(rhs.updatedAt ?? rhs.createdAt) ?? .distantPast
+      return l > r
+    }
+    unresolvedThreads = sortedThreads.filter { !$0.isResolved }
+    resolvedThreads = sortedThreads.filter { $0.isResolved }
   }
 
   private var actionAvailability: PrActionAvailability {
@@ -253,56 +325,9 @@ struct PrDetailView: View {
       && currentPr.githubPrNumber > 0
   }
 
-  /// Bulleted merge-blocker reasons derived from the already-fetched PR status /
-  /// checks / reviews. Mirrors desktop's `PrDetailMergeRail` blocker list.
-  private var mergeBlockers: [String] {
-    var reasons: [String] = []
-    if isCurrentPrDraft {
-      reasons.append("PR is a draft")
-    }
-    let status = snapshot?.status
-    if status?.mergeConflicts == true {
-      reasons.append("Merge conflicts with the base branch")
-    }
-    let behind = status?.behindBaseBy ?? 0
-    if behind > 0 {
-      reasons.append("Behind base by \(behind) commit\(behind == 1 ? "" : "s")")
-    }
-    let failing = (snapshot?.checks ?? []).filter { check in
-      check.status == "completed"
-        && check.conclusion != nil
-        && check.conclusion != "success"
-        && check.conclusion != "neutral"
-        && check.conclusion != "skipped"
-    }.count
-    if failing > 0 {
-      reasons.append("\(failing) failing required check\(failing == 1 ? "" : "s")")
-    }
-    let pending = (snapshot?.checks ?? []).filter { $0.status.lowercased() != "completed" }.count
-    if pending > 0 {
-      reasons.append("\(pending) pending required check\(pending == 1 ? "" : "s")")
-    }
-    let changesRequested = (snapshot?.reviews ?? []).filter { $0.state == "changes_requested" }
-    if !changesRequested.isEmpty {
-      let reviewers = changesRequested.map { $0.reviewer }.filter { !$0.isEmpty }.prefix(3).joined(separator: ", ")
-      reasons.append(reviewers.isEmpty ? "Changes requested" : "Changes requested by \(reviewers)")
-    }
-    let missingApprovals = max(reviewsNeeded - reviewsHave, 0)
-    if missingApprovals > 0 {
-      reasons.append("\(missingApprovals) approval\(missingApprovals == 1 ? "" : "s") still required")
-    }
-    if unresolvedThreadCount > 0 {
-      reasons.append("\(unresolvedThreadCount) unresolved review thread\(unresolvedThreadCount == 1 ? "" : "s")")
-    }
-    if let blocked = capabilities?.mergeBlockedReason?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !blocked.isEmpty, reasons.isEmpty {
-      reasons.append(blocked)
-    }
-    return reasons
-  }
-
-  /// GitHub-style requirement checklist for the merge sheet. Mirrors desktop's
-  /// `buildMergeChecklist`, driven by the structured merge-state fields.
+  /// GitHub-style requirement checklist for the merge rail + merge sheet.
+  /// Mirrors desktop's `buildMergeChecklist`, driven by the structured
+  /// merge-state fields.
   private var mergeChecklistItems: [PrMergeChecklistItem] {
     PrMergeChecklist.build(
       prState: snapshot?.status?.state ?? currentPr.state,
@@ -333,7 +358,6 @@ struct PrDetailView: View {
       repoName: currentPr.repoName,
       prNumber: currentPr.githubPrNumber,
       gate: mergeGateInfo,
-      blockers: mergeBlockers,
       isDraft: isCurrentPrDraft,
       canMerge: canRunPrActions
         && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
@@ -475,49 +499,9 @@ struct PrDetailView: View {
       case .overview, .activity:
         // Unified Overview thread — folds the former Activity tab in. `.activity`
         // is routed here too so any persisted/legacy selection still renders.
-        PrUnifiedOverviewThread(
-          pr: currentPr,
-          snapshot: snapshot,
-          aiSummary: aiSummary,
-          isLive: canRunPrActions,
-          isAiSummaryLoading: isAiSummaryLoading,
-          groupMembers: groupMembers,
-          onNavigate: { target in
-            switch target {
-            case .checks: selectedTab = .checks
-            case .files: selectedTab = .files
-            }
-          },
-          onRegenerateAiSummary: refreshAiSummary,
-          onOpenStack: openStack,
-          onArchiveLane: {
-            cleanupChoice = .archive
-            cleanupConfirmationPresented = true
-          },
-          onDeleteBranch: {
-            cleanupChoice = .deleteBranch
-            cleanupConfirmationPresented = true
-          },
-          timeline: buildPullRequestTimeline(
-            pr: currentPr,
-            snapshot: snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: []),
-            activity: activityEvents
-          ),
-          reviewThreads: reviewThreads,
-          descriptionBody: snapshot?.detail?.body,
-          descriptionAuthor: snapshot?.detail?.author.login ?? githubItem?.author,
-          commentInput: $commentInput,
-          canAddComment: canAddComment,
-          isMapped: isCurrentPrMapped,
-          onSubmitComment: submitComment,
-          onReplyToThread: replyToThread,
-          onSetThreadResolved: setThreadResolved,
-          canAutoMap: canAutoMapCurrentPr,
-          onAutoMap: autoMapCurrentPr,
-          onOpenInGitHub: { openGitHub(urlString: currentPr.githubUrl) },
-          mergeRail: overviewMergeRailModel
-        )
-        .prListRow()
+        // Emitted as SIBLING List rows (not one nested mega-row) so the List
+        // actually virtualizes offscreen thread content.
+        overviewThreadRows
       case .files:
         PrFilesTab(
           snapshot: snapshot,
@@ -566,16 +550,19 @@ struct PrDetailView: View {
       // gate below evaluates. Doing this inside `.task` (rather than relying on
       // `.onAppear` firing first) makes the ordering deterministic.
       seedFromWarmCacheIfNeeded()
-      // Freshness gate lives in `seedFromWarmCacheIfNeeded`: a FRESH warm-cache
-      // seed sets `hasLoadedLiveSidecars`, which makes `needLiveSidecars` false
-      // here so this revision-driven reload skips the cold sidecar fan-out (8+
-      // network calls) and only refreshes the cheap local projection. A stale
-      // (or absent) warm entry leaves `hasLoadedLiveSidecars` false, so we do a
-      // full refresh and never let stale data mask fresh server state.
+      // Freshness gate: a FRESH warm-cache entry (loaded < detailFreshnessWindow
+      // ago) means this revision-driven reload skips the sidecar fan-out (8+
+      // network calls) and only refreshes the cheap local projection. Once the
+      // window lapses, the next projection bump re-fetches the sidecars too.
+      // That is what keeps review threads / activity / checks runs live while
+      // the screen is open: GitHub webhooks land on the host, the host's hot
+      // poll rewrites the replicated snapshot rows, the changeset pump bumps
+      // `prsProjectionRevision` here, and this gate turns that into a throttled
+      // sidecar refresh instead of a one-shot load.
       let needLiveSidecars = shouldFetchPrDetailLiveSidecars(
         hasLoadedLiveSidecars: hasLoadedLiveSidecars,
         refreshRemote: false
-      )
+      ) || !syncService.prDetailWarmEntryIsFresh(for: prId, within: Self.detailFreshnessWindow)
       await reload(includeLiveSidecars: needLiveSidecars)
     }
     .sheet(isPresented: $cleanupConfirmationPresented) {
@@ -798,19 +785,12 @@ struct PrDetailView: View {
       // 44pt state tile on the left
       ZStack {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [stateTint.opacity(0.38), stateTint.opacity(0.14)],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            )
-          )
+          .fill(stateTint.opacity(0.14))
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .strokeBorder(stateTint.opacity(0.48), lineWidth: 0.75)
         Image(systemName: "arrow.triangle.pull")
           .font(.system(size: 17, weight: .semibold))
           .foregroundStyle(stateTint)
-          .shadow(color: stateTint.opacity(0.55), radius: 6)
       }
       .frame(width: 44, height: 44)
       .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(currentPr.id)", in: transitionNamespace)
@@ -857,9 +837,8 @@ struct PrDetailView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
-    .prGlassCard(cornerRadius: 20, tint: stateTint.opacity(0.42))
+    .prGlassCard(cornerRadius: 20, tint: stateTint)
     .padding(.horizontal, 2)
-    .shadow(color: stateTint.opacity(0.14), radius: 18, y: 8)
   }
 
   // MARK: - Sub-tab picker
@@ -905,23 +884,12 @@ struct PrDetailView: View {
             .padding(.vertical, 9)
             .background {
               if active {
-                ZStack {
-                  RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                  RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-                  RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(
-                      LinearGradient(
-                        colors: [Color.white.opacity(0.10), Color.white.opacity(0.0)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                      )
-                    )
-                  RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.6)
-                }
-                .shadow(color: Color.black.opacity(0.35), radius: 8, y: 3)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .fill(PrGlassPalette.panelCard)
+                  .overlay(
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                      .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.6)
+                  )
               }
             }
             .contentShape(Rectangle())
@@ -932,19 +900,180 @@ struct PrDetailView: View {
     .padding(4)
     .frame(height: 40)
     .background(
-      ZStack {
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .fill(.ultraThinMaterial)
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .fill(Color.black.opacity(0.22))
-      }
+      RoundedRectangle(cornerRadius: 13, style: .continuous)
+        .fill(PrGlassPalette.threadCard)
     )
     .overlay(
       RoundedRectangle(cornerRadius: 13, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.07), lineWidth: 0.5)
+        .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.5)
     )
     .padding(.horizontal, 2)
     .padding(.top, 2)
+  }
+
+  // MARK: - Overview thread rows (desktop Timeline+Rails, stacked for mobile)
+  //
+  // Desktop reading order adapted to one column: AI summary → description →
+  // chronological event feed → review threads → composer → merge rail →
+  // metadata cards (checks / commits / files / people / stack). Every card is
+  // its own List row.
+  @ViewBuilder
+  private var overviewThreadRows: some View {
+    if !isCurrentPrMapped {
+      PrUnmappedThreadBanner(
+        canAutoMap: canAutoMapCurrentPr,
+        onAutoMap: autoMapCurrentPr,
+        onOpenInGitHub: { openGitHub(urlString: currentPr.githubUrl) }
+      )
+      .prListRow()
+    }
+
+    // AI summary — desktop pins it at the top of the timeline.
+    PrAiSummaryCard(
+      summary: aiSummary,
+      additions: currentPr.additions,
+      deletions: currentPr.deletions,
+      fileCount: snapshot?.files.count ?? 0,
+      isLoading: isAiSummaryLoading,
+      isLive: canRunPrActions,
+      onRegenerate: refreshAiSummary
+    )
+    .padding(14)
+    .prGlassCard(cornerRadius: 16)
+    .prListRow()
+
+    // Description (PR body) — the first card of the chronological thread.
+    let descriptionText = (snapshot?.detail?.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    if !descriptionText.isEmpty {
+      PrThreadDescriptionCard(
+        author: snapshot?.detail?.author.login ?? githubItem?.author,
+        text: descriptionText
+      )
+      .prListRow()
+    }
+
+    // Chronological event feed — one row per event / folded commit group.
+    ForEach(timelineDisplayItems) { item in
+      PrTimelineDisplayRow(item: item)
+        .prListRow()
+    }
+
+    // Review threads: unresolved first, resolved folded away (desktop parity).
+    if !unresolvedThreads.isEmpty {
+      PrThreadSectionHeader(title: "Threads", trailing: "\(unresolvedThreads.count) unresolved")
+        .prListRow()
+      ForEach(unresolvedThreads) { thread in
+        PrReviewThreadCard(
+          thread: thread,
+          isLive: canRunPrActions,
+          isFocused: focusedThreadId == thread.id,
+          replyDraft: Binding(
+            get: { replyDraft[thread.id] ?? "" },
+            set: { replyDraft[thread.id] = $0 }
+          ),
+          onFocus: { focusedThreadId = thread.id },
+          onReply: { body in
+            replyToThread(threadId: thread.id, body: body)
+            replyDraft[thread.id] = ""
+          },
+          onResolve: { resolved in setThreadResolved(threadId: thread.id, resolved: resolved) }
+        )
+        .prListRow()
+      }
+    }
+    if !resolvedThreads.isEmpty {
+      PrCollapsibleResolvedSection(
+        threads: resolvedThreads,
+        isLive: canRunPrActions,
+        onReopen: { threadId in setThreadResolved(threadId: threadId, resolved: false) }
+      )
+      .prListRow()
+    }
+
+    // Comment composer — locked when the PR is unmapped.
+    if isCurrentPrMapped {
+      VStack(alignment: .leading, spacing: 6) {
+        PrReplyComposer(
+          text: $commentInput,
+          placeholder: focusedThreadId != nil ? "Reply…" : "Comment on PR…",
+          isLive: canRunPrActions && canAddComment,
+          onSend: {
+            if let focusedThreadId {
+              replyToThread(threadId: focusedThreadId, body: commentInput)
+              commentInput = ""
+            } else {
+              submitComment()
+            }
+          },
+          onClearFocus: focusedThreadId != nil ? { focusedThreadId = nil } : nil
+        )
+        if !canAddComment {
+          Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+      .prListRow()
+    } else {
+      PrLockedComposerBar()
+        .prListRow()
+    }
+
+    // Inline merge rail with the requirement checklist (desktop merge rail).
+    PrOverviewMergeRail(model: overviewMergeRailModel, checklist: mergeChecklistItems)
+      .prListRow()
+
+    // Metadata cards — the desktop right rail, stacked.
+    if let snapshot, !snapshot.checks.isEmpty {
+      PrOverviewChecksCard(checks: snapshot.checks) { selectedTab = .checks }
+        .prListRow()
+    }
+    if let commits = snapshot?.commits, !commits.isEmpty {
+      PrOverviewCommitsCard(commits: commits)
+        .prListRow()
+    }
+    if let files = snapshot?.files, !files.isEmpty {
+      PrOverviewFilesCard(files: files) { selectedTab = .files }
+        .prListRow()
+    }
+    if snapshot?.detail != nil {
+      PrOverviewPeopleCard(
+        detail: snapshot?.detail,
+        reviews: snapshot?.reviews ?? [],
+        authorLogin: snapshot?.detail?.author.login ?? githubItem?.author
+      )
+      .prListRow()
+    }
+    if !groupMembers.isEmpty, let groupId = currentPr.linkedGroupId {
+      PrOverviewStackCard(
+        groupMembers: groupMembers,
+        groupId: groupId,
+        laneName: currentPr.laneName,
+        isLive: canRunPrActions,
+        onOpenStack: openStack
+      )
+      .prListRow()
+    }
+    if currentPr.state == "merged" {
+      PrLaneCleanupBanner(
+        laneName: currentPr.laneName,
+        isLive: canRunPrActions,
+        onArchive: {
+          cleanupChoice = .archive
+          cleanupConfirmationPresented = true
+        },
+        onDeleteBranch: {
+          cleanupChoice = .deleteBranch
+          cleanupConfirmationPresented = true
+        }
+      )
+      .prListRow()
+    }
+
+    Color.clear
+      .frame(height: 88)
+      .accessibilityHidden(true)
+      .prListRow()
   }
 
   // MARK: - Sticky action bar
@@ -1037,44 +1166,23 @@ struct PrDetailView: View {
         .padding(.vertical, 16)
         .background {
           if isPrimary {
-            ZStack {
-              RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(
-                  LinearGradient(
-                    colors: [ADEColor.success, ADEColor.success.opacity(0.82)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                  )
-                )
-              RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(
-                  LinearGradient(
-                    colors: [Color.white.opacity(0.22), Color.white.opacity(0.0)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                  )
-                )
-            }
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .fill(ADEColor.success)
           } else {
             ZStack {
               RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.ultraThinMaterial)
+                .fill(PrGlassPalette.threadCard)
               RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill((isAmber ? ADEColor.warning : ADEColor.danger).opacity(0.14))
+                .fill((isAmber ? ADEColor.warning : ADEColor.danger).opacity(0.12))
             }
           }
         }
         .overlay(
           RoundedRectangle(cornerRadius: 16, style: .continuous)
             .strokeBorder(
-              isPrimary ? Color.white.opacity(0.32) : (isAmber ? ADEColor.warning.opacity(0.45) : ADEColor.danger.opacity(0.45)),
+              isPrimary ? Color.white.opacity(0.20) : (isAmber ? ADEColor.warning.opacity(0.45) : ADEColor.danger.opacity(0.45)),
               lineWidth: 0.75
             )
-        )
-        .shadow(
-          color: isPrimary ? ADEColor.success.opacity(0.45) : .clear,
-          radius: 18,
-          y: 6
         )
         .opacity(enabled ? 1 : 0.55)
       }
@@ -1196,6 +1304,8 @@ struct PrDetailView: View {
       errorMessage = error.localizedDescription
     }
 
+    recomputeDerivedModels()
+
     if shouldFetchLiveSidecars {
       hasLoadedLiveSidecars = true
       // Persist a warm entry once a full live load lands so re-opening the PR
@@ -1236,6 +1346,7 @@ struct PrDetailView: View {
     if syncService.prDetailWarmEntryIsFresh(for: prId, within: Self.detailFreshnessWindow) {
       hasLoadedLiveSidecars = true
     }
+    recomputeDerivedModels()
   }
 
   /// Snapshot the current fully-loaded detail state into the service warm cache.
@@ -1497,43 +1608,15 @@ struct PrDetailView: View {
   }
 }
 
-// MARK: - Liquid-glass backdrop
+// MARK: - PR surface backdrop
+//
+// Flat, theme-aware surface (desktop `--pr-surface` parity). The previous
+// stacked radial-gradient + `.plusLighter` backdrop forced expensive
+// re-compositing under every scroll frame and clashed with the app palette.
 
 @ViewBuilder
 func prLiquidGlassBackdrop() -> some View {
-  ZStack {
-    PrGlassPalette.ink
-
-    RadialGradient(
-      colors: [PrGlassPalette.purple.opacity(0.35), .clear],
-      center: .init(x: 0.15, y: 0.12),
-      startRadius: 8,
-      endRadius: 520
-    )
-    .blendMode(.plusLighter)
-
-    RadialGradient(
-      colors: [PrGlassPalette.blue.opacity(0.28), .clear],
-      center: .init(x: 0.95, y: 0.18),
-      startRadius: 10,
-      endRadius: 460
-    )
-    .blendMode(.plusLighter)
-
-    RadialGradient(
-      colors: [PrGlassPalette.pink.opacity(0.22), .clear],
-      center: .init(x: 0.55, y: 1.05),
-      startRadius: 10,
-      endRadius: 580
-    )
-    .blendMode(.plusLighter)
-
-    LinearGradient(
-      colors: [Color.black.opacity(0.0), Color.black.opacity(0.35)],
-      startPoint: .top,
-      endPoint: .bottom
-    )
-  }
+  PrGlassPalette.ink
 }
 
 private struct PrDetailActionsSheet: View {
@@ -1574,7 +1657,7 @@ private struct PrDetailActionsSheet: View {
           Spacer(minLength: 0)
           Text("Pull request actions")
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+            .foregroundStyle(ADEColor.textPrimary)
           Spacer(minLength: 0)
           Button(action: onRefresh) {
             Image(systemName: "arrow.clockwise")
@@ -1821,7 +1904,7 @@ private struct PrSubmitReviewSheet: View {
             if reviewBody.isEmpty {
               Text("Leave a note with your review…")
                 .font(.system(size: 14))
-                .foregroundStyle(Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255))
+                .foregroundStyle(ADEColor.textMuted)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 12)
                 .allowsHitTesting(false)
@@ -1830,7 +1913,7 @@ private struct PrSubmitReviewSheet: View {
               .scrollContentBackground(.hidden)
               .focused($bodyFocused)
               .font(.system(size: 14))
-              .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+              .foregroundStyle(ADEColor.textPrimary)
               .padding(.horizontal, 10)
               .padding(.vertical, 6)
               .frame(minHeight: 160)
@@ -1842,7 +1925,7 @@ private struct PrSubmitReviewSheet: View {
 
         Text("Approvals can be submitted without a note, but comments and requests for changes need one.")
           .font(.system(size: 11))
-          .foregroundStyle(Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255))
+          .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.horizontal, 2)
       }
@@ -1885,7 +1968,7 @@ private struct PrDetailLiquidSheetShell<Content: View>: View {
           Spacer(minLength: 0)
           Text(title)
             .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+            .foregroundStyle(ADEColor.textPrimary)
           Spacer(minLength: 0)
           Button(action: onTrailing) {
             Text(trailingLabel)
@@ -1957,7 +2040,7 @@ private struct PrReviewDecisionTab: View {
     Button(action: onTap) {
       Text(option.title)
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(isSelected ? Color.white : Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+        .foregroundStyle(isSelected ? Color.white : ADEColor.textSecondary)
         .frame(maxWidth: .infinity)
         .frame(height: 34)
         .background(
@@ -2295,13 +2378,13 @@ private struct PrCleanupConfirmationSheet: View {
 
         Text(title)
           .font(.system(size: 17, weight: .semibold))
-          .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+          .foregroundStyle(ADEColor.textPrimary)
           .tracking(-0.2)
           .multilineTextAlignment(.center)
 
         Text(message)
           .font(.system(size: 12))
-          .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+          .foregroundStyle(ADEColor.textSecondary)
           .multilineTextAlignment(.center)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.horizontal, 4)
@@ -2362,17 +2445,17 @@ private struct PrGlassRadioRow: View {
           }
           Image(systemName: icon)
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(isSelected ? Color.white : Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+            .foregroundStyle(isSelected ? Color.white : ADEColor.textSecondary)
         }
         .frame(width: 32, height: 32)
 
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
             .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+            .foregroundStyle(ADEColor.textPrimary)
           Text(subtitle)
             .font(.system(size: 11))
-            .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
+            .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
         }
 
@@ -2450,7 +2533,7 @@ private struct PrDetailGlassOutlineButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.system(size: 14, weight: .semibold))
-      .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
+      .foregroundStyle(ADEColor.textPrimary)
       .frame(maxWidth: .infinity)
       .frame(height: 44)
       .background(

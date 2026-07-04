@@ -385,7 +385,8 @@ struct WorkRootScreen: View {
                     onDelete: deleteChatSession,
                     onCopyId: copySessionId,
                     onCopyDeepLink: copySessionDeepLink,
-                    onGoToLane: goToLane
+                    onGoToLane: goToLane,
+                    onOpenPullRequest: openPullRequest
                   )
                   .id(session.id)
                   .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -423,7 +424,8 @@ struct WorkRootScreen: View {
                           onDelete: deleteChatSession,
                           onCopyId: copySessionId,
                           onCopyDeepLink: copySessionDeepLink,
-                          onGoToLane: goToLane
+                          onGoToLane: goToLane,
+                          onOpenPullRequest: openPullRequest
                         )
                         .id(child.id)
                       }

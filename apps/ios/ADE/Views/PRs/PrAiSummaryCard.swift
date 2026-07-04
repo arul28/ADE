@@ -111,40 +111,19 @@ struct PrAiSummaryCard: View {
     }
   }
 
-  /// Purple-gradient icon disc with a soft outer glow.
+  /// Flat accent icon disc. No blur halo, no continuous symbol animation —
+  /// both forced constant re-rendering inside the scrolling thread.
   private var iconDisc: some View {
     ZStack {
       Circle()
-        .fill(PrGlassPalette.purple.opacity(0.55))
-        .frame(width: 36, height: 36)
-        .blur(radius: 10)
-        .opacity(0.7)
-
-      Circle()
-        .fill(
-          LinearGradient(
-            colors: [PrGlassPalette.purpleBright, PrGlassPalette.purpleDeep],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-          )
-        )
+        .fill(PrGlassPalette.purple.opacity(0.14))
         .frame(width: 28, height: 28)
-
       Circle()
-        .strokeBorder(
-          LinearGradient(
-            colors: [Color.white.opacity(0.55), .clear],
-            startPoint: .top,
-            endPoint: .center
-          ),
-          lineWidth: 1
-        )
+        .strokeBorder(PrGlassPalette.purple.opacity(0.35), lineWidth: 1)
         .frame(width: 28, height: 28)
-
       Image(systemName: "sparkles")
         .font(.system(size: 13, weight: .bold))
-        .foregroundStyle(.white)
-        .symbolEffect(.pulse, options: .repeat(.continuous))
+        .foregroundStyle(PrGlassPalette.purple)
     }
   }
 }

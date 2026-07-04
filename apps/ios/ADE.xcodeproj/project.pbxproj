@@ -151,6 +151,7 @@
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
 		G10000000000000000000026 /* PrsRootScreenPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000026 /* PrsRootScreenPreviews.swift */; };
 		G10000000000000000000025 /* PrRowCardPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000025 /* PrRowCardPreviews.swift */; };
+		G10000000000000000000031 /* PrDetailOverviewPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000031 /* PrDetailOverviewPreviews.swift */; };
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
 		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
@@ -369,6 +370,7 @@
 		G20000000000000000000004 /* PrFiltersCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrFiltersCard.swift; path = ADE/Views/PRs/PrFiltersCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000026 /* PrsRootScreenPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreenPreviews.swift; path = ADE/Views/PRs/PrsRootScreenPreviews.swift; sourceTree = "<group>"; };
 		G20000000000000000000025 /* PrRowCardPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCardPreviews.swift; path = ADE/Views/PRs/PrRowCardPreviews.swift; sourceTree = "<group>"; };
+		G20000000000000000000031 /* PrDetailOverviewPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailOverviewPreviews.swift; path = ADE/Views/PRs/PrDetailOverviewPreviews.swift; sourceTree = "<group>"; };
 		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
@@ -548,6 +550,7 @@
 				G20000000000000000000026 /* PrsRootScreenPreviews.swift */,
 				G20000000000000000000007 /* PrDetailScreen.swift */,
 				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
+				G20000000000000000000031 /* PrDetailOverviewPreviews.swift */,
 				G20000000000000000000009 /* PrDetailFilesTab.swift */,
 				G2000000000000000000000A /* PrDetailChecksTab.swift */,
 				G2000000000000000000000B /* PrDetailActivityTab.swift */,
@@ -1063,6 +1066,7 @@
 				G10000000000000000000004 /* PrFiltersCard.swift in Sources */,
 				G10000000000000000000005 /* PrRowCard.swift in Sources */,
 				G10000000000000000000025 /* PrRowCardPreviews.swift in Sources */,
+				G10000000000000000000031 /* PrDetailOverviewPreviews.swift in Sources */,
 				G10000000000000000000026 /* PrsRootScreenPreviews.swift in Sources */,
 				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
 				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
