@@ -691,9 +691,17 @@ export function createBrainProjectActionsSyncHandler(
               || !safeStringEquals(bootstrapToken, auth.token)
               || (!SYNC_HOST_BIND_LOOPBACK_ONLY && !pairingStore.hasPairingRecord(hello.peer.deviceId));
           if (authFailed) {
+            // Same attribution as the project host's auth_failed: name the
+            // rejecting machine so clients never drop a saved pairing over a
+            // rejection they cannot attribute to the paired machine.
+            const rejectingHost = brainMetadata();
             send(ws, "hello_error", {
               code: "auth_failed",
               message: "Sync authentication failed.",
+              host: {
+                deviceId: rejectingHost.deviceId,
+                name: rejectingHost.deviceName,
+              },
             }, envelope.requestId);
             try {
               ws.close(4003, "Authentication failed");
