@@ -724,6 +724,16 @@ through the existing command surface (`prs.createFromLane`,
 `prs.draftDescription`). The mobile client calls `getMobileSnapshot`
 on open and re-fetches on focus or after a successful mutation.
 
+The mobile PR **detail** screen (`PrDetailView`, a single-column
+adaptation of the desktop Timeline+Rails layout) pulls its per-PR action
+sidecars — review threads, activity feed, action runs, deployments, AI
+summary, and this snapshot's capabilities — separately, and keeps them
+live while open through a warm-cache freshness gate keyed on the sync
+projection revision: webhook-driven host updates rewrite the replicated
+snapshot rows, the changeset pump bumps the projection, and the detail
+screen re-fetches the sidecars at most once every 25 s. See
+[iOS companion → PR detail screen](../sync-and-multi-device/ios-companion.md#pr-detail-screen).
+
 ## Gotchas
 
 - **Branch name validation in `CreatePrModal`** runs before submission
