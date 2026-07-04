@@ -320,6 +320,9 @@ struct PrOverviewMergeRail: View {
         .buttonStyle(.plain)
         .disabled(!model.canMerge || model.isBusy)
 
+        // Same gate as the primary button: the method sheet's footer executes
+        // the merge, so an ungated chevron would let blocked/busy states
+        // dispatch prs.land anyway.
         Button(action: model.onChangeMethod) {
           Image(systemName: "chevron.up.chevron.down")
             .font(.system(size: 13, weight: .bold))
@@ -333,8 +336,10 @@ struct PrOverviewMergeRail: View {
               RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .strokeBorder(PrGlassPalette.cardBorder, lineWidth: 0.5)
             )
+            .opacity(model.canMerge && !model.isBusy ? 1 : 0.5)
         }
         .buttonStyle(.plain)
+        .disabled(!model.canMerge || model.isBusy)
         .accessibilityLabel("Change merge method")
       }
 
