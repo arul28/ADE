@@ -581,12 +581,16 @@ final class TerminalSessionController: NSObject, ObservableObject {
     }
   }
 
+  /// How close (in points) the viewport bottom must be to the content bottom
+  /// to still count as resting at the live tail — roughly two cell rows.
+  nonisolated private static let liveTailSlack: CGFloat = 32
+
   /// Pure pin predicate for `updatePinState`. A keyboard-driven shrink lowers
   /// `viewportHeight` and can flip this to false with an unchanged offset —
   /// which is exactly why only user-driven scroll callbacks may consult it,
   /// and layout events re-assert the tail instead.
   nonisolated static func isAtLiveTail(offsetY: CGFloat, viewportHeight: CGFloat, contentHeight: CGFloat) -> Bool {
-    offsetY + viewportHeight >= contentHeight - 32
+    offsetY + viewportHeight >= contentHeight - liveTailSlack
   }
 
   private func updatePinState() {
