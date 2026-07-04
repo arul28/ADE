@@ -335,6 +335,24 @@ extension WorkRootScreen {
     }
   }
 
+  func openPullRequest(_ session: TerminalSessionSummary, tag: LanePrTag) {
+    let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+    Task { @MainActor in
+      // Same menu-dismissal wait as goToLane so the cross-tab request isn't
+      // published while the context menu is still animating away.
+      try? await Task.sleep(for: .milliseconds(450))
+      if let prId = tag.prId, !prId.isEmpty {
+        syncService.requestedPrNavigation = PrNavigationRequest(
+          prId: prId,
+          prNumber: tag.githubPrNumber,
+          laneId: laneId.isEmpty ? nil : laneId
+        )
+      } else {
+        syncService.requestedPrNavigation = PrNavigationRequest(prNumber: tag.githubPrNumber)
+      }
+    }
+  }
+
   func openSession(_ session: TerminalSessionSummary) {
     guard !navigationMutationPending else { return }
     navigationMutationPending = true

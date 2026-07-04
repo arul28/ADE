@@ -1,79 +1,5 @@
 import SwiftUI
 
-
-// MARK: - Approval summary
-
-private struct PrApprovalSummaryCard: View {
-  let approvalCount: Int
-  let requiredApprovals: Int
-  let requestedChangesCount: Int
-  let unresolvedCount: Int
-  let firstRequestedReviewer: String?
-  let latestReviewedAt: String?
-
-  private var ratio: String { "\(approvalCount)/\(max(requiredApprovals, 1))" }
-
-  private var isReady: Bool {
-    approvalCount >= max(requiredApprovals, 1) && requestedChangesCount == 0
-  }
-
-  private var tint: Color {
-    if requestedChangesCount > 0 { return ADEColor.danger }
-    if isReady { return ADEColor.success }
-    return ADEColor.warning
-  }
-
-  private var title: String {
-    if requestedChangesCount > 0 { return "Changes requested" }
-    if isReady { return "Approved" }
-    return "Awaiting approval"
-  }
-
-  private var subtitle: String {
-    if let reviewer = firstRequestedReviewer, !reviewer.isEmpty {
-      let ago = prRelativeTime(latestReviewedAt)
-      return "@\(reviewer) · review requested \(ago)"
-    }
-    return "No reviewers requested"
-  }
-
-  var body: some View {
-    HStack(spacing: 10) {
-      ZStack {
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
-          .fill(tint.opacity(0.14))
-          .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-              .strokeBorder(tint.opacity(0.3), lineWidth: 0.5)
-          )
-        Text(ratio)
-          .font(.system(.footnote, design: .monospaced).weight(.bold))
-          .foregroundStyle(tint)
-      }
-      .frame(width: 36, height: 36)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-          .font(.subheadline.weight(.bold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(subtitle)
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-
-      Spacer(minLength: 8)
-
-      if unresolvedCount > 0 {
-        PrTagChip(label: "\(unresolvedCount) unresolved", color: ADEColor.warning)
-      }
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .prGlassCard(cornerRadius: 18)
-  }
-}
-
 // MARK: - Thread card
 
 struct PrReviewThreadCard: View {
@@ -233,18 +159,8 @@ struct PrReviewThreadCard: View {
     }
     .prGlassCard(
       cornerRadius: 18,
-      tint: isFocused ? PrGlassPalette.purple.opacity(0.6) : nil,
-      strokeOpacity: isFocused ? 0.35 : 0.10,
-      highlightOpacity: isFocused ? 0.22 : 0.14
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .strokeBorder(PrGlassPalette.purple.opacity(isFocused ? 0.55 : 0), lineWidth: 0.75)
-    )
-    .shadow(
-      color: isFocused ? PrGlassPalette.purpleDeep.opacity(0.4) : .clear,
-      radius: isFocused ? 18 : 0,
-      y: 0
+      tint: isFocused ? ADEColor.accent : nil,
+      strokeOpacity: isFocused ? 0.45 : 0.10
     )
   }
 
@@ -371,18 +287,35 @@ private struct ThreadButton: View {
   }
 }
 
-private struct PrInlineCodeText: View {
+/// Plain text with backtick spans rendered as tinted mono code. The parsed
+/// `AttributedString` is cached (keyed by the raw text) so repeated body
+/// evaluations of thread/comment rows don't re-scan the string on the main
+/// thread — that parse showed up directly in scroll hitches.
+struct PrInlineCodeText: View {
   let text: String
 
   var body: some View {
-    Text(renderAttributed())
+    Text(Self.attributed(for: text))
       .font(.system(.footnote))
       .foregroundStyle(ADEColor.textPrimary)
       .multilineTextAlignment(.leading)
       .fixedSize(horizontal: false, vertical: true)
   }
 
-  private func renderAttributed() -> AttributedString {
+  static func attributed(for text: String) -> AttributedString {
+    // Namespaced key: the shared cache is also used by the full-markdown
+    // renderer, and both key by content — an unprefixed key would let the two
+    // renderings clobber each other for identical source strings.
+    let cacheKey = "inline:\(text)"
+    if let cached = PrMarkdownRenderingCache.shared.attributedString(for: cacheKey) {
+      return cached
+    }
+    let rendered = render(text)
+    PrMarkdownRenderingCache.shared.store(rendered, for: cacheKey)
+    return rendered
+  }
+
+  private static func render(_ text: String) -> AttributedString {
     var result = AttributedString("")
     var cursor = text.startIndex
     while cursor < text.endIndex {
@@ -532,215 +465,6 @@ private struct PrResolvedThreadRow: View {
   }
 }
 
-// MARK: - Bot review aggregate
-
-private struct PrBotReviewAggregate: Identifiable {
-  let id: String
-  let provider: PrBotProvider
-  let approvedCount: Int
-  let changesRequestedCount: Int
-  let commentedCount: Int
-  let lastBody: String?
-
-  var primaryState: String {
-    if changesRequestedCount > 0 { return "actionable" }
-    if approvedCount > 0 { return "approved" }
-    return "commented"
-  }
-
-  var summary: String {
-    if changesRequestedCount > 0 {
-      let suggestions = "\(changesRequestedCount) suggestion\(changesRequestedCount == 1 ? "" : "s")"
-      if commentedCount > 0 {
-        return "\(suggestions) · \(commentedCount) nitpick\(commentedCount == 1 ? "" : "s")"
-      }
-      return suggestions
-    }
-    if approvedCount > 0 { return "No blocking issues" }
-    if let lastBody {
-      let trimmed = lastBody.trimmingCharacters(in: .whitespacesAndNewlines)
-      return String(trimmed.prefix(50))
-    }
-    return "Review posted"
-  }
-
-  static func build(from reviews: [PrReview]) -> [PrBotReviewAggregate] {
-    var groups: [String: (provider: PrBotProvider, list: [PrReview])] = [:]
-    for review in reviews {
-      guard let provider = prBotProvider(from: review.reviewer) else { continue }
-      var entry = groups[provider.rawValue] ?? (provider, [])
-      entry.list.append(review)
-      groups[provider.rawValue] = entry
-    }
-    return groups.values.map { entry -> PrBotReviewAggregate in
-      var approved = 0, changes = 0, commented = 0
-      for review in entry.list {
-        switch review.state {
-        case "approved": approved += 1
-        case "changes_requested": changes += 1
-        default: commented += 1
-        }
-      }
-      let latest = entry.list.sorted { (a, b) in
-        (prParsedDate(a.submittedAt) ?? .distantPast) > (prParsedDate(b.submittedAt) ?? .distantPast)
-      }.first
-      return PrBotReviewAggregate(
-        id: entry.provider.rawValue,
-        provider: entry.provider,
-        approvedCount: approved,
-        changesRequestedCount: changes,
-        commentedCount: commented,
-        lastBody: latest?.body
-      )
-    }.sorted { prBotDisplayName($0.provider) < prBotDisplayName($1.provider) }
-  }
-}
-
-private struct PrBotReviewRow: View {
-  let item: PrBotReviewAggregate
-
-  private var stateTint: Color {
-    switch item.primaryState {
-    case "actionable": return ADEColor.warning
-    case "approved": return ADEColor.success
-    default: return ADEColor.textSecondary
-    }
-  }
-
-  var body: some View {
-    HStack(spacing: 10) {
-      ZStack {
-        Circle().fill(ADEColor.tintPRs.opacity(0.18))
-        Circle().strokeBorder(ADEColor.tintPRs.opacity(0.3), lineWidth: 0.5)
-        Text(prBotLetter(item.provider))
-          .font(.system(size: 11, weight: .heavy))
-          .foregroundStyle(ADEColor.tintPRs)
-      }
-      .frame(width: 26, height: 26)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(prBotDisplayName(item.provider))
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(item.summary)
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 8)
-      PrTagChip(label: item.primaryState, color: stateTint)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-  }
-}
-
-// MARK: - Human reviewers
-
-private struct PrHumanReviewer: Identifiable {
-  let id: String
-  let login: String
-  let role: String
-  let state: String
-  let ago: String?
-}
-
-private extension PrHumanReviewer {
-  static func build(requestedReviewers: [PrUser], reviews: [PrReview], authorLogin: String?) -> [PrHumanReviewer] {
-    var seen = Set<String>()
-    var result: [PrHumanReviewer] = []
-
-    if let author = authorLogin, !author.isEmpty, prBotProvider(from: author) == nil {
-      result.append(PrHumanReviewer(id: "author-\(author)", login: author, role: "author", state: "author", ago: nil))
-      seen.insert(author)
-    }
-
-    for user in requestedReviewers where prBotProvider(from: user.login) == nil {
-      if seen.contains(user.login) { continue }
-      let latest = reviews.filter { $0.reviewer == user.login }.sorted { (a, b) in
-        (prParsedDate(a.submittedAt) ?? .distantPast) > (prParsedDate(b.submittedAt) ?? .distantPast)
-      }.first
-      let state = latest?.state ?? "pending"
-      result.append(PrHumanReviewer(
-        id: "requested-\(user.login)",
-        login: user.login,
-        role: "requested",
-        state: mapReviewStateToToken(state),
-        ago: prRelativeTime(latest?.submittedAt)
-      ))
-      seen.insert(user.login)
-    }
-
-    for review in reviews where prBotProvider(from: review.reviewer) == nil {
-      if seen.contains(review.reviewer) { continue }
-      result.append(PrHumanReviewer(
-        id: "review-\(review.reviewer)",
-        login: review.reviewer,
-        role: reviewRoleLabel(for: review.state),
-        state: mapReviewStateToToken(review.state),
-        ago: prRelativeTime(review.submittedAt)
-      ))
-      seen.insert(review.reviewer)
-    }
-    return result
-  }
-
-  private static func mapReviewStateToToken(_ state: String) -> String {
-    switch state {
-    case "approved": return "approved"
-    case "changes_requested": return "changes"
-    case "pending", "requested": return "pending"
-    default: return state
-    }
-  }
-
-  private static func reviewRoleLabel(for state: String) -> String {
-    switch state {
-    case "approved": return "approved"
-    case "changes_requested": return "changes requested"
-    default: return "commented"
-    }
-  }
-}
-
-private struct PrHumanReviewerRow: View {
-  let reviewer: PrHumanReviewer
-
-  private var stateTint: Color {
-    switch reviewer.state {
-    case "approved": return ADEColor.success
-    case "pending", "requested": return ADEColor.warning
-    case "changes": return ADEColor.danger
-    case "author": return ADEColor.textSecondary
-    default: return ADEColor.textSecondary
-    }
-  }
-
-  var body: some View {
-    HStack(spacing: 10) {
-      ZStack {
-        Circle().fill(ADEColor.accent.opacity(0.16))
-        Circle().strokeBorder(ADEColor.accent.opacity(0.3), lineWidth: 0.5)
-        Text(String(reviewer.login.prefix(1)).uppercased())
-          .font(.system(size: 11, weight: .heavy))
-          .foregroundStyle(ADEColor.accent)
-      }
-      .frame(width: 28, height: 28)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(reviewer.login)
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(reviewer.role + (reviewer.ago.map { " · \($0)" } ?? ""))
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      Spacer(minLength: 8)
-      PrTagChip(label: reviewer.state, color: stateTint)
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
-  }
-}
-
 // MARK: - Reply composer
 
 struct PrReplyComposer: View {
@@ -780,18 +504,7 @@ struct PrReplyComposer: View {
           .font(.system(size: 12, weight: .bold))
           .foregroundStyle(Color.white)
           .frame(width: 30, height: 30)
-          .background(
-            PrGlassPalette.accentGradient,
-            in: Circle()
-          )
-          .overlay(Circle().strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5))
-          .overlay(
-            Circle()
-              .inset(by: 1)
-              .stroke(Color.white.opacity(0.22), lineWidth: 0.5)
-              .blendMode(.plusLighter)
-          )
-          .shadow(color: PrGlassPalette.purpleDeep.opacity(0.55), radius: 10, y: 3)
+          .background(ADEColor.accentDeep, in: Circle())
       }
       .buttonStyle(.plain)
       .disabled(!isLive || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -803,155 +516,311 @@ struct PrReplyComposer: View {
   }
 }
 
-// MARK: - Activity timeline
+// MARK: - Timeline display items (desktop `PrTimeline` folding parity)
 
-/// Chronological event list used at the top of the Activity tab. Each row is
-/// avatar-disc + colored event label + body. The vertical hairline behind the
-/// dots threads the events together, matching the desktop's timeline column.
-struct PrActivityTimelineList: View {
-  let events: [PrTimelineEvent]
+/// Timeline event folded for display. Runs of 2+ consecutive commits by the
+/// same author collapse into a single group row so long push sessions don't
+/// dominate the thread (mirrors desktop `buildRenderItems`).
+enum PrTimelineDisplayItem: Identifiable, Equatable {
+  case event(PrTimelineEvent)
+  case commitGroup(id: String, author: String?, events: [PrTimelineEvent])
 
-  private var sorted: [PrTimelineEvent] {
-    events.sorted { (a, b) in
-      let l = prParsedDate(a.timestamp) ?? .distantPast
-      let r = prParsedDate(b.timestamp) ?? .distantPast
-      return l > r
-    }
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 6) {
-        Text("TIMELINE")
-          .font(.system(size: 10, weight: .bold))
-          .tracking(1.0)
-          .foregroundStyle(ADEColor.textSecondary)
-        Spacer(minLength: 8)
-        Text("\(events.count)")
-          .font(.system(size: 11, weight: .bold, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 4)
-
-      VStack(spacing: 0) {
-        ForEach(Array(sorted.enumerated()), id: \.element.id) { index, event in
-          PrActivityTimelineRow(
-            event: event,
-            isFirst: index == 0,
-            isLast: index == sorted.count - 1
-          )
-        }
-      }
-      .prGlassCard(cornerRadius: 16)
+  var id: String {
+    switch self {
+    case .event(let event): return event.id
+    case .commitGroup(let id, _, _): return id
     }
   }
 }
 
-/// Single timeline row. The left rail is a 22pt-wide column with the dot in
-/// the middle and stub-lines top/bottom that join into a continuous rail.
-private struct PrActivityTimelineRow: View {
-  let event: PrTimelineEvent
-  let isFirst: Bool
-  let isLast: Bool
+func buildPrTimelineDisplayItems(_ events: [PrTimelineEvent]) -> [PrTimelineDisplayItem] {
+  var items: [PrTimelineDisplayItem] = []
+  var pendingCommits: [PrTimelineEvent] = []
 
-  private var tint: Color { timelineTint(event.kind) }
-  private var symbol: String { timelineSymbol(event.kind) }
-
-  private var ago: String { prRelativeTime(event.timestamp) }
-
-  private var kindLabel: String {
-    switch event.kind {
-    case .stateChange: return "state"
-    case .review: return "review"
-    case .comment: return "comment"
-    case .deployment: return "deploy"
-    case .commit: return "commit"
-    case .label: return "label"
-    case .ci: return "ci"
-    case .forcePush: return "force-push"
-    case .reviewRequest: return "request"
+  func flushCommits() {
+    guard !pendingCommits.isEmpty else { return }
+    if pendingCommits.count == 1 {
+      items.append(.event(pendingCommits[0]))
+    } else {
+      items.append(
+        .commitGroup(
+          id: "commit-group-\(pendingCommits[0].id)",
+          author: pendingCommits[0].author,
+          events: pendingCommits
+        )
+      )
     }
+    pendingCommits = []
   }
 
-  var body: some View {
-    HStack(alignment: .top, spacing: 0) {
-      // Rail column with vertical hairline + dot.
-      ZStack(alignment: .top) {
-        VStack(spacing: 0) {
-          Rectangle()
-            .fill(isFirst ? Color.clear : ADEColor.textMuted.opacity(0.22))
-            .frame(width: 1, height: 14)
-          Rectangle()
-            .fill(isLast ? Color.clear : ADEColor.textMuted.opacity(0.22))
-            .frame(width: 1)
-            .frame(maxHeight: .infinity)
-        }
-        .frame(width: 22)
-
-        ZStack {
-          Circle()
-            .fill(tint.opacity(0.18))
-            .frame(width: 22, height: 22)
-          Circle()
-            .strokeBorder(tint.opacity(0.45), lineWidth: 0.75)
-            .frame(width: 22, height: 22)
-          Image(systemName: symbol)
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(tint)
-        }
-        .padding(.top, 8)
+  for event in events {
+    if event.kind == .commit {
+      if let last = pendingCommits.last, last.author != event.author {
+        flushCommits()
       }
-      .frame(width: 28)
+      pendingCommits.append(event)
+    } else {
+      flushCommits()
+      items.append(.event(event))
+    }
+  }
+  flushCommits()
+  return items
+}
 
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(spacing: 6) {
-          Text(kindLabel.uppercased())
+/// One row of the Overview thread's chronological feed. Emitted directly as a
+/// List row by `PrDetailScreen.overviewThreadRows` — never nested inside a
+/// larger container — so offscreen events cost nothing.
+struct PrTimelineDisplayRow: View {
+  let item: PrTimelineDisplayItem
+
+  var body: some View {
+    switch item {
+    case .event(let event):
+      PrTimelineEventRow(event: event)
+    case .commitGroup(_, let author, let events):
+      PrTimelineCommitGroupRow(author: author, events: events)
+    }
+  }
+}
+
+/// Renders a single timeline event with desktop-parity treatments:
+/// - commits → slim borderless one-line divider
+/// - force pushes → centered divider text
+/// - comments / reviews with bodies → thread cards
+/// - everything else (lifecycle, labels, CI, deploys) → borderless inline row
+struct PrTimelineEventRow: View {
+  let event: PrTimelineEvent
+
+  var body: some View {
+    switch event.kind {
+    case .commit:
+      PrCommitDividerRow(event: event)
+    case .forcePush:
+      PrForcePushDividerRow(event: event)
+    case .comment, .review:
+      if let body = event.body?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+        PrTimelineCommentCard(event: event, bodyText: body)
+      } else {
+        PrTimelineInlineRow(event: event)
+      }
+    default:
+      PrTimelineInlineRow(event: event)
+    }
+  }
+}
+
+/// Slim, borderless commit line: dot + subject + short SHA + relative time.
+private struct PrCommitDividerRow: View {
+  let event: PrTimelineEvent
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "circle.fill")
+        .font(.system(size: 4))
+        .foregroundStyle(ADEColor.textMuted)
+      Text(event.title)
+        .font(.system(size: 11.5, design: .monospaced))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Spacer(minLength: 4)
+      if let metadata = event.metadata, !metadata.isEmpty {
+        Text(metadata)
+          .font(.system(size: 10, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+      Text(prCompactRelativeTime(event.timestamp))
+        .font(.system(size: 10, design: .monospaced))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 6)
+    .padding(.vertical, 2)
+  }
+}
+
+/// Collapsible "author added N commits" group (desktop commit-group parity).
+private struct PrTimelineCommitGroupRow: View {
+  let author: String?
+  let events: [PrTimelineEvent]
+
+  @State private var expanded = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: expanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 9, weight: .bold))
-            .tracking(0.6)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(tint.opacity(0.16)))
-            .overlay(Capsule().strokeBorder(tint.opacity(0.32), lineWidth: 0.5))
-          if let author = event.author, !author.isEmpty {
-            Text("@\(author)")
-              .font(.system(size: 11, weight: .semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-          }
+            .foregroundStyle(ADEColor.textMuted)
+          Text("\(author.map { "@\($0)" } ?? "Someone") added \(events.count) commits")
+            .font(.system(size: 11.5, weight: .medium))
+            .foregroundStyle(ADEColor.textSecondary)
           Spacer(minLength: 4)
-          Text(ago)
+          Text(prCompactRelativeTime(events.last?.timestamp))
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
         }
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
 
-        Text(event.title)
-          .font(.system(size: 12.5))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-          .fixedSize(horizontal: false, vertical: true)
-
-        if let body = event.body, !body.isEmpty {
-          let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-          if !trimmed.isEmpty {
-            Text(trimmed)
-              .font(.system(size: 11))
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(3)
-              .fixedSize(horizontal: false, vertical: true)
+      if expanded {
+        VStack(alignment: .leading, spacing: 2) {
+          ForEach(events) { event in
+            PrCommitDividerRow(event: event)
           }
         }
+        .padding(.leading, 10)
+      }
+    }
+    .padding(.horizontal, 6)
+    .padding(.vertical, 2)
+  }
+}
 
-        if let metadata = event.metadata, !metadata.isEmpty {
-          Text(metadata)
+/// Centered force-push divider (desktop parity).
+private struct PrForcePushDividerRow: View {
+  let event: PrTimelineEvent
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Rectangle()
+        .fill(PrGlassPalette.cardBorder)
+        .frame(height: 0.5)
+      Text("\(event.author.map { "@\($0)" } ?? "someone") force-pushed")
+        .font(.system(size: 10.5, design: .monospaced))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .fixedSize()
+      Rectangle()
+        .fill(PrGlassPalette.cardBorder)
+        .frame(height: 0.5)
+    }
+    .padding(.vertical, 2)
+  }
+}
+
+/// Borderless one-line row for lifecycle / label / CI / deploy / bodyless
+/// review events (desktop `InlineRow` parity).
+private struct PrTimelineInlineRow: View {
+  let event: PrTimelineEvent
+
+  var body: some View {
+    let tint = timelineTint(event.kind)
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Image(systemName: timelineSymbol(event.kind))
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 16)
+      Group {
+        if let author = event.author, !author.isEmpty {
+          Text("@\(author) ")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          + Text(event.title)
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textSecondary)
+        } else {
+          Text(event.title)
+            .font(.system(size: 12))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+      }
+      .lineLimit(2)
+      .fixedSize(horizontal: false, vertical: true)
+      Spacer(minLength: 4)
+      Text(prCompactRelativeTime(event.timestamp))
+        .font(.system(size: 10, design: .monospaced))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 6)
+    .padding(.vertical, 2)
+  }
+}
+
+/// Thread card for comments and reviews that carry a body. Long bodies are
+/// clamped with a tap-to-expand affordance so a verbose bot review doesn't
+/// swallow the feed.
+private struct PrTimelineCommentCard: View {
+  let event: PrTimelineEvent
+  let bodyText: String
+
+  @State private var expanded = false
+
+  private static let collapsedLineLimit = 10
+
+  private var authorLogin: String { event.author ?? "unknown" }
+  private var botProvider: PrBotProvider? { prBotProvider(from: authorLogin) }
+
+  private var displayName: String {
+    if let botProvider { return prBotDisplayName(botProvider) }
+    return authorLogin
+  }
+
+  private var avatarLetter: String {
+    if let botProvider { return prBotLetter(botProvider) }
+    guard let first = authorLogin.first else { return "?" }
+    return String(first).uppercased()
+  }
+
+  private var avatarTint: Color {
+    botProvider != nil ? ADEColor.tintPRs : ADEColor.accent
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .center, spacing: 9) {
+        ZStack {
+          Circle().fill(avatarTint.opacity(0.16))
+          Circle().strokeBorder(avatarTint.opacity(0.3), lineWidth: 0.5)
+          Text(avatarLetter)
+            .font(.system(size: 11, weight: .heavy))
+            .foregroundStyle(avatarTint)
+        }
+        .frame(width: 26, height: 26)
+
+        VStack(alignment: .leading, spacing: 1) {
+          HStack(spacing: 5) {
+            Text(displayName)
+              .font(.subheadline.weight(.bold))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+            if botProvider != nil {
+              PrTagChip(label: "bot", color: ADEColor.tintPRs)
+            }
+          }
+          Text("\(event.title) · \(prRelativeTime(event.timestamp))")
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
+        Spacer(minLength: 0)
       }
-      .padding(.vertical, 10)
-      .padding(.trailing, 12)
+
+      PrInlineCodeText(text: bodyText)
+        .lineLimit(expanded ? nil : Self.collapsedLineLimit)
+
+      // Offer expansion whenever the clamp could plausibly truncate: at
+      // footnote size a phone renders ~35+ chars/line, so <280 chars with
+      // fewer than 10 hard newlines cannot exceed the 10-line clamp.
+      if !expanded, bodyText.count > 280 || bodyText.filter({ $0 == "\n" }).count >= Self.collapsedLineLimit {
+        Button {
+          expanded = true
+        } label: {
+          Text("Show more")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+        .buttonStyle(.plain)
+      }
     }
+    .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
+    .prGlassCard(cornerRadius: 16)
   }
 }
 

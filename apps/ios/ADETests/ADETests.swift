@@ -7520,6 +7520,87 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(timeline.last?.title, "Opened")
   }
 
+  private func makeTimelineEvent(
+    id: String,
+    kind: PrTimelineEventKind,
+    author: String? = "arul",
+    timestamp: String = "2026-03-20T10:00:00.000Z"
+  ) -> PrTimelineEvent {
+    PrTimelineEvent(
+      id: id,
+      kind: kind,
+      title: "event \(id)",
+      author: author,
+      body: nil,
+      timestamp: timestamp,
+      metadata: nil
+    )
+  }
+
+  func testPrTimelineDisplayItemsFoldConsecutiveSameAuthorCommits() {
+    let events = [
+      makeTimelineEvent(id: "opened", kind: .stateChange),
+      makeTimelineEvent(id: "c1", kind: .commit),
+      makeTimelineEvent(id: "c2", kind: .commit),
+      makeTimelineEvent(id: "c3", kind: .commit),
+      makeTimelineEvent(id: "review-1", kind: .review),
+      makeTimelineEvent(id: "c4", kind: .commit),
+    ]
+
+    let items = buildPrTimelineDisplayItems(events)
+
+    // opened → folded group of 3 → review → trailing single commit.
+    XCTAssertEqual(items.count, 4)
+    XCTAssertEqual(items[0], .event(events[0]))
+    guard case .commitGroup(let groupId, let author, let groupEvents) = items[1] else {
+      return XCTFail("expected a folded commit group, got \(items[1])")
+    }
+    XCTAssertEqual(groupId, "commit-group-c1")
+    XCTAssertEqual(author, "arul")
+    XCTAssertEqual(groupEvents.map(\.id), ["c1", "c2", "c3"])
+    XCTAssertEqual(items[2], .event(events[4]))
+    // A single trailing commit must stay a plain event, not a group of one.
+    XCTAssertEqual(items[3], .event(events[5]))
+  }
+
+  func testPrTimelineDisplayItemsSplitCommitRunsOnAuthorChange() {
+    let events = [
+      makeTimelineEvent(id: "a1", kind: .commit, author: "arul"),
+      makeTimelineEvent(id: "a2", kind: .commit, author: "arul"),
+      makeTimelineEvent(id: "b1", kind: .commit, author: "codex"),
+      makeTimelineEvent(id: "b2", kind: .commit, author: "codex"),
+    ]
+
+    let items = buildPrTimelineDisplayItems(events)
+
+    XCTAssertEqual(items.count, 2)
+    guard case .commitGroup(_, let firstAuthor, let firstEvents) = items[0],
+          case .commitGroup(_, let secondAuthor, let secondEvents) = items[1] else {
+      return XCTFail("expected two folded commit groups, got \(items)")
+    }
+    XCTAssertEqual(firstAuthor, "arul")
+    XCTAssertEqual(firstEvents.map(\.id), ["a1", "a2"])
+    XCTAssertEqual(secondAuthor, "codex")
+    XCTAssertEqual(secondEvents.map(\.id), ["b1", "b2"])
+    // Row ids must stay unique + stable so List identity survives refolds.
+    XCTAssertEqual(Set(items.map(\.id)).count, items.count)
+    XCTAssertEqual(items.map(\.id), ["commit-group-a1", "commit-group-b1"])
+  }
+
+  func testPrTimelineDisplayItemsPassThroughNonCommitFeeds() {
+    let events = [
+      makeTimelineEvent(id: "opened", kind: .stateChange),
+      makeTimelineEvent(id: "comment-1", kind: .comment),
+      makeTimelineEvent(id: "force-1", kind: .forcePush),
+    ]
+
+    let items = buildPrTimelineDisplayItems(events)
+
+    XCTAssertEqual(items.count, events.count)
+    XCTAssertEqual(items.map(\.id), events.map(\.id))
+    XCTAssertEqual(items, events.map { PrTimelineDisplayItem.event($0) })
+  }
+
   func testParsePullRequestPatchBuildsLineNumbers() {
     let lines = parsePullRequestPatch("""
     @@ -1,2 +1,3 @@
@@ -12344,7 +12425,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(availabilityForOpen.showsMerge)
     XCTAssertTrue(availabilityForOpen.mergeEnabled)
 
-    // Emulate the derivation used in PrOverviewTab.
+    // Emulate the derivation used by the Overview merge rail.
     let mergeable = true
     let effectiveMergeEnabled = capabilitiesBlock.canMerge && mergeable
     XCTAssertFalse(effectiveMergeEnabled)

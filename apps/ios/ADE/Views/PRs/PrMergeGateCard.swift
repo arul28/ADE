@@ -1,27 +1,58 @@
 import SwiftUI
+import UIKit
 
-// MARK: - Liquid-glass style primitives
+// MARK: - PR surface style primitives
 //
 // Shared across the PR Detail surfaces (Screen, Overview, Checks, Merge gate).
 // These are pure presentational helpers — they add no state, no behaviour.
+//
+// Design contract (desktop parity): the PRs tab mirrors the desktop PR detail
+// tokens — `--pr-surface` rgb(15,16,16), `--pr-thread-card` rgb(23,23,24),
+// `--pr-panel-card` rgb(24,23,43) in dark mode — with light-mode values drawn
+// from the app-wide `ADEColor` adaptive system. Cards are FLAT fills with a
+// hairline border and a cheap shadow: no live materials, no blend modes, no
+// blur layers. Those were the primary scroll-perf cost inside PR detail.
 
-/// Canonical accent palette for the liquid-glass look.
+private func prAdaptive(light: UIColor, dark: UIColor) -> Color {
+  Color(UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light })
+}
+
+private func prRgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ alpha: CGFloat = 1) -> UIColor {
+  UIColor(red: r / 255, green: g / 255, blue: b / 255, alpha: alpha)
+}
+
+/// Canonical adaptive palette for the PRs surfaces. Legacy names (`ink`,
+/// `purple*`, …) are kept so existing call sites keep compiling; they now map
+/// onto theme-aware tokens instead of fixed dark-mode RGB values.
 enum PrGlassPalette {
-  static let ink = Color(red: 0x07 / 255, green: 0x06 / 255, blue: 0x09 / 255)
-  static let purple = Color(red: 0xA7 / 255, green: 0x8B / 255, blue: 0xFA / 255)
-  static let purpleBright = Color(red: 0xC4 / 255, green: 0xB1 / 255, blue: 0xFF / 255)
-  static let purpleDeep = Color(red: 0x8B / 255, green: 0x5C / 255, blue: 0xF6 / 255)
-  static let blue = Color(red: 0x6B / 255, green: 0x8A / 255, blue: 0xFD / 255)
-  static let pink = Color(red: 0xF4 / 255, green: 0x72 / 255, blue: 0xB6 / 255)
-  static let success = Color(red: 0x4A / 255, green: 0xDE / 255, blue: 0x80 / 255)
-  static let warning = Color(red: 0xFB / 255, green: 0xBF / 255, blue: 0x24 / 255)
-  static let danger = Color(red: 0xF8 / 255, green: 0x71 / 255, blue: 0x71 / 255)
+  /// Page surface behind the PR list/detail. Desktop `--pr-surface`.
+  static let ink = prAdaptive(light: prRgb(245, 243, 240), dark: prRgb(15, 16, 16))
+  /// Timeline thread cards. Desktop `--pr-thread-card`.
+  static let threadCard = prAdaptive(light: prRgb(255, 255, 255), dark: prRgb(23, 23, 24))
+  /// Floating rail/metadata panes. Desktop `--pr-panel-card` (faint violet).
+  static let panelCard = prAdaptive(light: prRgb(255, 255, 255), dark: prRgb(24, 23, 43))
+  /// Hairline border for cards.
+  static let cardBorder = prAdaptive(light: prRgb(26, 26, 30, 0.10), dark: prRgb(255, 255, 255, 0.08))
+  /// Card drop shadow (cheap, small radius).
+  static let cardShadow = prAdaptive(light: prRgb(0, 0, 0, 0.08), dark: prRgb(0, 0, 0, 0.35))
 
-  static let accentGradient = LinearGradient(
-    colors: [purpleBright, purpleDeep],
-    startPoint: .topLeading,
-    endPoint: .bottomTrailing
-  )
+  // Accents route through the app-wide adaptive tokens so light mode stops
+  // rendering the fixed dark-mode violet.
+  static var purple: Color { ADEColor.accent }
+  static var purpleBright: Color { ADEColor.accentBright }
+  static var purpleDeep: Color { ADEColor.accentDeep }
+  static var blue: Color { ADEColor.info }
+  static var success: Color { ADEColor.success }
+  static var warning: Color { ADEColor.warning }
+  static var danger: Color { ADEColor.danger }
+
+  static var accentGradient: LinearGradient {
+    LinearGradient(
+      colors: [ADEColor.accentBright, ADEColor.accentDeep],
+      startPoint: .topLeading,
+      endPoint: .bottomTrailing
+    )
+  }
 }
 
 struct PrGlassCardStyle: ViewModifier {
@@ -38,38 +69,26 @@ struct PrGlassCardStyle: ViewModifier {
       .background(
         ZStack {
           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(.ultraThinMaterial)
+            .fill(PrGlassPalette.threadCard)
 
           if let tint {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-              .fill(tint.opacity(0.14))
+              .fill(tint.opacity(0.08))
           }
-
-          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(
-              LinearGradient(
-                colors: [Color.white.opacity(0.08), Color.white.opacity(0.0)],
-                startPoint: .top,
-                endPoint: .bottom
-              )
-            )
         }
       )
       .overlay(
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .strokeBorder(Color.white.opacity(strokeOpacity), lineWidth: 1)
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius - 1, style: .continuous)
-          .inset(by: 1)
-          .stroke(Color.white.opacity(highlightOpacity), lineWidth: 0.5)
-          .blendMode(.plusLighter)
+          .strokeBorder(
+            tint.map { $0.opacity(max(0.30, strokeOpacity)) } ?? PrGlassPalette.cardBorder,
+            lineWidth: 1
+          )
       )
       .shadow(
-        color: shadow ? Color.black.opacity(0.45) : .clear,
-        radius: shadow ? 24 : 0,
+        color: shadow ? PrGlassPalette.cardShadow : .clear,
+        radius: shadow ? 6 : 0,
         x: 0,
-        y: shadow ? 8 : 0
+        y: shadow ? 2 : 0
       )
   }
 }
@@ -329,7 +348,6 @@ struct PrMergeGateCard: View {
       Image(systemName: info.tone.icon)
         .font(.system(size: 14, weight: .semibold))
         .foregroundStyle(info.tone.color)
-        .shadow(color: info.tone.color.opacity(0.55), radius: 5)
         .frame(width: 22, height: 22)
 
       VStack(alignment: .leading, spacing: 2) {
@@ -356,34 +374,26 @@ struct PrMergeGateCard: View {
     .background(
       ZStack {
         RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(.ultraThinMaterial)
+          .fill(PrGlassPalette.threadCard)
         RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .fill(info.tone.color.opacity(0.10))
+          .fill(info.tone.color.opacity(0.08))
       }
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .strokeBorder(info.tone.color.opacity(0.34), lineWidth: 0.75)
     )
-    .shadow(color: Color.black.opacity(0.35), radius: 12, y: 4)
   }
 
   private func statusTile(size: CGFloat, cornerRadius: CGFloat, iconSize: CGFloat) -> some View {
     ZStack {
       RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [info.tone.color.opacity(0.32), info.tone.color.opacity(0.14)],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-          )
-        )
+        .fill(info.tone.color.opacity(0.14))
       RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         .strokeBorder(info.tone.color.opacity(0.45), lineWidth: 0.75)
       Image(systemName: info.tone.icon)
         .font(.system(size: iconSize, weight: .semibold))
         .foregroundStyle(info.tone.color)
-        .shadow(color: info.tone.color.opacity(0.6), radius: 8)
     }
     .frame(width: size, height: size)
   }
