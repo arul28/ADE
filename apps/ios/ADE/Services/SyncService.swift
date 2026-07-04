@@ -5275,17 +5275,20 @@ final class SyncService: ObservableObject {
   /// `titleGenerationEnabled` setting and clamps the name; it returns a
   /// deterministic fallback when naming is disabled/unavailable. This command is
   /// NOT queueable, so an offline phone throws here rather than queueing — the
-  /// caller is expected to catch and fall back to its own deterministic name.
+  /// caller is expected to catch and keep its own deterministic name.
   ///
-  /// The request is short (10s) and non-disconnecting: it's a best-effort lookup
-  /// that the caller races against its own 10s UI deadline, so a slow/stuck host
-  /// must not strain the connection or trigger a probe/reconnect that could
-  /// disrupt the chat/CLI session started right after the lane is created.
+  /// Callers run this fire-and-forget AFTER the lane is created with the
+  /// deterministic name (desktop's `startBackgroundLaneNaming` pattern), so the
+  /// request is short (10s) and non-disconnecting: a slow/stuck host must not
+  /// strain the connection or trigger a probe/reconnect that could disrupt the
+  /// chat/CLI session just started in the new lane.
   func suggestLaneName(
     laneId: String,
     prompt: String,
     modelId: String,
-    fallbackName: String
+    fallbackName: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> String {
     let args: [String: Any] = [
       "laneId": laneId,
@@ -5298,6 +5301,8 @@ final class SyncService: ObservableObject {
       args: args,
       disconnectOnTimeout: false,
       timeoutNanoseconds: 10_000_000_000,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
       as: SuggestLaneNameResult.self
     )
     let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5386,8 +5391,18 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "lanes.listUnregisteredWorktrees", as: [UnregisteredLaneCandidate].self)
   }
 
-  func renameLane(_ laneId: String, name: String) async throws {
-    _ = try await sendCommand(action: "lanes.rename", args: ["laneId": laneId, "name": name])
+  func renameLane(
+    _ laneId: String,
+    name: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws {
+    _ = try await sendCommand(
+      action: "lanes.rename",
+      args: ["laneId": laneId, "name": name],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
   }
 
   func reparentLane(

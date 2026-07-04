@@ -384,10 +384,12 @@ A handful have more logic:
   result; a missing `agentChatService`, a thrown error, or an empty name
   all fall back to the supplied `fallbackName` (or, when none was passed,
   a prompt-derived `deriveDeterministicLaneNameFromPrompt`), so naming
-  can never block or fail lane creation. The iOS caller
-  (`SyncService.suggestLaneName`, raced against a 10s deadline in
-  `WorkNewChatScreen`) catches any throw and uses the same deterministic
-  name.
+  can never block or fail lane creation. The iOS callers
+  (`WorkNewChatScreen` and the hub composer) create the lane instantly
+  with the deterministic name, then call `SyncService.suggestLaneName`
+  fire-and-forget after the session launch and apply a differing
+  suggestion via `lanes.rename` — desktop's background-rename pattern;
+  any throw keeps the deterministic name.
 - **`lanes.initEnv` / `lanes.applyTemplate`** — resolves the lane's
   overlay context (`resolveLaneOverlayContext`), merges overrides with
   the template's env init config, and invokes

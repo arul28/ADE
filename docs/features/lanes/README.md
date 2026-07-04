@@ -171,19 +171,24 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `ade://repo/<owner>/<repo>/branch/<branch>` links the lane options
   menu copies to the pasteboard.
 - `apps/ios/ADE/Views/Work/WorkNewChatScreen.swift` — mobile
-  auto-create (the "Auto-create lane" sentinel) now names the new lane
-  with the host's small AI model, mirroring desktop's draft-launch
-  flow. `submit()` resolves the name **before** creating the lane:
-  it calls `SyncService.suggestLaneName` (the non-queueable
-  `lanes.suggestName` sync command → `agentChatService.suggestLaneNameFromPrompt`
-  on the host), raced against a 10s deadline, and shows a banner above
-  the composer (`Naming lane with <model>… → Creating lane…`). Any
-  failure / timeout / offline / host-disabled state falls back to the
-  existing deterministic `autoCreatedLaneName(opener:)`, so lane
-  creation is never blocked or failed by naming. The host command is
+  auto-create (the "Auto-create lane" sentinel) names the new lane with
+  the host's small AI model using desktop's background-rename pattern
+  (`startBackgroundLaneNaming` in `AgentChatPane`): `submit()` creates
+  the lane instantly with the deterministic
+  `autoCreatedLaneName(opener:)`, launches the chat/CLI session, then
+  fires a fire-and-forget task that calls `SyncService.suggestLaneName`
+  (the non-queueable `lanes.suggestName` sync command →
+  `agentChatService.suggestLaneNameFromPrompt` on the host) and applies
+  the result via `lanes.rename` only when it differs from the
+  deterministic fallback. Naming never blocks or fails lane creation or
+  session launch — any failure / timeout / offline / host-disabled
+  state simply keeps the deterministic name. The host command is
   deliberately not queueable so an offline phone fails fast to the
   deterministic name instead of queueing a stale suggestion. Covers
-  both the Chat and CLI auto-create paths.
+  both the Chat and CLI auto-create paths; the all-projects hub
+  composer (`HubComposerDrawer.swift`) runs the same background naming
+  with `targetProjectId`/`targetProjectRootPath` scope so it works for
+  foreign-project launches.
 
 Detail docs in this folder:
 
