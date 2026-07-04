@@ -42,7 +42,6 @@ enum PrGlassPalette {
   static var purpleBright: Color { ADEColor.accentBright }
   static var purpleDeep: Color { ADEColor.accentDeep }
   static var blue: Color { ADEColor.info }
-  static var pink: Color { ADEColor.accent }
   static var success: Color { ADEColor.success }
   static var warning: Color { ADEColor.warning }
   static var danger: Color { ADEColor.danger }

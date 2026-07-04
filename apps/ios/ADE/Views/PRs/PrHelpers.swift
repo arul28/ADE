@@ -904,9 +904,6 @@ extension PrGlassPalette {
 
   // Info accent (soft blue, used for non-critical callouts).
   static var info: Color { ADEColor.info }
-
-  // Aliases for spec vocabulary. `purpleSoft` = existing `purple`.
-  static var purpleSoft: Color { purple }
 }
 
 // MARK: - Shared PRs tab view helpers

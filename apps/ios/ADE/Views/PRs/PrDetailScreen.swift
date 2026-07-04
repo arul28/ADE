@@ -928,12 +928,16 @@ struct PrDetailView: View {
       .prListRow()
     }
 
-    // AI summary — desktop pins it at the top of the timeline.
+    // AI summary — desktop pins it at the top of the timeline. +/- totals come
+    // from the snapshot's file list (same source as the Files card) so the two
+    // never disagree; the PR-row totals are only a fallback when files haven't
+    // synced yet.
+    let summaryFiles = snapshot?.files ?? []
     PrAiSummaryCard(
       summary: aiSummary,
-      additions: currentPr.additions,
-      deletions: currentPr.deletions,
-      fileCount: snapshot?.files.count ?? 0,
+      additions: summaryFiles.isEmpty ? currentPr.additions : summaryFiles.reduce(0) { $0 + $1.additions },
+      deletions: summaryFiles.isEmpty ? currentPr.deletions : summaryFiles.reduce(0) { $0 + $1.deletions },
+      fileCount: summaryFiles.count,
       isLoading: isAiSummaryLoading,
       isLive: canRunPrActions,
       onRegenerate: refreshAiSummary
@@ -1645,7 +1649,7 @@ private struct PrDetailActionsSheet: View {
 
       VStack(spacing: 0) {
         Capsule(style: .continuous)
-          .fill(Color.white.opacity(0.25))
+          .fill(ADEColor.textMuted.opacity(0.45))
           .frame(width: 36, height: 5)
           .padding(.top, 8)
           .padding(.bottom, 8)
@@ -1954,7 +1958,7 @@ private struct PrDetailLiquidSheetShell<Content: View>: View {
 
       VStack(spacing: 0) {
         Capsule(style: .continuous)
-          .fill(Color.white.opacity(0.25))
+          .fill(ADEColor.textMuted.opacity(0.45))
           .frame(width: 36, height: 5)
           .padding(.top, 8)
           .padding(.bottom, 8)
@@ -2115,7 +2119,7 @@ private struct PrMergeStrategySheet: View {
       VStack(spacing: 0) {
         // Grab handle.
         Capsule(style: .continuous)
-          .fill(Color.white.opacity(0.25))
+          .fill(ADEColor.textMuted.opacity(0.45))
           .frame(width: 36, height: 5)
           .padding(.top, 10)
           .padding(.bottom, 4)

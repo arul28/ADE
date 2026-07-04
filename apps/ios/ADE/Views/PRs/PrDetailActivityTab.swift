@@ -303,11 +303,15 @@ struct PrInlineCodeText: View {
   }
 
   static func attributed(for text: String) -> AttributedString {
-    if let cached = PrMarkdownRenderingCache.shared.attributedString(for: text) {
+    // Namespaced key: the shared cache is also used by the full-markdown
+    // renderer, and both key by content — an unprefixed key would let the two
+    // renderings clobber each other for identical source strings.
+    let cacheKey = "inline:\(text)"
+    if let cached = PrMarkdownRenderingCache.shared.attributedString(for: cacheKey) {
       return cached
     }
     let rendered = render(text)
-    PrMarkdownRenderingCache.shared.store(rendered, for: text)
+    PrMarkdownRenderingCache.shared.store(rendered, for: cacheKey)
     return rendered
   }
 
