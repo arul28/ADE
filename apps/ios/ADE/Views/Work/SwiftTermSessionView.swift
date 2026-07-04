@@ -140,6 +140,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private var inputFlushTask: Task<Void, Never>?
 
   private var lastSentSize: (cols: Int, rows: Int)?
+  private var lastLayoutSize: CGSize = .zero
   private var pinchBaseFontSize: CGFloat = TerminalSessionController.defaultFontSize
   private var ctrlResetObserver: NSObjectProtocol?
 
@@ -323,6 +324,15 @@ final class TerminalSessionController: NSObject, ObservableObject {
       let queued = queuedEvents
       queuedEvents = []
       queued.forEach(applyStreamEvent)
+    }
+    // A layout-driven resize (keyboard show/hide, key bar, rotation) must
+    // never strand a pinned viewport above the live tail: SwiftTerm only
+    // re-snaps when cols/rows change, and a TUI repainting in place emits no
+    // scroll events afterward to self-heal. A reader who scrolled up keeps
+    // their spot (and the Live pill).
+    if view.bounds.size != lastLayoutSize {
+      lastLayoutSize = view.bounds.size
+      reassertLiveTailIfPinned()
     }
   }
 
@@ -559,9 +569,37 @@ final class TerminalSessionController: NSObject, ObservableObject {
     terminalView?.resumeAutoScroll()
   }
 
+  /// Keep a bottom-pinned viewport glued to the live tail across geometry
+  /// changes the user didn't scroll (keyboard resize, pinch-zoom font
+  /// change). Deferred one runloop so it lands after SwiftTerm's own
+  /// (also deferred) scroller sync for the same change.
+  private func reassertLiveTailIfPinned() {
+    guard isPinnedToBottom else { return }
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.isPinnedToBottom else { return }
+      self.terminalView?.resumeAutoScroll()
+    }
+  }
+
+  /// How close (in points) the viewport bottom must be to the content bottom
+  /// to still count as resting at the live tail — roughly two cell rows.
+  nonisolated private static let liveTailSlack: CGFloat = 32
+
+  /// Pure pin predicate for `updatePinState`. A keyboard-driven shrink lowers
+  /// `viewportHeight` and can flip this to false with an unchanged offset —
+  /// which is exactly why only user-driven scroll callbacks may consult it,
+  /// and layout events re-assert the tail instead.
+  nonisolated static func isAtLiveTail(offsetY: CGFloat, viewportHeight: CGFloat, contentHeight: CGFloat) -> Bool {
+    offsetY + viewportHeight >= contentHeight - liveTailSlack
+  }
+
   private func updatePinState() {
     guard let view = terminalView else { return }
-    let nearBottom = view.contentOffset.y + view.bounds.height >= view.contentSize.height - 32
+    let nearBottom = Self.isAtLiveTail(
+      offsetY: view.contentOffset.y,
+      viewportHeight: view.bounds.height,
+      contentHeight: view.contentSize.height
+    )
     if nearBottom {
       if !isPinnedToBottom {
         isPinnedToBottom = true
@@ -596,6 +634,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
         // Font change recomputes cell metrics + cols/rows inside SwiftTerm,
         // which fires sizeChanged → sendTerminalResize.
         terminalView?.font = UIFont.monospacedSystemFont(ofSize: next, weight: .regular)
+        // New cell metrics change content height without a bounds change;
+        // SwiftTerm only re-snaps if rows/cols moved, so hold the tail here.
+        reassertLiveTailIfPinned()
       }
     default:
       break
@@ -657,7 +698,10 @@ extension TerminalSessionController: UIScrollViewDelegate {
   func scrollViewDidScroll(_ scrollView: UIScrollView) {
     guard scrollView === terminalView else { return }
     // Ignore programmatic offset changes (SwiftTerm's own bottom snaps).
-    guard scrollView.isTracking || scrollView.isDecelerating else { return }
+    // isDragging, not isTracking: a stationary tap-to-focus also tracks, and
+    // a programmatic snap landing during that tap must not be misread as a
+    // user scroll while keyboard layout is in flight.
+    guard scrollView.isDragging || scrollView.isDecelerating else { return }
     updatePinState()
     if scrollView.contentOffset.y < 160 {
       loadOlderHistoryIfNeeded()

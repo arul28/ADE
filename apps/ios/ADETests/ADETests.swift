@@ -14627,3 +14627,34 @@ final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
     XCTAssertTrue(workSessionShouldAppearInWorkList(orphanedLiveChild, parentChatSessionIds: []))
   }
 }
+
+final class TerminalLiveTailPinningTests: XCTestCase {
+  func testViewportRestingAtTailIsAtLiveTail() {
+    // Exactly at the bottom, and within the one-line slack band.
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 4200, viewportHeight: 800, contentHeight: 5000))
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 4170, viewportHeight: 800, contentHeight: 5000))
+    // A real scroll-up past the slack band leaves the tail.
+    XCTAssertFalse(TerminalSessionController.isAtLiveTail(offsetY: 4100, viewportHeight: 800, contentHeight: 5000))
+  }
+
+  func testKeyboardShrinkFlipsTailPredicateWithUnchangedOffset() {
+    // Regression anchor for the keyboard-avoidance bug: with large scrollback,
+    // a pinned viewport (offset unchanged) reads as off-tail purely because the
+    // keyboard shrank the viewport height. The pin state must therefore never
+    // be derived from a layout resize — the controller re-asserts the live
+    // tail on layout size changes instead of consulting this predicate.
+    let offsetAtTailBeforeKeyboard: CGFloat = 4200
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(
+      offsetY: offsetAtTailBeforeKeyboard, viewportHeight: 800, contentHeight: 5000
+    ))
+    XCTAssertFalse(TerminalSessionController.isAtLiveTail(
+      offsetY: offsetAtTailBeforeKeyboard, viewportHeight: 460, contentHeight: 5000
+    ))
+  }
+
+  func testShortTranscriptStaysAtLiveTailThroughKeyboardShrink() {
+    // Content shorter than the shrunken viewport can never leave the tail —
+    // why short/new sessions always survived the keyboard.
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 0, viewportHeight: 460, contentHeight: 300))
+  }
+}
