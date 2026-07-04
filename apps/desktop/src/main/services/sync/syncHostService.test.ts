@@ -2996,8 +2996,16 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       },
     }));
     const revokedHello = await revokedQueue.next("hello_error");
-    const revokedPayload = revokedHello.payload as { code: string; message: string };
+    const revokedPayload = revokedHello.payload as {
+      code: string;
+      message: string;
+      host?: { deviceId?: string; name?: string };
+    };
     expect(revokedPayload.code).toBe("auth_failed");
+    // The rejection must be attributed: clients only drop a saved pairing
+    // when the rejecting machine's identity matches the one they paired with.
+    expect(typeof revokedPayload.host?.deviceId).toBe("string");
+    expect(revokedPayload.host?.deviceId?.length).toBeGreaterThan(0);
     revokedWs.close();
     await new Promise((resolve) => revokedWs.once("close", resolve));
   });

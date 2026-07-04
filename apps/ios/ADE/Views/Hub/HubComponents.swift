@@ -695,12 +695,19 @@ struct HubStatusDot: View {
 // MARK: - State cards
 
 struct HubConnectingCard: View {
+  @EnvironmentObject private var syncService: SyncService
+
   var body: some View {
-    HStack(spacing: 10) {
-      ProgressView().controlSize(.small)
-      Text("Connecting to your machine…")
-        .font(.system(.subheadline, design: .rounded))
-        .foregroundStyle(ADEColor.textSecondary)
+    VStack(spacing: 16) {
+      HStack(spacing: 10) {
+        ProgressView().controlSize(.small)
+        Text("Connecting to your machine…")
+          .font(.system(.subheadline, design: .rounded))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      if syncService.tailscaleOffHintVisible {
+        ADETailscaleOffHintCard()
+      }
     }
     .frame(maxWidth: .infinity)
     .padding(.vertical, 28)
@@ -748,11 +755,11 @@ struct HubNoMachineState: View {
         .accessibilityLabel("ADE")
 
       HStack(spacing: 8) {
-        Circle().fill(ADEColor.textMuted).frame(width: 8, height: 8)
+        Circle().fill(statusDotColor).frame(width: 8, height: 8)
         Image(systemName: "desktopcomputer")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
-        Text(syncService.connectionState == .error ? "Cannot reach machine" : "No machine attached")
+        Text(statusText)
           .font(.system(.footnote, design: .rounded).weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
       }
@@ -762,30 +769,85 @@ struct HubNoMachineState: View {
       .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
       .padding(.top, 30)
 
+      if syncService.tailscaleOffHintVisible {
+        ADETailscaleOffHintCard()
+          .padding(.top, 22)
+      }
+
       Spacer(minLength: 40)
 
-      Button {
-        syncService.settingsPresented = true
-      } label: {
-        HStack(spacing: 10) {
-          Image(systemName: "link")
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-          Text("Connect Machine")
-            .font(.system(.subheadline, design: .rounded).weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
+      VStack(spacing: 12) {
+        if hasSavedMachine {
+          Button {
+            Task { await syncService.reconnectIfPossible(userInitiated: true) }
+          } label: {
+            primaryButtonLabel(symbol: "arrow.clockwise", title: "Reconnect")
+          }
+          .buttonStyle(.plain)
+
+          Button {
+            syncService.settingsPresented = true
+          } label: {
+            Text("Connection settings")
+              .font(.system(.footnote, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .buttonStyle(.plain)
+        } else {
+          Button {
+            syncService.settingsPresented = true
+          } label: {
+            primaryButtonLabel(symbol: "link", title: "Connect Machine")
+          }
+          .buttonStyle(.plain)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEColor.accent.opacity(0.4), lineWidth: 1))
       }
-      .buttonStyle(.plain)
       .padding(.bottom, 56)
     }
     .frame(maxWidth: 520)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .padding(.horizontal, 22)
+  }
+
+  /// A machine is "saved" when a pairing credential still exists for it —
+  /// plain `.disconnected` with a saved machine must not read as unpaired.
+  private var hasSavedMachine: Bool {
+    syncService.canReconnectToSavedHost
+  }
+
+  private var machineDisplayName: String? {
+    let name = syncService.hostName ?? syncService.activeHostProfile?.hostName
+    let trimmed = name?.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed?.isEmpty == false ? trimmed : nil
+  }
+
+  private var statusText: String {
+    if syncService.connectionState == .error {
+      return "Cannot reach \(machineDisplayName ?? "machine")"
+    }
+    if hasSavedMachine {
+      return "Disconnected from \(machineDisplayName ?? "saved machine")"
+    }
+    return "No machine attached"
+  }
+
+  private var statusDotColor: Color {
+    syncService.connectionState == .error ? ADEColor.danger : ADEColor.textMuted
+  }
+
+  private func primaryButtonLabel(symbol: String, title: String) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: symbol)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(ADEColor.accent)
+      Text(title)
+        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 16)
+    .background(ADEColor.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(ADEColor.accent.opacity(0.4), lineWidth: 1))
   }
 }
 

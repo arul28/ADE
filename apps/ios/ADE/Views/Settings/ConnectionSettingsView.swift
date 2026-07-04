@@ -139,6 +139,7 @@ struct SettingsConnectionSnapshot: Equatable {
   var canReconnectToSavedHost: Bool
   var savedReconnectPrefersTailnet: Bool
   var errorMessage: String?
+  var showTailscaleOffHint = false
 }
 
 struct SettingsPairingSnapshot: Equatable {
@@ -213,7 +214,8 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         routeLine: Self.routeLine(address: address, port: activeProfile?.port),
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         savedReconnectPrefersTailnet: savedReconnectHost?.tailscaleAddress != nil,
-        errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil
+        errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
+        showTailscaleOffHint: syncService.tailscaleOffHintVisible
       )
     )
 
@@ -242,7 +244,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
 
   private static func routeLine(address: String?, port: Int?) -> String? {
     guard let address else { return nil }
-    let prefix = syncIsTailscaleIPv4Address(address) ? "Tailscale " : ""
+    let prefix = syncIsTailscaleRoute(address) ? "Tailscale " : ""
     if let port {
       return "\(prefix)\(address) · :\(port)"
     }

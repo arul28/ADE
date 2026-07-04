@@ -230,13 +230,47 @@ cards — controllers no longer ship duplicate offline / reconnect /
 hydrating cards inside each screen body.
 
 The Hub is the exception: with the navigation bar hidden, its
-no-machine / connection-error state renders `HubNoMachineState`
-("No machine attached" / "Cannot reach machine") instead of project
-cards, using the same `SyncConnectionHealth` mapping as `ADEConnectionDot`
-(success when connected and not strained, warning when connecting or
-strained, danger when unreachable, muted when disconnected) and routing
-taps through `syncService.settingsPresented` to the same Settings sheet
-the dot opens.
+no-machine / connection-error state renders `HubNoMachineState` instead
+of project cards, using the same `SyncConnectionHealth` mapping as
+`ADEConnectionDot` and routing taps through
+`syncService.settingsPresented` to the same Settings sheet the dot
+opens. Its status capsule distinguishes three states: "Cannot reach
+\<machine\>" (`.error`, danger dot), "Disconnected from \<machine\>"
+(`.disconnected` while a pairing credential is still saved —
+`canReconnectToSavedHost`), and "No machine attached" (truly unpaired).
+With a saved machine the primary action is **Reconnect** (calls
+`reconnectIfPossible(userInitiated: true)`) with a secondary
+"Connection settings" link; unpaired phones keep the single
+"Connect Machine" button into Settings.
+
+### Tailscale-off route hint
+
+Connection surfaces show an "iPhone isn't on Tailscale" warning card
+(`ADETailscaleOffHintCard` in `ADEDesignSystem.swift`) when the one
+user action that can fix the connection is turning Tailscale on. Gating
+is the pure helper `syncShouldShowTailscaleOffHint(...)`, exposed as
+`SyncService.tailscaleOffHintVisible`; all of the following must hold:
+
+- a pairing credential exists and the saved profile carries a Tailscale
+  route (`profileHasTailnetRoute`),
+- the phone holds **no** tailnet self-address — `syncHasTailnetSelfAddress`
+  scans `getifaddrs` output for a Tailscale CGNAT IPv4 (100.64/10) or
+  Tailscale IPv6 (fd7a:115c:a1e0::/48) address **on a `utun*` interface
+  only** (cellular carriers assign CGNAT 100.64/10 to `pdp_ip*`, so an
+  unscoped scan would false-positive on LTE),
+- no live discovery hit matches the profile (Bonjour ⇒ same LAN; the
+  tailnet probe only resolves when the tunnel is up),
+- transport is connecting / disconnected / unreachable — never while
+  connected, so a working VPN-to-LAN setup is left alone.
+
+The interface scan refreshes on `NWPathMonitor` path changes (VPN
+tunnels flip the path), on foreground transitions, and before
+`enterUnreachableTerminalState` surfaces its terminal error (whose
+message appends the Tailscale explanation when the hint holds). The
+card renders in `HubNoMachineState`, `HubConnectingCard`, and
+`SettingsConnectionHeader` (via
+`SettingsConnectionSnapshot.showTailscaleOffHint`); its action opens
+the Tailscale app (`tailscale://`), falling back to the App Store page.
 
 `SettingsConnectionHeader` distinguishes the four states explicitly:
 
@@ -344,11 +378,26 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    candidates are raced with concurrent raw-TCP reachability probes
    (happy eyeballs) and tried in first-reachable order, so a dead LAN
    IP does not cost a full open timeout before the live Tailscale
-   route is attempted. `reconnectIfPossible` is guarded so overlapping
-   wake-ups never stack TCP/WebSocket attempts, and a reconnect never
-   tears down an already-live connection. The socket declares the
-   `chunkedEnvelopes` capability and sets a 32 MiB
+   route is attempted. Tailscale-classified candidates get a longer
+   probe budget (3 s vs 1.5 s) because first contact through a cold
+   DERP relay can exceed the LAN-sized timeout on exactly the networks
+   where the tailnet is the only working route. Route classification
+   (`syncIsTailscaleRoute`) covers CGNAT IPv4 (100.64/10), Tailscale
+   IPv6 (fd7a:115c:a1e0::/48), `.ts.net` names, and the `ade-sync`
+   alias. The background tailnet discovery probe (`SyncTailnetProbe`,
+   45 s cadence) sweeps only a bounded port set — saved-profile ports
+   plus `SyncTailnetDiscovery.probePortCandidates` (default port + 8) —
+   never the full 8787–8999 stale-port range, which belongs to the
+   connect path's recovery sweep. `reconnectIfPossible` is guarded so
+   overlapping wake-ups never stack TCP/WebSocket attempts, and a
+   reconnect never tears down an already-live connection. The socket
+   declares the `chunkedEnvelopes` capability and sets a 32 MiB
    `maximumMessageSize` receive budget.
+   An `auth_failed` hello rejection drops the saved pairing **only**
+   when the rejecting machine attributed itself (`hello_error.host`)
+   and its identity matches the paired machine; unattributed or
+   mismatched rejections are marked ambiguous, keep the pairing, and
+   let the reconnect loop try other routes.
 3. Send local `db_version` plus the per-host-DB cursor map
    (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
    `serverDbSiteId` and the runtime's current project catalog when the

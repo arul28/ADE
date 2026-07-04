@@ -661,7 +661,15 @@ snapshots, `file_response`, and large `command_result` payloads can
 no longer kill the connection with "Message too long".
 
 `SyncHelloErrorPayload.code` is trimmed to `auth_failed |
-invalid_hello`. `SyncPairingResultPayload.error.code` is one of
+invalid_hello`. An `auth_failed` payload also carries an optional
+`host: { deviceId, name }` naming the machine that rejected the hello —
+both the project host and the brain-level fallback handler send it. This
+is the client's only safe basis for destroying a saved pairing: a phone
+drops its credentials **only** when the rejecting `host.deviceId` matches
+the paired machine's identity. An unattributed rejection (older host, or
+a stranger machine reached over a reused DHCP lease / mDNS alias / stale
+Tailscale candidate) keeps the pairing and the client moves on to other
+routes. `SyncPairingResultPayload.error.code` is one of
 `invalid_pin | pin_not_set | pairing_failed`.
 
 Heartbeat interval is 30 seconds. Desktop peers close after **two**

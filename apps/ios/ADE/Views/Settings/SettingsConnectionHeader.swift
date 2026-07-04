@@ -65,6 +65,10 @@ struct SettingsConnectionHeader: View {
          !health.transport.isConnected {
         SettingsInlineErrorBanner(message: errorMessage)
       }
+
+      if snapshot.showTailscaleOffHint {
+        ADETailscaleOffHintCard()
+      }
     }
     .padding(18)
     .frame(maxWidth: .infinity, alignment: .leading)
