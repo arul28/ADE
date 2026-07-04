@@ -873,7 +873,7 @@ private func syncLogPathSummary(_ snapshot: SyncNetworkPathSnapshot?) -> String 
 private let syncAmbiguousRouteAuthFailureKey = "ADEAmbiguousRouteAuthFailure"
 /// userInfo key carrying `hello_error.host.deviceId` — the identity of the
 /// machine that rejected the hello, when the host was new enough to send it.
-let syncRespondingHostIdentityKey = "ADERespondingHostIdentity"
+private let syncRespondingHostIdentityKey = "ADERespondingHostIdentity"
 
 private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   [
