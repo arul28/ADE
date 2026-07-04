@@ -791,6 +791,8 @@ struct HubNoMachineState: View {
             Text("Connection settings")
               .font(.system(.footnote, design: .rounded).weight(.semibold))
               .foregroundStyle(ADEColor.textSecondary)
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
         } else {

@@ -168,7 +168,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   false so a second runtime becomes a viewer instead of stealing the
   sync authority role.
 - `syncHostService.ts` — the per-project WebSocket host. Owns
-  connection acceptance, hello/pairing handshakes, per-peer state,
+  connection acceptance, hello/pairing handshakes (an `auth_failed`
+  rejection is attributed with the rejecting machine's
+  `host: { deviceId, name }` — read from `readBrainMetadata()` — so a
+  client can only ever drop a saved pairing when the rejection came from
+  the machine it is actually paired with), per-peer state,
   changeset fan-out + ack tracking (bounded, windowed exports — see
   `crdt-model.md`), chat-first scheduling (chat events are pumped before
   background changesets, and peers with active chat subscriptions get
@@ -259,7 +263,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `brainProjectActionsSyncHandler.ts` — machine-wide fallback sync
   handler used by `ade serve` before any project host is active. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
-  per-project host, applies the same failed-PIN cooldown, and serves
+  per-project host, applies the same failed-PIN cooldown, attributes its
+  `auth_failed` rejections with the same `host: { deviceId, name }`
+  identity the per-project host sends (so a phone that reaches this
+  fallback over a stale address still won't destroy a pairing it can't
+  attribute), and serves
   project catalog plus runtime-scoped project actions so a phone can
   add/open/create/clone/remove a project even from the project-home state.
   It also answers `command` envelopes: when no project host owns the peer
