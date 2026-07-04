@@ -359,9 +359,16 @@ struct PrDetailView: View {
       prNumber: currentPr.githubPrNumber,
       gate: mergeGateInfo,
       isDraft: isCurrentPrDraft,
+      // Green must agree with the STRUCTURED checklist: the gate's review math
+      // uses requestedReviewers counts, which read 0 when reviewDecision is
+      // reviewRequired but nobody is currently requested — without the fail-row
+      // condition the rail could enable merge under a visible failing row. The
+      // non-green arm keeps the deliberate blocked-attempt (bypass) affordance.
       canMerge: canRunPrActions
         && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
-        && (mergeGateInfo.tone == .green || canAttemptBlockedMerge),
+        && (mergeGateInfo.tone == .green
+              ? !mergeChecklistItems.contains(where: { $0.state == .fail })
+              : canAttemptBlockedMerge),
       canClose: canRunPrActions && shouldShowCloseAction,
       canDeleteBranch: !currentPr.laneId.isEmpty,
       canReopen: canRunPrActions && shouldShowReopenAction,
@@ -1105,7 +1112,10 @@ struct PrDetailView: View {
       symbol = "checkmark.seal.fill"
       isPrimary = true
       isAmber = false
-      enabled = canRunPrActions && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+      // Same structured-checklist agreement rule as overviewMergeRailModel.
+      enabled = canRunPrActions
+        && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+        && !mergeChecklistItems.contains(where: { $0.state == .fail })
       action = { presentMergeMethodPicker() }
     case .amber:
       if canRebaseFromGate {
