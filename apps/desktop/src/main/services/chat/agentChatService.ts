@@ -9808,6 +9808,13 @@ export function createAgentChatService(args: {
       managed.lastActivitySignature = null;
     }
 
+    if (normalizedEvent.type === "done") {
+      // If this session was spawned as a child of another chat, reflect the
+      // first finished turn as the child's terminal status in the parent's
+      // subagents panel. No-op unless the spawn was tracked this process.
+      reportChildSpawnEnded(managed.session.id, normalizedEvent.status);
+    }
+
     if (normalizedEvent.type === "todo_update") {
       managed.todoItems = normalizedEvent.items;
     }
@@ -19866,6 +19873,85 @@ export function createAgentChatService(args: {
     return mapped;
   };
 
+  /**
+   * Child chat sessions spawned with a parent lineage — spawnAgent and CLI
+   * spawns (`ade chat create` / `ade new --mode chat` default the parent from
+   * the ADE_CHAT_SESSION_ID env var ADE injects into every tracked agent
+   * shell). The durable lineage record is the child session's
+   * orchestrationParentSessionId field itself (persisted via
+   * collectOrchestrationFields independent of run/role); manifest
+   * DelegationEdges are not used here because they require an approved-plan
+   * orchestration run. The parent transcript gets a "Subagent spawned"
+   * system_notice chip; plain spawns outside an orchestration run (which
+   * already has the Work-tab orchestrator UI) additionally get synthetic
+   * subagent_* events so the child lists in the parent's subagents panel
+   * with live status. Tracking is process-transient on purpose: after a
+   * restart no stale subagent_result can fire for a spawn event that
+   * predates the process.
+   */
+  const childSpawnTracking = new Map<string, { parentSessionId: string; terminal: boolean }>();
+
+  const notifyParentSessionOfSpawn = (child: ManagedChatSession, label: string): void => {
+    const parentSessionId = child.session.orchestrationParentSessionId?.trim();
+    if (!parentSessionId || parentSessionId === child.session.id) return;
+    const parent = managedSessions.get(parentSessionId);
+    if (!parent || parent.deleted || parent.closed) return;
+    emitChatEvent(parent, {
+      type: "system_notice",
+      noticeKind: "info",
+      status: "subagent_spawned",
+      message: `Subagent spawned: ${label}`,
+      detail: {
+        spawnedSession: {
+          sessionId: child.session.id,
+          laneId: child.session.laneId ?? null,
+          title: label,
+        },
+      },
+    });
+    if (child.session.orchestrationRunId) return;
+    childSpawnTracking.set(child.session.id, { parentSessionId, terminal: false });
+    emitChatEvent(parent, {
+      type: "subagent_started",
+      taskId: `chat:${child.session.id}`,
+      agentId: child.session.id,
+      agentType: child.session.provider,
+      parentToolUseId: null,
+      description: label,
+      background: false,
+      taskType: "subagent",
+    });
+  };
+
+  const reportChildSpawnEnded = (
+    childSessionId: string,
+    status: "completed" | "interrupted" | "failed",
+  ): void => {
+    const tracked = childSpawnTracking.get(childSessionId);
+    if (!tracked || tracked.terminal) return;
+    tracked.terminal = true;
+    const parent = managedSessions.get(tracked.parentSessionId);
+    if (!parent || parent.deleted || parent.closed) return;
+    const child = managedSessions.get(childSessionId);
+    const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
+    const summary = resultStatus === "completed"
+      ? "Kickoff turn finished."
+      : resultStatus === "stopped"
+        ? "Stopped before finishing."
+        : "Turn failed.";
+    emitChatEvent(parent, {
+      type: "subagent_result",
+      taskId: `chat:${childSessionId}`,
+      agentId: childSessionId,
+      ...(child?.session.provider ? { agentType: child.session.provider } : {}),
+      parentToolUseId: null,
+      status: resultStatus,
+      summary,
+      finalSummary: summary,
+      taskType: "subagent",
+    });
+  };
+
   const createSession = async ({
     laneId,
     provider,
@@ -20239,6 +20325,8 @@ export function createAgentChatService(args: {
       ensureClaudeSessionRuntime(managed);
       prewarmClaudeQuery(managed);
     }
+
+    notifyParentSessionOfSpawn(managed, initialTitle);
 
     persistChatState(managed);
     return managed.session;
@@ -26313,6 +26401,9 @@ export function createAgentChatService(args: {
     if (tombstoned) {
       tombstoned.deleted = true;
     }
+    // A tracked child spawn that never finished a turn would otherwise leave
+    // a running row in the parent's subagents panel forever.
+    reportChildSpawnEnded(trimmedSessionId, "interrupted");
 
     if (existing.status === "running") {
       await dispose({ sessionId: trimmedSessionId });

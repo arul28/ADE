@@ -187,6 +187,17 @@ export type AgentChatNoticeDetail = {
   metrics?: AgentChatNoticeDetailMetric[];
   sections?: AgentChatNoticeDetailSection[];
   permissionModeTransition?: "entered_plan_mode" | "exited_plan_mode";
+  /**
+   * Deep-link to a child chat session spawned from this one (the
+   * "Subagent spawned" chip on `status: "subagent_spawned"` notices).
+   * Desktop navigates to the session; the TUI switches to it; iOS renders
+   * the notice message (extra fields are ignored by its decoder).
+   */
+  spawnedSession?: {
+    sessionId: string;
+    laneId?: string | null;
+    title?: string;
+  };
 };
 
 export type AgentChatLocalFileRef = {
