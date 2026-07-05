@@ -556,7 +556,6 @@ function createRuntime() {
           createdAt: "2026-03-17T19:00:00.000Z",
           prevHash: null,
         })),
-        recentSubordinateActivity: [],
       })),
     } as any,
     linearCredentialService: {

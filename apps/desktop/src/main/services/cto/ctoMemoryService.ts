@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { CtoMemorySearchRow, CtoMemorySnapshot } from "../../../shared/types";
-import { nowIso, writeTextAtomic } from "../shared/utils";
+import { clipText, nowIso, writeTextAtomic } from "../shared/utils";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -22,6 +22,10 @@ const DAILY_INJECT_MAX_CHARS = 4000;
 // Hard cap on the on-disk MEMORY.md so a runaway `saveMemory` loop cannot grow
 // the file without bound. Oldest facts are dropped first when the cap is hit.
 const MEMORY_FILE_MAX_BYTES = 64 * 1024;
+
+// Per-turn journal line caps (`HH:MM — user → outcome`).
+const JOURNAL_USER_MAX_CHARS = 160;
+const JOURNAL_OUTCOME_MAX_CHARS = 200;
 
 const MEMORY_HEADER = "# CTO Durable Memory";
 const MEMORY_FACTS_HEADING = "## Facts";
@@ -179,6 +183,22 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     fs.appendFileSync(filePath, fileExists ? `${entry}\n` : `# ${stamp}\n\n${entry}\n`, "utf8");
   };
 
+  /**
+   * One compact daily-log line per completed CTO turn:
+   * `HH:MM — <user intent> → <outcome>`. Owns the format and caps so callers
+   * only supply the raw text.
+   */
+  const appendTurnJournal = (
+    input: { user: string; outcome: string },
+    now = new Date(),
+  ): void => {
+    const user = input.user.replace(/\s+/g, " ").trim();
+    const outcome = input.outcome.replace(/\s+/g, " ").trim();
+    if (!user.length && !outcome.length) return;
+    const line = `${localHourMinute(now)} — ${clipText(user, JOURNAL_USER_MAX_CHARS)} → ${clipText(outcome, JOURNAL_OUTCOME_MAX_CHARS)}`;
+    appendDailyEntry(line, now);
+  };
+
   const listDailyStampsNewestFirst = (): string[] => {
     let entries: string[] = [];
     try {
@@ -291,15 +311,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
     readMemory,
     writeMemory,
     appendMemoryFact,
-    readThreadState,
     writeThreadState,
     appendDailyEntry,
-    readRecentDailyEntries,
+    appendTurnJournal,
     searchMemory,
     getSnapshot,
     buildMemoryContextSections,
-    // Exposed for deterministic testing of the local-time journal line format.
-    _localHourMinute: localHourMinute,
   };
 }
 

@@ -33,19 +33,19 @@ let ctoPersonalityPresetOptions: [CtoPersonalityPresetOption] = [
   .init(
     id: "casual",
     label: "Collaborative",
-    description: "Warm and human while still acting like the technical lead.",
+    description: "Warm, human, and easy to work with while still acting like the technical lead.",
     systemImage: "bubble.left.and.text.bubble.right"
   ),
   .init(
     id: "minimal",
     label: "Concise",
-    description: "Low-noise and direct — decisions, blockers, and next actions.",
+    description: "Low-noise, direct, and focused on decisions, blockers, and next actions.",
     systemImage: "line.3.horizontal.decrease"
   ),
   .init(
     id: "custom",
     label: "Custom",
-    description: "Use your own personality overlay while staying inside CTO doctrine.",
+    description: "Use your own personality overlay while staying inside ADE's CTO doctrine.",
     systemImage: "slider.horizontal.3"
   ),
 ]
@@ -61,8 +61,8 @@ func ctoPersonalityLabel(for id: String?) -> String {
 enum CtoWorkStyle {
   static let verbosityOptions: [(value: String, label: String)] = [
     ("concise", "Concise"),
-    ("detailed", "Detailed"),
     ("adaptive", "Adaptive"),
+    ("detailed", "Detailed"),
   ]
   static let proactivityOptions: [(value: String, label: String)] = [
     ("reactive", "Reactive"),

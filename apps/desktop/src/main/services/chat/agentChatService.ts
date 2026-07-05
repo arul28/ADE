@@ -9414,12 +9414,7 @@ export function createAgentChatService(args: {
         ? input.failureNote.trim()
         : (input.assistantText?.trim() || lastAssistant);
       if (!lastUser && !outcome) return;
-      const clip = (value: string, max: number): string => {
-        const normalized = value.replace(/\s+/g, " ").trim();
-        return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
-      };
-      const line = `${ctoMemoryService._localHourMinute()} — ${clip(lastUser, 160)} → ${clip(outcome, 200)}`;
-      ctoMemoryService.appendDailyEntry(line);
+      ctoMemoryService.appendTurnJournal({ user: lastUser, outcome });
     } catch (error) {
       logger.warn("agent_chat.cto_turn_journal_failed", {
         sessionId: managed.session.id,
