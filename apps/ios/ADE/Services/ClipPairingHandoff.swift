@@ -31,8 +31,10 @@ struct ClipPairingHandoff: Codable, Equatable {
 
   /// Reads AND removes the pending handoff (one-shot: the blob holds a
   /// secret, so it never outlives its first read, valid or not).
-  static func consume() -> ClipPairingHandoff? {
-    guard let url = containerURL(),
+  /// `location` is injectable for tests; production callers use the App
+  /// Group container.
+  static func consume(at location: URL? = nil, now: Date = Date()) -> ClipPairingHandoff? {
+    guard let url = location ?? containerURL(),
           let data = try? Data(contentsOf: url) else {
       return nil
     }
@@ -41,7 +43,7 @@ struct ClipPairingHandoff: Codable, Equatable {
           handoff.version == 1,
           !handoff.deviceId.isEmpty,
           !handoff.secret.isEmpty,
-          Date().timeIntervalSince1970 - handoff.pairedAtEpochSeconds < maxAgeSeconds else {
+          now.timeIntervalSince1970 - handoff.pairedAtEpochSeconds < maxAgeSeconds else {
       return nil
     }
     return handoff

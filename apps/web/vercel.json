@@ -43,6 +43,14 @@
       "destination": "/api/open"
     },
     {
+      "source": "/pair",
+      "destination": "/pair/index.html"
+    },
+    {
+      "source": "/pair/",
+      "destination": "/pair/index.html"
+    },
+    {
       "source": "/((?!.*\\.).*)",
       "destination": "/index.html"
     }

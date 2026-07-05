@@ -35,10 +35,20 @@ final class ClipPairingModel: ObservableObject {
     phase = .enterPin
   }
 
+  /// Pairing PINs are exactly 6 digits everywhere (desktop generator, full
+  /// app); gate the clip the same way so the button can't submit a
+  /// guaranteed-to-fail code.
+  static let pinLength = 6
+
+  var pinIsComplete: Bool {
+    let code = pin.trimmingCharacters(in: .whitespacesAndNewlines)
+    return code.count == Self.pinLength && code.allSatisfy(\.isNumber)
+  }
+
   func submitPin() {
     guard let payload, phase == .enterPin || errorText != nil else { return }
     let code = pin.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard code.count >= 4 else { return }
+    guard pinIsComplete else { return }
     errorText = nil
     phase = .pairing
     Task {
@@ -161,7 +171,7 @@ struct ClipPairingView: View {
         }
         .buttonStyle(.borderedProminent)
         .buttonBorderShape(.roundedRectangle(radius: 14))
-        .disabled(model.phase == .pairing || model.pin.trimmingCharacters(in: .whitespaces).count < 4)
+        .disabled(model.phase == .pairing || !model.pinIsComplete)
       }
     case .paired:
       Text("Get the ADE app to start working with your agents.")

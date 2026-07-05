@@ -35,6 +35,7 @@
 		AF00000000000000000000B2 /* PairingQrPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A2 /* PairingQrPayload.swift */; };
 		AF00000000000000000000B3 /* SettingsPairingScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */; };
 		AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A4 /* PairingAndDpopTests.swift */; };
+		AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1000000000000000000008 /* ClipPairingHandoffTests.swift */; };
 		AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ADEWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AC1100000000000000000001 /* ADEClipApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1000000000000000000001 /* ADEClipApp.swift */; };
 		AC1100000000000000000002 /* ClipPairingClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1000000000000000000002 /* ClipPairingClient.swift */; };
@@ -269,6 +270,7 @@
 		AF00000000000000000000A2 /* PairingQrPayload.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairingQrPayload.swift; path = ADE/Services/PairingQrPayload.swift; sourceTree = "<group>"; };
 		AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingScannerSheet.swift; path = ADE/Views/Settings/SettingsPairingScannerSheet.swift; sourceTree = "<group>"; };
 		AF00000000000000000000A4 /* PairingAndDpopTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairingAndDpopTests.swift; path = ADETests/PairingAndDpopTests.swift; sourceTree = "<group>"; };
+		AC1000000000000000000008 /* ClipPairingHandoffTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ClipPairingHandoffTests.swift; path = ADETests/ClipPairingHandoffTests.swift; sourceTree = "<group>"; };
 		D1C7A70000000000000001A1 /* DictationController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationController.swift; path = ADE/Services/Dictation/DictationController.swift; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
@@ -869,6 +871,7 @@
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
+				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
@@ -1283,6 +1286,7 @@
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
 				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,
+				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
