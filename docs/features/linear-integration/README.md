@@ -4,6 +4,36 @@ ADE's Linear integration is a **read surface plus a developer-driven write flow*
 
 > **Removed:** the earlier autonomous Linear workflow engine — intake, routing, dispatcher, sync loop, webhook/relay ingress, flow policy, closeout, and the visual pipeline builder — was deleted along with the CTO worker/hiring model. There is no longer a `LinearWorkflowDefinition`, no dispatcher, no reconciliation timer, and no `ade serve` workflow runtime. The CTO ([`../cto/README.md`](../cto/README.md)) is a single chat thread that can read and lightly update Linear issues through its operator tools; it does not own an intake pipeline. Legacy `linear_workflow_*` / `linear_dispatch_*` / `linear_ingress_*` tables remain in the schema for migration safety but are not written by any live service.
 
+## Source file map
+
+### Connection, client, and writes (`apps/desktop/src/main/services/cto/`)
+
+The Linear services live under the `cto/` service directory as shared plumbing; they are not CTO-owned workflow machinery.
+
+- `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage in the active project's `.ade/secrets`, with `ensureFreshToken()` for automatic OAuth refresh.
+- `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — PKCE loopback OAuth flow (port 19836), the cross-process refresh lock, and the token-refresh exchange.
+- `linearClient.ts` — the GraphQL client shared by desktop and the headless ADE CLI (reads plus the lightweight `updateIssueState` / `updateIssueAssignee` / `createComment` / `addIssueLabel` writes).
+- `linearIssueTracker.ts` / `issueTracker.ts` — normalization into `NormalizedLinearIssue` and the read shims + write helpers renderer/CLI surfaces call through.
+- `linearGraphQLInput.ts` — GraphQL input builders shared by client and tracker.
+- `linearLaneCardService.ts` — builds the "Open in ADE" Linear attachments for lanes, PRs, issue quick-view links, and chat sessions.
+- `linearLiveStatusService.ts` — the optional launch → PR → merge status round-trip, gated OFF unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
+
+### Renderer surfaces
+
+- `renderer/components/app/LinearQuickViewButton.tsx`, `LinearIssueBrowser.tsx`, `LinearIssueSelectModal.tsx`, `LinearIssueResolveModals.tsx` — the top-bar quick view, the filter/search browser, and the single-issue select/resolve dialogs.
+- `renderer/components/app/BatchLaunchModal.tsx` + `renderer/lib/linearBatchLaunch.ts` — multi-select batch launch (per-issue config, bounded-parallel create-lane → session → kickoff).
+- `renderer/components/settings/LinearSection.tsx` — Settings → Integrations connect/disconnect panel.
+- `renderer/components/lanes/LinearIssueBadge.tsx` (+ `linearBrand.tsx`, `linearIssueDisplay.ts`, `linearProjectIcon.tsx`) — the lane-list badge and brand/display helpers.
+
+### Shared and CLI
+
+- `apps/desktop/src/shared/linearMagicWords.ts` — `Refs`/`Fixes` commit and PR magic-word injection (`ensureLinearCommitReference`, `ensureLinearPrReference`, `buildLinearPrTitle`, multi-issue linkage block).
+- `apps/desktop/src/shared/linearIssueBranch.ts` — `linearIssueLaneName` / `linearIssueBranchName` derivation.
+- `apps/desktop/src/shared/chatContextAttachments.ts` — the `linear_issue` chat context attachment shape.
+- `apps/ade-cli/src/cli.ts` — the `ade linear` bridge (`buildLinearPlan`) routed over the daemon to the desktop runtime's Linear connection.
+
+IPC channel names live in `apps/desktop/src/shared/ipc.ts` (registered in `registerIpc.ts`), reached via `window.ade.cto.*`; the lane-scoped session-attach channels are on `window.ade.lane.*`. See the [Read surface](#read-surface) and [Session-scoped issue attachment](#session-scoped-issue-attachment-and-cli-context-injection) sections for the exact channel lists.
+
 ## Connection model
 
 Credentials are owned by `apps/desktop/src/main/services/cto/linearCredentialService.ts`, backed by the active project's `.ade/secrets` store, so separate ADE projects can attach separate Linear workspaces. Two connection paths:

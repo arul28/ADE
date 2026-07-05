@@ -75,6 +75,29 @@ describe("ctoMemoryService", () => {
     void stamp;
   });
 
+  it("owns the turn-journal line format with per-part caps", () => {
+    const { service, ctoDir } = createFixture();
+    const longUser = `ask   about ${"u".repeat(300)}`;
+    const longOutcome = `did\nthe\nthing ${"o".repeat(300)}`;
+    service.appendTurnJournal({ user: longUser, outcome: longOutcome }, new Date(2026, 6, 4, 9, 5));
+    // Blank turns are ignored entirely.
+    service.appendTurnJournal({ user: "   ", outcome: "\n" });
+
+    const dailyDir = path.join(ctoDir, "daily");
+    const files = fs.readdirSync(dailyDir).filter((name) => name.endsWith(".md"));
+    expect(files).toEqual(["2026-07-04.md"]);
+    const content = fs.readFileSync(path.join(dailyDir, files[0]), "utf8");
+    const line = content.split("\n").find((row) => row.includes("09:05"));
+    expect(line).toBeTruthy();
+    // `HH:MM — user → outcome`, whitespace collapsed, both parts clipped with ellipses.
+    expect(line).toMatch(/^09:05 — ask about u+… → did the thing o+…$/);
+    const [userPart, outcomePart] = line!.slice("09:05 — ".length).split(" → ");
+    expect(userPart.length).toBeLessThanOrEqual(160);
+    expect(outcomePart.length).toBeLessThanOrEqual(200);
+    // Only the one real entry was journaled (header + one line).
+    expect(content.trim().split("\n").filter((row) => row.includes("—")).length).toBe(1);
+  });
+
   it("searches memory, thread-state, and daily logs case-insensitively", () => {
     const { service } = createFixture();
     service.appendMemoryFact("Release flow tags only after CI passes.");

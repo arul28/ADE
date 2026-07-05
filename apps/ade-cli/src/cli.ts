@@ -482,8 +482,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -1834,15 +1834,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
-`,
-  cto: `${ADE_BANNER}
-  CTO and Work state
-
-    $ ade cto state --text                          Read CTO identity, recent sessions
-    $ ade cto chats list --text                     List CTO work chats
-    $ ade cto chats spawn --lane <lane> --prompt "plan this"
-    $ ade cto chats send <session> --text "continue"
-    $ ade actions run worker_agent.listAgents --input-json '{"includeDeleted":false}'
 `,
   linear: `${ADE_BANNER}
   Linear workflows
@@ -10215,7 +10206,7 @@ function buildCliPlan(
   }
   if (primary === "linear") {
     // `ade linear install` is the deeplink installer; every other `ade linear`
-    // subcommand (workflows, sync, quick-view, route, picker-data, ...) belongs
+    // subcommand (quick-view, issues, comment, set-state, picker-data, ...) belongs
     // to buildLinearPlan below. Only route to the deeplink handler when the
     // first positional looks like "install". Use a non-mutating peek so
     // buildLinearPlan still sees the original args.

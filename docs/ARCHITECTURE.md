@@ -274,7 +274,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   │   └── daily/<YYYY-MM-DD>.md # Per-turn journal
 │   ├── templates/               # Lane and automation templates (tracked when human-authored)
 │   ├── skills/                  # Exported skill markdown (tracked when human-authored)
-│   ├── workflows/linear/        # Linear workflow config (tracked when present)
+│   ├── workflows/linear/        # Reserved scaffold dir; the legacy Linear workflow-config subsystem was removed and nothing writes here anymore
 │   ├── project-icons/           # Imported project icon overrides (tracked when ade.yaml.iconPath points at one)
 │   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
@@ -629,8 +629,8 @@ conflicts/      # risk matrix, simulation, resolution
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/
 history/        # operation timeline
-automations/    # rule list, pipeline builder
-cto/            # CTO page, identity editor, team panel, pipeline, shared/designTokens.ts
+automations/    # rule list, action editor, templates
+cto/            # single-thread CTO page, settings/memory/prompt panels, onboarding card, identity editor, shared/designTokens.ts
 orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, PlanningTimeline, ValidationFindings
 onboarding/     # first-run flows
 settings/       # keybindings, agents, data, context, sync

@@ -396,7 +396,7 @@ describe("linear command routing", () => {
     expect(result.title).toBe("Linear");
     expect(result.body).toContain("attach");
     expect(result.body).toContain("comment");
-    expect(result.body).toContain("workflows");
+    expect(result.body).toContain("graphql");
   });
 
   it("routes /linear attach to a session attach action with the active-session placeholder", () => {
@@ -527,36 +527,12 @@ describe("linear command routing", () => {
     });
   });
 
-  it("routes sync dashboard and queue resolution", () => {
-    expect(buildLinearToolRequest("sync dashboard")).toEqual({
-      kind: "tool",
-      title: "Linear sync dashboard",
-      toolName: "getLinearSyncDashboard",
-      args: {},
-    });
-    expect(buildLinearToolRequest("sync resolve queue-1 approve --note ok")).toEqual({
-      kind: "tool",
-      title: "Linear sync resolve",
-      toolName: "resolveLinearSyncQueueItem",
-      args: {
-        queueItemId: "queue-1",
-        action: "approve",
-        note: "ok",
-      },
-    });
-  });
-
-  it("routes worker handoff and reports usage for missing fields", () => {
-    expect(buildLinearToolRequest("route worker LIN-123 agent-1")).toEqual({
-      kind: "tool",
-      title: "Linear route worker",
-      toolName: "routeLinearIssueToWorker",
-      args: { issueId: "LIN-123", agentId: "agent-1" },
-    });
-    expect(buildLinearToolRequest("run cancel run-1")).toEqual({
-      kind: "usage",
-      title: "Linear run cancel",
-      body: "Usage: /linear run cancel <run-id> --reason <reason>",
-    });
+  it("shows usage for removed workflow/route/sync/ingress groups", () => {
+    for (const removed of ["workflows", "run cancel run-1", "route cto LIN-1", "sync dashboard", "ingress status"]) {
+      const result = buildLinearToolRequest(removed);
+      expect(result.kind).toBe("usage");
+      if (result.kind !== "usage") continue;
+      expect(result.title).toBe("Linear");
+    }
   });
 });
