@@ -1,6 +1,6 @@
 # ADE — Product Requirements
 
-ADE is a **per-machine local-first development system** for AI-assisted software engineering. Its center is the **brain**: the always-on, machine-owned ADE process for a channel. The brain owns projects, git-worktree lanes of work, multi-provider agent chat, work sessions, a persistent CTO agent, worker delegation, pipeline automations, PR stacking, conflict simulation, computer-use proofs, the sync websocket, and the project catalog. Three first-party clients attach to it: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
+ADE is a **per-machine local-first development system** for AI-assisted software engineering. Its center is the **brain**: the always-on, machine-owned ADE process for a channel. The brain owns projects, git-worktree lanes of work, multi-provider agent chat, work sessions, a persistent CTO agent, rule-based automations, PR stacking, conflict simulation, computer-use proofs, the sync websocket, and the project catalog. Three first-party clients attach to it: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
 
 This doc is the entry point. Every major feature and concept is linked to its detailed breakdown in [`features/`](./features/). For how the pieces fit together, read [ARCHITECTURE.md](./ARCHITECTURE.md) next.
 
@@ -17,14 +17,14 @@ The clients of that brain are equal:
 - **iOS app** (`apps/ios/`) — SwiftUI controller; pairs with an ADE machine over WebSocket. The phone never runs agents.
 - **SSH-attached desktop** — a desktop window pointed at a remote machine is the same client as a local window; the remote machine's brain is authoritative for its projects.
 
-The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and can be delegated to CTO workers or automation rules when the work needs durable routing.
+The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and can be driven by automation rules when the work needs durable routing.
 
 Layered on top, all owned by the brain:
-- **Agents** — chat, CTO operator, workers. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware. CTO worker adapter types: `claude-local`, `codex-local`, `process`.
+- **Agents** — lane-bound chat plus the persistent CTO operator. Multi-provider (Anthropic, OpenAI, Claude Code CLI, Codex, OpenCode, Cursor). Tool-aware.
 - **Automations** — rule-based background workflows triggered by events, cron, webhooks.
 - **Computer use** — control plane that fans out to Computer Use, agent-browser, or local fallback for UI automation proofs.
 - **ADE browser** — project-scoped built-in browser with persistent project profiles, tab/session ownership, hidden-tab agent actions, diagnostics, traces, and explicit proof promotion.
-- **Linear** — first-class two-way integration owned by the CTO agent.
+- **Linear** — issue read/search plus a developer lane/PR flow and an optional live-status round-trip.
 - **Multi-device sync** — cr-sqlite CRDT replication, owned by the sync service inside the brain. The iOS app and any controller desktops connect through the same sync service.
 - **Remote runtime** — the desktop ships per-platform `ade-<platform-arch>` binaries plus native deps under `apps/desktop/resources/runtime/`; `bootstrapRemoteRuntime` uploads them on first SSH connect. Headless installs use `curl … install.sh | sh`.
 
@@ -42,7 +42,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Project | One repo entry in the brain's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Lane | Isolated git worktree + per-lane process pool + agent session for one task. | [lanes/README.md](./features/lanes/README.md) |
 | Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
-| Agent | Typed persona with identity, tool tier, budget, and session log. CTO + workers + chat agents. | [agents/README.md](./features/agents/README.md) |
+| Agent | Typed persona with identity, tool tier, and session log. The persistent CTO plus lane-bound chat agents. | [agents/README.md](./features/agents/README.md) |
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Lane runtime | Per-lane process pool + env + ports + proxy + diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
@@ -72,8 +72,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Agent chat | A structured multi-provider chat session that can call ADE tools, stream events, and attach to a lane. |
 | Terminal session | A PTY-backed work session with transcript, runtime state, and optional chat ownership. |
 | Agent | A model-backed operator with persona, provider/model, tool tier, budget, and session log. |
-| CTO | The persistent project-level agent that coordinates workers, Linear workflows, and plans. |
-| Worker | A delegated agent launched by the CTO or automation rules for scoped execution. |
+| CTO | The persistent project-level chat agent with durable memory that plans and reasons across the whole project. |
 | Proof | A normalized artifact proving UI or workflow execution: screenshot, recording, trace, or log. |
 | Remote target | A saved SSH-reachable machine that can host a remote runtime. |
 | Remote project | A project registered with the remote target's brain. |
@@ -98,14 +97,14 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Agents and chat
 
-- [**Agents**](./features/agents/README.md) — Three surfaces: chat, CTO operator, workers. Identity, capability modes, tool tiers, heartbeats.
+- [**Agents**](./features/agents/README.md) — Two surfaces: lane-bound chat and the persistent CTO operator. Identity, capability modes, tool tiers, and the CTO memory system.
 - [**Chat**](./features/chat/README.md) — Multi-provider, streaming, tool-aware. Transcript and turns, tool system (universal/workflow/coordinator), agent routing, composer + derived panels, and parallel multi-model lane launch. Terminal client: [ADE Code](./features/ade-code/README.md).
-- [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions, CTO sessions, and worker runs. Every recorded service follows the same `runTrackedOperation` pattern.
+- [**History**](./features/history/README.md) — Two surfaces sharing one page: a GitKraken-style commit graph for the focused lane (per-commit branch/lane/tag/cherry-pick/revert/reset and lane-level head-change undo+redo), and a unified activity feed that merges operations with chat sessions and CTO sessions. Every recorded service follows the same `runTrackedOperation` pattern.
 
 ### Automation and CTO
 
 - [**Automations**](./features/automations/README.md) — Rule triggers (time, action, webhook) → agent-session and built-in execution surfaces. Confidence + verification + human review.
-- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator with identity, context continuity, Linear workflows, pipeline builder, and worker team.
+- [**CTO**](./features/cto/README.md) — Persistent project-level AI operator: one chat thread with a smart memory system, first-class mid-thread model switching, and a light Linear read/write surface.
 
 ### Workspace surfaces
 
@@ -116,7 +115,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Integrations
 
-- [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (session/worker/PR), bidirectional sync.
+- [**Linear Integration**](./features/linear-integration/README.md) — Issue read/search, lane/commit/PR attachment flow, batch launch, session-scoped attachment, and an optional live-status round-trip.
 - [**Computer Use**](./features/computer-use/README.md) — Intentional proof capture plus active App Control. Canonical artifact model, ownership-linked storage.
 - [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
@@ -146,7 +145,7 @@ If you are an AI agent working on ADE, read in this order:
 1. **This PRD** — product scope + feature index.
 2. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — how the apps fit, where state lives, IPC contract, services catalog.
 3. **Feature READMEs** — pick only the features relevant to your task. Each README has a "Source file map" at the top so you can go straight to code.
-4. **Detail docs** — when you need depth on a specific area (e.g., `features/cto/pipeline-builder.md` for pipeline internals).
+4. **Detail docs** — when you need depth on a specific area (e.g., `features/cto/README.md` for the CTO memory system internals).
 
 The source of truth is always the code. Docs may lag on specific code paths — cross-check `git log` and the referenced files when in doubt.
 
@@ -155,7 +154,7 @@ Fragile areas flagged across the docs (read docs before editing):
 - Local vs. remote runtime pools (`apps/desktop/src/main/services/localRuntime/`, `remoteRuntime/`) — desktop binding switching, SSH bootstrap upload, version negotiation against bundled `ade-<platform-arch>` binaries.
 - Sync service inside the ADE runtime (`apps/ade-cli/src/services/sync/`) — desktop's old in-process sync host is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics; do not assume desktop owns sync.
 - Multi-window shell + `app/navigate` JSON-RPC handoff (desktop main `main.ts`, runtime side in `apps/ade-cli/src/adeRpcServer.ts`) — TUI/external controllers can drive desktop window navigation.
-- CTO pipeline builder — recent work, custom flat/nested target-chain translation.
+- CTO smart-memory system — recent work: deterministic pre-compaction / pre-model-switch flush, file-backed durable memory, memory-rich reconstruction injection.
 - PTY / sessions / processes services — rewritten this branch.
 - OAuth redirect service — complex three-state machine with HMAC signing.
 - Chat transcript render pipeline — two-layer event→state→render path.

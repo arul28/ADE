@@ -140,6 +140,7 @@ function createRuntime() {
     } as any,
     laneService: {
       list: vi.fn(async () => laneRows),
+      ensurePrimaryLane: vi.fn(async () => laneRows[0]),
       listUnregisteredWorktrees: vi.fn(async () => [{ path: "/tmp/untracked-worktree", branch: "feature/untracked" }]),
       getLaneWorktreePath: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
@@ -516,6 +517,17 @@ function createRuntime() {
       })),
     } as any,
     fileService: null,
+    ctoMemoryService: {
+      appendMemoryFact: vi.fn((fact: string) => ({ saved: true, fact })),
+      searchMemory: vi.fn(() => [{ file: "MEMORY.md", date: null, line: 1, snippet: "a fact" }]),
+      getSnapshot: vi.fn(() => ({
+        memory: "# CTO Durable Memory\n\n## Facts\n\n- a fact",
+        threadState: "# CTO Thread State\n\nrolling summary",
+        dailyLog: "",
+        dailyLogDate: "2026-07-04",
+        updatedAt: "2026-07-04T09:00:00.000Z",
+      })),
+    } as any,
     ctoStateService: {
       getIdentity: vi.fn(() => ({
         name: "CTO",
@@ -544,20 +556,7 @@ function createRuntime() {
           createdAt: "2026-03-17T19:00:00.000Z",
           prevHash: null,
         })),
-        recentSubordinateActivity: [],
       })),
-    } as any,
-    workerAgentService: {} as any,
-    flowPolicyService: {
-      getPolicy: vi.fn(() => ({ workflows: [], legacyConfig: { projects: [] } })),
-      savePolicy: vi.fn((policy: Record<string, unknown>) => policy),
-    } as any,
-    linearDispatcherService: {
-      listActiveRuns: vi.fn(() => [{ id: "run-active", status: "in_progress" }]),
-      listQueue: vi.fn(() => [{ id: "run-queued", status: "queued" }]),
-      getRunDetail: vi.fn(async (runId: string) => ({ run: { id: runId, status: "queued" }, issue: { id: "issue-1" } })),
-      resolveRunAction: vi.fn(async (runId: string, action: string) => ({ id: runId, status: action })),
-      cancelRun: vi.fn(async () => {}),
     } as any,
     linearCredentialService: {
       getStatus: vi.fn(() => ({
@@ -631,21 +630,6 @@ function createRuntime() {
       fetchIssueComments: vi.fn(async (issueId: string) => [
         { id: "comment-1", body: "First comment", createdAt: "2026-03-17T19:00:00.000Z", userName: "arul", userDisplayName: "Arul" },
       ]),
-    } as any,
-    linearSyncService: {
-      getDashboard: vi.fn(() => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: null, lastSuccessAt: null, lastError: null, queue: { queued: 1, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
-      runSyncNow: vi.fn(async () => ({ enabled: true, running: false, ingressMode: "webhook-first", reconciliationIntervalSec: 60, lastPollAt: "2026-03-17T19:11:00.000Z", lastSuccessAt: "2026-03-17T19:11:00.000Z", lastError: null, queue: { queued: 0, blocked: 0, failed: 0 }, workflowRuns: { active: 1, waiting: 0 }, recentIssues: [] })),
-      listQueue: vi.fn(() => [{ id: "run-queued", status: "queued" }]),
-      resolveQueueItem: vi.fn(async ({ queueItemId, action, employeeOverride, laneId }: { queueItemId: string; action: string; employeeOverride?: string; laneId?: string }) => ({ id: queueItemId, status: action, employeeOverride: employeeOverride ?? null, laneId: laneId ?? null })),
-      getRunDetail: vi.fn(async ({ runId }: { runId: string }) => ({ run: { id: runId, status: "queued" }, issue: { id: "issue-1" } })),
-    } as any,
-    linearIngressService: {
-      getStatus: vi.fn(() => ({ configured: true, relayUrl: "https://example.com/webhook", webhookUrl: "https://example.com/webhook", lastReceivedAt: null, lastError: null })),
-      listRecentEvents: vi.fn(() => [{ id: "event-1", source: "webhook", summary: "received", createdAt: "2026-03-17T19:11:00.000Z" }]),
-      ensureRelayWebhook: vi.fn(async () => {}),
-    } as any,
-    linearRoutingService: {
-      simulateRoute: vi.fn(({ issue }: { issue: Record<string, unknown> }) => ({ decision: "cto", reason: "test", issue })),
     } as any,
     processService: null,
     computerUseArtifactBrokerService: {
@@ -1217,6 +1201,9 @@ describe("adeRpcServer", () => {
     expect(names).toEqual(
       expect.arrayContaining([
         "get_cto_state",
+        "saveMemory",
+        "searchMemory",
+        "readMemory",
         "listChats",
         "spawnChat",
         "getChatStatus",
@@ -1228,15 +1215,32 @@ describe("adeRpcServer", () => {
         "pr_reply_to_review_thread",
         "pr_resolve_review_thread",
         "getLinearQuickView",
-        "listLinearWorkflows",
-        "getLinearRunStatus",
-        "getLinearSyncDashboard",
-        "runLinearSyncNow",
-        "listLinearSyncQueue",
-        "getLinearIngressStatus",
+        "getLinearIssuePickerData",
+        "searchLinearIssues",
+        "getLinearIssueComments",
       ]),
     );
     expect(names).not.toContain("spawn_worker");
+    expect(names).not.toContain("listLinearWorkflows");
+    expect(names).not.toContain("getLinearSyncDashboard");
+  });
+
+  it("dispatches CTO memory tools through ctoMemoryService", async () => {
+    const { runtime } = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+
+    const saved = await callTool(handler, "saveMemory", { fact: "Prefer sentence case." });
+    expect((runtime.ctoMemoryService as any).appendMemoryFact).toHaveBeenCalledWith("Prefer sentence case.");
+    expect(saved.structuredContent).toEqual(
+      expect.objectContaining({ success: true, saved: true, file: "MEMORY.md" }),
+    );
+
+    const read = await callTool(handler, "readMemory", {});
+    expect((runtime.ctoMemoryService as any).getSnapshot).toHaveBeenCalled();
+    expect(read.structuredContent).toEqual(
+      expect.objectContaining({ success: true, memory: expect.stringContaining("a fact") }),
+    );
   });
 
   it("creates a work chat for cto callers and returns a work navigation suggestion", async () => {
@@ -1266,22 +1270,6 @@ describe("adeRpcServer", () => {
           surface: "work",
           sessionId: "chat-new",
         }),
-      }),
-    );
-  });
-
-  it("returns the Linear sync dashboard for cto callers", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "cto-1", role: "cto" });
-    const result = await callTool(handler, "getLinearSyncDashboard", {});
-
-    expect((runtime.linearSyncService as any).getDashboard).toHaveBeenCalled();
-    expect(result.structuredContent).toEqual(
-      expect.objectContaining({
-        enabled: true,
-        ingressMode: "webhook-first",
       }),
     );
   });
@@ -1371,52 +1359,6 @@ describe("adeRpcServer", () => {
     expect(result.structuredContent).toEqual([
       expect.objectContaining({ id: "comment-1", body: "First comment" }),
     ]);
-  });
-
-  it("forwards employeeOverride and laneId when resuming a Linear sync queue item", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "cto-1", role: "cto" });
-    const result = await callTool(handler, "resolveLinearSyncQueueItem", {
-      queueItemId: "run-queued",
-      action: "resume",
-      employeeOverride: "agent:worker-1",
-      laneId: "lane-2",
-    });
-
-    expect((runtime.linearSyncService as any).resolveQueueItem).toHaveBeenCalledWith(
-      expect.objectContaining({
-        queueItemId: "run-queued",
-        action: "resume",
-        employeeOverride: "agent:worker-1",
-        laneId: "lane-2",
-      }),
-    );
-    expect(result.structuredContent).toEqual(
-      expect.objectContaining({
-        id: "run-queued",
-        status: "resume",
-        employeeOverride: "agent:worker-1",
-        laneId: "lane-2",
-      }),
-    );
-  });
-
-  it("rejects unsupported Linear sync queue actions", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "cto-1", role: "cto" });
-    const response = await callTool(handler, "resolveLinearSyncQueueItem", {
-      queueItemId: "run-queued",
-      action: "ship-it",
-    });
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-      "action must be one of: approve, reject, retry, complete, resume",
-    );
-    expect((runtime.linearSyncService as any).resolveQueueItem).not.toHaveBeenCalled();
   });
 
   it("returns structured local computer-use capability state", async () => {
@@ -2532,7 +2474,7 @@ describe("adeRpcServer", () => {
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator")).toBe(false);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "orchestrator_core")).toBe(false);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "cto_state")).toBe(true);
-    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "worker_agent")).toBe(true);
+    expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "worker_agent")).toBe(false);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "computer_use_artifacts")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "operation")).toBe(true);
     expect(allDomains.structuredContent.actions.some((entry: { domain: string }) => entry.domain === "keybindings")).toBe(true);

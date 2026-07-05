@@ -3,15 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mockState = vi.hoisted(() => ({
-  syncService: {
-    processIssueUpdate: vi.fn(async () => {}),
-    dispose: vi.fn(),
-  },
-  ingressOnEvent: null as ((event: { issueId?: string | null }) => Promise<void>) | null,
-  dispatcherOnEvent: null as ((event: unknown) => void) | null,
-}));
-
 const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
 
 afterAll(() => {
@@ -28,63 +19,6 @@ vi.mock("../../desktop/src/main/services/cto/linearClient", () => ({
 
 vi.mock("../../desktop/src/main/services/cto/linearIssueTracker", () => ({
   createLinearIssueTracker: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearTemplateService", () => ({
-  createLinearTemplateService: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearWorkflowFileService", () => ({
-  createLinearWorkflowFileService: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/flowPolicyService", () => ({
-  createFlowPolicyService: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearRoutingService", () => ({
-  createLinearRoutingService: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearIntakeService", () => ({
-  createLinearIntakeService: vi.fn(() => ({ issueHash: vi.fn(() => "hash-current") })),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearOutboundService", () => ({
-  createLinearOutboundService: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearCloseoutService", () => ({
-  createLinearCloseoutService: vi.fn(() => ({})),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearDispatcherService", () => ({
-  createLinearDispatcherService: vi.fn((args: { onEvent?: (event: unknown) => void }) => {
-    mockState.dispatcherOnEvent = args.onEvent ?? null;
-    return {};
-  }),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearSyncService", () => ({
-  createLinearSyncService: vi.fn(() => mockState.syncService),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/linearIngressService", () => ({
-  createLinearIngressService: vi.fn((args: { onEvent?: (event: { issueId?: string | null }) => Promise<void> }) => {
-    mockState.ingressOnEvent = args.onEvent ?? null;
-    return {
-      canAutoStart: vi.fn(() => false),
-      start: vi.fn(async () => {}),
-      ensureRelayWebhook: vi.fn(async () => {}),
-      getStatus: vi.fn(() => ({})),
-      listRecentEvents: vi.fn(() => []),
-      dispose: vi.fn(),
-    };
-  }),
-}));
-
-vi.mock("../../desktop/src/main/services/cto/workerTaskSessionService", () => ({
-  createWorkerTaskSessionService: vi.fn(() => ({})),
 }));
 
 vi.mock("../../desktop/src/main/services/files/fileService", () => ({
@@ -135,9 +69,6 @@ function createDeps(overrides: Record<string, any> = {}) {
     laneService: {} as any,
     operationService: {} as any,
     conflictService: {} as any,
-    workerAgentService: {} as any,
-    workerBudgetService: {} as any,
-    computerUseArtifactBrokerService: {} as any,
     openExternal: async () => {},
     ...overrides,
   };
@@ -147,29 +78,6 @@ describe("headlessLinearServices", () => {
   beforeEach(() => {
     process.env.ADE_DISABLE_GH_AUTH_FALLBACK = "1";
     vi.clearAllMocks();
-    mockState.ingressOnEvent = null;
-    mockState.dispatcherOnEvent = null;
-  });
-
-  it("forwards Linear workflow dispatcher events to the headless runtime callback", () => {
-    const onLinearWorkflowEvent = vi.fn();
-    createHeadlessLinearServices({
-      ...createDeps(),
-      onLinearWorkflowEvent,
-    });
-
-    const event = {
-      type: "linear-workflow-ingress",
-      projectId: "project-1",
-      source: "manual",
-      issueId: "issue-1",
-      issueIdentifier: "ADE-1",
-      summary: "Received Linear issue",
-      createdAt: "now",
-    };
-    expect(mockState.dispatcherOnEvent).toEqual(expect.any(Function));
-    mockState.dispatcherOnEvent?.(event);
-    expect(onLinearWorkflowEvent).toHaveBeenCalledWith(event);
   });
 
   it("emits GitHub status changes from the headless shared credential service", async () => {
@@ -311,46 +219,6 @@ describe("headlessLinearServices", () => {
     services.dispose();
   });
 
-  it("fails worker-backed targets immediately instead of leaving queued headless runs behind", async () => {
-    const services = createHeadlessLinearServices(createDeps());
-
-    const wake = await services.workerHeartbeatService.triggerWakeup({
-      agentId: "worker-1",
-      reason: "assignment",
-      taskKey: "task-1",
-      issueKey: "ABC-42",
-      context: { source: "linear_workflow" },
-    });
-
-    expect(wake.status).toBe("failed");
-    expect(services.workerHeartbeatService.listRuns({ limit: 10 })).toEqual([
-      expect.objectContaining({
-        id: wake.runId,
-        agentId: "worker-1",
-        status: "failed",
-        taskKey: "task-1",
-        issueKey: "ABC-42",
-        errorMessage: expect.stringContaining("does not support worker-backed Linear targets"),
-      }),
-    ]);
-
-    services.dispose();
-  });
-
-  it("forwards ingress issue events into sync processing", async () => {
-    const services = createHeadlessLinearServices(createDeps());
-
-    expect(mockState.ingressOnEvent).toBeTypeOf("function");
-
-    await mockState.ingressOnEvent?.({ issueId: "issue-123" });
-    await mockState.ingressOnEvent?.({ issueId: null });
-
-    expect(mockState.syncService.processIssueUpdate).toHaveBeenCalledTimes(1);
-    expect(mockState.syncService.processIssueUpdate).toHaveBeenCalledWith("issue-123");
-
-    services.dispose();
-  });
-
   it("creates a fresh session with createSession and assigns unique ids", async () => {
     const services = createHeadlessLinearServices(createDeps());
 
@@ -483,58 +351,16 @@ describe("headlessLinearServices", () => {
     services.dispose();
   });
 
-  it("workerHeartbeatService listRuns respects limit and returns in LIFO order", async () => {
-    const services = createHeadlessLinearServices(createDeps());
-
-    await services.workerHeartbeatService.triggerWakeup({ agentId: "w1", reason: "timer" });
-    await services.workerHeartbeatService.triggerWakeup({ agentId: "w2", reason: "manual" });
-    await services.workerHeartbeatService.triggerWakeup({ agentId: "w3", reason: "api" });
-
-    const all = services.workerHeartbeatService.listRuns({ limit: 10 });
-    expect(all).toHaveLength(3);
-    expect(all[0]!.agentId).toBe("w3"); // most recent first
-
-    const limited = services.workerHeartbeatService.listRuns({ limit: 1 });
-    expect(limited).toHaveLength(1);
-    expect(limited[0]!.agentId).toBe("w3");
-
-    services.dispose();
-  });
-
-  it("workerHeartbeatService dispose clears all runs", async () => {
-    const services = createHeadlessLinearServices(createDeps());
-
-    await services.workerHeartbeatService.triggerWakeup({ agentId: "w1" });
-    expect(services.workerHeartbeatService.listRuns()).toHaveLength(1);
-
-    services.workerHeartbeatService.dispose();
-    expect(services.workerHeartbeatService.listRuns()).toHaveLength(0);
-
-    services.dispose();
-  });
-
   it("exposes all expected service properties", () => {
     const services = createHeadlessLinearServices(createDeps());
 
     expect(services.linearCredentialService).toBeTruthy();
     expect(services.linearClient).toBeTruthy();
     expect(services.linearIssueTracker).toBeTruthy();
-    expect(services.linearTemplateService).toBeTruthy();
-    expect(services.linearWorkflowFileService).toBeTruthy();
-    expect(services.flowPolicyService).toBeTruthy();
-    expect(services.linearRoutingService).toBeTruthy();
-    expect(services.linearIntakeService).toBeTruthy();
-    expect(services.linearOutboundService).toBeTruthy();
-    expect(services.linearCloseoutService).toBeTruthy();
-    expect(services.linearDispatcherService).toBeTruthy();
-    expect(services.linearSyncService).toBeTruthy();
-    expect(services.linearIngressService).toBeTruthy();
     expect(services.fileService).toBeTruthy();
     expect(services.processService).toBeTruthy();
     expect(services.prService).toBeTruthy();
     expect(services.agentChatService).toBeTruthy();
-    expect(services.workerTaskSessionService).toBeTruthy();
-    expect(services.workerHeartbeatService).toBeTruthy();
     expect(typeof services.dispose).toBe("function");
 
     services.dispose();
@@ -721,20 +547,6 @@ describe("headlessLinearServices", () => {
     expect(codex.modelId).toBe("openai/gpt-5.5");
     expect(claude.model).toBe("opus-4.8-1m");
     expect(claude.modelId).toBe("anthropic/claude-opus-4-8");
-
-    services.dispose();
-  });
-
-  it("ignores empty issue IDs in ingress events", async () => {
-    const services = createHeadlessLinearServices(createDeps());
-
-    expect(mockState.ingressOnEvent).toBeTypeOf("function");
-
-    // Empty string should be ignored
-    await mockState.ingressOnEvent?.({ issueId: "" });
-    await mockState.ingressOnEvent?.({ issueId: "  " });
-
-    expect(mockState.syncService.processIssueUpdate).not.toHaveBeenCalled();
 
     services.dispose();
   });

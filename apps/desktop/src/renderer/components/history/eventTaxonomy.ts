@@ -205,12 +205,9 @@ export const EVENT_KIND_META: Record<string, EventKindMeta> = {
   // ── Unified ADE work feed ─────────────────────────────────
   "chat.session":     { label: "Chat Session",    category: "session", iconName: "ChatCircleText", description: "ADE chat session activity",      importance: "medium" },
   "cto.session":      { label: "CTO Session",     category: "session", iconName: "Strategy",       description: "CTO coordinator session update", importance: "medium" },
-  "worker.run":       { label: "Worker Run",      category: "automation", iconName: "Robot",       description: "Worker task run",                importance: "medium" },
-  "worker.activity":  { label: "Worker Activity", category: "automation", iconName: "Users",       description: "Worker activity update",         importance: "low" },
 
   // ── Noise-level events (hidden by default) ─────────────────
   "tool_call":         { label: "Tool Call",         category: "system", iconName: "Wrench",          description: "Tool invocation",              importance: "noise" },
-  "worker":            { label: "Worker",            category: "automation", iconName: "Robot",         description: "Worker step",                  importance: "noise" },
   "implementation":    { label: "Implementation",    category: "automation", iconName: "Code",          description: "Implementation step",          importance: "noise" },
   "coordinator":       { label: "Coordinator",       category: "automation", iconName: "TreeStructure", description: "Coordinator operation",        importance: "noise" },
   "opencode":          { label: "OpenCode",          category: "automation", iconName: "Stack",         description: "OpenCode step",                importance: "noise" },

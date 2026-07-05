@@ -2375,17 +2375,14 @@ describe("preload OAuth bridge", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.cto.getLinearWorkflowCatalog()).resolves.toEqual(catalog);
     await expect(bridge.cto.getLinearConnectionStatus()).resolves.toEqual(connection);
     await expect(bridge.cto.setLinearToken({ token: "lin-token" })).resolves.toEqual(connection);
     await expect(bridge.cto.clearLinearToken()).resolves.toEqual(connection);
     await expect(bridge.cto.setLinearOAuthClient({ clientId: "client-id", clientSecret: "secret" })).resolves.toEqual(connection);
     await expect(bridge.cto.clearLinearOAuthClient()).resolves.toEqual(connection);
     await expect(bridge.cto.getLinearQuickView()).resolves.toEqual(quickView);
-    await expect(bridge.cto.simulateFlowRoute({ issue: { title: "Fix routing" } })).resolves.toEqual(route);
     await expect(bridge.cto.startLinearOAuth()).resolves.toEqual(oauthStart);
     await expect(bridge.cto.getLinearOAuthSession({ sessionId: "linear-oauth-1" })).resolves.toEqual(oauthSession);
-    await expect(bridge.cto.ensureLinearWebhook({ force: true })).resolves.toEqual(ingressStatus);
     await expect(bridge.cto.getLinearProjects()).resolves.toEqual(projects);
     await expect(bridge.cto.getLinearIssuePickerData()).resolves.toEqual(picker);
     await expect(bridge.cto.searchLinearIssues({ query: "routing" })).resolves.toEqual(search);
@@ -2394,7 +2391,6 @@ describe("preload OAuth bridge", () => {
       .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
       .map(([, payload]) => (payload as { request: { domain: string; action: string; args?: unknown; arg?: unknown } }).request);
     expect(actions).toEqual([
-      { domain: "linear_issue_tracker", action: "getWorkflowCatalog" },
       { domain: "linear_issue_tracker", action: "getConnectionStatus" },
       { domain: "linear_credentials", action: "setToken", arg: "lin-token" },
       { domain: "linear_issue_tracker", action: "getConnectionStatus" },
@@ -2405,26 +2401,20 @@ describe("preload OAuth bridge", () => {
       { domain: "linear_credentials", action: "clearOAuthClientCredentials" },
       { domain: "linear_issue_tracker", action: "getConnectionStatus" },
       { domain: "linear_issue_tracker", action: "getQuickView" },
-      { domain: "linear_routing", action: "simulateRoute", args: { issue: { title: "Fix routing" } } },
       { domain: "linear_oauth", action: "startSession" },
       { domain: "linear_oauth", action: "getSession", arg: "linear-oauth-1" },
-      { domain: "linear_ingress", action: "ensureRelayWebhook", arg: true },
-      { domain: "linear_ingress", action: "getStatus" },
       { domain: "linear_issue_tracker", action: "listProjects" },
       { domain: "linear_issue_tracker", action: "getIssuePickerData" },
       { domain: "linear_issue_tracker", action: "searchIssues", args: { query: "routing" } },
     ]);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.ctoGetLinearWorkflowCatalog);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoGetLinearConnectionStatus);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoSetLinearToken, { token: "lin-token" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoClearLinearToken);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoSetLinearOAuthClient, { clientId: "client-id", clientSecret: "secret" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoClearLinearOAuthClient);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoGetLinearQuickView);
-    expect(invoke).not.toHaveBeenCalledWith(IPC.ctoSimulateFlowRoute, { issue: { title: "Fix routing" } });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoStartLinearOAuth);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoGetLinearOAuthSession, { sessionId: "linear-oauth-1" });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.ctoEnsureLinearWebhook, { force: true });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoGetLinearProjects);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoGetLinearIssuePickerData);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoSearchLinearIssues, { query: "routing" });
@@ -2441,7 +2431,6 @@ describe("preload OAuth bridge", () => {
       displayName: "Project",
     };
     const ctoSession = { id: "session-cto", identityKey: "cto" };
-    const workerSession = { id: "session-worker", identityKey: "agent:worker-1" };
     const scan = { detection: null };
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
       if (channel === IPC.appGetWindowSession) {
@@ -2451,9 +2440,6 @@ describe("preload OAuth bridge", () => {
         const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
         if (request?.domain === "chat" && request.action === "ensureCtoSession") {
           return { ok: true, domain: request.domain, action: request.action, result: ctoSession, statusHints: {} };
-        }
-        if (request?.domain === "chat" && request.action === "ensureAgentIdentitySession") {
-          return { ok: true, domain: request.domain, action: request.action, result: workerSession, statusHints: {} };
         }
         if (request?.domain === "cto_state" && request.action === "runProjectScan") {
           return { ok: true, domain: request.domain, action: request.action, result: scan, statusHints: {} };
@@ -2480,7 +2466,6 @@ describe("preload OAuth bridge", () => {
 
     const bridge = (globalThis as any).__adeBridge;
     await expect(bridge.cto.ensureSession({ modelId: "claude-sonnet", reasoningEffort: "high" })).resolves.toEqual(ctoSession);
-    await expect(bridge.cto.ensureAgentSession({ agentId: "worker-1", modelId: "gpt-5.4-mini" })).resolves.toEqual(workerSession);
     await expect(bridge.cto.runProjectScan()).resolves.toEqual(scan);
 
     const actions = invoke.mock.calls
@@ -2488,11 +2473,9 @@ describe("preload OAuth bridge", () => {
       .map(([, payload]) => (payload as { request: { domain: string; action: string; args?: unknown } }).request);
     expect(actions).toEqual([
       { domain: "chat", action: "ensureCtoSession", args: { modelId: "claude-sonnet", reasoningEffort: "high" } },
-      { domain: "chat", action: "ensureAgentIdentitySession", args: { agentId: "worker-1", modelId: "gpt-5.4-mini" } },
       { domain: "cto_state", action: "runProjectScan" },
     ]);
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoEnsureSession, { modelId: "claude-sonnet", reasoningEffort: "high" });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.ctoEnsureAgentSession, { agentId: "worker-1", modelId: "gpt-5.4-mini" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.ctoRunProjectScan);
   });
 
@@ -3971,7 +3954,6 @@ describe("preload OAuth bridge", () => {
     const conflicts = vi.fn();
     const rebase = vi.fn();
     const githubStatusChanged = vi.fn();
-    const linearWorkflow = vi.fn();
     const feedback = vi.fn();
     const computerUse = vi.fn();
     const iosSimulator = vi.fn();
@@ -3983,7 +3965,6 @@ describe("preload OAuth bridge", () => {
       bridge.conflicts.onEvent(conflicts),
       bridge.rebase.onEvent(rebase),
       bridge.github.onStatusChanged(githubStatusChanged),
-      bridge.cto.onLinearWorkflowEvent(linearWorkflow),
       bridge.feedback.onUpdate(feedback),
       bridge.computerUse.onEvent(computerUse),
       bridge.iosSimulator.onEvent(iosSimulator),
@@ -4029,15 +4010,6 @@ describe("preload OAuth bridge", () => {
       repoAccessError: null,
       connected: true,
     };
-    const linearWorkflowEvent = {
-      type: "linear-workflow-ingress",
-      projectId: "project-1",
-      source: "manual",
-      issueId: "issue-1",
-      issueIdentifier: "ADE-1",
-      summary: "Received Linear issue",
-      createdAt: "now",
-    };
     const feedbackEvent = { type: "feedback-submission-updated", submission: { id: "sub-1" } };
     const computerUseEvent = { type: "artifact-ingested", artifactId: "artifact-1", at: "now" };
     const iosEvent = { type: "session-updated", session: null };
@@ -4047,7 +4019,6 @@ describe("preload OAuth bridge", () => {
     emit(3, { ...automationEvent, source: "automations" });
     emit(4, { type: "conflict_event", event: conflictEvent }, "dag_mutation");
     emit(5, { type: "github_status_changed", event: githubStatus });
-    emit(6, { type: "linear_workflow_event", event: linearWorkflowEvent }, "orchestrator");
     emit(7, { type: "feedback_submission_event", event: feedbackEvent });
     emit(8, { type: "computer_use_event", event: computerUseEvent });
     emit(9, { type: "ios_simulator_event", event: iosEvent });
@@ -4058,7 +4029,6 @@ describe("preload OAuth bridge", () => {
     expect(conflicts).toHaveBeenCalledWith(conflictEvent);
     expect(rebase).toHaveBeenCalledWith(conflictEvent);
     expect(githubStatusChanged).toHaveBeenCalledWith(githubStatus);
-    expect(linearWorkflow).toHaveBeenCalledWith(linearWorkflowEvent);
     expect(feedback).toHaveBeenCalledWith(feedbackEvent);
     expect(computerUse).toHaveBeenCalledWith(computerUseEvent);
     expect(iosSimulator).toHaveBeenCalledWith(iosEvent);

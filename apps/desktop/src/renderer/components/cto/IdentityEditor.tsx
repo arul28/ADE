@@ -1,282 +1,228 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { getModelById, resolveModelDescriptor } from "../../../shared/modelRegistry";
-import type { CtoIdentity, CtoPersonalityPreset } from "../../../shared/types";
-import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { Button } from "../ui/Button";
+import type { CtoCommunicationStyle, CtoIdentity, CtoPersonalityPreset } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { cardCls, labelCls, recessedPanelCls, textareaCls } from "./shared/designTokens";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { textareaCls } from "./shared/designTokens";
 import { CTO_PERSONALITY_PRESETS, getCtoPersonalityPreset } from "./identityPresets";
-import { CtoPromptPreview } from "./CtoPromptPreview";
+import {
+  getPersonalityTheme,
+  normalizeCommunicationStyle,
+  WORK_STYLE_ROWS,
+} from "./personalityTheme";
+import { Segmented } from "./Segmented";
 
-const CTO_DISPLAY_NAME = "CTO";
+const CTO_DEFAULT_NAME = "CTO";
 
 type IdentityDraft = {
-  customPersonality: string;
+  name: string;
   personality: CtoPersonalityPreset;
-  provider: string;
-  model: string;
-  modelId: string | null;
-  reasoningEffort: string | null;
+  customPersonality: string;
+  communicationStyle: CtoCommunicationStyle;
 };
 
-function pickReasoningEffort(modelId: string | null | undefined, preferred: string | null | undefined): string | null {
-  const tiers = modelId ? (getModelById(modelId)?.reasoningTiers ?? []) : [];
-  if (!tiers.length) return preferred ?? null;
-  if (preferred && tiers.includes(preferred)) return preferred;
-  return tiers.includes("medium") ? "medium" : tiers[0] ?? null;
-}
-
-function applyModelSelection(draft: IdentityDraft, modelId: string): IdentityDraft {
-  const descriptor = getModelById(modelId);
-  if (!descriptor) return draft;
-  return {
-    ...draft,
-    provider: descriptor.family,
-    model: descriptor.shortId ?? descriptor.id.split("/").pop() ?? descriptor.id,
-    modelId: descriptor.id,
-    reasoningEffort: pickReasoningEffort(descriptor.id, draft.reasoningEffort),
-  };
-}
-
-function coerceConfiguredModel(draft: IdentityDraft, configuredModelIds: string[]): IdentityDraft {
-  if (configuredModelIds.length === 0) {
-    return draft.modelId ? applyModelSelection(draft, draft.modelId) : draft;
-  }
-  if (draft.modelId && configuredModelIds.includes(draft.modelId)) {
-    return applyModelSelection(draft, draft.modelId);
-  }
-  return applyModelSelection(draft, configuredModelIds[0]!);
-}
-
 function draftFromIdentity(identity: CtoIdentity | null): IdentityDraft {
-  const resolvedModel = resolveModelDescriptor(
-    identity?.modelPreferences.modelId
-    ?? identity?.modelPreferences.model
-    ?? "",
-  );
-  const base: IdentityDraft = {
-    customPersonality: identity?.customPersonality ?? (identity?.personality === "custom" ? identity?.persona ?? "" : ""),
+  return {
+    name: identity?.name && identity.name !== CTO_DEFAULT_NAME ? identity.name : "",
     personality: identity?.personality ?? "strategic",
-    provider: identity?.modelPreferences.provider ?? "claude",
-    model: identity?.modelPreferences.model ?? "sonnet",
-    modelId: identity?.modelPreferences.modelId ?? null,
-    reasoningEffort: identity?.modelPreferences.reasoningEffort ?? "medium",
+    customPersonality:
+      identity?.customPersonality
+      ?? (identity?.personality === "custom" ? identity?.persona ?? "" : ""),
+    communicationStyle: normalizeCommunicationStyle(identity?.communicationStyle),
   };
-  return resolvedModel ? applyModelSelection(base, resolvedModel.id) : base;
 }
 
+function draftsEqual(a: IdentityDraft, b: IdentityDraft): boolean {
+  return a.name === b.name
+    && a.personality === b.personality
+    && a.customPersonality === b.customPersonality
+    && a.communicationStyle.verbosity === b.communicationStyle.verbosity
+    && a.communicationStyle.proactivity === b.communicationStyle.proactivity
+    && a.communicationStyle.escalationThreshold === b.communicationStyle.escalationThreshold;
+}
+
+/**
+ * Identity section of CTO settings: name, personality preset, and the three
+ * work-style rows. The model lives in its own section; this saves only the
+ * personality overlay.
+ */
 export function IdentityEditor({
   identity,
   onSave,
-  onCancel,
 }: {
   identity: CtoIdentity | null;
   onSave: (patch: Record<string, unknown>) => Promise<void>;
-  onCancel: () => void;
 }) {
-  const navigate = useNavigate();
-  const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
-  }, [navigate]);
-  const [draft, setDraft] = useState<IdentityDraft>(draftFromIdentity(identity));
-  const [availableModelIds, setAvailableModelIds] = useState<string[]>([]);
-  const [loadingModels, setLoadingModels] = useState(true);
+  const baseline = useMemo(() => draftFromIdentity(identity), [identity]);
+  const [draft, setDraft] = useState<IdentityDraft>(baseline);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setDraft(draftFromIdentity(identity));
-  }, [identity]);
+    setDraft(baseline);
+  }, [baseline]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        const status = await window.ade.ai.getStatus();
-        if (cancelled) return;
-        const configured = deriveConfiguredModelIds(status);
-        setAvailableModelIds(configured);
-        setDraft((current) => coerceConfiguredModel(current, configured));
-      } catch {
-        if (!cancelled) {
-          setAvailableModelIds([]);
-        }
-      } finally {
-        if (!cancelled) {
-          setLoadingModels(false);
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const selectedModelDescriptor = useMemo(
-    () => (draft.modelId ? getModelById(draft.modelId) : null),
-    [draft.modelId],
-  );
-  const selectedPreset = getCtoPersonalityPreset(draft.personality);
+  const activeTheme = getPersonalityTheme(draft.personality);
+  const dirty = !draftsEqual(draft, baseline);
 
   const handleSave = useCallback(async () => {
+    if (draft.personality === "custom" && !draft.customPersonality.trim()) {
+      setError("Describe the custom personality, or pick one of the presets.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      if (!draft.modelId || !availableModelIds.includes(draft.modelId)) {
-        throw new Error("Choose one of your configured models for the CTO.");
-      }
-      if (draft.personality === "custom" && !draft.customPersonality.trim()) {
-        throw new Error("Add custom personality guidance or pick one of the built-in presets.");
-      }
-      const selectedPreset = getCtoPersonalityPreset(draft.personality);
+      const preset = getCtoPersonalityPreset(draft.personality);
       await onSave({
-        name: CTO_DISPLAY_NAME,
+        name: draft.name.trim() || CTO_DEFAULT_NAME,
         persona: draft.personality === "custom"
           ? draft.customPersonality.trim()
-          : `Persistent project CTO with ${selectedPreset.label.toLowerCase()} personality.`,
+          : `Persistent project CTO with ${preset.label.toLowerCase()} personality.`,
         personality: draft.personality,
+        communicationStyle: draft.communicationStyle,
         ...(draft.personality === "custom"
           ? { customPersonality: draft.customPersonality.trim() }
           : { customPersonality: undefined }),
-        modelPreferences: {
-          provider: draft.provider,
-          model: draft.model,
-          modelId: draft.modelId,
-          reasoningEffort: draft.reasoningEffort ?? null,
-        },
       });
-      onCancel();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save.");
+      setError(err instanceof Error ? err.message : "Couldn't save. Try again.");
     } finally {
       setSaving(false);
     }
-  }, [availableModelIds, draft, onCancel, onSave]);
+  }, [draft, onSave]);
 
   return (
-    <div className="space-y-3">
-      <div className={cn(cardCls, "space-y-4")}>
-        <div>
-          <div className="font-sans text-sm font-semibold text-fg">CTO identity</div>
-          <div className="mt-1 text-xs leading-5 text-muted-fg/45">
-            ADE keeps the doctrine fixed. Here you choose the model and the personality overlay that rides on top of it.
-          </div>
-        </div>
+    <div className="space-y-6">
+      {/* Name */}
+      <div>
+        <label className="block text-[12px] font-medium text-muted-fg/70" htmlFor="cto-identity-name">
+          Name
+        </label>
+        <input
+          id="cto-identity-name"
+          type="text"
+          value={draft.name}
+          placeholder="CTO"
+          onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
+          className="mt-1.5 h-9 w-full rounded-lg border border-white/[0.08] bg-black/25 px-3 text-[13px] text-fg placeholder:text-muted-fg/35 focus:border-white/20 focus:outline-none"
+        />
+      </div>
 
-        <div className="space-y-2">
-          <div className={labelCls}>Model</div>
-          <div className="inline-flex items-center gap-1.5">
-            <ModelPicker
-              value={draft.modelId ?? ""}
-              availableModelIds={availableModelIds}
-              surfaceKey="cto-identity"
-              onChange={(modelId) => {
-                setDraft((current) => applyModelSelection(current, modelId));
-                setError(null);
-              }}
-              onOpenSignIn={openAiProvidersSettings}
-            />
-            <ReasoningEffortPicker
-              modelId={draft.modelId ?? ""}
-              reasoningEffort={draft.reasoningEffort}
-              onChange={(effort) => setDraft((current) => ({
-                ...current,
-                reasoningEffort: effort,
-              }))}
-            />
-          </div>
-          {loadingModels ? (
-            <div className="text-[11px] text-muted-fg/40">Checking configured models...</div>
-          ) : availableModelIds.length === 0 ? (
-            <div className="rounded-lg border border-amber-500/18 bg-amber-500/[0.06] px-3 py-2 text-[11px] text-amber-200">
-              No configured models detected yet. Open Settings → AI → Providers to add API keys or CLIs before saving.
-            </div>
-          ) : (
-            <div className="text-[11px] text-muted-fg/40">You can change the model and thinking level any time from the CTO chat.</div>
-          )}
-        </div>
-
-        <div>
-          <div className="font-sans text-sm font-semibold text-fg">Personality</div>
-          <div className="mt-2 grid gap-2 md:grid-cols-2">
-            {CTO_PERSONALITY_PRESETS.map((preset) => (
+      {/* Personality */}
+      <div>
+        <div className="text-[12px] font-medium text-muted-fg/70">Personality</div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          {CTO_PERSONALITY_PRESETS.map((preset) => {
+            const theme = getPersonalityTheme(preset.id);
+            const selected = draft.personality === preset.id;
+            const Icon = theme.icon;
+            return (
               <button
                 key={preset.id}
                 type="button"
-                onClick={() => setDraft((current) => ({
-                  ...current,
-                  personality: preset.id,
-                }))}
+                title={preset.description}
+                onClick={() => {
+                  setDraft((current) => ({ ...current, personality: preset.id }));
+                  setError(null);
+                }}
                 className={cn(
-                  "rounded-2xl border px-3 py-3 text-left transition-all duration-200",
-                  draft.personality === preset.id
-                    ? "border-[rgba(167,139,250,0.28)] bg-[rgba(167,139,250,0.08)]"
-                    : "border-white/[0.06] bg-[rgba(24,20,35,0.4)] hover:border-[rgba(167,139,250,0.16)]",
+                  "flex items-center gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors duration-150",
+                  selected
+                    ? "border-transparent"
+                    : "border-white/[0.06] bg-white/[0.015] hover:bg-white/[0.03]",
                 )}
+                style={selected
+                  ? {
+                      background: `rgba(${theme.rgb}, 0.12)`,
+                      boxShadow: `inset 0 0 0 1px rgba(${theme.rgb}, 0.34)`,
+                    }
+                  : undefined}
               >
-                <div className="text-xs font-medium text-fg">{preset.label}</div>
-                <div className="mt-1 text-[11px] leading-5 text-muted-fg/45">{preset.description}</div>
+                <Icon
+                  size={15}
+                  weight={selected ? "duotone" : "regular"}
+                  style={{ color: selected ? theme.hex : undefined }}
+                  className={selected ? undefined : "text-muted-fg/50"}
+                />
+                <span className={cn("text-[12.5px] font-medium", selected ? "text-fg" : "text-muted-fg/70")}>
+                  {preset.label}
+                </span>
               </button>
-            ))}
-          </div>
+            );
+          })}
         </div>
+        <div className="mt-1.5 text-[11.5px] leading-4 text-muted-fg/45">
+          {getCtoPersonalityPreset(draft.personality).description}
+        </div>
+      </div>
 
-        {draft.personality === "custom" ? (
-          <label className="space-y-1 block">
-            <div className={labelCls}>Custom personality overlay</div>
-            <textarea
-              className={cn(textareaCls, "min-h-[120px]")}
-              rows={5}
-              value={draft.customPersonality}
-              placeholder="Describe the CTO's tone, priorities, and decision style."
-              onChange={(event) => setDraft((current) => ({ ...current, customPersonality: event.target.value }))}
+      {draft.personality === "custom" && (
+        <textarea
+          className={cn(textareaCls, "min-h-[96px]")}
+          rows={4}
+          placeholder="Describe the CTO's tone, standards, and decision style."
+          value={draft.customPersonality}
+          onChange={(event) => {
+            const next = event.target.value;
+            setDraft((current) => ({ ...current, customPersonality: next }));
+            setError(null);
+          }}
+        />
+      )}
+
+      {/* Work style */}
+      <div className="space-y-3">
+        <div className="text-[12px] font-medium text-muted-fg/70">Work style</div>
+        {WORK_STYLE_ROWS.map((row) => (
+          <div key={row.key} className="flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <div className="text-[12.5px] font-medium text-fg/85">{row.label}</div>
+              <div className="text-[11px] leading-4 text-muted-fg/45">{row.hint}</div>
+            </div>
+            <Segmented
+              ariaLabel={row.label}
+              options={row.options}
+              value={draft.communicationStyle[row.key]}
+              accentRgb={activeTheme.rgb}
+              onChange={(value) =>
+                setDraft((current) => ({
+                  ...current,
+                  communicationStyle: { ...current.communicationStyle, [row.key]: value },
+                }))
+              }
             />
-            <div className="text-[11px] leading-5 text-muted-fg/40">
-              This custom text changes the CTO's personality. ADE still owns the core doctrine and runtime guardrails.
-            </div>
-          </label>
-        ) : null}
+          </div>
+        ))}
       </div>
 
-      <div className={cn(recessedPanelCls, "space-y-2 p-4")}>
-        <div className="text-[10px] font-medium uppercase tracking-wider text-muted-fg/50">Current summary</div>
-        <div className="grid gap-2 md:grid-cols-3">
-          {[
-            { label: "Role", value: CTO_DISPLAY_NAME },
-            { label: "Model", value: selectedModelDescriptor?.displayName ?? "No model selected" },
-            { label: "Style", value: selectedPreset.label },
-          ].map((item) => (
-            <div key={item.label} className="rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2">
-              <div className="text-[10px] text-muted-fg/40">{item.label}</div>
-              <div className="mt-0.5 text-[11px] leading-5 text-fg/70">{item.value}</div>
-            </div>
-          ))}
+      {/* Constraints (read-only, when configured) */}
+      {identity?.constraints && identity.constraints.length > 0 && (
+        <div>
+          <div className="text-[12px] font-medium text-muted-fg/70">Constraints</div>
+          <ul className="mt-2 space-y-1.5">
+            {identity.constraints.map((constraint, index) => (
+              <li key={index} className="flex gap-2 text-[12px] leading-5 text-muted-fg/60">
+                <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-muted-fg/40" />
+                {constraint}
+              </li>
+            ))}
+          </ul>
         </div>
-      </div>
+      )}
 
-      <CtoPromptPreview
-        compact
-        identityOverride={{
-          name: CTO_DISPLAY_NAME,
-          personality: draft.personality,
-          customPersonality: draft.personality === "custom" ? draft.customPersonality : undefined,
-          persona: draft.personality === "custom" ? draft.customPersonality : undefined,
-        }}
-      />
+      {error && <div className="text-[12px] text-error">{error}</div>}
 
-      {error && <div className="text-xs text-error">{error}</div>}
-
-      <div className="flex gap-2 pt-1">
-        <Button variant="primary" className="flex-1" disabled={saving} onClick={() => void handleSave()}>
-          {saving ? "Saving..." : "Save"}
-        </Button>
-        <Button variant="outline" disabled={saving} onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
+      <button
+        type="button"
+        disabled={!dirty || saving}
+        onClick={() => void handleSave()}
+        className={cn(
+          "h-9 w-full rounded-lg text-[13px] font-semibold transition-opacity",
+          dirty && !saving ? "text-[#0A0A0F]" : "cursor-default text-[#0A0A0F]/70",
+        )}
+        style={{ background: activeTheme.hex, opacity: dirty && !saving ? 1 : 0.55 }}
+      >
+        {saving ? "Saving…" : dirty ? "Save identity" : "Saved"}
+      </button>
     </div>
   );
 }

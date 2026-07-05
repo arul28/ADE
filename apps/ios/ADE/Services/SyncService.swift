@@ -4143,23 +4143,11 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func fetchCtoRoster() async throws -> CtoRoster {
-    try await sendDecodableCommand(action: "cto.getRoster", as: CtoRoster.self)
-  }
-
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
     try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
   }
 
-  func ensureCtoAgentSession(agentId: String) async throws -> AgentChatSessionSummary {
-    try await sendDecodableCommand(
-      action: "cto.ensureAgentSession",
-      args: ["agentId": agentId],
-      as: AgentChatSessionSummary.self
-    )
-  }
-
-  // MARK: - CTO org / worker management
+  // MARK: - CTO state + memory
 
   func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
     var args: [String: Any] = [:]
@@ -4167,46 +4155,12 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "cto.getState", args: args, as: CtoSnapshot.self)
   }
 
-  func fetchCtoAgents(includeDeleted: Bool = false) async throws -> [AgentIdentity] {
-    try await sendDecodableCommand(
-      action: "cto.listAgents",
-      args: ["includeDeleted": includeDeleted],
-      as: [AgentIdentity].self
-    )
-  }
-
-  func fetchCtoBudget() async throws -> AgentBudgetSnapshot {
-    try await sendDecodableCommand(action: "cto.getBudgetSnapshot", as: AgentBudgetSnapshot.self)
-  }
-
-  func listAgentRuns(agentId: String, limit: Int? = nil) async throws -> [WorkerAgentRun] {
-    var args: [String: Any] = ["agentId": agentId]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(action: "cto.listAgentRuns", args: args, as: [WorkerAgentRun].self)
-  }
-
-  func listAgentSessionLogs(agentId: String, limit: Int? = nil) async throws -> [AgentSessionLogEntry] {
-    var args: [String: Any] = ["agentId": agentId]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(
-      action: "cto.listAgentSessionLogs",
-      args: args,
-      as: [AgentSessionLogEntry].self
-    )
-  }
-
-  func listAgentRevisions(agentId: String, limit: Int? = nil) async throws -> [AgentConfigRevision] {
-    var args: [String: Any] = ["agentId": agentId]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(
-      action: "cto.listAgentRevisions",
-      args: args,
-      as: [AgentConfigRevision].self
-    )
-  }
-
-  func fetchFlowPolicy() async throws -> LinearWorkflowConfig {
-    try await sendDecodableCommand(action: "cto.getFlowPolicy", as: LinearWorkflowConfig.self)
+  /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
+  /// today's daily log. The host command is version-gated: older hosts respond
+  /// with a command error, which callers surface as a quiet "not available"
+  /// row rather than an error card.
+  func fetchCtoMemory() async throws -> CtoMemory {
+    try await sendDecodableCommand(action: "cto.getMemory", as: CtoMemory.self)
   }
 
   func fetchLinearConnectionStatus() async throws -> LinearConnectionStatus {
@@ -4237,71 +4191,12 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchLinearSyncDashboard() async throws -> LinearSyncDashboard {
-    try await sendDecodableCommand(action: "cto.getLinearSyncDashboard", as: LinearSyncDashboard.self)
-  }
-
-  func runLinearSyncNow() async throws -> LinearSyncDashboard {
-    try await sendDecodableCommand(action: "cto.runLinearSyncNow", as: LinearSyncDashboard.self)
-  }
-
-  func removeAgent(agentId: String) async throws {
-    _ = try await sendCommand(action: "cto.removeAgent", args: ["agentId": agentId])
-  }
-
-  func saveAgent(_ agent: AgentUpsertInput, actor: String = "mobile") async throws -> AgentIdentity {
-    let payload = CtoSaveAgentPayload(agent: agent, actor: actor)
-    return try await sendDecodableCommand(
-      action: "cto.saveAgent",
-      args: try encodedCommandArgs(from: payload),
-      as: AgentIdentity.self
-    )
-  }
-
-  func listLinearSyncQueue() async throws -> [LinearSyncQueueItem] {
-    try await sendDecodableCommand(action: "cto.listLinearSyncQueue", as: [LinearSyncQueueItem].self)
-  }
-
-  func listLinearIngressEvents(limit: Int? = nil) async throws -> [LinearIngressEventRecord] {
-    var args: [String: Any] = [:]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(
-      action: "cto.listLinearIngressEvents",
-      args: args,
-      as: [LinearIngressEventRecord].self
-    )
-  }
-
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
     let patchArgs = try encodedCommandArgs(from: patch)
     return try await sendDecodableCommand(
       action: "cto.updateIdentity",
       args: ["patch": patchArgs],
       as: CtoSnapshot.self
-    )
-  }
-
-  func setAgentStatus(agentId: String, status: String) async throws {
-    _ = try await sendCommand(
-      action: "cto.setAgentStatus",
-      args: ["agentId": agentId, "status": status]
-    )
-  }
-
-  func triggerAgentWakeup(agentId: String, reason: String? = nil) async throws -> CtoTriggerAgentWakeupResult {
-    var args: [String: Any] = ["agentId": agentId]
-    if let reason { args["reason"] = reason }
-    return try await sendDecodableCommand(
-      action: "cto.triggerAgentWakeup",
-      args: args,
-      as: CtoTriggerAgentWakeupResult.self
-    )
-  }
-
-  func rollbackAgentRevision(agentId: String, revisionId: String) async throws {
-    _ = try await sendCommand(
-      action: "cto.rollbackAgentRevision",
-      args: ["agentId": agentId, "revisionId": revisionId]
     )
   }
 

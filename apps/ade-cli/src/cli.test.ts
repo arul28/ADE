@@ -255,7 +255,6 @@ describe("ADE CLI", () => {
       },
       () => {
         expect(() => buildCliPlan(["automations", "list"])).toThrow(/coming soon/);
-        expect(() => buildCliPlan(["linear", "ingress", "status"])).toThrow(/coming soon/);
 
         const automationHelp = buildCliPlan(["help", "automations"]);
         expect(automationHelp.kind).toBe("help");
@@ -4379,34 +4378,6 @@ describe("ADE CLI", () => {
         domain: "automations",
         action: "setWebhookGatewayPublicUrl",
         args: { publicUrl: null },
-      },
-    });
-  });
-
-  it("linear ingress start-local starts the runtime local webhook listener", () => {
-    const plan = buildCliPlan(["linear", "ingress", "start-local"]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "linear_ingress",
-        action: "startLocalWebhook",
-        args: {},
-      },
-    });
-  });
-
-  it("linear ingress start ensures the provider webhook and relay loop", () => {
-    const plan = buildCliPlan(["linear", "ingress", "start"]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "linear_ingress",
-        action: "ensureRelayWebhook",
-        args: {},
       },
     });
   });

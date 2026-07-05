@@ -104,7 +104,6 @@ export type DelegationContract = {
 
 export type ChatSurfaceMode = "standard" | "resolver";
 export type ChatSurfaceProfile = "standard" | "persistent_identity";
-export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-launch";
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
@@ -126,7 +125,6 @@ export type ChatSurfaceChip = {
 export type ChatSurfacePresentation = {
   mode: ChatSurfaceMode;
   profile?: ChatSurfaceProfile;
-  modelSwitchPolicy?: ChatModelSwitchPolicy;
   title?: string | null;
   subtitle?: string | null;
   accentColor?: string | null;
@@ -871,7 +869,7 @@ export type OrchestrationSessionFields = {
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
 };
-export type AgentChatIdentityKey = "cto" | `agent:${string}`;
+export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {

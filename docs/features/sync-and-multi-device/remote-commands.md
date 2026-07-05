@@ -267,11 +267,15 @@ a boolean.
   tab; see `ios-companion.md` for the shape.
 
 **CTO** (`cto.*`)
-- `removeAgent` — drop a worker from the team and trigger a
-  `workerHeartbeatService.syncFromConfig` resync so the live
-  roster reflects the removal immediately. Phone-driven CTO
-  management uses this in tandem with `setAgentStatus`,
-  `triggerAgentWakeup`, and `rollbackAgentRevision`.
+- `ensureSession`, `getState`, `updateIdentity` — resolve the single CTO
+  chat session and read/patch its identity.
+- `getMemory` — return the CTO's memory snapshot (durable `MEMORY.md`,
+  rolling thread state, and today's daily log) for the phone's Memory card.
+- `getLinearConnectionStatus`, `getLinearQuickView`,
+  `getLinearIssuePickerData`, `searchLinearIssues`, `getLinearIssueComments`
+  — the Linear read surface. The former worker-management commands
+  (`removeAgent`, `setAgentStatus`, `triggerAgentWakeup`,
+  `rollbackAgentRevision`) were removed with the worker subsystem.
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.

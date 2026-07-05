@@ -42,7 +42,6 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
 import type { BudgetCapProvider } from "../../../shared/types/usage";
 import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandboxDefaults";
-import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
@@ -801,25 +800,6 @@ function resolveTemplateString(template: string | undefined | null, trigger: Tri
   }
 }
 
-function mapWorkerStatus(status: string, _verificationRequired: boolean): AutomationRunStatus {
-  switch (status) {
-    case "queued":
-    case "deferred":
-      return "queued";
-    case "running":
-      return "running";
-    case "completed":
-      return "succeeded";
-    case "cancelled":
-      return "cancelled";
-    case "skipped":
-      return "paused";
-    case "failed":
-    default:
-      return "failed";
-  }
-}
-
 function deriveQueueStatus(args: {
   current: AutomationRunQueueStatus;
   runStatus: AutomationRunStatus;
@@ -958,7 +938,6 @@ export function createAutomationService({
   };
   let agentChatServiceRef = agentChatService;
   let budgetCapServiceRef = budgetCapService;
-  let workerHeartbeatServiceRef: ReturnType<typeof createWorkerHeartbeatService> | null = null;
   let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
   const readWebhookGatewayPublicUrl = (): string | null => {
     try {
@@ -2755,81 +2734,6 @@ export function createAutomationService({
     });
   };
 
-  const syncWorkerRun = async (workerRunId: string) => {
-    if (!workerHeartbeatServiceRef) return;
-    const runRow = db.get<AutomationRunRow>(
-      `
-        select
-          id, automation_id, chat_session_id, worker_run_id, worker_agent_id, queue_item_id, ingress_event_id, trigger_type, started_at, ended_at, status, execution_kind, queue_status,
-          executor_mode, actions_completed, actions_total, error_message, verification_required, spend_usd,
-          trigger_metadata, summary, confidence_json, billing_code
-        from automation_runs
-        where project_id = ? and worker_run_id = ?
-        order by started_at desc
-        limit 1
-      `,
-      [projectId, workerRunId]
-    );
-    if (!runRow) return;
-    const workerRun = workerHeartbeatServiceRef
-      .listRuns({ agentId: runRow.worker_agent_id ?? undefined, limit: 500 })
-      .find((entry) => entry.id === workerRunId);
-    if (!workerRun) return;
-    const rule = findRule(runRow.automation_id);
-    const verificationRequired = Boolean(runRow.verification_required ?? 0);
-    const nextStatus = mapWorkerStatus(workerRun.status, verificationRequired);
-    const nextSummary = typeof workerRun.result?.summary === "string"
-      ? workerRun.result.summary
-      : typeof workerRun.result?.output === "string"
-        ? workerRun.result.output
-        : runRow.summary ?? null;
-    const nextQueueStatus = deriveQueueStatus({
-      current: normalizeQueueStatus(runRow.queue_status, "pending-review"),
-      runStatus: nextStatus,
-      verificationRequired,
-      mode: rule?.mode ?? "review",
-      summary: nextSummary,
-    });
-    updateRun(runRow.id, {
-      status: nextStatus,
-      queue_status: nextQueueStatus,
-      summary: nextSummary,
-      ended_at: nextStatus === "running" || nextStatus === "queued" ? null : (workerRun.finishedAt ?? nowIso()),
-      error_message: workerRun.errorMessage ?? null,
-    });
-    if (runRow.queue_item_id) {
-      upsertQueueItem({
-        id: runRow.queue_item_id,
-        rule: rule ?? {
-          id: runRow.automation_id,
-          name: runRow.automation_id,
-          enabled: true,
-          mode: "review",
-          triggers: [{ type: runRow.trigger_type as AutomationTriggerType }],
-          trigger: { type: runRow.trigger_type as AutomationTriggerType },
-          executor: { mode: "automation-bot" },
-          reviewProfile: "quick",
-          toolPalette: ["repo"],
-          contextSources: [],
-          guardrails: {},
-          outputs: { disposition: "comment-only", createArtifact: true },
-          verification: { verifyBeforePublish: verificationRequired, mode: "intervention" },
-          billingCode: runRow.billing_code ?? `auto:${runRow.automation_id}`,
-          actions: [],
-        },
-        runId: runRow.id,
-        queueStatus: nextQueueStatus,
-        triggerType: runRow.trigger_type as AutomationTriggerType,
-        summary: nextSummary,
-        severitySummary: workerRun.errorMessage ?? (nextStatus === "succeeded" ? "Worker completed" : "Worker active"),
-        confidence: normalizeConfidence(safeJsonParse(runRow.confidence_json ?? "null", null)),
-        spendUsd: Number(runRow.spend_usd ?? 0),
-        verificationRequired,
-      });
-    }
-    emit({ type: "runs-updated", automationId: runRow.automation_id, runId: runRow.id });
-  };
-
   const upsertIngressCursor = (source: AutomationIngressSource, cursor: string | null) => {
     db.run(
       `
@@ -2994,10 +2898,8 @@ export function createAutomationService({
 
     bindRuntime(args: {
       budgetCapService?: ReturnType<typeof createBudgetCapService>;
-      workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
     }) {
       budgetCapServiceRef = args.budgetCapService ?? budgetCapServiceRef;
-      workerHeartbeatServiceRef = args.workerHeartbeatService ?? workerHeartbeatServiceRef;
     },
 
     bindAdeActionRegistry(registry: AutomationAdeActionRegistry | null) {
@@ -3009,12 +2911,6 @@ export function createAutomationService({
       const snapshot = projectConfigService.get();
       const localRuleIds = new Set((snapshot.local?.automations ?? []).map((rule) => rule?.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0));
       const sharedRuleIds = new Set((snapshot.shared?.automations ?? []).map((rule) => rule?.id).filter((id): id is string => typeof id === "string" && id.trim().length > 0));
-      for (const row of db.all<{ worker_run_id: string | null }>(
-        `select distinct worker_run_id from automation_runs where project_id = ? and worker_run_id is not null`,
-        [projectId]
-      )) {
-        if (row.worker_run_id) void syncWorkerRun(row.worker_run_id);
-      }
       return rules.map((rule) => {
         const runRow = db.get<AutomationRunRow>(
           `
@@ -3138,9 +3034,6 @@ export function createAutomationService({
         `,
         [projectId, id, limit]
       );
-      for (const row of rows) {
-        if (row.worker_run_id) void syncWorkerRun(row.worker_run_id);
-      }
       return rows.map((row) => toRun(loadRunRow(row.id) ?? row));
     },
 
@@ -3178,7 +3071,6 @@ export function createAutomationService({
       if (!runId) return null;
       const runRow = loadRunRow(runId);
       if (!runRow) return null;
-      if (runRow.worker_run_id) void syncWorkerRun(runRow.worker_run_id);
       const refreshed = loadRunRow(runId) ?? runRow;
       const actions = db.all<AutomationActionRow>(
         `
@@ -3469,10 +3361,6 @@ export function createAutomationService({
       }
     },
 
-    onWorkerRunUpdated(args: { workerRunId: string }) {
-      if (!args.workerRunId.trim()) return;
-      void syncWorkerRun(args.workerRunId.trim());
-    },
 
     reloadFromConfig() {
       syncFromConfig();

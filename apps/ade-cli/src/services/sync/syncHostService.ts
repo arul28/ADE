@@ -73,15 +73,9 @@ import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTra
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
-import type { createFlowPolicyService } from "../../../../desktop/src/main/services/cto/flowPolicyService";
+import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
-import type { createLinearIngressService } from "../../../../desktop/src/main/services/cto/linearIngressService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearSyncService } from "../../../../desktop/src/main/services/cto/linearSyncService";
-import type { createWorkerAgentService } from "../../../../desktop/src/main/services/cto/workerAgentService";
-import type { createWorkerBudgetService } from "../../../../desktop/src/main/services/cto/workerBudgetService";
-import type { createWorkerHeartbeatService } from "../../../../desktop/src/main/services/cto/workerHeartbeatService";
-import type { createWorkerRevisionService } from "../../../../desktop/src/main/services/cto/workerRevisionService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
@@ -585,16 +579,10 @@ type SyncHostServiceArgs = {
   ptyService: ReturnType<typeof createPtyService>;
   processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
-  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
-  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -1213,16 +1201,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
-    workerAgentService: args.workerAgentService,
-    workerBudgetService: args.workerBudgetService,
-    workerHeartbeatService: args.workerHeartbeatService,
-    workerRevisionService: args.workerRevisionService,
     ctoStateService: args.ctoStateService,
-    flowPolicyService: args.flowPolicyService,
+    ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
-    getLinearIngressService: args.getLinearIngressService,
     getLinearIssueTracker: args.getLinearIssueTracker,
-    getLinearSyncService: args.getLinearSyncService,
     queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
     processService: args.processService,

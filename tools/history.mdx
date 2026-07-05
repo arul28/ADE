@@ -4,7 +4,7 @@ description: "A per-project timeline with two surfaces: a commit graph for each 
 icon: "clock-rotate-left"
 ---
 
-The **History** tab is your project's timeline. It has two surfaces sharing one page: a **Commits** view — a GitKraken-style commit graph for the focused lane — and an **Activity** view that merges operations, chat sessions, CTO sessions, and worker runs into one feed. Use it to recover context, audit agent work, or recover from a lane that wandered off.
+The **History** tab is your project's timeline. It has two surfaces sharing one page: a **Commits** view — a GitKraken-style commit graph for the focused lane — and an **Activity** view that merges operations, chat sessions, and CTO sessions into one feed. Use it to recover context, audit agent work, or recover from a lane that wandered off.
 
 ## Commits
 
@@ -35,7 +35,7 @@ The Commits view also exposes per-lane **undo / redo** for the last HEAD-changin
 
 ## Activity
 
-The Activity surface is a unified feed. It combines recorded **operations** — discrete, typed actions that changed state — with synthesized rows pulled from chat sessions, CTO snapshots, and worker runs, sorted newest-first.
+The Activity surface is a unified feed. It combines recorded **operations** — discrete, typed actions that changed state — with synthesized rows pulled from chat sessions and CTO snapshots, sorted newest-first.
 
 | Source | Examples |
 |--------|----------|
@@ -43,12 +43,12 @@ The Activity surface is a unified feed. It combines recorded **operations** — 
 | **PR operations** | PR creation and related actions. |
 | **Pack refreshes** | Lane and project context-pack regeneration. |
 | **Chat sessions** | Agent chats, with provider, model, and status. |
-| **CTO & workers** | CTO sessions and worker runs with their status and wakeup reason. |
+| **CTO** | CTO chat sessions with their provider, model, and status. |
 
 Pick from three view modes — **Graph** (per-lane swimlanes), **List** (a sortable table), or **Compact** (one dense line per event). A **scope** selector sets how much detail shows (Key → Standard → Detailed → All), and you can further filter by lane, category, status, and time range, or search across labels, kinds, and metadata. Running events auto-refresh while the tab is focused.
 
 <Note>
-Synthesized chat/CTO/worker rows are rebuilt on every refresh for display only — they're never written into the operations table, and they don't appear in an export.
+Synthesized chat and CTO rows are rebuilt on every refresh for display only — they're never written into the operations table, and they don't appear in an export.
 </Note>
 
 ## Export

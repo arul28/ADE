@@ -48,19 +48,10 @@ import { createPrPollingService } from "../../desktop/src/main/services/prs/prPo
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
-import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
-import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
-import { createWorkerRevisionService } from "../../desktop/src/main/services/cto/workerRevisionService";
-import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
-import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
+import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
-import type { createFlowPolicyService } from "../../desktop/src/main/services/cto/flowPolicyService";
-import type { createLinearDispatcherService } from "../../desktop/src/main/services/cto/linearDispatcherService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearIngressService } from "../../desktop/src/main/services/cto/linearIngressService";
-import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
-import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
 import {
   createLinearChatLinkPublisher,
   publishLinearLaneCard,
@@ -209,19 +200,10 @@ export type AdeRuntime = {
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
-  workerAgentService: ReturnType<typeof createWorkerAgentService>;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
+  ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
-  linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
-  linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
-  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
-  linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
@@ -821,15 +803,15 @@ export async function createAdeRuntime(args: {
     dismiss: (args) => rebaseSuggestionService.dismiss(args),
   };
 
+  const ctoMemoryService = createCtoMemoryService({
+    adeDir: paths.adeDir,
+    logger,
+  });
   const ctoStateService = createCtoStateService({
     db,
     projectId,
     adeDir: paths.adeDir,
-  });
-  const workerAgentService = createWorkerAgentService({
-    db,
-    projectId,
-    adeDir: paths.adeDir,
+    ctoMemoryService,
   });
   const adeProjectService = createAdeProjectService({
     projectRoot,
@@ -838,18 +820,6 @@ export async function createAdeRuntime(args: {
     logger,
     projectConfigService,
     ctoStateService,
-    workerAgentService,
-  });
-  const workerBudgetService = createWorkerBudgetService({
-    db,
-    projectId,
-    workerAgentService,
-    projectConfigService,
-  });
-  const workerRevisionService = createWorkerRevisionService({
-    db,
-    projectId,
-    workerAgentService,
   });
   const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
     db,
@@ -928,15 +898,9 @@ export async function createAdeRuntime(args: {
     laneService,
     operationService,
     conflictService,
-    workerAgentService,
-    workerBudgetService,
-    computerUseArtifactBrokerService,
     openExternal: async () => {},
     onGitHubStatusChanged: (status) =>
       pushEvent("runtime", { type: "github_status_changed", event: status }),
-    onLinearWorkflowEvent: (event) =>
-      pushEvent("runtime", { type: "linear_workflow_event", event }),
-    getAutomationService: () => automationServiceRef,
   });
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -981,11 +945,7 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       transcriptsDir: paths.transcriptsDir,
       fileService: headlessLinearServices.fileService,
-      workerAgentService,
-      workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
-      flowPolicyService: headlessLinearServices.flowPolicyService,
-      getLinearDispatcherService: () => headlessLinearServices.linearDispatcherService,
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
@@ -995,7 +955,6 @@ export async function createAdeRuntime(args: {
       getAutomationService: () => automationServiceRef,
       getGitService: () => gitService,
       conflictService,
-      getWorkerBudgetService: () => workerBudgetService,
       computerUseArtifactBrokerService,
       laneService,
       sessionService,
@@ -1003,6 +962,7 @@ export async function createAdeRuntime(args: {
       projectConfigService,
       aiIntegrationService,
       ctoStateService,
+      ctoMemoryService,
       logger,
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
@@ -1227,15 +1187,10 @@ export async function createAdeRuntime(args: {
       autoRebaseService,
       computerUseArtifactBrokerService,
       agentChatService,
-      workerAgentService,
-      workerBudgetService,
-      workerRevisionService,
-      workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
       ctoStateService,
-      flowPolicyService: headlessLinearServices.flowPolicyService,
-      getLinearIngressService: () => headlessLinearServices.linearIngressService,
+      ctoMemoryService,
+      linearCredentialService: headlessLinearServices.linearCredentialService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
-      getLinearSyncService: () => headlessLinearServices.linearSyncService,
       processService,
       sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
@@ -1305,25 +1260,16 @@ export async function createAdeRuntime(args: {
     agentChatService,
     orchestrationService,
     ctoStateService,
-    workerAgentService,
+    ctoMemoryService,
     adeProjectService,
-    workerBudgetService,
-    workerRevisionService,
     githubService: headlessLinearServices.githubService,
-    workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
-    workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
     linearCredentialService: headlessLinearServices.linearCredentialService,
     linearOAuthService,
     prService: headlessLinearServices.prService,
     queueLandingService,
     prSummaryService,
     fileService: headlessLinearServices.fileService,
-    flowPolicyService: headlessLinearServices.flowPolicyService,
-    linearDispatcherService: headlessLinearServices.linearDispatcherService,
     linearIssueTracker: headlessLinearServices.linearIssueTracker,
-    linearSyncService: headlessLinearServices.linearSyncService,
-    linearIngressService: headlessLinearServices.linearIngressService,
-    linearRoutingService: headlessLinearServices.linearRoutingService,
     processService,
     feedbackReporterService,
     usageTrackingService,

@@ -126,7 +126,7 @@ describe("isAllowedAdeAction", () => {
 });
 
 describe("getAdeActionDomainServices feature gates", () => {
-  it("hides Automations and Linear ingress domains in packaged builds", () => {
+  it("hides Automations domains in packaged builds", () => {
     withEnv(
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
@@ -138,12 +138,10 @@ describe("getAdeActionDomainServices feature gates", () => {
           automationService: {},
           automationPlannerService: {},
           automationIngressService: {},
-          linearIngressService: {},
         } as never);
 
         expect(services.automation_planner).toBeNull();
         expect(services.automations).toBeNull();
-        expect(services.linear_ingress).toBeNull();
       },
     );
   });
@@ -158,11 +156,9 @@ describe("getAdeActionDomainServices feature gates", () => {
         const services = getAdeActionDomainServices({
           isPackaged: false,
           automationPlannerService: { parseNaturalLanguage: () => undefined },
-          linearIngressService: { getStatus: () => undefined },
         } as never);
 
         expect(services.automation_planner).not.toBeNull();
-        expect(services.linear_ingress).not.toBeNull();
       },
     );
   });
@@ -310,7 +306,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("getIssuePickerData");
     expect(actions).toContain("getConnectionStatus");
     expect(actions).toContain("getQuickView");
-    expect(ADE_ACTION_ALLOWLIST.linear_routing ?? []).toContain("simulateRoute");
     expect(ADE_ACTION_ALLOWLIST.linear_oauth ?? []).toEqual(expect.arrayContaining([
       "getSession",
       "startSession",
@@ -320,7 +315,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
   it("exposes CTO identity session and scan wrappers for runtime-backed CTO views", () => {
     const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(chatActions).toContain("ensureCtoSession");
-    expect(chatActions).toContain("ensureAgentIdentitySession");
     expect(chatActions).toContain("getSubagentTranscript");
     expect(chatActions).toContain("modelCatalog");
     expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");

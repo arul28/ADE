@@ -2846,7 +2846,6 @@ export function createLaneService({
   const cleanupLaneDatabaseRows = (laneId: string): void => {
     db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update linear_workflow_runs set execution_lane_id = null where execution_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
 

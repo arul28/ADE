@@ -2737,6 +2737,7 @@ export function AgentChatPane({
   hideSessionTabs = false,
   hideNativeControls = false,
   hideWorkspaceChrome = false,
+  hideSurfaceHeader = false,
   hideLaneToolDrawers = false,
   forceNewSession = false,
   forceDraftMode = false,
@@ -2779,6 +2780,8 @@ export function AgentChatPane({
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
   hideWorkspaceChrome?: boolean;
+  /** Suppress the WorkSurfaceHeader row entirely (the host surface renders its own header, e.g. the CTO page). */
+  hideSurfaceHeader?: boolean;
   /** Work owns these lane-scoped drawers; proof remains chat-scoped here. */
   hideLaneToolDrawers?: boolean;
   forceNewSession?: boolean;
@@ -2882,7 +2885,6 @@ export function AgentChatPane({
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const showWorkspaceChrome = !hideWorkspaceChrome;
-  const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const workDraftStorageKind = normalizeWorkDraftStorageKind();
   const isWorkDraftComposer = forceDraft && embeddedWorkLayout && !lockSessionId && !initialSessionId;
   const draftLaunchConfigLaneScopeId = isWorkDraftComposer ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
@@ -4501,7 +4503,6 @@ export function AgentChatPane({
       activeSessionModelId: selectedSessionModelId,
       hasConversation: selectedEvents.length > 0,
       includeActiveSessionModel: !modelSelectionConstrained,
-      policy: modelSwitchPolicy,
     });
     if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const catalog = getSharedRuntimeCatalog();
@@ -4511,7 +4512,7 @@ export function AgentChatPane({
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
-  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
+  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
     [aiStatus],
@@ -9538,17 +9539,6 @@ export function AgentChatPane({
               {deletingChatSessionId === selectedSessionId ? "Deleting..." : "Delete chat"}
             </button>
           ) : null}
-          {isPersistentIdentitySurface && selectedSessionId ? (
-            <button
-              type="button"
-              className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg"
-              onClick={() => {
-                clearSessionView(selectedSessionId);
-              }}
-            >
-              Clear view
-            </button>
-          ) : null}
     </>
   );
   const shellHeader = (
@@ -9691,7 +9681,7 @@ export function AgentChatPane({
   // scrolled out of view. Reuses the self-contained login pill (styled + own
   // dismiss); it hides itself once the session reconnects. Only shown when the
   // chat header login pill is absent so the two never double up.
-  const chatHeaderLoginPromptVisible = !compactShell && chatTerminalVisible && Boolean(selectedSessionId);
+  const chatHeaderLoginPromptVisible = !compactShell && !hideSurfaceHeader && chatTerminalVisible && Boolean(selectedSessionId);
   const authStickyBar = showClaudeLoginPrompt && selectedSessionId && !chatHeaderLoginPromptVisible ? (
     <div className="mb-1.5 flex justify-start px-0.5">
       <ClaudeLoginPromptButton
@@ -10370,7 +10360,7 @@ export function AgentChatPane({
         chromeTint={chatChromeTint}
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
-        header={compactShell ? undefined : shellHeader}
+        header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined
           : composerWithTypographyRoot}

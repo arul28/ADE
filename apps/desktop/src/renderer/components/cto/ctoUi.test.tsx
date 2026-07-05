@@ -1,572 +1,234 @@
 /* @vitest-environment jsdom */
 
-import type { CtoIdentity, CtoSessionLogEntry } from "../../../shared/types";
-import type { LinearSyncQueueItem, LinearWorkflowDefinition, LinearWorkflowRunDetail } from "../../../shared/types";
-import {
-  buildRunMatchSummary,
-  describeTriggerSemantics,
-  deriveRunStallSummary,
-  shouldShowDelegationOverride,
-} from "./LinearSyncPanel";
-import { CtoSettingsPanel } from "./CtoSettingsPanel";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
+import { CtoOnboardingCard } from "./CtoOnboardingCard";
+import { CtoMemoryPanel } from "./CtoMemoryPanel";
 import { CtoPage } from "./CtoPage";
 import { useAppStore } from "../../state/appStore";
 
-const agentChatPaneProps = vi.hoisted(() => ({
-  latest: null as null | Record<string, unknown>,
-}));
-
+/* AgentChatPane is heavy; stub it so CtoPage renders synchronously. */
 vi.mock("../chat/AgentChatPane", () => ({
-  AgentChatPane: (props: Record<string, unknown>) => {
-    agentChatPaneProps.latest = props;
-    return <div data-testid="cto-agent-chat-pane" />;
-  },
+  AgentChatPane: () => <div data-testid="cto-agent-chat-pane" />,
 }));
 
-describe("CtoPage chat layout", () => {
+/* The model badge/settings row route through these; stub so the picker is a
+ * plain button and the id resolves without the real registry. */
+vi.mock("./useCtoModelOptions", () => ({
+  useCtoModelOptions: () => ({
+    availableModelIds: ["anthropic/claude-sonnet-4-6"],
+    loadingModels: false,
+    openProviderSettings: vi.fn(),
+  }),
+  resolveModelSelection: (modelId: string) => ({
+    provider: "anthropic",
+    model: "sonnet",
+    modelId,
+    reasoningEffort: null,
+  }),
+}));
+
+vi.mock("../shared/ModelPicker/ModelPicker", () => ({
+  ModelPicker: (props: { value: string; onChange: (id: string) => void }) => (
+    <button data-testid="model-picker" onClick={() => props.onChange("anthropic/claude-opus-4-8")}>
+      {props.value}
+    </button>
+  ),
+}));
+
+vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
+  ReasoningEffortPicker: () => <div data-testid="reasoning-picker" />,
+}));
+
+const IDENTITY = {
+  version: 2,
+  name: "CTO",
+  persona: "Senior CTO",
+  personality: "strategic",
+  customPersonality: null,
+  modelPreferences: {
+    provider: "anthropic",
+    model: "claude-sonnet-4-6",
+    modelId: "anthropic/claude-sonnet-4-6",
+    reasoningEffort: null,
+  },
+} as const;
+
+const SESSION = {
+  id: "cto-session",
+  laneId: "lane-primary",
+  provider: "anthropic",
+  model: "claude-sonnet-4-6",
+  modelId: "anthropic/claude-sonnet-4-6",
+  sessionProfile: "persistent_identity",
+  reasoningEffort: null,
+  executionMode: null,
+  identityKey: "cto",
+  capabilityMode: "full_tooling",
+  status: "idle",
+  createdAt: "2026-05-01T00:00:00.000Z",
+  lastActivityAt: "2026-05-01T00:00:00.000Z",
+  threadId: "thread-1",
+} as const;
+
+describe("CtoPage model badge", () => {
   const originalAde = globalThis.window.ade;
+  const updateSession = vi.fn().mockResolvedValue({ ...SESSION, modelId: "anthropic/claude-opus-4-8" });
 
   beforeEach(() => {
-    agentChatPaneProps.latest = null;
+    updateSession.mockClear();
     useAppStore.setState({
-      lanes: [
-        {
-          id: "lane-primary",
-          name: "Primary",
-          laneType: "primary",
-        } as any,
-      ],
+      lanes: [{ id: "lane-primary", name: "Primary", laneType: "primary" } as never],
       lanesLoading: false,
     });
     globalThis.window.ade = {
       ...(originalAde ?? {}),
+      agentChat: { ...((originalAde as { agentChat?: object })?.agentChat ?? {}), updateSession },
       cto: {
-        ...(originalAde?.cto ?? {}),
-        getState: vi.fn().mockResolvedValue({
-          identity: {
-            version: 2,
-            persona: "Senior CTO",
-            personality: "strategic",
-            customPersonality: null,
-            modelPreferences: {
-              provider: "anthropic",
-              model: "claude-sonnet-4-6",
-              reasoningEffort: null,
-            },
-          },
-          recentSessions: [],
-        }),
+        getState: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
         getOnboardingState: vi.fn().mockResolvedValue({
           completedAt: "2026-05-01T00:00:00.000Z",
           completedSteps: ["identity"],
           dismissedAt: null,
         }),
-        listAgents: vi.fn().mockResolvedValue([]),
-        ensureSession: vi.fn().mockResolvedValue({
-          id: "cto-session",
-          laneId: "lane-primary",
-          provider: "anthropic",
-          model: "claude-sonnet-4-6",
-          modelId: "anthropic/claude-sonnet-4-6",
-          sessionProfile: "persistent_identity",
-          reasoningEffort: null,
-          executionMode: null,
-          identityKey: "cto",
-          capabilityMode: "full_tooling",
-          status: "idle",
-          createdAt: "2026-05-01T00:00:00.000Z",
-          lastActivityAt: "2026-05-01T00:00:00.000Z",
-          threadId: "thread-1",
-        }),
+        ensureSession: vi.fn().mockResolvedValue(SESSION),
+        updateIdentity: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
       },
-    } as any;
+    } as never;
   });
 
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
     useAppStore.setState({ lanes: [], lanesLoading: false });
-    if (originalAde === undefined) {
-      delete (globalThis.window as any).ade;
-    } else {
-      globalThis.window.ade = originalAde;
-    }
+    globalThis.window.ade = originalAde;
   });
 
-  it("embeds the persistent CTO chat in the full-height chat host instead of an extra clipped card", async () => {
-    render(
-      <MemoryRouter>
-        <CtoPage />
-      </MemoryRouter>,
+  it("renders the persistent thread once the session wakes", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    expect(await screen.findByTestId("cto-agent-chat-pane")).toBeTruthy();
+  });
+
+  it("routes a header model switch through agentChat.updateSession on the locked session", async () => {
+    render(<MemoryRouter><CtoPage /></MemoryRouter>);
+    await screen.findByTestId("cto-agent-chat-pane");
+
+    fireEvent.click(screen.getByTestId("model-picker"));
+
+    await waitFor(() => expect(updateSession).toHaveBeenCalledTimes(1));
+    expect(updateSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "cto-session", modelId: "anthropic/claude-opus-4-8" }),
     );
-
-    const pane = await screen.findByTestId("cto-agent-chat-pane");
-    expect(agentChatPaneProps.latest?.laneId).toBe("lane-primary");
-    expect(agentChatPaneProps.latest?.lockSessionId).toBe("cto-session");
-    expect(agentChatPaneProps.latest?.hideSessionTabs).toBe(true);
-
-    const host = pane.parentElement;
-    expect(host?.className).toBe("min-h-0 flex-1 overflow-hidden");
-    expect(host?.className).not.toContain("rounded");
   });
+});
 
-  it("wires team grid Wake and Edit actions to the clicked worker", async () => {
-    const triggerAgentWakeup = vi.fn().mockResolvedValue({ status: "queued" });
-    const listAgentRuns = vi.fn().mockResolvedValue([]);
-    const worker = {
-      id: "worker-1",
-      name: "Build Fixer",
-      role: "Engineer",
-      status: "active",
-      capabilities: [],
-      adapterType: "codex",
-      adapterConfig: { model: "openai/gpt-5.4-mini" },
-      budgetMonthlyCents: 0,
-      prompt: "",
-      createdAt: "2026-05-01T00:00:00.000Z",
-      updatedAt: "2026-05-01T00:00:00.000Z",
-    };
+describe("CtoOnboardingCard", () => {
+  const originalAde = globalThis.window.ade;
+  const updateIdentity = vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] });
+  const completeOnboardingStep = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    updateIdentity.mockClear();
+    completeOnboardingStep.mockClear();
     globalThis.window.ade = {
-      ...(globalThis.window.ade ?? {}),
+      ...(originalAde ?? {}),
       cto: {
-        ...(globalThis.window.ade?.cto ?? {}),
-        listAgents: vi.fn().mockResolvedValue([worker]),
-        getBudgetSnapshot: vi.fn().mockResolvedValue({ workers: [] }),
-        getState: vi.fn().mockResolvedValue({
-          identity: {
-            version: 2,
-            persona: "Senior CTO",
-            personality: "strategic",
-            customPersonality: null,
-            modelPreferences: {
-              provider: "anthropic",
-              model: "claude-sonnet-4-6",
-              reasoningEffort: null,
-            },
-          },
-          recentSessions: [],
+        getState: vi.fn().mockResolvedValue({ identity: IDENTITY, recentSessions: [] }),
+        updateIdentity,
+        completeOnboardingStep,
+      },
+    } as never;
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+    globalThis.window.ade = originalAde;
+  });
+
+  it("saves identity + completes the step when the user starts", async () => {
+    const onComplete = vi.fn();
+    render(<CtoOnboardingCard onComplete={onComplete} onSkip={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+
+    await waitFor(() => expect(completeOnboardingStep).toHaveBeenCalledWith({ stepId: "identity" }));
+    expect(updateIdentity).toHaveBeenCalledTimes(1);
+    const patch = updateIdentity.mock.calls[0][0].patch;
+    expect(patch.personality).toBe("strategic");
+    expect(patch.communicationStyle).toEqual({
+      verbosity: "adaptive",
+      proactivity: "balanced",
+      escalationThreshold: "medium",
+    });
+    await waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("CtoMemoryPanel", () => {
+  const originalAde = globalThis.window.ade;
+  const updateMemory = vi.fn();
+
+  beforeEach(() => {
+    updateMemory.mockReset();
+    globalThis.window.ade = {
+      ...(originalAde ?? {}),
+      cto: {
+        getMemory: vi.fn().mockResolvedValue({
+          memory: "# Facts\n- ships on Fridays",
+          threadState: "",
+          dailyLog: "",
+          dailyLogDate: "2026-07-04",
+          updatedAt: null,
         }),
-        getOnboardingState: vi.fn().mockResolvedValue({
-          completedAt: "2026-05-01T00:00:00.000Z",
-          completedSteps: ["identity"],
-          dismissedAt: null,
+        updateMemory: updateMemory.mockResolvedValue({
+          memory: "# Facts\n- ships on Fridays\n- prefers pnpm",
+          threadState: "",
+          dailyLog: "",
+          dailyLogDate: "2026-07-04",
+          updatedAt: "2026-07-04T00:00:00.000Z",
         }),
-        listAgentSessionLogs: vi.fn().mockResolvedValue([]),
-        listAgentRuns,
-        listAgentRevisions: vi.fn().mockResolvedValue([]),
-        triggerAgentWakeup,
       },
-    } as any;
+    } as never;
+  });
 
-    render(
-      <MemoryRouter>
-        <CtoPage />
-      </MemoryRouter>,
-    );
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+    globalThis.window.ade = originalAde;
+  });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Team" }));
-    const wake = await screen.findByRole("button", { name: "Wake" });
-    fireEvent.click(wake);
-    expect(triggerAgentWakeup).toHaveBeenCalledWith({
-      agentId: "worker-1",
-      reason: "manual",
-      context: { source: "cto_ui" },
-    });
-    expect(listAgentRuns).toHaveBeenCalledWith({ agentId: "worker-1", limit: 20 });
+  it("loads MEMORY.md and saves edits through cto.updateMemory", async () => {
+    render(<CtoMemoryPanel />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    expect(await screen.findByDisplayValue("Build Fixer")).toBeTruthy();
+    const textarea = await screen.findByRole("textbox");
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe("# Facts\n- ships on Fridays"));
+    fireEvent.change(textarea, { target: { value: "# Facts\n- ships on Fridays\n- prefers pnpm" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(updateMemory).toHaveBeenCalledTimes(1));
+    expect(updateMemory).toHaveBeenCalledWith({ memory: "# Facts\n- ships on Fridays\n- prefers pnpm" });
   });
 });
 
-describe("CtoSettingsPanel (file group)", () => {
-  vi.mock("./IdentityEditor", () => ({
-    IdentityEditor: vi.fn(({ onCancel }: { onCancel: () => void }) => (
-      <div data-testid="identity-editor">
-        <button onClick={onCancel}>Cancel Edit</button>
-      </div>
-    )),
-  }));
-
-  vi.mock("./shared/TimelineEntry", () => ({
-    TimelineEntry: vi.fn(({ title }: { title: string }) => (
-      <div data-testid="timeline-entry">{title}</div>
-    )),
-  }));
-
-  vi.mock("./CtoPromptPreview", () => ({
-    CtoPromptPreview: vi.fn(() => <div data-testid="prompt-preview" />),
-  }));
-
-  vi.mock("./identityPresets", () => ({
-    getCtoPersonalityPreset: vi.fn((key: string) => ({
-      label: key === "strategic" ? "Strategic" : key,
-      description: `Personality: ${key}`,
-    })),
-  }));
-
-  /* ── Fixtures ── */
-
-  function makeIdentity(overrides: Partial<CtoIdentity> = {}): CtoIdentity {
-    return {
-      version: 2,
-      persona: "Senior CTO",
-      personality: "strategic",
-      customPersonality: null,
-      modelPreferences: {
-        provider: "anthropic",
-        model: "claude-sonnet-4-6",
-        reasoningEffort: null,
-      },
-      ...overrides,
-    } as CtoIdentity;
-  }
-
-  /* ── Tests ── */
-
-  describe("CtoSettingsPanel", () => {
-    const onSaveIdentity = vi.fn().mockResolvedValue(undefined);
-    const onResetOnboarding = vi.fn();
-
-    beforeEach(() => {
-      vi.clearAllMocks();
-      onSaveIdentity.mockResolvedValue(undefined);
-    });
-
-    afterEach(() => {
-      cleanup();
-    });
-
-    it("renders identity section with model info when identity is provided", () => {
-      render(
-        <CtoSettingsPanel
-          identity={makeIdentity()}
-          sessionLogs={[]}
-          onSaveIdentity={onSaveIdentity}
-        />,
-      );
-      expect(screen.getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
-    });
-
-    it("shows Loading when identity is null", () => {
-      render(
-        <CtoSettingsPanel
-          identity={null}
-          sessionLogs={[]}
-          onSaveIdentity={onSaveIdentity}
-        />,
-      );
-      const loadingElements = screen.getAllByText("Loading...");
-      expect(loadingElements.length).toBeGreaterThanOrEqual(1);
-    });
-
-    it("shows the reset onboarding button when callback is provided", () => {
-      render(
-        <CtoSettingsPanel
-          identity={makeIdentity()}
-          sessionLogs={[]}
-          onSaveIdentity={onSaveIdentity}
-          onResetOnboarding={onResetOnboarding}
-        />,
-      );
-      expect(screen.getByText("Re-run setup")).toBeTruthy();
-    });
-
-    it("does not show reset onboarding when callback is omitted", () => {
-      render(
-        <CtoSettingsPanel
-          identity={makeIdentity()}
-          sessionLogs={[]}
-          onSaveIdentity={onSaveIdentity}
-        />,
-      );
-      expect(screen.queryByText("Re-run setup")).toBeNull();
-    });
-
-    it("renders model and personality tags for identity", () => {
-      render(
-        <CtoSettingsPanel
-          identity={makeIdentity({
-            personality: "strategic",
-            modelPreferences: {
-              provider: "anthropic",
-              model: "claude-sonnet-4-6",
-              reasoningEffort: "high",
-            },
-          })}
-          sessionLogs={[]}
-          onSaveIdentity={onSaveIdentity}
-        />,
-      );
-      expect(screen.getByText("anthropic/claude-sonnet-4-6")).toBeTruthy();
-      expect(screen.getByText("reasoning: high")).toBeTruthy();
-      expect(screen.getByText("Strategic")).toBeTruthy();
-    });
-
-    // Removed tests ("shows Configured", "shows Needs work", "renders the CTO
-    // runtime header card"): the sub-tab refactor removed the status badges and
-    // the "CTO runtime" / "Identity, brief, and continuity" header card. Those
-    // UI elements no longer exist in the component.
-
-    it("renders sub-tab navigation", () => {
-      render(
-        <CtoSettingsPanel
-          identity={makeIdentity()}
-          sessionLogs={[]}
-          onSaveIdentity={onSaveIdentity}
-        />,
-      );
-      expect(screen.getByRole("button", { name: "Identity" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "History" })).toBeTruthy();
-    });
-
-    it("shows session history timeline entries in the History tab", () => {
-      render(
-        <CtoSettingsPanel
-          identity={makeIdentity()}
-          sessionLogs={[
-            {
-              id: "s1",
-              createdAt: "2026-03-26T00:00:00.000Z",
-              summary: "Fixed deployment pipeline",
-              capabilityMode: "full_tooling",
-            } as CtoSessionLogEntry,
-          ]}
-          onSaveIdentity={onSaveIdentity}
-        />,
-      );
-
-      fireEvent.click(screen.getByRole("button", { name: "History" }));
-      const entries = screen.getAllByTestId("timeline-entry");
-      expect(entries).toHaveLength(1);
-    });
+describe("resolveCtoPrimaryLaneId", () => {
+  it("prefers the primary lane even when another lane is selected elsewhere", () => {
+    expect(resolveCtoPrimaryLaneId([
+      { id: "lane-feature", laneType: "worktree" },
+      { id: "lane-primary", laneType: "primary" },
+    ])).toBe("lane-primary");
   });
 
-});
-
-describe("LinearSyncPanel (file group)", () => {
-  function makeWorkflow(triggerOverrides: Partial<LinearWorkflowDefinition["triggers"]> = {}): LinearWorkflowDefinition {
-    return {
-      id: "workflow-1",
-      name: "Workflow",
-      description: null,
-      enabled: true,
-      priority: 0,
-      source: "repo",
-      triggers: {
-        assignees: [],
-        labels: [],
-        projectSlugs: [],
-        teamKeys: [],
-        priority: [],
-        stateTransitions: [],
-        owner: [],
-        creator: [],
-        metadataTags: [],
-        ...triggerOverrides,
-      },
-    } as unknown as LinearWorkflowDefinition;
-  }
-
-  function makeRunDetail(overrides: Partial<LinearWorkflowRunDetail> = {}): LinearWorkflowRunDetail {
-    return {
-      run: {
-        id: "run-1",
-        issueId: "issue-1",
-        identifier: "LIN-1",
-        title: "Example",
-        workflowId: "workflow-1",
-        workflowName: "Workflow",
-        workflowVersion: "1",
-        source: "linear",
-        targetType: "worker_run",
-        status: "queued",
-        currentStepIndex: 0,
-        currentStepId: null,
-        executionLaneId: null,
-        linkedSessionId: null,
-        linkedWorkerRunId: null,
-        linkedPrId: null,
-        reviewState: null,
-        supervisorIdentityKey: null,
-        reviewReadyReason: null,
-        prState: null,
-        prChecksStatus: null,
-        prReviewStatus: null,
-        latestReviewNote: null,
-        retryCount: 0,
-        retryAfter: null,
-        closeoutState: "pending",
-        terminalOutcome: null,
-        sourceIssueSnapshot: {},
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-        ...overrides.run,
-      } as unknown as LinearWorkflowRunDetail["run"],
-      steps: [],
-      events: [],
-      ingressEvents: [],
-      syncEvents: [],
-      issue: null,
-      reviewContext: null,
-      ...overrides,
-    } as LinearWorkflowRunDetail;
-  }
-
-  describe("LinearSyncPanel", () => {
-    it("shows delegation overrides for queue states that still need manual routing or recovery", () => {
-      expect(shouldShowDelegationOverride("queued")).toBe(true);
-      expect(shouldShowDelegationOverride("retry_wait")).toBe(true);
-      expect(shouldShowDelegationOverride("escalated")).toBe(true);
-      expect(shouldShowDelegationOverride("awaiting_delegation")).toBe(true);
-      expect(shouldShowDelegationOverride("dispatched")).toBe(false);
-      expect(shouldShowDelegationOverride("failed")).toBe(false);
-      expect(shouldShowDelegationOverride("resolved")).toBe(false);
-      expect(shouldShowDelegationOverride("cancelled")).toBe(false);
-    });
-
-    it("describes trigger semantics as OR within groups and AND across populated groups", () => {
-      expect(describeTriggerSemantics(makeWorkflow())).toContain("Populated groups are OR-ed within the group and AND-ed across groups");
-      expect(
-        describeTriggerSemantics(
-          makeWorkflow({
-            assignees: ["alice"],
-          })
-        )
-      ).toContain("This workflow fires when the populated trigger group matches");
-      expect(
-        describeTriggerSemantics(
-          makeWorkflow({
-            assignees: ["alice"],
-            labels: ["bug"],
-          })
-        )
-      ).toContain("Each populated trigger group must match");
-    });
-
-    it("summarizes route matches from run events and route context", () => {
-      const detail = makeRunDetail({
-        run: {
-          routeContext: {
-            reason: "Matched by routing rules",
-            matchedSignals: ["assignee:alice", "label:bug"],
-            routeTags: ["watch-only", "priority:high"],
-            watchOnly: false,
-          },
-        } as unknown as LinearWorkflowRunDetail["run"],
-        events: [
-          {
-            id: "event-1",
-            runId: "run-1",
-            eventType: "run.created",
-            status: "completed",
-            message: "Matched workflow 'Workflow'.",
-            payload: {
-              candidates: [
-                {
-                  workflowId: "workflow-1",
-                  workflowName: "Workflow",
-                  priority: 1,
-                  matched: true,
-                  reasons: ["assignee matched", "label matched"],
-                  matchedSignals: ["assignee:alice", "label:bug"],
-                },
-              ],
-              nextStepsPreview: ["launch worker", "wait for review"],
-            },
-            createdAt: "2026-01-01T00:00:00.000Z",
-          },
-        ],
-      });
-
-      const summary = buildRunMatchSummary(detail);
-      expect(summary).not.toBeNull();
-      expect(summary?.reason).toContain("Matched workflow");
-      expect(summary?.matchedSignals).toEqual(["assignee:alice", "label:bug"]);
-      expect(summary?.routeTags).toEqual(["watch-only", "priority:high"]);
-      expect(summary?.nextStepsPreview).toEqual(["launch worker", "wait for review"]);
-      expect(summary?.matchedCandidate?.matched).toBe(true);
-    });
-
-    it("derives a readable stall summary from the current step and queue timing", () => {
-      const retryItem = {
-        id: "run-1",
-        status: "retry_wait",
-        nextAttemptAt: "2026-01-01T01:00:00.000Z",
-      } as LinearSyncQueueItem;
-
-      expect(
-        deriveRunStallSummary(
-          makeRunDetail({
-            run: { status: "awaiting_delegation" } as unknown as LinearWorkflowRunDetail["run"],
-          })
-        )
-      ).toContain("No employee could be resolved");
-
-      expect(
-        deriveRunStallSummary(
-          makeRunDetail({
-            run: { status: "awaiting_lane_choice" } as unknown as LinearWorkflowRunDetail["run"],
-          })
-        )
-      ).toContain("Pick an execution lane");
-
-      expect(
-        deriveRunStallSummary(
-          makeRunDetail({
-            run: {
-              status: "waiting_for_target",
-              executionContext: {
-                stalledReason: "Waiting on PR review.",
-                waitingFor: "explicit_completion",
-              },
-            } as unknown as LinearWorkflowRunDetail["run"],
-          }),
-          retryItem
-        )
-      ).toContain("Waiting on PR review.");
-
-      expect(
-        deriveRunStallSummary(
-          makeRunDetail({
-            run: {
-              status: "retry_wait",
-              executionContext: {
-                waitingFor: "explicit_completion",
-              },
-            } as unknown as LinearWorkflowRunDetail["run"],
-          }),
-          retryItem
-        )
-      ).toContain("Retry is scheduled for");
-    });
+  it("falls back to the first lane when no primary lane exists yet", () => {
+    expect(resolveCtoPrimaryLaneId([
+      { id: "lane-feature", laneType: "worktree" },
+      { id: "lane-bugfix", laneType: "worktree" },
+    ])).toBe("lane-feature");
   });
 
-});
-
-describe("ctoSessionViewState (file group)", () => {
-  describe("resolveCtoPrimaryLaneId", () => {
-    it("prefers the primary lane even when another lane is selected elsewhere in the app", () => {
-      expect(resolveCtoPrimaryLaneId([
-        { id: "lane-feature", laneType: "worktree" },
-        { id: "lane-primary", laneType: "primary" },
-      ])).toBe("lane-primary");
-    });
-
-    it("falls back to the first lane when a primary lane has not been materialized yet", () => {
-      expect(resolveCtoPrimaryLaneId([
-        { id: "lane-feature", laneType: "worktree" },
-        { id: "lane-bugfix", laneType: "worktree" },
-      ])).toBe("lane-feature");
-    });
-
-    it("returns null when no lanes are available", () => {
-      expect(resolveCtoPrimaryLaneId([])).toBeNull();
-    });
+  it("returns null when no lanes are available", () => {
+    expect(resolveCtoPrimaryLaneId([])).toBeNull();
   });
-
 });

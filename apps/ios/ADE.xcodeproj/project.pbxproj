@@ -71,12 +71,8 @@
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
 		H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000014 /* CtoIdentityEditor.swift */; };
 		H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000015 /* CtoSettingsScreen.swift */; };
-		H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000016 /* CtoSharedHelpers.swift */; };
-		H10000000000000000000008 /* CtoTabShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000017 /* CtoTabShell.swift */; };
-		H10000000000000000000009 /* CtoTeamScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000018 /* CtoTeamScreen.swift */; };
-		H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000019 /* CtoWorkerDetailScreen.swift */; };
-		H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1000000000000000000001A /* CtoWorkflowsScreen.swift */; };
 		H1000000000000000000000C /* CtoReloadHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1000000000000000000001B /* CtoReloadHelpers.swift */; };
+		H1000000000000000000000D /* CtoSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = H1000000000000000000001C /* CtoSetup.swift */; };
 		E20000000000000000000042 /* FilesModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000042 /* FilesModels.swift */; };
 		E20000000000000000000043 /* FilesHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000043 /* FilesHelpers.swift */; };
 		E20000000000000000000044 /* FilesRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000044 /* FilesRootScreen.swift */; };
@@ -283,12 +279,8 @@
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
 		H10000000000000000000014 /* CtoIdentityEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoIdentityEditor.swift; path = ADE/Views/Cto/CtoIdentityEditor.swift; sourceTree = "<group>"; };
 		H10000000000000000000015 /* CtoSettingsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSettingsScreen.swift; path = ADE/Views/Cto/CtoSettingsScreen.swift; sourceTree = "<group>"; };
-		H10000000000000000000016 /* CtoSharedHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSharedHelpers.swift; path = ADE/Views/Cto/CtoSharedHelpers.swift; sourceTree = "<group>"; };
-		H10000000000000000000017 /* CtoTabShell.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoTabShell.swift; path = ADE/Views/Cto/CtoTabShell.swift; sourceTree = "<group>"; };
-		H10000000000000000000018 /* CtoTeamScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoTeamScreen.swift; path = ADE/Views/Cto/CtoTeamScreen.swift; sourceTree = "<group>"; };
-		H10000000000000000000019 /* CtoWorkerDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoWorkerDetailScreen.swift; path = ADE/Views/Cto/CtoWorkerDetailScreen.swift; sourceTree = "<group>"; };
-		H1000000000000000000001A /* CtoWorkflowsScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoWorkflowsScreen.swift; path = ADE/Views/Cto/CtoWorkflowsScreen.swift; sourceTree = "<group>"; };
 		H1000000000000000000001B /* CtoReloadHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoReloadHelpers.swift; path = ADE/Views/Cto/CtoReloadHelpers.swift; sourceTree = "<group>"; };
+		H1000000000000000000001C /* CtoSetup.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSetup.swift; path = ADE/Views/Cto/CtoSetup.swift; sourceTree = "<group>"; };
 		D20000000000000000000042 /* FilesModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesModels.swift; path = ADE/Views/Files/FilesModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000043 /* FilesHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesHelpers.swift; path = ADE/Views/Files/FilesHelpers.swift; sourceTree = "<group>"; };
 		D20000000000000000000044 /* FilesRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesRootScreen.swift; path = ADE/Views/Files/FilesRootScreen.swift; sourceTree = "<group>"; };
@@ -597,11 +589,7 @@
 				H10000000000000000000010 /* CtoRootScreen.swift */,
 				H10000000000000000000011 /* CtoSessionDestinationView.swift */,
 				H10000000000000000000015 /* CtoSettingsScreen.swift */,
-				H10000000000000000000016 /* CtoSharedHelpers.swift */,
-				H10000000000000000000017 /* CtoTabShell.swift */,
-				H10000000000000000000018 /* CtoTeamScreen.swift */,
-				H10000000000000000000019 /* CtoWorkerDetailScreen.swift */,
-				H1000000000000000000001A /* CtoWorkflowsScreen.swift */,
+				H1000000000000000000001C /* CtoSetup.swift */,
 			);
 			name = Cto;
 			sourceTree = "<group>";
@@ -1141,12 +1129,8 @@
 				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
 				H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */,
 				H10000000000000000000006 /* CtoSettingsScreen.swift in Sources */,
-				H10000000000000000000007 /* CtoSharedHelpers.swift in Sources */,
-				H10000000000000000000008 /* CtoTabShell.swift in Sources */,
-				H10000000000000000000009 /* CtoTeamScreen.swift in Sources */,
-				H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */,
-				H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */,
 				H1000000000000000000000C /* CtoReloadHelpers.swift in Sources */,
+				H1000000000000000000000D /* CtoSetup.swift in Sources */,
 				AA5100000000000000000014 /* AttentionActionIntents.swift in Sources */,
 				AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */,
 				K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */,

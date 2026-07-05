@@ -8,23 +8,15 @@ struct CtoIdentityEditor: View {
   @Environment(\.dismiss) private var dismiss
 
   @State private var localName: String = ""
-  @State private var localPersonality: String = "professional"
+  @State private var localPersonality: String = "strategic"
+  @State private var localVerbosity: String = CtoWorkStyle.defaultStyle.verbosity
+  @State private var localProactivity: String = CtoWorkStyle.defaultStyle.proactivity
   @State private var localProvider: String = ""
   @State private var localModel: String = ""
   @State private var localExtension: String = ""
 
   @State private var isSaving = false
   @State private var errorMessage: String?
-
-  /// Presets mirror desktop `CtoPersonalityPreset`.
-  private let presets: [(id: String, label: String)] = [
-    ("professional", "Professional"),
-    ("strategic", "Strategic"),
-    ("hands_on", "Hands-on"),
-    ("casual", "Casual"),
-    ("minimal", "Minimal"),
-    ("custom", "Custom"),
-  ]
 
   var body: some View {
     NavigationStack {
@@ -48,18 +40,26 @@ struct CtoIdentityEditor: View {
 
           Section("Personality") {
             VStack(spacing: 8) {
-              ForEach(presets, id: \.id) { preset in
+              ForEach(ctoPersonalityPresetOptions) { option in
                 ADEOptionButton(
-                  title: preset.label,
-                  subtitle: personalityDescription(for: preset.id),
-                  systemImage: personalityIcon(for: preset.id),
-                  isSelected: localPersonality == preset.id,
+                  title: option.label,
+                  subtitle: option.description,
+                  systemImage: option.systemImage,
+                  isSelected: localPersonality == option.id,
                   tint: ADEColor.ctoAccent
                 ) {
-                  localPersonality = preset.id
+                  localPersonality = option.id
                 }
               }
             }
+          }
+
+          Section("Work style") {
+            VStack(alignment: .leading, spacing: 14) {
+              CtoSegmentedRow(title: "Verbosity", options: CtoWorkStyle.verbosityOptions, selection: $localVerbosity)
+              CtoSegmentedRow(title: "Proactivity", options: CtoWorkStyle.proactivityOptions, selection: $localProactivity)
+            }
+            .padding(.vertical, 4)
           }
 
           Section("Model") {
@@ -88,7 +88,7 @@ struct CtoIdentityEditor: View {
       .toolbar(.hidden, for: .navigationBar)
     }
     .presentationDetents([.large])
-    .tint(ADEColor.accent)
+    .tint(ADEColor.ctoAccent)
     .onAppear(perform: hydrate)
   }
 
@@ -125,44 +125,14 @@ struct CtoIdentityEditor: View {
     .background(ADEColor.pageBackground.opacity(0.98))
   }
 
-  private func personalityDescription(for id: String) -> String {
-    switch id {
-    case "professional":
-      return "Measured, direct planning."
-    case "strategic":
-      return "Long-range tradeoffs and sequencing."
-    case "hands_on":
-      return "Operational, implementation-first guidance."
-    case "casual":
-      return "Lower-formality check-ins."
-    case "minimal":
-      return "Brief status and next actions."
-    default:
-      return "Use the prompt extension below."
-    }
-  }
-
-  private func personalityIcon(for id: String) -> String {
-    switch id {
-    case "strategic":
-      return "map"
-    case "hands_on":
-      return "hammer"
-    case "casual":
-      return "bubble.left.and.text.bubble.right"
-    case "minimal":
-      return "line.3.horizontal.decrease"
-    case "custom":
-      return "slider.horizontal.3"
-    default:
-      return "person.crop.circle"
-    }
-  }
-
   private func hydrate() {
     guard let identity = snapshot?.identity else { return }
     localName = identity.name
-    localPersonality = identity.personality ?? "professional"
+    localPersonality = identity.personality ?? "strategic"
+    if let style = identity.communicationStyle {
+      localVerbosity = style.verbosity
+      localProactivity = style.proactivity
+    }
     localProvider = identity.modelPreferences.provider
     localModel = identity.modelPreferences.model
     localExtension = identity.systemPromptExtension ?? ""
@@ -189,8 +159,17 @@ struct CtoIdentityEditor: View {
 
     var patch = CtoIdentityPatch()
     if trimmedName != identity.name { patch.name = trimmedName }
-    if localPersonality != (identity.personality ?? "professional") {
+    if localPersonality != (identity.personality ?? "strategic") {
       patch.personality = localPersonality
+    }
+
+    let existingStyle = identity.communicationStyle ?? CtoWorkStyle.defaultStyle
+    if localVerbosity != existingStyle.verbosity || localProactivity != existingStyle.proactivity {
+      patch.communicationStyle = CtoCommunicationStyle(
+        verbosity: localVerbosity,
+        proactivity: localProactivity,
+        escalationThreshold: existingStyle.escalationThreshold
+      )
     }
 
     let trimmedProvider = localProvider.trimmingCharacters(in: .whitespacesAndNewlines)

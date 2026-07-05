@@ -344,7 +344,7 @@ power the TUI picker (`apps/ade-cli/src/tuiClient/components/ModelPicker/`).
 | `useProviderAuthStatus.ts` | Resolves `AuthStatus` (`authenticated` / `missing` / `unknown`) per `ProviderFamily` from the AI integration status. |
 | `useAuthOnlyFilter.ts` | Hides models whose provider is not authenticated, with a toggle for the catalog browse mode. |
 | `useModelFavorites.ts` / `useModelRecents.ts` | Cross-surface favorites and recents persisted to the per-project `ade.db` tables `model_picker_favorites` and `model_picker_recents` via the `modelPicker.*` JSON-RPC methods on `adeRpcServer`. Desktop, TUI, and iOS share the CRR-backed store; the legacy `~/.ade/modelPicker.json` file is only a one-time migration source. |
-| `usePerSurfaceModelDefaults.ts` | Per-surface default-model resolver (Settings, parallel slots, worker delegation, etc.) — keyed by surface so each call site can have its own remembered default. |
+| `usePerSurfaceModelDefaults.ts` | Per-surface default-model resolver (Settings, parallel slots, CTO, etc.) — keyed by surface so each call site can have its own remembered default. |
 | `useReasoningByFamily.ts` | Last-used reasoning effort per model family. |
 
 Renderer state and the TUI share descriptors and ordering: the TUI

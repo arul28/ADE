@@ -8,7 +8,7 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is the **ADE brain**: the always-on, machine-owned ADE process for one channel. The brain hosts every project on that machine through a project registry, exposes a multi-project JSON-RPC surface on the channel's local endpoint, serves the sync websocket for ADE Mobile, and carries executor authority. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all **clients** that attach to a local brain or remote runtime transport and invoke runtime-owned actions through that one surface.
 
-The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, multi-provider agent chat, work-session orchestration, a Linear-integrated CTO agent acting as a team lead, worker delegation, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
+The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, multi-provider agent chat, work-session orchestration, a persistent CTO agent with durable memory and a Linear read/write surface, rule-based automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
 ADE ships as one computer install, ADE Mobile, and the marketing site:
 
@@ -269,11 +269,12 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── cto/
 │   │   ├── identity.yaml        # Local CTO identity (ignored)
 │   │   ├── CURRENT.md           # Running status markdown (ignored)
-│   │   └── daily/<YYYY-MM-DD>.md
-│   ├── agents/<slug>/           # Per-worker identity and daily logs (runtime, ignored)
+│   │   ├── MEMORY.md            # Curated durable facts (ignored)
+│   │   ├── thread-state.md      # Rolling thread summary (ignored)
+│   │   └── daily/<YYYY-MM-DD>.md # Per-turn journal
 │   ├── templates/               # Lane and automation templates (tracked when human-authored)
 │   ├── skills/                  # Exported skill markdown (tracked when human-authored)
-│   ├── workflows/linear/        # Linear workflow config (tracked when present)
+│   ├── workflows/linear/        # Reserved scaffold dir; the legacy Linear workflow-config subsystem was removed and nothing writes here anymore
 │   ├── project-icons/           # Imported project icon overrides (tracked when ade.yaml.iconPath points at one)
 │   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
@@ -295,7 +296,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 **Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
 
-- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, the tracked placeholder `.gitkeep`s, plus local-only CTO identity state) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`, `linearWorkflowFileService.save`).
+- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, the tracked placeholder `.gitkeep`s, plus local-only CTO identity state) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`).
 - `mode: "auto"` (the default for `openProject`) keeps the project local-only when no shared scaffold files exist yet — it ensures `.git/info/exclude` has a `.ade/` entry so a brand-new clone or a personal-only setup never accidentally promotes runtime state into git, and only flips to the shared layout when shared scaffold files are already present (or after a save call promotes them).
 - `mode: "local"` is reserved for force-local repair flows.
 
@@ -506,7 +507,7 @@ High-frequency events flow from main → renderer via `webContents.send(channel,
 | `ade.tests.event` | testService | Test panel |
 | `ade.conflicts.event` | conflictService | Conflicts page, Graph overlay |
 | `ade.prs.event` | prPollingService | PRs page, stacked queue |
-| `ade.agents.event` | CTO/worker services | CTO tab feed |
+| `ade.agents.event` | CTO service | CTO tab feed |
 | `ade.lanes.lifecycle.event` | laneService / runtime `lane_lifecycle_event` | AppShell toast stack |
 | `ade.lanes.rebaseSuggestions.event` / `ade.lanes.autoRebase.event` / `ade.lanes.rebase.event` | rebase services | Lanes + Graph; automated terminal-state rebase outcomes also feed AppShell toasts |
 | `ade.project.missing` | projectService | Shell banner |
@@ -532,7 +533,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts`, `linearLaneCardService.ts` | CTO identity, worker agents, session logs, and Linear sync/ingress/OAuth/routing/dispatcher/closeout. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL. |
+| `cto/` | `ctoStateService.ts`, `ctoMemoryService.ts`, `ctoPromptContent.ts`, `linearClient.ts`, `linearIssueTracker.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` | CTO identity, the smart-memory file store, session logs, and the Linear read/credential/OAuth surface. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL; `linearLiveStatusService` is the optional launch/PR/merge status round-trip. |
 | `deeplinks/` | `protocolHandler.ts` | Registers the `ade://` OS protocol handler for the packaged Stable desktop build, owns the single-instance lock, buffers cold-start URLs until `app.whenReady()`, and dispatches parsed URLs through `IPC.appNavigate` to the focused window. Beta, Alpha, and source builds can receive explicitly delivered links but do not claim the OS-default handler. Re-used by the iOS Send-to-Mac sync command (`syncRemoteCommandService.deeplinks.open`). Shared parser + builder live in `apps/desktop/src/shared/deeplinks.ts`; the PR "Open in ADE" footer is in `apps/desktop/src/shared/adeDeeplinkFooter.ts`. See [features/deeplinks/README.md](./features/deeplinks/README.md). |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
@@ -628,8 +629,8 @@ conflicts/      # risk matrix, simulation, resolution
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/
 history/        # operation timeline
-automations/    # rule list, pipeline builder
-cto/            # CTO page, identity editor, team panel, pipeline, shared/designTokens.ts
+automations/    # rule list, action editor, templates
+cto/            # single-thread CTO page, settings/memory/prompt panels, onboarding card, identity editor, shared/designTokens.ts
 orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, PlanningTimeline, ValidationFindings
 onboarding/     # first-run flows
 settings/       # keybindings, agents, data, context, sync
@@ -805,7 +806,7 @@ Related Git docs: [Lanes](./features/lanes/README.md), [Lane runtime isolation](
 ## 10. Context Continuity
 
 ADE carries continuity through the records owned by each runtime surface:
-chat transcripts, CTO and worker session logs, daily logs, and explicit
+chat transcripts, CTO session logs, CTO durable memory, daily logs, and explicit
 context documents. These are read directly by the services that need them;
 there is no separate retrieval layer in between.
 
