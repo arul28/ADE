@@ -200,9 +200,11 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 
 - Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
 - CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
-- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`.
-- Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings.
-- Shipped: one Lock Screen widget for prioritized agent, PR, sync, offline, and idle status.
+- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`, `DpopKeyService.swift` (Secure Enclave P-256 pairing proof), `PushNotificationService.swift`, `LiveActivityService.swift`.
+- Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings (including a Push delivery panel).
+- Shipped widgets: a Lock Screen widget for prioritized agent/PR/sync/offline/idle status, plus an ActivityKit Live Activity + Dynamic Island for active agent runs (`ADEWidgets/ADEAgentActivityWidget.swift`).
+- Push: APNs alert pushes (deep-linked) and Live Activity updates arrive via the Cloudflare push relay (§2.6); the phone hands tokens/prefs to the brain over the paired sync WebSocket.
+- Pairing: user-set 6-digit PIN over a v3 smart-URL QR (or discovery / manual entry), hardened with device-bound DPoP proofs.
 - Planned: Automations, Graph, History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
@@ -211,6 +213,14 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 A Vite/React SPA that serves the public marketing site, download page, and the deeplink landing page. Five pages: `HomePage`, `DownloadPage`, `OpenPage`, `PrivacyPage`, `TermsPage`. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
 
 The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app.dev/open?type=...&...`). `apps/web/api/open.ts` is a Vercel serverless function that self-fetches `index.html`, rewrites OpenGraph + Twitter meta tags from the query params so chat-app unfurlers (Slack, Discord, iMessage, Gmail, Linear) show a rich card without executing JavaScript, then hands the SPA over to `OpenPage` which attempts the `ade://` upgrade in the browser and falls back to an install/marketing card if no handler is registered. Supported targets include lanes, Work sessions, repo branches, PRs, and Linear issues. See [features/deeplinks/README.md](./features/deeplinks/README.md).
+
+### 2.6 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/webhook-relay/`)
+
+Three independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
+
+- **`apps/push-relay/`** — fans ADE agent-state transitions out to iPhones as APNs alert pushes and Live Activity updates (Worker + a single D1 database; free-plan compatible, no Durable Objects). The brain is the only publisher: it claims an unguessable 32–64-hex `machineKey` with a relay secret (`POST /machines/:key/claim`, first-writer-wins) and HMAC-signs every later call (`x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`). It stores only device tokens and in-flight notification payloads — no chat/PR content. APNs auth is an ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID`). Brain-side publisher lives at `apps/ade-cli/src/services/push/`. See [features/sync-and-multi-device/push-notifications.md](./features/sync-and-multi-device/push-notifications.md).
+- **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a phone and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket; a phone dials `/connect/:machineKey`; the DO pairs the phone with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the end-to-end ADE hello / PIN / DPoP handshake is untouched (the relay is byte transport only). Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`, gated by the off-by-default "Cloud relay fallback" toggle. Advertised to phones as the lowest-priority `relay` address candidate.
+- **`apps/webhook-relay/`** — the pre-existing GitHub webhook relay (different trust model and lifecycle again). See its own docs.
 
 ---
 
@@ -910,8 +920,10 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
   (`work.startCliSession`), whose provider command construction is
   shared with the desktop Work tab through
   `apps/desktop/src/shared/cliLaunch.ts`.
-- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
-- Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. Home Screen, Control Center, and ActivityKit surfaces are not registered.
+- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is a **v3 smart URL** (`https://ade-app.dev/pair#<base64url(JSON)>` — host identity + port + address candidates + optional cloud-relay URL, no pairing code); the iOS camera scanner parses it. Pairing is hardened with **device-bound DPoP**: iOS keeps a Secure Enclave P-256 key and every paired hello carries a signed proof (`requireDpop` / `ADE_SYNC_REQUIRE_DPOP` on the host, enforced on both the project host and the brain ingress path).
+- Off-LAN transport: an optional, off-by-default **cloud tunnel relay** (`apps/tunnel-relay`, §2.6) advertised as the lowest-priority `relay` address candidate; the phone dials it only after every direct route fails and only when the user enabled it.
+- Push: APNs alert pushes (deep-linked) and Live Activity updates via `apps/push-relay` (§2.6); the phone hands tokens/prefs to the brain over the paired sync WebSocket (`push.*` runtime-scoped commands) and never talks to the relay directly.
+- Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. `ADEAgentActivityWidget` registers an ActivityKit Live Activity + Dynamic Island for active agent runs. Home Screen and Control Center surfaces are not registered.
 - Tabs: Lanes, Files, Work, PRs, CTO, Settings.
 
 ### 13.4 Conflict resolution semantics
@@ -941,7 +953,10 @@ ADE/
 │   ├── ade-cli/        # ADE brain, manual runtime entry points, `ade` CLI, `ade code`
 │   ├── desktop/        # Electron client (multi-window; local + SSH-bound runtime bindings)
 │   ├── ios/            # Native SwiftUI controller (WebSocket to ADE machine)
-│   └── web/            # Marketing + download landing (Vite + React)
+│   ├── web/            # Marketing + download landing (Vite + React)
+│   ├── push-relay/     # Cloudflare Worker + D1: APNs push + Live Activity relay
+│   ├── tunnel-relay/   # Cloudflare Worker + Durable Object: off-LAN sync tunnel
+│   └── webhook-relay/  # Cloudflare Worker: GitHub webhook relay
 ├── docs/
 │   ├── PRD.md
 │   ├── features/
@@ -975,20 +990,23 @@ Per-app scripts:
 | `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands, headless runtime, and Ink Work chat TUI). |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
+| `apps/push-relay`, `apps/tunnel-relay`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
 
 ### 14.2 CI (`.github/workflows/ci.yml`)
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, and web with a shared cache keyed on those lockfiles.
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` has its own lockfile and is not in the shared cache; its jobs `npm ci` inline.)
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
    - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
+   - `typecheck-webhook-relay`, `typecheck-push-relay`, `typecheck-tunnel-relay` — the three Cloudflare Workers.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
-   - `test-ade-cli` — full ade-cli vitest.
+   - `test-ade-cli` — full ade-cli vitest (covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`).
+   - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay` — the three Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).

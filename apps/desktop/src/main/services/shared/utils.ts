@@ -615,11 +615,15 @@ export function toOptionalString(value: unknown): string | null {
 
 // ── File helpers ────────────────────────────────────────────────────
 
-/** Write text to a file atomically (write to tmp, rename). */
-export function writeTextAtomic(filePath: string, text: string): void {
+/**
+ * Write text to a file atomically (write to tmp, rename). Pass `mode` (e.g.
+ * `0o600`) to create the temp file with restrictive perms from the start —
+ * important for secrets, which must never exist world-readable even briefly.
+ */
+export function writeTextAtomic(filePath: string, text: string, options?: { mode?: number }): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.tmp-${randomUUID()}`;
-  fs.writeFileSync(tmp, text, "utf8");
+  fs.writeFileSync(tmp, text, options?.mode != null ? { encoding: "utf8", mode: options.mode } : "utf8");
   try {
     fs.renameSync(tmp, filePath);
   } catch (error) {

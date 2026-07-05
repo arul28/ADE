@@ -477,7 +477,24 @@ func syncStalePortRecoveryEndpointAttempts(
   }
 }
 
+/// True when a candidate carries a full `ws://`/`wss://` URL (the cloud relay
+/// candidate). Such candidates keep their path (e.g. `/connect/<machineKey>`)
+/// and must not be reconstructed as `scheme://host:port` or TCP-probed against
+/// the wrong host/port.
+func syncIsFullWebSocketRoute(_ address: String) -> Bool {
+  address
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .range(of: "^wss?://", options: [.regularExpression, .caseInsensitive]) != nil
+}
+
 func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> String? {
+  let trimmedHost = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+  // A full ws/wss URL (the relay candidate) is used verbatim — it carries a
+  // path we must preserve, and its own port. Reconstructing scheme://host:port
+  // would drop `/connect/<machineKey>` and break the tunnel.
+  if syncIsFullWebSocketRoute(trimmedHost), URL(string: trimmedHost) != nil {
+    return trimmedHost
+  }
   guard let endpoint = syncParseRouteEndpoint(rawHost) else { return nil }
   let port = endpoint.port ?? defaultPort
   guard syncValidRoutePort(port) != nil else { return nil }
@@ -696,7 +713,13 @@ func syncRaceAddressCandidates(
         ? max(timeoutNanoseconds, tailscaleTimeoutNanoseconds)
         : timeoutNanoseconds
       group.addTask {
-        (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: probeTimeout))
+        // A full-URL relay candidate can't be host:port TCP-probed — probing
+        // its host against `port` would be wrong. Treat it as an unprobed
+        // last resort so it keeps its (already last) position in the tail.
+        if syncIsFullWebSocketRoute(address) {
+          return (index, false)
+        }
+        return (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: probeTimeout))
       }
     }
     var reachable: [Int] = []
@@ -1207,6 +1230,19 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   }
 }
 
+/// Carries a scanned/deep-linked pairing QR into the connection settings so it
+/// can present the pairing flow (reconnect for a known machine, or PIN entry
+/// pre-filled for a new one). Mirrors the other `requested*Navigation` shapes.
+struct PairingQrNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let raw: String
+
+  init(raw: String) {
+    self.id = UUID().uuidString
+    self.raw = raw
+  }
+}
+
 enum PrNavigationRequestTarget: Equatable {
   case detail(prId: String, prNumber: Int?, laneId: String?)
   case githubNumber(Int)
@@ -1407,6 +1443,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
+  /// Offline new-chat creations awaiting sync. The Work list renders one
+  /// "Pending sync" row per entry.
+  @Published private(set) var pendingChatCreations: [PendingChatCreation] = []
   @Published private(set) var localStateRevision = 0
   @Published private(set) var lanesProjectionRevision = 0
   @Published private(set) var laneDetailProjectionRevision = 0
@@ -1454,6 +1493,9 @@ final class SyncService: ObservableObject {
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
+  /// Set when a pairing QR arrives via the system Camera app / universal link
+  /// so the connection settings can open the pairing flow.
+  @Published var requestedPairingQrNavigation: PairingQrNavigationRequest?
 
   // MARK: - Durable PR action / detail state
   //
@@ -1546,6 +1588,13 @@ final class SyncService: ObservableObject {
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
   private let hiddenProjectsKey = "ade.sync.hiddenProjects"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
+  /// App Group key for offline new-chat creation snapshots. Stored in the
+  /// shared suite so a synthesized "pending sync" row survives relaunch and is
+  /// visible to the same UI regardless of process.
+  private let pendingChatCreationsKey = "ade.sync.pendingChatCreations.v1"
+  /// App Group key for the "Cloud relay fallback" toggle (default OFF). When
+  /// off, relay candidates are excluded from every transport race.
+  static let cloudRelayFallbackDefaultsKey = "ade.sync.cloudRelayFallbackEnabled"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
@@ -2790,6 +2839,7 @@ final class SyncService: ObservableObject {
     // returns here. `activeProjectId` stays set so the roster's live overlay and
     // on-tap chat opening have a synced project to work with.
     pendingOperationCount = loadPendingOperations().count
+    pendingChatCreations = loadPendingChatCreations()
     resetOutboundCursorStateForActiveProject()
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
     remoteCommandDescriptors = loadRemoteCommandDescriptors()
@@ -3420,6 +3470,54 @@ final class SyncService: ObservableObject {
     await reconnectIfPossible(userInitiated: true, preferTailnet: preferTailnet)
   }
 
+  /// The saved profile paired to this QR's machine (matched by host identity)
+  /// when it still has credentials — the phone can reconnect without a PIN.
+  /// `nil` means the machine is new and must go through PIN entry.
+  func savedProfileForPairingQr(hostIdentity: String) -> HostConnectionProfile? {
+    let trimmed = hostIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return loadSavedProfiles().values.first { profile in
+      (profile.hostIdentity == trimmed || profile.lastHostDeviceId == trimmed)
+        && tokenForProfile(profile) != nil
+    }
+  }
+
+  /// Refreshes a known machine's saved routes from a scanned QR (direct hosts,
+  /// relay URLs, port) and reconnects without a PIN. Returns false when no
+  /// matching credentialed profile exists — the caller presents PIN entry.
+  @discardableResult
+  func reconnectUsingPairingQr(
+    hostIdentity: String,
+    port: Int,
+    directCandidates: [String],
+    relayCandidates: [String]
+  ) async -> Bool {
+    guard var profile = savedProfileForPairingQr(hostIdentity: hostIdentity) else { return false }
+    let directHosts = directCandidates.compactMap { syncEndpointHost($0) }
+    let relayHosts = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
+    profile.savedAddressCandidates = deduplicatedAddresses(profile.savedAddressCandidates + directHosts)
+    profile.discoveredLanAddresses = deduplicatedAddresses(
+      profile.discoveredLanAddresses
+        + directHosts.filter { !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0) }
+    )
+    if profile.tailscaleAddress == nil, let tailnet = directHosts.first(where: syncIsTailscaleRoute) {
+      profile.tailscaleAddress = tailnet
+    }
+    if !relayHosts.isEmpty {
+      profile.savedRelayCandidates = deduplicatedAddresses((profile.savedRelayCandidates ?? []) + relayHosts)
+    }
+    if port > 0 { profile.port = port }
+    profile.updatedAt = ISO8601DateFormatter().string(from: Date())
+    if let key = profileStorageKey(profile) {
+      var profiles = loadSavedProfilesRaw()
+      profiles[key] = profile
+      saveSavedProfiles(profiles)
+    }
+    saveProfile(profile)
+    await reconnectIfPossible(userInitiated: true)
+    return true
+  }
+
   func reconnectIfPossible(userInitiated: Bool = false, preferTailnet: Bool = false) async {
     do {
       try ensureDatabaseReady()
@@ -3699,6 +3797,11 @@ final class SyncService: ObservableObject {
   func handleForegroundTransition() async {
     refreshPhoneTailnetInterfaceState()
     guard !reconnectConnectInFlight else { return }
+    // Push registration + Live Activity token re-reporting are independent of
+    // the connection branch below, so kick them off up front. They no-op when
+    // no machine is paired.
+    Task { await PushNotificationService.shared.enableIfPaired() }
+    Task { await LiveActivityService.shared.handleForegroundTransition() }
     if canSendLiveRequests() {
       lastError = nil
       await restoreTrackedOpenLanesAfterReconnect()
@@ -3734,7 +3837,8 @@ final class SyncService: ObservableObject {
     hostName: String? = nil,
     siteId: String? = nil,
     candidateAddresses: [String] = [],
-    tailscaleAddress: String? = nil
+    tailscaleAddress: String? = nil,
+    relayCandidates: [String] = []
   ) async {
     do {
       try ensureDatabaseReady()
@@ -3792,8 +3896,13 @@ final class SyncService: ObservableObject {
         normalizedCandidateAddresses
       ))
       let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
+      // Relay URLs (full wss://) are attempted LAST and only when the fallback
+      // is enabled. They ride their own path/port, so they're kept out of the
+      // direct port sweep and appended as single attempts.
+      let normalizedRelayCandidates = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
+      let relayWalkCandidates = isCloudRelayFallbackEnabled ? normalizedRelayCandidates : []
       syncConnectLog.info(
-        "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)]"
+        "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)] relay=[\(syncLogAddressList(relayWalkCandidates), privacy: .public)]"
       )
       // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
       // walk them in order and only fail if every one fails to open a socket.
@@ -3802,10 +3911,12 @@ final class SyncService: ObservableObject {
       var openedAddress: String?
       var openedPort: Int?
       var lastOpenError: Error?
-      guard !addressCandidates.isEmpty else {
+      guard !addressCandidates.isEmpty || !relayWalkCandidates.isEmpty else {
         throw noConnectableAddressError()
       }
-      for attempt in syncConnectionEndpointAttempts(addresses: addressCandidates, ports: portCandidates) {
+      let directAttempts = syncConnectionEndpointAttempts(addresses: addressCandidates, ports: portCandidates)
+      let relayAttempts = relayWalkCandidates.map { SyncConnectionEndpointAttempt(address: $0, port: requestedPort) }
+      for attempt in directAttempts + relayAttempts {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
@@ -3833,10 +3944,16 @@ final class SyncService: ObservableObject {
       }
       let requestId = makeRequestId()
       let raw = try await awaitResponse(requestId: requestId) {
-        self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: [
+        var pairingPayload: [String: Any] = [
           "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
           "peer": self.currentPeerMetadata(),
-        ])
+        ]
+        // Register this device's DPoP public key at pairing time so the host
+        // has a key on record from the first paired hello onward.
+        if let dpopPublicKey = DpopKeyService.shared.publicKeyX963Base64() {
+          pairingPayload["dpopPublicKey"] = dpopPublicKey
+        }
+        self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: pairingPayload)
       }
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
@@ -3873,7 +3990,10 @@ final class SyncService: ObservableObject {
           if host == "127.0.0.1" { return false }
           return !syncIsTailscaleRoute(host)
         },
-        tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
+        tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute),
+        // Persist relay candidates regardless of the toggle so enabling the
+        // fallback later reuses them; the toggle only gates whether they race.
+        savedRelayCandidates: normalizedRelayCandidates.isEmpty ? nil : normalizedRelayCandidates
       )
       currentAddress = preferredAddress
       try await hello(
@@ -3887,6 +4007,11 @@ final class SyncService: ObservableObject {
       )
       keychain.saveToken(secret)
       keychain.saveToken(secret, hostKey: profileStorageKey(activeHostProfile ?? profile))
+      // Pairing just succeeded — this is the moment to ask for notification
+      // permission (never on first launch) and begin observing Live Activity
+      // tokens so the brain can start / update remote activities.
+      Task { await PushNotificationService.shared.enableIfPaired() }
+      LiveActivityService.shared.start()
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -3952,6 +4077,7 @@ final class SyncService: ObservableObject {
       keychain.clearToken()
       saveProfile(nil)
       saveRemoteCommandDescriptors([])
+      clearPendingChatCreations()
       resetChatEventState(clearHistory: true)
       resetTerminalSubscriptionState(clearHistory: false)
       activeHostProfile = nil
@@ -3961,6 +4087,9 @@ final class SyncService: ObservableObject {
   }
 
   func forgetHost() {
+    // Best-effort: drop this device from the relay and end any Live Activity
+    // before we tear down the pairing credentials.
+    PushNotificationService.shared.handleUnpair()
     disconnect(clearCredentials: true)
     remoteProjectCatalog = []
     refreshProjectCatalog()
@@ -5976,7 +6105,8 @@ final class SyncService: ObservableObject {
     computerUse: RemoteJSONValue? = nil,
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    pendingDisplayName: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -6031,6 +6161,34 @@ final class SyncService: ObservableObject {
     }
     if let requestedCwd, !requestedCwd.isEmpty {
       args["requestedCwd"] = requestedCwd
+    }
+    // Offline: queue the create with a stable command id and record a snapshot
+    // so the Work list shows a "Pending sync" row until the queued command
+    // drains after reconnect. `chat.create` is not queued by the generic
+    // offline path (it's not host-advertised as queueable while disconnected),
+    // so enqueue it explicitly here.
+    if !canSendLiveRequests() {
+      let commandId = makeRequestId()
+      try enqueueOperation(
+        kind: "command",
+        action: "chat.create",
+        args: args,
+        id: commandId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      let trimmedName = pendingDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+      recordPendingChatCreation(PendingChatCreation(
+        id: commandId,
+        projectId: targetProjectId ?? activeProjectId,
+        projectRootPath: targetProjectRootPath ?? activeProjectRootPath,
+        laneId: laneId,
+        name: (trimmedName?.isEmpty == false ? trimmedName! : "New chat"),
+        provider: provider,
+        model: trimmedModel,
+        queuedAt: syncDateFormatter.string(from: Date())
+      ))
+      throw QueuedRemoteCommandError(action: "chat.create")
     }
     return try await sendDecodableCommand(
       action: "chat.create",
@@ -7639,6 +7797,20 @@ final class SyncService: ObservableObject {
     return false
   }
 
+  /// Whether the user enabled the cloud relay fallback. Read from the App Group
+  /// suite so the value is shared and defaults OFF.
+  var isCloudRelayFallbackEnabled: Bool {
+    ADESharedContainer.defaults.bool(forKey: SyncService.cloudRelayFallbackDefaultsKey)
+  }
+
+  /// Relay `wss://` candidates for a profile, ordered last and gated on the
+  /// user toggle. Empty when the fallback is off so relay is excluded from
+  /// every race.
+  private func relayFallbackCandidates(for profile: HostConnectionProfile) -> [String] {
+    guard isCloudRelayFallbackEnabled else { return [] }
+    return deduplicatedAddresses((profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute))
+  }
+
   private func prioritizedAddresses(for profile: HostConnectionProfile) -> [String] {
     let preferTailnet = shouldPreferTailnetReconnect()
     let matchingDiscovery = discoveredHosts.filter { host in
@@ -7682,7 +7854,8 @@ final class SyncService: ObservableObject {
         + savedProfileTailnet
         + savedTailnet
     }
-    return deduplicatedAddresses(prioritizedLive + fallbackSaved)
+    // Relay is the last-resort route: only tried when no direct path opened.
+    return deduplicatedAddresses(prioritizedLive + fallbackSaved + relayFallbackCandidates(for: profile))
   }
 
   private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
@@ -7700,6 +7873,7 @@ final class SyncService: ObservableObject {
         + (profile.tailscaleAddress.map { [$0] } ?? [])
         + savedTailnet
         + (preferTailnet ? lastSuccessfulTailnet : [])
+        + relayFallbackCandidates(for: profile)
       )
     }
 
@@ -7721,7 +7895,7 @@ final class SyncService: ObservableObject {
     let prioritizedLive = preferTailnet
       ? liveLastSuccessfulTailnet + liveTailscale + savedTailnetFallback + liveLastSuccessfulLan + liveLan
       : liveLastSuccessful + liveLan + liveTailscale + savedTailnetFallback
-    return deduplicatedAddresses(prioritizedLive)
+    return deduplicatedAddresses(prioritizedLive + relayFallbackCandidates(for: profile))
   }
 
   private func connectUsingProfile(
@@ -8303,11 +8477,21 @@ final class SyncService: ObservableObject {
     let requestId = makeRequestId()
     let auth: [String: Any]
     if authKind == "paired", let pairedDeviceId {
-      auth = [
+      var pairedAuth: [String: Any] = [
         "kind": "paired",
         "deviceId": pairedDeviceId,
         "secret": token,
       ]
+      // A fresh device-bound proof rides EVERY paired hello (nonce is
+      // single-use). Once the host has a key on record, hellos without a valid
+      // proof are rejected. Key/sign failure is soft — the legacy path still
+      // works until the host stores a key for us.
+      if let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: token) {
+        pairedAuth["dpop"] = proof
+      } else {
+        syncConnectLog.info("ADE_SYNC_TRACE dpop proof unavailable; sending legacy paired hello")
+      }
+      auth = pairedAuth
     } else {
       auth = [
         "kind": "bootstrap",
@@ -9564,6 +9748,67 @@ final class SyncService: ObservableObject {
     pendingOperationCount = operations.count
   }
 
+  // MARK: - Offline chat-creation snapshots
+
+  private func loadPendingChatCreations() -> [PendingChatCreation] {
+    guard let data = ADESharedContainer.defaults.data(forKey: pendingChatCreationsKey) else { return [] }
+    return (try? decoder.decode([PendingChatCreation].self, from: data)) ?? []
+  }
+
+  private func savePendingChatCreations(_ creations: [PendingChatCreation]) {
+    if creations.isEmpty {
+      ADESharedContainer.defaults.removeObject(forKey: pendingChatCreationsKey)
+    } else if let data = try? encoder.encode(creations) {
+      ADESharedContainer.defaults.set(data, forKey: pendingChatCreationsKey)
+    }
+    if pendingChatCreations != creations {
+      pendingChatCreations = creations
+    }
+  }
+
+  private func recordPendingChatCreation(_ creation: PendingChatCreation) {
+    var creations = loadPendingChatCreations()
+    creations.removeAll { $0.id == creation.id }
+    creations.append(creation)
+    savePendingChatCreations(creations)
+  }
+
+  private func removePendingChatCreation(id: String) {
+    var creations = loadPendingChatCreations()
+    let before = creations.count
+    creations.removeAll { $0.id == id }
+    if creations.count != before {
+      savePendingChatCreations(creations)
+    }
+  }
+
+  /// Cancels a queued offline chat creation: drops both the pending `chat.create`
+  /// operation and its snapshot so the "Pending sync" row disappears.
+  func cancelPendingChatCreation(id: String) {
+    var queued = loadPendingOperations()
+    let filtered = queued.filter { !($0.kind == "command" && $0.action == "chat.create" && $0.id == id) }
+    if filtered.count != queued.count {
+      queued = filtered
+      savePendingOperations(queued)
+    }
+    removePendingChatCreation(id: id)
+  }
+
+  private func clearPendingChatCreations() {
+    let creations = loadPendingChatCreations()
+    guard !creations.isEmpty else { return }
+    // Also drop the queued `chat.create` commands, not just the UI snapshots —
+    // otherwise flushPendingOperations would replay them against the next paired
+    // host and silently recreate chats the user forgot.
+    let ids = Set(creations.map(\.id))
+    let queued = loadPendingOperations()
+    let filtered = queued.filter { !(ids.contains($0.id) && $0.kind == "command" && $0.action == "chat.create") }
+    if filtered.count != queued.count {
+      savePendingOperations(filtered)
+    }
+    savePendingChatCreations([])
+  }
+
   private func schedulePendingOperationFlush(delayNanoseconds: UInt64 = 2_000_000_000) {
     guard pendingOperationFlushTask == nil else { return }
     pendingOperationFlushTask = Task { @MainActor [weak self] in
@@ -9724,6 +9969,11 @@ final class SyncService: ObservableObject {
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
         }
         removePendingOperation(operation)
+        // A drained chat.create produced a real session; drop the optimistic
+        // "Pending sync" snapshot so the synced row takes over.
+        if operation.kind == "command", operation.action == "chat.create" {
+          removePendingChatCreation(id: operation.id)
+        }
       } catch {
         lastError = SyncUserFacingError.message(for: error)
         let stillLive = canSendLiveRequests()
@@ -9735,6 +9985,9 @@ final class SyncService: ObservableObject {
         }
         if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
           removePendingOperation(operation)
+          if operation.kind == "command", operation.action == "chat.create" {
+            removePendingChatCreation(id: operation.id)
+          }
           queued = loadPendingOperations()
           continue
         }
@@ -9854,6 +10107,26 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath
     )
     return ["queued": true]
+  }
+
+  /// True when this device is paired to a machine (active or last-saved
+  /// profile). Push registration only runs while paired.
+  var hasPairedHost: Bool {
+    (activeHostProfile ?? loadProfile())?.authKind == "paired"
+  }
+
+  /// Thin wrapper for the runtime-scoped `push.*` commands used by
+  /// `PushNotificationService` / `LiveActivityService`. Runtime-scoped and never
+  /// queued — a failed registration is simply retried on the next foreground.
+  func sendPushCommand(action: String, args: [String: Any]) async throws -> [String: Any] {
+    let response = try await sendCommand(action: action, args: args)
+    if let payload = response as? [String: Any] {
+      if payload["queued"] as? Bool == true {
+        throw QueuedRemoteCommandError(action: action)
+      }
+      return payload
+    }
+    return [:]
   }
 
   private func chatSubscriptionPayload(

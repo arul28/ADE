@@ -35,6 +35,7 @@ import type {
   SyncCommandPayload,
   SyncCommandResultPayload,
   CreateProjectInput,
+  SyncDpopProof,
   SyncEnvelope,
   SyncChatEventPayload,
   SyncChatSubscribePayload,
@@ -97,11 +98,13 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
+import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import type { PushPublisherService } from "../push/pushPublisherService";
 import {
   buildChangesetBatchPayload,
   DEFAULT_MAX_CHANGESET_BATCH_BYTES,
@@ -579,6 +582,8 @@ type SyncHostServiceArgs = {
   ptyService: ReturnType<typeof createPtyService>;
   processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  /** Brain→push-relay publisher; forwarded to the default remote-command service. */
+  pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
@@ -625,6 +630,12 @@ type SyncHostServiceArgs = {
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  /**
+   * When true, paired hellos from devices WITHOUT a registered DPoP key are
+   * rejected (forces a re-pair that registers one). Devices with a key on
+   * record always require a valid proof regardless of this flag.
+   */
+  requireDpop?: () => boolean;
 };
 
 function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string | null {
@@ -990,6 +1001,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
   if (!toOptionalString(peer.deviceId) || !toOptionalString(peer.deviceName) || !toOptionalString(peer.siteId)) {
     return null;
   }
+  const dpopPublicKey = toOptionalString(value?.dpopPublicKey);
   return {
     code,
     peer: {
@@ -1000,6 +1012,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
       siteId: String(peer.siteId).trim(),
       dbVersion: Number(peer.dbVersion ?? 0),
     },
+    ...(dpopPublicKey ? { dpopPublicKey } : {}),
   };
 }
 
@@ -1190,6 +1203,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     filePath: pairingSecretsPath,
     pinStore: args.pinStore,
   });
+  const dpopNonceCache = createSyncDpopNonceCache();
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
     db: args.db,
     laneService: args.laneService,
@@ -1201,6 +1215,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
+    pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
@@ -4084,7 +4099,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           return;
         }
         try {
-          const result = pairingStore.pairPeer(pairing.peer, pairing.code);
+          const result = pairingStore.pairPeer(pairing.peer, pairing.code, {
+            dpopPublicKey: pairing.dpopPublicKey ?? null,
+          });
           clearPairFailuresAfterSuccessfulPair(peer.remoteAddress);
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
             lastSeenAt: nowIso(),
@@ -4152,24 +4169,59 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // legitimate already-paired reconnects (which use the token) while
           // forcing every new device through the PIN gate.
           if (!safeStringEquals(bootstrapToken, hello.auth.token)) return true;
-          const alreadyPaired = pairingStore.hasPairingRecord(hello.peer.deviceId);
+          const bootstrapPairingRecord = pairingStore.getPairingRecord(hello.peer.deviceId);
+          // A device whose pairing record carries a DPoP key must prove key
+          // possession on every connection. Letting it in via the shared
+          // bootstrap token would be a downgrade path: a stolen token plus a
+          // spoofed deviceId would bypass the enclave binding entirely.
+          if (bootstrapPairingRecord?.dpopPublicKey) return true;
           if (SYNC_HOST_BIND_LOOPBACK_ONLY) {
             // Loopback-only hosts (ADE_SYNC_BIND_HOST=127.0.0.1) are already a
             // trust boundary — only local processes can connect — so retain the
             // historical bootstrap-token behaviour there.
             return false;
           }
+          // Strict posture: with require-DPoP on, the shared bootstrap token
+          // must never satisfy a LAN hello — a keyless legacy pairing would
+          // otherwise sidestep the forced re-pair the setting exists to compel.
+          if (args.requireDpop?.()) {
+            args.logger.warn("sync_host.dpop_required_bootstrap_rejected", {
+              deviceId: hello.peer.deviceId,
+            });
+            return true;
+          }
           // LAN-bound default: bootstrap is reconnect-only. A device must already
           // be paired; unknown devices must pair via the PIN flow. Existing
           // paired phones from older releases may not have a host PIN configured
           // yet, and should still be able to reconnect with their stored token.
-          return !alreadyPaired;
+          return bootstrapPairingRecord == null;
         }
         if (hello.auth?.kind === "paired") {
-          if (hello.auth.deviceId !== hello.peer.deviceId) return true;
-          if (!pairingStore.authenticate(hello.auth.deviceId, hello.auth.secret)) return true;
-          authenticatedPairingRecord = pairingStore.getPairingRecord(hello.auth.deviceId);
-          return !authenticatedPairingRecord;
+          const pairedAuth = hello.auth;
+          if (pairedAuth.deviceId !== hello.peer.deviceId) return true;
+          if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) return true;
+          authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
+          if (!authenticatedPairingRecord) return true;
+          const dpopFailure = evaluatePairedHelloDpop({
+            storedPublicKey: authenticatedPairingRecord.dpopPublicKey,
+            deviceId: pairedAuth.deviceId,
+            secret: pairedAuth.secret,
+            proof: pairedAuth.dpop ?? null,
+            requireDpop: args.requireDpop?.() ?? false,
+            nonceCache: dpopNonceCache,
+            adoptPublicKey: (publicKey) => {
+              pairingStore.adoptDpopPublicKey(pairedAuth.deviceId, publicKey);
+              args.logger.info("sync_host.dpop_adopted", { deviceId: pairedAuth.deviceId });
+            },
+          });
+          if (dpopFailure) {
+            args.logger.warn("sync_host.dpop_rejected", {
+              deviceId: pairedAuth.deviceId,
+              reason: dpopFailure,
+            });
+            return true;
+          }
+          return false;
         }
         return true;
       })();

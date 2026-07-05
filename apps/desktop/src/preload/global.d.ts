@@ -205,6 +205,7 @@ import type {
   AdeCliInstallResult,
   AdeCliStatus,
   OpenCodeRuntimeSnapshot,
+  SyncCloudRelayStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -902,6 +903,8 @@ declare global {
         setRuntimeName: (name: string) => Promise<SyncRoleSnapshot>;
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
+        getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
+        setCloudRelayEnabled: (enabled: boolean) => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       agentTools: {

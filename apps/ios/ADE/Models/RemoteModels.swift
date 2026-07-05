@@ -33,6 +33,10 @@ struct HostConnectionProfile: Codable, Equatable {
   var savedAddressCandidates: [String]
   var discoveredLanAddresses: [String]
   var tailscaleAddress: String?
+  /// Full `wss://…/connect/<machineKey>` cloud-relay URLs from a pairing QR.
+  /// Optional so profiles persisted before the relay feature decode cleanly.
+  /// Always attempted LAST and only when the user enabled the relay fallback.
+  var savedRelayCandidates: [String]?
   var updatedAt: String
 
   init(
@@ -49,6 +53,7 @@ struct HostConnectionProfile: Codable, Equatable {
     savedAddressCandidates: [String],
     discoveredLanAddresses: [String],
     tailscaleAddress: String?,
+    savedRelayCandidates: [String]? = nil,
     updatedAt: String = ISO8601DateFormatter().string(from: Date())
   ) {
     self.hostIdentity = hostIdentity
@@ -64,6 +69,7 @@ struct HostConnectionProfile: Codable, Equatable {
     self.savedAddressCandidates = savedAddressCandidates
     self.discoveredLanAddresses = discoveredLanAddresses
     self.tailscaleAddress = tailscaleAddress
+    self.savedRelayCandidates = savedRelayCandidates
     self.updatedAt = updatedAt
   }
 
@@ -80,6 +86,22 @@ struct HostConnectionProfile: Codable, Equatable {
       tailscaleAddress: nil
     )
   }
+}
+
+/// A new-chat creation queued while offline. Persisted (App Group defaults) so
+/// the Work list can render a "Pending sync" row that survives relaunch. `id`
+/// is the stable command id of the queued `chat.create`; when that command
+/// drains after reconnect the snapshot is removed and the real synced row
+/// replaces it.
+struct PendingChatCreation: Codable, Identifiable, Equatable {
+  let id: String
+  let projectId: String?
+  let projectRootPath: String?
+  let laneId: String
+  let name: String
+  let provider: String
+  let model: String
+  let queuedAt: String
 }
 
 struct MobileProjectSummary: Codable, Equatable, Identifiable {

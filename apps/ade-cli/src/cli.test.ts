@@ -646,6 +646,59 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("builds sync cloud relay and security commands", () => {
+    expect(expectExecutePlan(buildCliPlan(["sync", "relay"])).steps).toEqual([
+      { key: "result", method: "sync.getCloudRelayStatus" },
+    ]);
+    expect(
+      expectExecutePlan(buildCliPlan(["sync", "relay", "enable"])).steps,
+    ).toEqual([
+      {
+        key: "result",
+        method: "sync.setCloudRelayEnabled",
+        params: { enabled: true },
+      },
+    ]);
+    expect(
+      expectExecutePlan(buildCliPlan(["sync", "relay", "disable"])).steps,
+    ).toEqual([
+      {
+        key: "result",
+        method: "sync.setCloudRelayEnabled",
+        params: { enabled: false },
+      },
+    ]);
+
+    expect(expectExecutePlan(buildCliPlan(["sync", "security"])).steps).toEqual([
+      { key: "result", method: "sync.getRequireDpop" },
+    ]);
+    expect(
+      expectExecutePlan(
+        buildCliPlan(["sync", "security", "require-dpop", "on"]),
+      ).steps,
+    ).toEqual([
+      {
+        key: "result",
+        method: "sync.setRequireDpop",
+        params: { requireDpop: true },
+      },
+    ]);
+    expect(
+      expectExecutePlan(
+        buildCliPlan(["sync", "security", "require-dpop", "off"]),
+      ).steps,
+    ).toEqual([
+      {
+        key: "result",
+        method: "sync.setRequireDpop",
+        params: { requireDpop: false },
+      },
+    ]);
+    expect(() =>
+      buildCliPlan(["sync", "security", "require-dpop", "maybe"]),
+    ).toThrow(/on or off/);
+  });
+
   it("forwards resolved roots and socket intent to ade code", () => {
     const previousRuntimeSocket = process.env.ADE_RUNTIME_SOCKET_PATH;
     const previousRpcSocket = process.env.ADE_RPC_SOCKET_PATH;

@@ -22,6 +22,7 @@ struct SettingsPinSheet: View {
     switch preset {
     case .discover(let host): return .host(host)
     case .manual(let host, let port): return .manual(host: host, port: port)
+    case .qr(let payload): return .qr(payload)
     }
   }
 
@@ -172,6 +173,22 @@ struct SettingsPinSheet: View {
           hostName: nil,
           candidateAddresses: [host],
           tailscaleAddress: tailscaleAddress
+        )
+
+      case .qr(let payload):
+        let directCandidates = payload.directCandidateHosts
+        let relayCandidates = payload.relayCandidateHosts
+        let tailscaleAddress = directCandidates.first(where: syncIsTailscaleRoute)
+        await syncService.pairAndConnect(
+          host: directCandidates.first ?? relayCandidates.first ?? payload.hostIdentity.name,
+          port: payload.port,
+          code: code,
+          hostIdentity: payload.hostIdentity.deviceId,
+          hostName: payload.hostIdentity.name,
+          siteId: payload.hostIdentity.siteId,
+          candidateAddresses: directCandidates,
+          tailscaleAddress: tailscaleAddress,
+          relayCandidates: relayCandidates
         )
       }
 

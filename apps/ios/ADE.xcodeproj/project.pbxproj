@@ -23,6 +23,17 @@
 		K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000002 /* DeepLinkURLParsing.swift */; };
 		AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000001 /* ADEWidgetBundle.swift */; };
 		AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000004 /* ADELockScreenWidget.swift */; };
+		AE00000000000000000000B1 /* ADEAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A1 /* ADEAppDelegate.swift */; };
+		AE00000000000000000000B2 /* PushNotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A2 /* PushNotificationService.swift */; };
+		AE00000000000000000000B3 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A3 /* LiveActivityService.swift */; };
+		AE00000000000000000000B4 /* SettingsPushDeliverySection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */; };
+		AE00000000000000000000B5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
+		AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */; };
+		AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */; };
+		AF00000000000000000000B1 /* DpopKeyService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A1 /* DpopKeyService.swift */; };
+		AF00000000000000000000B2 /* PairingQrPayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A2 /* PairingQrPayload.swift */; };
+		AF00000000000000000000B3 /* SettingsPairingScannerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */; };
+		AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF00000000000000000000A4 /* PairingAndDpopTests.swift */; };
 		AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ADEWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
 		0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */; };
@@ -225,6 +236,16 @@
 		K20000000000000000000002 /* DeepLinkURLParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkURLParsing.swift; path = ADE/App/DeepLinkURLParsing.swift; sourceTree = "<group>"; };
 		AA5200000000000000000001 /* ADEWidgetBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetBundle.swift; path = ADEWidgets/ADEWidgetBundle.swift; sourceTree = "<group>"; };
 		AA5200000000000000000004 /* ADELockScreenWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELockScreenWidget.swift; path = ADEWidgets/ADELockScreenWidget.swift; sourceTree = "<group>"; };
+		AE00000000000000000000A1 /* ADEAppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAppDelegate.swift; path = ADE/App/ADEAppDelegate.swift; sourceTree = "<group>"; };
+		AE00000000000000000000A2 /* PushNotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PushNotificationService.swift; path = ADE/Services/PushNotificationService.swift; sourceTree = "<group>"; };
+		AE00000000000000000000A3 /* LiveActivityService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityService.swift; path = ADE/Services/LiveActivityService.swift; sourceTree = "<group>"; };
+		AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPushDeliverySection.swift; path = ADE/Views/Settings/SettingsPushDeliverySection.swift; sourceTree = "<group>"; };
+		AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityAttributes.swift; path = ADE/Shared/ADEAgentActivityAttributes.swift; sourceTree = "<group>"; };
+		AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEAgentActivityWidget.swift; path = ADEWidgets/ADEAgentActivityWidget.swift; sourceTree = "<group>"; };
+		AF00000000000000000000A1 /* DpopKeyService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DpopKeyService.swift; path = ADE/Services/DpopKeyService.swift; sourceTree = "<group>"; };
+		AF00000000000000000000A2 /* PairingQrPayload.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairingQrPayload.swift; path = ADE/Services/PairingQrPayload.swift; sourceTree = "<group>"; };
+		AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsPairingScannerSheet.swift; path = ADE/Views/Settings/SettingsPairingScannerSheet.swift; sourceTree = "<group>"; };
+		AF00000000000000000000A4 /* PairingAndDpopTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PairingAndDpopTests.swift; path = ADETests/PairingAndDpopTests.swift; sourceTree = "<group>"; };
 		D1C7A70000000000000001A1 /* DictationController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationController.swift; path = ADE/Services/Dictation/DictationController.swift; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
@@ -657,6 +678,8 @@
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
 				AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
+				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
+				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
 			);
 			name = Settings;
 			sourceTree = "<group>";
@@ -667,6 +690,10 @@
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				AE00000000000000000000A2 /* PushNotificationService.swift */,
+				AE00000000000000000000A3 /* LiveActivityService.swift */,
+				AF00000000000000000000A1 /* DpopKeyService.swift */,
+				AF00000000000000000000A2 /* PairingQrPayload.swift */,
 				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
 			name = Services;
@@ -695,6 +722,7 @@
 			isa = PBXGroup;
 			children = (
 				C9411193AF56B236BA32EFF5 /* ADEApp.swift */,
+				AE00000000000000000000A1 /* ADEAppDelegate.swift */,
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
 				B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */,
 				AA5300000000000000000012 /* DeepLinkRouter.swift */,
@@ -721,6 +749,7 @@
 				AA1000000000000000000002 /* ADESharedModels.swift */,
 				AA1000000000000000000003 /* ADESharedTheme.swift */,
 				AA5100000000000000000004 /* AttentionActionIntents.swift */,
+				AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -732,6 +761,7 @@
 				AA5000000000000000000002 /* ADEWidgets.entitlements */,
 				AA5200000000000000000001 /* ADEWidgetBundle.swift */,
 				AA5200000000000000000004 /* ADELockScreenWidget.swift */,
+				AE00000000000000000000A6 /* ADEAgentActivityWidget.swift */,
 			);
 			name = ADEWidgets;
 			sourceTree = "<group>";
@@ -792,6 +822,7 @@
 			isa = PBXGroup;
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
+				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
@@ -1134,6 +1165,14 @@
 				AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */,
 				K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */,
 				K10000000000000000000001 /* SendToMacCard.swift in Sources */,
+				AE00000000000000000000B1 /* ADEAppDelegate.swift in Sources */,
+				AE00000000000000000000B2 /* PushNotificationService.swift in Sources */,
+				AE00000000000000000000B3 /* LiveActivityService.swift in Sources */,
+				AE00000000000000000000B4 /* SettingsPushDeliverySection.swift in Sources */,
+				AE00000000000000000000B5 /* ADEAgentActivityAttributes.swift in Sources */,
+				AF00000000000000000000B1 /* DpopKeyService.swift in Sources */,
+				AF00000000000000000000B2 /* PairingQrPayload.swift in Sources */,
+				AF00000000000000000000B3 /* SettingsPairingScannerSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1142,6 +1181,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
+				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
@@ -1159,6 +1199,8 @@
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
+				AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */,
+				AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

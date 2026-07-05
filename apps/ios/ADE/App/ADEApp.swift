@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct ADEApp: App {
+  @UIApplicationDelegateAdaptor(ADEAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var syncService = SyncService()
   /// App-level dictation singleton. Owning the single `SpeechDictationService`

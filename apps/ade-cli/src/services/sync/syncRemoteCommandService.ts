@@ -135,6 +135,19 @@ import {
   type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
+import {
+  PUSH_GET_STATUS_ACTION,
+  PUSH_REGISTER_DEVICE_ACTION,
+  PUSH_REPORT_LIVE_ACTIVITY_TOKEN_ACTION,
+  PUSH_SET_PREFS_ACTION,
+  PUSH_UNREGISTER_DEVICE_ACTION,
+  type PushDeliveryStatus,
+  type PushDeviceRegistration,
+  type PushLiveActivityTokenReport,
+  type PushNotificationPrefs,
+  type PushQuietHours,
+} from "../../../../desktop/src/shared/types/push";
+import type { PushPublisherService } from "../push/pushPublisherService";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
@@ -226,6 +239,13 @@ type SyncRemoteCommandServiceArgs = {
    * clear "not available" error.
    */
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
+  /**
+   * Brain→push-relay publisher. When present, the `push.*` runtime commands
+   * hand device registrations / prefs / Live Activity tokens to it; when absent
+   * (e.g. sync host with push publishing off) the commands no-op with a clear
+   * error so the phone can surface "push publishing is not running".
+   */
+  pushPublisherService?: PushPublisherService | null;
   logger: Logger;
 };
 
@@ -453,6 +473,52 @@ async function summarizeChatSessionForRemote(
     summary: null,
     ...(session.threadId ? { threadId: session.threadId } : {}),
     ...(session.requestedCwd !== undefined ? { requestedCwd: session.requestedCwd } : {}),
+  };
+}
+
+function parsePushQuietHours(value: unknown): PushQuietHours | null {
+  if (!isRecord(value)) return null;
+  const start = asTrimmedString(value.start);
+  const end = asTrimmedString(value.end);
+  const timezone = asTrimmedString(value.timezone);
+  if (!start || !end || !timezone) return null;
+  return { start, end, timezone };
+}
+
+function parsePushPrefs(value: unknown): PushNotificationPrefs {
+  if (!isRecord(value)) {
+    return { enabled: true, liveActivitiesEnabled: true, mutedSessionIds: [], quietHours: null };
+  }
+  return {
+    enabled: value.enabled !== false,
+    liveActivitiesEnabled: value.liveActivitiesEnabled !== false,
+    mutedSessionIds: asStringArray(value.mutedSessionIds),
+    quietHours: parsePushQuietHours(value.quietHours),
+  };
+}
+
+function parsePushRegisterDeviceArgs(value: Record<string, unknown>): PushDeviceRegistration {
+  const apsEnvironmentRaw = asTrimmedString(value.apsEnvironment);
+  if (apsEnvironmentRaw !== "sandbox" && apsEnvironmentRaw !== "production") {
+    throw new Error("push.registerDevice requires apsEnvironment (sandbox|production).");
+  }
+  return {
+    deviceId: requireString(value.deviceId, "push.registerDevice requires deviceId."),
+    bundleId: requireString(value.bundleId, "push.registerDevice requires bundleId."),
+    apsEnvironment: apsEnvironmentRaw,
+    apnsToken: asTrimmedString(value.apnsToken),
+    pushToStartToken: asTrimmedString(value.pushToStartToken),
+    platform: asTrimmedString(value.platform),
+    deviceName: asTrimmedString(value.deviceName),
+    prefs: isRecord(value.prefs) ? parsePushPrefs(value.prefs) : null,
+  };
+}
+
+function parsePushLiveActivityTokenArgs(value: Record<string, unknown>): PushLiveActivityTokenReport {
+  return {
+    deviceId: requireString(value.deviceId, "push.reportLiveActivityToken requires deviceId."),
+    activityId: requireString(value.activityId, "push.reportLiveActivityToken requires activityId."),
+    token: asTrimmedString(value.token),
   };
 }
 
@@ -2515,6 +2581,77 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
 
 }
 
+function registerPushRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const publisher = args.pushPublisherService ?? null;
+  const unavailable = (action: string) => async (): Promise<never> => {
+    throw new Error(`${action} is unavailable: push publishing is not running on this ADE machine.`);
+  };
+
+  register(
+    PUSH_REGISTER_DEVICE_ACTION as SyncRemoteCommandAction,
+    { viewerAllowed: true },
+    publisher
+      ? async (payload) => publisher.handleDeviceRegistered(parsePushRegisterDeviceArgs(payload))
+      : unavailable(PUSH_REGISTER_DEVICE_ACTION),
+    "runtime",
+  );
+
+  register(
+    PUSH_UNREGISTER_DEVICE_ACTION as SyncRemoteCommandAction,
+    { viewerAllowed: true },
+    publisher
+      ? async (payload) => {
+        await publisher.handleUnregister(requireString(payload.deviceId, "push.unregisterDevice requires deviceId."));
+        return { ok: true };
+      }
+      : unavailable(PUSH_UNREGISTER_DEVICE_ACTION),
+    "runtime",
+  );
+
+  register(
+    PUSH_SET_PREFS_ACTION as SyncRemoteCommandAction,
+    { viewerAllowed: true },
+    publisher
+      ? async (payload) => {
+        const deviceId = requireString(payload.deviceId, "push.setPrefs requires deviceId.");
+        const applied = publisher.setPrefs(deviceId, parsePushPrefs(payload.prefs));
+        return { ok: applied };
+      }
+      : unavailable(PUSH_SET_PREFS_ACTION),
+    "runtime",
+  );
+
+  register(
+    PUSH_REPORT_LIVE_ACTIVITY_TOKEN_ACTION as SyncRemoteCommandAction,
+    { viewerAllowed: true },
+    publisher
+      ? async (payload) => {
+        await publisher.handleLiveActivityToken(parsePushLiveActivityTokenArgs(payload));
+        return { ok: true };
+      }
+      : unavailable(PUSH_REPORT_LIVE_ACTIVITY_TOKEN_ACTION),
+    "runtime",
+  );
+
+  register(
+    PUSH_GET_STATUS_ACTION as SyncRemoteCommandAction,
+    { viewerAllowed: true },
+    publisher
+      ? async (payload) => publisher.getDeliveryStatus(asTrimmedString(payload.deviceId))
+      : async () => ({
+        publisherEnabled: false,
+        relayUrl: null,
+        relayApnsConfigured: null,
+        deviceRegistered: false,
+        registeredDeviceCount: 0,
+        lastPublishAt: null,
+        lastPublishError: null,
+        lastRelayContactAt: null,
+      } satisfies PushDeliveryStatus),
+    "runtime",
+  );
+}
+
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
@@ -3024,6 +3161,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerProcessRemoteCommands({ args, register });
   registerChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
+  registerPushRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });
   registerGitAndFileRemoteCommands({ args, register });
   registerConflictRemoteCommands({ args, register });

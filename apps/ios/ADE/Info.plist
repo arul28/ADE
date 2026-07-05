@@ -73,6 +73,8 @@
   <array>
     <string>_ade-sync._tcp</string>
   </array>
+  <key>NSCameraUsageDescription</key>
+  <string>ADE scans your computer's pairing code to connect.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Discover ADE hosts on your local network and reconnect without rescanning.</string>
   <key>NSMicrophoneUsageDescription</key>
@@ -81,9 +83,14 @@
   <string>ADE transcribes your dictated prompts on device so you can speak instead of type. Speech is processed locally.</string>
   <key>UIApplicationSceneManifest</key>
   <dict/>
+  <key>NSSupportsLiveActivities</key>
+  <true/>
+  <key>NSSupportsLiveActivitiesFrequentUpdates</key>
+  <true/>
   <key>UIBackgroundModes</key>
   <array>
     <string>audio</string>
+    <string>remote-notification</string>
   </array>
   <key>UILaunchScreen</key>
   <dict/>
