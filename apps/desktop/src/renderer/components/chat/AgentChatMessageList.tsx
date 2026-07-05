@@ -2823,6 +2823,41 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
+    // "Subagent spawned" chip — one quiet line deep-linking to the child
+    // chat session (spawnAgent + CLI-spawned children). SDK Task-tool
+    // subagents stay panel-only; the side panel remains the primary surface.
+    if (event.noticeKind === "info" && event.status === "subagent_spawned") {
+      const spawned = event.detail && typeof event.detail === "object" && "spawnedSession" in event.detail
+        ? (event.detail as { spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string } }).spawnedSession
+        : undefined;
+      const childTitle = spawned?.title ?? event.message.replace(/^Subagent spawned:\s*/, "");
+      const childSessionId = typeof spawned?.sessionId === "string" && spawned.sessionId.length ? spawned.sessionId : null;
+      return (
+        <button
+          type="button"
+          disabled={!childSessionId}
+          onClick={() => {
+            if (!childSessionId) return;
+            try {
+              window.dispatchEvent(
+                new CustomEvent("ade:work:select-session", {
+                  detail: { sessionId: childSessionId, laneId: spawned?.laneId ?? null },
+                }),
+              );
+            } catch {
+              /* no-op */
+            }
+          }}
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-border/14 bg-surface-recessed/70 px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70 transition-colors enabled:hover:border-border/28 enabled:hover:text-fg/85"
+          title={childSessionId ? "Open the spawned chat" : undefined}
+        >
+          <Robot size={11} weight="duotone" className="shrink-0 text-muted-fg/55" />
+          <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/45">subagent</span>
+          <span className="min-w-0 truncate">{childTitle}</span>
+          {childSessionId ? <CaretRight size={10} className="shrink-0 text-muted-fg/50" /> : null}
+        </button>
+      );
+    }
     if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
       return (
         <div
