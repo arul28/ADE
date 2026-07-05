@@ -100,9 +100,32 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   const readMemory = (): string => readFileOrEmpty(memoryPath);
 
+  const archiveMemoryContent = (content: string, reason: string): void => {
+    const body = content.trim();
+    if (!body.length) return;
+    try {
+      const archiveExists = fs.existsSync(memoryArchivePath);
+      fs.appendFileSync(
+        memoryArchivePath,
+        `${archiveExists ? "" : "# CTO Memory Archive (facts evicted from MEMORY.md)\n\n"}<!-- ${reason} ${nowIso()} -->\n${body}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      warn("cto_memory.archive_failed", error, { reason });
+    }
+  };
+
   const writeMemory = (content: string): void => {
-    const body = content.trim().length ? redactSecrets(content.trim()) : MEMORY_HEADER;
-    writeTextAtomic(memoryPath, `${body}\n`);
+    const next = content.trim().length ? redactSecrets(content.trim()) : MEMORY_HEADER;
+    // A full rewrite that clears existing content preserves what it replaces in
+    // the append-only archive — durable memory is never silently destroyed.
+    if (next === MEMORY_HEADER) {
+      const previous = readMemory().trim();
+      if (previous.length && previous !== MEMORY_HEADER) {
+        archiveMemoryContent(previous, "cleared by updateMemory");
+      }
+    }
+    writeTextAtomic(memoryPath, `${next}\n`);
   };
 
   /**
@@ -165,16 +188,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       rendered = render(facts);
     }
     if (evicted.length) {
-      try {
-        const archiveExists = fs.existsSync(memoryArchivePath);
-        fs.appendFileSync(
-          memoryArchivePath,
-          `${archiveExists ? "" : "# CTO Memory Archive (facts evicted from MEMORY.md)\n\n"}${evicted.join("\n")}\n`,
-          "utf8",
-        );
-      } catch (error) {
-        warn("cto_memory.archive_evicted_facts_failed", error, { evictedCount: evicted.length });
-      }
+      archiveMemoryContent(evicted.join("\n"), "evicted by size cap");
     }
 
     writeTextAtomic(memoryPath, `${rendered}\n`);
@@ -274,15 +288,17 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       }
     };
 
+    // Durable facts first — current then archived — so evicted memories are
+    // never starved out of the budget by high-volume daily journal lines.
     scan("MEMORY.md", null, readMemory());
     if (rows.length < limit) scan("thread-state.md", null, readThreadState());
+    if (rows.length < limit) scan("memory-archive.md", null, readFileOrEmpty(memoryArchivePath));
     if (rows.length < limit) {
       for (const stamp of listDailyStampsNewestFirst()) {
         if (rows.length >= limit) break;
         scan("daily", stamp, readFileOrEmpty(dailyPathFor(stamp)));
       }
     }
-    if (rows.length < limit) scan("memory-archive.md", null, readFileOrEmpty(memoryArchivePath));
     return rows;
   };
 

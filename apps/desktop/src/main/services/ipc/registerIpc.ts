@@ -9077,7 +9077,12 @@ export function registerIpc({
   ipcMain.handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
-    ctx.ctoMemoryService.writeMemory(arg.memory ?? "");
+    // Only an explicit string may rewrite MEMORY.md — a missing field must not
+    // silently blank the durable memory file.
+    if (typeof arg?.memory !== "string") {
+      throw new Error("updateMemory requires a string `memory` field.");
+    }
+    ctx.ctoMemoryService.writeMemory(arg.memory);
     return ctx.ctoMemoryService.getSnapshot();
   });
 

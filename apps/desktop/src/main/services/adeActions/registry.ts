@@ -1200,7 +1200,13 @@ function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null 
   return {
     getSnapshot: () => ctoMemoryService.getSnapshot(),
     updateMemory: (args?: { memory?: string }) => {
-      ctoMemoryService.writeMemory(args?.memory ?? "");
+      // A missing field must not silently blank the durable memory file; only
+      // an explicit string (including a deliberate "") is a valid rewrite —
+      // and clearing writes archive the replaced content.
+      if (typeof args?.memory !== "string") {
+        throw new Error("updateMemory requires a string `memory` field.");
+      }
+      ctoMemoryService.writeMemory(args.memory);
       return ctoMemoryService.getSnapshot();
     },
     searchMemory: (args?: { query?: string; limit?: number }) => {

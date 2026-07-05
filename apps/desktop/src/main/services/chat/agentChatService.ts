@@ -25005,26 +25005,35 @@ export function createAgentChatService(args: {
         await resumeSession({ sessionId: managed.session.id });
       }
 
-      // D3 (half 2): reconcile the live session model with the CTO identity's
-      // stored preference (or an explicit request). A Settings/composer model
-      // change persisted into modelPreferences should move the live thread on
-      // the next ensureSession — but never mid-turn.
+      // D3 (half 2): reconcile the live session model AND reasoning tier with
+      // the CTO identity's stored preference (or an explicit request). A
+      // Settings/composer change persisted into modelPreferences should move
+      // the live thread on the next ensureSession — but never mid-turn. The
+      // identity preference is the source of truth in this direction, so a
+      // reasoning-only difference reconciles too.
       if (args.identityKey === "cto" && ctoStateService && managed.session.status !== "active") {
+        const prefs = ctoStateService.getIdentity().modelPreferences;
         const desiredModelId =
           (typeof args.modelId === "string" && args.modelId.trim().length ? args.modelId.trim() : null)
-          ?? ctoStateService.getIdentity().modelPreferences.modelId
+          ?? prefs.modelId
           ?? null;
-        if (desiredModelId && desiredModelId !== managed.session.modelId) {
+        const desiredReasoning = normalizeReasoningEffort(
+          args.reasoningEffort ?? prefs.reasoningEffort ?? managed.session.reasoningEffort ?? null,
+        ) ?? null;
+        const modelDiffers = Boolean(desiredModelId && desiredModelId !== managed.session.modelId);
+        const reasoningDiffers = desiredReasoning !== (managed.session.reasoningEffort ?? null);
+        if (modelDiffers || reasoningDiffers) {
           try {
             await updateSession({
               sessionId: managed.session.id,
-              modelId: desiredModelId,
-              reasoningEffort: managed.session.reasoningEffort ?? null,
+              ...(desiredModelId ? { modelId: desiredModelId } : {}),
+              reasoningEffort: desiredReasoning,
             });
           } catch (error) {
             logger.warn("agent_chat.cto_model_reconcile_failed", {
               sessionId: managed.session.id,
               desiredModelId,
+              desiredReasoning,
               error: error instanceof Error ? error.message : String(error),
             });
           }
