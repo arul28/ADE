@@ -87,7 +87,7 @@ struct CtoRootScreen: View {
 
   @ViewBuilder
   private var content: some View {
-    if let snapshot, !snapshot.identity.isOnboardingComplete {
+    if let snapshot, snapshot.identity.isOnboardingBlocking {
       CtoOnboardingScreen(snapshot: snapshot) { updated in
         self.snapshot = updated
       }
@@ -132,7 +132,9 @@ struct CtoRootScreen: View {
   }
 
   private var isOnboarded: Bool {
-    snapshot?.identity.isOnboardingComplete ?? false
+    // Dismissed-but-not-completed setup still unlocks the tab (desktop parity).
+    guard let identity = snapshot?.identity else { return false }
+    return !identity.isOnboardingBlocking
   }
 
   // MARK: - Loading

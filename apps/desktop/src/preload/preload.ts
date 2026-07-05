@@ -8215,11 +8215,17 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.ctoUpdateIdentity, args),
       ),
     getMemory: async (): Promise<CtoMemorySnapshot> =>
-      ipcRenderer.invoke(IPC.ctoGetMemory, {}),
+      callProjectRuntimeActionOr("cto_memory", "getSnapshot", {}, () =>
+        ipcRenderer.invoke(IPC.ctoGetMemory, {}),
+      ),
     updateMemory: async (args: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> =>
-      ipcRenderer.invoke(IPC.ctoUpdateMemory, args),
+      callProjectRuntimeActionOr("cto_memory", "updateMemory", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoUpdateMemory, args),
+      ),
     searchMemory: async (args: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> =>
-      ipcRenderer.invoke(IPC.ctoSearchMemory, args),
+      callProjectRuntimeActionOr("cto_memory", "searchMemory", { args }, () =>
+        ipcRenderer.invoke(IPC.ctoSearchMemory, args),
+      ),
     getLinearConnectionStatus: async (): Promise<LinearConnectionStatus> =>
       callProjectRuntimeActionOr(
         "linear_issue_tracker",

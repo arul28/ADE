@@ -842,6 +842,14 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   var isOnboardingComplete: Bool {
     onboardingState?.isComplete ?? false
   }
+
+  /// Mirrors the desktop gate (`needsOnboarding` in CtoPage): setup blocks the
+  /// CTO surface only when it is neither complete nor dismissed. A user who
+  /// tapped "Set up later" on any device must still reach the chat here.
+  var isOnboardingBlocking: Bool {
+    guard let state = onboardingState else { return true }
+    return !state.isComplete && state.dismissedAt == nil
+  }
 }
 
 /// Patch sent to `cto.updateIdentity`. Nested `modelPreferences` so the

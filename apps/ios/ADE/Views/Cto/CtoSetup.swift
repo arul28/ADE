@@ -237,20 +237,49 @@ struct CtoOnboardingScreen: View {
   }
 
   private var saveButton: some View {
-    Button {
-      Task { await save() }
-    } label: {
-      HStack(spacing: 8) {
-        if isSaving { ProgressView().controlSize(.small).tint(.white) }
-        Text(isSaving ? "Saving…" : "Start with this setup")
-          .fontWeight(.semibold)
+    VStack(spacing: 10) {
+      Button {
+        Task { await save() }
+      } label: {
+        HStack(spacing: 8) {
+          if isSaving { ProgressView().controlSize(.small).tint(.white) }
+          Text(isSaving ? "Saving…" : "Start with this setup")
+            .fontWeight(.semibold)
+        }
+        .frame(maxWidth: .infinity, minHeight: 30)
       }
-      .frame(maxWidth: .infinity, minHeight: 30)
+      .buttonStyle(.glassProminent)
+      .tint(ADEColor.ctoAccent)
+      .disabled(isSaving)
+
+      Button("Set up later") {
+        Task { await dismissSetup() }
+      }
+      .font(.subheadline)
+      .foregroundStyle(ADEColor.textSecondary)
+      .disabled(isSaving)
     }
-    .buttonStyle(.glassProminent)
-    .tint(ADEColor.ctoAccent)
-    .disabled(isSaving)
     .padding(.top, 4)
+  }
+
+  /// Desktop-parity skip: mark onboarding dismissed (not completed) so the tab
+  /// unlocks now and setup can be re-run from settings later.
+  private func dismissSetup() async {
+    isSaving = true
+    errorMessage = nil
+    defer { isSaving = false }
+    var patch = CtoIdentityPatch()
+    patch.onboardingState = CtoOnboardingState(
+      completedSteps: snapshot?.identity.onboardingState?.completedSteps ?? [],
+      dismissedAt: ISO8601DateFormatter().string(from: Date()),
+      completedAt: nil
+    )
+    do {
+      let updated = try await syncService.updateCtoIdentity(patch: patch)
+      onCompleted(updated)
+    } catch {
+      errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
   }
 
   private func hydrate() {

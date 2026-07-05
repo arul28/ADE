@@ -9588,6 +9588,26 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(viaTimestamp.isComplete)
   }
 
+  func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
+    func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
+      CtoIdentity(
+        name: "CTO",
+        onboardingState: state,
+        modelPreferences: CtoModelPreferences(provider: "claude", model: "sonnet", reasoningEffort: nil)
+      )
+    }
+    // Never set up and never dismissed → setup blocks the tab.
+    XCTAssertTrue(identity(nil).isOnboardingBlocking)
+    XCTAssertTrue(identity(CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)).isOnboardingBlocking)
+    // Dismissed on desktop ("Set up later") → chat must open, not the setup card.
+    let dismissed = CtoOnboardingState(completedSteps: [], dismissedAt: "2026-07-05T00:00:00Z", completedAt: nil)
+    XCTAssertFalse(identity(dismissed).isOnboardingBlocking)
+    XCTAssertFalse(identity(dismissed).isOnboardingComplete)
+    // Completed → unlocked too.
+    let complete = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
+    XCTAssertFalse(identity(complete).isOnboardingBlocking)
+  }
+
   func testMergeWorkChatTranscriptsReplacesDuplicatesAndKeepsAssistantItemsStable() {
     let existingText = "I am adding Meta as a first-class health signal now. That means ADE can distinguish app installed from repo not installed."
     let replayedTail = "Meta as a first-class health signal now. That means ADE can distinguish app installed from repo not installed. Next I will wire the relay status."

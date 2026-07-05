@@ -86,6 +86,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "onboarding",
   "automation_planner",
   "cto_state",
+  "cto_memory",
   "session",
   "operation",
   "ade_project",
@@ -508,6 +509,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "runProjectScan",
     "updateIdentity",
   ],
+  cto_memory: ["getSnapshot", "searchMemory", "updateMemory"],
   session: ["backfillDeltas", "deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
@@ -1185,6 +1187,23 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     runProjectScan: async (): Promise<CtoRunProjectScanResult> => {
       const detection = await runtime.onboardingService?.detectDefaults().catch(() => null) ?? null;
       return { detection };
+    },
+  };
+}
+
+function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const ctoMemoryService = runtime.ctoMemoryService;
+  if (!ctoMemoryService) return null;
+  return {
+    getSnapshot: () => ctoMemoryService.getSnapshot(),
+    updateMemory: (args?: { memory?: string }) => {
+      ctoMemoryService.writeMemory(args?.memory ?? "");
+      return ctoMemoryService.getSnapshot();
+    },
+    searchMemory: (args?: { query?: string; limit?: number }) => {
+      const query = args?.query ?? "";
+      const rows = ctoMemoryService.searchMemory(query, { limit: args?.limit ?? 20 });
+      return { query, rows };
     },
   };
 }
@@ -2735,6 +2754,7 @@ export function getAdeActionDomainServices(
     onboarding: toService(runtime.onboardingService),
     automation_planner: automationsEnabled ? toService(runtime.automationPlannerService) : null,
     cto_state: toService(buildCtoStateDomainService(runtime)),
+    cto_memory: toService(buildCtoMemoryDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
