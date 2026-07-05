@@ -860,9 +860,61 @@ function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | n
 }
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const FILE_SEARCH_SESSION_LANE_CACHE_MAX = 200;
+const fileSearchLaneIdBySessionId = new Map<string, string>();
 
 function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: string): string {
   return `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
+}
+
+function rememberFileSearchLaneId(sessionId: string, laneId: string): void {
+  if (fileSearchLaneIdBySessionId.has(sessionId)) {
+    fileSearchLaneIdBySessionId.delete(sessionId);
+  }
+  fileSearchLaneIdBySessionId.set(sessionId, laneId);
+  while (fileSearchLaneIdBySessionId.size > FILE_SEARCH_SESSION_LANE_CACHE_MAX) {
+    const oldest = fileSearchLaneIdBySessionId.keys().next().value;
+    if (typeof oldest !== "string") break;
+    fileSearchLaneIdBySessionId.delete(oldest);
+  }
+}
+
+function readSessionLaneId(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const laneId = value.laneId;
+  return typeof laneId === "string" && laneId.trim() ? laneId.trim() : null;
+}
+
+async function resolveFileSearchLaneId(agentChatService: unknown, sessionId: string): Promise<string | null> {
+  const cached = fileSearchLaneIdBySessionId.get(sessionId);
+  if (cached) return cached;
+
+  const service = agentChatService as {
+    getSessionSummary?: (sessionId: string) => Promise<unknown> | unknown;
+    listSessions?: () => Promise<unknown> | unknown;
+  };
+
+  if (typeof service.getSessionSummary === "function") {
+    try {
+      const laneId = readSessionLaneId(await service.getSessionSummary(sessionId));
+      if (laneId) {
+        rememberFileSearchLaneId(sessionId, laneId);
+        return laneId;
+      }
+    } catch {
+      // Fall back to listSessions below for older or partially available runtimes.
+    }
+  }
+
+  if (typeof service.listSessions !== "function") return null;
+  const sessions = await service.listSessions();
+  if (!Array.isArray(sessions)) return null;
+  const session = sessions.find((entry) => isRecord(entry) && entry.sessionId === sessionId);
+  const laneId = readSessionLaneId(session);
+  if (laneId) {
+    rememberFileSearchLaneId(sessionId, laneId);
+  }
+  return laneId;
 }
 
 function normalizeStringList(value: unknown): string[] {
@@ -1131,10 +1183,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");
       const query = typeof args?.query === "string" ? args.query : "";
-      const session = (await agentChatService.listSessions()).find((entry) => entry.sessionId === sessionId);
-      if (!session?.laneId || !runtime.fileService) return [];
+      const laneId = await resolveFileSearchLaneId(agentChatService, sessionId);
+      if (!laneId || !runtime.fileService) return [];
+      if (!query.trim()) {
+        const warmQuickOpenIndex = (runtime.fileService as {
+          warmQuickOpenIndex?: (args: { workspaceId: string; includeIgnored?: boolean }) => Promise<void>;
+        }).warmQuickOpenIndex;
+        if (typeof warmQuickOpenIndex === "function") {
+          void warmQuickOpenIndex({ workspaceId: laneId }).catch(() => undefined);
+        }
+        return [];
+      }
       const matches = await runtime.fileService.quickOpen({
-        workspaceId: session.laneId,
+        workspaceId: laneId,
         query,
         limit: 20,
       });

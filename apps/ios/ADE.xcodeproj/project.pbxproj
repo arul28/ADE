@@ -182,8 +182,7 @@
 		E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000041 /* WorkNewChatScreen.swift */; };
 		E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000051 /* WorkLanePickerDropdown.swift */; };
 		E10000000000000000000042 /* WorkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000042 /* WorkPreviews.swift */; };
-		E10000000000000000000043 /* WorkMentionsPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000043 /* WorkMentionsPickerSheet.swift */; };
-		E10000000000000000000044 /* WorkSlashCommandsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000044 /* WorkSlashCommandsSheet.swift */; };
+		E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000090 /* WorkComposerTypedTriggers.swift */; };
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000048 /* WorkTerminalEmulatorView.swift */; };
@@ -267,8 +266,7 @@
 		D10000000000000000000041 /* WorkNewChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatScreen.swift; path = ADE/Views/Work/WorkNewChatScreen.swift; sourceTree = "<group>"; };
 		D10000000000000000000051 /* WorkLanePickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLanePickerDropdown.swift; path = ADE/Views/Work/WorkLanePickerDropdown.swift; sourceTree = "<group>"; };
 		D10000000000000000000042 /* WorkPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPreviews.swift; path = ADE/Views/Work/WorkPreviews.swift; sourceTree = "<group>"; };
-		D10000000000000000000043 /* WorkMentionsPickerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMentionsPickerSheet.swift; path = ADE/Views/Work/WorkMentionsPickerSheet.swift; sourceTree = "<group>"; };
-		D10000000000000000000044 /* WorkSlashCommandsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSlashCommandsSheet.swift; path = ADE/Views/Work/WorkSlashCommandsSheet.swift; sourceTree = "<group>"; };
+		D20000000000000000000090 /* WorkComposerTypedTriggers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTypedTriggers.swift; path = ADE/Views/Work/WorkComposerTypedTriggers.swift; sourceTree = "<group>"; };
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D10000000000000000000048 /* WorkTerminalEmulatorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTerminalEmulatorView.swift; path = ADE/Views/Work/WorkTerminalEmulatorView.swift; sourceTree = "<group>"; };
@@ -618,8 +616,7 @@
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
 				D10000000000000000000051 /* WorkLanePickerDropdown.swift */,
 				D10000000000000000000042 /* WorkPreviews.swift */,
-				D10000000000000000000043 /* WorkMentionsPickerSheet.swift */,
-				D10000000000000000000044 /* WorkSlashCommandsSheet.swift */,
+				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D10000000000000000000047 /* ADEInspectable.swift */,
@@ -1100,8 +1097,7 @@
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
 				E10000000000000000000051 /* WorkLanePickerDropdown.swift in Sources */,
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
-				E10000000000000000000043 /* WorkMentionsPickerSheet.swift in Sources */,
-				E10000000000000000000044 /* WorkSlashCommandsSheet.swift in Sources */,
+				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */,

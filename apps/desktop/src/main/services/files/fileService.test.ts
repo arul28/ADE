@@ -496,6 +496,56 @@ describe("fileService", () => {
     }
   });
 
+  it("warms the quick open index for subsequent lookups", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-warm-search-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "warmTarget.ts"), "export const warmed = true;\n", "utf8");
+
+      await expect(service.warmQuickOpenIndex({ workspaceId: "workspace-1" })).resolves.toBeUndefined();
+
+      const readdirSync = vi.spyOn(fs, "readdirSync").mockImplementation((() => {
+        throw new Error("quickOpen should use the warmed index");
+      }) as typeof fs.readdirSync);
+      try {
+        const quickOpen = await service.quickOpen({
+          workspaceId: "workspace-1",
+          query: "warmTarget",
+        });
+
+        expect(quickOpen).toEqual([expect.objectContaining({ path: "src/warmTarget.ts" })]);
+        expect(readdirSync).not.toHaveBeenCalled();
+      } finally {
+        readdirSync.mockRestore();
+      }
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("swallows warmQuickOpenIndex errors for unknown workspaces", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-warm-missing-"));
+    const laneService = {
+      ...createLaneServiceStub(rootPath),
+      resolveWorkspaceById: vi.fn(() => {
+        throw new Error("unknown workspace");
+      }),
+    } as any;
+    const service = createFileService({ laneService });
+
+    try {
+      await expect(service.warmQuickOpenIndex({ workspaceId: "missing" })).resolves.toBeUndefined();
+      expect(laneService.resolveWorkspaceById).toHaveBeenCalledWith("missing");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("lists only the requested tree depth without extra file metadata", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-tree-"));
     const { execSync } = await import("node:child_process");

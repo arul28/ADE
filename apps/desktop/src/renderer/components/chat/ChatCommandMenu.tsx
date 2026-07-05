@@ -11,6 +11,7 @@ import {
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import { Command, File, MagnifyingGlass, SpinnerGap } from "@phosphor-icons/react";
+import type { ComposerTrigger } from "../../../shared/composerTriggers";
 import { cn } from "../ui/cn";
 
 // ---------------------------------------------------------------------------
@@ -29,7 +30,7 @@ export type ChatCommandMenuHandle = {
 
 type ChatCommandMenuProps = {
   /** The current trigger character and query. */
-  trigger: { type: "at" | "slash"; query: string; cursorIndex: number } | null;
+  trigger: ComposerTrigger | null;
   /** Available slash commands. */
   slashCommands: Array<{ name: string; description: string; argumentHint?: string; source?: "sdk" | "local" }>;
   /** Session ID for file search. */
@@ -77,7 +78,8 @@ const MENU_WIDTH = 420;
 const MENU_HEIGHT = 328;
 const VIEWPORT_GUTTER = 8;
 const MENU_GAP = 8;
-const DEBOUNCE_MS = 300;
+const DEBOUNCE_MS = 40;
+const QUERY_CACHE_MAX = 40;
 
 function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]>): CSSProperties {
   const viewportWidth = typeof window === "undefined" ? MENU_WIDTH + VIEWPORT_GUTTER * 2 : window.innerWidth;
@@ -113,6 +115,22 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const [fileLoading, setFileLoading] = useState(false);
     const listRef = useRef<HTMLDivElement | null>(null);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Per-query result cache for the lifetime of one menu session. Cached
+    // queries render in the same frame; a background revalidation still runs
+    // so watcher-driven index changes land on the next keystroke. Cleared
+    // when the menu closes so staleness cannot outlive the interaction.
+    const queryCacheRef = useRef<Map<string, Array<{ path: string }>>>(new Map());
+    const searchSeqRef = useRef(0);
+
+    const triggerType = trigger?.type ?? null;
+    const triggerQuery = trigger?.query ?? "";
+
+    useEffect(() => {
+      if (!trigger) {
+        queryCacheRef.current.clear();
+        searchSeqRef.current += 1;
+      }
+    }, [trigger]);
 
     // ---- Slash command filtering ----
     const filteredCommands = useMemo(() => {
@@ -122,43 +140,57 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         .slice(0, MAX_COMMAND_RESULTS);
     }, [trigger, slashCommands]);
 
-    // ---- File search with debounce ----
+    // ---- File search: short debounce, per-query cache, stale-result guard ----
     useEffect(() => {
-      if (!trigger || trigger.type !== "at") {
+      if (triggerType !== "at") {
         setFileResults([]);
         setFileLoading(false);
         return;
       }
 
-      const query = trigger.query;
+      const query = triggerQuery.trim();
       if (!sessionId) {
         setFileResults([]);
         setFileLoading(false);
         return;
       }
 
-      setFileLoading(true);
+      const cached = queryCacheRef.current.get(query);
+      if (cached) {
+        // Warm path: render cached results immediately, revalidate silently.
+        setFileResults(cached.slice(0, MAX_FILE_RESULTS));
+        setFileLoading(false);
+      } else {
+        setFileLoading(true);
+      }
 
+      const seq = ++searchSeqRef.current;
       if (debounceRef.current) clearTimeout(debounceRef.current);
-
       debounceRef.current = setTimeout(async () => {
         try {
           const results = await window.ade.agentChat.fileSearch({
             sessionId,
-            query: query.trim(),
+            query,
           });
+          if (searchSeqRef.current !== seq) return;
+          queryCacheRef.current.delete(query);
+          queryCacheRef.current.set(query, results);
+          if (queryCacheRef.current.size > QUERY_CACHE_MAX) {
+            const oldest = queryCacheRef.current.keys().next().value;
+            if (oldest !== undefined) queryCacheRef.current.delete(oldest);
+          }
           setFileResults(results.slice(0, MAX_FILE_RESULTS));
         } catch {
-          setFileResults([]);
+          if (searchSeqRef.current === seq && !cached) setFileResults([]);
         } finally {
-          setFileLoading(false);
+          if (searchSeqRef.current === seq) setFileLoading(false);
         }
-      }, DEBOUNCE_MS);
+      }, cached ? 0 : DEBOUNCE_MS);
 
       return () => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
       };
-    }, [trigger, sessionId]);
+    }, [triggerType, triggerQuery, sessionId]);
 
     // ---- Derive display items ----
     const items: ChatCommandMenuItem[] = useMemo(() => {
@@ -261,8 +293,8 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
             {/* Results list */}
             <div ref={listRef} className="max-h-[280px] overflow-y-auto py-1">
-              {/* Loading state */}
-              {fileLoading && trigger!.type === "at" && (
+              {/* Loading state — only when there is nothing cached to show */}
+              {fileLoading && trigger!.type === "at" && items.length === 0 && (
                 <div className="flex items-center gap-2 px-3 py-2">
                   <SpinnerGap size={12} weight="bold" className="animate-spin text-violet-400/50" />
                   <span className="text-[11px] text-fg/30">Searching...</span>

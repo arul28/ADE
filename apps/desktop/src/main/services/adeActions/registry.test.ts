@@ -435,6 +435,71 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it("resolves chat fileSearch lanes from getSessionSummary and caches the result", async () => {
+    const sessionId = "file-search-summary-session";
+    const getSessionSummary = vi.fn(async (id: string) => ({ sessionId: id, laneId: "lane-fast" }));
+    const listSessions = vi.fn(async () => [{ sessionId, laneId: "lane-slow" }]);
+    const quickOpen = vi.fn(async () => [{ path: "src/fast.ts", score: 600 }]);
+    const runtime = {
+      agentChatService: {
+        getSessionSummary,
+        listSessions,
+      },
+      fileService: {
+        quickOpen,
+        warmQuickOpenIndex: vi.fn(async () => undefined),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      fileSearch?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.fileSearch?.({ sessionId, query: "fast" })).resolves.toEqual([
+      { path: "src/fast.ts", score: 600 },
+    ]);
+    await expect(chat.fileSearch?.({ sessionId, query: "fast" })).resolves.toEqual([
+      { path: "src/fast.ts", score: 600 },
+    ]);
+
+    expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    expect(getSessionSummary).toHaveBeenCalledWith(sessionId);
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(quickOpen).toHaveBeenCalledTimes(2);
+    expect(quickOpen).toHaveBeenNthCalledWith(1, {
+      workspaceId: "lane-fast",
+      query: "fast",
+      limit: 20,
+    });
+  });
+
+  it("returns empty chat fileSearch results for whitespace queries and warms quickOpen", async () => {
+    const sessionId = "file-search-warm-session";
+    const getSessionSummary = vi.fn(async (id: string) => ({ sessionId: id, laneId: "lane-warm" }));
+    const quickOpen = vi.fn(async () => [{ path: "src/unused.ts", score: 600 }]);
+    const warmQuickOpenIndex = vi.fn(() => new Promise<void>(() => undefined));
+    const runtime = {
+      agentChatService: {
+        getSessionSummary,
+        listSessions: vi.fn(async () => []),
+      },
+      fileService: {
+        quickOpen,
+        warmQuickOpenIndex,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      fileSearch?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.fileSearch?.({ sessionId, query: "   " })).resolves.toEqual([]);
+
+    expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    expect(quickOpen).not.toHaveBeenCalled();
+    expect(warmQuickOpenIndex).toHaveBeenCalledWith({ workspaceId: "lane-warm" });
+  });
+
   it("falls back to headless chat transcript reads when readTranscript is unavailable", async () => {
     const getChatTranscript = vi.fn(async () => ({
       sessionId: "chat-1",

@@ -189,6 +189,17 @@ with the watcher:
 - Mass invalidation resets the index and triggers a full rebuild on
   next query
 
+The name index and the content index are split: the build walk only
+stats paths (no file reads), so `quickOpen` never waits on content.
+File contents load lazily inside `searchText` (bounded per-file and in
+total, binary-sniffed, cooperative yields) and are cached on the entry
+until the watcher invalidates it. `quickOpen` results are additionally
+cached per `(query, limit)` per index; any watcher mutation clears the
+query cache. `fileService.warmQuickOpenIndex({ workspaceId })` is a
+best-effort warm hook — the chat action bridge calls it for empty
+`chat.fileSearch` queries so the composer's first `@` builds the index
+before the first real query.
+
 The index has a soft cap on entries (workspaces over the cap fall
 back to on-demand glob scanning).
 
