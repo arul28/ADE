@@ -10330,9 +10330,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setMentionIndex(0);
   }, [prompt, setPromptValue]);
 
-  const insertSlashCommand = useCallback(() => {
-    const selected = slashRows[slashIndex] ?? slashRows[0];
-    if (!selected) return;
+  const insertSlashCommandRow = useCallback((selected: { name: string; argumentHint?: string }) => {
     const trigger = detectComposerTrigger(prompt, promptCursorRef.current);
     if (trigger?.type !== "slash" || composerTriggerSpansWholeDraft(prompt, trigger)) {
       // Lone leading command keeps the legacy fill-the-prompt behavior.
@@ -10341,7 +10339,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     const next = replaceComposerTriggerSpan(prompt, trigger, `${selected.name} `);
     setPromptValue(next.text, next.caret);
-  }, [prompt, setPromptValue, slashIndex, slashRows]);
+  }, [prompt, setPromptValue]);
+
+  const insertSlashCommand = useCallback(() => {
+    const selected = slashRows[slashIndex] ?? slashRows[0];
+    if (!selected) return;
+    insertSlashCommandRow(selected);
+  }, [insertSlashCommandRow, slashIndex, slashRows]);
 
   const applyModelState = useCallback((updater: (prev: AdeCodeModelState) => AdeCodeModelState) => {
     setModelState((prev) => {
@@ -11946,8 +11950,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       // When the slash-command suggester or @-mention list is open, ↑/↓ belong
       // exclusively to that palette (handled just below) — don't let cursor /
-      // history movement swallow them.
-      const slashOrMentionOpen = prompt.startsWith("/") || activeMentionRange != null;
+      // history movement swallow them. Keyed off the live rows (not a leading
+      // "/") so mid-sentence triggers get palette navigation too.
+      const slashOrMentionOpen = slashRows.length > 0 || activeMentionRange != null;
       if (key.upArrow && !slashOrMentionOpen) {
         if (prompt.length === 0 && attachedImageChips.length === 0) {
           recallPromptHistory("previous");
@@ -11986,7 +11991,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const pageDown = Boolean((key as { pageDown?: boolean }).pageDown);
       const home = Boolean((key as { home?: boolean }).home);
       const end = Boolean((key as { end?: boolean }).end);
-      const paletteOpen = activeMentionRange != null || prompt.startsWith("/");
+      const paletteOpen = activeMentionRange != null || slashRows.length > 0;
       const pageRows = Math.max(1, chatRowBudget - 2);
       if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0 && !pendingQuestionKeyActive) {
         setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
@@ -13436,7 +13441,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
   const showCommandPalette = commandPaletteOpen;
   const showMentionPalette = activeMentionRange != null;
-  const showSlashPalette = prompt.startsWith("/");
+  const showSlashPalette = slashComposerTrigger != null;
   const errorRows = error ? (!connection ? 2 : 1) : 0;
   const paletteBottomRows = 5
     + (promptRows.length - 1)
@@ -13907,7 +13912,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           rect: { x: paletteOverlayLeft + 1, y: paletteOverlayTop + index + 1, w: paletteOverlayWidth, h: 1 },
           onClick: () => {
             setSlashIndex(index);
-            setPrompt(`${row.name}${row.argumentHint ? " " : ""}`);
+            insertSlashCommandRow(row);
           },
           onHover: (hovered) => { if (hovered) setSlashIndex(index); },
           zIndex: 20,
@@ -14380,6 +14385,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     inlineRowFocus.cell,
     inlineRowFocused,
     insertMention,
+    insertSlashCommandRow,
     lanes,
     liveAgentCount,
     mentionSuggestions,
@@ -14728,7 +14734,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <SlashPalette
-              query={prompt}
+              query={slashComposerTrigger ? `/${slashComposerTrigger.query}` : prompt}
               userCommands={slashCommands}
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
