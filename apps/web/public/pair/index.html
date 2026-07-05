@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pair with ADE</title>
+    <!-- iPhone: offer the ADE App Clip card for instant pairing. The pairing
+         payload rides the URL fragment, so it never reaches this server and
+         is available to the clip at invocation. -->
+    <meta
+      name="apple-itunes-app"
+      content="app-id=6762759870, app-clip-bundle-id=com.ade.ios.Clip, app-clip-display=card"
+    />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --fg: #111;
+        --muted: #666;
+        --bg: #fafafa;
+        --card: #fff;
+        --border: rgba(0, 0, 0, 0.08);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --fg: #f2f2f2;
+          --muted: #9a9a9a;
+          --bg: #0c0c0c;
+          --card: #161616;
+          --border: rgba(255, 255, 255, 0.1);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        padding: 24px;
+      }
+      .card {
+        max-width: 420px;
+        width: 100%;
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 20px;
+        padding: 36px 32px;
+        text-align: center;
+      }
+      h1 { font-size: 22px; margin: 0 0 8px; font-weight: 600; }
+      p { color: var(--muted); font-size: 15px; line-height: 1.5; margin: 0 0 20px; }
+      .steps { text-align: left; color: var(--muted); font-size: 14px; line-height: 1.7; margin: 0 auto 8px; padding-left: 20px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Pair your iPhone with ADE</h1>
+      <p id="lead">Scan this page's QR code with your iPhone camera to pair instantly.</p>
+      <ol class="steps">
+        <li>Open the Camera app on your iPhone</li>
+        <li>Scan the pairing QR shown in ADE on your Mac</li>
+        <li>Enter the PIN your Mac displays</li>
+      </ol>
+      <p>Have the ADE app already? Scanning the same code inside the app's Settings works too.</p>
+    </div>
+    <script>
+      // A phone browser landing here (banner dismissed or clip unavailable)
+      // still has the payload in the fragment; keep the copy honest.
+      if (/iPhone|iPad/.test(navigator.userAgent) && location.hash.length > 1) {
+        document.getElementById("lead").textContent =
+          "Tap the ADE banner above to pair instantly, or install ADE from the App Store and scan the code again.";
+      }
+    </script>
+  </body>
+</html>

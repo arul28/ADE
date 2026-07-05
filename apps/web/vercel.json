@@ -4,13 +4,28 @@
     {
       "source": "/videos/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=0, s-maxage=31536000, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=31536000, must-revalidate"
+        }
       ]
     },
     {
       "source": "/images/(.*)",
       "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=0, s-maxage=31536000, must-revalidate" }
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, s-maxage=31536000, must-revalidate"
+        }
+      ]
+    },
+    {
+      "source": "/.well-known/apple-app-site-association",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/json"
+        }
       ]
     }
   ],
