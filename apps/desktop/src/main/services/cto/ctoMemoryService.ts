@@ -288,11 +288,12 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
       }
     };
 
-    // Durable facts first — current then archived — so evicted memories are
-    // never starved out of the budget by high-volume daily journal lines.
+    // Durable facts first — current then archived — before any transient
+    // content (rolling thread summary, daily journals), so evicted memories
+    // are never starved out of the result budget.
     scan("MEMORY.md", null, readMemory());
-    if (rows.length < limit) scan("thread-state.md", null, readThreadState());
     if (rows.length < limit) scan("memory-archive.md", null, readFileOrEmpty(memoryArchivePath));
+    if (rows.length < limit) scan("thread-state.md", null, readThreadState());
     if (rows.length < limit) {
       for (const stamp of listDailyStampsNewestFirst()) {
         if (rows.length >= limit) break;
