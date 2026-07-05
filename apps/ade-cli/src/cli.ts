@@ -9764,8 +9764,8 @@ function buildLinearPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    `Unknown linear command '${sub}'. Supported: quick-view, overview, projects, issues, my-issues, `
-      + `search, issue, comments, attach, detach, comment, assign, label, state, gql.`,
+    `Unknown linear command '${sub}'. Supported: quick-view, picker-data, issues, my-issues, `
+      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, graphql.`,
   );
 }
 

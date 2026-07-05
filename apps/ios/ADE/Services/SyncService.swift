@@ -324,7 +324,16 @@ enum SyncTailnetDiscovery {
   static let hostCandidates = [
     "ade-sync",
   ]
-  static let portCandidates = SyncDirectHostPorts.portCandidates
+  /// Bounded discovery sweep. The full stale-port recovery range
+  /// (`SyncDirectHostPorts.portCandidates`, 8787–8999) belongs to the actual
+  /// connect path; probing all 213 ports here — sequentially, 2 s timeout
+  /// each, on a 45 s cadence — overruns the refresh interval by minutes and
+  /// keeps the radio hot whenever the tailnet host is resolvable but dropping
+  /// packets (asleep Mac). Saved-profile ports are injected separately via
+  /// `SyncTailnetProbe.preferredPortsProvider` so a drifted port is still found.
+  static let probePortCandidates = Array(
+    SyncDirectHostPorts.defaultPort...(SyncDirectHostPorts.defaultPort + 8)
+  )
 }
 
 enum SyncDirectHostPorts {
@@ -497,6 +506,91 @@ func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
   return first == 100 && (64...127).contains(second)
 }
 
+/// Tailscale assigns every node an IPv6 address inside fd7a:115c:a1e0::/48
+/// alongside the CGNAT IPv4. Classifying it keeps tailnet-preference ordering
+/// and cellular roaming correct when a host advertises its v6 address.
+func syncIsTailscaleIPv6Address(_ host: String) -> Bool {
+  let normalized = host
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+  guard let v6 = IPv6Address(normalized) else { return false }
+  let bytes = v6.rawValue
+  guard bytes.count == 16 else { return false }
+  return bytes[0] == 0xfd && bytes[1] == 0x7a && bytes[2] == 0x11 && bytes[3] == 0x5c
+    && bytes[4] == 0xa1 && bytes[5] == 0xe0
+}
+
+struct SyncNetworkInterfaceAddress: Equatable {
+  let interfaceName: String
+  let address: String
+}
+
+/// True when this device itself holds a Tailscale-assigned address — CGNAT
+/// IPv4 (100.64.0.0/10) or the Tailscale IPv6 slice (fd7a:115c:a1e0::/48) —
+/// on a tunnel interface. The utun scoping is load-bearing: cellular carriers
+/// hand phones CGNAT 100.64/10 addresses on pdp_ip*, so an unscoped address
+/// scan would read as "on Tailscale" whenever the phone is on LTE.
+func syncHasTailnetSelfAddress(_ interfaces: [SyncNetworkInterfaceAddress]) -> Bool {
+  interfaces.contains { entry in
+    entry.interfaceName.hasPrefix("utun")
+      && (syncIsTailscaleIPv4Address(entry.address) || syncIsTailscaleIPv6Address(entry.address))
+  }
+}
+
+/// Snapshot of the device's current interface addresses via getifaddrs.
+func syncCopyNetworkInterfaceAddresses() -> [SyncNetworkInterfaceAddress] {
+  var result: [SyncNetworkInterfaceAddress] = []
+  var head: UnsafeMutablePointer<ifaddrs>?
+  guard getifaddrs(&head) == 0, let first = head else { return result }
+  defer { freeifaddrs(first) }
+  var cursor: UnsafeMutablePointer<ifaddrs>? = first
+  while let entry = cursor {
+    cursor = entry.pointee.ifa_next
+    guard let addrPtr = entry.pointee.ifa_addr else { continue }
+    let family = Int32(addrPtr.pointee.sa_family)
+    guard family == AF_INET || family == AF_INET6 else { continue }
+    let addressLength = family == AF_INET
+      ? socklen_t(MemoryLayout<sockaddr_in>.size)
+      : socklen_t(MemoryLayout<sockaddr_in6>.size)
+    var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+    guard getnameinfo(addrPtr, addressLength, &hostBuffer, socklen_t(hostBuffer.count), nil, 0, NI_NUMERICHOST) == 0 else {
+      continue
+    }
+    var address = String(cString: hostBuffer)
+    // Drop the IPv6 zone suffix (fe80::1%utun3 → fe80::1).
+    if let percent = address.firstIndex(of: "%") {
+      address = String(address[..<percent])
+    }
+    result.append(SyncNetworkInterfaceAddress(
+      interfaceName: String(cString: entry.pointee.ifa_name),
+      address: address
+    ))
+  }
+  return result
+}
+
+/// The saved machine advertises a Tailscale route, it is not discoverable on
+/// the current network, and this phone holds no tailnet address — the one
+/// user action that fixes the connection is turning Tailscale on (or moving
+/// back onto the machine's Wi-Fi). Never shown while connected: a user on a
+/// working VPN-to-LAN route (LAN probes succeed) simply connects.
+func syncShouldShowTailscaleOffHint(
+  transport: SyncTransportHealth,
+  hasSavedMachine: Bool,
+  savedMachineHasTailnetRoute: Bool,
+  phoneHasTailnetInterface: Bool,
+  machineDiscoveredNearby: Bool
+) -> Bool {
+  guard hasSavedMachine, savedMachineHasTailnetRoute else { return false }
+  guard !phoneHasTailnetInterface, !machineDiscoveredNearby else { return false }
+  switch transport {
+  case .connecting, .unreachable, .disconnected:
+    return true
+  case .connected:
+    return false
+  }
+}
+
 func syncNormalizedRouteHost(_ address: String) -> String {
   syncEndpointHost(address)?
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -507,6 +601,7 @@ func syncIsTailscaleRoute(_ address: String) -> Bool {
   let host = syncNormalizedRouteHost(address)
   if host.isEmpty { return false }
   return syncIsTailscaleIPv4Address(host)
+    || syncIsTailscaleIPv6Address(host)
     || syncIsTailnetDiscoveryHost(host)
     || host.hasSuffix(".ts.net")
 }
@@ -587,13 +682,21 @@ func syncTcpProbe(host: String, port: Int, timeoutNanoseconds: UInt64) async -> 
 func syncRaceAddressCandidates(
   addresses: [String],
   port: Int,
-  timeoutNanoseconds: UInt64 = 1_500_000_000
+  timeoutNanoseconds: UInt64 = 1_500_000_000,
+  tailscaleTimeoutNanoseconds: UInt64 = 3_000_000_000
 ) async -> [String] {
   guard addresses.count > 1 else { return addresses }
   return await withTaskGroup(of: (Int, Bool).self) { group in
     for (index, address) in addresses.enumerated() {
+      // First contact over a Tailscale route can ride a cold DERP relay and
+      // exceed the LAN-sized budget — exactly on the networks where the
+      // tailnet is the only working route. Give those candidates more room
+      // so they don't get demoted to the fallback tail.
+      let probeTimeout = syncIsTailscaleRoute(address)
+        ? max(timeoutNanoseconds, tailscaleTimeoutNanoseconds)
+        : timeoutNanoseconds
       group.addTask {
-        (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: timeoutNanoseconds))
+        (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: probeTimeout))
       }
     }
     var reachable: [Int] = []
@@ -768,6 +871,9 @@ private func syncLogPathSummary(_ snapshot: SyncNetworkPathSnapshot?) -> String 
 }
 
 private let syncAmbiguousRouteAuthFailureKey = "ADEAmbiguousRouteAuthFailure"
+/// userInfo key carrying `hello_error.host.deviceId` — the identity of the
+/// machine that rejected the hello, when the host was new enough to send it.
+private let syncRespondingHostIdentityKey = "ADERespondingHostIdentity"
 
 private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   [
@@ -931,7 +1037,7 @@ enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
-      return "Reached a different ADE machine on this route. ADE kept the saved pairing and will keep trying other routes."
+      return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     }
     if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
       return "This phone is no longer paired with this machine. Pair again from Settings."
@@ -1273,6 +1379,9 @@ enum TerminalStreamEvent {
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
   @Published private(set) var hostName: String?
+  /// Whether this phone currently holds a Tailscale-assigned address on a
+  /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
+  @Published private(set) var phoneHasTailnetInterface = false
   @Published private(set) var activeHostProfile: HostConnectionProfile?
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
@@ -2703,6 +2812,12 @@ final class SyncService: ObservableObject {
         self?.publishMergedDiscoveredHosts()
       }
     }
+    tailnetDiscovery.preferredPortsProvider = { [weak self] in
+      await MainActor.run {
+        guard let self else { return [] }
+        return self.loadSavedProfiles().values.map(\.port)
+      }
+    }
     tailnetDiscovery.start()
     pathMonitor.pathUpdateHandler = { [weak self] path in
       let snapshot = SyncNetworkPathSnapshot(
@@ -3481,9 +3596,43 @@ final class SyncService: ObservableObject {
     refreshReducedSyncLoad()
   }
 
+  /// Rescan interfaces for a tailnet self-address. Called on network-path
+  /// changes (NWPathMonitor fires when a VPN tunnel comes up or down), on
+  /// foreground transitions, and before surfacing an unreachable state.
+  private func refreshPhoneTailnetInterfaceState() {
+    let hasTailnet = syncHasTailnetSelfAddress(syncCopyNetworkInterfaceAddresses())
+    if phoneHasTailnetInterface != hasTailnet {
+      phoneHasTailnetInterface = hasTailnet
+    }
+  }
+
+  /// True when the "iPhone isn't on Tailscale" hint should show on connection
+  /// surfaces (Hub blank states, Settings header). See
+  /// `syncShouldShowTailscaleOffHint` for the gating rationale.
+  var tailscaleOffHintVisible: Bool {
+    guard let profile = activeHostProfile ?? loadProfile(),
+          tokenForProfile(profile) != nil else {
+      return false
+    }
+    // Any live discovery hit means the current network already reaches the
+    // machine (Bonjour ⇒ same LAN; the tailnet probe only resolves when the
+    // tunnel is up), so the hint would be noise.
+    let machineDiscoveredNearby = discoveredHosts.contains { host in
+      matchesDiscoveredHost(host, profile: profile)
+    }
+    return syncShouldShowTailscaleOffHint(
+      transport: connectionHealth.transport,
+      hasSavedMachine: true,
+      savedMachineHasTailnetRoute: profileHasTailnetRoute(profile),
+      phoneHasTailnetInterface: phoneHasTailnetInterface,
+      machineDiscoveredNearby: machineDiscoveredNearby
+    )
+  }
+
   private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
     let previous = lastNetworkPathSnapshot
     lastNetworkPathSnapshot = snapshot
+    refreshPhoneTailnetInterfaceState()
     refreshReducedSyncLoad()
     guard previous != nil else { return }
     guard canReconnectToSavedHost,
@@ -3548,6 +3697,7 @@ final class SyncService: ObservableObject {
   }
 
   func handleForegroundTransition() async {
+    refreshPhoneTailnetInterfaceState()
     guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
       lastError = nil
@@ -5170,17 +5320,20 @@ final class SyncService: ObservableObject {
   /// `titleGenerationEnabled` setting and clamps the name; it returns a
   /// deterministic fallback when naming is disabled/unavailable. This command is
   /// NOT queueable, so an offline phone throws here rather than queueing — the
-  /// caller is expected to catch and fall back to its own deterministic name.
+  /// caller is expected to catch and keep its own deterministic name.
   ///
-  /// The request is short (10s) and non-disconnecting: it's a best-effort lookup
-  /// that the caller races against its own 10s UI deadline, so a slow/stuck host
-  /// must not strain the connection or trigger a probe/reconnect that could
-  /// disrupt the chat/CLI session started right after the lane is created.
+  /// Callers run this fire-and-forget AFTER the lane is created with the
+  /// deterministic name (desktop's `startBackgroundLaneNaming` pattern), so the
+  /// request is short (10s) and non-disconnecting: a slow/stuck host must not
+  /// strain the connection or trigger a probe/reconnect that could disrupt the
+  /// chat/CLI session just started in the new lane.
   func suggestLaneName(
     laneId: String,
     prompt: String,
     modelId: String,
-    fallbackName: String
+    fallbackName: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> String {
     let args: [String: Any] = [
       "laneId": laneId,
@@ -5193,6 +5346,8 @@ final class SyncService: ObservableObject {
       args: args,
       disconnectOnTimeout: false,
       timeoutNanoseconds: 10_000_000_000,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
       as: SuggestLaneNameResult.self
     )
     let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5281,8 +5436,18 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "lanes.listUnregisteredWorktrees", as: [UnregisteredLaneCandidate].self)
   }
 
-  func renameLane(_ laneId: String, name: String) async throws {
-    _ = try await sendCommand(action: "lanes.rename", args: ["laneId": laneId, "name": name])
+  func renameLane(
+    _ laneId: String,
+    name: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws {
+    _ = try await sendCommand(
+      action: "lanes.rename",
+      args: ["laneId": laneId, "name": name],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
   }
 
   func reparentLane(
@@ -7636,7 +7801,11 @@ final class SyncService: ObservableObject {
         syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
         return (host: attempt.address, port: attempt.port)
       } catch {
-        let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: attempt.address)
+        let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(
+          error,
+          attemptedAddress: attempt.address,
+          expectedHostIdentity: profile.hostIdentity
+        )
         syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
         lastFailure = reconnectError
         if shouldInvalidateSavedPairing(for: reconnectError) {
@@ -7736,10 +7905,13 @@ final class SyncService: ObservableObject {
     networkPathReconnectTask = nil
     clearReconnectConnectInFlight()
     autoReconnectAwaitingLiveDiscovery = false
+    refreshPhoneTailnetInterfaceState()
     let machineName = syncTrimmedNonEmptyName(profile?.hostName)
       ?? syncTrimmedNonEmptyName(hostName)
       ?? "this machine"
-    lastError = "Can't reach \(machineName)."
+    lastError = tailscaleOffHintVisible
+      ? "Can't reach \(machineName). This iPhone isn't connected to Tailscale, which ADE needs when you're away from the machine's Wi-Fi."
+      : "Can't reach \(machineName)."
     connectionState = .error
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
   }
@@ -7767,37 +7939,33 @@ final class SyncService: ObservableObject {
     return nsError.userInfo["ADEErrorCode"] as? String == "auth_failed"
   }
 
-  private func isAmbiguousSavedRoute(_ attemptedAddress: String) -> Bool {
-    let host = syncNormalizedRouteHost(attemptedAddress)
-    if host.isEmpty { return false }
-    if syncIsTailnetDiscoveryHost(host) { return true }
-    if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") { return true }
-    if let v4 = IPv4Address(host) {
-      let bytes = v4.rawValue
-      guard bytes.count == 4 else { return false }
-      let a = bytes[0], b = bytes[1]
-      return a == 127
-        || a == 10
-        || (a == 172 && (16...31).contains(b))
-        || (a == 192 && b == 168)
-        || (a == 169 && b == 254)
-    }
-    if let v6 = IPv6Address(host) {
-      let bytes = v6.rawValue
-      guard bytes.count == 16 else { return false }
-      if bytes == Data([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) { return true }
-      if (bytes[0] & 0xfe) == 0xfc { return true }
-      if bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80 { return true }
-    }
-    return false
-  }
-
-  private func errorByMarkingAmbiguousRouteAuthFailure(_ error: Error, attemptedAddress: String) -> Error {
+  /// A destructive `forgetHost()` needs positive attribution: the rejection
+  /// must come from the exact machine this profile is paired with. A reused
+  /// DHCP lease, an mDNS alias, or a stale Tailscale candidate can all dial a
+  /// stranger whose auth check fails — and older hosts omit their identity
+  /// from `hello_error` entirely. Anything unattributed is marked ambiguous so
+  /// `shouldInvalidateSavedPairing` keeps the saved pairing and the reconnect
+  /// loop moves on to other routes.
+  private func errorByMarkingAmbiguousRouteAuthFailure(
+    _ error: Error,
+    attemptedAddress: String,
+    expectedHostIdentity: String?
+  ) -> Error {
     let nsError = error as NSError
-    guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed",
-          isAmbiguousSavedRoute(attemptedAddress) else {
+    guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed" else {
       return error
     }
+    let responding = syncNonEmpty(nsError.userInfo[syncRespondingHostIdentityKey] as? String)
+    if let responding,
+       let expected = syncNonEmpty(expectedHostIdentity),
+       responding == expected {
+      // The paired machine itself rejected this device — the pairing is
+      // genuinely revoked and the saved credentials may be dropped.
+      return error
+    }
+    syncConnectLog.info(
+      "ADE_SYNC_TRACE auth failure kept pairing (unattributed) address=\(attemptedAddress, privacy: .public) expected=\(expectedHostIdentity ?? "none", privacy: .public) responding=\(responding ?? "none", privacy: .public)"
+    )
     var userInfo = nsError.userInfo
     userInfo[syncAmbiguousRouteAuthFailureKey] = true
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
@@ -8259,17 +8427,25 @@ final class SyncService: ObservableObject {
     currentPeerMetadata()["dbVersion"] as? Int ?? -1
   }
 
-  func shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: String) -> Bool {
-    let error = NSError(
-      domain: "ADE",
-      code: 3,
-      userInfo: [
-        NSLocalizedDescriptionKey: "Authentication failed.",
-        "ADEErrorCode": "auth_failed",
-      ]
-    )
+  func shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+    address: String,
+    respondingHostIdentity: String? = nil,
+    expectedHostIdentity: String? = nil
+  ) -> Bool {
+    var userInfo: [String: Any] = [
+      NSLocalizedDescriptionKey: "Authentication failed.",
+      "ADEErrorCode": "auth_failed",
+    ]
+    if let respondingHostIdentity {
+      userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
+    }
+    let error = NSError(domain: "ADE", code: 3, userInfo: userInfo)
     return shouldInvalidateSavedPairing(
-      for: errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: address)
+      for: errorByMarkingAmbiguousRouteAuthFailure(
+        error,
+        attemptedAddress: address,
+        expectedHostIdentity: expectedHostIdentity
+      )
     )
   }
 
@@ -8633,16 +8809,26 @@ final class SyncService: ObservableObject {
          "project_list_my_github_repos_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
-      let code = ((payload as? [String: Any])?["code"] as? String) ?? "auth_failed"
-      let message = ((payload as? [String: Any])?["message"] as? String) ?? "Authentication failed."
+      let errorPayload = payload as? [String: Any]
+      let code = (errorPayload?["code"] as? String) ?? "auth_failed"
+      let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+      // Newer hosts attribute the rejection: the identity of the machine that
+      // refused the hello. Without it (older host, or a stranger machine on a
+      // reused address) the client must never destroy its saved pairing.
+      let respondingHostIdentity = ((errorPayload?["host"] as? [String: Any])?["deviceId"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
       connectionState = .error
+      var userInfo: [String: Any] = [
+        NSLocalizedDescriptionKey: message,
+        "ADEErrorCode": code,
+      ]
+      if let respondingHostIdentity, !respondingHostIdentity.isEmpty {
+        userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
+      }
       resolve(requestId: requestId, result: .failure(NSError(
         domain: "ADE",
         code: 5,
-        userInfo: [
-          NSLocalizedDescriptionKey: message,
-          "ADEErrorCode": code,
-        ]
+        userInfo: userInfo
       )))
     case "pairing_result":
       resolve(requestId: requestId, result: .success(payload))
@@ -10608,6 +10794,9 @@ extension SyncService {
 
 private final class SyncTailnetProbe {
   var onHostsChanged: (([DiscoveredSyncHost]) -> Void)?
+  /// Live saved-profile ports injected by SyncService so a host serving on a
+  /// drifted port is still discovered without sweeping the whole port range.
+  var preferredPortsProvider: (() async -> [Int])?
 
   private let connectionQueue = DispatchQueue(label: "com.ade.sync.tailnet-probe")
   private var probeTask: Task<Void, Never>?
@@ -10629,9 +10818,13 @@ private final class SyncTailnetProbe {
   }
 
   private func refresh() async {
+    let preferredPorts = await preferredPortsProvider?() ?? []
+    var seenPorts = Set<Int>()
+    let ports = (preferredPorts + SyncTailnetDiscovery.probePortCandidates)
+      .filter { (1...65_535).contains($0) && seenPorts.insert($0).inserted }
     var nextHosts: [String: DiscoveredSyncHost] = [:]
     for host in SyncTailnetDiscovery.hostCandidates {
-      for port in SyncTailnetDiscovery.portCandidates {
+      for port in ports {
         guard !Task.isCancelled else { return }
         let result = await probe(host: host, port: port)
         guard result != .unresolvedHost else { break }

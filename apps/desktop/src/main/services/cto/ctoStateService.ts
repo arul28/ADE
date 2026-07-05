@@ -132,6 +132,7 @@ const CTO_MEMORY_SYSTEM_GUIDANCE = [
   "- Search prior context with the searchMemory tool before asking the user to restate something, and readMemory to review what you already know.",
   "- The injected memory below is authoritative. Never claim to remember something that is not present in your injected memory or the current conversation — if you don't have it, say so or search for it.",
   "- Your memory is model-agnostic. When the user switches your model, the same memory carries over; do not treat a switch as a reset.",
+  "- Never store secrets in memory: no API keys, tokens, passwords, or credentials. Memory files are plaintext on disk and re-injected into prompts. Reference secrets by name (e.g. \"the LINEAR_API_KEY in ade secrets\") instead of by value; ADE also scrubs secret-shaped content on write as a backstop.",
 ].join("\n");
 
 function buildCtoEnvironmentKnowledge(): string {

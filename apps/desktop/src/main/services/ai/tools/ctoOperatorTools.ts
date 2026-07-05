@@ -2025,7 +2025,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.readMemory = tool({
     description:
-      "Read your persistent memory: durable facts (MEMORY.md) and the current thread state. " +
+      "Read your persistent memory: durable facts (MEMORY.md), the current thread state, and today's daily journal. " +
       "Use to review what you already know before making decisions.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -2036,6 +2036,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           success: true,
           memory: snapshot.memory,
           threadState: snapshot.threadState,
+          dailyLog: snapshot.dailyLog,
+          dailyLogDate: snapshot.dailyLogDate,
           updatedAt: snapshot.updatedAt,
         };
       } catch (error) {

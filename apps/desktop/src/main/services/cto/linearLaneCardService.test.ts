@@ -12,7 +12,6 @@ import {
   publishLinearLaneCard,
   publishLinearPrCard,
 } from "./linearLaneCardService";
-import type { LaneLinearIssue } from "../../../shared/types";
 import type { IssueTracker } from "./issueTracker";
 import { createLinearLiveStatusService, isLinearLiveStatusRoundTripEnabled } from "./linearLiveStatusService";
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { CtoMemorySearchRow, CtoMemorySnapshot } from "../../../shared/types";
-import { clipText, nowIso, writeTextAtomic } from "../shared/utils";
+import { clipText, nowIso, redactSecrets, writeTextAtomic } from "../shared/utils";
 
 type Logger = {
   warn: (message: string, meta?: Record<string, unknown>) => void;
@@ -26,6 +26,10 @@ const MEMORY_FILE_MAX_BYTES = 64 * 1024;
 // Per-turn journal line caps (`HH:MM — user → outcome`).
 const JOURNAL_USER_MAX_CHARS = 160;
 const JOURNAL_OUTCOME_MAX_CHARS = 200;
+
+// A single fact may not dominate MEMORY.md — clip before the byte-cap pass so
+// one runaway `saveMemory` payload cannot evict every other fact.
+const MEMORY_FACT_MAX_CHARS = 2000;
 
 const MEMORY_HEADER = "# CTO Durable Memory";
 const MEMORY_FACTS_HEADING = "## Facts";
@@ -96,7 +100,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const readMemory = (): string => readFileOrEmpty(memoryPath);
 
   const writeMemory = (content: string): void => {
-    const body = content.trim().length ? content.trim() : MEMORY_HEADER;
+    const body = content.trim().length ? redactSecrets(content.trim()) : MEMORY_HEADER;
     writeTextAtomic(memoryPath, `${body}\n`);
   };
 
@@ -106,7 +110,9 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
    * byte cap.
    */
   const appendMemoryFact = (fact: string): { saved: boolean; fact: string } => {
-    const normalized = fact.replace(/\s+/g, " ").trim();
+    // Memory files are plaintext on disk and re-injected into prompts: scrub
+    // secret-shaped content and clip a single fact before the byte-cap pass.
+    const normalized = clipText(redactSecrets(fact.replace(/\s+/g, " ").trim()), MEMORY_FACT_MAX_CHARS);
     if (!normalized.length) return { saved: false, fact: "" };
     const bullet = `- ${normalized}`;
 
@@ -163,7 +169,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const readThreadState = (): string => readFileOrEmpty(threadStatePath);
 
   const writeThreadState = (content: string, reason?: string): void => {
-    const summary = content.trim();
+    const summary = redactSecrets(content.trim());
     if (!summary.length) return;
     const stamp = `_Updated ${nowIso()}${reason ? ` (${reason})` : ""}_`;
     const body = [THREAD_STATE_HEADER, "", stamp, "", summary].join("\n");
@@ -173,7 +179,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   /* ── daily logs ── */
 
   const appendDailyEntry = (line: string, now = new Date()): void => {
-    const entry = line.replace(/\r?\n/g, " ").trim();
+    const entry = redactSecrets(line.replace(/\r?\n/g, " ").trim());
     if (!entry.length) return;
     const stamp = todayStamp(now);
     const filePath = dailyPathFor(stamp);

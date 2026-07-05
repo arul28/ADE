@@ -4174,9 +4174,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return true;
       })();
       if (authFailed) {
+        // Attribute the rejection: a phone dialing a stale/reused address can
+        // reach a stranger machine whose auth check fails. Only when the
+        // rejecting machine's identity matches the client's saved pairing may
+        // the client safely drop its credentials.
+        const rejectingHost = readBrainMetadata();
         send(peer.ws, "hello_error", {
           code: "auth_failed",
           message: "Sync authentication failed.",
+          host: {
+            deviceId: rejectingHost.deviceId,
+            name: rejectingHost.deviceName,
+          },
         }, envelope.requestId);
         try {
           peer.ws.close(4003, "Authentication failed");

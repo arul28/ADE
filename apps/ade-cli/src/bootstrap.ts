@@ -1189,6 +1189,7 @@ export async function createAdeRuntime(args: {
       agentChatService,
       ctoStateService,
       ctoMemoryService,
+      linearCredentialService: headlessLinearServices.linearCredentialService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       processService,
       sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,

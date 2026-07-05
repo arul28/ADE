@@ -75,6 +75,27 @@ describe("ctoMemoryService", () => {
     void stamp;
   });
 
+  it("scrubs secret-shaped content on every write path", () => {
+    const { service, ctoDir } = createFixture();
+    service.appendMemoryFact("Linear key is sk-abcdefghijklmnop1234 for the relay.");
+    service.writeThreadState("Deploy uses ghp_ABCDEFGHIJKLMNOPQRSTUVWX token.", "compaction");
+    service.appendTurnJournal({ user: "store api_key=deadbeefdeadbeefdeadbeef", outcome: "done" });
+
+    const memory = fs.readFileSync(path.join(ctoDir, "MEMORY.md"), "utf8");
+    const threadState = fs.readFileSync(path.join(ctoDir, "thread-state.md"), "utf8");
+    const dailyDir = path.join(ctoDir, "daily");
+    const daily = fs.readFileSync(
+      path.join(dailyDir, fs.readdirSync(dailyDir).find((name) => name.endsWith(".md"))!),
+      "utf8",
+    );
+    expect(memory).not.toContain("sk-abcdefghijklmnop1234");
+    expect(memory).toContain("[REDACTED]");
+    expect(threadState).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWX");
+    expect(daily).not.toContain("deadbeefdeadbeefdeadbeef");
+    // Non-secret content survives around the redactions.
+    expect(memory).toContain("for the relay");
+  });
+
   it("owns the turn-journal line format with per-part caps", () => {
     const { service, ctoDir } = createFixture();
     const longUser = `ask   about ${"u".repeat(300)}`;

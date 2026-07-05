@@ -483,6 +483,36 @@ struct ADENoticeCard: View {
   }
 }
 
+/// Warning card shown on connection surfaces when the saved machine expects a
+/// Tailscale route but this iPhone has no tailnet interface (see
+/// `SyncService.tailscaleOffHintVisible`). The action opens the Tailscale app
+/// when installed, falling back to its App Store page.
+struct ADETailscaleOffHintCard: View {
+  @Environment(\.openURL) private var openURL
+
+  var body: some View {
+    ADENoticeCard(
+      title: "iPhone isn't on Tailscale",
+      message: "Away from your machine's Wi-Fi, ADE connects through Tailscale. Open it and connect this iPhone.",
+      icon: "network.badge.shield.half.filled",
+      tint: ADEColor.warning,
+      actionTitle: "Open Tailscale",
+      action: openTailscale
+    )
+  }
+
+  private func openTailscale() {
+    guard let appUrl = URL(string: "tailscale://") else { return }
+    openURL(appUrl) { accepted in
+      guard !accepted,
+            let storeUrl = URL(string: "https://apps.apple.com/app/tailscale/id1470499037") else {
+        return
+      }
+      openURL(storeUrl)
+    }
+  }
+}
+
 struct ADEStatusPill: View {
   let text: String
   let tint: Color
