@@ -500,6 +500,8 @@ export const IPC = {
   syncSetRuntimeName: "ade.sync.setRuntimeName",
   syncClearRuntimeName: "ade.sync.clearRuntimeName",
   syncSetActiveLanePresence: "ade.sync.setActiveLanePresence",
+  syncGetCloudRelayStatus: "ade.sync.getCloudRelayStatus",
+  syncSetCloudRelayEnabled: "ade.sync.setCloudRelayEnabled",
   syncEvent: "ade.sync.event",
   agentToolsDetect: "ade.agentTools.detect",
   adeCliGetStatus: "ade.adeCli.getStatus",

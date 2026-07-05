@@ -39,6 +39,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let pullRequests: [PullRequestListItem]
   let githubPrs: [GitHubPrListItem]
   let optimisticSessions: [String: TerminalSessionSummary]
+  let pendingChatCreations: [PendingChatCreation]
   let selectedLaneId: String
   let selectedStatus: WorkSessionStatusFilter
   let searchText: String
@@ -118,6 +119,18 @@ struct WorkRootScreen: View {
       chatSummaries: chatSummaries,
       sessions: sessions + Array(optimisticSessions.values)
     )
+  }
+
+  /// Synthesized optimistic rows for offline chat creations awaiting sync,
+  /// keyed by their synthetic session id.
+  var pendingChatCreationOptimisticSessions: [String: TerminalSessionSummary] {
+    var result: [String: TerminalSessionSummary] = [:]
+    for creation in syncService.pendingChatCreations {
+      let lane = lanes.first(where: { $0.id == creation.laneId })
+      let session = workPendingChatCreationOptimisticSession(creation, lane: lane)
+      result[session.id] = session
+    }
+    return result
   }
 
   var laneById: [String: LaneSummary] {
@@ -233,6 +246,7 @@ struct WorkRootScreen: View {
       pullRequests: pullRequests,
       githubPrs: syncService.laneGithubPrItems,
       optimisticSessions: optimisticSessions,
+      pendingChatCreations: syncService.pendingChatCreations,
       selectedLaneId: selectedLaneId,
       selectedStatus: selectedStatus,
       searchText: searchText,

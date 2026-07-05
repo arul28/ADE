@@ -97,6 +97,9 @@ import {
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
+import { createPushRelayClient } from "./services/push/pushRelayClient";
+import { getSharedPushPublisherService, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
@@ -214,6 +217,7 @@ export type AdeRuntime = {
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
+  pushPublisherService?: PushPublisherService | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
@@ -1088,8 +1092,28 @@ export async function createAdeRuntime(args: {
   // `pr.listQueueStates` call over the local runtime fails with "is not
   // callable". Mirror the desktop main-process wiring (see main.ts) so the PRs
   // tab loads against the local runtime.
+  // Fan-out for the push publisher: PR merge-ready / checks-failing notifications
+  // are bridged here so the publisher never has to poll GitHub itself. Populated
+  // by pushPublisherService.start() (declared below), so it stays empty and inert
+  // when push publishing is not running.
+  const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
   const emitPrEvent = (event: PrEventPayload): void => {
     pushEvent("runtime", { type: "pr_event", event });
+    if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
+      const notification: PushPrNotification = {
+        kind: event.kind,
+        prNumber: event.prNumber,
+        prTitle: event.prTitle ?? null,
+        laneId: event.laneId ?? null,
+      };
+      for (const subscriber of pushPrNotificationSubscribers) {
+        try {
+          subscriber(notification);
+        } catch {
+          // ignore subscriber failures
+        }
+      }
+    }
   };
   const queueLandingService = createQueueLandingService({
     db,
@@ -1146,6 +1170,47 @@ export async function createAdeRuntime(args: {
   });
   prPollingService.start();
 
+  // Brain → Cloudflare push relay publisher. Owns push registration (from the
+  // paired phone via `push.*` sync commands) and fans agent/PR state transitions
+  // out as APNs alerts + the aggregate "agent-runs" Live Activity. Machine-level
+  // identity lives next to the sync pairing secrets under ~/.ade/secrets.
+  // One machine-level publisher shared by every project scope (keyed by the
+  // push-identity file), so a run in one project doesn't clobber the phone's
+  // single "agent-runs" Live Activity for another. Each scope wires its own
+  // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
+  const pushRelayFilePath = path.join(resolveMachineAdeLayout().secretsDir, "push-relay.json");
+  const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
+    const store = createPushRegistrationStore({ filePath: pushRelayFilePath });
+    return {
+      logger,
+      store,
+      relayClient: createPushRelayClient({ store, logger }),
+      machineName: os.hostname(),
+    };
+  });
+  const detachPushSources = pushPublisherService.attachSources(projectId, {
+    agentChatService: agentChatService ?? null,
+    ptyService,
+    subscribePrNotifications: (cb) => {
+      pushPrNotificationSubscribers.add(cb);
+      return () => pushPrNotificationSubscribers.delete(cb);
+    },
+    resolveLaneName: (laneId) => {
+      try {
+        const row = db.get<{ name: string }>(
+          "select name from lanes where id = ? and project_id = ? limit 1",
+          [laneId, projectId],
+        );
+        return row?.name ?? null;
+      } catch {
+        return null;
+      }
+    },
+  });
+  void pushPublisherService.start().catch((error) => {
+    logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+
   const usageTrackingService = createUsageTrackingService({
     logger,
     pollIntervalMs: 120_000,
@@ -1158,6 +1223,31 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
+  // Cloud tunnel relay (phone → Cloudflare DO → this brain). Off by default;
+  // the Settings toggle flips the shared store and the client follows. The
+  // store instance is shared with the sync service so the relay candidate in
+  // pairingConnectInfo and the tunnel client always agree on one config file.
+  const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
+  const { createSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
+  const cloudRelayStore = createSyncCloudRelayStore({
+    filePath: path.join(
+      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-cloud-relay.json",
+    ),
+  });
+  const syncTunnelClientService = createSyncTunnelClientService({
+    logger,
+    configStore: cloudRelayStore,
+    getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
+  });
+  if (cloudRelayStore.isEnabled()) {
+    void syncTunnelClientService.start().catch((error) => {
+      logger.warn("sync.tunnel_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
   let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
@@ -1187,6 +1277,7 @@ export async function createAdeRuntime(args: {
       autoRebaseService,
       computerUseArtifactBrokerService,
       agentChatService,
+      pushPublisherService,
       ctoStateService,
       ctoMemoryService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
@@ -1201,6 +1292,16 @@ export async function createAdeRuntime(args: {
       foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
+      cloudRelayStore,
+      onCloudRelayEnabledChanged: (enabled) => {
+        const action = enabled ? syncTunnelClientService.start() : syncTunnelClientService.stop();
+        void action.catch((error) => {
+          logger.warn("sync.tunnel_toggle_failed", {
+            enabled,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
     syncServiceForPtyEvents = syncService;
@@ -1251,6 +1352,7 @@ export async function createAdeRuntime(args: {
     gitService,
     diffService,
     syncService,
+    pushPublisherService,
     syncHostService: syncService?.getHostService() ?? null,
     laneWorktreeLockService,
     ptyService,
@@ -1290,6 +1392,9 @@ export async function createAdeRuntime(args: {
       }
       void configReloadService.dispose().catch(() => {});
       swallow(() => prPollingService.dispose());
+      // Detach only this scope's signals; the shared publisher outlives the scope.
+      swallow(() => detachPushSources());
+      void syncTunnelClientService.dispose().catch(() => {});
       swallow(() => automationIngressService?.dispose());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());

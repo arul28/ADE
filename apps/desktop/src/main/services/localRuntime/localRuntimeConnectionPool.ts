@@ -18,6 +18,7 @@ import type {
 import type {
   AdeActionRegistryEntry,
   LocalRuntimeStatus,
+  SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
@@ -927,6 +928,14 @@ export class LocalRuntimeConnectionPool {
 
   async clearSyncRuntimeNameForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.clearRuntimeName");
+  }
+
+  async syncCloudRelayStatusForRoot(rootPath: string): Promise<SyncCloudRelayStatus> {
+    return await this.callSyncForRoot<SyncCloudRelayStatus>(rootPath, "sync.getCloudRelayStatus");
+  }
+
+  async setSyncCloudRelayEnabledForRoot(rootPath: string, enabled: boolean): Promise<SyncCloudRelayStatus> {
+    return await this.callSyncForRoot<SyncCloudRelayStatus>(rootPath, "sync.setCloudRelayEnabled", { enabled });
   }
 
   async callSync<T>(

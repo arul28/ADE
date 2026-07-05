@@ -1300,9 +1300,16 @@ final class ADETests: XCTestCase {
       syncWebSocketURLString(host: "[fd7a:115c:a1e0::1]:8788", port: 8787),
       "ws://[fd7a:115c:a1e0::1]:8788"
     )
+    // A full wss:// URL is now used verbatim so the relay path (e.g.
+    // `/connect/<machineKey>`) survives — reconstructing scheme://host:port
+    // would drop it and break the tunnel.
     XCTAssertEqual(
       syncWebSocketURLString(host: "wss://sync.ade.example:443/sync", port: 8787),
-      "wss://sync.ade.example:443"
+      "wss://sync.ade.example:443/sync"
+    )
+    XCTAssertEqual(
+      syncWebSocketURLString(host: "wss://relay.ade-app.dev/connect/machinekey123", port: 8787),
+      "wss://relay.ade-app.dev/connect/machinekey123"
     )
   }
 

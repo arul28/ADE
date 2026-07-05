@@ -13,7 +13,10 @@ extension WorkRootScreen {
     let lanesSnapshot = lanes
     let pullRequestsSnapshot = pullRequests
     let githubPrsSnapshot = syncService.laneGithubPrItems
+    // Fold offline "Pending sync" chat-creation rows into the optimistic set so
+    // they render through the same machinery; committed rows win on id collision.
     let optimisticSessionsSnapshot = optimisticSessions
+      .merging(pendingChatCreationOptimisticSessions) { current, _ in current }
     let archivedSessionIdsSnapshot = archivedSessionIds
     let selectedStatusSnapshot = selectedStatus
     let selectedLaneIdSnapshot = selectedLaneId
@@ -354,6 +357,8 @@ extension WorkRootScreen {
   }
 
   func openSession(_ session: TerminalSessionSummary) {
+    // A pending-sync row has no synced session to open yet.
+    guard !workIsPendingChatCreationSession(session) else { return }
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
     selectedSessionTransitionId = session.id
@@ -413,6 +418,11 @@ extension WorkRootScreen {
   }
 
   func deleteChatSession(_ session: TerminalSessionSummary) {
+    // Deleting a pending-sync row cancels the queued creation locally.
+    if workIsPendingChatCreationSession(session) {
+      syncService.cancelPendingChatCreation(id: workPendingChatCreationCommandId(session))
+      return
+    }
     Task {
       do {
         try await syncService.deleteChatSession(sessionId: session.id)

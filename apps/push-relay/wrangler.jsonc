@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "ade-push-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-30",
+  "workers_dev": true,
+  "preview_urls": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ade-push-relay",
+      "database_id": "1fab2e8a-b269-4618-9402-7a49f9651f26",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
   SyncAddressCandidate,
+  SyncCloudRelayStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
@@ -50,11 +51,14 @@ import {
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
+import { createSyncSecurityStore } from "./syncSecurityStore";
+import { createSyncCloudRelayStore, type SyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
@@ -90,6 +94,8 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
+  /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
+  pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
@@ -116,6 +122,14 @@ type SyncServiceArgs = {
    */
   forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
+  /**
+   * Shared cloud-relay config store. The daemon passes the machine-level
+   * instance it also hands to the tunnel client so both read one file; when
+   * absent a store is created under the pairing state dir.
+   */
+  cloudRelayStore?: SyncCloudRelayStore;
+  /** Fired when the "Cloud relay fallback" toggle flips (start/stop tunnel). */
+  onCloudRelayEnabledChanged?: (enabled: boolean) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
@@ -141,6 +155,8 @@ const TOKEN_FILE = "sync-bootstrap-token";
 const PIN_FILE = "sync-pin.json";
 const PAIRED_DEVICES_FILE = "sync-paired-devices.json";
 const RUNTIME_NAME_FILE = "sync-runtime-name.json";
+const SECURITY_FILE = "sync-security.json";
+const CLOUD_RELAY_FILE = "sync-cloud-relay.json";
 
 function readPairingRecords(filePath: string): Record<string, unknown> {
   try {
@@ -362,9 +378,15 @@ function isViewerDraftTransportError(error: unknown): boolean {
 
 function buildPairingConnectInfo(argsIn: {
   localDevice: SyncRoleSnapshot["localDevice"];
+  relayWssUrl?: string | null;
 }): SyncPairingConnectInfo {
   const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
   const addressCandidates = buildAddressCandidates(argsIn.localDevice);
+  // The cloud relay is the lowest-priority path: phones try every direct
+  // candidate first and fall back to the tunnel only when nothing answers.
+  if (argsIn.relayWssUrl) {
+    addressCandidates.push({ host: argsIn.relayWssUrl, kind: "relay" });
+  }
   const hostIdentity = {
     deviceId: argsIn.localDevice.deviceId,
     siteId: argsIn.localDevice.siteId,
@@ -478,6 +500,12 @@ export function createSyncService(args: SyncServiceArgs) {
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
     pinStore,
+  });
+  const securityStore = createSyncSecurityStore({
+    filePath: path.join(pairingStateDir, SECURITY_FILE),
+  });
+  const cloudRelayStore = args.cloudRelayStore ?? createSyncCloudRelayStore({
+    filePath: path.join(pairingStateDir, CLOUD_RELAY_FILE),
   });
 
   const deviceRegistryService = createDeviceRegistryService({
@@ -610,6 +638,7 @@ export function createSyncService(args: SyncServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
+    pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
@@ -686,6 +715,7 @@ export function createSyncService(args: SyncServiceArgs) {
       ptyService: args.ptyService,
       processService: args.processService,
       agentChatService: args.agentChatService,
+      pushPublisherService: args.pushPublisherService,
       ctoStateService: args.ctoStateService,
       ctoMemoryService: args.ctoMemoryService,
       linearCredentialService: args.linearCredentialService,
@@ -712,6 +742,7 @@ export function createSyncService(args: SyncServiceArgs) {
       foreignChatProvider: args.foreignChatProvider,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
+      requireDpop: () => securityStore.getRequireDpop(),
       onStateChanged: () => {
         void refreshRoleState();
       },
@@ -1151,7 +1182,10 @@ export function createSyncService(args: SyncServiceArgs) {
         runtimeName: runtimeNameStore.getRuntimeName(),
         pairingConnectInfo:
           canHostPhonePairing
-            ? buildPairingConnectInfo({ localDevice })
+            ? buildPairingConnectInfo({
+                localDevice,
+                relayWssUrl: cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+              })
             : null,
         connectedPeers,
         tailnetDiscovery: canHostPhonePairing && hostService
@@ -1302,6 +1336,35 @@ export function createSyncService(args: SyncServiceArgs) {
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;
+    },
+
+    getRequireDpop(): boolean {
+      return securityStore.getRequireDpop();
+    },
+
+    setRequireDpop(requireDpop: boolean): boolean {
+      securityStore.setRequireDpop(requireDpop);
+      // Return the effective value: ADE_SYNC_REQUIRE_DPOP can override the store.
+      return securityStore.getRequireDpop();
+    },
+
+    getCloudRelayStatus(): SyncCloudRelayStatus {
+      const config = cloudRelayStore.getConfig();
+      return {
+        enabled: config.enabled,
+        relayWssUrl: cloudRelayStore.getRelayWssUrl(),
+        machineKey: config.machineKey,
+        relayUrl: cloudRelayStore.getRelayUrl(),
+      };
+    },
+
+    async setCloudRelayEnabled(enabled: boolean): Promise<SyncCloudRelayStatus> {
+      cloudRelayStore.setEnabled(enabled);
+      args.onCloudRelayEnabledChanged?.(enabled);
+      // The relay candidate rides pairingConnectInfo, so republish status.
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return service.getCloudRelayStatus();
     },
 
     async setActiveLanePresence(laneIds: string[]): Promise<void> {

@@ -24,7 +24,9 @@ import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { createSyncPairingStore } from "./syncPairingStore";
+import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
 import { createSyncPinStore } from "./syncPinStore";
+import { createSyncSecurityStore } from "./syncSecurityStore";
 import {
   DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
   encodeSyncEnvelope,
@@ -182,7 +184,12 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   ) {
     return {
       peer,
-      auth: { kind: "paired", deviceId: auth.deviceId, secret: auth.secret },
+      auth: {
+        kind: "paired",
+        deviceId: auth.deviceId,
+        secret: auth.secret,
+        ...(auth.dpop ? { dpop: auth.dpop } : {}),
+      },
     };
   }
   const token = optionalString(record.token);
@@ -195,7 +202,8 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
   const record = payload as Record<string, unknown>;
   const code = optionalString(record.code);
   const peer = normalizePeerMetadata(record.peer);
-  return code && peer ? { code, peer } : null;
+  const dpopPublicKey = optionalString(record.dpopPublicKey);
+  return code && peer ? { code, peer, ...(dpopPublicKey ? { dpopPublicKey } : {}) } : null;
 }
 
 function send(
@@ -329,6 +337,13 @@ export function createBrainProjectActionsSyncHandler(
   const pairingStore = createSyncPairingStore({
     filePath: args.pairingSecretsPath,
     pinStore,
+  });
+  const dpopNonceCache = createSyncDpopNonceCache();
+  // Same machine-level security posture file the project sync host reads, so
+  // `requireDpop` binds on this ingress path too — the brain is the default
+  // sync host and must not be a softer entry point than the project host.
+  const securityStore = createSyncSecurityStore({
+    filePath: path.join(path.dirname(args.pinPath), "sync-security.json"),
   });
   const localDeviceId = ensureSecretFile(args.localDeviceIdPath, 16);
   const localSiteId = ensureSecretFile(args.localSiteIdPath, 16);
@@ -632,7 +647,9 @@ export function createBrainProjectActionsSyncHandler(
               return;
             }
             try {
-              const paired = pairingStore.pairPeer(payload.peer, payload.code);
+              const paired = pairingStore.pairPeer(payload.peer, payload.code, {
+                dpopPublicKey: payload.dpopPublicKey ?? null,
+              });
               pairFailures.clearAfterSuccess(remoteAddress ?? null);
               send(ws, "pairing_result", { ok: true, deviceId: paired.deviceId, secret: paired.secret }, envelope.requestId);
             } catch (error) {
@@ -685,11 +702,43 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           const auth = hello.auth;
-          const authFailed = auth?.kind === "paired"
-            ? auth.deviceId !== hello.peer.deviceId || !pairingStore.authenticate(auth.deviceId, auth.secret)
-            : !auth
-              || !safeStringEquals(bootstrapToken, auth.token)
-              || (!SYNC_HOST_BIND_LOOPBACK_ONLY && !pairingStore.hasPairingRecord(hello.peer.deviceId));
+          const authFailed = (() => {
+            if (auth?.kind === "paired") {
+              if (auth.deviceId !== hello.peer.deviceId) return true;
+              if (!pairingStore.authenticate(auth.deviceId, auth.secret)) return true;
+              const record = pairingStore.getPairingRecord(auth.deviceId);
+              if (!record) return true;
+              const dpopFailure = evaluatePairedHelloDpop({
+                storedPublicKey: record.dpopPublicKey,
+                deviceId: auth.deviceId,
+                secret: auth.secret,
+                proof: auth.dpop ?? null,
+                requireDpop: securityStore.getRequireDpop(),
+                nonceCache: dpopNonceCache,
+                adoptPublicKey: (publicKey) => {
+                  pairingStore.adoptDpopPublicKey(auth.deviceId, publicKey);
+                },
+              });
+              if (dpopFailure) {
+                args.logger.warn("sync_ingress.dpop_rejected", { deviceId: auth.deviceId, reason: dpopFailure });
+                return true;
+              }
+              return false;
+            }
+            if (!auth || !safeStringEquals(bootstrapToken, auth.token)) return true;
+            // DPoP-upgraded devices must not enter through the shared
+            // bootstrap token — that would bypass the enclave key binding.
+            if (pairingStore.getPairingRecord(hello.peer.deviceId)?.dpopPublicKey) return true;
+            // Strict posture mirrors the project host: with require-DPoP on,
+            // the bootstrap token never satisfies a LAN hello.
+            if (securityStore.getRequireDpop() && !SYNC_HOST_BIND_LOOPBACK_ONLY) {
+              args.logger.warn("sync_ingress.dpop_required_bootstrap_rejected", {
+                deviceId: hello.peer.deviceId,
+              });
+              return true;
+            }
+            return !SYNC_HOST_BIND_LOOPBACK_ONLY && !pairingStore.hasPairingRecord(hello.peer.deviceId);
+          })();
           if (authFailed) {
             // Same attribution as the project host's auth_failed: name the
             // rejecting machine so clients never drop a saved pairing over a

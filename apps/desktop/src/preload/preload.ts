@@ -85,6 +85,7 @@ import type {
   CursorCloudStreamRunResult,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
+  SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
@@ -1229,6 +1230,7 @@ const MUTATING_SYNC_METHODS = new Set([
   "sync.clearRuntimeName",
   "sync.updateLocalDevice",
   "sync.setActiveLanePresence",
+  "sync.setCloudRelayEnabled",
   "modelPicker.setFavorites",
   "modelPicker.toggleFavorite",
   "modelPicker.pushRecent",
@@ -3931,6 +3933,14 @@ contextBridge.exposeInMainWorld("ade", {
     setActiveLanePresence: async (args: { laneIds: string[] }): Promise<void> =>
       callProjectRuntimeSyncOr("sync.setActiveLanePresence", args, () =>
         ipcRenderer.invoke(IPC.syncSetActiveLanePresence, args),
+      ),
+    getCloudRelayStatus: async (): Promise<SyncCloudRelayStatus> =>
+      callProjectRuntimeSyncOr("sync.getCloudRelayStatus", {}, () =>
+        ipcRenderer.invoke(IPC.syncGetCloudRelayStatus),
+      ),
+    setCloudRelayEnabled: async (enabled: boolean): Promise<SyncCloudRelayStatus> =>
+      callProjectRuntimeSyncOr("sync.setCloudRelayEnabled", { enabled }, () =>
+        ipcRenderer.invoke(IPC.syncSetCloudRelayEnabled, enabled),
       ),
     onEvent: (cb: (event: SyncStatusEventPayload) => void) => {
       const listener = (

@@ -1,12 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import type {
   SyncAddressCandidate,
+  SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncPairingConnectInfo,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
 } from "../../../shared/types";
+import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
+import { SettingsToggle } from "./settingsSectionUi";
 import {
   COLORS,
   LABEL_STYLE,
@@ -102,8 +106,23 @@ function addressKindLabel(kind: SyncAddressCandidate["kind"]): string {
       return "LAN";
     case "loopback":
       return "Loopback";
+    case "saved":
+      return "Saved";
+    case "relay":
+      return "Cloud relay";
     default:
       return "Manual";
+  }
+}
+
+function addressKindColor(kind: SyncAddressCandidate["kind"]): string {
+  switch (kind) {
+    case "tailscale":
+      return COLORS.success;
+    case "relay":
+      return COLORS.accent;
+    default:
+      return COLORS.textMuted;
   }
 }
 
@@ -154,18 +173,21 @@ function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
 export function SyncDevicesSection() {
   const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
   const [devices, setDevices] = useState<SyncDeviceRuntimeState[]>([]);
+  const [cloudRelay, setCloudRelay] = useState<SyncCloudRelayStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextDevices] = await Promise.all([
+    const [nextStatus, nextDevices, nextCloudRelay] = await Promise.all([
       window.ade.sync.getStatus(),
       window.ade.sync.listDevices(),
+      window.ade.sync.getCloudRelayStatus().catch(() => null),
     ]);
     setStatus(nextStatus);
     setDevices(nextDevices);
+    setCloudRelay(nextCloudRelay);
     setError(null);
   }, []);
 
@@ -299,6 +321,11 @@ export function SyncDevicesSection() {
           pinConfigured={status.pairingPinConfigured}
           runtimeName={status.runtimeName}
           busy={busy}
+          cloudRelay={cloudRelay}
+          onToggleCloudRelay={(enabled) => runAction(async () => {
+            const next = await window.ade.sync.setCloudRelayEnabled(enabled);
+            setCloudRelay(next);
+          })}
           onSavePin={handleSetPin}
           onGeneratePin={handleGeneratePin}
           onClearPin={handleClearPin}
@@ -560,6 +587,8 @@ function PairPhoneCard({
   pinConfigured,
   runtimeName,
   busy,
+  cloudRelay,
+  onToggleCloudRelay,
   onSavePin,
   onGeneratePin,
   onClearPin,
@@ -571,6 +600,8 @@ function PairPhoneCard({
   pinConfigured: boolean;
   runtimeName: string | null;
   busy: boolean;
+  cloudRelay: SyncCloudRelayStatus | null;
+  onToggleCloudRelay: (enabled: boolean) => void;
   onSavePin: (pin: string) => Promise<void>;
   onGeneratePin: () => Promise<void>;
   onClearPin: () => Promise<void>;
@@ -579,10 +610,12 @@ function PairPhoneCard({
 }) {
   const [editing, setEditing] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const pinMissing = !pinConfigured;
   const primaryCandidate = primaryPairingCandidate(connectInfo);
   const primaryEndpoint = formatEndpoint(primaryCandidate?.host, connectInfo?.port ?? 8787);
+  const hasAddresses = (connectInfo?.addressCandidates.length ?? 0) > 0;
 
   const handleSave = async (value: string) => {
     setPinError(null);
@@ -594,79 +627,152 @@ function PairPhoneCard({
     }
   };
 
+  const pinSection = editing ? (
+    <PinEditor
+      initial={pin ?? ""}
+      busy={busy}
+      onCancel={() => { setEditing(false); setPinError(null); }}
+      onSave={handleSave}
+      error={pinError}
+    />
+  ) : pinMissing ? (
+    <EmptyPinBlock
+      busy={busy}
+      onSet={() => { setPinError(null); setEditing(true); }}
+      onGenerate={() => { void onGeneratePin(); }}
+    />
+  ) : pin ? (
+    <PinDisplay
+      pin={pin}
+      busy={busy}
+      onChange={() => { setPinError(null); setEditing(true); }}
+      onGenerate={() => { void onGeneratePin(); }}
+      onRemove={() => { void onClearPin(); }}
+    />
+  ) : (
+    <SavedPinBlock
+      busy={busy}
+      onChange={() => { setPinError(null); setEditing(true); }}
+      onGenerate={() => { void onGeneratePin(); }}
+      onRemove={() => { void onClearPin(); }}
+    />
+  );
+
   return (
     <div style={cardStyle({ display: "grid", gap: 16 })}>
       <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
         Pair a phone
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr)",
-          gap: 16,
-          alignItems: "start",
-          minWidth: 0,
-        }}
-      >
+      {hasAddresses ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto minmax(0, 1fr)",
+            gap: 16,
+            alignItems: "start",
+            minWidth: 0,
+          }}
+        >
+          <PairQrPanel connectInfo={connectInfo as SyncPairingConnectInfo} />
+          <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+            <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
+              Scan with the ADE app to pair.
+            </div>
+            {pinSection}
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+          <div style={helperTextStyle}>No machine addresses are published yet.</div>
+          {pinSection}
+        </div>
+      )}
+
+      <HostNameEditor
+        runtimeName={runtimeName}
+        busy={busy}
+        onSave={onSaveRuntimeName}
+        onClear={onClearRuntimeName}
+      />
+
+      {cloudRelay ? (
         <div style={{ ...panelStyle, gap: 10 }}>
-          <div style={LABEL_STYLE}>Machine address</div>
-          <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "break-word" }}>
-            {primaryEndpoint}
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
+            <div style={{ display: "grid", gap: 4 }}>
+              <div style={LABEL_STYLE}>Cloud relay fallback</div>
+              <div style={helperTextStyle}>
+                Adds a cloud tunnel as a last-resort route when no LAN or Tailscale path works.
+              </div>
+            </div>
+            <SettingsToggle
+              id="sync-cloud-relay-toggle"
+              checked={cloudRelay.enabled}
+              disabled={busy}
+              onChange={onToggleCloudRelay}
+            />
           </div>
-          <div style={helperTextStyle}>
-            Choose this machine in ADE mobile discovery. If it does not appear, enter one of these addresses manually.
+        </div>
+      ) : null}
+
+      <div style={{ display: "grid", gap: 10 }}>
+        <button
+          type="button"
+          style={outlineButton({ justifySelf: "start", height: 30 })}
+          onClick={() => setDetailsOpen((open) => !open)}
+        >
+          {detailsOpen ? "Hide connection details" : "Connection details"}
+        </button>
+        {detailsOpen ? (
+          <div style={{ ...panelStyle, gap: 10 }}>
+            <div style={LABEL_STYLE}>Machine address</div>
+            <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "break-word" }}>
+              {primaryEndpoint}
+            </div>
+            <div style={helperTextStyle}>
+              Choose this machine in ADE mobile discovery. If it does not appear, enter one of these addresses manually.
+            </div>
+            <EndpointList connectInfo={connectInfo} />
           </div>
-          <EndpointList connectInfo={connectInfo} />
-        </div>
-
-        <HostNameEditor
-          runtimeName={runtimeName}
-          busy={busy}
-          onSave={onSaveRuntimeName}
-          onClear={onClearRuntimeName}
-        />
-
-        <div style={{ display: "grid", gap: 10 }}>
-          {editing ? (
-            <PinEditor
-              initial={pin ?? ""}
-              busy={busy}
-              onCancel={() => { setEditing(false); setPinError(null); }}
-              onSave={handleSave}
-              error={pinError}
-            />
-          ) : pinMissing ? (
-            <EmptyPinBlock
-              busy={busy}
-              onSet={() => { setPinError(null); setEditing(true); }}
-              onGenerate={() => { void onGeneratePin(); }}
-            />
-          ) : pin ? (
-            <PinDisplay
-              pin={pin}
-              busy={busy}
-              onChange={() => { setPinError(null); setEditing(true); }}
-              onGenerate={() => { void onGeneratePin(); }}
-              onRemove={() => { void onClearPin(); }}
-            />
-          ) : (
-            <SavedPinBlock
-              busy={busy}
-              onChange={() => { setPinError(null); setEditing(true); }}
-              onGenerate={() => { void onGeneratePin(); }}
-              onRemove={() => { void onClearPin(); }}
-            />
-          )}
-        </div>
+        ) : null}
       </div>
 
       <div style={helperTextStyle}>
         {pinMissing
           ? "No PIN set. Phones cannot pair."
           : pin
-            ? "Select this machine on your phone and enter this PIN to pair."
-            : "Select this machine on your phone and enter the saved PIN, or set a new one."}
+            ? "Scan the QR, then enter this PIN on your phone to pair."
+            : "Scan the QR, then enter the saved PIN on your phone, or set a new one."}
+      </div>
+    </div>
+  );
+}
+
+function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
+  const qrUrl = useMemo(
+    () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo })),
+    [connectInfo],
+  );
+  return (
+    <div style={{ ...panelStyle, gap: 0, padding: 12, placeItems: "center" }}>
+      <div
+        style={{
+          display: "inline-flex",
+          padding: 12,
+          borderRadius: 12,
+          background: "#FFFFFF",
+          border: `1px solid ${COLORS.accentBorder}`,
+        }}
+      >
+        <QRCodeSVG
+          value={qrUrl}
+          size={148}
+          level="M"
+          marginSize={1}
+          bgColor="#FFFFFF"
+          fgColor="#111827"
+          title="Pairing QR code"
+        />
       </div>
     </div>
   );
@@ -746,7 +852,7 @@ function EndpointList({ connectInfo }: { connectInfo: SyncPairingConnectInfo | n
             minWidth: 0,
           }}
         >
-          <span style={tagStyle(candidate.kind === "tailscale" ? COLORS.success : COLORS.textMuted)}>
+          <span style={tagStyle(addressKindColor(candidate.kind))}>
             {addressKindLabel(candidate.kind)}
           </span>
           <span style={{ ...codeValueStyle, overflowWrap: "break-word" }}>

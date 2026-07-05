@@ -28,7 +28,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
 
       - name: Install all dependencies (parallel)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -42,6 +43,8 @@ jobs:
           (cd apps/web && npm ci) &
           pids+=($!)
           (cd apps/webhook-relay && npm ci) &
+          pids+=($!)
+          (cd apps/push-relay && npm ci) &
           pids+=($!)
           fail=0
           for pid in "${pids[@]}"; do
@@ -79,7 +82,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
 
   typecheck-ade-cli:
@@ -97,7 +101,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/ade-cli && npm run typecheck
 
   typecheck-web:
@@ -115,7 +120,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/web && npm run typecheck
 
   typecheck-webhook-relay:
@@ -133,8 +139,30 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/webhook-relay && npm run typecheck
+
+  typecheck-push-relay:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/ade-cli/node_modules
+            apps/web/node_modules
+            apps/webhook-relay/node_modules
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
+      - run: cd apps/push-relay && npm run typecheck
 
   lint-desktop:
     needs: install
@@ -151,7 +179,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/desktop && npm run lint
 
   test-desktop:
@@ -173,7 +202,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/desktop && npx vitest run --shard=${{ matrix.shard }}/8
 
   test-ade-cli:
@@ -191,7 +221,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/ade-cli && npm test
 
   test-webhook-relay:
@@ -209,8 +240,56 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/webhook-relay && npm test
+
+  test-push-relay:
+    needs: install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            apps/desktop/node_modules
+            apps/ade-cli/node_modules
+            apps/web/node_modules
+            apps/webhook-relay/node_modules
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
+      - run: cd apps/push-relay && npm test
+
+  # apps/tunnel-relay has its own lockfile and is not in the shared install
+  # cache, so these jobs install it inline (self-contained, append-only).
+  typecheck-tunnel-relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/tunnel-relay && npm ci
+      - run: cd apps/tunnel-relay && npm run typecheck
+
+  test-tunnel-relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/tunnel-relay && npm ci
+      - run: cd apps/tunnel-relay && npm test
 
   build:
     needs: install
@@ -227,7 +306,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
       - run: cd apps/web && npm run build
@@ -306,7 +386,8 @@ jobs:
             apps/ade-cli/node_modules
             apps/web/node_modules
             apps/webhook-relay/node_modules
-          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json') }}
+            apps/push-relay/node_modules
+          key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
@@ -319,10 +400,14 @@ jobs:
       - typecheck-ade-cli
       - typecheck-web
       - typecheck-webhook-relay
+      - typecheck-push-relay
+      - typecheck-tunnel-relay
       - lint-desktop
       - test-desktop
       - test-ade-cli
       - test-webhook-relay
+      - test-push-relay
+      - test-tunnel-relay
       - build
       - build-runtime-binaries
       - validate-docs

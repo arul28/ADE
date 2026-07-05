@@ -417,6 +417,7 @@ import type {
   AiSettingsStatus,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
+  SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
@@ -4441,6 +4442,29 @@ export function registerIpc({
       await service.setActiveLanePresence(laneIds);
     },
   );
+
+  ipcMain.handle(IPC.syncGetCloudRelayStatus, async (event): Promise<SyncCloudRelayStatus> => {
+    const runtimeResult = await tryRuntimeSync<SyncCloudRelayStatus>(
+      event,
+      "sync.getCloudRelayStatus",
+      {},
+      (pool, rootPath) => pool.syncCloudRelayStatusForRoot(rootPath),
+    );
+    if (runtimeResult.handled) return runtimeResult.result;
+    return (await requireSyncService()).getCloudRelayStatus();
+  });
+
+  ipcMain.handle(IPC.syncSetCloudRelayEnabled, async (event, enabled: boolean): Promise<SyncCloudRelayStatus> => {
+    const normalized = enabled === true;
+    const runtimeResult = await tryRuntimeSync<SyncCloudRelayStatus>(
+      event,
+      "sync.setCloudRelayEnabled",
+      { enabled: normalized },
+      (pool, rootPath) => pool.setSyncCloudRelayEnabledForRoot(rootPath, normalized),
+    );
+    if (runtimeResult.handled) return runtimeResult.result;
+    return await (await requireSyncService()).setCloudRelayEnabled(normalized);
+  });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
     const ctx = getCtx();

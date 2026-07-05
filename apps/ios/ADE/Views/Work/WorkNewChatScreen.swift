@@ -798,12 +798,20 @@ struct WorkNewChatScreen: View {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
-        cursorModeId: wire.cursorModeId
+        cursorModeId: wire.cursorModeId,
+        pendingDisplayName: opener
       )
       await onStarted(summary, opener)
       if let createdLaneId, let autoCreatedFallbackName {
         startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
       }
+      busy = false
+      return true
+    } catch is QueuedRemoteCommandError {
+      // Offline: the create was queued and a "Pending sync" row now stands in
+      // for it on the Work list. Dismiss cleanly — not an error — and keep the
+      // (existing) lane; the queued command drains on reconnect.
+      ADEHaptics.medium()
       busy = false
       return true
     } catch {

@@ -10036,6 +10036,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--reasoning",
   "--recent-limit",
   "--ref",
+  "--require-dpop",
   "--role",
   "--root",
   "--root-lane",
@@ -11726,6 +11727,11 @@ Usage:
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
+  ade sync relay status             Cloud relay (phones dial this machine via a tunnel)
+  ade sync relay enable
+  ade sync relay disable
+  ade sync security status          Machine sync security posture (require-DPoP)
+  ade sync security require-dpop <on|off>
 `,
     };
   }
@@ -11827,6 +11833,92 @@ Usage:
       label: "sync name set",
       steps: [{ key: "result", method: "sync.setRuntimeName", params: { name } }],
     };
+  }
+  if (sub === "relay") {
+    // Cloud relay toggle. Headless brains have no desktop Settings popover, so
+    // the CLI is the only surface for enabling the tunnel phones dial into.
+    const action = firstPositional(args) ?? "status";
+    if (action === "status" || action === "show" || action === "get") {
+      return {
+        kind: "execute",
+        label: "sync relay status",
+        steps: [{ key: "result", method: "sync.getCloudRelayStatus" }],
+      };
+    }
+    if (action === "enable" || action === "on") {
+      return {
+        kind: "execute",
+        label: "sync relay enable",
+        steps: [
+          {
+            key: "result",
+            method: "sync.setCloudRelayEnabled",
+            params: { enabled: true },
+          },
+        ],
+      };
+    }
+    if (action === "disable" || action === "off") {
+      return {
+        kind: "execute",
+        label: "sync relay disable",
+        steps: [
+          {
+            key: "result",
+            method: "sync.setCloudRelayEnabled",
+            params: { enabled: false },
+          },
+        ],
+      };
+    }
+    throw new CliUsageError(`Unsupported sync relay action: ${action}`);
+  }
+  if (sub === "security") {
+    // Machine-level sync security posture. Today the only knob is require-DPoP,
+    // otherwise reachable solely via ADE_SYNC_REQUIRE_DPOP; headless operators
+    // need a persistent CLI toggle.
+    const action = firstPositional(args) ?? "status";
+    if (action === "status" || action === "show" || action === "get") {
+      return {
+        kind: "execute",
+        label: "sync security status",
+        steps: [{ key: "result", method: "sync.getRequireDpop" }],
+      };
+    }
+    if (action === "require-dpop" || action === "dpop") {
+      const raw = requireValue(
+        readValue(args, ["--require-dpop"]) ?? firstPositional(args),
+        "on|off",
+      );
+      const normalized = raw.toLowerCase();
+      const enabled =
+        normalized === "on" ||
+        normalized === "true" ||
+        normalized === "enable" ||
+        normalized === "1";
+      const disabled =
+        normalized === "off" ||
+        normalized === "false" ||
+        normalized === "disable" ||
+        normalized === "0";
+      if (!enabled && !disabled) {
+        throw new CliUsageError(
+          "sync security require-dpop expects on or off.",
+        );
+      }
+      return {
+        kind: "execute",
+        label: `sync security require-dpop ${enabled ? "on" : "off"}`,
+        steps: [
+          {
+            key: "result",
+            method: "sync.setRequireDpop",
+            params: { requireDpop: enabled },
+          },
+        ],
+      };
+    }
+    throw new CliUsageError(`Unsupported sync security action: ${action}`);
   }
   throw new CliUsageError(`Unsupported sync command: ${sub}`);
 }

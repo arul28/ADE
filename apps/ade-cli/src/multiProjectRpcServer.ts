@@ -93,6 +93,10 @@ const RUNTIME_METHODS = new Set([
   "sync.setRuntimeName",
   "sync.clearRuntimeName",
   "sync.setActiveLanePresence",
+  "sync.getCloudRelayStatus",
+  "sync.setCloudRelayEnabled",
+  "sync.getRequireDpop",
+  "sync.setRequireDpop",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -753,6 +757,22 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.clearRuntimeName") {
       return await (await getSyncService()).clearRuntimeName();
+    }
+
+    if (method === "sync.getCloudRelayStatus") {
+      return (await getSyncService()).getCloudRelayStatus();
+    }
+
+    if (method === "sync.setCloudRelayEnabled") {
+      return await (await getSyncService()).setCloudRelayEnabled(params.enabled === true);
+    }
+
+    if (method === "sync.getRequireDpop") {
+      return (await getSyncService()).getRequireDpop();
+    }
+
+    if (method === "sync.setRequireDpop") {
+      return (await getSyncService()).setRequireDpop(params.requireDpop === true);
     }
 
     if (method === "sync.setActiveLanePresence") {
