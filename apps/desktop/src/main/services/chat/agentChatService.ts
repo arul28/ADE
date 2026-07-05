@@ -50,6 +50,14 @@ import {
   writeClaudeOutputStyleSelection,
 } from "./claudeOutputStyles";
 import { createClaudeSubprocessReaper, type ClaudeSubprocessReaper } from "./claudeSubprocessReaper";
+import {
+  drainRunningClaudeWorkflowAgents,
+  parseClaudeWorkflowProgress,
+  planClaudeWorkflowAgentTransitions,
+  summarizeClaudeWorkflowRun,
+  type ClaudeWorkflowAgentEmitState,
+  type ClaudeWorkflowAgentTransition,
+} from "./claudeWorkflowProgress";
 import { discoverClaudeSlashCommands } from "./claudeSlashCommandDiscovery";
 import { discoverCodexSlashCommands } from "./codexSlashCommandDiscovery";
 import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
@@ -702,6 +710,14 @@ type ClaudeRuntime = {
     description?: string;
     isBackground?: boolean;
   }>;
+  /**
+   * Per-workflow-task emit state for the SDK's undocumented
+   * `workflow_progress` snapshot on system:task_progress. Keyed by the
+   * workflow taskId → per-agent transition tracking, so cumulative snapshots
+   * fan out as started/progress/result events under stable identities
+   * instead of duplicating rows (see claudeWorkflowProgress.ts).
+   */
+  workflowAgentsByTask: Map<string, Map<string, ClaudeWorkflowAgentEmitState>>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
   activeTurnId: string | null;
@@ -10704,6 +10720,7 @@ export function createAgentChatService(args: {
       managed.runtime.warmupDone = null;
       managed.runtime.activeSubagents.clear();
       managed.runtime.taskToolInputByToolUseId.clear();
+      managed.runtime.workflowAgentsByTask.clear();
       for (const pending of managed.runtime.approvals.values()) {
         pending.resolve({ decision: "cancel" });
       }
@@ -12798,11 +12815,19 @@ export function createAgentChatService(args: {
           const description = String(taskMsg.description ?? existing?.description ?? "");
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
-          const agentType = existing?.agentType ?? stashed?.subagentType ?? stashed?.name;
+          const agentType = existing?.agentType
+            ?? stashed?.subagentType
+            ?? stashed?.name
+            ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
           const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
           const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
+          // Undocumented Workflow-run snapshot (phases + per-agent status).
+          // Parsing is fully defensive: absence, shape drift, and unknown
+          // phases all yield `undefined` and the event keeps rendering as a
+          // generic task exactly as before.
+          const workflowProgress = parseClaudeWorkflowProgress(taskMsg.workflow_progress, taskId);
           runtime.activeSubagents.set(taskId, {
             taskId,
             description,
@@ -12821,7 +12846,10 @@ export function createAgentChatService(args: {
             ...(agentType ? { agentType } : {}),
             parentToolUseId,
             description,
-            summary: String(taskMsg.summary ?? ""),
+            summary: String(
+              taskMsg.summary
+                ?? (workflowProgress ? summarizeClaudeWorkflowRun(workflowProgress) : ""),
+            ),
             usage: taskMsg.usage ? {
               totalTokens: typeof taskMsg.usage.total_tokens === "number" ? taskMsg.usage.total_tokens : undefined,
               toolUses: typeof taskMsg.usage.tool_uses === "number" ? taskMsg.usage.tool_uses : undefined,
@@ -12832,6 +12860,21 @@ export function createAgentChatService(args: {
             ...(workflowName ? { workflowName } : {}),
             turnId,
           });
+          if (workflowProgress && workflowProgress.agents.length > 0) {
+            let tracked = runtime.workflowAgentsByTask.get(taskId);
+            if (!tracked) {
+              tracked = new Map();
+              runtime.workflowAgentsByTask.set(taskId, tracked);
+            }
+            for (const transition of planClaudeWorkflowAgentTransitions(tracked, workflowProgress.agents)) {
+              emitClaudeWorkflowAgentEvent(managed, transition, {
+                workflowTaskId: taskId,
+                background: existing?.background === true,
+                workflowName,
+                turnId,
+              });
+            }
+          }
           continue;
         }
 
@@ -12864,7 +12907,9 @@ export function createAgentChatService(args: {
               ?? stashed?.description
               ?? "",
           );
-          const agentType = stashed?.subagentType ?? stashed?.name;
+          const agentType = stashed?.subagentType
+            ?? stashed?.name
+            ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length
             ? taskMsg.agent_id.trim()
             : undefined;
@@ -12929,7 +12974,10 @@ export function createAgentChatService(args: {
           const parentToolUseId = taskParentToolUseId(taskMsg as Record<string, unknown>) ?? existing?.parentToolUseId ?? null;
           const summary = String(taskMsg.summary ?? existing?.finalSummary ?? "");
           const stashed = parentToolUseId ? runtime.taskToolInputByToolUseId.get(parentToolUseId) : undefined;
-          const agentType = existing?.agentType ?? stashed?.subagentType ?? stashed?.name;
+          const agentType = existing?.agentType
+            ?? stashed?.subagentType
+            ?? stashed?.name
+            ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
           const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
@@ -12954,6 +13002,26 @@ export function createAgentChatService(args: {
             ...(workflowName ? { workflowName } : {}),
             turnId,
           });
+          // A workflow task that ends with agents still mid-flight (stop,
+          // interrupt, script error) leaves those rows running — close them.
+          const workflowTracker = runtime.workflowAgentsByTask.get(taskId);
+          if (workflowTracker) {
+            runtime.workflowAgentsByTask.delete(taskId);
+            for (const { agent, agentId: workflowAgentId } of drainRunningClaudeWorkflowAgents(workflowTracker)) {
+              emitChatEvent(managed, {
+                type: "subagent_result",
+                taskId: `${taskId}::a${agent.index}`,
+                agentId: workflowAgentId,
+                ...(agent.agentType ? { agentType: agent.agentType } : {}),
+                parentToolUseId: null,
+                status: "stopped",
+                summary: "Workflow ended before this agent finished.",
+                taskType: "subagent",
+                ...(workflowName ? { workflowName } : {}),
+                turnId,
+              });
+            }
+          }
           continue;
         }
 
@@ -15709,12 +15777,105 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
+  /**
+   * Emit one workflow-agent transition (from claudeWorkflowProgress.ts) as
+   * the matching legacy `subagent_*` event so Workflow runs flow through the
+   * exact snapshot folds, panel, and TUI pane the Task tool already uses.
+   * Agent rows get a synthetic `<taskId>::a<index>` taskId and no
+   * parentToolUseId on purpose: reusing the workflow's own taskId or
+   * tool_use_id would collide with the parent workflow row in the
+   * `agentId ?? taskId` keying / placeholder-adoption logic.
+   */
+  const emitClaudeWorkflowAgentEvent = (
+    managed: ManagedChatSession,
+    transition: ClaudeWorkflowAgentTransition,
+    context: { workflowTaskId: string; background: boolean; workflowName?: string; turnId?: string },
+  ): void => {
+    const { agent, agentId } = transition;
+    const taskId = `${context.workflowTaskId}::a${agent.index}`;
+    const usage = agent.tokens !== undefined || agent.toolCalls !== undefined || agent.durationMs !== undefined
+      ? {
+        ...(agent.tokens !== undefined ? { totalTokens: agent.tokens } : {}),
+        ...(agent.toolCalls !== undefined ? { toolUses: agent.toolCalls } : {}),
+        ...(agent.durationMs !== undefined ? { durationMs: agent.durationMs } : {}),
+      }
+      : undefined;
+    if (transition.kind === "started") {
+      emitChatEvent(managed, {
+        type: "subagent_started",
+        taskId,
+        agentId,
+        ...(agent.agentType ? { agentType: agent.agentType } : {}),
+        parentToolUseId: null,
+        description: agent.name,
+        background: context.background,
+        taskType: "subagent",
+        ...(context.workflowName ? { workflowName: context.workflowName } : {}),
+        turnId: context.turnId,
+      });
+      return;
+    }
+    if (transition.kind === "progress") {
+      emitChatEvent(managed, {
+        type: "subagent_progress",
+        taskId,
+        agentId,
+        ...(agent.agentType ? { agentType: agent.agentType } : {}),
+        parentToolUseId: null,
+        description: agent.name,
+        summary: agent.summary,
+        ...(usage ? { usage } : {}),
+        ...(agent.lastToolName ? { lastToolName: agent.lastToolName } : {}),
+        taskType: "subagent",
+        ...(context.workflowName ? { workflowName: context.workflowName } : {}),
+        turnId: context.turnId,
+      });
+      return;
+    }
+    emitChatEvent(managed, {
+      type: "subagent_result",
+      taskId,
+      agentId,
+      ...(agent.agentType ? { agentType: agent.agentType } : {}),
+      parentToolUseId: null,
+      status: agent.status === "failed" ? "failed" : "completed",
+      summary: agent.summary,
+      finalSummary: agent.summary,
+      ...(usage ? { usage } : {}),
+      taskType: "subagent",
+      ...(context.workflowName ? { workflowName: context.workflowName } : {}),
+      turnId: context.turnId,
+    });
+  };
+
   const stopActiveClaudeSubagents = async (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     turnId: string | undefined,
     summary: string,
   ): Promise<void> => {
+    // Close any still-running Workflow agent rows first — they are tracked
+    // separately from activeSubagents (they are snapshot-derived, not SDK
+    // tasks, so there is nothing to stopTask for them).
+    for (const [workflowTaskId, tracked] of [...runtime.workflowAgentsByTask]) {
+      runtime.workflowAgentsByTask.delete(workflowTaskId);
+      const workflowName = runtime.activeSubagents.get(workflowTaskId)?.workflowName;
+      for (const { agent, agentId } of drainRunningClaudeWorkflowAgents(tracked)) {
+        emitChatEvent(managed, {
+          type: "subagent_result",
+          taskId: `${workflowTaskId}::a${agent.index}`,
+          agentId,
+          ...(agent.agentType ? { agentType: agent.agentType } : {}),
+          parentToolUseId: null,
+          status: "stopped",
+          summary,
+          finalSummary: summary,
+          taskType: "subagent",
+          ...(workflowName ? { workflowName } : {}),
+          turnId,
+        });
+      }
+    }
     const activeSubagents = [...runtime.activeSubagents.values()];
     if (activeSubagents.length === 0) return;
 
@@ -19469,6 +19630,7 @@ export function createAgentChatService(args: {
       warmupCancelled: false,
       activeSubagents: new Map(),
       taskToolInputByToolUseId: new Map(),
+      workflowAgentsByTask: new Map(),
       slashCommands: [],
       busy: false,
       activeTurnId: null,
