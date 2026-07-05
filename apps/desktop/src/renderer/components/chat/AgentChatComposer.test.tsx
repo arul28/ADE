@@ -298,6 +298,74 @@ describe("AgentChatComposer", () => {
     expect(await screen.findByText("App.tsx")).toBeTruthy();
   });
 
+  it("opens the slash menu mid-sentence and splices only the trigger span", async () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sdkSlashCommands: [{
+        name: "status",
+        description: "Summarize current state",
+        source: "sdk",
+      }],
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "fix bug then run /st", selectionStart: 20 },
+    });
+    view.rerender(<AgentChatComposer {...props} draft="fix bug then run /st" />);
+
+    fireEvent.click(await screen.findByText("/status"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("fix bug then run /status ");
+  });
+
+  it("falls through to send when Enter hits an unmatched mid-sentence slash token", async () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sdkSlashCommands: [{
+        name: "status",
+        description: "Summarize current state",
+        source: "sdk",
+      }],
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const textbox = screen.getByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "check /tmp", selectionStart: 10 } });
+    view.rerender(<AgentChatComposer {...props} draft="check /tmp" />);
+    expect(await screen.findByText('No commands match "tmp"')).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
+
+    expect(props.onSubmit).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(screen.queryByText('No commands match "tmp"')).toBeNull();
+    });
+  });
+
+  it("replaces a mid-sentence @query with the selected file and attaches it", async () => {
+    const fileSearch = vi.fn().mockResolvedValue([{ path: "src/App.tsx" }]);
+    (window as any).ade = { agentChat: { fileSearch } };
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: "session-1",
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "fix the parser in @src", selectionStart: 22 },
+    });
+    view.rerender(<AgentChatComposer {...props} draft="fix the parser in @src" />);
+
+    fireEvent.click(await screen.findByText("App.tsx"));
+
+    expect(props.onDraftChange).toHaveBeenLastCalledWith("fix the parser in @src/App.tsx ");
+    expect(props.onAddAttachment).toHaveBeenCalledWith({ path: "src/App.tsx", type: "file" });
+  });
+
   it("dismisses an attachment error from the composer preview row", async () => {
     const view = renderComposer({
       turnActive: false,
