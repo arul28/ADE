@@ -33,18 +33,27 @@ describe("ctoMemoryService", () => {
     expect(memory.match(/Prefer sentence case in UI copy\./g)?.length).toBe(1);
   });
 
-  it("caps MEMORY.md by dropping the oldest facts", () => {
+  it("caps MEMORY.md by archiving the oldest facts, never destroying them", () => {
     const { service, ctoDir } = createFixture();
     // Each fact is ~1.2KB; 100 of them blows past the 64KB cap.
     const filler = "x".repeat(1200);
+    let sawEviction = false;
     for (let i = 0; i < 100; i += 1) {
-      service.appendMemoryFact(`fact-${i} ${filler}`);
+      const result = service.appendMemoryFact(`fact-${i} ${filler}`);
+      if (result.evictedCount) sawEviction = true;
     }
     const memory = fs.readFileSync(path.join(ctoDir, "MEMORY.md"), "utf8");
     expect(Buffer.byteLength(memory, "utf8")).toBeLessThanOrEqual(64 * 1024 + 200);
-    // The newest fact survives; the oldest is dropped.
+    // The newest fact survives; the oldest moved out of the injected file...
     expect(memory).toContain("fact-99");
     expect(memory).not.toContain("fact-0 ");
+    // ...but is preserved in the append-only archive, reported to the caller,
+    // and still reachable through search.
+    expect(sawEviction).toBe(true);
+    const archive = fs.readFileSync(path.join(ctoDir, "memory-archive.md"), "utf8");
+    expect(archive).toContain("fact-0 ");
+    const rows = service.searchMemory("fact-0 ", { limit: 5 });
+    expect(rows.some((row) => row.file === "memory-archive.md")).toBe(true);
   });
 
   it("writes thread-state atomically with a reason header", () => {

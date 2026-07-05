@@ -128,6 +128,9 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  // The CTO's durable memory is injected into every CTO session; only the CTO
+  // itself (and the user's own UI, which connects at cto role) may rewrite it.
+  cto_memory: ["updateMemory"],
   linear_credentials: [
     "setToken",
     "setOAuthToken",

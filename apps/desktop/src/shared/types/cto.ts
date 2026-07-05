@@ -280,7 +280,7 @@ export type CtoSearchMemoryArgs = {
 };
 
 export type CtoMemorySearchRow = {
-  file: "MEMORY.md" | "thread-state.md" | "daily";
+  file: "MEMORY.md" | "thread-state.md" | "daily" | "memory-archive.md";
   date: string | null;
   line: number;
   snippet: string;

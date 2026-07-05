@@ -83,6 +83,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
   const dailyDir = path.join(ctoDir, "daily");
   const memoryPath = path.join(ctoDir, "MEMORY.md");
   const threadStatePath = path.join(ctoDir, "thread-state.md");
+  const memoryArchivePath = path.join(ctoDir, "memory-archive.md");
 
   fs.mkdirSync(ctoDir, { recursive: true });
 
@@ -106,10 +107,11 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
 
   /**
    * Append a durable fact under the `## Facts` section. Exact-line duplicates
-   * are ignored, and the oldest facts are dropped if the file would exceed the
-   * byte cap.
+   * are ignored. If the file would exceed the byte cap, the oldest facts are
+   * moved to the append-only `memory-archive.md` (never silently destroyed)
+   * and the eviction is reported to the caller.
    */
-  const appendMemoryFact = (fact: string): { saved: boolean; fact: string } => {
+  const appendMemoryFact = (fact: string): { saved: boolean; fact: string; evictedCount?: number } => {
     // Memory files are plaintext on disk and re-injected into prompts: scrub
     // secret-shaped content and clip a single fact before the byte-cap pass.
     const normalized = clipText(redactSecrets(fact.replace(/\s+/g, " ").trim()), MEMORY_FACT_MAX_CHARS);
@@ -153,15 +155,30 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         .replace(/\n{3,}/g, "\n\n")
         .trimEnd();
 
-    // Drop oldest facts until under the byte cap.
+    // Move oldest facts to the append-only archive until under the byte cap —
+    // durable memory is never silently destroyed, only demoted out of the
+    // always-injected file (the archive stays reachable via searchMemory).
+    const evicted: string[] = [];
     let rendered = render(facts);
     while (Buffer.byteLength(rendered, "utf8") > MEMORY_FILE_MAX_BYTES && facts.length > 1) {
-      facts.shift();
+      evicted.push(facts.shift() as string);
       rendered = render(facts);
+    }
+    if (evicted.length) {
+      try {
+        const archiveExists = fs.existsSync(memoryArchivePath);
+        fs.appendFileSync(
+          memoryArchivePath,
+          `${archiveExists ? "" : "# CTO Memory Archive (facts evicted from MEMORY.md)\n\n"}${evicted.join("\n")}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        warn("cto_memory.archive_evicted_facts_failed", error, { evictedCount: evicted.length });
+      }
     }
 
     writeTextAtomic(memoryPath, `${rendered}\n`);
-    return { saved: true, fact: normalized };
+    return { saved: true, fact: normalized, ...(evicted.length ? { evictedCount: evicted.length } : {}) };
   };
 
   /* ── thread-state.md ── */
@@ -265,6 +282,7 @@ export function createCtoMemoryService(args: CtoMemoryServiceArgs) {
         scan("daily", stamp, readFileOrEmpty(dailyPathFor(stamp)));
       }
     }
+    if (rows.length < limit) scan("memory-archive.md", null, readFileOrEmpty(memoryArchivePath));
     return rows;
   };
 

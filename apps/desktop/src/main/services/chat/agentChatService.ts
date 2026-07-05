@@ -26438,8 +26438,10 @@ export function createAgentChatService(args: {
 
       // Persist the CTO's model choice back into its identity so it becomes the
       // single source of truth (D3): a composer/settings switch on the live CTO
-      // thread is remembered for the next session. Guarded and no-op-safe.
-      if (managed.session.identityKey === "cto" && modelChanged) {
+      // thread is remembered for the next session. Also runs when only the
+      // reasoning tier changed for the same model — the helper no-ops when
+      // nothing actually differs. Guarded and no-op-safe.
+      if (managed.session.identityKey === "cto" && (modelChanged || reasoningEffort !== undefined)) {
         persistCtoModelPreference(managed, descriptor.id);
       }
     } else if (reasoningEffort !== undefined) {
@@ -26464,6 +26466,14 @@ export function createAgentChatService(args: {
         } else {
           resetClaudeQuerySession(managed, managed.runtime, "session_reset");
         }
+      }
+      // A reasoning-only change on the CTO thread must also land in identity
+      // modelPreferences, or the next ensured session resurrects the old tier.
+      if (managed.session.identityKey === "cto" && prev !== next) {
+        const currentModelId = managed.session.modelId
+          ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
+          ?? managed.session.model;
+        persistCtoModelPreference(managed, currentModelId);
       }
     }
 

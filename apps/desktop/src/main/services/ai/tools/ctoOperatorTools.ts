@@ -1997,7 +1997,17 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
       try {
         const result = deps.ctoMemoryService.appendMemoryFact(fact);
-        return { success: true, saved: result.saved, fact: result.fact, file: "MEMORY.md" };
+        return {
+          success: true,
+          saved: result.saved,
+          fact: result.fact,
+          file: "MEMORY.md",
+          ...(result.evictedCount
+            ? {
+                notice: `MEMORY.md hit its size cap: the ${result.evictedCount} oldest fact(s) were moved to memory-archive.md (still searchable via searchMemory). Consider pruning MEMORY.md.`,
+              }
+            : {}),
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
