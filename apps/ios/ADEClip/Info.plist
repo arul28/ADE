@@ -13,6 +13,16 @@
 	</dict>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!--
+	  Pairing uses a plaintext WebSocket to hosts the QR payload vouches for
+	  (loopback / LAN / Tailscale). Mirrors the full app's ATS posture; relay
+	  candidates are wss:// and need no exception.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ADE connects to your Mac on the local network to pair this device.</string>
 	<key>NSBonjourServices</key>

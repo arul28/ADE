@@ -66,7 +66,26 @@ final class ClipPairingClient: NSObject {
     throw lastError
   }
 
+  /// Hard ceiling on one candidate's full handshake (connect + send +
+  /// receive). `timeoutIntervalForRequest` only covers opening the socket;
+  /// without this a host that accepts the connection but never answers the
+  /// pairing_request would pin the clip in `.pairing` forever.
+  private static let handshakeTimeoutSeconds: UInt64 = 15
+
   private func pairOnce(host: String, port: Int, pin: String) async throws -> ClipPairingSuccess {
+    try await withThrowingTaskGroup(of: ClipPairingSuccess.self) { group in
+      group.addTask { try await self.pairOnceInner(host: host, port: port, pin: pin) }
+      group.addTask {
+        try await Task.sleep(nanoseconds: Self.handshakeTimeoutSeconds * 1_000_000_000)
+        throw ClipPairingError.unreachable
+      }
+      defer { group.cancelAll() }
+      guard let first = try await group.next() else { throw ClipPairingError.unreachable }
+      return first
+    }
+  }
+
+  private func pairOnceInner(host: String, port: Int, pin: String) async throws -> ClipPairingSuccess {
     guard let url = ClipPairingClient.socketURL(host: host, defaultPort: port) else {
       throw ClipPairingError.unreachable
     }
@@ -85,6 +104,23 @@ final class ClipPairingClient: NSObject {
     }
     task.resume()
 
+    // A pending `receive()` does not respond to Swift task cancellation on
+    // its own; killing the socket on cancel errors it out so the timeout
+    // sibling in `pairOnce` can actually unwind this child.
+    return try await withTaskCancellationHandler {
+      try await performHandshake(task: task, host: host, port: port, pin: pin)
+    } onCancel: {
+      task.cancel(with: .goingAway, reason: nil)
+      session.invalidateAndCancel()
+    }
+  }
+
+  private func performHandshake(
+    task: URLSessionWebSocketTask,
+    host: String,
+    port: Int,
+    pin: String
+  ) async throws -> ClipPairingSuccess {
     let requestId = UUID().uuidString.lowercased()
     let peer: [String: Any] = [
       "deviceId": ClipHandoff.clipDeviceId(),
