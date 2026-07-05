@@ -266,6 +266,7 @@ export function createFileSearchIndexService() {
         visitedFiles += 1;
         if (visitedFiles >= MAX_INDEXED_FILES) {
           index.builtAt = new Date().toISOString();
+          invalidateQuickOpenCache(index);
           return;
         }
         if (visitedFiles % YIELD_EVERY_FILES === 0) {
@@ -275,17 +276,22 @@ export function createFileSearchIndexService() {
     }
 
     index.builtAt = new Date().toISOString();
+    // Drop anything cached against the partially-built file map.
+    invalidateQuickOpenCache(index);
   };
 
   const ensureBuilt = async (workspaceId: string, rootPath: string, opts: IgnoreOptions & {
     includeIgnored: boolean;
   }): Promise<WorkspaceIndex> => {
     const index = getOrCreateWorkspaceIndex(workspaceId, rootPath, opts.includeIgnored);
-    if (index.files.size > 0 || index.builtAt) return index;
+    // An in-flight build (e.g. a warmQuickOpenIndex kicked off by the chat
+    // composer) fills `files` incrementally — wait for it rather than serving
+    // a partial index that quickOpen would then cache.
     if (index.buildingPromise) {
       await index.buildingPromise;
       return index;
     }
+    if (index.files.size > 0 || index.builtAt) return index;
 
     index.buildingPromise = buildWorkspace(index, opts).finally(() => {
       index.buildingPromise = null;

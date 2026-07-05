@@ -879,6 +879,54 @@ describe("fileSearchIndexService", () => {
     primeIgnoreCache.mockClear();
   });
 
+  it("waits for an in-flight build so quickOpen never caches a partial index", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-inflight-build-");
+    const service = createFileSearchIndexService();
+
+    try {
+      for (let i = 0; i < 10; i += 1) {
+        fs.writeFileSync(path.join(rootPath, `alpha-${i}.ts`), `export const v${i} = ${i};\n`, "utf8");
+      }
+      // Slow the walk down so the quickOpen below is issued mid-build.
+      const slowIgnore = vi.fn(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        return false;
+      });
+
+      const warm = service.ensureIndexed({
+        workspaceId: "workspace-1",
+        rootPath,
+        includeIgnored: false,
+        shouldIgnore: slowIgnore,
+      });
+      const matches = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 20,
+        includeIgnored: false,
+        shouldIgnore: slowIgnore,
+        primeIgnoreCache,
+      });
+      expect(matches).toHaveLength(10);
+
+      await warm;
+      const cached = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 20,
+        includeIgnored: false,
+        shouldIgnore: slowIgnore,
+        primeIgnoreCache,
+      });
+      expect(cached).toHaveLength(10);
+    } finally {
+      service.dispose();
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("returns quickOpen matches without reading file contents", async () => {
     const rootPath = createTempWorkspace("ade-file-index-quick-open-");
     const service = createFileSearchIndexService();
