@@ -6120,6 +6120,173 @@ describe("createAgentChatService", () => {
   });
 
   // --------------------------------------------------------------------------
+  // Claude Workflow runs (workflow_progress fan-out) + child spawn lineage
+  // --------------------------------------------------------------------------
+
+  describe("claude workflow progress fan-out", () => {
+    it("fans workflow agents out as subagent rows with stable identity and closes stragglers on workflow end", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-wf-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "wf-1",
+          description: "Run review workflow",
+          task_type: "local_workflow",
+          workflow_name: "review",
+        };
+        // Tick 1: phase + one running agent, one queued agent (no startedAt).
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "wf-1",
+          description: "Run review workflow",
+          usage: { total_tokens: 100, tool_uses: 1, duration_ms: 50 },
+          workflow_progress: [
+            { type: "workflow_phase", index: 0, title: "Scan" },
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 100 },
+            { type: "workflow_agent", index: 1, state: "start", label: "scan:db" },
+          ],
+        };
+        // Tick 2: agent-a finishes, the queued agent starts.
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "wf-1",
+          description: "Run review workflow",
+          usage: { total_tokens: 900, tool_uses: 4, duration_ms: 900 },
+          workflow_progress: [
+            { type: "workflow_phase", index: 0, title: "Scan" },
+            { type: "workflow_agent", index: 0, state: "done", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 900, durationMs: 800 },
+            { type: "workflow_agent", index: 1, state: "start", startedAt: 5, label: "scan:db" },
+          ],
+        };
+        // Workflow ends while scan:db is still running.
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "wf-1",
+          status: "completed",
+          summary: "workflow done",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-wf-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run the workflow." });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "wf-1",
+      );
+
+      const agentEvents = events.filter((e) => (e.event as any).agentId === "agent-a");
+      const started = agentEvents.filter((e) => e.event.type === "subagent_started");
+      const results = agentEvents.filter((e) => e.event.type === "subagent_result");
+      // Stable identity: exactly one started + one result despite cumulative re-emission.
+      expect(started).toHaveLength(1);
+      expect(results).toHaveLength(1);
+      expect((started[0]!.event as any).taskId).toBe("wf-1::a0");
+      expect((started[0]!.event as any).description).toBe("scan:auth");
+      expect((started[0]!.event as any).workflowName).toBe("review");
+      expect((started[0]!.event as any).background).toBe(true);
+      expect((results[0]!.event as any).status).toBe("completed");
+      expect((results[0]!.event as any).usage?.totalTokens).toBe(900);
+
+      // The queued agent only materializes once it starts, then is closed as
+      // stopped when the workflow ends before it finishes.
+      const dbRow = events.filter((e) => (e.event as any).taskId === "wf-1::a1");
+      expect(dbRow.some((e) => e.event.type === "subagent_started")).toBe(true);
+      const dbResult = dbRow.find((e) => e.event.type === "subagent_result");
+      expect((dbResult?.event as any)?.status).toBe("stopped");
+      expect((dbResult?.event as any)?.finalSummary).toContain("Workflow ended");
+
+      // Parent workflow row derives a phase/count summary when the SDK sends none.
+      const parentProgress = events.find(
+        (e) => e.event.type === "subagent_progress" && (e.event as any).taskId === "wf-1",
+      );
+      expect((parentProgress?.event as any)?.summary).toContain("Scan");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+  });
+
+  describe("child chat spawn lineage", () => {
+    it("notifies the parent session with a spawn chip notice and a live subagent row", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-lineage", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-lineage",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Fix flaky tests",
+        orchestrationParentSessionId: parent.id,
+      });
+
+      const parentEvents = events.filter((e) => e.sessionId === parent.id);
+      const notice = parentEvents.find(
+        (e) => e.event.type === "system_notice" && (e.event as any).status === "subagent_spawned",
+      );
+      expect(notice).toBeTruthy();
+      expect((notice!.event as any).message).toContain("Fix flaky tests");
+      expect((notice!.event as any).detail?.spawnedSession?.sessionId).toBe(child.id);
+
+      const row = parentEvents.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === `chat:${child.id}`,
+      );
+      expect(row).toBeTruthy();
+      expect((row!.event as any).agentId).toBe(child.id);
+      expect((row!.event as any).description).toBe("Fix flaky tests");
+
+      expect(child.orchestrationParentSessionId).toBe(parent.id);
+    });
+  });
+
+  // --------------------------------------------------------------------------
   // Claude subagent name capture (Task tool input -> task_started envelope)
   // --------------------------------------------------------------------------
 

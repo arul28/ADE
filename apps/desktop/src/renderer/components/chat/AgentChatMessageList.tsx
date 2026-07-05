@@ -81,6 +81,8 @@ import {
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { HighlightedCode } from "./CodeHighlighter";
+import { MosaicCard } from "./MosaicCard";
+import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   buildMinimapDisplayEntries,
@@ -96,6 +98,17 @@ import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { CodexContextCompactionChip } from "./codex/CodexContextCompactionChip";
+
+/**
+ * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
+ * ```mosaic fence renders as an interactive card instead of a plain code block.
+ * `scope` is the transcript row's stable key so byte-identical cards at
+ * different positions keep independent answered state.
+ */
+export type MosaicRenderContext = {
+  cardKeyFor: (source: string, scope: string) => string;
+  onSubmit: (submission: { text: string; displayText: string }) => void | Promise<void>;
+};
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
@@ -859,10 +872,15 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
   onOpenWorkspacePath,
   workspaceLaneId,
+  mosaic,
+  mosaicScopeKey,
 }: {
   markdown: string;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
   workspaceLaneId?: string | null;
+  mosaic?: MosaicRenderContext;
+  /** Stable transcript-row key scoping mosaic answered state per message. */
+  mosaicScopeKey?: string;
 }) {
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
@@ -944,6 +962,9 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             const language = typeof className === "string"
               ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
               : "text";
+            if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
+              return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
+            }
             return isBlock ? (
               <HighlightedCode code={text} language={language} />
             ) : pathIsClickable ? (
@@ -2247,6 +2268,7 @@ function renderEvent(
     runtimeName?: string | null;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
+    mosaic?: MosaicRenderContext;
   }
 ) {
   const event = envelope.event;
@@ -2379,7 +2401,7 @@ function renderEvent(
             <MessageCopyButton value={event.text} />
           </div>
           <div className="min-w-0">
-            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
           </div>
         </div>
       </motion.div>
@@ -2806,6 +2828,41 @@ function renderEvent(
 
   /* ── System Notice ── */
   if (event.type === "system_notice") {
+    // "Subagent spawned" chip — one quiet line deep-linking to the child
+    // chat session (spawnAgent + CLI-spawned children). SDK Task-tool
+    // subagents stay panel-only; the side panel remains the primary surface.
+    if (event.noticeKind === "info" && event.status === "subagent_spawned") {
+      const spawned = event.detail && typeof event.detail === "object" && "spawnedSession" in event.detail
+        ? (event.detail as { spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string } }).spawnedSession
+        : undefined;
+      const childTitle = spawned?.title ?? event.message.replace(/^Subagent spawned:\s*/, "");
+      const childSessionId = typeof spawned?.sessionId === "string" && spawned.sessionId.length ? spawned.sessionId : null;
+      return (
+        <button
+          type="button"
+          disabled={!childSessionId}
+          onClick={() => {
+            if (!childSessionId) return;
+            try {
+              window.dispatchEvent(
+                new CustomEvent("ade:work:select-session", {
+                  detail: { sessionId: childSessionId, laneId: spawned?.laneId ?? null },
+                }),
+              );
+            } catch {
+              /* no-op */
+            }
+          }}
+          className="inline-flex max-w-full items-center gap-2 rounded-full border border-border/14 bg-surface-recessed/70 px-3 py-1 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/70 transition-colors enabled:hover:border-border/28 enabled:hover:text-fg/85"
+          title={childSessionId ? "Open the spawned chat" : undefined}
+        >
+          <Robot size={11} weight="duotone" className="shrink-0 text-muted-fg/55" />
+          <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/45">subagent</span>
+          <span className="min-w-0 truncate">{childTitle}</span>
+          {childSessionId ? <CaretRight size={10} className="shrink-0 text-muted-fg/50" /> : null}
+        </button>
+      );
+    }
     if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
       return (
         <div
@@ -3721,6 +3778,7 @@ type EventRowProps = {
   laneId?: string | null;
   sessionId?: string | null;
   runtimeName?: string | null;
+  mosaic?: MosaicRenderContext;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -3748,6 +3806,7 @@ const EventRow = React.memo(function EventRow({
   laneId,
   sessionId,
   runtimeName,
+  mosaic,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -3798,6 +3857,7 @@ const EventRow = React.memo(function EventRow({
             runtimeName,
             onRevealChatTerminal,
             onRewindFiles,
+            mosaic,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -4076,6 +4136,7 @@ function AgentChatMessageListMain({
   hasOlderHistory = false,
   loadingOlderHistory = false,
   onLoadOlderHistory,
+  mosaic,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -4099,6 +4160,8 @@ function AgentChatMessageListMain({
   loadingOlderHistory?: boolean;
   /** Called when the user scrolls near the top and older pages exist. */
   onLoadOlderHistory?: () => void;
+  /** Present only for Claude-family sessions; enables interactive mosaic cards. */
+  mosaic?: MosaicRenderContext;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
@@ -4719,6 +4782,7 @@ function AgentChatMessageListMain({
           laneId={laneId}
           sessionId={sessionId}
           runtimeName={runtimeName}
+          mosaic={mosaic}
         />
       );
     }
@@ -4749,9 +4813,10 @@ function AgentChatMessageListMain({
         laneId={laneId}
         sessionId={sessionId}
         runtimeName={runtimeName}
+        mosaic={mosaic}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

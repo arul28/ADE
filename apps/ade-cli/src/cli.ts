@@ -1446,6 +1446,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --no-fast, --standard   Disable fast mode explicitly.
     --print-config          Print the createSession payload and permission mapping.
     --dry-run               Alias for --print-config; does not create a chat.
+    --parent <sessionId>    Link the new chat as a child of that session.
+                            Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
+    --no-parent             Create the chat without a parent link.
 
   Permission notes:
     full-auto maps Codex to sandbox=danger-full-access and approval=never.
@@ -1480,6 +1483,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --print                 Start the session runtime in print mode.
     --print-config          Print the resolved CLI launch config.
     --dry-run               Alias for --print-config; no session is created.
+    --parent <sessionId>    Link the new chat as a child of that session.
+                            Defaults to $ADE_CHAT_SESSION_ID when run from a
+                            tracked agent shell (the spawning chat).
+    --no-parent             Create the chat without a parent link.
 
   Permission mapping highlights:
     codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.
@@ -2247,6 +2254,27 @@ function collectGenericObjectArgs(
 
 function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
+}
+
+/**
+ * Parent chat-session lineage for spawned chat sessions. Defaults to the
+ * spawning agent's own session — ADE injects ADE_CHAT_SESSION_ID into every
+ * tracked agent shell (chat runtimes and tracked CLI/PTY sessions) — so a
+ * child created via `ade chat create` links back to the chat that spawned it
+ * instead of becoming an orphan. `--parent <sessionId>` overrides the
+ * default; `--no-parent` opts out entirely.
+ */
+function readParentSessionId(args: string[]): string | undefined {
+  const override = readValue(args, ["--parent", "--parent-session", "--parent-session-id"]);
+  const noParent = readFlag(args, ["--no-parent"]);
+  if (override && noParent) {
+    throw new CliUsageError("--parent cannot be combined with --no-parent.");
+  }
+  if (noParent) return undefined;
+  const explicit = override?.trim();
+  if (explicit) return explicit;
+  const env = process.env.ADE_CHAT_SESSION_ID?.trim();
+  return env?.length ? env : undefined;
 }
 
 type ToolClaimArgs = {
@@ -3731,6 +3759,11 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     return createdLaneId;
   };
 
+  // Consume the flags in both modes so they never leak into the generic arg
+  // bag; lineage only applies to chat mode (a PTY session is not a chat
+  // record, so there is nothing to link).
+  const parentSessionId = readParentSessionId(args);
+  const orchestrationParentSessionId = mode === "chat" ? parentSessionId : undefined;
   const launchArgs = mode === "chat"
     ? collectGenericObjectArgs(args, {
         provider,
@@ -3738,6 +3771,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         modelId: modelArg,
         reasoningEffort,
         permissionMode,
+        ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
         droidPermissionMode: readValue(args, [
           "--droid-permission-mode",
           "--droid-autonomy",
@@ -6240,12 +6274,14 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
+    const orchestrationParentSessionId = readParentSessionId(args);
     const createStep = actionStep(
       "result",
       "chat",
       "createSession",
       collectGenericObjectArgs(args, {
         laneId: readLaneId(args),
+        ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
         provider: readValue(args, ["--provider"]),
         model: modelArg,
         modelId: modelArg,

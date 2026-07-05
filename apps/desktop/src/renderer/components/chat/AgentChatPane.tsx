@@ -88,7 +88,7 @@ import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModel
 import { toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
-import { AgentChatMessageList } from "./AgentChatMessageList";
+import { AgentChatMessageList, type MosaicRenderContext } from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -2503,6 +2503,15 @@ export function buildParallelLaunchPrompt(args: {
     return { sendText: "", displayText: "" };
   }
   return { sendText: displayText, displayText };
+}
+
+/** Deterministic djb2 hash → stable, collision-resilient mosaic card key suffix. */
+function djb2Hash(input: string): string {
+  let hash = 5381;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
 }
 
 export type ParallelLaunchCleanupIssue = {
@@ -6338,6 +6347,37 @@ export function AgentChatPane({
       setBusy(false);
     }
   }, [refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
+
+  // Mosaic card submit → structured reply through the normal chat send path.
+  const handleMosaicSubmit = useCallback(async (submission: { text: string; displayText: string }) => {
+    const sessionId = selectedSessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      setError(null);
+      touchSession(sessionId);
+      await window.ade.agentChat.send({ sessionId, text: submission.text, displayText: submission.displayText });
+      void refreshSessions().catch(() => {});
+    } catch (mosaicSendError) {
+      setError(mosaicSendError instanceof Error ? mosaicSendError.message : String(mosaicSendError));
+      throw mosaicSendError;
+    }
+  }, [refreshSessions, touchSession]);
+
+  const mosaicCardKeyFor = useCallback(
+    // Scope (the transcript row key) keeps byte-identical cards at different
+    // positions independently answerable.
+    (source: string, scope: string) => `${selectedSessionIdRef.current ?? "draft"}:${scope}:${djb2Hash(source)}`,
+    [],
+  );
+
+  // Interactive mosaic cards are Claude-family only; other runtimes fall back to
+  // the plain code fence. Memoized so AgentChatMessageList's row memo holds.
+  const mosaicContext = useMemo<MosaicRenderContext | undefined>(() => {
+    if (sessionProvider !== "claude") return undefined;
+    // Pass the promise through — the card awaits it and rolls back its
+    // answered latch when the send rejects.
+    return { cardKeyFor: mosaicCardKeyFor, onSubmit: handleMosaicSubmit };
+  }, [sessionProvider, mosaicCardKeyFor, handleMosaicSubmit]);
 
   // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
   // turn"; only the pane that owns the session resends.
@@ -10548,6 +10588,7 @@ export function AgentChatPane({
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}
+                      mosaic={subagentView ? undefined : mosaicContext}
                     />
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">

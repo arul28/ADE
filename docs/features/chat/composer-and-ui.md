@@ -408,6 +408,32 @@ rendering. Key rules:
 Row derivation uses `chatTranscriptRows.ts` (see
 [transcript-and-turns](transcript-and-turns.md)).
 
+## Mosaic cards
+
+A Claude-family agent can emit a fenced ` ```mosaic ` code block whose body
+is strict versioned JSON (`{"v":1,...}`) describing a small form — text /
+select / multiselect / number-or-slider / input / approve-deny / key-value
+table elements. `MarkdownBlock`'s code-fence handler renders it as an
+interactive `MosaicCard` (`MosaicCard.tsx`) when the pane passes a
+Claude-gated `mosaic` context prop (`AgentChatPane`); non-Claude sessions,
+and any card that fails the strict parse in `chatMosaic.ts`
+(`parseMosaicCard`: unknown version/element type, duplicate id, or malformed
+JSON → null), fall back to rendering the plain code fence unchanged. The
+artifact is data only — no expressions, no eval, no host actions.
+
+Submitting serializes the selections through `serializeMosaicSubmission`
+(readable `- Field: value` lines the user bubble shows, plus a machine
+`json` fence keyed by element id) and sends them through the normal
+`agentChat.send` path with a `displayText`, so the answer reads as an
+ordinary user turn. Answered state is latched for the session in a
+`cardKey`-keyed map (`<sessionId>:<row-scope>:<djb2(source)>`) so a card
+that unmounts while scrolled out of the virtualized list restores its
+"Answered" state on remount; a send failure rolls the latch back so the
+user can retry. The TUI collapses the fence to a one-line summary
+(`summarizeMosaicCard`) and iOS shows the raw fence. The schema is
+documented for agents in the `ade-mosaic` Agent Skill
+(`apps/desktop/resources/agent-skills/ade-mosaic/SKILL.md`).
+
 ## Tasks panel
 
 `ChatTasksPanel` renders todos from `deriveTodoItems()`. Items carry
@@ -462,6 +488,18 @@ strip showing running subagent count.
 Interrupt transitions all running subagents to `stopped` by emitting a
 `subagent_result` with `status: "stopped"` for each, matching the
 Claude Code CLI behavior.
+
+Claude Workflow runs (the SDK's multi-agent orchestration tool) render in
+the same panel with zero new chrome: `claudeWorkflowProgress.ts` normalizes
+the undocumented `workflow_progress` snapshot and fans each workflow agent
+out as its own subagent row (phase in the summary line, tokens/duration
+from the snapshot, `workflowName` chip), while the parent workflow task row
+falls back to a phase/count rollup summary. Child chat sessions spawned
+with a parent lineage (`ade chat create` from a tracked agent shell,
+`--parent`) also list here via synthetic `subagent_*` events keyed
+`chat:<childSessionId>`; the parent transcript additionally shows a quiet
+"Subagent spawned" chip (a `status:"subagent_spawned"` system_notice) that
+deep-links to the child chat.
 
 Codex parallel agent failures emit a system-notice plus `failed` /
 `stopped` `subagent_result` rows. The agentChatService maps

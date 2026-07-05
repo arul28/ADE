@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   buildAdeCodeArgs,
   buildCliPlan,
@@ -1054,6 +1054,11 @@ describe("ADE CLI", () => {
   });
 
   it("builds chat create with both model and modelId plus explicit reasoning and fast-mode args", () => {
+    // This strict-equality assertion must not absorb the ambient parent
+    // default when the test itself runs inside an ADE-tracked agent shell.
+    const savedParentEnv = process.env.ADE_CHAT_SESSION_ID;
+    delete process.env.ADE_CHAT_SESSION_ID;
+    try {
     const plan = buildCliPlan([
       "chat",
       "create",
@@ -1095,6 +1100,10 @@ describe("ADE CLI", () => {
         },
       },
     });
+    } finally {
+      if (savedParentEnv === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = savedParentEnv;
+    }
   });
 
   it("chains chat create --prompt into a first chat send", () => {
@@ -1334,6 +1343,71 @@ describe("ADE CLI", () => {
     });
     expect(value.input).not.toHaveProperty("droidPermissionMode");
     expect(value.input).not.toHaveProperty("title");
+  });
+
+  describe("chat create parent lineage", () => {
+    const savedParentEnv = process.env.ADE_CHAT_SESSION_ID;
+    afterEach(() => {
+      if (savedParentEnv === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+      else process.env.ADE_CHAT_SESSION_ID = savedParentEnv;
+    });
+
+    const dryRunCreate = (...extra: string[]) =>
+      buildCliPlan([
+        "chat", "create",
+        "--lane", "lane-1",
+        "--provider", "codex",
+        "--model", "openai/gpt-5.5",
+        "--print-config",
+        ...extra,
+      ]);
+
+    it("defaults orchestrationParentSessionId from ADE_CHAT_SESSION_ID", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const staticPlan = expectStaticPlan(dryRunCreate());
+      expect((staticPlan.value as { input: Record<string, unknown> }).input.orchestrationParentSessionId)
+        .toBe("parent-session-1");
+    });
+
+    it("omits the parent when the env var is not set", () => {
+      delete process.env.ADE_CHAT_SESSION_ID;
+      const staticPlan = expectStaticPlan(dryRunCreate());
+      expect((staticPlan.value as { input: Record<string, unknown> }).input)
+        .not.toHaveProperty("orchestrationParentSessionId");
+    });
+
+    it("--parent overrides the env default", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const staticPlan = expectStaticPlan(dryRunCreate("--parent", "explicit-parent"));
+      expect((staticPlan.value as { input: Record<string, unknown> }).input.orchestrationParentSessionId)
+        .toBe("explicit-parent");
+    });
+
+    it("--no-parent opts out even with the env var set", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const staticPlan = expectStaticPlan(dryRunCreate("--no-parent"));
+      expect((staticPlan.value as { input: Record<string, unknown> }).input)
+        .not.toHaveProperty("orchestrationParentSessionId");
+    });
+
+    it("rejects --parent combined with --no-parent", () => {
+      expect(() => dryRunCreate("--parent", "p", "--no-parent")).toThrow(/--no-parent/);
+    });
+
+    it("ade new chat --mode chat inherits the env parent in its launch args", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "chat",
+        "--lane", "lane-1",
+        "--provider", "codex",
+        "--model", "openai/gpt-5.5",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      expect((staticPlan.value as { launch: Record<string, unknown> }).launch.orchestrationParentSessionId)
+        .toBe("parent-session-1");
+    });
   });
 
   it("prints chat create --prompt dry-run with the follow-up send", () => {
