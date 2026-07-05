@@ -295,6 +295,15 @@ function elementDisplayName(element: MosaicInteractiveElement): string {
   return element.label ?? element.id;
 }
 
+/**
+ * Collapse internal whitespace before a string lands in the submitted user
+ * message. Labels are agent-authored — an embedded newline must not let the
+ * card forge extra transcript lines attributed to the user.
+ */
+function inlineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 export type MosaicSubmission = {
   /** Message sent to the model: readable lines + a machine-readable JSON fence. */
   text: string;
@@ -313,17 +322,17 @@ export function serializeMosaicSubmission(spec: MosaicCardSpec, values: MosaicVa
     if (!isMosaicInteractiveElement(element)) continue;
     const value = values[element.id];
     if (value === undefined) continue;
-    const name = elementDisplayName(element);
+    const name = inlineText(elementDisplayName(element));
     switch (element.type) {
       case "select": {
         if (typeof value !== "string") continue;
-        lines.push(`- ${name}: ${optionLabel(element.options, value)}`);
+        lines.push(`- ${name}: ${inlineText(optionLabel(element.options, value))}`);
         structured[element.id] = value;
         break;
       }
       case "multiselect": {
         const selected = Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
-        lines.push(`- ${name}: ${selected.length > 0 ? selected.map((v) => optionLabel(element.options, v)).join(", ") : "(none)"}`);
+        lines.push(`- ${name}: ${selected.length > 0 ? selected.map((v) => inlineText(optionLabel(element.options, v))).join(", ") : "(none)"}`);
         structured[element.id] = selected;
         break;
       }
@@ -335,19 +344,19 @@ export function serializeMosaicSubmission(spec: MosaicCardSpec, values: MosaicVa
       }
       case "input": {
         if (typeof value !== "string") continue;
-        lines.push(`- ${name}: ${value.trim() || "(empty)"}`);
+        lines.push(`- ${name}: ${inlineText(value) || "(empty)"}`);
         structured[element.id] = value.trim();
         break;
       }
       case "approval": {
         if (value !== "approve" && value !== "deny") continue;
-        lines.push(`- ${name}: ${value === "approve" ? (element.approveLabel ?? "Approved") : (element.denyLabel ?? "Denied")}`);
+        lines.push(`- ${name}: ${value === "approve" ? inlineText(element.approveLabel ?? "Approved") : inlineText(element.denyLabel ?? "Denied")}`);
         structured[element.id] = value;
         break;
       }
     }
   }
-  const heading = `Answered via card${spec.title ? ` — ${spec.title}` : ""}`;
+  const heading = `Answered via card${spec.title ? ` — ${inlineText(spec.title)}` : ""}`;
   const displayText = [heading, ...lines].join("\n");
   const machine = JSON.stringify({ mosaic: MOSAIC_VERSION, ...(spec.title ? { card: spec.title } : {}), values: structured });
   const text = `${displayText}\n\n\`\`\`json\n${machine}\n\`\`\``;

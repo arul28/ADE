@@ -6364,7 +6364,9 @@ export function AgentChatPane({
   }, [refreshSessions, touchSession]);
 
   const mosaicCardKeyFor = useCallback(
-    (source: string) => `${selectedSessionIdRef.current ?? "draft"}:${djb2Hash(source)}`,
+    // Scope (the transcript row key) keeps byte-identical cards at different
+    // positions independently answerable.
+    (source: string, scope: string) => `${selectedSessionIdRef.current ?? "draft"}:${scope}:${djb2Hash(source)}`,
     [],
   );
 

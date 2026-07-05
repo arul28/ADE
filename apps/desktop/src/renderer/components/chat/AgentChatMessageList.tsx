@@ -83,15 +83,6 @@ import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard"
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
-
-/**
- * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
- * ```mosaic fence renders as an interactive card instead of a plain code block.
- */
-export type MosaicRenderContext = {
-  cardKeyFor: (source: string) => string;
-  onSubmit: (submission: { text: string; displayText: string }) => void;
-};
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   buildMinimapDisplayEntries,
@@ -107,6 +98,17 @@ import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { CodexContextCompactionChip } from "./codex/CodexContextCompactionChip";
+
+/**
+ * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
+ * ```mosaic fence renders as an interactive card instead of a plain code block.
+ * `scope` is the transcript row's stable key so byte-identical cards at
+ * different positions keep independent answered state.
+ */
+export type MosaicRenderContext = {
+  cardKeyFor: (source: string, scope: string) => string;
+  onSubmit: (submission: { text: string; displayText: string }) => void | Promise<void>;
+};
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
 type PendingInputResolution = Extract<AgentChatEvent, { type: "pending_input_resolved" }>["resolution"];
@@ -871,11 +873,14 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   onOpenWorkspacePath,
   workspaceLaneId,
   mosaic,
+  mosaicScopeKey,
 }: {
   markdown: string;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
   workspaceLaneId?: string | null;
   mosaic?: MosaicRenderContext;
+  /** Stable transcript-row key scoping mosaic answered state per message. */
+  mosaicScopeKey?: string;
 }) {
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
@@ -958,7 +963,7 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
               ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
               : "text";
             if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
-              return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text)} onSubmit={mosaic.onSubmit} />;
+              return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
             }
             return isBlock ? (
               <HighlightedCode code={text} language={language} />
@@ -2396,7 +2401,7 @@ function renderEvent(
             <MessageCopyButton value={event.text} />
           </div>
           <div className="min-w-0">
-            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} />
+            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} mosaicScopeKey={envelope.key} />
           </div>
         </div>
       </motion.div>

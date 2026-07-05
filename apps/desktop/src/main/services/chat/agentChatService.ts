@@ -13023,6 +13023,7 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 status: "stopped",
                 summary: "Workflow ended before this agent finished.",
+                finalSummary: "Workflow ended before this agent finished.",
                 taskType: "subagent",
                 ...(workflowName ? { workflowName } : {}),
                 turnId,
@@ -19889,7 +19890,7 @@ export function createAgentChatService(args: {
    * restart no stale subagent_result can fire for a spawn event that
    * predates the process.
    */
-  const childSpawnTracking = new Map<string, { parentSessionId: string; terminal: boolean }>();
+  const childSpawnTracking = new Map<string, { parentSessionId: string }>();
 
   const notifyParentSessionOfSpawn = (child: ManagedChatSession, label: string): void => {
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
@@ -19910,7 +19911,7 @@ export function createAgentChatService(args: {
       },
     });
     if (child.session.orchestrationRunId) return;
-    childSpawnTracking.set(child.session.id, { parentSessionId, terminal: false });
+    childSpawnTracking.set(child.session.id, { parentSessionId });
     emitChatEvent(parent, {
       type: "subagent_started",
       taskId: `chat:${child.session.id}`,
@@ -19928,8 +19929,10 @@ export function createAgentChatService(args: {
     status: "completed" | "interrupted" | "failed",
   ): void => {
     const tracked = childSpawnTracking.get(childSessionId);
-    if (!tracked || tracked.terminal) return;
-    tracked.terminal = true;
+    if (!tracked) return;
+    // Terminal once — deleting the entry both enforces that and keeps the
+    // map from growing over a long-lived process.
+    childSpawnTracking.delete(childSessionId);
     const parent = managedSessions.get(tracked.parentSessionId);
     if (!parent || parent.deleted || parent.closed) return;
     const child = managedSessions.get(childSessionId);
@@ -20326,7 +20329,16 @@ export function createAgentChatService(args: {
       prewarmClaudeQuery(managed);
     }
 
-    notifyParentSessionOfSpawn(managed, initialTitle);
+    try {
+      notifyParentSessionOfSpawn(managed, initialTitle);
+    } catch (spawnNoticeError) {
+      // Parent-side notification is best-effort chrome; never fail the
+      // freshly created child session over it.
+      logger.warn("agent_chat.spawn_notice_failed", {
+        sessionId,
+        error: spawnNoticeError instanceof Error ? spawnNoticeError.message : String(spawnNoticeError),
+      });
+    }
 
     persistChatState(managed);
     return managed.session;
