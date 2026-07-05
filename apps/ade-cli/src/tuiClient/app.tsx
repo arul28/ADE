@@ -15,7 +15,9 @@ import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSk
 import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
+  findConfirmedComposerTokens,
   replaceComposerTriggerSpan,
+  type ComposerTokenRange,
 } from "../../../desktop/src/shared/composerTriggers";
 import type {
   AgentChatClaudePlugin,
@@ -2006,8 +2008,6 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
   return "No terminal login command is known for this provider.";
 }
 
-type PromptTokenRange = { start: number; end: number; kind: "file" | "command" };
-
 /**
  * Split a visual prompt row's text into plain and confirmed-token segments so
  * the renderer can style `@file` / `/command` chips. `rowStart` is the prompt
@@ -2016,7 +2016,7 @@ type PromptTokenRange = { start: number; end: number; kind: "file" | "command" }
 function segmentPromptLineText(
   text: string,
   rowStart: number,
-  tokens: PromptTokenRange[],
+  tokens: ComposerTokenRange[],
 ): Array<{ text: string; kind: "plain" | "file" | "command" }> {
   if (!tokens.length || !text) return text ? [{ text, kind: "plain" }] : [];
   const segments: Array<{ text: string; kind: "plain" | "file" | "command" }> = [];
@@ -3895,24 +3895,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Confirmed chip tokens in the prompt: mentions that were actually inserted
   // from the picker and /commands matching the known catalog. Rendered as
   // colored tokens in the prompt rows below.
-  const promptTokenRanges = useMemo<PromptTokenRange[]>(() => {
+  const promptTokenRanges = useMemo<ComposerTokenRange[]>(() => {
     if (!prompt) return [];
     const mentionTexts = new Set(selectedMentions.map((mention) => mention.insertText));
     const commandNames = new Set([
       ...BUILTIN_COMMANDS.map((command) => command.name.replace(/^\//, "").toLowerCase()),
       ...slashCommands.map((command) => command.name.replace(/^\//, "").toLowerCase()),
     ]);
-    const ranges: PromptTokenRange[] = [];
-    for (const match of prompt.matchAll(/(^|\s)([@/])(\S+)/g)) {
-      const start = (match.index ?? 0) + match[1]!.length;
-      const body = match[3]!;
-      if (match[2] === "@") {
-        if (mentionTexts.has(`@${body}`)) ranges.push({ start, end: start + 1 + body.length, kind: "file" });
-      } else if (commandNames.has(body.toLowerCase())) {
-        ranges.push({ start, end: start + 1 + body.length, kind: "command" });
-      }
-    }
-    return ranges;
+    return findConfirmedComposerTokens(prompt, {
+      isFile: (body) => mentionTexts.has(`@${body}`),
+      isCommand: (body) => commandNames.has(body.toLowerCase()),
+    });
   }, [prompt, selectedMentions, slashCommands]);
   const promptDisplay = promptDisplayRowsWithCursor(prompt, Math.max(1, promptPaneWidth - 5), promptCursor, PROMPT_MAX_ROWS);
   const promptRows = promptDisplay.rows;

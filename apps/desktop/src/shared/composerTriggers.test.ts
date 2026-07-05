@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
+  findConfirmedComposerTokens,
   replaceComposerTriggerSpan,
 } from "./composerTriggers";
 
@@ -99,6 +100,31 @@ describe("replaceComposerTriggerSpan", () => {
       text: "/clear ",
       caret: 7,
     });
+  });
+});
+
+describe("findConfirmedComposerTokens", () => {
+  const confirm = {
+    isFile: (body: string) => body === "src/foo.ts",
+    isCommand: (body: string) => body === "test",
+  };
+
+  it("finds confirmed file and command tokens with correct spans", () => {
+    const text = "fix @src/foo.ts then run /test now";
+    expect(findConfirmedComposerTokens(text, confirm)).toEqual([
+      { start: 4, end: 15, kind: "file" },
+      { start: 25, end: 30, kind: "command" },
+    ]);
+  });
+
+  it("skips unconfirmed tokens and mid-word matches", () => {
+    const text = "mail user@doma or run /unknown with @other.ts";
+    expect(findConfirmedComposerTokens(text, confirm)).toEqual([]);
+  });
+
+  it("requires a word boundary before the trigger char", () => {
+    expect(findConfirmedComposerTokens("path/@src/foo.ts", confirm)).toEqual([]);
+    expect(findConfirmedComposerTokens("a/test", confirm)).toEqual([]);
   });
 });
 

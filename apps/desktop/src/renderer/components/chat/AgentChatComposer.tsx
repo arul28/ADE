@@ -41,6 +41,7 @@ import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../
 import {
   composerTriggerSpansWholeDraft,
   detectComposerTrigger,
+  findConfirmedComposerTokens,
   replaceComposerTriggerSpan,
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
@@ -1256,17 +1257,11 @@ export function AgentChatComposer({
     [effectiveSlashCommands],
   );
   const plainComposerTokens = useMemo(() => {
-    if (useRichComposer || !draft) return [] as Array<{ start: number; end: number }>;
-    const tokens: Array<{ start: number; end: number }> = [];
-    for (const match of draft.matchAll(/(^|\s)([@/])(\S+)/g)) {
-      const start = (match.index ?? 0) + match[1]!.length;
-      const body = match[3]!;
-      const confirmed = match[2] === "@"
-        ? attachedPaths.has(body)
-        : knownSlashCommandNames.has(body.toLowerCase());
-      if (confirmed) tokens.push({ start, end: start + 1 + body.length });
-    }
-    return tokens;
+    if (useRichComposer || !draft) return [];
+    return findConfirmedComposerTokens(draft, {
+      isFile: (body) => attachedPaths.has(body),
+      isCommand: (body) => knownSlashCommandNames.has(body.toLowerCase()),
+    });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
   useLayoutEffect(() => {
@@ -1717,6 +1712,29 @@ export function AgentChatComposer({
     document.execCommand("insertText", false, text);
     syncRichDraft();
   }, [syncRichDraft]);
+
+  // Re-evaluate the plain-textarea trigger at the given caret. Typing paths
+  // pass openIfNew=true; caret-move paths pass false so cursor movement can
+  // close or retarget an open menu but never open one.
+  const evaluatePlainTrigger = useCallback((node: HTMLTextAreaElement, caret: number, openIfNew: boolean) => {
+    const trigger = detectComposerTrigger(node.value, caret);
+    if (!trigger) {
+      setCommandMenuTrigger(null);
+      return;
+    }
+    if (!openIfNew) {
+      setCommandMenuTrigger((current) => {
+        if (!current) return current;
+        return trigger.type !== current.type || trigger.start !== current.start || trigger.query !== current.query
+          ? trigger
+          : current;
+      });
+      return;
+    }
+    setCommandMenuTrigger(trigger);
+    const anchor = getCommandMenuAnchor(node);
+    if (anchor) setCommandMenuAnchor(anchor);
+  }, []);
 
   const restoreTextareaCaret = useCallback((caret: number) => {
     lastPlainSelectionRef.current = caret;
@@ -2799,7 +2817,12 @@ export function AgentChatComposer({
       if (event.key === "Escape") { event.preventDefault(); setCommandMenuTrigger(null); return; }
       if (event.key === "ArrowDown") { event.preventDefault(); commandMenuRef.current?.moveDown(); return; }
       if (event.key === "ArrowUp") { event.preventDefault(); commandMenuRef.current?.moveUp(); return; }
-      if (event.key === "Enter" || event.key === "Tab") { event.preventDefault(); commandMenuRef.current?.selectCurrent(); return; }
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (commandMenuRef.current?.selectCurrent()) { event.preventDefault(); return; }
+        // No matching row (e.g. "check /tmp"): close the menu and let
+        // Enter/Tab fall through to their normal send/suggestion behavior.
+        setCommandMenuTrigger(null);
+      }
     }
 
     if (event.key === "ArrowUp" && !commandModified && !event.shiftKey && !event.altKey) {
@@ -2957,11 +2980,13 @@ export function AgentChatComposer({
     } else if (item.type === "command" && commandMenuTrigger) {
       const selected = effectiveSlashCommands.find((cmd) => cmd.command.replace(/^\//, "") === item.name);
       const wholeDraft = composerTriggerSpansWholeDraft(draft, commandMenuTrigger);
-      if (selected && wholeDraft && !useRichComposer) {
-        // Lone leading command keeps the legacy path: local /clear intercept
-        // plus the argument-hint scaffold.
-        handleSlashSelect(selected);
-      } else if (selected?.command === "/clear" && selected.source === "local" && wholeDraft) {
+      // A lone command keeps the legacy path (local /clear intercept +
+      // argument-hint scaffold). Rich mode only takes it for the local /clear
+      // intercept — handleSlashSelect rewrites the whole editor, which would
+      // wipe context chips.
+      const useLegacySlashSelect = Boolean(selected) && wholeDraft
+        && (!useRichComposer || (selected?.command === "/clear" && selected.source === "local"));
+      if (selected && useLegacySlashSelect) {
         handleSlashSelect(selected);
       } else if (useRichComposer) {
         if (!replaceRichTriggerWith({ chipKind: "command", chipText: `/${item.name}` })) {
@@ -4392,14 +4417,7 @@ export function AgentChatComposer({
                   const cursorPos = event.target.selectionStart ?? val.length;
                   lastPlainSelectionRef.current = cursorPos;
                   if (imeComposingRef.current) return;
-                  const trigger = detectComposerTrigger(val, cursorPos);
-                  if (trigger) {
-                    setCommandMenuTrigger(trigger);
-                    const anchor = getCommandMenuAnchor(event.currentTarget);
-                    if (anchor) setCommandMenuAnchor(anchor);
-                  } else {
-                    setCommandMenuTrigger(null);
-                  }
+                  evaluatePlainTrigger(event.currentTarget, cursorPos, true);
                 }}
                 rows={1}
                 onInput={resizeTextarea}
@@ -4412,32 +4430,14 @@ export function AgentChatComposer({
                 onCompositionEnd={(event) => {
                   imeComposingRef.current = false;
                   const node = event.currentTarget;
-                  const trigger = detectComposerTrigger(node.value, node.selectionStart ?? node.value.length);
-                  if (trigger) {
-                    setCommandMenuTrigger(trigger);
-                    const anchor = getCommandMenuAnchor(node);
-                    if (anchor) setCommandMenuAnchor(anchor);
-                  } else {
-                    setCommandMenuTrigger(null);
-                  }
+                  evaluatePlainTrigger(node, node.selectionStart ?? node.value.length, true);
                 }}
                 onSelect={(event) => {
                   const node = event.currentTarget;
                   const caret = node.selectionStart ?? node.value.length;
                   lastPlainSelectionRef.current = caret;
-                  // Caret moves close or retarget an open menu but never open one;
-                  // opening stays a typing-only affordance.
-                  if (!commandMenuTrigger || imeComposingRef.current) return;
-                  const trigger = detectComposerTrigger(node.value, caret);
-                  if (!trigger) {
-                    setCommandMenuTrigger(null);
-                  } else if (
-                    trigger.type !== commandMenuTrigger.type
-                    || trigger.start !== commandMenuTrigger.start
-                    || trigger.query !== commandMenuTrigger.query
-                  ) {
-                    setCommandMenuTrigger(trigger);
-                  }
+                  if (imeComposingRef.current) return;
+                  evaluatePlainTrigger(node, caret, false);
                 }}
                 disabled={parallelLaunchBusy || composerInputLocked}
                 autoComplete="on"

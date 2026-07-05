@@ -861,6 +861,10 @@ function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | n
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const FILE_SEARCH_SESSION_LANE_CACHE_MAX = 200;
+// Only non-identity sessions are cached: a regular chat session's lane binding
+// is immutable (updateSession exposes no laneId; handoffs create new sessions),
+// but resumeSession can migrate a primary-pinned identity (CTO/worker) session
+// to the canonical primary lane, so those resolve fresh every call.
 const fileSearchLaneIdBySessionId = new Map<string, string>();
 
 function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: string): string {
@@ -885,6 +889,10 @@ function readSessionLaneId(value: unknown): string | null {
   return typeof laneId === "string" && laneId.trim() ? laneId.trim() : null;
 }
 
+function isLaneCacheableSession(value: unknown): boolean {
+  return isRecord(value) && !value.identityKey;
+}
+
 async function resolveFileSearchLaneId(agentChatService: unknown, sessionId: string): Promise<string | null> {
   const cached = fileSearchLaneIdBySessionId.get(sessionId);
   if (cached) return cached;
@@ -896,9 +904,10 @@ async function resolveFileSearchLaneId(agentChatService: unknown, sessionId: str
 
   if (typeof service.getSessionSummary === "function") {
     try {
-      const laneId = readSessionLaneId(await service.getSessionSummary(sessionId));
+      const summary = await service.getSessionSummary(sessionId);
+      const laneId = readSessionLaneId(summary);
       if (laneId) {
-        rememberFileSearchLaneId(sessionId, laneId);
+        if (isLaneCacheableSession(summary)) rememberFileSearchLaneId(sessionId, laneId);
         return laneId;
       }
     } catch {
@@ -912,7 +921,7 @@ async function resolveFileSearchLaneId(agentChatService: unknown, sessionId: str
   const session = sessions.find((entry) => isRecord(entry) && entry.sessionId === sessionId);
   const laneId = readSessionLaneId(session);
   if (laneId) {
-    rememberFileSearchLaneId(sessionId, laneId);
+    if (isLaneCacheableSession(session)) rememberFileSearchLaneId(sessionId, laneId);
   }
   return laneId;
 }

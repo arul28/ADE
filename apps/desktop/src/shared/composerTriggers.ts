@@ -55,6 +55,39 @@ export function replaceComposerTriggerSpan(
   };
 }
 
+export type ComposerTokenKind = "file" | "command";
+
+export type ComposerTokenRange = {
+  start: number;
+  end: number;
+  kind: ComposerTokenKind;
+};
+
+const CONFIRMED_TOKEN_RE = /(^|\s)([@/])(\S+)/g;
+
+/**
+ * Find the confirmed chip tokens in a draft: word-boundary `@body` / `/body`
+ * runs whose body the caller vouches for (attached file, known command).
+ * Offsets are code units into `text`, sorted ascending. Used by the desktop
+ * textarea overlay and the TUI prompt renderer to style chips.
+ */
+export function findConfirmedComposerTokens(
+  text: string,
+  confirm: { isFile: (body: string) => boolean; isCommand: (body: string) => boolean },
+): ComposerTokenRange[] {
+  if (!text) return [];
+  const tokens: ComposerTokenRange[] = [];
+  for (const match of text.matchAll(CONFIRMED_TOKEN_RE)) {
+    const start = (match.index ?? 0) + match[1]!.length;
+    const body = match[3]!;
+    const kind: ComposerTokenKind | null = match[2] === "@"
+      ? (confirm.isFile(body) ? "file" : null)
+      : (confirm.isCommand(body) ? "command" : null);
+    if (kind) tokens.push({ start, end: start + 1 + body.length, kind });
+  }
+  return tokens;
+}
+
 /** True when the trigger token is the only content in the draft. */
 export function composerTriggerSpansWholeDraft(
   text: string,

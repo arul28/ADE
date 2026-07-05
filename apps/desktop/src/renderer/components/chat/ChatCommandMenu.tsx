@@ -25,7 +25,8 @@ export type ChatCommandMenuItem =
 export type ChatCommandMenuHandle = {
   moveUp(): void;
   moveDown(): void;
-  selectCurrent(): void;
+  /** Returns true when a row was actually selected (the menu had a match). */
+  selectCurrent(): boolean;
 };
 
 type ChatCommandMenuProps = {
@@ -216,11 +217,12 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
     // ---- Imperative handle for keyboard navigation ----
     const handleSelect = useCallback(
-      (index: number) => {
+      (index: number): boolean => {
         const item = items[index];
-        if (!item) return;
+        if (!item) return false;
         onSelect(item);
         onClose();
+        return true;
       },
       [items, onClose, onSelect],
     );
@@ -229,13 +231,15 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       ref,
       () => ({
         moveUp() {
+          if (!items.length) return;
           setSelectedIndex((prev) => (prev <= 0 ? items.length - 1 : prev - 1));
         },
         moveDown() {
+          if (!items.length) return;
           setSelectedIndex((prev) => (prev >= items.length - 1 ? 0 : prev + 1));
         },
         selectCurrent() {
-          handleSelect(selectedIndex);
+          return handleSelect(selectedIndex);
         },
       }),
       [items.length, selectedIndex, handleSelect],
@@ -413,8 +417,10 @@ export function handleCommandMenuKeyDown(
     }
     case "Enter":
     case "Tab": {
+      // No matching row: report unhandled so Enter/Tab keep their normal
+      // send/focus behavior instead of becoming a dead key.
+      if (!handle.selectCurrent()) return false;
       e.preventDefault();
-      handle.selectCurrent();
       return true;
     }
     case "Escape": {

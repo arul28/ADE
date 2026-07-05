@@ -141,7 +141,13 @@ final class WorkComposerSuggestionController: ObservableObject {
   @Published private(set) var isLoading = false
 
   var provider: String = ""
-  var laneId: String?
+  var laneId: String? {
+    didSet {
+      // The cached workspace belongs to the previous lane; a stale entry
+      // would make @ quick-open search the wrong worktree.
+      if oldValue != laneId { cachedWorkspaceId = nil }
+    }
+  }
   weak var syncService: SyncService?
 
   /// Wired by the text view: performs the splice on the live UITextView so
