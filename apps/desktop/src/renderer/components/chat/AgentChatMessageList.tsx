@@ -81,6 +81,17 @@ import {
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { HighlightedCode } from "./CodeHighlighter";
+import { MosaicCard } from "./MosaicCard";
+import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
+
+/**
+ * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
+ * ```mosaic fence renders as an interactive card instead of a plain code block.
+ */
+export type MosaicRenderContext = {
+  cardKeyFor: (source: string) => string;
+  onSubmit: (submission: { text: string; displayText: string }) => void;
+};
 import {
   CHAT_TIMELINE_ROW_GAP_PX,
   buildMinimapDisplayEntries,
@@ -859,10 +870,12 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
   onOpenWorkspacePath,
   workspaceLaneId,
+  mosaic,
 }: {
   markdown: string;
   onOpenWorkspacePath?: (path: string | WorkspacePathLocation, laneId?: string | null) => void;
   workspaceLaneId?: string | null;
+  mosaic?: MosaicRenderContext;
 }) {
   const chromeTint = useChatChromeTint();
   const neu = chromeTint === "neutral";
@@ -944,6 +957,9 @@ const MarkdownBlock = React.memo(function MarkdownBlock({
             const language = typeof className === "string"
               ? (className.match(/language-([^\s]+)/)?.[1] ?? "text")
               : "text";
+            if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
+              return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text)} onSubmit={mosaic.onSubmit} />;
+            }
             return isBlock ? (
               <HighlightedCode code={text} language={language} />
             ) : pathIsClickable ? (
@@ -2247,6 +2263,7 @@ function renderEvent(
     runtimeName?: string | null;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
+    mosaic?: MosaicRenderContext;
   }
 ) {
   const event = envelope.event;
@@ -2379,7 +2396,7 @@ function renderEvent(
             <MessageCopyButton value={event.text} />
           </div>
           <div className="min-w-0">
-            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} />
+            <MarkdownBlock markdown={event.text} onOpenWorkspacePath={options?.onOpenWorkspacePath} mosaic={options?.mosaic} />
           </div>
         </div>
       </motion.div>
@@ -3721,6 +3738,7 @@ type EventRowProps = {
   laneId?: string | null;
   sessionId?: string | null;
   runtimeName?: string | null;
+  mosaic?: MosaicRenderContext;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -3748,6 +3766,7 @@ const EventRow = React.memo(function EventRow({
   laneId,
   sessionId,
   runtimeName,
+  mosaic,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -3798,6 +3817,7 @@ const EventRow = React.memo(function EventRow({
             runtimeName,
             onRevealChatTerminal,
             onRewindFiles,
+            mosaic,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -4076,6 +4096,7 @@ function AgentChatMessageListMain({
   hasOlderHistory = false,
   loadingOlderHistory = false,
   onLoadOlderHistory,
+  mosaic,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -4099,6 +4120,8 @@ function AgentChatMessageListMain({
   loadingOlderHistory?: boolean;
   /** Called when the user scrolls near the top and older pages exist. */
   onLoadOlderHistory?: () => void;
+  /** Present only for Claude-family sessions; enables interactive mosaic cards. */
+  mosaic?: MosaicRenderContext;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
@@ -4719,6 +4742,7 @@ function AgentChatMessageListMain({
           laneId={laneId}
           sessionId={sessionId}
           runtimeName={runtimeName}
+          mosaic={mosaic}
         />
       );
     }
@@ -4749,9 +4773,10 @@ function AgentChatMessageListMain({
         laneId={laneId}
         sessionId={sessionId}
         runtimeName={runtimeName}
+        mosaic={mosaic}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName]);
+  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

@@ -30,6 +30,11 @@ import {
 import { laneIconGlyph } from "./Header";
 import type { AdeCodeProvider } from "../types";
 import {
+  MOSAIC_FENCE_LANGUAGE,
+  parseMosaicCard,
+  summarizeMosaicCard,
+} from "../../../../desktop/src/shared/chatMosaic";
+import {
   hardWrapDisplayText,
   sliceByDisplayCells,
   splitByDisplayCells,
@@ -542,6 +547,14 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
     } else if (block.kind === "quote") {
       rows.push(...inlineRowsFromText(block.text, width, id, "> ", "> ", { dim: true }));
     } else if (block.kind === "code") {
+      // A valid ```mosaic fence collapses to one dim summary line here; the
+      // interactive card only renders on desktop. Parse failure → plain block.
+      const mosaicSpec = block.language === MOSAIC_FENCE_LANGUAGE
+        ? parseMosaicCard((block.lines.length ? block.lines : [""]).join("\n"))
+        : null;
+      if (mosaicSpec) {
+        rows.push(...inlineRowsFromText(summarizeMosaicCard(mosaicSpec), width, id, "  ", "  ", { dim: true, color: theme.color.t2 }));
+      } else {
       const label = block.language ? ` ${block.language} ` : "";
       const ruleWidth = Math.max(1, Math.min(width - 5, 24));
       rows.push({
@@ -591,6 +604,7 @@ function markdownRows(blocks: AssistantMarkdownBlock[], width: number, id: strin
         }
       }
       rows.push({ id, tone: "assistant", text: "  └", color: theme.color.border, dim: true });
+      }
     } else if (block.kind === "table") {
       rows.push(...tableRows(block, width, id));
     } else if (block.kind === "hr") {
