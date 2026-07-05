@@ -171,9 +171,9 @@ render them, but neither one *runs* them.
   turn). Inline dispatches are reversible until the model reads them
   via `cancelAsyncMessage(uuid)`. The pending-steer queue is persisted
   with chat state so undelivered messages survive restart.
-- **Identity sessions.** Sessions carrying `identityKey` (`"cto"` or
-  `"agent:<id>"`) are filtered out of the Work tab list and rendered by
-  dedicated surfaces (CTO tab, worker detail). See [Agent Routing and
+- **Identity sessions.** Sessions carrying `identityKey` (now just
+  `"cto"`) are filtered out of the Work tab list and rendered by the
+  dedicated CTO tab. See [Agent Routing and
   Identity](agent-routing.md).
 - **Inline agent CLI install / auth.** When a chat targets a provider
   whose CLI (Claude, Codex, Cursor, Droid) is missing or
@@ -613,10 +613,11 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   `interrupt()` calls. Missing the guard yields duplicate
   `subagent_result` or `error` events. See `interrupted` flag in
   `ClaudeChatRuntimeState`.
-- **Claude post-compaction identity re-injection.** When a CTO or worker
+- **Claude post-compaction identity re-injection.** When the CTO
   identity session undergoes context compaction, the service calls
-  `refreshReconstructionContext()` to re-inject persona and continuity
-  protocols. Missing this path loses CTO identity mid-session.
+  `refreshReconstructionContext()` to re-inject persona, durable memory,
+  and continuity protocols. Missing this path loses CTO identity and
+  memory mid-session. See [CTO](../cto/README.md#flush-and-injection-lifecycle).
 - **Transcript persistence.** Sessions persist version-2 state under the
   `.ade` layout. Re-derivation goes through `sessionRecovery.ts`;
   changing the on-disk format without bumping the version silently
@@ -628,10 +629,9 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   the state shape changes. The cleanup path must tolerate lanes that
   were already deleted.
 - **Identity session filtering.** `listSessions` with
-  `includeIdentity: true` is the only way to surface CTO and worker
-  chats. Regular renderer surfaces pass `undefined` to exclude them;
-  CTO and worker pages pass `true`. Double-check when wiring new chat
-  lists.
+  `includeIdentity: true` is the only way to surface CTO chats. Regular
+  renderer surfaces pass `undefined` to exclude them; the CTO page
+  passes `true`. Double-check when wiring new chat lists.
 - **OpenCode passive vs. active inventory reads.** `loadAvailableModels`
   for `provider: "opencode"` no longer unconditionally starts a probe
   server. A passive call (the default for Settings page mounts, model
@@ -691,8 +691,8 @@ config service):
 
 ## Related docs
 
-- [Agents README](../agents/README.md) -- CTO and worker identities,
-  persona overlays, tool policy.
+- [Agents README](../agents/README.md) -- the CTO identity, persona
+  overlays, and tool policy.
 - [History README](../history/README.md) -- chat sessions are not
   recorded in the operations timeline, but the turns that cause git
   state changes (lane creation, PR creation, commits) are.

@@ -5,6 +5,9 @@ import path from "node:path";
 import { query, startup } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
+import { openKvDb } from "../state/kvDb";
+import { createCtoStateService } from "../cto/ctoStateService";
+import { createCtoMemoryService } from "../cto/ctoMemoryService";
 import {
   clearOpenCodeInventoryCache,
   peekOpenCodeInventoryCache,
@@ -1224,6 +1227,7 @@ function createMockSessionService() {
     updateMeta: vi.fn((args: any) => {
       const row = sessions.get(args.sessionId);
       if (row) {
+        if (typeof args.laneId === "string" && args.laneId.trim().length) row.laneId = args.laneId.trim();
         if (args.title !== undefined) row.title = args.title;
         if (args.goal !== undefined) row.goal = args.goal;
         if (args.manuallyNamed !== undefined) row.manuallyNamed = args.manuallyNamed;
@@ -4100,7 +4104,10 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("full-auto");
     });
 
-    it("does not reuse a foreign-lane identity session or auto-close it during migration", async () => {
+    it("reuses a foreign-lane CTO session and rebinds it onto the canonical lane", async () => {
+      // The CTO is a single project-level thread (D5): a session left on a
+      // non-canonical lane must be reused and rebound to the canonical lane
+      // rather than forking a second parallel thread.
       const { service, sessionService } = createService();
 
       const legacy = await service.createSession({
@@ -4116,8 +4123,9 @@ describe("createAgentChatService", () => {
         laneId: "lane-2",
       });
 
-      expect(canonical.id).not.toBe(legacy.id);
+      expect(canonical.id).toBe(legacy.id);
       expect(canonical.laneId).toBe("lane-1");
+      expect(sessionService.get(legacy.id)?.laneId).toBe("lane-1");
       expect(sessionService.get(legacy.id)?.status).not.toBe("ended");
 
       const reused = await service.ensureIdentitySession({
@@ -4142,24 +4150,6 @@ describe("createAgentChatService", () => {
         laneId: "lane-2",
       });
 
-      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
-    });
-
-    it("pins worker identity execution state to the primary lane", async () => {
-      vi.mocked(runGit).mockImplementation(async (_args, opts) => ({
-        stdout: String(opts?.cwd ?? "").includes(path.join(tmpRoot, "lane-2")) ? "lane-2-sha\n" : "lane-1-sha\n",
-        stderr: "",
-        exitCode: 0,
-      }));
-
-      const { service, sessionService } = createService();
-      const session = await service.ensureIdentitySession({
-        identityKey: "agent:worker-1",
-        laneId: "lane-2",
-      });
-
-      expect(session.laneId).toBe("lane-1");
-      expect(session.permissionMode).toBe("full-auto");
       expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
     });
 
@@ -4188,7 +4178,7 @@ describe("createAgentChatService", () => {
       expect(session.interactionMode).not.toBe("plan");
     });
 
-    it("ignores native codex permission overrides for worker identities on create", async () => {
+    it("ignores native codex permission overrides for the CTO identity on create", async () => {
       // Locally map modes so full-auto => danger-full-access / never and the
       // default mapping (used when no permissionMode is passed) stays on the
       // on-request / read-only baseline. This lets us prove the IPC-provided
@@ -4206,7 +4196,7 @@ describe("createAgentChatService", () => {
         provider: "codex",
         model: "gpt-5-codex",
         modelId: "gpt-5-codex",
-        identityKey: "agent:worker-1",
+        identityKey: "cto",
         codexApprovalPolicy: "untrusted",
         codexSandbox: "read-only",
       });
@@ -4243,6 +4233,63 @@ describe("createAgentChatService", () => {
       }
       expect(updated.codexApprovalPolicy).not.toBe("untrusted");
       expect(updated.codexSandbox).not.toBe("read-only");
+    });
+  });
+
+  describe("CTO memory + model-switch-safe thread", () => {
+    async function createCtoServices() {
+      const adeDir = path.join(tmpRoot, ".ade");
+      fs.mkdirSync(adeDir, { recursive: true });
+      const db = await openKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
+      const ctoMemoryService = createCtoMemoryService({ adeDir });
+      const ctoStateService = createCtoStateService({
+        db,
+        projectId: "project-test",
+        adeDir,
+        ctoMemoryService,
+      });
+      return { db, ctoStateService, ctoMemoryService };
+    }
+
+    it("persists a CTO model switch back into identity model preferences (D3)", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "opencode/openai/gpt-5.2",
+      });
+
+      const prefs = ctoStateService.getIdentity().modelPreferences;
+      expect(prefs.modelId).toBe("opencode/openai/gpt-5.2");
+      expect(prefs.provider).toBe("opencode");
+
+      db.close();
+    });
+
+    it("injects durable memory into the CTO reconstruction context", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      ctoMemoryService.appendMemoryFact("The build long-pole is the Windows runner.");
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      // ensureIdentitySession refreshes the reconstruction context; the durable
+      // memory fact must be present so it survives a fresh provider thread.
+      const reconstruction = ctoStateService.buildReconstructionContext(8);
+      expect(reconstruction).toContain("Durable memory (MEMORY.md)");
+      expect(reconstruction).toContain("The build long-pole is the Windows runner.");
+      expect(session.identityKey).toBe("cto");
+
+      db.close();
     });
   });
 

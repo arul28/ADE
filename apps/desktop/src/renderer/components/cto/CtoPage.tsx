@@ -1,141 +1,73 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ChatCircle,
-  Gear,
-  GitBranch,
-  UsersThree,
-} from "@phosphor-icons/react";
+import { Gear, X } from "@phosphor-icons/react";
 import type {
-  AgentBudgetSnapshot,
   AgentChatSession,
-  AgentConfigRevision,
-  AgentIdentity,
-  AgentSessionLogEntry,
+  AgentChatSessionSummary,
+  ChatSurfacePresentation,
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
-  AgentStatus,
-  AgentChatSessionSummary,
-  ChatSurfacePresentation,
-  HeartbeatPolicy,
-  WorkerAgentRun,
 } from "../../../shared/types";
 import { AgentChatPane } from "../chat/AgentChatPane";
 import { useAppStore } from "../../state/appStore";
-import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-import { AgentSidebar } from "./AgentSidebar";
-import { WorkerDetailPanel, WorkerEditorPanel, workerDraftFromAgent } from "./TeamPanel";
-import type { WorkerEditorDraft } from "./TeamPanel";
-import { LinearSyncPanel } from "./LinearSyncPanel";
+import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { CtoSettingsPanel } from "./CtoSettingsPanel";
-import { OnboardingWizard } from "./OnboardingWizard";
-import { OnboardingBanner } from "./OnboardingBanner";
-import { WorkerCreationWizard } from "./WorkerCreationWizard";
-import { shellBodyCls } from "./shared/designTokens";
-import { SmartTooltip } from "../ui/SmartTooltip";
+import { CtoOnboardingCard } from "./CtoOnboardingCard";
+import { getCtoPersonalityPreset } from "./identityPresets";
+import { getPersonalityTheme } from "./personalityTheme";
+import { resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
+import { shellBodyCls } from "./shared/designTokens";
 
-/* ── Tab types ── */
+const CTO_ACCENT = "#22D3EE";
+const MAX_WAKING_RETRIES = 4;
 
-type TabId = "chat" | "team" | "workflows" | "settings";
-
-const TABS: { id: TabId; label: string; icon: React.ElementType; color: string; tooltip: string }[] = [
-  { id: "chat", label: "Chat", icon: ChatCircle, color: "#A78BFA", tooltip: "Chat directly with the CTO or a selected worker." },
-  { id: "team", label: "Team", icon: UsersThree, color: "#60A5FA", tooltip: "Manage workers — hire, configure, and monitor your AI team." },
-  { id: "workflows", label: "Workflows", icon: GitBranch, color: "#34D399", tooltip: "Automated pipelines that route Linear issues to workers." },
-  { id: "settings", label: "Settings", icon: Gear, color: "#F472B6", tooltip: "CTO identity, project brief, and integration settings." },
-];
-
-const CTO_PRIMARY_SESSION_CACHE_KEY = "__cto_primary__";
-const ctoChatSessionCacheByScope = new Map<string, AgentChatSession>();
-
-function ctoChatSessionCacheKey(agentId: string | null): string {
-  return agentId ?? CTO_PRIMARY_SESSION_CACHE_KEY;
-}
-
-function splitTrimmed(value: string): string[] {
-  return value
-    .split(",")
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-}
-
-function statusDotCls(status: AgentStatus): string {
-  switch (status) {
-    case "running": return "bg-info animate-pulse";
-    case "active": return "bg-success";
-    case "paused": return "bg-warning";
-    default: return "bg-muted-fg/40";
-  }
-}
-
-/* ── Main Page ── */
+// The CTO is a single project-level thread. There is only ever one session; the
+// module-level cache keeps it warm across tab switches so re-entry is instant.
+let ctoPrimarySession: AgentChatSession | null = null;
 
 export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const lanes = useAppStore((s) => s.lanes);
 
-  const [activeTab, setActiveTab] = useState<TabId>("chat");
-  const [session, setSession] = useState<AgentChatSession | null>(
-    () => ctoChatSessionCacheByScope.get(ctoChatSessionCacheKey(null)) ?? null,
-  );
-  const [loading, setLoading] = useState(false);
+  const [session, setSession] = useState<AgentChatSession | null>(() => ctoPrimarySession);
   const [error, setError] = useState<string | null>(null);
-
   const [ctoIdentity, setCtoIdentity] = useState<CtoIdentity | null>(null);
   const [sessionLogs, setSessionLogs] = useState<CtoSessionLogEntry[]>([]);
-
-  // Onboarding state
   const [onboardingState, setOnboardingState] = useState<CtoOnboardingState | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [switchingModel, setSwitchingModel] = useState(false);
 
-  const [agents, setAgents] = useState<AgentIdentity[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [revisions, setRevisions] = useState<AgentConfigRevision[]>([]);
-  const [budgetSnapshot, setBudgetSnapshot] = useState<AgentBudgetSnapshot | null>(null);
-  const [workerSessionLogs, setWorkerSessionLogs] = useState<AgentSessionLogEntry[]>([]);
-  const [workerRuns, setWorkerRuns] = useState<WorkerAgentRun[]>([]);
-  const [workerOpsError, setWorkerOpsError] = useState<string | null>(null);
-  const [workerWakeStatus, setWorkerWakeStatus] = useState<string | null>(null);
-  const [workerWakeError, setWorkerWakeError] = useState<string | null>(null);
-  const [wakingWorker, setWakingWorker] = useState(false);
-  const [budgetLoading, setBudgetLoading] = useState(false);
+  const historyLoadedRef = useRef(false);
+  const wakingRetriesRef = useRef(0);
 
-  // Worker creation wizard
-  const [showWorkerWizard, setShowWorkerWizard] = useState(false);
-
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [workerDraft, setWorkerDraft] = useState<WorkerEditorDraft>(workerDraftFromAgent(null));
-  const [savingWorker, setSavingWorker] = useState(false);
-  const [workerError, setWorkerError] = useState<string | null>(null);
-  const ctoHistoryLoadedRef = useRef(false);
-  const lastBudgetLoadAtRef = useRef(0);
-  const ctoDisplayName = "CTO";
+  const { availableModelIds, loadingModels, openProviderSettings } = useCtoModelOptions();
 
   const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
-  const selectedWorker = useMemo(
-    () => (selectedAgentId ? agents.find((a) => a.id === selectedAgentId) ?? null : null),
-    [agents, selectedAgentId],
-  );
-
   const onboardingComplete = Boolean(onboardingState?.completedAt)
     || Boolean(onboardingState?.completedSteps.includes("identity"));
+  const needsOnboarding = Boolean(
+    onboardingState && !onboardingComplete && !onboardingState.dismissedAt,
+  );
+  const onboardingVisible = showOnboarding || needsOnboarding;
 
-  // Onboarding detection
-  const needsOnboarding = onboardingState
-    && !onboardingComplete
-    && !onboardingState.dismissedAt;
+  const ctoDisplayName = ctoIdentity?.name?.trim() || "CTO";
+  const personality = ctoIdentity?.personality ?? "strategic";
+  const theme = getPersonalityTheme(personality);
+  const personalityLabel = getCtoPersonalityPreset(personality).label;
 
-  const showBanner = onboardingState
-    && !needsOnboarding
-    && !onboardingComplete
-    && Boolean(onboardingState.dismissedAt)
-    && !showOnboarding;
+  const currentModelId = session?.modelId
+    ?? ctoIdentity?.modelPreferences.modelId
+    ?? "";
+  const currentReasoningEffort = session?.reasoningEffort
+    ?? ctoIdentity?.modelPreferences.reasoningEffort
+    ?? null;
 
   /* ── Data loading ── */
 
-  const loadCtoSummary = useCallback(async () => {
+  const loadSummary = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
       const [snapshot, obState] = await Promise.all([
@@ -144,338 +76,136 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       ]);
       setCtoIdentity(snapshot.identity);
       setOnboardingState(obState);
-      if (!obState.completedAt && !obState.completedSteps.includes("identity") && !obState.dismissedAt) {
-        setShowOnboarding(true);
-      }
-    } catch { /* non-fatal */ }
+    } catch {
+      // Non-fatal: keep the waking state and let the session/lane effects retry.
+      setOnboardingState((prev) => prev ?? { completedSteps: [] });
+    }
   }, []);
 
-  const loadCtoHistory = useCallback(async () => {
+  const loadHistory = useCallback(async () => {
     if (!window.ade?.cto) return;
     try {
       const snapshot = await window.ade.cto.getState({ recentLimit: 20 });
       setCtoIdentity(snapshot.identity);
       setSessionLogs(snapshot.recentSessions);
-      ctoHistoryLoadedRef.current = true;
+      historyLoadedRef.current = true;
     } catch {
       // non-fatal
     }
   }, []);
 
-  const loadAgents = useCallback(async () => {
-    if (!window.ade?.cto) return;
-    try {
-      const nextAgents = await window.ade.cto.listAgents({ includeDeleted: false });
-      setAgents(nextAgents);
-      if (selectedAgentId && !nextAgents.some((a) => a.id === selectedAgentId)) {
-        setSelectedAgentId(null);
-      }
-    } catch { /* non-fatal */ }
-  }, [selectedAgentId]);
-
-  const loadBudgetSnapshot = useCallback(async (options?: { force?: boolean }) => {
-    if (!window.ade?.cto || budgetLoading) return;
-    const now = Date.now();
-    if (!options?.force && budgetSnapshot && now - lastBudgetLoadAtRef.current < 30_000) {
-      return;
-    }
-    setBudgetLoading(true);
-    try {
-      const nextBudget = await window.ade.cto.getBudgetSnapshot({});
-      setBudgetSnapshot(nextBudget);
-      lastBudgetLoadAtRef.current = Date.now();
-    } catch {
-      // non-fatal
-    } finally {
-      setBudgetLoading(false);
-    }
-  }, [budgetLoading, budgetSnapshot]);
-
   useEffect(() => {
     if (!active) return;
-    void loadCtoSummary();
-  }, [active, loadCtoSummary]);
+    void loadSummary();
+  }, [active, loadSummary]);
 
   useEffect(() => {
-    if (!active) return;
-    if (!onboardingState || needsOnboarding) return;
-    void loadAgents();
-  }, [active, loadAgents, needsOnboarding, onboardingState]);
+    if (!active || !settingsOpen || historyLoadedRef.current) return;
+    void loadHistory();
+  }, [active, settingsOpen, loadHistory]);
 
+  // Ensure the persistent session. Re-runs when the primary lane hydrates (D6
+  // race) so a slow lanes store shows the waking state, never an error card.
   useEffect(() => {
-    if (!active) return;
-    if (!onboardingState || needsOnboarding) return;
-    if (activeTab !== "team" && activeTab !== "settings") return;
+    if (!active || !window.ade?.cto) return;
+    if (!onboardingState || onboardingVisible || !primaryLaneId) return;
+
     let cancelled = false;
-    const timer = window.setTimeout(() => {
-      if (!cancelled) {
-        void loadBudgetSnapshot();
-      }
-    }, 900);
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    if (ctoPrimarySession) setSession(ctoPrimarySession);
+    setError(null);
+
+    const attempt = () => {
+      void window.ade.cto!.ensureSession()
+        .then((next) => {
+          if (cancelled) return;
+          ctoPrimarySession = next;
+          wakingRetriesRef.current = 0;
+          setSession(next);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          if (wakingRetriesRef.current < MAX_WAKING_RETRIES) {
+            wakingRetriesRef.current += 1;
+            retryTimer = setTimeout(attempt, 800);
+          } else {
+            setError(err instanceof Error ? err.message : String(err));
+          }
+        });
+    };
+    attempt();
+
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, activeTab, loadBudgetSnapshot, needsOnboarding, onboardingState]);
-
-  useEffect(() => {
-    if (!active) return;
-    if ((activeTab !== "team" && activeTab !== "settings") || ctoHistoryLoadedRef.current) return;
-    void loadCtoHistory();
-  }, [active, activeTab, loadCtoHistory]);
-
-  // Load revisions when worker selected
-  useEffect(() => {
-    if (!active) return;
-    if (!window.ade?.cto || !selectedAgentId) { setRevisions([]); return; }
-    if (activeTab !== "team") return;
-    void window.ade.cto.listAgentRevisions({ agentId: selectedAgentId, limit: 20 }).then(setRevisions).catch(() => setRevisions([]));
-  }, [active, activeTab, selectedAgentId]);
-
-  // Load worker details when selected
-  useEffect(() => {
-    if (!active) return;
-    if (!window.ade?.cto || !selectedAgentId) {
-      setWorkerSessionLogs([]); setWorkerRuns([]);
-      setWorkerOpsError(null); setWorkerWakeStatus(null); setWorkerWakeError(null);
-      return;
-    }
-    if (activeTab !== "team") return;
-    let cancelled = false;
-    void Promise.all([
-      window.ade.cto.listAgentSessionLogs({ agentId: selectedAgentId, limit: 20 }),
-      window.ade.cto.listAgentRuns({ agentId: selectedAgentId, limit: 20 }),
-    ]).then(([sessions, runs]) => {
-      if (cancelled) return;
-      setWorkerSessionLogs(sessions); setWorkerRuns(runs); setWorkerOpsError(null);
-    }).catch((err) => {
-      if (cancelled) return;
-      setWorkerOpsError(err instanceof Error ? err.message : "Failed to load.");
-      setWorkerSessionLogs([]); setWorkerRuns([]);
-    });
-    return () => { cancelled = true; };
-  }, [active, activeTab, selectedAgentId]);
-
-  // Establish chat session
-  useEffect(() => {
-    if (!active) return;
-    if (activeTab !== "chat") {
-      setLoading(false);
-      return;
-    }
-    if (!window.ade?.cto) {
-      setLoading(false);
-      setError("CTO bridge is unavailable.");
-      setSession(null);
-      return;
-    }
-    if (!onboardingState || showOnboarding || needsOnboarding) {
-      setLoading(false);
-      setSession(null);
-      return;
-    }
-    if (!primaryLaneId) { setSession(null); return; }
-    let cancelled = false;
-    const sessionCacheKey = ctoChatSessionCacheKey(selectedAgentId);
-    const cachedSession = ctoChatSessionCacheByScope.get(sessionCacheKey) ?? null;
-    if (cachedSession) {
-      setSession(cachedSession);
-    } else {
-      setSession(null);
-    }
-    setLoading(!cachedSession); setError(null);
-    const promise = selectedAgentId
-      ? window.ade.cto.ensureAgentSession({ agentId: selectedAgentId })
-      : window.ade.cto.ensureSession();
-    void promise
-      .then((next) => {
-        ctoChatSessionCacheByScope.set(sessionCacheKey, next);
-        if (!cancelled) setSession(next);
-      })
-      .catch((err) => { if (!cancelled) { setError(err instanceof Error ? err.message : String(err)); setSession(null); } })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [active, activeTab, needsOnboarding, onboardingState, primaryLaneId, selectedAgentId, showOnboarding]);
-
-  // Deep links for guided setup flows
-  useEffect(() => {
-    if (!active) return;
-    const syncHash = () => {
-      const hash = window.location.hash.toLowerCase();
-      if (hash.includes("linear-sync")) {
-        setActiveTab("workflows");
-      } else if (hash.includes("team-setup")) {
-        setActiveTab("team");
-      }
-    };
-    syncHash();
-    window.addEventListener("hashchange", syncHash);
-    return () => window.removeEventListener("hashchange", syncHash);
-  }, [active]);
-
-  useEffect(() => {
-    console.info(`renderer.tab_change ${JSON.stringify({
-      page: "cto",
-      tab: activeTab,
-      workerId: selectedAgentId,
-    })}`);
-  }, [activeTab, selectedAgentId]);
+  }, [active, onboardingState, onboardingVisible, primaryLaneId]);
 
   /* ── Callbacks ── */
 
-  const refreshPersistentCtoSession = useCallback(async () => {
-    if (!window.ade?.cto || !primaryLaneId || showOnboarding || needsOnboarding) {
-      return null;
-    }
+  const refreshSession = useCallback(async () => {
+    if (!window.ade?.cto || !primaryLaneId || onboardingVisible) return null;
     const next = await window.ade.cto.ensureSession();
-    if (!selectedAgentId) {
-      setSession(next);
-    }
+    ctoPrimarySession = next;
+    setSession(next);
     return next;
-  }, [needsOnboarding, primaryLaneId, selectedAgentId, showOnboarding]);
+  }, [onboardingVisible, primaryLaneId]);
 
-  const handleSaveCtoIdentity = useCallback(async (patch: Record<string, unknown>) => {
-    if (!window.ade?.cto) throw new Error("CTO bridge unavailable.");
+  const handleSaveIdentity = useCallback(async (patch: Record<string, unknown>) => {
+    if (!window.ade?.cto) throw new Error("The CTO isn't available right now.");
     const snapshot = await window.ade.cto.updateIdentity({ patch });
     setCtoIdentity(snapshot.identity);
-    await refreshPersistentCtoSession();
-  }, [refreshPersistentCtoSession]);
+    await refreshSession();
+  }, [refreshSession]);
 
-
-  const saveWorker = useCallback(async () => {
-    if (!window.ade?.cto) return;
-    setSavingWorker(true); setWorkerError(null);
+  // One switch path for both the header badge and the Settings model row. With a
+  // live session it moves the running thread via updateSession (the composer's
+  // path, which also persists the choice into identity prefs). Before the session
+  // exists it writes identity prefs so ensureSession reconciles the model in.
+  const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
+    if (!window.ade?.cto || switchingModel) return;
+    const selection = resolveModelSelection(modelId, reasoningEffort);
+    if (!selection) return;
+    setSwitchingModel(true);
+    setError(null);
     try {
-      const at = workerDraft.adapterType;
-      const adapterConfig: Record<string, unknown> =
-        at === "process"
-            ? { command: workerDraft.processCommand }
-            : { ...(workerDraft.model.trim() ? { model: workerDraft.model.trim() } : {}) };
-
-      const heartbeat: HeartbeatPolicy = {
-        enabled: workerDraft.heartbeatEnabled,
-        intervalSec: Math.max(0, Math.floor(workerDraft.heartbeatIntervalSec)),
-        wakeOnDemand: workerDraft.wakeOnDemand,
-        ...(workerDraft.activeHoursEnabled
-          ? { activeHours: { start: workerDraft.activeHoursStart.trim() || "09:00", end: workerDraft.activeHoursEnd.trim() || "22:00", timezone: workerDraft.activeHoursTimezone.trim() || "local" } }
-          : {}),
-      };
-
-      await window.ade.cto.saveAgent({
-        agent: {
-          ...(workerDraft.id ? { id: workerDraft.id } : {}),
-          name: workerDraft.name,
-          role: workerDraft.role,
-          ...(workerDraft.title.trim() ? { title: workerDraft.title.trim() } : {}),
-          reportsTo: workerDraft.reportsTo.trim() || null,
-          capabilities: workerDraft.capabilities.split(",").map((s) => s.trim()).filter(Boolean),
-          adapterType: at,
-          adapterConfig,
-          runtimeConfig: {
-            heartbeat,
-            maxConcurrentRuns: Math.max(1, Math.min(10, Math.floor(workerDraft.maxConcurrentRuns || 1))),
+      if (session) {
+        const updated = await window.ade.agentChat.updateSession({
+          sessionId: session.id,
+          modelId: selection.modelId,
+          reasoningEffort: selection.reasoningEffort,
+        });
+        ctoPrimarySession = updated;
+        setSession(updated);
+      } else {
+        await window.ade.cto.updateIdentity({
+          patch: {
+            modelPreferences: {
+              provider: selection.provider,
+              model: selection.model,
+              modelId: selection.modelId,
+              reasoningEffort: selection.reasoningEffort,
+            },
           },
-          ...(
-            splitTrimmed(workerDraft.linearUserIds).length
-            || splitTrimmed(workerDraft.linearDisplayNames).length
-            || splitTrimmed(workerDraft.linearAliases).length
-              ? {
-                  linearIdentity: {
-                    userIds: splitTrimmed(workerDraft.linearUserIds),
-                    displayNames: splitTrimmed(workerDraft.linearDisplayNames),
-                    aliases: splitTrimmed(workerDraft.linearAliases),
-                  },
-                }
-              : {}
-          ),
-          budgetMonthlyCents: Math.max(0, Math.round(workerDraft.budgetDollars * 100)),
-        },
-      });
-      setEditorOpen(false);
-      await loadAgents();
-      await loadBudgetSnapshot({ force: true });
+        });
+        await refreshSession();
+      }
+      const snap = await window.ade.cto.getState({ recentLimit: 0 });
+      setCtoIdentity(snap.identity);
     } catch (err) {
-      setWorkerError(err instanceof Error ? err.message : "Failed to save worker.");
+      setError(err instanceof Error ? err.message : "Couldn't switch the model.");
     } finally {
-      setSavingWorker(false);
+      setSwitchingModel(false);
     }
-  }, [loadAgents, loadBudgetSnapshot, workerDraft]);
-
-  const removeWorker = useCallback(async (agentId: string) => {
-    if (!window.ade?.cto) return;
-    await window.ade.cto.removeAgent({ agentId });
-    if (selectedAgentId === agentId) {
-      setSelectedAgentId(null);
-    }
-    await loadAgents();
-    await loadBudgetSnapshot({ force: true });
-  }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
-
-  const setSelectedWorkerStatus = useCallback(async (status: AgentStatus) => {
-    if (!window.ade?.cto || !selectedAgentId) return;
-    await window.ade.cto.setAgentStatus({ agentId: selectedAgentId, status });
-    await loadAgents();
-    await loadBudgetSnapshot({ force: true });
-  }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
-
-  const rollbackRevision = useCallback(async (revisionId: string) => {
-    if (!window.ade?.cto || !selectedAgentId) return;
-    await window.ade.cto.rollbackAgentRevision({ agentId: selectedAgentId, revisionId });
-    await loadAgents();
-    await loadBudgetSnapshot({ force: true });
-    const next = await window.ade.cto.listAgentRevisions({ agentId: selectedAgentId, limit: 20 });
-    setRevisions(next);
-  }, [loadAgents, loadBudgetSnapshot, selectedAgentId]);
-
-  const wakeWorker = useCallback(async (workerId: string) => {
-    if (!window.ade?.cto || !workerId) return;
-    setWakingWorker(true); setWorkerWakeError(null);
-    try {
-      const wake = await window.ade.cto.triggerAgentWakeup({ agentId: workerId, reason: "manual", context: { source: "cto_ui" } });
-      setWorkerWakeStatus(`Wake: ${wake.status}`);
-      const nextRuns = await window.ade.cto.listAgentRuns({ agentId: workerId, limit: 20 });
-      setWorkerRuns(nextRuns);
-    } catch (err) {
-      setWorkerWakeError(err instanceof Error ? err.message : "Failed to wake worker.");
-    } finally {
-      setWakingWorker(false);
-    }
-  }, []);
-
-  const wakeSelectedWorker = useCallback(async () => {
-    if (!selectedAgentId) return;
-    await wakeWorker(selectedAgentId);
-  }, [selectedAgentId, wakeWorker]);
-
-  const handleHireWorker = useCallback(() => {
-    setShowWorkerWizard(true);
-    setActiveTab("team");
-  }, []);
-
-  const handleEditWorker = useCallback((worker: AgentIdentity | null = selectedWorker) => {
-    if (!worker) return;
-    setSelectedAgentId(worker.id);
-    setWorkerDraft(workerDraftFromAgent(worker));
-    setWorkerError(null);
-    setEditorOpen(true);
-  }, [selectedWorker]);
+  }, [refreshSession, session, switchingModel]);
 
   const handleOnboardingComplete = useCallback(async () => {
-    const completedAt = new Date().toISOString();
-    setOnboardingState((current) => ({
-      completedSteps: Array.from(new Set([...(current?.completedSteps ?? []), "identity"])),
-      completedAt: current?.completedAt ?? completedAt,
-      dismissedAt: current?.dismissedAt,
-    }));
     setShowOnboarding(false);
-    try {
-      await loadCtoSummary();
-    } catch {
-      // Keep the local optimistic state even if the refresh fails.
-    }
-  }, [loadCtoSummary]);
+    await loadSummary();
+  }, [loadSummary]);
 
-  const handleDismissOnboarding = useCallback(async () => {
+  const handleOnboardingSkip = useCallback(async () => {
     const dismissedAt = new Date().toISOString();
     setOnboardingState((current) => ({
       completedSteps: current?.completedSteps ?? [],
@@ -486,18 +216,19 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     if (!window.ade?.cto) return;
     try {
       await window.ade.cto.dismissOnboarding();
-      await loadCtoSummary();
+      await loadSummary();
     } catch {
-      // Let the user continue even if persistence or refresh fails.
+      // Let the user continue even if persistence fails.
     }
-  }, [loadCtoSummary]);
+  }, [loadSummary]);
 
   const handleResetOnboarding = useCallback(async () => {
     if (!window.ade?.cto) return;
+    setSettingsOpen(false);
     await window.ade.cto.resetOnboarding();
     setShowOnboarding(true);
-    await loadCtoSummary();
-  }, [loadCtoSummary]);
+    await loadSummary();
+  }, [loadSummary]);
 
   const lockedSessionSummary = useMemo<AgentChatSessionSummary | null>(() => {
     if (!session) return null;
@@ -524,354 +255,191 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     };
   }, [session]);
 
-  /* ── Render ── */
-
-  const persistentIdentityPresentation = useMemo<ChatSurfacePresentation>(() => ({
+  const presentation = useMemo<ChatSurfacePresentation>(() => ({
     mode: "standard",
     profile: "persistent_identity",
-    modelSwitchPolicy: selectedWorker ? "same-family-after-launch" : "any-after-launch",
-    title: selectedWorker ? selectedWorker.name : ctoDisplayName,
-    subtitle: selectedWorker
-      ? "Persistent employee session with same-family model switching."
-      : "Your persistent CTO identity for this project. ADE restores continuity across compaction and fresh session resumes.",
-    accentColor: selectedWorker ? "#60A5FA" : "#22D3EE",
+    title: ctoDisplayName,
+    subtitle: "Your persistent CTO for this project. It keeps its memory across model switches and compaction.",
+    accentColor: CTO_ACCENT,
     chips: [],
     showMcpStatus: false,
-    assistantLabel: selectedWorker ? selectedWorker.name : ctoDisplayName,
-    messagePlaceholder: selectedWorker ? `Message ${selectedWorker.name}...` : "Message the CTO...",
-  }), [ctoDisplayName, selectedWorker]);
+    assistantLabel: ctoDisplayName,
+    messagePlaceholder: `Message ${ctoDisplayName}…`,
+  }), [ctoDisplayName]);
 
-  const sidebarCtoModelInfo = useMemo(
-    () => (
-      ctoIdentity
-        ? {
-          provider: ctoIdentity.modelPreferences.provider,
-          model: ctoIdentity.modelPreferences.model,
-        }
-        : null
-    ),
-    [ctoIdentity],
-  );
+  /* ── Render ── */
 
-  const handleSelectSidebarAgent = useCallback((id: string) => {
-    setSelectedAgentId(id);
-  }, []);
+  const bridgeMissing = active && typeof window !== "undefined" && !window.ade?.cto;
 
-  const handleSelectSidebarCto = useCallback(() => {
-    setSelectedAgentId(null);
-    setActiveTab("chat");
-  }, []);
+  // First-run: a single setup card owns the whole surface.
+  if (!bridgeMissing && onboardingVisible && onboardingState) {
+    return (
+      <div className={cn(shellBodyCls, "flex-col")}>
+        <CtoOnboardingCard onComplete={handleOnboardingComplete} onSkip={handleOnboardingSkip} />
+      </div>
+    );
+  }
 
-  const currentBrainSummary = useMemo(() => {
-    if (session) return [session.provider, session.model].filter(Boolean).join(" / ");
-    if (selectedWorker) {
-      const workerModel = String((selectedWorker.adapterConfig as { model?: string } | null)?.model ?? "adaptive");
-      return [selectedWorker.adapterType, workerModel].join(" / ");
-    }
-    return [ctoIdentity?.modelPreferences.provider, ctoIdentity?.modelPreferences.model].filter(Boolean).join(" / ");
-  }, [ctoIdentity?.modelPreferences.model, ctoIdentity?.modelPreferences.provider, selectedWorker, session]);
-
-  const pageTitle = selectedWorker ? selectedWorker.name : ctoDisplayName;
+  const avatarInitial = ctoDisplayName.charAt(0).toUpperCase();
+  const sessionReady = Boolean(session) && Boolean(primaryLaneId);
 
   return (
-    <div className={shellBodyCls}>
-      {/* Onboarding wizard overlay */}
-      {showOnboarding && (
-        <OnboardingWizard
-          onComplete={handleOnboardingComplete}
-          onSkip={handleDismissOnboarding}
-        />
-      )}
+    <div className={cn(shellBodyCls, "relative flex-col")}>
+      {/* Header */}
+      <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[11px] font-bold"
+            style={{
+              background: `rgba(${theme.rgb}, 0.14)`,
+              border: `1px solid rgba(${theme.rgb}, 0.32)`,
+              color: theme.hex,
+            }}
+          >
+            {avatarInitial}
+          </div>
+          <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
+          <span
+            className="hidden shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium sm:inline"
+            style={{ background: `rgba(${theme.rgb}, 0.12)`, color: theme.hex }}
+          >
+            {personalityLabel}
+          </span>
+        </div>
 
-      {/* Agent sidebar */}
-      {/* Stable automation anchor — wraps AgentSidebar so data-tour attaches to a stable container */}
-      <div data-tour="cto.sidebar" style={{ display: "contents" }}>
-      <AgentSidebar
-        agents={agents}
-        selectedAgentId={selectedAgentId}
-        onSelectAgent={handleSelectSidebarAgent}
-        onSelectCto={handleSelectSidebarCto}
-        isCtoSelected={!selectedAgentId}
-        budgetSnapshot={budgetSnapshot}
-        onHireWorker={handleHireWorker}
-        ctoModelInfo={sidebarCtoModelInfo}
-      />
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          {currentModelId ? (
+            <ModelPicker
+              value={currentModelId}
+              availableModelIds={availableModelIds}
+              surfaceKey="cto-header"
+              compact
+              disabled={switchingModel}
+              onChange={(modelId) => {
+                const selection = resolveModelSelection(modelId, currentReasoningEffort);
+                void handleModelChange(modelId, selection?.reasoningEffort ?? null);
+              }}
+              onOpenSignIn={openProviderSettings}
+            />
+          ) : null}
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            aria-label="CTO settings"
+            className={cn(
+              "flex h-7 w-7 items-center justify-center rounded-lg border transition-colors",
+              settingsOpen
+                ? "border-white/15 bg-white/[0.06] text-fg"
+                : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",
+            )}
+          >
+            <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
+          </button>
+        </div>
       </div>
 
-      {/* Main content */}
-      <div className="flex flex-1 flex-col min-w-0 min-h-0">
-        {/* Onboarding banner */}
-        {showBanner && (
-          <OnboardingBanner
-            onContinue={() => setShowOnboarding(true)}
-            onDismiss={handleDismissOnboarding}
+      {/* Thread / waking */}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {bridgeMissing ? (
+          <WakingState theme={theme} title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
+        ) : sessionReady && lockedSessionSummary && primaryLaneId ? (
+          <AgentChatPane
+            laneId={primaryLaneId}
+            lockSessionId={session?.id ?? null}
+            initialSessionSummary={lockedSessionSummary}
+            hideSessionTabs
+            hideNativeControls
+            hideWorkspaceChrome
+            hideSurfaceHeader
+            presentation={presentation}
+          />
+        ) : error ? (
+          <WakingState theme={theme} title="Couldn't reach the CTO" subtitle={error} />
+        ) : (
+          <WakingState
+            theme={theme}
+            title="Waking the CTO"
+            subtitle="Restoring identity, memory, and recent context."
+            pulsing
           />
         )}
-
-        {/* Minimal single-row header */}
-        <div className="flex items-center gap-4 border-b border-white/[0.06] px-5 py-2.5">
-          {/* Left: Avatar + name */}
-          <div className="flex items-center gap-2.5 shrink-0">
-            <div
-              className="flex h-7 w-7 items-center justify-center rounded-lg border border-accent/20"
-              style={{ background: "var(--color-accent-muted)" }}
-            >
-              <span className="text-xs font-bold text-accent">
-                {pageTitle.charAt(0).toUpperCase()}
-              </span>
-            </div>
-            <span className="text-sm font-semibold text-fg">{pageTitle}</span>
-          </div>
-
-          {/* Center: Tab buttons */}
-          <div className="flex flex-1 items-center gap-1">
-            {TABS.map(({ id, label, icon: Icon, tooltip }) => {
-              const active = activeTab === id;
-              return (
-                <SmartTooltip key={id} content={{ label, description: tooltip }} side="bottom">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTab(id)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150",
-                      active
-                        ? "bg-accent/10 text-accent border border-accent/20"
-                        : "text-muted-fg/50 hover:text-muted-fg/80 hover:bg-white/[0.03] border border-transparent",
-                    )}
-                  >
-                    <Icon size={13} weight={active ? "fill" : "regular"} />
-                    {label}
-                  </button>
-                </SmartTooltip>
-              );
-            })}
-          </div>
-
-          {/* Right: Model badge */}
-          {currentBrainSummary ? (
-            <div className="shrink-0 rounded-md border border-white/[0.06] bg-white/[0.03] px-2.5 py-1 text-[10px] font-medium text-muted-fg/60">
-              {currentBrainSummary}
-            </div>
-          ) : null}
-        </div>
-
-        {/* Tab content */}
-        <div className="flex-1 min-h-0 overflow-hidden">
-          {/* Chat tab */}
-          <div className={cn("h-full min-h-0 flex-col p-4 pt-0", activeTab === "chat" ? "flex" : "hidden")}>
-            {loading && <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-loading">Connecting persistent session...</div>}
-            {error && <div className="px-1 py-2 text-xs text-error" data-testid="cto-error">{error}</div>}
-            {!primaryLaneId && (
-              <div className="px-1 py-2 text-xs text-muted-fg/55" data-testid="cto-no-lane">
-                ADE could not resolve the primary lane for the persistent CTO session.
-              </div>
-            )}
-
-            <div className="min-h-0 flex-1 overflow-hidden">
-              {showOnboarding || needsOnboarding ? (
-                <div
-                  className="flex h-full items-center justify-center rounded-[24px] border border-white/[0.07] p-6 text-center"
-                  style={{
-                    background: "radial-gradient(circle at top left, rgba(167,139,250,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
-                  }}
-                >
-                  <div className="max-w-sm space-y-3">
-                    <div className="text-sm font-semibold text-fg">Complete setup to unlock the CTO session</div>
-                    <div className="text-[12px] leading-6 text-muted-fg/42">
-                      ADE needs the identity and long-term brief before it can keep the CTO stable across compaction and chat resumes.
-                    </div>
-                    <Button variant="primary" onClick={() => setShowOnboarding(true)}>
-                      Continue setup
-                    </Button>
-                  </div>
-                </div>
-              ) : !session ? (
-                <div
-                  className="flex h-full items-center justify-center rounded-[24px] border border-white/[0.07] p-6 text-center"
-                  style={{
-                    background: "radial-gradient(circle at top left, rgba(167,139,250,0.08), transparent 26%), linear-gradient(180deg, rgba(13,18,27,0.88), rgba(9,12,18,0.94))",
-                  }}
-                >
-                  <div className="space-y-2">
-                    <div className="text-sm font-medium text-fg/70">Connecting the persistent session…</div>
-                    <div className="text-[12px] leading-6 text-muted-fg/40">
-                      Rehydrating identity, core continuity, and recent activity.
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <AgentChatPane
-                  laneId={primaryLaneId}
-                  lockSessionId={session?.id ?? null}
-                  initialSessionSummary={lockedSessionSummary}
-                  hideSessionTabs
-                  hideNativeControls
-                  hideWorkspaceChrome
-                  presentation={persistentIdentityPresentation}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Team tab */}
-          {activeTab === "team" && (
-            <div className="flex flex-col h-full min-h-0 overflow-y-auto" data-tour="cto.teamPanel">
-              {showWorkerWizard ? (
-                <div className="p-4">
-                  <WorkerCreationWizard
-                    agents={agents}
-                    onComplete={async () => {
-                      setShowWorkerWizard(false);
-                      await loadAgents();
-                      await loadBudgetSnapshot({ force: true });
-                    }}
-                    onCancel={() => setShowWorkerWizard(false)}
-                  />
-                </div>
-              ) : editorOpen ? (
-                <div className="p-4">
-                  <WorkerEditorPanel
-                    draft={workerDraft}
-                    setDraft={setWorkerDraft}
-                    agents={agents}
-                    saving={savingWorker}
-                    error={workerError}
-                    onSave={() => void saveWorker()}
-                    onCancel={() => setEditorOpen(false)}
-                  />
-                </div>
-              ) : agents.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full p-8">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-lg mb-4 bg-accent/10 border border-accent/15">
-                    <UsersThree size={22} weight="duotone" className="text-accent" />
-                  </div>
-                  <div className="text-base font-semibold text-fg">No workers yet</div>
-                  <div className="text-xs text-muted-fg/50 mt-1.5 text-center max-w-[36ch]">
-                    Hire workers to delegate tasks. Each worker gets its own chat session, core continuity, and model.
-                  </div>
-                  <Button variant="primary" className="mt-4" onClick={handleHireWorker}>
-                    Hire Worker
-                  </Button>
-                </div>
-              ) : (
-                <div className="p-4">
-                  {!selectedWorker ? (
-                    <div className="space-y-4" data-testid="team-overview">
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm font-semibold text-fg">Team</div>
-                        <SmartTooltip content={{ label: "Hire Worker", description: "Create a new worker from a template. Each worker gets its own chat session, core continuity, and model." }}>
-                          <Button variant="outline" size="sm" onClick={handleHireWorker}>
-                            Hire Worker
-                          </Button>
-                        </SmartTooltip>
-                      </div>
-
-                      <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
-                        {agents.map((agent) => {
-                          const workerBudget = budgetSnapshot?.workers.find((w) => w.agentId === agent.id);
-                          const modelId = (agent.adapterConfig as { model?: string } | null)?.model;
-                          return (
-                            <div
-                              key={agent.id}
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => { setSelectedAgentId(agent.id); }}
-                              onKeyDown={(event) => {
-                                if (event.key === "Enter" || event.key === " ") {
-                                  event.preventDefault();
-                                  setSelectedAgentId(agent.id);
-                                }
-                              }}
-                              className="text-left rounded-xl border border-white/[0.07] bg-[linear-gradient(180deg,rgba(26,24,48,0.6),rgba(18,16,34,0.7))] p-4 shadow-card backdrop-blur-[16px] transition-all duration-150 hover:border-accent/25 hover:shadow-card-hover"
-                            >
-                              <div className="flex items-center gap-2 mb-2">
-                                <div className={cn("h-2 w-2 rounded-full shrink-0", statusDotCls(agent.status))} />
-                                <span className="text-xs font-semibold text-fg truncate">{agent.name}</span>
-                              </div>
-                              <div className="flex items-center gap-2 text-[10px] text-muted-fg/50 mb-3">
-                                <span>{agent.role}</span>
-                                {modelId && <><span className="text-white/[0.08]">&middot;</span><span className="truncate">{modelId}</span></>}
-                              </div>
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] text-muted-fg/40">
-                                  {workerBudget ? `$${(workerBudget.spentMonthlyCents / 100).toFixed(2)}/mo` : "$0.00/mo"}
-                                </span>
-                                <div className="flex items-center gap-1">
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="!h-5 !px-1.5 !text-[10px]"
-                                    onClick={(e) => { e.stopPropagation(); setSelectedAgentId(agent.id); void wakeWorker(agent.id); }}
-                                  >
-                                    Wake
-                                  </Button>
-                                  <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="!h-5 !px-1.5 !text-[10px]"
-                                    onClick={(e) => { e.stopPropagation(); handleEditWorker(agent); }}
-                                  >
-                                    Edit
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedAgentId(null)}
-                        className="flex items-center gap-1.5 text-xs text-muted-fg/50 hover:text-fg transition-colors"
-                      >
-                        <span className="text-[10px]">&larr;</span> Back to Team
-                      </button>
-                    <WorkerDetailPanel
-                      worker={selectedWorker}
-                      sessionLogs={workerSessionLogs}
-                      runs={workerRuns}
-                      revisions={revisions}
-                      opsError={workerOpsError}
-                      wakeStatus={workerWakeStatus}
-                      wakeError={workerWakeError}
-                      waking={wakingWorker}
-                      onWakeNow={() => void wakeSelectedWorker()}
-                      onSetStatus={(status) => void setSelectedWorkerStatus(status)}
-                      onEdit={() => handleEditWorker()}
-                      onRemove={() => void removeWorker(selectedWorker.id)}
-                      onRollbackRevision={(id) => void rollbackRevision(id)}
-                    />
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Linear tab */}
-          {activeTab === "workflows" && (
-            <div data-tour="cto.linearPanel" className="h-full min-h-0">
-              <LinearSyncPanel lanes={lanes} selectedLaneId={primaryLaneId} />
-            </div>
-          )}
-
-          {/* Settings tab */}
-          {activeTab === "settings" && (
-            <div data-tour="cto.settingsPanel" className="h-full min-h-0">
-              <CtoSettingsPanel
-                identity={ctoIdentity}
-                sessionLogs={sessionLogs}
-                onSaveIdentity={handleSaveCtoIdentity}
-                onResetOnboarding={handleResetOnboarding}
-              />
-            </div>
-          )}
-        </div>
       </div>
 
+      {/* Settings overlay */}
+      {settingsOpen && (
+        <>
+          <button
+            type="button"
+            aria-label="Close settings"
+            onClick={() => setSettingsOpen(false)}
+            className="absolute inset-0 z-30 cursor-default bg-black/40"
+          />
+          <div
+            role="dialog"
+            aria-label="CTO settings"
+            className="absolute inset-y-0 right-0 z-40 flex w-[440px] max-w-full flex-col border-l border-white/[0.08] bg-[#0C0B12] shadow-[-16px_0_44px_rgba(0,0,0,0.5)]"
+          >
+            <div className="flex items-center justify-between border-b border-white/[0.07] px-5 py-3">
+              <div className="text-[13px] font-semibold text-fg">Settings</div>
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(false)}
+                aria-label="Close settings"
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg"
+              >
+                <X size={15} />
+              </button>
+            </div>
+            <CtoSettingsPanel
+              identity={ctoIdentity}
+              sessionLogs={sessionLogs}
+              currentModelId={currentModelId}
+              currentReasoningEffort={currentReasoningEffort}
+              availableModelIds={availableModelIds}
+              loadingModels={loadingModels}
+              switchingModel={switchingModel}
+              onSaveIdentity={handleSaveIdentity}
+              onModelChange={(modelId, reasoningEffort) => void handleModelChange(modelId, reasoningEffort)}
+              onOpenProviderSettings={openProviderSettings}
+              onResetOnboarding={handleResetOnboarding}
+            />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WakingState({
+  theme,
+  title,
+  subtitle,
+  pulsing = false,
+}: {
+  theme: ReturnType<typeof getPersonalityTheme>;
+  title: string;
+  subtitle: string;
+  pulsing?: boolean;
+}) {
+  const Icon = theme.icon;
+  return (
+    <div className="flex h-full items-center justify-center p-6" data-testid="cto-waking">
+      <div className="flex flex-col items-center text-center">
+        <div
+          className={cn(
+            "flex h-12 w-12 items-center justify-center rounded-2xl",
+            pulsing && "motion-safe:animate-pulse",
+          )}
+          style={{
+            background: `rgba(${theme.rgb}, 0.12)`,
+            border: `1px solid rgba(${theme.rgb}, 0.28)`,
+          }}
+        >
+          <Icon size={20} weight="duotone" style={{ color: theme.hex }} />
+        </div>
+        <div className="mt-4 text-[14px] font-semibold text-fg">{title}</div>
+        <div className="mt-1 max-w-xs text-[12.5px] leading-5 text-muted-fg/50">{subtitle}</div>
+      </div>
     </div>
   );
 }

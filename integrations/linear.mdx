@@ -1,33 +1,33 @@
 ---
 title: "Linear"
-description: "Linear is a first-class, two-way integration owned by the CTO — attach issues to lanes and chats, sync status, and run issues end to end with workflow presets."
+description: "Connect a Linear workspace to browse and search issues, attach them to lanes and chats, and carry the link through branch names, commits, and PRs."
 icon: "layers"
 ---
 
-Linear is a first-class, two-way integration, owned by the CTO. Connect it when your planning and review loop already runs through Linear issues — then you can attach issues to lanes and chats, keep status in sync, and let the CTO triage an issue, delegate the work, open a PR, and close the issue back out.
+Connect Linear when your planning and review loop already runs through Linear issues. Once connected, you can browse and search issues from inside ADE, attach an issue to a lane or a chat, and let ADE carry that link through the branch name, commit messages, and the PR — so Linear links the work back to the issue. An optional live-status round-trip reflects an agent's progress back into Linear.
 
 <video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/linearConnection.mp4"></video>
 
 ## What the integration does
 
 <CardGroup cols={2}>
+  <Card title="Browse & search issues" icon="magnifying-glass">
+    Open the issue browser from the top bar to search, filter, read comments, and see cycle and sub-issue detail.
+  </Card>
   <Card title="Attach issues" icon="paperclip">
-    Connect a Linear issue to a lane or chat. ADE derives the branch name and attaches the issue as context.
+    Connect a Linear issue to a lane or chat. ADE derives the lane and branch name and attaches the issue as context.
   </Card>
   <Card title="Commit & PR linkbacks" icon="code-pull-request">
-    Connected lanes prefix commits with the issue reference and seed the PR title and body so Linear links the work back.
+    Connected lanes prefix commits with the issue reference and seed the PR title and body so Linear links the work back — and closes the issue on merge if you choose.
   </Card>
-  <Card title="Status sync" icon="arrow-right-arrow-left">
-    As work moves, ADE updates the issue and posts progress and closeout notes.
-  </Card>
-  <Card title="Workflow presets" icon="diagram-project">
-    Define workflows that dispatch a matching issue to a session, a worker, or a PR resolution — automatically.
+  <Card title="Live status (optional)" icon="arrow-right-arrow-left">
+    When enabled, ADE moves the issue to In Progress on launch, comments the PR link, and marks it Done on merge.
   </Card>
 </CardGroup>
 
 ## Connect Linear
 
-You can connect from **CTO &rarr; Workflows** or **Settings &rarr; Integrations**. There are two paths:
+Connect from **Settings &rarr; Integrations**, or from the CTO's Settings sheet. There are two paths:
 
 <Steps>
   <Step title="Sign in with Linear (OAuth)">
@@ -36,59 +36,45 @@ You can connect from **CTO &rarr; Workflows** or **Settings &rarr; Integrations*
   <Step title="Personal API key">
     The alternative — paste a key that doesn't expire. Good for headless or automated setups.
   </Step>
-  <Step title="Choose intake defaults">
-    Pick which Linear projects ADE watches and which states count as active vs. terminal.
-  </Step>
   <Step title="Test with one issue">
-    Attach an issue to a lane and confirm it shows up in the lane and in CTO context.
+    Attach an issue to a lane and confirm it shows up in the lane and in chat context.
   </Step>
 </Steps>
 
-<Frame caption="Connect a Linear workspace to the CTO.">
+<Frame caption="Connect a Linear workspace to ADE.">
   <img src="/media/features/linear/linear-connection.webp" alt="Connecting a Linear workspace to ADE" />
 </Frame>
 
 <Note>
-Until a token is stored, the whole integration stays dormant — nothing polls, nothing binds, no background work runs. Connecting is a deliberate act.
+Until a token is stored, the integration stays dormant — nothing polls and nothing binds. Connecting is a deliberate act.
 </Note>
 
-## The CTO-driven Linear loop
+## From issue to PR
 
-Once Linear is connected, a workflow can run a whole issue end to end. The shape is the same every time.
+The everyday flow starts with an issue and ends with a linked PR.
 
 <Steps>
-  <Step title="Triage">
-    A new or updated issue is matched against your workflows by trigger — assignee, labels, team, project, priority, or state transition.
+  <Step title="Attach an issue">
+    Create a lane from an issue (or attach one to an existing lane or chat). ADE derives the lane name and branch name from the issue and attaches it as context.
   </Step>
-  <Step title="Delegate">
-    The matched workflow dispatches the work as an employee session, a worker run, or a PR resolution, with the issue attached as context.
+  <Step title="Work in the lane">
+    The agent implements in its worktree. Commit messages are auto-prefixed with the issue reference.
   </Step>
   <Step title="Open a PR">
-    The agent implements in its lane, then commits, pushes, and opens a PR — linked back to the issue.
+    The PR title and body are seeded from the issue, with a `Fixes` or `Refs` magic word so Linear links — and optionally closes — the issue on merge.
   </Step>
-  <Step title="Sync status">
-    On completion, ADE transitions the issue's state, posts a summary comment, and attaches proof artifacts.
+  <Step title="Live status (optional)">
+    With the live-status round-trip enabled, ADE moves the issue to In Progress on launch, comments the PR link, and marks it Done on merge.
   </Step>
 </Steps>
 
-### Workflow targets
+### Launch several issues at once
 
-A workflow dispatches an issue to one of four targets. Workflows can also chain stages — a worker run feeding into a PR resolution, say.
-
-| Target | What it launches |
-|--------|------------------|
-| Employee session | A CTO or employee chat with the issue as context. |
-| Worker run | A delegated worker run in a fresh lane. |
-| PR resolution | A PR-focused resolver session. |
-| Review gate | A human review pause — no work launched until you decide. |
+From the issue browser you can multi-select issues and launch them together — one lane per issue, optionally with an agent kickoff prompt each. Failures are isolated so one bad issue doesn't stop the rest, and you can retry just the ones that failed.
 
 <Note>
-The CTO owns Linear issue intake. [Automations](/tools/automations) can react to Linear events for their own context, but they never duplicate this routing — the CTO is the canonical path.
+Linear triggers in [Automations](/tools/automations) are context-only. There is no autonomous issue-routing engine — any Linear write from an automation is an explicit rule action.
 </Note>
-
-### Human review and delegation
-
-Workflows can insert a review gate so a run pauses for your approval before it continues or lands a PR. And if a workflow can't resolve an issue's assignee to a known worker, the run waits in **awaiting delegation** with a dropdown to assign it — it never dispatches to an invalid target.
 
 ## Good CTO prompts with Linear
 
@@ -101,14 +87,14 @@ Summarize what changed on the PR linked to ENG-142 and draft a Linear update.
 ```
 
 ```text
-Which Linear issues are blocked by current PR or CI state?
+Which of my Linear issues are ready to start?
 ```
 
 <CardGroup cols={2}>
   <Card title="Set up the CTO" icon="wand-magic-sparkles" href="/cto/setup">
-    Pick a persona and model, connect GitHub and Linear, and add workers.
+    Pick a personality and work style, then optionally choose a model and connect Linear.
   </Card>
-  <Card title="Workers" icon="users" href="/cto/workers">
-    Manage the scoped agents that run worker-target Linear workflows.
+  <Card title="CTO overview" icon="crown" href="/cto/overview">
+    The persistent operator that can browse and update Linear issues from its thread.
   </Card>
 </CardGroup>

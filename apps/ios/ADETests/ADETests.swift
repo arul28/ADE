@@ -9380,115 +9380,50 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(plain.supportsCodexFastMode)
   }
 
-  func testCtoRosterDecodesCtoSummaryAndWorkerEntries() throws {
-    let ctoSummary: [String: Any] = [
-      "sessionId": "cto-session-1",
-      "laneId": "lane-cto",
-      "provider": "claude",
-      "model": "claude-opus-4-6",
-      "identityKey": "cto",
-      "status": "active",
-      "startedAt": "2026-03-25T00:00:00.000Z",
-      "lastActivityAt": "2026-03-25T00:00:05.000Z",
-    ]
-
-    let workerOneSummary: [String: Any] = [
-      "sessionId": "worker-session-1",
-      "laneId": "lane-cto",
-      "provider": "claude",
-      "model": "claude-sonnet-4-6",
-      "identityKey": "agent:worker-1",
-      "status": "running",
-      "startedAt": "2026-03-25T00:01:00.000Z",
-      "lastActivityAt": "2026-03-25T00:01:10.000Z",
-      "awaitingInput": false,
-    ]
-
+  func testCtoMemoryDecodesFullPayload() throws {
     let payload: [String: Any] = [
-      "cto": ctoSummary,
-      "workers": [
-        [
-          "agentId": "worker-1",
-          "name": "Build Bot",
-          "avatarSeed": "build-bot",
-          "status": "running",
-          "sessionSummary": workerOneSummary,
-        ],
-        [
-          "agentId": "worker-2",
-          "name": "Research Bot",
-          "avatarSeed": NSNull(),
-          "status": "idle",
-          "sessionSummary": NSNull(),
-        ],
-      ],
-    ]
-
-    let data = try JSONSerialization.data(withJSONObject: payload)
-    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
-
-    XCTAssertEqual(roster.cto?.sessionId, "cto-session-1")
-    XCTAssertEqual(roster.cto?.identityKey, "cto")
-    XCTAssertEqual(roster.workers.count, 2)
-
-    let first = roster.workers[0]
-    XCTAssertEqual(first.id, "worker-1")
-    XCTAssertEqual(first.agentId, "worker-1")
-    XCTAssertEqual(first.name, "Build Bot")
-    XCTAssertEqual(first.avatarSeed, "build-bot")
-    XCTAssertEqual(first.status, "running")
-    XCTAssertEqual(first.sessionSummary?.sessionId, "worker-session-1")
-    XCTAssertEqual(first.sessionSummary?.identityKey, "agent:worker-1")
-
-    let second = roster.workers[1]
-    XCTAssertEqual(second.agentId, "worker-2")
-    XCTAssertEqual(second.name, "Research Bot")
-    XCTAssertNil(second.avatarSeed)
-    XCTAssertEqual(second.status, "idle")
-    XCTAssertNil(second.sessionSummary)
-
-    // Round-trip encode + decode to confirm Codable key parity.
-    let encoded = try JSONEncoder().encode(roster)
-    let roundTripped = try JSONDecoder().decode(CtoRoster.self, from: encoded)
-    XCTAssertEqual(roundTripped, roster)
-    XCTAssertEqual(roundTripped.workers.map(\.agentId), ["worker-1", "worker-2"])
-  }
-
-  func testCtoRosterDecodesNullCtoAndEmptyWorkers() throws {
-    let payload: [String: Any] = [
-      "cto": NSNull(),
-      "workers": [] as [Any],
+      "memory": "- Prefers monochrome UI\n- Ships mac-only releases",
+      "threadState": "Goal: finish CTO revamp. Open loop: iOS build.",
+      "dailyLog": "09:12 reviewed onboarding card",
+      "dailyLogDate": "2026-07-04",
+      "updatedAt": "2026-07-04T12:00:00.000Z",
     ]
     let data = try JSONSerialization.data(withJSONObject: payload)
-    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+    let memory = try JSONDecoder().decode(CtoMemory.self, from: data)
 
-    XCTAssertNil(roster.cto)
-    XCTAssertTrue(roster.workers.isEmpty)
+    XCTAssertTrue(memory.memory.contains("monochrome"))
+    XCTAssertTrue(memory.threadState.contains("Open loop"))
+    XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
+    XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
+    XCTAssertFalse(memory.isEmpty)
   }
 
-  func testCtoRosterDecodesMissingCtoKey() throws {
-    let payload: [String: Any] = [
-      "workers": [] as [Any],
-    ]
-    let data = try JSONSerialization.data(withJSONObject: payload)
-    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+  func testCtoMemoryDecodesPartialAndEmptyPayload() throws {
+    // A host that only returns `memory` (missing/null other fields) must still
+    // decode — the tolerant model defaults the rest to empty strings.
+    let partial: [String: Any] = ["memory": "just one fact", "threadState": NSNull()]
+    let partialData = try JSONSerialization.data(withJSONObject: partial)
+    let partialMemory = try JSONDecoder().decode(CtoMemory.self, from: partialData)
+    XCTAssertEqual(partialMemory.memory, "just one fact")
+    XCTAssertEqual(partialMemory.threadState, "")
+    XCTAssertEqual(partialMemory.dailyLog, "")
+    XCTAssertNil(partialMemory.updatedAt)
+    XCTAssertFalse(partialMemory.isEmpty)
 
-    XCTAssertNil(roster.cto)
-    XCTAssertTrue(roster.workers.isEmpty)
+    let emptyData = try JSONSerialization.data(withJSONObject: [String: Any]())
+    let emptyMemory = try JSONDecoder().decode(CtoMemory.self, from: emptyData)
+    XCTAssertTrue(emptyMemory.isEmpty)
   }
 
-  func testCtoAvatarPaletteIndexIsDeterministic() {
-    let inputs = ["build-bot", "Research Bot", "worker-42"]
-    let paletteSize = 7
-    for input in inputs {
-      let first = ctoAvatarPaletteIndex(for: input, paletteSize: paletteSize)
-      let second = ctoAvatarPaletteIndex(for: input, paletteSize: paletteSize)
-      XCTAssertEqual(first, second, "hash drifted for input '\(input)'")
-      XCTAssertGreaterThanOrEqual(first, 0)
-      XCTAssertLessThan(first, paletteSize)
-    }
-    // Zero-size palette degrades to 0 rather than crashing on modulo.
-    XCTAssertEqual(ctoAvatarPaletteIndex(for: "anything", paletteSize: 0), 0)
+  func testCtoOnboardingCompletionMirrorsDesktopRequiredStep() {
+    let incomplete = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
+    XCTAssertFalse(incomplete.isComplete)
+
+    let viaStep = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
+    XCTAssertTrue(viaStep.isComplete)
+
+    let viaTimestamp = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: "2026-07-04T00:00:00Z")
+    XCTAssertTrue(viaTimestamp.isComplete)
   }
 
   func testMergeWorkChatTranscriptsReplacesDuplicatesAndKeepsAssistantItemsStable() {

@@ -8,29 +8,22 @@ import type {
   AgentChatSendArgs,
   AgentChatSession,
   AgentChatSessionSummary,
-  AgentStatus,
-  AgentUpsertInput,
   AutomationRuleSummary,
   AutomationRun,
   AutomationRunListArgs,
-  CtoTriggerAgentWakeupArgs,
-  LinearWorkflowConfig,
   GitPullArgs,
   OperatorNavigationSuggestion,
   TestRunSummary,
   TestSuiteDefinition,
 } from "../../../../shared/types";
 import type { IssueTracker } from "../../cto/issueTracker";
-import type { createLinearDispatcherService } from "../../cto/linearDispatcherService";
-import type { createWorkerAgentService } from "../../cto/workerAgentService";
-import type { createWorkerHeartbeatService } from "../../cto/workerHeartbeatService";
-import type { createFlowPolicyService } from "../../cto/flowPolicyService";
 import type { createFileService } from "../../files/fileService";
 import type { createLaneService } from "../../lanes/laneService";
 import type { createPrService } from "../../prs/prService";
 import type { createProcessService } from "../../processes/processService";
 import type { createSessionService } from "../../sessions/sessionService";
 import type { createCtoStateService } from "../../cto/ctoStateService";
+import type { CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
 
@@ -46,10 +39,6 @@ export interface CtoOperatorToolDeps {
     freshLaneDescription?: string | null;
   }) => Promise<string>;
   laneService: ReturnType<typeof createLaneService>;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   prService?: ReturnType<typeof createPrService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
@@ -107,12 +96,12 @@ export interface CtoOperatorToolDeps {
     listArtifacts: (args?: any) => any[];
     updateArtifactReview: (args: any) => any;
   } | null;
-  workerBudgetService?: {
-    getBudgetSnapshot: (args: { monthKey?: string }) => any;
-    listCostEvents: (args: { agentId: string; monthKey?: string; limit?: number }) => any[];
-  } | null;
   issueTracker?: IssueTracker | null;
-  ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs" | "getSubordinateActivityLogs"> | null;
+  ctoStateService?: Pick<ReturnType<typeof createCtoStateService>, "getSessionLogs"> | null;
+  ctoMemoryService?: Pick<
+    CtoMemoryService,
+    "appendMemoryFact" | "searchMemory" | "getSnapshot"
+  > | null;
   listChats: (laneId?: string, options?: { includeIdentity?: boolean; includeAutomation?: boolean }) => Promise<AgentChatSessionSummary[]>;
   getChatStatus: (sessionId: string) => Promise<AgentChatSessionSummary | null>;
   getChatTranscript: (args: {
@@ -149,17 +138,6 @@ export interface CtoOperatorToolDeps {
   }) => Promise<AgentChatSession>;
 }
 
-const ACTIVE_LINEAR_RUN_STATUSES = new Set([
-  "queued",
-  "in_progress",
-  "waiting_for_target",
-  "waiting_for_pr",
-  "awaiting_human_review",
-  "awaiting_delegation",
-  "awaiting_lane_choice",
-  "retry_wait",
-]);
-
 function deriveChatProvider(args: { modelId?: string | null }): { provider: AgentChatCreateArgs["provider"]; model: string } {
   const descriptor = args.modelId ? getModelById(args.modelId) : null;
   if (!descriptor) {
@@ -182,18 +160,6 @@ function buildIssueBrief(issue: Awaited<ReturnType<IssueTracker["fetchIssueById"
     `Assignee: ${issue.assigneeName || "unassigned"}`,
     issue.url ? `URL: ${issue.url}` : "",
   ].filter((line) => line.length > 0).join("\n");
-}
-
-function summarizeWorkerStatus(status: AgentStatus): string {
-  switch (status) {
-    case "active":
-    case "running":
-      return "Worker is active.";
-    case "paused":
-      return "Worker is paused.";
-    default:
-      return "Worker is idle.";
-  }
 }
 
 function buildNavigationSuggestion(args: {
@@ -279,84 +245,6 @@ function resolveWorkspaceIdForLane(
 
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string, Tool> {
   const tools: Record<string, Tool> = {};
-
-  const getLinearPolicy = (): LinearWorkflowConfig | null => deps.flowPolicyService?.getPolicy() ?? null;
-
-  const loadIssue = async (issueId: string) => {
-    if (!deps.issueTracker) return null;
-    return deps.issueTracker.fetchIssueById(issueId);
-  };
-
-  const routeIssueToCto = async (args: {
-    issueId: string;
-    laneId?: string;
-    reuseExisting?: boolean;
-  }) => {
-    if (!deps.issueTracker) return { success: false as const, error: "Linear issue tracker is not available." };
-    const issue = await loadIssue(args.issueId);
-    if (!issue) return { success: false as const, error: `Issue not found: ${args.issueId}` };
-    const session = await deps.ensureCtoSession({
-      laneId: args.laneId?.trim() || deps.defaultLaneId,
-      modelId: deps.defaultModelId,
-      reasoningEffort: deps.defaultReasoningEffort,
-      reuseExisting: args.reuseExisting,
-    });
-    if (session.id !== deps.currentSessionId) {
-      await deps.sendChatMessage({
-        sessionId: session.id,
-        text: `New Linear issue context:\n\n${buildIssueBrief(issue)}`,
-      });
-    }
-    return {
-      success: true as const,
-      sessionId: session.id,
-      ...buildNavigationPayload(buildNavigationSuggestion({
-        surface: "cto",
-        laneId: session.laneId,
-        sessionId: session.id,
-      })),
-      reusedCurrentSession: session.id === deps.currentSessionId,
-      issue: {
-        id: issue.id,
-        identifier: issue.identifier,
-        title: issue.title,
-        url: issue.url,
-      },
-    };
-  };
-
-  const routeIssueToWorker = async (args: {
-    issueId: string;
-    agentId: string;
-    taskKey?: string;
-  }) => {
-    if (!deps.issueTracker || !deps.workerHeartbeatService) {
-      return { success: false as const, error: "Worker routing services are not available." };
-    }
-    const agentId = args.agentId.trim();
-    if (!agentId.length) {
-      return { success: false as const, error: "agentId is required to route a workflow run to a worker." };
-    }
-    const issue = await loadIssue(args.issueId);
-    if (!issue) return { success: false as const, error: `Issue not found: ${args.issueId}` };
-    try {
-      const result = await deps.workerHeartbeatService.triggerWakeup({
-        agentId,
-        reason: "assignment",
-        issueKey: issue.identifier,
-        taskKey: args.taskKey?.trim() || issue.identifier,
-        prompt: buildIssueBrief(issue),
-        context: {
-          linearIssueId: issue.id,
-          linearIssueIdentifier: issue.identifier,
-          linearIssueUrl: issue.url,
-        },
-      });
-      return { success: true as const, ...result };
-    } catch (error) {
-      return { success: false as const, error: getErrorMessage(error) };
-    }
-  };
 
   tools.listLanes = tool({
     description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work.",
@@ -576,108 +464,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
-    },
-  });
-
-  tools.listWorkers = tool({
-    description: "List worker agents in the CTO org.",
-    inputSchema: z.object({
-      includeDeleted: z.boolean().optional().default(false),
-    }),
-    execute: async ({ includeDeleted }) => {
-      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
-      const workers = deps.workerAgentService.listAgents({ includeDeleted });
-      return { success: true, count: workers.length, workers };
-    },
-  });
-
-  tools.createWorker = tool({
-    description: "Create a worker agent in the CTO org.",
-    inputSchema: z.object({
-      name: z.string(),
-      role: z.enum(["engineer", "qa", "designer", "devops", "researcher", "general"]).default("engineer"),
-      title: z.string().optional(),
-      reportsTo: z.string().nullable().optional(),
-      capabilities: z.array(z.string()).optional(),
-      adapterType: z.enum(["claude-local", "codex-local", "process"]).default("claude-local"),
-      modelId: z.string().optional(),
-      budgetMonthlyCents: z.number().int().nonnegative().optional(),
-    }),
-    execute: async ({ name, role, title, reportsTo, capabilities, adapterType, modelId, budgetMonthlyCents }) => {
-      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
-      try {
-        const adapterConfig: AgentUpsertInput["adapterConfig"] = modelId?.trim() ? { modelId: modelId.trim() } : {};
-        const worker = deps.workerAgentService.saveAgent({
-          name,
-          role,
-          ...(title?.trim() ? { title: title.trim() } : {}),
-          reportsTo: reportsTo?.trim() || null,
-          capabilities: capabilities?.map((entry) => entry.trim()).filter(Boolean) ?? [],
-          adapterType,
-          adapterConfig,
-          budgetMonthlyCents,
-        });
-        return { success: true, worker };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.updateWorkerStatus = tool({
-    description: "Change a worker agent status.",
-    inputSchema: z.object({
-      agentId: z.string(),
-      status: z.enum(["idle", "active", "paused", "running"]),
-    }),
-    execute: async ({ agentId, status }) => {
-      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
-      deps.workerAgentService.setAgentStatus(agentId, status);
-      return { success: true, agentId, status };
-    },
-  });
-
-  tools.wakeWorker = tool({
-    description: "Wake a worker agent with a manual task prompt.",
-    inputSchema: z.object({
-      agentId: z.string(),
-      prompt: z.string(),
-      taskKey: z.string().nullable().optional(),
-      issueKey: z.string().nullable().optional(),
-    }),
-    execute: async ({ agentId, prompt, taskKey, issueKey }) => {
-      if (!deps.workerHeartbeatService) return { success: false, error: "Worker heartbeat service is not available." };
-      try {
-        const result = await deps.workerHeartbeatService.triggerWakeup({
-          agentId,
-          reason: "manual",
-          prompt,
-          taskKey: taskKey?.trim() || null,
-          issueKey: issueKey?.trim() || null,
-        } satisfies CtoTriggerAgentWakeupArgs);
-        return { success: true, ...result };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.getWorkerStatus = tool({
-    description: "Inspect a worker agent, including its current status and recent runs.",
-    inputSchema: z.object({
-      agentId: z.string(),
-    }),
-    execute: async ({ agentId }) => {
-      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
-      const worker = deps.workerAgentService.getAgent(agentId, { includeDeleted: true });
-      if (!worker) return { success: false, error: `Worker not found: ${agentId}` };
-      const recentRuns = deps.workerHeartbeatService?.listRuns({ agentId, limit: 10 }) ?? [];
-      return {
-        success: true,
-        worker,
-        statusSummary: summarizeWorkerStatus(worker.status),
-        recentRuns,
-      };
     },
   });
 
@@ -943,84 +729,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     },
   });
 
-  tools.listLinearWorkflows = tool({
-    description: "List active and queued Linear workflow runs managed by ADE.",
-    inputSchema: z.object({}),
-    execute: async () => {
-      if (!deps.linearDispatcherService) return { success: false, error: "Linear dispatcher service is not available." };
-      return {
-        success: true,
-        activeRuns: deps.linearDispatcherService.listActiveRuns(),
-        queuedRuns: deps.linearDispatcherService.listQueue().slice(0, 50),
-      };
-    },
-  });
-
-  tools.getLinearRunStatus = tool({
-    description: "Inspect a Linear workflow run in detail.",
-    inputSchema: z.object({
-      runId: z.string(),
-    }),
-    execute: async ({ runId }) => {
-      if (!deps.linearDispatcherService || !deps.flowPolicyService) {
-        return { success: false, error: "Linear workflow services are not available." };
-      }
-      const policy: LinearWorkflowConfig = deps.flowPolicyService.getPolicy();
-      const detail = await deps.linearDispatcherService.getRunDetail(runId, policy);
-      if (!detail) return { success: false, error: `Workflow run not found: ${runId}` };
-      return { success: true, detail };
-    },
-  });
-
-  tools.resolveLinearRunAction = tool({
-    description: "Approve, reject, retry, resume, or explicitly complete a Linear workflow run from chat.",
-    inputSchema: z.object({
-      runId: z.string(),
-      action: z.enum(["approve", "reject", "retry", "resume", "complete"]),
-      note: z.string().optional(),
-      laneId: z.string().optional(),
-    }),
-    execute: async ({ runId, action, note, laneId }) => {
-      if (!deps.linearDispatcherService || !deps.flowPolicyService) {
-        return { success: false, error: "Linear workflow services are not available." };
-      }
-      try {
-        const run = await deps.linearDispatcherService.resolveRunAction(
-          runId,
-          action,
-          note?.trim() || undefined,
-          deps.flowPolicyService.getPolicy(),
-          undefined,
-          laneId?.trim() || undefined,
-        );
-        if (!run) return { success: false, error: `Workflow run not found: ${runId}` };
-        return { success: true, run };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.cancelLinearRun = tool({
-    description: "Cancel a Linear workflow run and record the operator reason.",
-    inputSchema: z.object({
-      runId: z.string(),
-      reason: z.string(),
-    }),
-    execute: async ({ runId, reason }) => {
-      if (!deps.linearDispatcherService || !deps.flowPolicyService) {
-        return { success: false, error: "Linear workflow services are not available." };
-      }
-      try {
-        await deps.linearDispatcherService.cancelRun(runId, reason.trim(), deps.flowPolicyService.getPolicy());
-        const detail = await deps.linearDispatcherService.getRunDetail(runId, deps.flowPolicyService.getPolicy());
-        return { success: true, runId, detail };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
   tools.commentOnLinearIssue = tool({
     description: "Post a comment to a Linear issue.",
     inputSchema: z.object({
@@ -1066,75 +774,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         }
         await deps.issueTracker.updateIssueState(issueId, resolvedStateId);
         return { success: true, issueId, stateId: resolvedStateId };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.routeLinearIssueToCto = tool({
-    description: "Route a Linear issue into the persistent CTO session.",
-    inputSchema: z.object({
-      issueId: z.string(),
-      laneId: z.string().optional(),
-      reuseExisting: z.boolean().optional().default(true),
-    }),
-    execute: async ({ issueId, laneId, reuseExisting }) => routeIssueToCto({ issueId, laneId, reuseExisting }),
-  });
-
-  tools.routeLinearIssueToWorker = tool({
-    description: "Wake a worker agent with a Linear issue as the task context.",
-    inputSchema: z.object({
-      issueId: z.string(),
-      agentId: z.string(),
-      taskKey: z.string().optional(),
-    }),
-    execute: async ({ issueId, agentId, taskKey }) => routeIssueToWorker({ issueId, agentId, taskKey }),
-  });
-
-  tools.rerouteLinearRun = tool({
-    description: "Recover a Linear workflow run by canceling the current run if needed and re-routing its issue.",
-    inputSchema: z.object({
-      runId: z.string(),
-      target: z.enum(["cto", "worker"]),
-      reason: z.string(),
-      laneId: z.string().optional(),
-      reuseExisting: z.boolean().optional().default(true),
-      agentId: z.string().optional(),
-      taskKey: z.string().optional(),
-    }),
-    execute: async ({ runId, target, reason, laneId, reuseExisting, agentId, taskKey }) => {
-      if (!deps.linearDispatcherService || !deps.flowPolicyService) {
-        return { success: false, error: "Linear workflow services are not available." };
-      }
-      const policy = getLinearPolicy();
-      if (!policy) return { success: false, error: "Linear workflow policy is not available." };
-      try {
-        const detail = await deps.linearDispatcherService.getRunDetail(runId, policy);
-        if (!detail) return { success: false, error: `Workflow run not found: ${runId}` };
-        const wasCancelled = ACTIVE_LINEAR_RUN_STATUSES.has(detail.run.status);
-        if (wasCancelled) {
-          await deps.linearDispatcherService.cancelRun(
-            runId,
-            `${reason.trim()} (rerouted by CTO)`,
-            policy,
-          );
-        }
-        const issueId = detail.run.issueId || String(detail.issue?.id ?? "").trim();
-        if (!issueId) {
-          return { success: false, error: `Workflow run ${runId} has no associated issue to reroute.` };
-        }
-        const rerouted = target === "cto"
-          ? await routeIssueToCto({ issueId, laneId, reuseExisting })
-          : await routeIssueToWorker({ issueId, agentId: agentId?.trim() || "", taskKey });
-        if (!rerouted.success) return rerouted;
-        return {
-          success: true,
-          runId,
-          issueId,
-          cancelledExistingRun: wasCancelled,
-          rerouted,
-        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -1369,61 +1008,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       try {
         await deps.laneService.archive({ laneId });
         return { success: true, laneId };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  // ---------------------------------------------------------------------------
-  // Worker Management
-  // ---------------------------------------------------------------------------
-
-  tools.removeWorker = tool({
-    description: "Remove a worker agent from the CTO org.",
-    inputSchema: z.object({
-      agentId: z.string().trim().min(1),
-    }),
-    execute: async ({ agentId }) => {
-      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
-      try {
-        deps.workerAgentService.removeAgent(agentId);
-        return { success: true, agentId };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.updateWorker = tool({
-    description: "Update a worker agent configuration.",
-    inputSchema: z.object({
-      agentId: z.string().trim().min(1),
-      name: z.string().optional(),
-      role: z.enum(["engineer", "qa", "designer", "devops", "researcher", "general"]).optional(),
-      title: z.string().nullable().optional(),
-      reportsTo: z.string().nullable().optional(),
-      capabilities: z.array(z.string()).optional(),
-      modelId: z.string().nullable().optional(),
-      budgetMonthlyCents: z.number().int().nonnegative().optional(),
-    }),
-    execute: async ({ agentId, name, role, title, reportsTo, capabilities, modelId, budgetMonthlyCents }) => {
-      if (!deps.workerAgentService) return { success: false, error: "Worker service is not available." };
-      const existing = deps.workerAgentService.getAgent(agentId);
-      if (!existing) return { success: false, error: `Worker not found: ${agentId}` };
-      try {
-        const worker = deps.workerAgentService.saveAgent({
-          id: agentId,
-          name: name ?? existing.name,
-          role: role ?? existing.role,
-          ...(title !== undefined ? { title: title ?? undefined } : {}),
-          ...(reportsTo !== undefined ? { reportsTo } : {}),
-          ...(capabilities ? { capabilities } : {}),
-          adapterType: existing.adapterType,
-          adapterConfig: modelId !== undefined ? { ...existing.adapterConfig, modelId: modelId ?? undefined } : existing.adapterConfig,
-          ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
-        });
-        return { success: true, worker };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -2003,7 +1587,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.getRecentEvents = tool({
     description:
-      "Surface a unified feed of recent project events: CTO session completions, worker activity, " +
+      "Surface a unified feed of recent project events: CTO session completions, " +
       "test completions/failures, PR review activity, and chat session events. " +
       "Use this to stay aware of what happened while you were idle or to brief the user on recent activity.",
     inputSchema: z.object({
@@ -2051,54 +1635,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         }
       }
 
-      // 2. Subordinate (worker) activity from CTO state
-      if (deps.ctoStateService) {
-        try {
-          const activities = deps.ctoStateService.getSubordinateActivityLogs(200);
-          for (const activity of activities) {
-            if (!afterCutoff(activity.createdAt)) continue;
-            events.push({
-              type: `worker_${activity.activityType}`,
-              timestamp: activity.createdAt,
-              summary: `[${activity.agentName}] ${activity.summary}`,
-              ids: {
-                agentId: activity.agentId,
-                sessionId: activity.sessionId ?? null,
-                taskKey: activity.taskKey ?? null,
-                issueKey: activity.issueKey ?? null,
-              },
-            });
-          }
-        } catch {
-          // ignore
-        }
-      }
-
-      // 3. Worker runs from heartbeat service
-      if (deps.workerHeartbeatService) {
-        try {
-          const runs = deps.workerHeartbeatService.listRuns({ limit: 100 });
-          for (const run of runs) {
-            const ts = run.finishedAt ?? run.startedAt ?? run.createdAt;
-            if (!afterCutoff(ts)) continue;
-            events.push({
-              type: "worker_run",
-              timestamp: ts,
-              summary: `Worker run ${run.status}${run.taskKey ? ` (task: ${run.taskKey})` : ""}${run.errorMessage ? ` — ${run.errorMessage}` : ""}`,
-              ids: {
-                runId: run.id,
-                agentId: run.agentId,
-                taskKey: run.taskKey ?? null,
-                issueKey: run.issueKey ?? null,
-              },
-            });
-          }
-        } catch {
-          // ignore
-        }
-      }
-
-      // 4. Test runs
+      // 2. Test runs
       if (deps.testService) {
         try {
           const runs = deps.testService.listRuns({ limit: 100 });
@@ -2195,7 +1732,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.getProjectHealthSummary = tool({
     description:
-      "Aggregate project health into a single snapshot: worker utilization, test pass rates, PR status distribution, active lanes, and weekly budget burn.",
+      "Aggregate project health into a single snapshot: test pass rates, PR status distribution, and active lanes.",
     inputSchema: z.object({
       testRunLimit: z
         .number()
@@ -2206,32 +1743,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         .default(50),
     }),
     execute: async ({ testRunLimit }) => {
-      let workers: {
-        total: number;
-        byStatus: Record<string, number>;
-        totalBudgetMonthlyCents: number;
-        totalSpentMonthlyCents: number;
-        budgetUtilizationPct: number;
-      } | null = null;
-      if (deps.workerAgentService) {
-        const agents = deps.workerAgentService.listAgents();
-        const byStatus: Record<string, number> = {};
-        let totalBudget = 0;
-        let totalSpent = 0;
-        for (const a of agents) {
-          byStatus[a.status] = (byStatus[a.status] ?? 0) + 1;
-          totalBudget += (a as any).budgetMonthlyCents ?? 0;
-          totalSpent += (a as any).spentMonthlyCents ?? 0;
-        }
-        workers = {
-          total: agents.length,
-          byStatus,
-          totalBudgetMonthlyCents: totalBudget,
-          totalSpentMonthlyCents: totalSpent,
-          budgetUtilizationPct: totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 10000) / 100 : 0,
-        };
-      }
-
       let tests: {
         suiteCount: number;
         recentRuns: number;
@@ -2284,7 +1795,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       return {
         success: true,
         generatedAt: nowIso(),
-        workers,
         tests,
         prs,
         lanes,
@@ -2403,94 +1913,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   // ---------------------------------------------------------------------------
-  // Budget / Cost Visibility
-  // ---------------------------------------------------------------------------
-
-  tools.getProjectBudgetStatus = tool({
-    description: "Get project-wide budget status: total spend, budget remaining, and per-worker summaries.",
-    inputSchema: z.object({
-      monthKey: z.string().optional().describe("YYYY-MM format. Defaults to current month."),
-    }),
-    execute: async ({ monthKey }) => {
-      if (!deps.workerBudgetService) return { success: false, error: "Worker budget service is not available." };
-      try {
-        const snapshot = deps.workerBudgetService.getBudgetSnapshot({ monthKey: monthKey?.trim() || undefined });
-        return {
-          success: true,
-          monthKey: snapshot.monthKey,
-          computedAt: snapshot.computedAt,
-          company: {
-            budgetMonthlyCents: snapshot.companyBudgetMonthlyCents,
-            spentMonthlyCents: snapshot.companySpentMonthlyCents,
-            remainingCents: snapshot.companyRemainingCents,
-          },
-          workerCount: snapshot.workers.length,
-          workerSummaries: snapshot.workers.map((w: any) => ({
-            agentId: w.agentId, name: w.name, budgetMonthlyCents: w.budgetMonthlyCents,
-            spentMonthlyCents: w.spentMonthlyCents, remainingCents: w.remainingCents, status: w.status,
-          })),
-        };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.getWorkerCostBreakdown = tool({
-    description: "Get per-worker monthly spend breakdown with token usage and model detail.",
-    inputSchema: z.object({
-      agentId: z.string().optional(),
-      monthKey: z.string().optional(),
-      limit: z.number().int().positive().optional().default(100),
-    }),
-    execute: async ({ agentId, monthKey, limit }) => {
-      if (!deps.workerBudgetService) return { success: false, error: "Worker budget service is not available." };
-      try {
-        const snapshot = deps.workerBudgetService.getBudgetSnapshot({ monthKey: monthKey?.trim() || undefined });
-        const targetWorkers = agentId?.trim()
-          ? snapshot.workers.filter((w: any) => w.agentId === agentId.trim())
-          : snapshot.workers;
-        if (agentId?.trim() && targetWorkers.length === 0) {
-          return { success: false, error: `Worker not found: ${agentId}` };
-        }
-        const breakdowns = targetWorkers.map((worker: any) => {
-          const events = deps.workerBudgetService!.listCostEvents({
-            agentId: worker.agentId,
-            monthKey: monthKey?.trim() || undefined,
-            limit,
-          });
-          const modelMap = new Map<string, { provider: string; modelId: string; totalCostCents: number; totalInputTokens: number; totalOutputTokens: number; eventCount: number }>();
-          for (const event of events) {
-            const key = `${event.provider}::${event.modelId ?? "unknown"}`;
-            const existing = modelMap.get(key);
-            if (existing) {
-              existing.totalCostCents += event.costCents;
-              existing.totalInputTokens += event.inputTokens ?? 0;
-              existing.totalOutputTokens += event.outputTokens ?? 0;
-              existing.eventCount += 1;
-            } else {
-              modelMap.set(key, {
-                provider: event.provider, modelId: event.modelId ?? "unknown",
-                totalCostCents: event.costCents, totalInputTokens: event.inputTokens ?? 0,
-                totalOutputTokens: event.outputTokens ?? 0, eventCount: 1,
-              });
-            }
-          }
-          return {
-            agentId: worker.agentId, name: worker.name, status: worker.status,
-            budgetMonthlyCents: worker.budgetMonthlyCents, spentMonthlyCents: worker.spentMonthlyCents,
-            remainingCents: worker.remainingCents,
-            modelBreakdown: Array.from(modelMap.values()),
-          };
-        });
-        return { success: true, monthKey: snapshot.monthKey, workerCount: breakdowns.length, breakdowns };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  // ---------------------------------------------------------------------------
   // Codebase Self-Search (for when CTO needs to understand ADE internals)
   // ---------------------------------------------------------------------------
 
@@ -2554,6 +1976,69 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
         if (error?.status === 1) {
           return { success: true, matchCount: 0, truncated: false, output: "No matches found." };
         }
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  // ---------------------------------------------------------------------------
+  // Persistent Memory
+  // ---------------------------------------------------------------------------
+
+  tools.saveMemory = tool({
+    description:
+      "Save a durable fact to your persistent memory (MEMORY.md). Use for decisions, user preferences, " +
+      "conventions, and standing project context you should remember across sessions and model switches. " +
+      "Keep each fact to one crisp sentence. Exact duplicates are ignored.",
+    inputSchema: z.object({
+      fact: z.string().trim().min(1).describe("A single durable fact to remember."),
+    }),
+    execute: async ({ fact }) => {
+      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
+      try {
+        const result = deps.ctoMemoryService.appendMemoryFact(fact);
+        return { success: true, saved: result.saved, fact: result.fact, file: "MEMORY.md" };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.searchMemory = tool({
+    description:
+      "Search your persistent memory (MEMORY.md, thread state, and recent daily logs) for prior context. " +
+      "Use this before asking the user to restate something you may already know.",
+    inputSchema: z.object({
+      query: z.string().trim().min(1),
+      limit: z.number().int().positive().max(100).optional().default(20),
+    }),
+    execute: async ({ query, limit }) => {
+      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
+      try {
+        const rows = deps.ctoMemoryService.searchMemory(query, { limit });
+        return { success: true, query, count: rows.length, rows };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.readMemory = tool({
+    description:
+      "Read your persistent memory: durable facts (MEMORY.md) and the current thread state. " +
+      "Use to review what you already know before making decisions.",
+    inputSchema: z.object({}),
+    execute: async () => {
+      if (!deps.ctoMemoryService) return { success: false, error: "Memory service is not available." };
+      try {
+        const snapshot = deps.ctoMemoryService.getSnapshot();
+        return {
+          success: true,
+          memory: snapshot.memory,
+          threadState: snapshot.threadState,
+          updatedAt: snapshot.updatedAt,
+        };
+      } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
     },

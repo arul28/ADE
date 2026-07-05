@@ -5,12 +5,7 @@ function guardedIdentityPermissionModeForProvider(_provider: AgentChatProvider):
 }
 
 export function isPrimaryPinnedIdentity(identityKey: AgentChatIdentityKey | undefined): boolean {
-  if (identityKey === "cto") return true;
-  if (!identityKey || !identityKey.startsWith("agent:")) return false;
-  // Require a non-empty trimmed suffix so `agent:` and `agent:   ` do not
-  // masquerade as a worker identity. Matches the stricter checks in
-  // resolveWorkerIdentityAgentId / normalizeIdentityKey.
-  return identityKey.slice("agent:".length).trim().length > 0;
+  return identityKey === "cto";
 }
 
 export function normalizeIdentityPermissionMode(

@@ -779,59 +779,11 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   }
 }
 
-struct CtoWorkerEntry: Codable, Identifiable, Hashable {
-  let agentId: String
-  let name: String
-  let avatarSeed: String?
-  let status: String
-  let sessionSummary: AgentChatSessionSummary?
-  var id: String { agentId }
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine(agentId)
-    hasher.combine(name)
-    hasher.combine(avatarSeed)
-    hasher.combine(status)
-    hasher.combine(sessionSummary?.sessionId)
-  }
-
-  static func == (lhs: CtoWorkerEntry, rhs: CtoWorkerEntry) -> Bool {
-    lhs.agentId == rhs.agentId
-      && lhs.name == rhs.name
-      && lhs.avatarSeed == rhs.avatarSeed
-      && lhs.status == rhs.status
-      && lhs.sessionSummary?.sessionId == rhs.sessionSummary?.sessionId
-  }
-}
-
-struct CtoRoster: Codable, Hashable {
-  let cto: AgentChatSessionSummary?
-  let workers: [CtoWorkerEntry]
-
-  func hash(into hasher: inout Hasher) {
-    hasher.combine(cto?.sessionSummary())
-    hasher.combine(workers)
-  }
-
-  static func == (lhs: CtoRoster, rhs: CtoRoster) -> Bool {
-    lhs.cto == rhs.cto && lhs.workers == rhs.workers
-  }
-}
-
-private extension AgentChatSessionSummary {
-  /// Stable identity tuple for hashing contexts where full Hashable is unavailable
-  /// (e.g. nested `RemoteJSONValue` fields only conform to Equatable).
-  func sessionSummary() -> String {
-    "\(sessionId)|\(status)|\(lastActivityAt)"
-  }
-}
-
-// MARK: - CTO + Worker Agent Models (sync wire types)
+// MARK: - CTO Models (sync wire types)
 //
 // Field names mirror the desktop canonical types defined in
-// apps/desktop/src/shared/types/{cto,agents,linearSync}.ts. All status-ish
-// fields come through as plain `String` so unknown server values don't break
-// decoding (e.g. a future "deferred" run state).
+// apps/desktop/src/shared/types/{cto,linearSync}.ts. All status-ish fields come
+// through as plain `String` so unknown server values don't break decoding.
 
 // MARK: CTO identity
 
@@ -847,6 +799,21 @@ struct CtoCommunicationStyle: Codable, Hashable {
   var escalationThreshold: String
 }
 
+/// Mirrors desktop `CtoOnboardingState`. Onboarding is complete once the
+/// required `"identity"` step lands in `completedSteps` (the desktop also
+/// stamps `completedAt` at that point).
+struct CtoOnboardingState: Codable, Hashable {
+  var completedSteps: [String]
+  var dismissedAt: String?
+  var completedAt: String?
+
+  /// Mirror of desktop `hasCompletedRequiredOnboardingSteps`: the only
+  /// required step is `"identity"`.
+  var isComplete: Bool {
+    completedAt != nil || completedSteps.contains("identity")
+  }
+}
+
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
 /// derive one from `name` for SwiftUI Identifiable semantics.
 struct CtoIdentity: Codable, Hashable, Identifiable {
@@ -859,6 +826,7 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   var communicationStyle: CtoCommunicationStyle?
   var constraints: [String]?
   var systemPromptExtension: String?
+  var onboardingState: CtoOnboardingState?
   var modelPreferences: CtoModelPreferences
   var updatedAt: String?
 
@@ -868,6 +836,12 @@ struct CtoIdentity: Codable, Hashable, Identifiable {
   var model: String { modelPreferences.model }
   /// Flat accessor used by UI code.
   var reasoningEffort: String? { modelPreferences.reasoningEffort }
+
+  /// True once the CTO has been set up. Mirrors desktop: onboarding is complete
+  /// when the required `"identity"` step has landed (or `completedAt` is set).
+  var isOnboardingComplete: Bool {
+    onboardingState?.isComplete ?? false
+  }
 }
 
 /// Patch sent to `cto.updateIdentity`. Nested `modelPreferences` so the
@@ -879,6 +853,7 @@ struct CtoIdentityPatch: Codable, Hashable {
   var communicationStyle: CtoCommunicationStyle?
   var constraints: [String]?
   var systemPromptExtension: String?
+  var onboardingState: CtoOnboardingState?
   var modelPreferences: CtoModelPreferences?
 }
 
@@ -901,196 +876,49 @@ struct CtoSnapshot: Codable, Hashable {
   var recentSessions: [CtoRecentSession]?
 }
 
-// MARK: Worker agents
+/// Returned by the `cto.getMemory` sync command: the durable facts the CTO
+/// keeps (`MEMORY.md`), the rolling `thread-state.md`, and today's daily log.
+/// Every field is tolerant of a missing/null value so a partial host response
+/// still decodes — older hosts that don't implement the command surface as a
+/// command error, not a decode failure.
+struct CtoMemory: Codable, Hashable {
+  var memory: String
+  var threadState: String
+  var dailyLog: String
+  var dailyLogDate: String
+  var updatedAt: String?
 
-/// Subset of desktop `AgentAdapterConfig` — only the fields the mobile UI
-/// actually surfaces. Adapter-specific payloads land under free-form keys;
-/// we just pull out `provider`/`model` heuristically.
-struct AgentAdapterConfig: Codable, Hashable {
-  var provider: String?
-  var model: String?
-  var modelId: String?
+  init(
+    memory: String = "",
+    threadState: String = "",
+    dailyLog: String = "",
+    dailyLogDate: String = "",
+    updatedAt: String? = nil
+  ) {
+    self.memory = memory
+    self.threadState = threadState
+    self.dailyLog = dailyLog
+    self.dailyLogDate = dailyLogDate
+    self.updatedAt = updatedAt
+  }
 
   init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: DynamicKey.self)
-    let keyNames = Set(c.allKeys.map(\.stringValue))
-    provider = keyNames.contains("provider")
-      ? try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "provider")!)
-      : nil
-    model = keyNames.contains("model")
-      ? try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "model")!)
-      : nil
-    modelId = keyNames.contains("modelId")
-      ? try c.decodeIfPresent(String.self, forKey: DynamicKey(stringValue: "modelId")!)
-      : nil
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    func str(_ key: CodingKeys) -> String? {
+      (try? c.decodeIfPresent(String.self, forKey: key)).flatMap { $0 }
+    }
+    memory = str(.memory) ?? ""
+    threadState = str(.threadState) ?? ""
+    dailyLog = str(.dailyLog) ?? ""
+    dailyLogDate = str(.dailyLogDate) ?? ""
+    updatedAt = str(.updatedAt)
   }
 
-  func encode(to encoder: Encoder) throws {
-    var c = encoder.container(keyedBy: DynamicKey.self)
-    if let provider { try c.encode(provider, forKey: DynamicKey(stringValue: "provider")!) }
-    if let model { try c.encode(model, forKey: DynamicKey(stringValue: "model")!) }
-    if let modelId { try c.encode(modelId, forKey: DynamicKey(stringValue: "modelId")!) }
-  }
-
-  private struct DynamicKey: CodingKey {
-    var stringValue: String
-    var intValue: Int? { nil }
-    init?(stringValue: String) { self.stringValue = stringValue }
-    init?(intValue: Int) { return nil }
-  }
-}
-
-struct AgentActiveHoursConfig: Codable {
-  var start: String
-  var end: String
-  var timezone: String
-}
-
-struct AgentHeartbeatConfig: Codable {
-  var enabled: Bool
-  var intervalSec: Int
-  var wakeOnDemand: Bool
-  var activeHours: AgentActiveHoursConfig?
-}
-
-struct AgentRuntimeConfigPatch: Codable {
-  var heartbeat: AgentHeartbeatConfig?
-  var maxConcurrentRuns: Int?
-}
-
-struct AgentLinearIdentityPatch: Codable {
-  var userIds: [String]?
-  var displayNames: [String]?
-  var aliases: [String]?
-}
-
-struct AgentUpsertInput: Codable {
-  var id: String?
-  var name: String
-  var role: String
-  var title: String?
-  var reportsTo: String?
-  var capabilities: [String]?
-  var status: String?
-  var adapterType: String
-  var adapterConfig: [String: RemoteJSONValue]?
-  var runtimeConfig: AgentRuntimeConfigPatch?
-  var linearIdentity: AgentLinearIdentityPatch?
-  var budgetMonthlyCents: Int?
-}
-
-struct CtoSaveAgentPayload: Codable {
-  var agent: AgentUpsertInput
-  var actor: String?
-}
-
-/// Mirrors desktop `AgentIdentity`. `model` and `provider` are pulled from
-/// `adapterConfig` by the computed properties below for display.
-struct AgentIdentity: Codable, Hashable, Identifiable {
-  var id: String
-  var name: String
-  var slug: String?
-  var role: String
-  var title: String?
-  var reportsTo: String?
-  var capabilities: [String]
-  /// Raw status string from the server. Validate client-side against
-  /// {"idle", "active", "paused", "running"} before acting on it.
-  var status: String
-  var adapterType: String
-  var adapterConfig: AgentAdapterConfig?
-  var personality: String?
-  var systemPromptExtension: String?
-  var budgetMonthlyCents: Int?
-  var spentMonthlyCents: Int?
-  var lastHeartbeatAt: String?
-  var createdAt: String?
-  var updatedAt: String?
-
-  /// Flat accessors used by UI. Falls back through adapterConfig so the UI
-  /// never has to know the nested shape.
-  var model: String? { adapterConfig?.model ?? adapterConfig?.modelId }
-  var provider: String? { adapterConfig?.provider }
-}
-
-struct AgentConfigRevision: Codable, Hashable, Identifiable {
-  var id: String
-  var agentId: String
-  var createdAt: String
-  var changedKeys: [String]
-  var hadRedactions: Bool?
-  var actor: String?
-  var note: String?
-}
-
-/// Mirrors desktop `WorkerAgentRun`. Desktop uses `finishedAt`, not `endedAt`,
-/// and `startedAt` is nullable.
-struct WorkerAgentRun: Codable, Hashable, Identifiable {
-  var id: String
-  var agentId: String
-  /// Raw status string from the server (e.g. "queued", "deferred", "running",
-  /// "completed", "failed", "cancelled", "skipped"). Kept as `String` for
-  /// forward compatibility.
-  var status: String
-  var wakeupReason: String?
-  var taskKey: String?
-  var issueKey: String?
-  var executionRunId: String?
-  var errorMessage: String?
-  var startedAt: String?
-  var finishedAt: String?
-  var createdAt: String
-  var updatedAt: String?
-
-  /// Human-facing title. Desktop has no dedicated title field, so we derive
-  /// one from the best available context.
-  var displayTitle: String {
-    if let issueKey, !issueKey.isEmpty { return issueKey }
-    if let taskKey, !taskKey.isEmpty { return taskKey }
-    return id
-  }
-}
-
-struct AgentSessionLogEntry: Codable, Hashable, Identifiable {
-  var id: String
-  var sessionId: String?
-  var summary: String?
-  var startedAt: String?
-  var endedAt: String?
-  var provider: String?
-  var modelId: String?
-  var capabilityMode: String?
-  var createdAt: String?
-}
-
-/// Mirrors desktop `AgentBudgetSummary` (the per-worker entry).
-struct AgentBudgetSnapshotWorker: Codable, Hashable, Identifiable {
-  var id: String { agentId }
-  var agentId: String
-  var name: String
-  var budgetMonthlyCents: Int
-  var spentMonthlyCents: Int
-  var exactSpentCents: Int?
-  var estimatedSpentCents: Int?
-  var remainingCents: Int?
-  var status: String?
-}
-
-/// Mirrors desktop `AgentBudgetSnapshot`. Field name is
-/// `companyBudgetMonthlyCents`, not `companyCapMonthlyCents`.
-struct AgentBudgetSnapshot: Codable, Hashable {
-  var computedAt: String?
-  var monthKey: String?
-  var companyBudgetMonthlyCents: Int
-  var companySpentMonthlyCents: Int
-  var companyExactSpentCents: Int?
-  var companyEstimatedSpentCents: Int?
-  var companyRemainingCents: Int?
-  var workers: [AgentBudgetSnapshotWorker]
-
-  /// UI-friendly alias. Zero means "no cap tracked".
-  var companyCapMonthlyCents: Int? {
-    companyBudgetMonthlyCents > 0 ? companyBudgetMonthlyCents : nil
+  /// True when the host returned no substantive memory content yet.
+  var isEmpty: Bool {
+    memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && threadState.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && dailyLog.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 }
 
@@ -1308,218 +1136,6 @@ struct LinearIssueComment: Codable, Hashable, Identifiable {
   var userDisplayName: String?
 }
 
-/// Flattens the desktop `LinearWorkflowTrigger` / `LinearWorkflowTarget`
-/// objects into short display strings. Keeps the raw JSON around so a
-/// re-encode doesn't destroy unknown fields.
-struct LinearWorkflowDefinition: Codable, Hashable, Identifiable {
-  var id: String
-  var name: String
-  var enabled: Bool
-  var priority: Int?
-  var description: String?
-
-  /// Short display string derived from the server's nested `triggers` object.
-  var triggerDisplay: String
-  /// Short display string derived from the server's nested `target` object.
-  var targetDisplay: String
-
-  private enum CodingKeys: String, CodingKey {
-    case id, name, enabled, priority, description, triggers, target
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    id = try c.decode(String.self, forKey: .id)
-    name = try c.decode(String.self, forKey: .name)
-    enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
-    priority = try c.decodeIfPresent(Int.self, forKey: .priority)
-    description = try c.decodeIfPresent(String.self, forKey: .description)
-
-    // Triggers is a structured object on desktop; flatten to a short label.
-    let triggersValue = try? c.decode(AnyDecodable.self, forKey: .triggers)
-    triggerDisplay = Self.describeTrigger(triggersValue?.value)
-
-    let targetValue = try? c.decode(AnyDecodable.self, forKey: .target)
-    targetDisplay = Self.describeTarget(targetValue?.value)
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var c = encoder.container(keyedBy: CodingKeys.self)
-    try c.encode(id, forKey: .id)
-    try c.encode(name, forKey: .name)
-    try c.encode(enabled, forKey: .enabled)
-    try c.encodeIfPresent(priority, forKey: .priority)
-    try c.encodeIfPresent(description, forKey: .description)
-  }
-
-  private static func describeTrigger(_ value: Any?) -> String {
-    guard let dict = value as? [String: Any] else { return "—" }
-    // LinearWorkflowTrigger typically has: { labels?: [], priorities?: [],
-    // assignees?: [], states?: [], ... }. Pick the first present key and
-    // summarize its values.
-    let keys = ["labels", "priorities", "assignees", "states", "projects", "teams", "cycles"]
-    for key in keys {
-      if let arr = dict[key] as? [Any], !arr.isEmpty {
-        let values = arr.compactMap { $0 as? String }
-        if !values.isEmpty {
-          return "\(key): \(values.prefix(3).joined(separator: ", "))"
-        }
-      }
-    }
-    if let any = dict["any"] as? Bool, any { return "any issue" }
-    return "custom"
-  }
-
-  private static func describeTarget(_ value: Any?) -> String {
-    guard let dict = value as? [String: Any] else { return "—" }
-    let kind = (dict["type"] as? String) ?? (dict["kind"] as? String)
-    if let kind {
-      if kind == "worker_run" {
-        if let workerId = dict["workerId"] as? String, !workerId.isEmpty {
-          return "worker run · \(workerId)"
-        }
-        if let selector = dict["workerSelector"] as? [String: Any],
-           let mode = selector["mode"] as? String,
-           mode != "none",
-           let value = selector["value"] as? String,
-           !value.isEmpty {
-          return "worker run · \(mode): \(value)"
-        }
-      }
-      return kind.replacingOccurrences(of: "_", with: " ")
-    }
-    return "—"
-  }
-}
-
-struct LinearWorkflowConfig: Codable, Hashable {
-  var workflows: [LinearWorkflowDefinition]
-}
-
-/// Mirrors desktop `LinearSyncDashboard`. The UI summarizes `queue.*` into
-/// flat counters via the computed properties below.
-struct LinearSyncDashboardQueue: Codable, Hashable {
-  var queued: Int
-  var retryWaiting: Int
-  var escalated: Int
-  var dispatched: Int
-  var failed: Int
-}
-
-struct LinearSyncDashboard: Codable, Hashable {
-  var enabled: Bool?
-  var running: Bool?
-  var reconciliationIntervalSec: Int?
-  var lastPollAt: String?
-  var lastSuccessAt: String?
-  var lastError: String?
-  var queue: LinearSyncDashboardQueue?
-  var claimsActive: Int?
-  var watchOnlyHits: Int?
-
-  var queuedCount: Int { queue?.queued ?? 0 }
-  /// "Running" in mobile UI = dispatched (active) + escalated (needs attention).
-  var runningCount: Int { (queue?.dispatched ?? 0) }
-  /// "Completed" isn't tracked on the dashboard; show claims-active as a
-  /// loose proxy for "work completed this cycle".
-  var completedCount: Int { claimsActive ?? 0 }
-  var failedCount: Int? { queue?.failed }
-}
-
-struct LinearSyncQueueItem: Codable, Hashable, Identifiable {
-  var id: String
-  var issueId: String
-  var title: String?
-  var status: String
-  var dispatchedAt: String?
-  var updatedAt: String?
-}
-
-struct LinearIngressEventRecord: Codable, Hashable, Identifiable {
-  var id: String
-  var issueId: String?
-  var issueIdentifier: String?
-  /// Raw ingress event kind (e.g. "issue.created", "issue.updated").
-  var kind: String
-  var summary: String?
-  var timestamp: String?
-  var receivedAt: String?
-  var createdAt: String?
-
-  /// UI-friendly timestamp preferring the most explicit field available.
-  var displayTimestamp: String? { timestamp ?? receivedAt ?? createdAt }
-  /// Issue ID is optional on desktop — fall back to "—" for display.
-  var displayIssueId: String { issueIdentifier ?? issueId ?? "—" }
-
-  private enum CodingKeys: String, CodingKey {
-    case id, issueId, issueIdentifier, kind, entityType, action, summary, timestamp, receivedAt, createdAt
-  }
-
-  init(from decoder: Decoder) throws {
-    let c = try decoder.container(keyedBy: CodingKeys.self)
-    id = try c.decode(String.self, forKey: .id)
-    issueId = try c.decodeIfPresent(String.self, forKey: .issueId)
-    issueIdentifier = try c.decodeIfPresent(String.self, forKey: .issueIdentifier)
-    let explicitKind = try c.decodeIfPresent(String.self, forKey: .kind)
-    let entityType = try c.decodeIfPresent(String.self, forKey: .entityType)
-    let action = try c.decodeIfPresent(String.self, forKey: .action)
-    if let explicitKind, !explicitKind.isEmpty {
-      kind = explicitKind
-    } else if let entityType, let action, !entityType.isEmpty, !action.isEmpty {
-      kind = "\(entityType).\(action)"
-    } else if let entityType, !entityType.isEmpty {
-      kind = entityType
-    } else if let action, !action.isEmpty {
-      kind = action
-    } else {
-      kind = "event"
-    }
-    summary = try c.decodeIfPresent(String.self, forKey: .summary)
-    timestamp = try c.decodeIfPresent(String.self, forKey: .timestamp)
-    receivedAt = try c.decodeIfPresent(String.self, forKey: .receivedAt)
-    createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt)
-  }
-
-  func encode(to encoder: Encoder) throws {
-    var c = encoder.container(keyedBy: CodingKeys.self)
-    try c.encode(id, forKey: .id)
-    try c.encodeIfPresent(issueId, forKey: .issueId)
-    try c.encodeIfPresent(issueIdentifier, forKey: .issueIdentifier)
-    try c.encode(kind, forKey: .kind)
-    try c.encodeIfPresent(summary, forKey: .summary)
-    try c.encodeIfPresent(timestamp, forKey: .timestamp)
-    try c.encodeIfPresent(receivedAt, forKey: .receivedAt)
-    try c.encodeIfPresent(createdAt, forKey: .createdAt)
-  }
-}
-
-struct CtoTriggerAgentWakeupResult: Codable, Hashable {
-  var ok: Bool?
-  var runId: String?
-  var message: String?
-}
-
-/// Small type-erased decoder used when we need to decode JSON values of
-/// unknown shape (currently only for LinearWorkflowDefinition's nested
-/// triggers/target trees).
-private struct AnyDecodable: Decodable {
-  let value: Any
-  init(from decoder: Decoder) throws {
-    let container = try decoder.singleValueContainer()
-    if let bool = try? container.decode(Bool.self) { value = bool; return }
-    if let int = try? container.decode(Int.self) { value = int; return }
-    if let double = try? container.decode(Double.self) { value = double; return }
-    if let string = try? container.decode(String.self) { value = string; return }
-    if let array = try? container.decode([AnyDecodable].self) {
-      value = array.map { $0.value }; return
-    }
-    if let dict = try? container.decode([String: AnyDecodable].self) {
-      value = dict.mapValues { $0.value }; return
-    }
-    if container.decodeNil() { value = NSNull(); return }
-    value = NSNull()
-  }
-}
 
 struct AgentChatSession: Codable, Identifiable, Equatable {
   var id: String { sessionId }

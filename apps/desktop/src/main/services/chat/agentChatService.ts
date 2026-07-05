@@ -229,7 +229,6 @@ import {
   buildProviderGroupBlocks,
   createModelOrderMap,
 } from "../../../shared/modelCatalog";
-import { canSwitchChatSessionModel } from "../../../shared/chatModelSwitching";
 import { detectAllAuth } from "../ai/authDetector";
 import type {
   AskUserToolInput,
@@ -274,11 +273,8 @@ import {
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
-import type { createWorkerAgentService } from "../cto/workerAgentService";
-import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
+import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
-import type { createFlowPolicyService } from "../cto/flowPolicyService";
-import type { createLinearDispatcherService } from "../cto/linearDispatcherService";
 import type { LinearClient } from "../cto/linearClient";
 import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
@@ -5200,19 +5196,7 @@ function normalizePersistedCompletion(value: unknown): AgentChatCompletionReport
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
-  if (value === "cto") return "cto";
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  if (!trimmed.startsWith("agent:")) return undefined;
-  const agentId = trimmed.slice("agent:".length).trim();
-  return agentId.length > 0 ? `agent:${agentId}` : undefined;
-}
-
-function resolveWorkerIdentityAgentId(identityKey: AgentChatIdentityKey | undefined): string | null {
-  if (!identityKey || identityKey === "cto") return null;
-  const match = /^agent:(.+)$/.exec(identityKey);
-  const agentId = match?.[1]?.trim() ?? "";
-  return agentId.length > 0 ? agentId : null;
+  return value === "cto" ? "cto" : undefined;
 }
 
 function normalizeCapabilityMode(value: unknown): CtoCapabilityMode | undefined {
@@ -5248,12 +5232,9 @@ export function createAgentChatService(args: {
   transcriptsDir: string;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
+  ctoMemoryService?: CtoMemoryService | null;
   linearIssueTracker?: IssueTracker | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
   getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
-  getLinearDispatcherService?: () => ReturnType<typeof createLinearDispatcherService> | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
@@ -5263,7 +5244,6 @@ export function createAgentChatService(args: {
   getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
-  getWorkerBudgetService?: () => CtoOperatorToolDeps["workerBudgetService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -5290,12 +5270,9 @@ export function createAgentChatService(args: {
     transcriptsDir,
     fileService,
     ctoStateService,
-    workerAgentService,
-    workerHeartbeatService,
+    ctoMemoryService,
     linearIssueTracker,
-    flowPolicyService,
     getOrchestrationService,
-    getLinearDispatcherService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
@@ -5305,7 +5282,6 @@ export function createAgentChatService(args: {
     getAutomationService,
     getGitService,
     conflictService,
-    getWorkerBudgetService,
     computerUseArtifactBrokerService,
     laneService,
     sessionService,
@@ -6581,10 +6557,6 @@ export function createAgentChatService(args: {
         defaultReasoningEffort: null,
         resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || laneId,
         laneService,
-        workerAgentService: workerAgentService ?? null,
-        workerHeartbeatService: workerHeartbeatService ?? null,
-        linearDispatcherService: getLinearDispatcherService?.() ?? null,
-        flowPolicyService: flowPolicyService ?? null,
         prService: prService ?? null,
         fileService: fileService ?? null,
         processService: processService ?? null,
@@ -6594,7 +6566,6 @@ export function createAgentChatService(args: {
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
-        workerBudgetService: getWorkerBudgetService?.() ?? null,
         steerChat: undefined,
         cancelSteer: undefined,
         handoffChat: undefined,
@@ -6602,6 +6573,7 @@ export function createAgentChatService(args: {
         approveToolUse: undefined,
         issueTracker: linearIssueTracker ?? null,
         ctoStateService: ctoStateService ?? null,
+        ctoMemoryService: ctoMemoryService ?? null,
         listChats: listSessions,
         getChatStatus: getSessionSummary,
         getChatTranscript,
@@ -7490,7 +7462,7 @@ export function createAgentChatService(args: {
   const usesIdentityContinuity = (managed: ManagedChatSession): boolean => Boolean(managed.session.identityKey);
 
   const buildDeterministicContinuitySummary = (managed: ManagedChatSession): string | null => {
-    const recentConversation = buildRecentConversationContext(managed, 8).trim();
+    const recentConversation = buildRecentConversationContext(managed, 20).trim();
     if (!recentConversation.length) return null;
     return [
       "Recent continuity snapshot:",
@@ -7498,19 +7470,91 @@ export function createAgentChatService(args: {
     ].join("\n");
   };
 
+  // Mirror a continuity summary into the CTO's durable thread-state.md so the
+  // rolling summary survives even if the in-memory session is torn down. Never
+  // throws — a failed memory write must not break a turn or a model switch.
+  const writeCtoThreadStateFromSummary = (
+    managed: ManagedChatSession,
+    summary: string | null,
+    reason: string,
+  ): void => {
+    if (managed.session.identityKey !== "cto" || !ctoMemoryService) return;
+    const trimmed = summary?.trim();
+    if (!trimmed?.length) return;
+    try {
+      ctoMemoryService.writeThreadState(trimmed, reason);
+    } catch (error) {
+      logger.warn("agent_chat.cto_thread_state_write_failed", {
+        sessionId: managed.session.id,
+        reason,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  // Persist the CTO's live model selection back into its identity model
+  // preferences so the identity file stays the single source of truth. Only
+  // writes when something actually changed (avoids version-bump loops). Never
+  // throws — a failed persist must not break the model switch.
+  const persistCtoModelPreference = (managed: ManagedChatSession, modelId: string): void => {
+    if (managed.session.identityKey !== "cto" || !ctoStateService) return;
+    try {
+      const prefs = ctoStateService.getIdentity().modelPreferences;
+      const nextProvider = managed.session.provider;
+      const nextModel = managed.session.model;
+      const nextReasoning = managed.session.reasoningEffort ?? null;
+      if (
+        prefs.provider === nextProvider
+        && prefs.model === nextModel
+        && prefs.modelId === modelId
+        && (prefs.reasoningEffort ?? null) === nextReasoning
+      ) {
+        return;
+      }
+      ctoStateService.updateIdentity({
+        modelPreferences: {
+          provider: nextProvider,
+          model: nextModel,
+          modelId,
+          reasoningEffort: nextReasoning,
+        },
+      });
+    } catch (error) {
+      logger.warn("agent_chat.cto_model_pref_persist_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  // Deterministic half of the continuity flush: writes the tail-based snapshot
+  // to the session and (for CTO) to thread-state.md. Synchronous and never
+  // gated by an in-flight LLM upgrade, so callers on the model-switch path can
+  // rely on it having flushed before teardown.
+  const flushIdentityContinuityDeterministic = (
+    managed: ManagedChatSession,
+    reason: "compaction" | "provider_reset",
+  ): string | null => {
+    if (!usesIdentityContinuity(managed)) return null;
+    const deterministic = buildDeterministicContinuitySummary(managed);
+    if (!deterministic) return null;
+    managed.continuitySummary = deterministic;
+    managed.continuitySummaryUpdatedAt = nowIso();
+    persistChatState(managed);
+    writeCtoThreadStateFromSummary(managed, deterministic, reason);
+    return deterministic;
+  };
+
   const maybeRefreshIdentityContinuitySummary = async (
     managed: ManagedChatSession,
     reason: "compaction" | "provider_reset",
   ): Promise<void> => {
-    if (!usesIdentityContinuity(managed)) return;
-    if (managed.continuitySummaryInFlight) return;
-
-    const deterministic = buildDeterministicContinuitySummary(managed);
+    // Deterministic flush runs first and unconditionally so the durable
+    // thread-state is guaranteed fresh even when an LLM upgrade is still in
+    // flight (the switch path depends on this synchronous prefix).
+    const deterministic = flushIdentityContinuityDeterministic(managed, reason);
     if (!deterministic) return;
-
-    managed.continuitySummary = deterministic;
-    managed.continuitySummaryUpdatedAt = nowIso();
-    persistChatState(managed);
+    if (managed.continuitySummaryInFlight) return;
 
     const auth = await detectAuth().catch(() => []);
     const availableModels = await getAvailableRegistryModels(auth);
@@ -7557,6 +7601,7 @@ export function createAgentChatService(args: {
         managed.continuitySummary = text;
         managed.continuitySummaryUpdatedAt = nowIso();
         persistChatState(managed);
+        writeCtoThreadStateFromSummary(managed, text, reason);
       }
     } catch (error) {
       logger.warn("agent_chat.identity_continuity_summary_failed", {
@@ -7597,18 +7642,14 @@ export function createAgentChatService(args: {
 
   const refreshReconstructionContext = (managed: ManagedChatSession): void => {
     const sections: string[] = [];
+    const isCto = managed.session.identityKey === "cto";
 
-    if (managed.session.identityKey === "cto" && ctoStateService) {
+    if (isCto && ctoStateService) {
       sections.push([
         "CTO Runtime Identity",
         ctoStateService.previewSystemPrompt().prompt,
       ].join("\n"));
       sections.push(ctoStateService.buildReconstructionContext(8));
-    } else {
-      const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-      if (workerAgentId && workerAgentService) {
-        sections.push(workerAgentService.buildReconstructionContext(workerAgentId, 8));
-      }
     }
 
     if (usesIdentityContinuity(managed) && managed.continuitySummary?.trim()) {
@@ -7618,7 +7659,9 @@ export function createAgentChatService(args: {
       ].join("\n"));
     }
 
-    const recentConversation = buildRecentConversationContext(managed);
+    // The CTO thread carries a deeper tail (40 vs the generic 20) since it is a
+    // long-living, memory-backed thread that survives model/provider switches.
+    const recentConversation = buildRecentConversationContext(managed, isCto ? 40 : 20);
     if (recentConversation.length) {
       sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
     }
@@ -9343,29 +9386,43 @@ export function createAgentChatService(args: {
     return `${trimmed.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
   };
 
-  const appendWorkerActivityToCto = (managed: ManagedChatSession, input: {
-    activityType: "chat_turn" | "worker_run";
-    summary: string;
-    taskKey?: string | null;
-    issueKey?: string | null;
-  }): void => {
-    const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-    if (!workerAgentId || !workerAgentService || !ctoStateService) return;
+  // Turn-completion hook. Worker/subordinate activity logging has been removed
+  // with the workers subsystem; this remains as the turn-end extension point that
+  // the CTO memory system (durable thread flushes) will hook into.
+  // Deterministic per-turn journal for the CTO's daily log. On each completed
+  // (or failed) CTO turn we append one compact line capturing the user's intent
+  // and the outcome. No LLM call; fully guarded so a failure never breaks the
+  // turn. Non-CTO sessions are ignored.
+  const appendCtoTurnJournal = (
+    managed: ManagedChatSession,
+    input: { assistantText?: string | null; failureNote?: string | null } = {},
+  ): void => {
+    if (managed.session.identityKey !== "cto" || !ctoMemoryService) return;
     try {
-      const worker = workerAgentService.getAgent(workerAgentId, { includeDeleted: true });
-      ctoStateService.appendSubordinateActivity({
-        agentId: workerAgentId,
-        agentName: worker?.name?.trim() || workerAgentId,
-        activityType: input.activityType,
-        summary: clipText(input.summary, 360),
-        sessionId: managed.session.id,
-        taskKey: input.taskKey ?? null,
-        issueKey: input.issueKey ?? null,
-      });
+      const entries = managed.recentConversationEntries;
+      let lastUser = "";
+      let lastAssistant = "";
+      for (let i = entries.length - 1; i >= 0; i -= 1) {
+        const entry = entries[i];
+        if (!lastAssistant && entry.role === "assistant") lastAssistant = entry.text.trim();
+        if (!lastUser && entry.role === "user") {
+          lastUser = (entry.displayText?.trim() || entry.text.trim());
+        }
+        if (lastUser && lastAssistant) break;
+      }
+      const outcome = input.failureNote?.trim()
+        ? input.failureNote.trim()
+        : (input.assistantText?.trim() || lastAssistant);
+      if (!lastUser && !outcome) return;
+      const clip = (value: string, max: number): string => {
+        const normalized = value.replace(/\s+/g, " ").trim();
+        return normalized.length > max ? `${normalized.slice(0, max - 1)}…` : normalized;
+      };
+      const line = `${ctoMemoryService._localHourMinute()} — ${clip(lastUser, 160)} → ${clip(outcome, 200)}`;
+      ctoMemoryService.appendDailyEntry(line);
     } catch (error) {
-      logger.warn("agent_chat.worker_activity_append_failed", {
+      logger.warn("agent_chat.cto_turn_journal_failed", {
         sessionId: managed.session.id,
-        workerAgentId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -10889,22 +10946,6 @@ export function createAgentChatService(args: {
       } catch (error) {
         logger.warn("agent_chat.cto_log_append_failed", {
           sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-    const workerAgentId = resolveWorkerIdentityAgentId(managed.session.identityKey);
-    if (workerAgentId && workerAgentService) {
-      try {
-        workerAgentService.appendSessionLog(workerAgentId, {
-          ...sessionLogArgs,
-          summary: explicitSummary || fallbackSummary || "Worker session ended.",
-          startedAt: managed.session.createdAt,
-        });
-      } catch (error) {
-        logger.warn("agent_chat.worker_log_append_failed", {
-          sessionId: managed.session.id,
-          workerAgentId,
           error: error instanceof Error ? error.message : String(error)
         });
       }
@@ -13443,10 +13484,7 @@ export function createAgentChatService(args: {
       }
 
       if (assistantText.trim().length > 0) {
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: assistantText,
-        });
+        appendCtoTurnJournal(managed, { assistantText });
       }
 
       const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
@@ -13517,10 +13555,7 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
 
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: `Turn failed: ${errorMessage}`,
-        });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
       } else if (isAbortRelatedError(effectiveError)) {
         // System-triggered abort (dispose/teardown) that wasn't flagged as interrupted.
         // Treat as interruption to avoid surfacing raw SDK messages like "aborted by user".
@@ -13580,10 +13615,7 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
 
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: `Turn failed: ${errorMessage}`,
-        });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
 
         // If resume failed, clear sessionId and the caller can retry fresh
         const isStaleSessionError = (err: unknown): boolean => {
@@ -14048,10 +14080,7 @@ export function createAgentChatService(args: {
         reportProviderRuntimeFailure("claude", result.state?.detail ?? result.state?.state ?? result.status);
       }
       if (result.assistantText.trim().length > 0) {
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: result.assistantText,
-        });
+        appendCtoTurnJournal(managed, { assistantText: result.assistantText });
       }
       const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
       if (endSha) {
@@ -14082,10 +14111,7 @@ export function createAgentChatService(args: {
         status: "failed",
         ...doneModel,
       });
-      appendWorkerActivityToCto(managed, {
-        activityType: "chat_turn",
-        summary: `Turn failed: ${errorMessage}`,
-      });
+      appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${errorMessage}` });
       persistChatState(managed);
     }
   };
@@ -14846,10 +14872,7 @@ export function createAgentChatService(args: {
         });
 
         if (finalAssistantText.trim().length > 0) {
-          appendWorkerActivityToCto(managed, {
-            activityType: "chat_turn",
-            summary: finalAssistantText,
-          });
+          appendCtoTurnJournal(managed, { assistantText: finalAssistantText });
         }
 
         const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
@@ -14916,9 +14939,8 @@ export function createAgentChatService(args: {
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
 
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: error instanceof Error
+        appendCtoTurnJournal(managed, {
+          failureNote: error instanceof Error
             ? `Turn failed: ${error.message}`
             : `Turn failed: ${String(error)}`,
         });
@@ -20507,10 +20529,7 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     });
 
-    appendWorkerActivityToCto(managed, {
-      activityType: "chat_turn",
-      summary: `Turn failed before execution: ${message}`,
-    });
+    appendCtoTurnJournal(managed, { failureNote: `Turn failed before execution: ${message}` });
     persistChatState(managed);
   };
 
@@ -21875,10 +21894,7 @@ export function createAgentChatService(args: {
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
-      appendWorkerActivityToCto(managed, {
-        activityType: "chat_turn",
-        summary: "Cursor SDK agent turn completed.",
-      });
+      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
@@ -21918,10 +21934,7 @@ export function createAgentChatService(args: {
           model: turnModel,
           ...(turnModelId ? { modelId: turnModelId } : {}),
         });
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: `Turn failed: ${msg}`,
-        });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
       }
       persistChatState(managed);
     } finally {
@@ -21933,6 +21946,11 @@ export function createAgentChatService(args: {
         setSessionIdle(managed);
       }
       if (pendingModelSwitchReset && managed.runtime === runtime && !managed.closed) {
+        // Deferred cursor-busy model switch: flush durable memory before the
+        // actual teardown, mirroring the synchronous switch path.
+        if (managed.session.identityKey === "cto") {
+          void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
+        }
         refreshReconstructionContext(managed);
         teardownRuntime(managed, "model_switch");
       }
@@ -22293,10 +22311,7 @@ export function createAgentChatService(args: {
         }
       }
 
-      appendWorkerActivityToCto(managed, {
-        activityType: "chat_turn",
-        summary: "Cursor Cloud agent turn completed.",
-      });
+      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
@@ -22332,10 +22347,7 @@ export function createAgentChatService(args: {
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: `Cloud turn failed: ${msg}`,
-        });
+        appendCtoTurnJournal(managed, { failureNote: `Cloud turn failed: ${msg}` });
       }
       persistChatState(managed);
     } finally {
@@ -23031,10 +23043,7 @@ export function createAgentChatService(args: {
         shouldDeliverQueuedSteer = runtime.pendingSteers.length > 0;
       }
 
-      appendWorkerActivityToCto(managed, {
-        activityType: "chat_turn",
-        summary: "Droid agent turn completed.",
-      });
+      appendCtoTurnJournal(managed);
       persistChatState(managed);
     } catch (error) {
       markSessionIdleWithFreshCache(managed);
@@ -23085,10 +23094,7 @@ export function createAgentChatService(args: {
           model: managed.session.model,
           ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
         });
-        appendWorkerActivityToCto(managed, {
-          activityType: "chat_turn",
-          summary: `Turn failed: ${msg}`,
-        });
+        appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${msg}` });
       }
       persistChatState(managed);
     } finally {
@@ -24963,15 +24969,26 @@ export function createAgentChatService(args: {
       ? null
       : identitySessions.find((entry) => entry.laneId === canonicalLaneId) ?? null;
 
-    const preferred = canonicalExisting;
+    // D5: the CTO is a single project-level thread. If nothing lives on the
+    // canonical lane but CTO sessions exist on other lanes, reuse the newest
+    // one and rebind it to the canonical lane instead of forking a parallel
+    // thread. This applies only to "cto"; other identities keep the strict
+    // canonical-only behavior.
+    const foreignCtoExisting =
+      args.reuseExisting === false || args.identityKey !== "cto" || canonicalExisting
+        ? null
+        : identitySessions[0] ?? null;
+
+    const preferred = canonicalExisting ?? foreignCtoExisting;
     if (preferred) {
-      // `canonicalExisting` is already filtered to `entry.laneId === canonicalLaneId`,
-      // so `preferred` is guaranteed to be on the canonical lane here — no
-      // migration guard needed. Foreign-lane legacy sessions are left untouched
-      // (see the `does not reuse a foreign-lane identity session` test); a
-      // fresh canonical session will be created below when none is found.
       const managed = ensureManagedSession(preferred.sessionId);
       managed.session.identityKey = args.identityKey;
+      // Rebind a reused foreign-lane CTO session onto the canonical lane so the
+      // thread is stable no matter where it was last active.
+      if (args.identityKey === "cto" && managed.session.laneId !== canonicalLaneId) {
+        managed.session.laneId = canonicalLaneId;
+        sessionService.updateMeta({ sessionId: managed.session.id, laneId: canonicalLaneId });
+      }
       managed.session.capabilityMode = inferCapabilityMode(managed.session.provider);
       if (args.reasoningEffort) {
         managed.session.reasoningEffort = normalizeReasoningEffort(args.reasoningEffort);
@@ -24992,23 +25009,39 @@ export function createAgentChatService(args: {
       if (managed.session.status === "ended") {
         await resumeSession({ sessionId: managed.session.id });
       }
+
+      // D3 (half 2): reconcile the live session model with the CTO identity's
+      // stored preference (or an explicit request). A Settings/composer model
+      // change persisted into modelPreferences should move the live thread on
+      // the next ensureSession — but never mid-turn.
+      if (args.identityKey === "cto" && ctoStateService && managed.session.status !== "active") {
+        const desiredModelId =
+          (typeof args.modelId === "string" && args.modelId.trim().length ? args.modelId.trim() : null)
+          ?? ctoStateService.getIdentity().modelPreferences.modelId
+          ?? null;
+        if (desiredModelId && desiredModelId !== managed.session.modelId) {
+          try {
+            await updateSession({
+              sessionId: managed.session.id,
+              modelId: desiredModelId,
+              reasoningEffort: managed.session.reasoningEffort ?? null,
+            });
+          } catch (error) {
+            logger.warn("agent_chat.cto_model_reconcile_failed", {
+              sessionId: managed.session.id,
+              desiredModelId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      }
       return ensureManagedSession(managed.session.id).session;
     }
 
     const ctoIdentity = ctoStateService?.getIdentity();
-    const workerAgentId = resolveWorkerIdentityAgentId(args.identityKey);
-    const workerIdentity = workerAgentId && workerAgentService
-      ? workerAgentService.getAgent(workerAgentId, { includeDeleted: true })
-      : null;
-    const workerAdapterConfig = workerIdentity?.adapterConfig && typeof workerIdentity.adapterConfig === "object"
-      ? workerIdentity.adapterConfig as Record<string, unknown>
-      : null;
     const pref = args.identityKey === "cto" ? ctoIdentity?.modelPreferences : null;
     const preferredProviderRaw = (pref?.provider ?? "").trim().toLowerCase();
     const providerFromPreference: AgentChatProvider = (() => {
-      if (workerIdentity?.adapterType === "claude-local") return "claude";
-      if (workerIdentity?.adapterType === "codex-local") return "codex";
-      if (workerIdentity?.adapterType === "process") return "opencode";
       if (preferredProviderRaw.includes("codex") || preferredProviderRaw.includes("openai")) return "codex";
       if (preferredProviderRaw.includes("claude") || preferredProviderRaw.includes("anthropic")) return "claude";
       if (preferredProviderRaw.includes("droid") || preferredProviderRaw.includes("factory")) return "droid";
@@ -25021,9 +25054,7 @@ export function createAgentChatService(args: {
       : null;
     const preferredModelId = typeof pref?.modelId === "string" && pref.modelId.trim().length
       ? pref.modelId.trim()
-      : typeof workerAdapterConfig?.modelId === "string" && workerAdapterConfig.modelId.trim().length
-        ? workerAdapterConfig.modelId.trim()
-        : null;
+      : null;
     const resolvedModelId = explicitModelId ?? preferredModelId;
     const resolvedDescriptor = resolvedModelId ? getModelById(resolvedModelId) : undefined;
 
@@ -25039,9 +25070,7 @@ export function createAgentChatService(args: {
 
     const preferredModel = typeof pref?.model === "string" && pref.model.trim().length
       ? pref.model.trim()
-      : typeof workerAdapterConfig?.model === "string" && workerAdapterConfig.model.trim().length
-        ? workerAdapterConfig.model.trim()
-        : fallbackModelForProvider(provider);
+      : fallbackModelForProvider(provider);
 
     const created = await createSession({
       laneId: canonicalLaneId,
@@ -26290,7 +26319,6 @@ export function createAgentChatService(args: {
     const identityPinned = isPrimaryPinnedIdentity(managed.session.identityKey);
     const orchestrationLockedMode = lockedOrchestrationPermissionMode(managed.session);
     const permissionsPinned = identityPinned || orchestrationLockedMode !== null;
-    const hasConversation = managed.recentConversationEntries.length > 0 || readTranscriptConversationEntries(managed).length > 0;
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
@@ -26321,22 +26349,7 @@ export function createAgentChatService(args: {
           descriptor,
         });
       }
-      const previousModelId = managed.session.modelId
-        ?? resolveModelIdFromStoredValue(managed.session.model, managed.session.provider)
-        ?? managed.session.model;
       const previousProvider = managed.session.provider;
-      const modelSwitchPolicy = managed.session.identityKey === "cto"
-        ? "any-after-launch"
-        : "same-family-after-launch";
-
-      if (!canSwitchChatSessionModel({
-        currentModelId: previousModelId,
-        nextModelId: descriptor.id,
-        hasConversation,
-        policy: modelSwitchPolicy,
-      })) {
-        throw new Error("This chat can only switch within the same model family after the conversation has started.");
-      }
 
       const modelChanged =
         previousProvider !== nextProvider
@@ -26347,6 +26360,14 @@ export function createAgentChatService(args: {
         if (managed.runtime.kind === "cursor" && managed.runtime.busy) {
           managed.runtime.pendingModelSwitchReset = true;
         } else {
+          // Flush durable memory BEFORE tearing down the old provider thread so
+          // nothing in the closing context window is lost. The deterministic
+          // thread-state write runs synchronously in the prefix of this call;
+          // only the LLM upgrade is fire-and-forget, so the switch is never
+          // blocked on an LLM round-trip.
+          if (managed.session.identityKey === "cto") {
+            void maybeRefreshIdentityContinuitySummary(managed, "provider_reset");
+          }
           teardownRuntime(managed, "model_switch");
           refreshReconstructionContext(managed);
         }
@@ -26418,6 +26439,13 @@ export function createAgentChatService(args: {
             logger.warn("agent_chat.claude_set_model_failed", { sessionId: managed.session.id, error: String(err) });
           }
         }
+      }
+
+      // Persist the CTO's model choice back into its identity so it becomes the
+      // single source of truth (D3): a composer/settings switch on the live CTO
+      // thread is remembered for the next session. Guarded and no-op-safe.
+      if (managed.session.identityKey === "cto" && modelChanged) {
+        persistCtoModelPreference(managed, descriptor.id);
       }
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;

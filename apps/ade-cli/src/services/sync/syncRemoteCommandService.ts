@@ -30,8 +30,6 @@ import type {
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
   AgentChatUpdateSessionArgs,
-  AgentStatus,
-  AgentUpsertInput,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
@@ -40,7 +38,6 @@ import type {
   ClosePrArgs,
   CancelQueueAutomationArgs,
   CtoIdentity,
-  CtoTriggerAgentWakeupArgs,
   CreateChildLaneArgs,
   CommitIntegrationArgs,
   CreateQueuePrsArgs,
@@ -143,15 +140,9 @@ import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
-import type { createFlowPolicyService } from "../../../../desktop/src/main/services/cto/flowPolicyService";
+import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
-import type { createLinearIngressService } from "../../../../desktop/src/main/services/cto/linearIngressService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearSyncService } from "../../../../desktop/src/main/services/cto/linearSyncService";
-import type { createWorkerAgentService } from "../../../../desktop/src/main/services/cto/workerAgentService";
-import type { createWorkerBudgetService } from "../../../../desktop/src/main/services/cto/workerBudgetService";
-import type { createWorkerHeartbeatService } from "../../../../desktop/src/main/services/cto/workerHeartbeatService";
-import type { createWorkerRevisionService } from "../../../../desktop/src/main/services/cto/workerRevisionService";
 import { matchLaneOverlayPolicies } from "../../../../desktop/src/main/services/config/laneOverlayMatcher";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
@@ -192,20 +183,14 @@ type SyncRemoteCommandServiceArgs = {
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   /**
    * Resolvers for services created after createSyncService in main.ts.
    * Router handlers read them lazily so init order is not load-bearing.
    */
-  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
-  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   processService?: ReturnType<typeof createProcessService> | null;
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
@@ -2574,60 +2559,6 @@ function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegi
 }
 
 function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
-  register("cto.getRoster", { viewerAllowed: true }, async () => {
-    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
-    const sessions = await agentChatService.listSessions(undefined, { includeIdentity: true });
-    const activityTimestamp = (value: string | null | undefined): number => {
-      if (!value) return 0;
-      const parsed = Date.parse(value);
-      return Number.isFinite(parsed) ? parsed : 0;
-    };
-    const sortedByRecency = [...sessions].sort(
-      (a, b) => activityTimestamp(b.lastActivityAt) - activityTimestamp(a.lastActivityAt),
-    );
-    const ctoSummary = sortedByRecency.find((entry) => entry.identityKey === "cto") ?? null;
-    const agents = workerAgentService.listAgents();
-    const knownAgentIds = new Set(agents.map((agent) => agent.id));
-    const liveWorkers = agents.map((agent) => {
-      const sessionSummary = sortedByRecency.find(
-        (entry) => entry.identityKey === `agent:${agent.id}`,
-      ) ?? null;
-      return {
-        agentId: agent.id,
-        name: agent.name,
-        avatarSeed: agent.slug || null,
-        status: agent.status as string,
-        sessionSummary,
-      };
-    });
-    // Include agent:<id> sessions whose identity is no longer in the roster
-    // so mobile users can still see / resume orphan chats. These are marked
-    // with a synthetic "orphaned" status and no avatar seed.
-    const orphanPrefix = "agent:";
-    const orphanWorkers: typeof liveWorkers = [];
-    const seenOrphanIds = new Set<string>();
-    for (const entry of sortedByRecency) {
-      const key = entry.identityKey ?? "";
-      if (!key.startsWith(orphanPrefix)) continue;
-      const agentId = key.slice(orphanPrefix.length);
-      if (!agentId.length) continue;
-      if (knownAgentIds.has(agentId)) continue;
-      if (seenOrphanIds.has(agentId)) continue;
-      seenOrphanIds.add(agentId);
-      orphanWorkers.push({
-        agentId,
-        name: agentId,
-        avatarSeed: null,
-        status: "orphaned",
-        sessionSummary: entry,
-      });
-    }
-    liveWorkers.sort((a, b) => a.name.localeCompare(b.name));
-    orphanWorkers.sort((a, b) => a.name.localeCompare(b.name));
-    const workers = [...liveWorkers, ...orphanWorkers];
-    return { cto: ctoSummary, workers };
-  });
   register("cto.ensureSession", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const laneId = await resolvePrimaryLaneIdOnlyForSync(args);
@@ -2643,69 +2574,17 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     });
     return summarizeChatSessionForRemote(agentChatService, session);
   });
-  register("cto.ensureAgentSession", { viewerAllowed: true }, async (payload) => {
-    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
-    const agentId = requireString(payload.agentId, "cto.ensureAgentSession requires agentId.");
-    // Reject unknown agentIds before we spin up an identity-bound session —
-    // otherwise clients could spawn orphan `agent:<id>` sessions for agents
-    // that don't exist.
-    const agent = typeof workerAgentService.getAgent === "function"
-      ? workerAgentService.getAgent(agentId)
-      : workerAgentService.listAgents().find((entry) => entry.id === agentId) ?? null;
-    if (!agent) {
-      throw new Error(`cto.ensureAgentSession: unknown agentId '${agentId}'`);
-    }
-    const laneId = await resolvePrimaryLaneIdOnlyForSync(args);
-    if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
-    const modelId = asTrimmedString(payload.modelId);
-    const reasoningEffort = asTrimmedString(payload.reasoningEffort);
-    const session = await agentChatService.ensureIdentitySession({
-      identityKey: `agent:${agentId}`,
-      laneId,
-      modelId: modelId ?? null,
-      reasoningEffort: reasoningEffort ?? null,
-      permissionMode: "full-auto",
-    });
-    return summarizeChatSessionForRemote(agentChatService, session);
-  });
 
   register("cto.getState", { viewerAllowed: true }, async (payload) => {
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const recentLimit = asOptionalNumber(payload.recentLimit);
     return ctoStateService.getSnapshot(recentLimit ?? 20);
   });
-  register("cto.listAgents", { viewerAllowed: true }, async (payload) => {
-    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
-    const includeDeleted = asOptionalBoolean(payload.includeDeleted);
-    return workerAgentService.listAgents(includeDeleted === undefined ? {} : { includeDeleted });
-  });
-  register("cto.getBudgetSnapshot", { viewerAllowed: true }, async (payload) => {
-    const workerBudgetService = requireService(args.workerBudgetService, "Worker budget service not available.");
-    const monthKey = asTrimmedString(payload.monthKey);
-    return workerBudgetService.getBudgetSnapshot(monthKey ? { monthKey } : {});
-  });
-  register("cto.listAgentRuns", { viewerAllowed: true }, async (payload) => {
-    const workerHeartbeatService = requireService(args.workerHeartbeatService, "Worker heartbeat service not available.");
-    const agentId = requireString(payload.agentId, "cto.listAgentRuns requires agentId.");
-    const limit = asOptionalNumber(payload.limit);
-    return workerHeartbeatService.listRuns({ agentId, ...(typeof limit === "number" ? { limit } : {}) });
-  });
-  register("cto.listAgentSessionLogs", { viewerAllowed: true }, async (payload) => {
-    const workerHeartbeatService = requireService(args.workerHeartbeatService, "Worker heartbeat service not available.");
-    const agentId = requireString(payload.agentId, "cto.listAgentSessionLogs requires agentId.");
-    const limit = asOptionalNumber(payload.limit);
-    return workerHeartbeatService.listAgentSessionLogs(agentId, limit ?? 40);
-  });
-  register("cto.listAgentRevisions", { viewerAllowed: true }, async (payload) => {
-    const workerRevisionService = requireService(args.workerRevisionService, "Worker revision service not available.");
-    const agentId = requireString(payload.agentId, "cto.listAgentRevisions requires agentId.");
-    const limit = asOptionalNumber(payload.limit);
-    return workerRevisionService.listAgentRevisions(agentId, limit ?? 20);
-  });
-  register("cto.getFlowPolicy", { viewerAllowed: true }, async () => {
-    const flowPolicyService = requireService(args.flowPolicyService, "Flow policy service not available.");
-    return flowPolicyService.getPolicy();
+  register("cto.getMemory", { viewerAllowed: true }, async () => {
+    const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
+    // Returns the exact CtoMemorySnapshot shape the iOS client decodes:
+    // { memory, threadState, dailyLog, dailyLogDate, updatedAt }.
+    return ctoMemoryService.getSnapshot();
   });
   register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () => {
     const credentialStatus = args.linearCredentialService?.getStatus() ?? {
@@ -2836,68 +2715,10 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     if (!linearIssueTracker) return [];
     return linearIssueTracker.fetchIssueComments(issueId);
   });
-  register("cto.getLinearSyncDashboard", { viewerAllowed: true }, async () => {
-    const linearSyncService = requireService(args.getLinearSyncService?.() ?? null, "Linear sync service not available.");
-    return linearSyncService.getDashboard();
-  });
-  register("cto.runLinearSyncNow", { viewerAllowed: true, queueable: true }, async () => {
-    const linearSyncService = requireService(args.getLinearSyncService?.() ?? null, "Linear sync service not available.");
-    return linearSyncService.runSyncNow();
-  });
-  register("cto.listLinearSyncQueue", { viewerAllowed: true }, async () => {
-    const linearSyncService = requireService(args.getLinearSyncService?.() ?? null, "Linear sync service not available.");
-    return linearSyncService.listQueue({ limit: 300 });
-  });
-  register("cto.listLinearIngressEvents", { viewerAllowed: true }, async (payload) => {
-    const linearIngressService = requireService(args.getLinearIngressService?.() ?? null, "Linear ingress service not available.");
-    const limit = asOptionalNumber(payload.limit);
-    return linearIngressService.listRecentEvents(limit ?? 20);
-  });
   register("cto.updateIdentity", { viewerAllowed: true, queueable: true }, async (payload) => {
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
     const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
     return ctoStateService.updateIdentity(patch);
-  });
-  register("cto.saveAgent", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const workerRevisionService = requireService(args.workerRevisionService, "Worker revision service not available.");
-    if (!isRecord(payload.agent)) {
-      throw new Error("cto.saveAgent requires agent object.");
-    }
-    const saved = workerRevisionService.saveAgent(payload.agent as AgentUpsertInput, "user");
-    (args.workerHeartbeatService as { syncFromConfig?: () => void } | null | undefined)?.syncFromConfig?.();
-    return saved;
-  });
-  register("cto.removeAgent", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
-    const agentId = requireString(payload.agentId, "cto.removeAgent requires agentId.");
-    workerAgentService.removeAgent(agentId);
-    (args.workerHeartbeatService as { syncFromConfig?: () => void } | null | undefined)?.syncFromConfig?.();
-    return {};
-  });
-  register("cto.setAgentStatus", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const workerAgentService = requireService(args.workerAgentService, "Worker agent service not available.");
-    const agentId = requireString(payload.agentId, "cto.setAgentStatus requires agentId.");
-    const status = requireString(payload.status, "cto.setAgentStatus requires status.") as AgentStatus;
-    workerAgentService.setAgentStatus(agentId, status);
-    return {};
-  });
-  register("cto.triggerAgentWakeup", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const workerHeartbeatService = requireService(args.workerHeartbeatService, "Worker heartbeat service not available.");
-    const agentId = requireString(payload.agentId, "cto.triggerAgentWakeup requires agentId.");
-    const reason = asTrimmedString(payload.reason);
-    const context = isRecord(payload.context) ? payload.context : undefined;
-    return workerHeartbeatService.triggerWakeup({
-      agentId,
-      ...(reason ? { reason: reason as CtoTriggerAgentWakeupArgs["reason"] } : {}),
-      ...(context ? { context } : {}),
-    });
-  });
-  register("cto.rollbackAgentRevision", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const workerRevisionService = requireService(args.workerRevisionService, "Worker revision service not available.");
-    const agentId = requireString(payload.agentId, "cto.rollbackAgentRevision requires agentId.");
-    const revisionId = requireString(payload.revisionId, "cto.rollbackAgentRevision requires revisionId.");
-    await workerRevisionService.rollbackAgentRevision(agentId, revisionId, "user");
-    return {};
   });
 }
 

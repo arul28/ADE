@@ -112,7 +112,6 @@ import type {
   SyncProjectSwitchResultPayload,
   UpdateInstallImpact,
 } from "../shared/types";
-import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import type { IosSimulatorDrawerMode } from "../shared/types/iosSimulator";
 import type { AppContext } from "./services/ipc/registerIpc";
 import fs from "node:fs";
@@ -166,28 +165,13 @@ import {
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
-import { createWorkerAgentService } from "./services/cto/workerAgentService";
-import { createWorkerRevisionService } from "./services/cto/workerRevisionService";
-import { createWorkerBudgetService } from "./services/cto/workerBudgetService";
-import { createWorkerAdapterRuntimeService } from "./services/cto/workerAdapterRuntimeService";
-import { createWorkerTaskSessionService } from "./services/cto/workerTaskSessionService";
-import { createWorkerHeartbeatService } from "./services/cto/workerHeartbeatService";
+import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { buildRendererCspPolicy, shouldApplyRendererCsp } from "./rendererCsp";
 import { createLinearClient } from "./services/cto/linearClient";
 import { createLinearIssueTracker, type LinearIssueTracker } from "./services/cto/linearIssueTracker";
 import { createLinearLiveStatusService, type LinearLiveStatusService } from "./services/cto/linearLiveStatusService";
-import { createLinearTemplateService } from "./services/cto/linearTemplateService";
-import { createFlowPolicyService } from "./services/cto/flowPolicyService";
-import { createLinearWorkflowFileService } from "./services/cto/linearWorkflowFileService";
-import { createLinearRoutingService } from "./services/cto/linearRoutingService";
-import { createLinearIntakeService } from "./services/cto/linearIntakeService";
-import { createLinearOutboundService } from "./services/cto/linearOutboundService";
-import { createLinearCloseoutService } from "./services/cto/linearCloseoutService";
-import { createLinearDispatcherService } from "./services/cto/linearDispatcherService";
 import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services/cto/linearLaneCardService";
-import { createLinearIngressService } from "./services/cto/linearIngressService";
-import { createLinearSyncService } from "./services/cto/linearSyncService";
 import { createOrchestrationService } from "./services/orchestration/orchestrationService";
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
@@ -2696,15 +2680,6 @@ app.whenReady().then(async () => {
     });
     prPollingServiceRef = prPollingService;
 
-    let linearDispatcherServiceRef: ReturnType<
-      typeof createLinearDispatcherService
-    > | null = null;
-    let linearSyncServiceRef: ReturnType<
-      typeof createLinearSyncService
-    > | null = null;
-    let linearIngressServiceRef: ReturnType<
-      typeof createLinearIngressService
-    > | null = null;
     let agentChatServiceRef: ReturnType<typeof createAgentChatService> | null =
       null;
     let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
@@ -2830,7 +2805,6 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-      void linearSyncServiceRef?.processActiveRunsNow().catch(() => {});
     };
 
     let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
@@ -2917,17 +2891,18 @@ app.whenReady().then(async () => {
     });
     sessionDeltaServiceRef = sessionDeltaService;
 
+    const ctoMemoryService = createCtoMemoryService({
+      adeDir: adePaths.adeDir,
+      logger,
+    });
+
     const ctoStateService = createCtoStateService({
       db,
       projectId,
       adeDir: adePaths.adeDir,
+      ctoMemoryService,
     });
 
-    const workerAgentService = createWorkerAgentService({
-      db,
-      projectId,
-      adeDir: adePaths.adeDir,
-    });
     const adeProjectService = createAdeProjectService({
       projectRoot,
       db,
@@ -2935,7 +2910,6 @@ app.whenReady().then(async () => {
       logger,
       projectConfigService,
       ctoStateService,
-      workerAgentService,
     });
     setImmediate(() => {
       try {
@@ -2955,39 +2929,6 @@ app.whenReady().then(async () => {
 
     });
 
-    const workerRevisionService = createWorkerRevisionService({
-      db,
-      projectId,
-      workerAgentService,
-    });
-
-    const workerTaskSessionService = createWorkerTaskSessionService({
-      db,
-      projectId,
-    });
-
-    const workerAdapterRuntimeService = createWorkerAdapterRuntimeService({
-      getAgentChatService: () => agentChatServiceRef,
-    });
-
-    const workerBudgetService = createWorkerBudgetService({
-      db,
-      projectId,
-      workerAgentService,
-      projectConfigService,
-    });
-
-    const workerHeartbeatService = createWorkerHeartbeatService({
-      db,
-      projectId,
-      workerAgentService,
-      workerAdapterRuntimeService,
-      workerTaskSessionService,
-      workerBudgetService,
-      ctoStateService,
-      logger,
-      autoStart: false,
-    });
     const automationSecretService = createAutomationSecretService({
       adeDir: adePaths.adeDir,
       logger,
@@ -3013,45 +2954,13 @@ app.whenReady().then(async () => {
       logger,
     });
     linearLiveStatusServiceRef = linearLiveStatusService;
-    const linearTemplateService = createLinearTemplateService({
-      adeDir: adePaths.adeDir,
-    });
-    const linearWorkflowFileService = createLinearWorkflowFileService({
-      projectRoot,
-    });
-    const flowPolicyService = createFlowPolicyService({
-      db,
-      projectId,
-      projectConfigService,
-      workflowFileService: linearWorkflowFileService,
-    });
-    const linearRoutingService = createLinearRoutingService({
-      flowPolicyService,
-      workerAgentService,
-    });
-    const linearIntakeService = createLinearIntakeService({
-      db,
-      projectId,
-      issueTracker: linearIssueTracker,
-    });
-    const linearOutboundService = createLinearOutboundService({
-      db,
-      projectId,
-      projectRoot,
-      issueTracker: linearIssueTracker,
-      logger,
-    });
 
     const agentChatService = createAgentChatService({
       projectRoot,
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
-      workerAgentService,
-      workerHeartbeatService,
       linearIssueTracker,
-      flowPolicyService,
       getOrchestrationService: () => orchestrationServiceRef,
-      getLinearDispatcherService: () => linearDispatcherServiceRef,
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
@@ -3061,13 +2970,13 @@ app.whenReady().then(async () => {
       getAutomationService: () => automationService,
       getGitService: () => gitServiceRef,
       conflictService,
-      getWorkerBudgetService: () => workerBudgetService,
       laneService,
       sessionService,
       processRegistry,
       projectConfigService,
       aiIntegrationService,
       ctoStateService,
+      ctoMemoryService,
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
@@ -3287,18 +3196,6 @@ app.whenReady().then(async () => {
     };
 
     scheduleBackgroundProjectTask(
-      "worker_heartbeat.start",
-      () => workerHeartbeatService.start(),
-      (error) => {
-        logger.warn("worker_heartbeat.start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      30_000,
-      "ADE_ENABLE_WORKER_HEARTBEAT",
-    );
-
-    scheduleBackgroundProjectTask(
       "lanes.port_allocation_recovery",
       () => recoverPortAllocations(),
       (error) => {
@@ -3496,16 +3393,9 @@ app.whenReady().then(async () => {
       autoRebaseService,
       computerUseArtifactBrokerService,
       agentChatService,
-      workerAgentService,
-      workerBudgetService,
-      workerHeartbeatService,
-      workerRevisionService,
       ctoStateService,
-      flowPolicyService,
       linearCredentialService,
-      getLinearIngressService: () => linearIngressServiceRef,
       getLinearIssueTracker: () => linearIssueTracker,
-      getLinearSyncService: () => linearSyncServiceRef,
       processService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
@@ -3578,152 +3468,6 @@ app.whenReady().then(async () => {
       0,
       "ADE_ENABLE_SYNC_INIT",
     );
-    logger.info("project.init_stage", {
-      projectRoot,
-      stage: "linear_closeout_init",
-    });
-    const linearCloseoutService = createLinearCloseoutService({
-      issueTracker: linearIssueTracker,
-      outboundService: linearOutboundService,
-      prService,
-      computerUseArtifactBrokerService,
-      logger,
-    });
-    logger.info("project.init_stage", {
-      projectRoot,
-      stage: "linear_dispatcher_init",
-    });
-    const linearDispatcherService = createLinearDispatcherService({
-      db,
-      projectId,
-      issueTracker: linearIssueTracker,
-      workerAgentService,
-      workerHeartbeatService,
-      agentChatService,
-      laneService,
-      templateService: linearTemplateService,
-      closeoutService: linearCloseoutService,
-      outboundService: linearOutboundService,
-      workerTaskSessionService,
-      prService,
-      onEvent: (event) => {
-        emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, event);
-      },
-    });
-    linearDispatcherServiceRef = linearDispatcherService;
-
-    logger.info("project.init_stage", {
-      projectRoot,
-      stage: "linear_sync_init",
-    });
-    const linearSyncService = createLinearSyncService({
-      db,
-      logger,
-      projectId,
-      flowPolicyService,
-      routingService: linearRoutingService,
-      intakeService: linearIntakeService,
-      issueTracker: linearIssueTracker,
-      dispatcherService: linearDispatcherService,
-      hasCredentials: () => linearCredentialService.getStatus().tokenStored,
-      autoStart: false,
-      onIssueUpdated: ({ issue, previousIssue }) => {
-        automationService?.onLinearIssueChanged?.({
-          issue,
-          previousAssigneeId:
-            typeof previousIssue?.assigneeId === "string"
-              ? previousIssue.assigneeId
-              : null,
-          previousAssigneeName:
-            typeof previousIssue?.assigneeName === "string"
-              ? previousIssue.assigneeName
-              : null,
-        });
-      },
-    });
-    linearSyncServiceRef = linearSyncService;
-    scheduleBackgroundProjectTask(
-      "linear.sync_start",
-      () => linearSyncService.start(),
-      (error) => {
-        logger.warn("linear.sync_start_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-      0,
-      "ADE_ENABLE_LINEAR_SYNC",
-    );
-
-    logger.info("project.init_stage", {
-      projectRoot,
-      stage: "linear_ingress_init",
-    });
-    const linearIngressService = automationsEnabled && automationService
-      ? createLinearIngressService({
-          db,
-          logger,
-          projectId,
-          linearClient,
-          secretService: automationSecretService,
-          projectConfigService,
-          onEvent: async (event) => {
-            emitProjectEvent(projectRoot, IPC.ctoLinearWorkflowEvent, {
-              type: "linear-workflow-ingress",
-              projectId,
-              source: event.source,
-              issueId: event.issueId,
-              issueIdentifier: event.issueIdentifier,
-              summary: event.summary,
-              createdAt: event.createdAt,
-            });
-            if (event.issueId) {
-              const isCreatedIssueEvent =
-                event.entityType?.trim().toLowerCase() === "issue"
-                && /^(create|created)$/i.test(event.action?.trim() ?? "");
-              await linearSyncService.processIssueUpdate(event.issueId, {
-                adeIssueLinkCause: isCreatedIssueEvent ? "linear_issue_created" : "linear_issue_ingress",
-              });
-              try {
-                for (const dispatched of buildLinearAutomationDispatches(event)) {
-                  await automationService.dispatchIngressTrigger(dispatched);
-                }
-              } catch (error) {
-                logger.warn("linear.automation_dispatch_failed", {
-                  issueId: event.issueId,
-                  eventId: event.eventId,
-                  error: error instanceof Error ? error.message : String(error),
-                });
-              }
-            }
-          },
-        })
-      : null;
-    linearIngressServiceRef = linearIngressService;
-    if (linearIngressService) {
-      scheduleBackgroundProjectTask(
-        "linear.ingress_start",
-        () => {
-          if (!linearIngressService.canAutoStart()) {
-            logger.info("project.startup_task_skipped", {
-              projectRoot,
-              task: "linear.ingress_start",
-              reason: "not_configured",
-              enableFlag: "ADE_ENABLE_LINEAR_INGRESS",
-            });
-            return;
-          }
-          return linearIngressService.start();
-        },
-        (error) => {
-          logger.warn("linear.ingress_start_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
-        },
-        0,
-        "ADE_ENABLE_LINEAR_INGRESS",
-      );
-    }
-
     const automationPlannerService = automationService
       ? createAutomationPlannerService({
           logger,
@@ -3978,7 +3722,7 @@ app.whenReady().then(async () => {
     writeGlobalState(globalStatePath, state);
 
     // ── ADE RPC Socket Server (embedded mode) ─────────────────────
-    const rpcRuntime: AdeRuntime = {
+    const rpcRuntime = {
       projectRoot,
       workspaceRoot: projectRoot,
       projectId,
@@ -4017,18 +3761,9 @@ app.whenReady().then(async () => {
       queueLandingService,
       fileService,
       ctoStateService,
-      workerAgentService,
-      workerBudgetService,
-      workerRevisionService,
-      workerHeartbeatService,
-      workerTaskSessionService,
+      ctoMemoryService,
       linearCredentialService,
-      flowPolicyService,
-      linearDispatcherService,
       linearIssueTracker,
-      linearSyncService,
-      linearIngressService,
-      linearRoutingService,
       processService,
       githubService,
       automationService,
@@ -4046,7 +3781,7 @@ app.whenReady().then(async () => {
       sessionDeltaService,
       autoUpdateService,
       appNavigationService: {
-        navigate: async (request) => {
+        navigate: async (request: AppNavigationRequest) => {
           const result = await deliverAppNavigationToProject(projectRoot, request);
           if (!result.ok) {
             return {
@@ -4217,17 +3952,11 @@ app.whenReady().then(async () => {
         testService,
         agentChatService,
         ctoStateService,
-        workerAgentService,
         sessionService,
         operationService,
         projectConfigService,
         projectSecretService,
-        flowPolicyService,
-        linearDispatcherService,
         linearIssueTracker,
-        linearSyncService,
-        linearIngressService,
-        linearRoutingService,
         fileService,
         processService,
         ptyService,
@@ -4310,18 +4039,10 @@ app.whenReady().then(async () => {
       sessionDeltaService,
       testService,
       ctoStateService,
-      workerAgentService,
+      ctoMemoryService,
       adeProjectService,
-      workerRevisionService,
-      workerBudgetService,
-      workerHeartbeatService,
-      workerTaskSessionService,
       linearCredentialService,
       linearIssueTracker,
-      flowPolicyService,
-      linearRoutingService,
-      linearIngressService,
-      linearSyncService,
       configReloadService,
       rpcSocketServer,
       rpcSocketPath,
@@ -4501,18 +4222,10 @@ app.whenReady().then(async () => {
       sessionDeltaService: null,
       testService: null,
       ctoStateService: null,
-      workerAgentService: null,
+      ctoMemoryService: null,
       adeProjectService: null,
-      workerRevisionService: null,
-      workerBudgetService: null,
-      workerHeartbeatService: null,
-      workerTaskSessionService: null,
       linearCredentialService: null,
       linearIssueTracker: null,
-      flowPolicyService: null,
-      linearRoutingService: null,
-      linearIngressService: null,
-      linearSyncService: null,
       configReloadService: null,
     };
   };
@@ -4611,21 +4324,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.usageTrackingService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.linearIngressService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.linearSyncService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      await ctx.workerHeartbeatService?.dispose();
     } catch {
       // ignore
     }

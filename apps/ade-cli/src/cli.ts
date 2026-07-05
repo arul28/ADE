@@ -565,12 +565,6 @@ function commandHelpText(key: string): string | undefined {
       "ADE_ENABLE_AUTOMATIONS",
     );
   }
-  if (key === "linear" && !automationsCliEnabled()) {
-    return HELP_BY_COMMAND.linear
-      .replace(/    \$ ade linear ingress status --text\s+Show Linear ingress status\n/, "")
-      .replace(/    \$ ade linear ingress start --text\s+Ensure Linear webhook and start relay ingress\n/, "")
-      .replace(/    \$ ade linear ingress start-local --text\s+Start only the local Linear webhook listener\n/, "");
-  }
   return HELP_BY_COMMAND[key];
 }
 
@@ -1882,26 +1876,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Search issues for the lane Linear-issue picker
     $ ade --role cto linear issue-comments --issue-id <id>
                                                     Fetch comments on a Linear issue
-    $ ade linear workflows --text                   List configured workflows
-    $ ade linear sync dashboard --text              Show sync dashboard
-    $ ade linear sync run                           Trigger a sync run
-    $ ade linear sync queue --text                  List sync queue items
-    $ ade linear sync resolve --queue-item <id> --action approve
-    $ ade linear ingress status --text              Show Linear ingress status
-    $ ade linear ingress start --text               Ensure Linear webhook and start relay ingress
-    $ ade linear ingress start-local --text         Start only the local Linear webhook listener
-    $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
-    $ ade linear install                            Register ADE as the "Open in coding tool" target
-    $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
-`,
-  flow: `${ADE_BANNER}
-  Flow policy
-
-    $ ade flow policy get --text                    Read current workflow policy
-    $ ade flow policy validate --input-json '{...}' Validate policy JSON
-    $ ade flow policy save --input-json '{...}'     Save policy JSON
-    $ ade flow policy revisions --text              List saved revisions
-    $ ade flow policy rollback <revision-id>        Restore a prior revision
 `,
   coordinator: `${ADE_BANNER}
   Coordinator runtime tools
@@ -9143,70 +9117,6 @@ function buildAgentPlan(args: string[]): CliPlan {
   };
 }
 
-function buildCtoPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "state";
-  if (sub === "state")
-    return {
-      kind: "execute",
-      label: "CTO state",
-      steps: [
-        actionCallStep(
-          "result",
-          "get_cto_state",
-          collectGenericObjectArgs(args, {
-            recentLimit: readIntOption(args, ["--recent-limit", "--limit"]),
-          }),
-        ),
-      ],
-    };
-  if (sub === "chats" || sub === "chat") {
-    const mode = firstPositional(args) ?? "list";
-    const toolByMode: Record<string, string> = {
-      list: "listChats",
-      spawn: "spawnChat",
-      status: "getChatStatus",
-      transcript: "readChatTranscript",
-      send: "sendChatMessage",
-      interrupt: "interruptChat",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "cto chats supports list, spawn, status, transcript, send, or interrupt.",
-      );
-    return {
-      kind: "execute",
-      label: `CTO chats ${mode}`,
-      steps: [
-        actionCallStep(
-          "result",
-          tool,
-          collectGenericObjectArgs(args, {
-            sessionId:
-              readValue(args, ["--session", "--session-id"]) ??
-              firstPositional(args),
-            text: readValue(args, ["--text", "--message"]) ?? args.join(" "),
-            laneId: readLaneId(args),
-            modelId: readValue(args, ["--model", "--model-id"]),
-            initialPrompt: readValue(args, ["--prompt"]),
-          }),
-        ),
-      ],
-    };
-  }
-  return {
-    kind: "execute",
-    label: `CTO ${sub}`,
-    steps: [
-      actionCallStep(
-        "result",
-        sub.replace(/-/g, "_"),
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
-}
-
 function parseDraftInput(args: string[]): JsonObject {
   const text = readFileTextInput(args);
   if (text == null) {
@@ -9617,7 +9527,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
 }
 
 function buildLinearPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "workflows";
+  const sub = firstPositional(args) ?? "quick-view";
   // --- Daemon-bridge commands for a CLI-session agent ---
   // These let an agent running inside a tracked ADE CLI session read and write
   // its attached Linear issue without holding Linear credentials: every call is
@@ -9862,170 +9772,10 @@ function buildLinearPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "workflows")
-    return {
-      kind: "execute",
-      label: "Linear workflows",
-      steps: [
-        actionCallStep(
-          "result",
-          "listLinearWorkflows",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  if (sub === "run") {
-    const mode = firstPositional(args) ?? "status";
-    const toolByMode: Record<string, string> = {
-      status: "getLinearRunStatus",
-      resolve: "resolveLinearRunAction",
-      cancel: "cancelLinearRun",
-      reroute: "rerouteLinearRun",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "linear run supports status, resolve, cancel, or reroute.",
-      );
-    return {
-      kind: "execute",
-      label: `Linear run ${mode}`,
-      steps: [
-        actionCallStep(
-          "result",
-          tool,
-          collectGenericObjectArgs(args, {
-            runId:
-              readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "route") {
-    const mode = firstPositional(args) ?? "cto";
-    const toolByMode: Record<string, string> = {
-      cto: "routeLinearIssueToCto",
-      worker: "routeLinearIssueToWorker",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError("linear route supports cto or worker.");
-    return {
-      kind: "execute",
-      label: `Linear route ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-  if (sub === "sync") {
-    const mode = firstPositional(args) ?? "dashboard";
-    const toolByMode: Record<string, string> = {
-      dashboard: "getLinearSyncDashboard",
-      run: "runLinearSyncNow",
-      queue: "listLinearSyncQueue",
-      resolve: "resolveLinearSyncQueueItem",
-      detail: "getLinearWorkflowRunDetail",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "linear sync supports dashboard, run, queue, resolve, or detail.",
-      );
-    return {
-      kind: "execute",
-      label: `Linear sync ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-  if (sub === "ingress") {
-    assertAutomationsCliEnabled();
-    const mode = firstPositional(args) ?? "status";
-    const toolByMode: Record<string, string> = {
-      status: "getLinearIngressStatus",
-      events: "listLinearIngressEvents",
-      webhook: "ensureLinearWebhook",
-    };
-    if (mode === "start" || mode === "listen" || mode === "ensure") {
-      return {
-        kind: "execute",
-        label: "Linear ingress start",
-        steps: [actionStep("result", "linear_ingress", "ensureRelayWebhook")],
-      };
-    }
-    if (mode === "start-local" || mode === "local-webhook") {
-      return {
-        kind: "execute",
-        label: "Linear ingress local webhook",
-        steps: [actionStep("result", "linear_ingress", "startLocalWebhook")],
-      };
-    }
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "linear ingress supports status, events, webhook, start, or start-local.",
-      );
-    return {
-      kind: "execute",
-      label: `Linear ingress ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-  return {
-    kind: "execute",
-    label: `Linear ${sub}`,
-    steps: [
-      actionStep(
-        "result",
-        "linear_dispatcher",
-        sub,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
-}
-
-function buildFlowPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "policy";
-  if (sub !== "policy")
-    return {
-      kind: "execute",
-      label: `flow ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "flow_policy",
-          sub,
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  const mode = firstPositional(args) ?? "get";
-  const actionByMode: Record<string, string> = {
-    get: "getPolicy",
-    save: "savePolicy",
-    validate: "validatePolicy",
-    normalize: "normalizePolicy",
-    revisions: "listRevisions",
-    rollback: "rollbackRevision",
-    diff: "diffPolicyPaths",
-  };
-  const action = actionByMode[mode];
-  if (!action)
-    throw new CliUsageError(
-      "flow policy supports get, save, validate, normalize, revisions, rollback, or diff.",
-    );
-  return {
-    kind: "execute",
-    label: `flow policy ${mode}`,
-    steps: [
-      actionStep(
-        "result",
-        "flow_policy",
-        action,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
+  throw new CliUsageError(
+    `Unknown linear command '${sub}'. Supported: quick-view, overview, projects, issues, my-issues, `
+      + `search, issue, comments, attach, detach, comment, assign, label, state, gql.`,
+  );
 }
 
 function buildCoordinatorPlan(args: string[]): CliPlan {
@@ -10577,13 +10327,11 @@ function buildCliPlan(
   if (primary === "chat" || primary === "chats" || primary === "work")
     return buildChatPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
-  if (primary === "cto") return buildCtoPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
     assertAutomationsCliEnabled();
     return buildAutomationsPlan(args);
   }
-  if (primary === "flow") return buildFlowPlan(args);
   if (primary === "coordinator" || primary === "coord")
     return buildCoordinatorPlan(args);
   if (primary === "ask")

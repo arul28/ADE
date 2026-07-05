@@ -716,8 +716,8 @@ payload.
 
 ## Command routing and execution isolation
 
-Controllers never run agent processes. CTO heartbeats and worker
-activations are runtime-exclusive.
+Controllers never run agent processes. Agent runtimes and CTO chat
+turns are runtime-exclusive.
 
 Two categories of controller write:
 

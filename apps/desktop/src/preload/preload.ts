@@ -99,26 +99,10 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
-  AgentIdentity,
-  AgentSessionLogEntry,
-  AgentConfigRevision,
-  AgentBudgetSnapshot,
-  WorkerAgentRun,
-  CtoListAgentsArgs,
-  CtoSaveAgentArgs,
-  CtoRemoveAgentArgs,
-  CtoSetAgentStatusArgs,
-  CtoListAgentRevisionsArgs,
-  CtoRollbackAgentRevisionArgs,
-  CtoEnsureAgentSessionArgs,
-  CtoGetBudgetSnapshotArgs,
-  CtoTriggerAgentWakeupArgs,
-  CtoTriggerAgentWakeupResult,
-  CtoListAgentRunsArgs,
-  CtoListAgentTaskSessionsArgs,
-  CtoClearAgentTaskSessionArgs,
-  AgentTaskSession,
-  CtoListAgentSessionLogsArgs,
+  CtoMemorySnapshot,
+  CtoUpdateMemoryArgs,
+  CtoSearchMemoryArgs,
+  CtoSearchMemoryResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearIssueComment,
@@ -133,24 +117,7 @@ import type {
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearOAuthClientArgs,
-  LinearIngressEventRecord,
-  LinearIngressStatus,
   CtoSetLinearTokenArgs,
-  CtoSaveFlowPolicyArgs,
-  CtoFlowPolicyRevision,
-  CtoRollbackFlowPolicyRevisionArgs,
-  CtoSimulateFlowRouteArgs,
-  LinearRouteDecision,
-  LinearWorkflowCatalog,
-  LinearSyncDashboard,
-  LinearSyncQueueItem,
-  LinearWorkflowRunDetail,
-  LinearWorkflowEventPayload,
-  CtoGetLinearWorkflowRunDetailArgs,
-  CtoResolveLinearSyncQueueItemArgs,
-  CtoEnsureLinearWebhookArgs,
-  CtoListLinearIngressEventsArgs,
-  LinearWorkflowConfig,
   AutomationsEventPayload,
   ConflictExternalResolverRunSummary,
   ConflictProposal,
@@ -1220,7 +1187,6 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "reloadClaudePlugins",
   "setParallelLaunchState",
   "ensureCtoSession",
-  "ensureAgentIdentitySession",
   "warmupModel",
   "rewindFiles",
   "saveTempAttachment",
@@ -1579,9 +1545,6 @@ const remoteConflictEventCallbacks = new Set<
 const remoteGitHubStatusChangedCallbacks = new Set<
   (payload: GitHubStatus) => void
 >();
-const remoteLinearWorkflowEventCallbacks = new Set<
-  (payload: LinearWorkflowEventPayload) => void
->();
 const remoteFeedbackEventCallbacks = new Set<
   (payload: FeedbackSubmissionEvent) => void
 >();
@@ -1739,7 +1702,6 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteAutomationsEventCallbacks.size > 0 ||
     remoteConflictEventCallbacks.size > 0 ||
     remoteGitHubStatusChangedCallbacks.size > 0 ||
-    remoteLinearWorkflowEventCallbacks.size > 0 ||
     remoteFeedbackEventCallbacks.size > 0 ||
     remoteComputerUseEventCallbacks.size > 0 ||
     remoteIosSimulatorEventCallbacks.size > 0 ||
@@ -2109,20 +2071,6 @@ function dispatchRemoteRuntimeEventPayload(
         cb(githubStatus);
       } catch (error) {
         console.error("preload remote GitHub status listener failed", error);
-      }
-    }
-  }
-
-  const linearWorkflowEvent = toWrappedEvent<LinearWorkflowEventPayload>(
-    payload,
-    "linear_workflow_event",
-  );
-  if (linearWorkflowEvent) {
-    for (const cb of [...remoteLinearWorkflowEventCallbacks]) {
-      try {
-        cb(linearWorkflowEvent);
-      } catch (error) {
-        console.error("preload remote Linear workflow listener failed", error);
       }
     }
   }
@@ -2729,16 +2677,6 @@ function subscribeRemoteGitHubStatusChangedEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remoteGitHubStatusChangedCallbacks.delete(cb);
-  };
-}
-
-function subscribeRemoteLinearWorkflowEvents(
-  cb: (payload: LinearWorkflowEventPayload) => void,
-): () => void {
-  remoteLinearWorkflowEventCallbacks.add(cb);
-  ensureRemoteRuntimeEventPump();
-  return () => {
-    remoteLinearWorkflowEventCallbacks.delete(cb);
   };
 }
 
@@ -8276,90 +8214,12 @@ contextBridge.exposeInMainWorld("ade", {
         { arg: args.patch ?? {} },
         () => ipcRenderer.invoke(IPC.ctoUpdateIdentity, args),
       ),
-    listAgents: async (
-      args: CtoListAgentsArgs = {},
-    ): Promise<AgentIdentity[]> =>
-      callProjectRuntimeActionOr("worker_agent", "listAgents", { args }, () =>
-        ipcRenderer.invoke(IPC.ctoListAgents, args),
-      ),
-    saveAgent: async (args: CtoSaveAgentArgs): Promise<AgentIdentity> =>
-      callProjectRuntimeActionOr("worker_agent", "saveAgent", { args }, () =>
-        ipcRenderer.invoke(IPC.ctoSaveAgent, args),
-      ),
-    removeAgent: async (args: CtoRemoveAgentArgs): Promise<void> =>
-      callProjectRuntimeActionOr("worker_agent", "removeAgent", { args }, () =>
-        ipcRenderer.invoke(IPC.ctoRemoveAgent, args),
-      ),
-    setAgentStatus: async (args: CtoSetAgentStatusArgs): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "setAgentStatus",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoSetAgentStatus, args),
-      ),
-    listAgentRevisions: async (
-      args: CtoListAgentRevisionsArgs,
-    ): Promise<AgentConfigRevision[]> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "listAgentRevisions",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoListAgentRevisions, args),
-      ),
-    rollbackAgentRevision: async (
-      args: CtoRollbackAgentRevisionArgs,
-    ): Promise<AgentIdentity> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "rollbackAgentRevision",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoRollbackAgentRevision, args),
-      ),
-    ensureAgentSession: async (
-      args: CtoEnsureAgentSessionArgs,
-    ): Promise<AgentChatSession> =>
-      callProjectRuntimeActionOr(
-        "chat",
-        "ensureAgentIdentitySession",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoEnsureAgentSession, args),
-      ),
-    getBudgetSnapshot: async (
-      args: CtoGetBudgetSnapshotArgs = {},
-    ): Promise<AgentBudgetSnapshot> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "getBudgetSnapshot",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoGetBudgetSnapshot, args),
-      ),
-    triggerAgentWakeup: async (
-      args: CtoTriggerAgentWakeupArgs,
-    ): Promise<CtoTriggerAgentWakeupResult> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "triggerWakeup",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoTriggerAgentWakeup, args),
-      ),
-    listAgentRuns: async (
-      args: CtoListAgentRunsArgs = {},
-    ): Promise<WorkerAgentRun[]> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "listAgentRuns",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoListAgentRuns, args),
-      ),
-    listAgentSessionLogs: async (
-      args: CtoListAgentSessionLogsArgs,
-    ): Promise<AgentSessionLogEntry[]> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "listSessionLogs",
-        { argsList: [args.agentId, args.limit ?? 40] },
-        () => ipcRenderer.invoke(IPC.ctoListAgentSessionLogs, args),
-      ),
+    getMemory: async (): Promise<CtoMemorySnapshot> =>
+      ipcRenderer.invoke(IPC.ctoGetMemory, {}),
+    updateMemory: async (args: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> =>
+      ipcRenderer.invoke(IPC.ctoUpdateMemory, args),
+    searchMemory: async (args: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> =>
+      ipcRenderer.invoke(IPC.ctoSearchMemory, args),
     getLinearConnectionStatus: async (): Promise<LinearConnectionStatus> =>
       callProjectRuntimeActionOr(
         "linear_issue_tracker",
@@ -8401,144 +8261,6 @@ contextBridge.exposeInMainWorld("ade", {
       }
       return ipcRenderer.invoke(IPC.ctoClearLinearToken);
     },
-    getFlowPolicy: async (): Promise<LinearWorkflowConfig> =>
-      callProjectRuntimeActionOr("flow_policy", "getPolicy", {}, () =>
-        ipcRenderer.invoke(IPC.ctoGetFlowPolicy),
-      ),
-    saveFlowPolicy: async (
-      args: CtoSaveFlowPolicyArgs,
-    ): Promise<LinearWorkflowConfig> =>
-      callProjectRuntimeActionOr(
-        "flow_policy",
-        "savePolicy",
-        { argsList: [args.policy, args.actor ?? "user"] },
-        () => ipcRenderer.invoke(IPC.ctoSaveFlowPolicy, args),
-      ),
-    listFlowPolicyRevisions: async (): Promise<CtoFlowPolicyRevision[]> =>
-      callProjectRuntimeActionOr(
-        "flow_policy",
-        "listRevisions",
-        { arg: 50 },
-        () => ipcRenderer.invoke(IPC.ctoListFlowPolicyRevisions),
-      ),
-    rollbackFlowPolicyRevision: async (
-      args: CtoRollbackFlowPolicyRevisionArgs,
-    ): Promise<LinearWorkflowConfig> =>
-      callProjectRuntimeActionOr(
-        "flow_policy",
-        "rollbackRevision",
-        { argsList: [args.revisionId, args.actor ?? "user"] },
-        () => ipcRenderer.invoke(IPC.ctoRollbackFlowPolicyRevision, args),
-      ),
-    simulateFlowRoute: async (
-      args: CtoSimulateFlowRouteArgs,
-    ): Promise<LinearRouteDecision> =>
-      callProjectRuntimeActionOr(
-        "linear_routing",
-        "simulateRoute",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoSimulateFlowRoute, args),
-      ),
-    getLinearWorkflowCatalog: async (): Promise<LinearWorkflowCatalog> =>
-      callProjectRuntimeActionOr(
-        "linear_issue_tracker",
-        "getWorkflowCatalog",
-        {},
-        () => ipcRenderer.invoke(IPC.ctoGetLinearWorkflowCatalog),
-      ),
-    getLinearSyncDashboard: async (): Promise<LinearSyncDashboard> =>
-      callProjectRuntimeActionOr("linear_sync", "getDashboard", {}, () =>
-        ipcRenderer.invoke(IPC.ctoGetLinearSyncDashboard),
-      ),
-    runLinearSyncNow: async (): Promise<LinearSyncDashboard> =>
-      callProjectRuntimeActionOr("linear_sync", "runSyncNow", {}, () =>
-        ipcRenderer.invoke(IPC.ctoRunLinearSyncNow),
-      ),
-    listLinearSyncQueue: async (): Promise<LinearSyncQueueItem[]> =>
-      callProjectRuntimeActionOr(
-        "linear_sync",
-        "listQueue",
-        { args: { limit: 300 } },
-        () => ipcRenderer.invoke(IPC.ctoListLinearSyncQueue),
-      ),
-    getLinearWorkflowRunDetail: async (
-      args: CtoGetLinearWorkflowRunDetailArgs,
-    ): Promise<LinearWorkflowRunDetail | null> =>
-      callProjectRuntimeActionOr("linear_sync", "getRunDetail", { args }, () =>
-        ipcRenderer.invoke(IPC.ctoGetLinearWorkflowRunDetail, args),
-      ),
-    resolveLinearSyncQueueItem: async (
-      args: CtoResolveLinearSyncQueueItemArgs,
-    ): Promise<LinearSyncQueueItem | null> =>
-      callProjectRuntimeActionOr(
-        "linear_sync",
-        "resolveQueueItem",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoResolveLinearSyncQueueItem, args),
-      ),
-    getLinearIngressStatus: async (): Promise<LinearIngressStatus> =>
-      callProjectRuntimeActionOr("linear_ingress", "getStatus", {}, () =>
-        ipcRenderer.invoke(IPC.ctoGetLinearIngressStatus),
-      ),
-    listLinearIngressEvents: async (
-      args: CtoListLinearIngressEventsArgs = {},
-    ): Promise<LinearIngressEventRecord[]> =>
-      callProjectRuntimeActionOr(
-        "linear_ingress",
-        "listRecentEvents",
-        { arg: args.limit ?? 20 },
-        () => ipcRenderer.invoke(IPC.ctoListLinearIngressEvents, args),
-      ),
-    ensureLinearWebhook: async (
-      args: CtoEnsureLinearWebhookArgs = {},
-    ): Promise<LinearIngressStatus> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "linear_ingress",
-        "ensureRelayWebhook",
-        { arg: args.force === true },
-      );
-      if (runtime.handled) {
-        return callProjectRuntimeActionOr(
-          "linear_ingress",
-          "getStatus",
-          {},
-          () => ipcRenderer.invoke(IPC.ctoEnsureLinearWebhook, args),
-        );
-      }
-      return ipcRenderer.invoke(IPC.ctoEnsureLinearWebhook, args);
-    },
-    onLinearWorkflowEvent: (
-      cb: (event: LinearWorkflowEventPayload) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: LinearWorkflowEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.ctoLinearWorkflowEvent, listener);
-      const removeRemote = subscribeRemoteLinearWorkflowEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.ctoLinearWorkflowEvent, listener);
-      };
-    },
-    listAgentTaskSessions: async (
-      args: CtoListAgentTaskSessionsArgs,
-    ): Promise<AgentTaskSession[]> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "listAgentTaskSessions",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoListAgentTaskSessions, args),
-      ),
-    clearAgentTaskSession: async (
-      args: CtoClearAgentTaskSessionArgs,
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "worker_agent",
-        "clearAgentTaskSession",
-        { args },
-        () => ipcRenderer.invoke(IPC.ctoClearAgentTaskSession, args),
-      ),
     getOnboardingState: async (): Promise<CtoOnboardingState> =>
       callProjectRuntimeActionOr("cto_state", "getOnboardingState", {}, () =>
         ipcRenderer.invoke(IPC.ctoGetOnboardingState),

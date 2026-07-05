@@ -101,7 +101,6 @@
             "pages": [
               "cto/overview",
               "cto/setup",
-              "cto/workers",
               "tools/automations"
             ]
           },

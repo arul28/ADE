@@ -16,15 +16,9 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
-import type { createFlowPolicyService } from "../../../../desktop/src/main/services/cto/flowPolicyService";
+import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
-import type { createLinearIngressService } from "../../../../desktop/src/main/services/cto/linearIngressService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearSyncService } from "../../../../desktop/src/main/services/cto/linearSyncService";
-import type { createWorkerAgentService } from "../../../../desktop/src/main/services/cto/workerAgentService";
-import type { createWorkerBudgetService } from "../../../../desktop/src/main/services/cto/workerBudgetService";
-import type { createWorkerHeartbeatService } from "../../../../desktop/src/main/services/cto/workerHeartbeatService";
-import type { createWorkerRevisionService } from "../../../../desktop/src/main/services/cto/workerRevisionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
@@ -96,21 +90,15 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   /**
    * Resolvers for services that are constructed AFTER createSyncService in
    * main.ts. Using lazy getters lets the sync router forward remote commands
    * to them without requiring a specific init order.
    */
-  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
-  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
@@ -622,16 +610,10 @@ export function createSyncService(args: SyncServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
-    workerAgentService: args.workerAgentService,
-    workerBudgetService: args.workerBudgetService,
-    workerHeartbeatService: args.workerHeartbeatService,
-    workerRevisionService: args.workerRevisionService,
     ctoStateService: args.ctoStateService,
-    flowPolicyService: args.flowPolicyService,
+    ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
-    getLinearIngressService: args.getLinearIngressService,
     getLinearIssueTracker: args.getLinearIssueTracker,
-    getLinearSyncService: args.getLinearSyncService,
     projectConfigService: args.projectConfigService,
     processService: args.processService,
     portAllocationService: args.portAllocationService,
@@ -704,16 +686,10 @@ export function createSyncService(args: SyncServiceArgs) {
       ptyService: args.ptyService,
       processService: args.processService,
       agentChatService: args.agentChatService,
-      workerAgentService: args.workerAgentService,
-      workerBudgetService: args.workerBudgetService,
-      workerHeartbeatService: args.workerHeartbeatService,
-      workerRevisionService: args.workerRevisionService,
       ctoStateService: args.ctoStateService,
-      flowPolicyService: args.flowPolicyService,
+      ctoMemoryService: args.ctoMemoryService,
       linearCredentialService: args.linearCredentialService,
-      getLinearIngressService: args.getLinearIngressService,
       getLinearIssueTracker: args.getLinearIssueTracker,
-      getLinearSyncService: args.getLinearSyncService,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

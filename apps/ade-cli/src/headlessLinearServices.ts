@@ -9,31 +9,14 @@ import type { createLaneService } from "../../desktop/src/main/services/lanes/la
 import type { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
-import type { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
-import type { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearTemplateService } from "../../desktop/src/main/services/cto/linearTemplateService";
-import type { createLinearWorkflowFileService } from "../../desktop/src/main/services/cto/linearWorkflowFileService";
-import type { createFlowPolicyService } from "../../desktop/src/main/services/cto/flowPolicyService";
-import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
-import type { createLinearIntakeService } from "../../desktop/src/main/services/cto/linearIntakeService";
-import type { createLinearOutboundService } from "../../desktop/src/main/services/cto/linearOutboundService";
-import type { createLinearCloseoutService } from "../../desktop/src/main/services/cto/linearCloseoutService";
-import type { createLinearDispatcherService } from "../../desktop/src/main/services/cto/linearDispatcherService";
-import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
-import type { createLinearIngressService } from "../../desktop/src/main/services/cto/linearIngressService";
-import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
-import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
-import type { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
-import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
-import type { LinearWorkflowEventPayload } from "../../desktop/src/shared/types/linearSync";
 import {
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -48,9 +31,6 @@ import type {
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
   GitHubStatus,
-  LinearIngressEventRecord,
-  WorkerAgentRun,
-  WorkerAgentWakeupReason,
 } from "../../desktop/src/shared/types";
 import type {
   GithubService,
@@ -68,17 +48,6 @@ import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { createLinearIssueTracker as createLinearIssueTrackerImpl } from "../../desktop/src/main/services/cto/linearIssueTracker";
-import { createLinearTemplateService as createLinearTemplateServiceImpl } from "../../desktop/src/main/services/cto/linearTemplateService";
-import { createLinearWorkflowFileService as createLinearWorkflowFileServiceImpl } from "../../desktop/src/main/services/cto/linearWorkflowFileService";
-import { createFlowPolicyService as createFlowPolicyServiceImpl } from "../../desktop/src/main/services/cto/flowPolicyService";
-import { createLinearRoutingService as createLinearRoutingServiceImpl } from "../../desktop/src/main/services/cto/linearRoutingService";
-import { createLinearIntakeService as createLinearIntakeServiceImpl } from "../../desktop/src/main/services/cto/linearIntakeService";
-import { createLinearOutboundService as createLinearOutboundServiceImpl } from "../../desktop/src/main/services/cto/linearOutboundService";
-import { createLinearCloseoutService as createLinearCloseoutServiceImpl } from "../../desktop/src/main/services/cto/linearCloseoutService";
-import { createLinearDispatcherService as createLinearDispatcherServiceImpl } from "../../desktop/src/main/services/cto/linearDispatcherService";
-import { createLinearSyncService as createLinearSyncServiceImpl } from "../../desktop/src/main/services/cto/linearSyncService";
-import { createLinearIngressService as createLinearIngressServiceImpl } from "../../desktop/src/main/services/cto/linearIngressService";
-import { createWorkerTaskSessionService as createWorkerTaskSessionServiceImpl } from "../../desktop/src/main/services/cto/workerTaskSessionService";
 import { createFileService as createFileServiceImpl } from "../../desktop/src/main/services/files/fileService";
 import { createProcessService as createProcessServiceImpl } from "../../desktop/src/main/services/processes/processService";
 import { createPrService as createPrServiceImpl } from "../../desktop/src/main/services/prs/prService";
@@ -140,13 +109,8 @@ type HeadlessLinearDeps = {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   conflictService: ReturnType<typeof createConflictService>;
-  workerAgentService: ReturnType<typeof createWorkerAgentService>;
-  workerBudgetService: ReturnType<typeof createWorkerBudgetService>;
-  computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
-  onLinearWorkflowEvent?: (event: LinearWorkflowEventPayload) => void;
-  getAutomationService?: () => ReturnType<typeof createAutomationService> | null;
 };
 
 type HeadlessLinearServices = {
@@ -154,16 +118,6 @@ type HeadlessLinearServices = {
   linearCredentialService: HeadlessLinearCredentialService;
   linearClient: ReturnType<typeof createLinearClient>;
   linearIssueTracker: ReturnType<typeof createLinearIssueTracker>;
-  linearTemplateService: ReturnType<typeof createLinearTemplateService>;
-  linearWorkflowFileService: ReturnType<typeof createLinearWorkflowFileService>;
-  flowPolicyService: ReturnType<typeof createFlowPolicyService>;
-  linearRoutingService: ReturnType<typeof createLinearRoutingService>;
-  linearIntakeService: ReturnType<typeof createLinearIntakeService>;
-  linearOutboundService: ReturnType<typeof createLinearOutboundService>;
-  linearCloseoutService: ReturnType<typeof createLinearCloseoutService>;
-  linearDispatcherService: ReturnType<typeof createLinearDispatcherService>;
-  linearSyncService: ReturnType<typeof createLinearSyncService>;
-  linearIngressService: ReturnType<typeof createLinearIngressService>;
   fileService: ReturnType<typeof createFileService>;
   processService: ReturnType<typeof createProcessService>;
   prService: ReturnType<typeof createPrService>;
@@ -215,8 +169,6 @@ type HeadlessLinearServices = {
       svc: ComputerUseArtifactBrokerService,
     ) => void;
   };
-  workerTaskSessionService: ReturnType<typeof createWorkerTaskSessionService>;
-  workerHeartbeatService: ReturnType<typeof createWorkerHeartbeatService>;
   dispose: () => void;
 };
 
@@ -1852,85 +1804,6 @@ function createHeadlessAgentChatService(
   };
 }
 
-function createHeadlessWorkerHeartbeatService(): ReturnType<
-  typeof createWorkerHeartbeatService
-> {
-  const runs: WorkerAgentRun[] = [];
-  const wakeupReasons = new Set<WorkerAgentWakeupReason>([
-    "timer",
-    "manual",
-    "user_message",
-    "assignment",
-    "api",
-    "deferred_promotion",
-    "startup_recovery",
-  ]);
-  const normalizeWakeupReason = (value: unknown): WorkerAgentWakeupReason => {
-    const reason = typeof value === "string" ? value.trim() : "";
-    return wakeupReasons.has(reason as WorkerAgentWakeupReason)
-      ? reason as WorkerAgentWakeupReason
-      : "api";
-  };
-
-  const service = {
-    syncFromConfig() {
-      return;
-    },
-    listRuns({ agentId, limit, statuses }: { agentId?: string; limit?: number; statuses?: WorkerAgentRun["status"][] } = {}) {
-      const safeLimit = Math.max(1, Math.min(200, Math.floor(limit ?? 50)));
-      return runs
-        .filter((run) => !agentId || run.agentId === agentId)
-        .filter((run) => !statuses?.length || statuses.includes(run.status))
-        .slice(0, safeLimit)
-        .map((run) => ({
-        ...run,
-        executionRunId: null,
-        executionLockedAt: null,
-        result: null,
-      }));
-    },
-    listAgentSessionLogs() {
-      return [];
-    },
-    async reapOrphansOnStartup() {
-      return;
-    },
-    async triggerWakeup(args: {
-      agentId: string;
-      reason?: string;
-      taskKey?: string | null;
-      issueKey?: string | null;
-      context?: Record<string, unknown>;
-    }) {
-      const runId = `wake-${randomUUID()}`;
-      const now = new Date().toISOString();
-      runs.unshift({
-        id: runId,
-        agentId: args.agentId,
-        status: "failed",
-        wakeupReason: normalizeWakeupReason(args.reason),
-        taskKey: args.taskKey ?? null,
-        issueKey: args.issueKey ?? null,
-        context: args.context ?? {},
-        errorMessage:
-          "Headless ADE mode does not support worker-backed Linear targets yet.",
-        startedAt: now,
-        finishedAt: now,
-        createdAt: now,
-        updatedAt: now,
-      });
-      return { runId, status: "failed" };
-    },
-    async dispose() {
-      runs.length = 0;
-    },
-    start() {
-      return;
-    },
-  } satisfies ReturnType<typeof createWorkerHeartbeatService>;
-  return service;
-}
-
 export function createHeadlessLinearServices(
   args: HeadlessLinearDeps,
 ): HeadlessLinearServices {
@@ -1956,34 +1829,6 @@ export function createHeadlessLinearServices(
     logger: args.logger,
   });
   const issueTracker = createLinearIssueTrackerImpl({ client: linearClient });
-  const templateService = createLinearTemplateServiceImpl({
-    adeDir: args.adeDir,
-  });
-  const workflowFileService = createLinearWorkflowFileServiceImpl({
-    projectRoot: args.projectRoot,
-  });
-  const flowPolicyService = createFlowPolicyServiceImpl({
-    db: args.db,
-    projectId: args.projectId,
-    projectConfigService: args.projectConfigService,
-    workflowFileService,
-  });
-  const routingService = createLinearRoutingServiceImpl({
-    flowPolicyService,
-    workerAgentService: args.workerAgentService,
-  });
-  const intakeService = createLinearIntakeServiceImpl({
-    db: args.db,
-    projectId: args.projectId,
-    issueTracker,
-  });
-  const outboundService = createLinearOutboundServiceImpl({
-    db: args.db,
-    projectId: args.projectId,
-    projectRoot: args.projectRoot,
-    issueTracker,
-    logger: args.logger,
-  });
   const fileService = createFileServiceImpl({
     laneService: args.laneService,
     onLaneWorktreeMutation: () => {},
@@ -2023,96 +1868,17 @@ export function createHeadlessLinearServices(
     conflictService: args.conflictService,
     openExternal: args.openExternal ?? (async () => {}),
   });
-  const workerTaskSessionService = createWorkerTaskSessionServiceImpl({
-    db: args.db,
-    projectId: args.projectId,
-  });
-  const workerHeartbeatService = createHeadlessWorkerHeartbeatService();
   const agentChatService = createHeadlessAgentChatService(args.projectRoot);
-  const closeoutService = createLinearCloseoutServiceImpl({
-    issueTracker,
-    outboundService,
-    prService,
-    computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-  });
-  const dispatcherService = createLinearDispatcherServiceImpl({
-    db: args.db,
-    projectId: args.projectId,
-    issueTracker,
-    workerAgentService: args.workerAgentService,
-    workerHeartbeatService,
-    agentChatService,
-    laneService: args.laneService,
-    templateService,
-    closeoutService,
-    outboundService,
-    workerTaskSessionService,
-    prService,
-    onEvent: args.onLinearWorkflowEvent ?? (() => {}),
-  });
-  const syncService = createLinearSyncServiceImpl({
-    db: args.db,
-    logger: args.logger,
-    projectId: args.projectId,
-    flowPolicyService,
-    routingService,
-    intakeService,
-    issueTracker,
-    dispatcherService,
-    autoStart: false,
-    hasCredentials: () => linearCredentialService.getStatus().tokenStored,
-  });
-  const handleIngressEvent = async (event: LinearIngressEventRecord) => {
-    const issueId =
-      typeof event.issueId === "string" ? event.issueId.trim() : "";
-    if (!issueId) return;
-    await syncService.processIssueUpdate(issueId);
-    const automationService = args.getAutomationService?.() ?? null;
-    if (!automationService) return;
-    try {
-      for (const dispatched of buildLinearAutomationDispatches(event)) {
-        await automationService.dispatchIngressTrigger(dispatched);
-      }
-    } catch (error) {
-      args.logger.warn("linear.headless_automation_dispatch_failed", {
-        issueId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
-  const ingressService = createLinearIngressServiceImpl({
-    db: args.db,
-    logger: args.logger,
-    projectId: args.projectId,
-    linearClient,
-    secretService: automationSecretService as ReturnType<
-      typeof createAutomationSecretService
-    >,
-    projectConfigService: args.projectConfigService,
-    onEvent: handleIngressEvent,
-  });
 
   return {
     linearCredentialService,
     githubService,
     linearClient,
     linearIssueTracker: issueTracker,
-    linearTemplateService: templateService,
-    linearWorkflowFileService: workflowFileService,
-    flowPolicyService,
-    linearRoutingService: routingService,
-    linearIntakeService: intakeService,
-    linearOutboundService: outboundService,
-    linearCloseoutService: closeoutService,
-    linearDispatcherService: dispatcherService,
-    linearSyncService: syncService,
-    linearIngressService: ingressService,
     fileService,
     processService,
     prService,
     agentChatService,
-    workerTaskSessionService,
-    workerHeartbeatService,
     dispose: () => {
       const swallow = (fn: () => void) => {
         try {
@@ -2121,11 +1887,8 @@ export function createHeadlessLinearServices(
           /* ignore */
         }
       };
-      swallow(() => syncService.dispose());
-      swallow(() => ingressService.dispose());
       swallow(() => fileService.dispose());
       swallow(() => processService.disposeAll());
-      swallow(() => workerHeartbeatService.dispose());
     },
   };
 }

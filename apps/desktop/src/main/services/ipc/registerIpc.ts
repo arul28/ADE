@@ -429,26 +429,11 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
-  AgentIdentity,
-  AgentSessionLogEntry,
-  AgentConfigRevision,
-  AgentBudgetSnapshot,
-  WorkerAgentRun,
-  AgentTaskSession,
-  CtoListAgentsArgs,
-  CtoSaveAgentArgs,
-  CtoRemoveAgentArgs,
-  CtoSetAgentStatusArgs,
-  CtoListAgentRevisionsArgs,
-  CtoRollbackAgentRevisionArgs,
-  CtoEnsureAgentSessionArgs,
-  CtoGetBudgetSnapshotArgs,
-  CtoTriggerAgentWakeupArgs,
-  CtoTriggerAgentWakeupResult,
-  CtoListAgentRunsArgs,
-  CtoListAgentSessionLogsArgs,
-  CtoListAgentTaskSessionsArgs,
-  CtoClearAgentTaskSessionArgs,
+  CtoGetMemoryArgs,
+  CtoUpdateMemoryArgs,
+  CtoSearchMemoryArgs,
+  CtoMemorySnapshot,
+  CtoSearchMemoryResult,
   CtoGetLinearOAuthSessionArgs,
   CtoGetLinearOAuthSessionResult,
   CtoGetLinearIssuePickerDataResult,
@@ -461,23 +446,6 @@ import type {
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
   CtoSetLinearOAuthClientArgs,
-  CtoFlowPolicyRevision,
-  CtoSaveFlowPolicyArgs,
-  CtoRollbackFlowPolicyRevisionArgs,
-  CtoSimulateFlowRouteArgs,
-  CtoEnsureLinearWebhookArgs,
-  CtoListLinearIngressEventsArgs,
-  LinearRouteDecision,
-  LinearWorkflowCatalog,
-  LinearIngressEventRecord,
-  LinearIngressStatus,
-  LinearSyncDashboard,
-  LinearSyncQueueItem,
-  CtoResolveLinearSyncQueueItemArgs,
-  CtoGetLinearWorkflowRunDetailArgs,
-  LinearWorkflowRunDetail,
-  LinearWorkflowConfig,
-  NormalizedLinearIssue,
   AdeUsageStats,
   GetAdeUsageStatsArgs,
   UsageSnapshot,
@@ -598,19 +566,11 @@ import type {
   OrchestrationSpawnAgentRequest,
 } from "../../../shared/types/orchestration";
 import type { createCtoStateService } from "../cto/ctoStateService";
-import type { createWorkerAgentService } from "../cto/workerAgentService";
-import type { createWorkerRevisionService } from "../cto/workerRevisionService";
-import type { createWorkerBudgetService } from "../cto/workerBudgetService";
-import type { createWorkerHeartbeatService } from "../cto/workerHeartbeatService";
-import type { createWorkerTaskSessionService } from "../cto/workerTaskSessionService";
+import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../cto/linearCredentialService";
 import { createLinearOAuthService, type LinearOAuthService } from "../cto/linearOAuthService";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { registerRuntimeBridge } from "./runtimeBridge";
-import type { createFlowPolicyService } from "../cto/flowPolicyService";
-import type { createLinearRoutingService } from "../cto/linearRoutingService";
-import type { createLinearIngressService } from "../cto/linearIngressService";
-import type { createLinearSyncService } from "../cto/linearSyncService";
 import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createBudgetCapService } from "../usage/budgetCapService";
@@ -931,18 +891,10 @@ export type AppContext = {
   testService: ReturnType<typeof createTestService> | null;
   sessionDeltaService?: SessionDeltaService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
+  ctoMemoryService?: CtoMemoryService | null;
   adeProjectService?: AdeProjectService | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
-  linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
-  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
-  linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   configReloadService?: ConfigReloadService | null;
@@ -9108,105 +9060,36 @@ export function registerIpc({
     return ctx.ctoStateService.getSessionLogs(arg.limit ?? 40);
   });
 
-  // -- W2: Worker Agents & Org Chart --
-
-  ipcMain.handle(IPC.ctoListAgents, async (_event, arg: CtoListAgentsArgs = {}): Promise<AgentIdentity[]> => {
-    const ctx = getCtx();
-    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
-    return ctx.workerAgentService.listAgents(arg);
-  });
-
-  ipcMain.handle(IPC.ctoSaveAgent, async (_event, arg: CtoSaveAgentArgs): Promise<AgentIdentity> => {
-    const ctx = getCtx();
-    if (!ctx.workerRevisionService) throw new Error("Worker revision service is not available.");
-    return ctx.workerRevisionService.saveAgent(arg.agent, arg.actor ?? "user");
-  });
-
-  ipcMain.handle(IPC.ctoRemoveAgent, async (_event, arg: CtoRemoveAgentArgs): Promise<void> => {
-    const ctx = getCtx();
-    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
-    ctx.workerAgentService.removeAgent(arg.agentId);
-    ctx.workerHeartbeatService?.syncFromConfig();
-  });
-
-  ipcMain.handle(IPC.ctoSetAgentStatus, async (_event, arg: CtoSetAgentStatusArgs): Promise<void> => {
-    const ctx = getCtx();
-    if (!ctx.workerAgentService) throw new Error("Worker agent service is not available.");
-    ctx.workerAgentService.setAgentStatus(arg.agentId, arg.status);
-    ctx.workerHeartbeatService?.syncFromConfig();
-  });
-
-  ipcMain.handle(IPC.ctoListAgentRevisions, async (_event, arg: CtoListAgentRevisionsArgs): Promise<AgentConfigRevision[]> => {
-    const ctx = getCtx();
-    if (!ctx.workerRevisionService) throw new Error("Worker revision service is not available.");
-    return ctx.workerRevisionService.listAgentRevisions(arg.agentId, arg.limit ?? 20);
-  });
-
-  ipcMain.handle(IPC.ctoRollbackAgentRevision, async (_event, arg: CtoRollbackAgentRevisionArgs): Promise<AgentIdentity> => {
-    const ctx = getCtx();
-    if (!ctx.workerRevisionService) throw new Error("Worker revision service is not available.");
-    return ctx.workerRevisionService.rollbackAgentRevision(arg.agentId, arg.revisionId, arg.actor ?? "user");
-  });
-
-  ipcMain.handle(IPC.ctoEnsureAgentSession, async (_event, arg: CtoEnsureAgentSessionArgs): Promise<AgentChatSession> => {
-    const ctx = getCtx();
-    if (!ctx.agentChatService) throw new Error("Agent chat service is not available.");
-    const laneId = await resolvePrimaryLaneIdOnly(ctx);
-    if (!laneId) throw new Error("No primary lane is available to host the agent chat session.");
-    return ctx.agentChatService.ensureIdentitySession({
-      identityKey: `agent:${arg.agentId}`,
-      laneId,
-      modelId: arg.modelId ?? null,
-      reasoningEffort: arg.reasoningEffort ?? null,
-      permissionMode: "full-auto",
-    });
-  });
-
-  ipcMain.handle(IPC.ctoGetBudgetSnapshot, async (_event, arg: CtoGetBudgetSnapshotArgs = {}): Promise<AgentBudgetSnapshot> => {
-    const ctx = getCtx();
-    if (!ctx.workerBudgetService) throw new Error("Worker budget service is not available.");
-    return ctx.workerBudgetService.getBudgetSnapshot({ monthKey: arg.monthKey });
-  });
-
   ipcMain.handle(IPC.ctoUpdateIdentity, async (_event, arg: CtoUpdateIdentityArgs): Promise<CtoSnapshot> => {
     const ctx = getCtx();
     if (!ctx.ctoStateService) throw new Error("CTO state service is not available.");
     return ctx.ctoStateService.updateIdentity(arg.patch ?? {});
   });
 
-  // -- W3: Heartbeat & Activation --
+  // -- Smart memory --
 
-  ipcMain.handle(IPC.ctoTriggerAgentWakeup, async (_event, arg: CtoTriggerAgentWakeupArgs): Promise<CtoTriggerAgentWakeupResult> => {
+  ipcMain.handle(IPC.ctoGetMemory, async (_event, _arg: CtoGetMemoryArgs = {}): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
-    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
-    return ctx.workerHeartbeatService.triggerWakeup(arg);
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    return ctx.ctoMemoryService.getSnapshot();
   });
 
-  ipcMain.handle(IPC.ctoListAgentRuns, async (_event, arg: CtoListAgentRunsArgs = {}): Promise<WorkerAgentRun[]> => {
+  ipcMain.handle(IPC.ctoUpdateMemory, async (_event, arg: CtoUpdateMemoryArgs): Promise<CtoMemorySnapshot> => {
     const ctx = getCtx();
-    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
-    return ctx.workerHeartbeatService.listRuns(arg);
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    ctx.ctoMemoryService.writeMemory(arg.memory ?? "");
+    return ctx.ctoMemoryService.getSnapshot();
   });
 
-  ipcMain.handle(IPC.ctoListAgentSessionLogs, async (_event, arg: CtoListAgentSessionLogsArgs): Promise<AgentSessionLogEntry[]> => {
+  ipcMain.handle(IPC.ctoSearchMemory, async (_event, arg: CtoSearchMemoryArgs): Promise<CtoSearchMemoryResult> => {
     const ctx = getCtx();
-    if (!ctx.workerHeartbeatService) throw new Error("Worker heartbeat service is not available.");
-    return ctx.workerHeartbeatService.listAgentSessionLogs(arg.agentId, arg.limit ?? 40);
+    if (!ctx.ctoMemoryService) throw new Error("CTO memory service is not available.");
+    const query = arg?.query ?? "";
+    const rows = ctx.ctoMemoryService.searchMemory(query, { limit: arg?.limit ?? 20 });
+    return { query, rows };
   });
 
-  ipcMain.handle(IPC.ctoListAgentTaskSessions, async (_event, arg: CtoListAgentTaskSessionsArgs): Promise<AgentTaskSession[]> => {
-    const ctx = getCtx();
-    if (!ctx.workerTaskSessionService) throw new Error("Worker task session service is not available.");
-    return ctx.workerTaskSessionService.listAgentTaskSessions(arg.agentId, arg.limit ?? 40);
-  });
-
-  ipcMain.handle(IPC.ctoClearAgentTaskSession, async (_event, arg: CtoClearAgentTaskSessionArgs): Promise<void> => {
-    const ctx = getCtx();
-    if (!ctx.workerTaskSessionService) throw new Error("Worker task session service is not available.");
-    ctx.workerTaskSessionService.clearAgentTaskSession(arg);
-  });
-
-  // -- W4: Bidirectional Linear Sync --
+  // -- Linear connection & credentials --
 
   ipcMain.handle(IPC.ctoGetLinearConnectionStatus, async (): Promise<LinearConnectionStatus> => {
     const ctx = getCtx();
@@ -9278,141 +9161,6 @@ export function registerIpc({
       };
     }
   );
-
-  ipcMain.handle(IPC.ctoGetFlowPolicy, async (): Promise<LinearWorkflowConfig> => {
-    const ctx = getCtx();
-    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
-    return ctx.flowPolicyService.getPolicy();
-  });
-
-  ipcMain.handle(IPC.ctoSaveFlowPolicy, async (_event, arg: CtoSaveFlowPolicyArgs): Promise<LinearWorkflowConfig> => {
-    const ctx = getCtx();
-    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
-    const saved = ctx.flowPolicyService.savePolicy(arg.policy, arg.actor ?? "user");
-    return saved;
-  });
-
-  ipcMain.handle(IPC.ctoListFlowPolicyRevisions, async (): Promise<CtoFlowPolicyRevision[]> => {
-    const ctx = getCtx();
-    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
-    return ctx.flowPolicyService.listRevisions(50);
-  });
-
-  ipcMain.handle(IPC.ctoRollbackFlowPolicyRevision, async (_event, arg: CtoRollbackFlowPolicyRevisionArgs): Promise<LinearWorkflowConfig> => {
-    const ctx = getCtx();
-    if (!ctx.flowPolicyService) throw new Error("Flow policy service is not available.");
-    return ctx.flowPolicyService.rollbackRevision(arg.revisionId, arg.actor ?? "user");
-  });
-
-  ipcMain.handle(IPC.ctoSimulateFlowRoute, async (_event, arg: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> => {
-    const ctx = getCtx();
-    if (!ctx.linearRoutingService) throw new Error("Linear routing service is not available.");
-
-    const now = nowIso();
-    const policy = ctx.flowPolicyService?.getPolicy();
-    const defaultProjectSlug =
-      policy?.workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []).find(Boolean)
-      ?? policy?.legacyConfig?.projects?.[0]?.slug
-      ?? "sim-project";
-    const issue: NormalizedLinearIssue = {
-      id: arg.issue.id ?? `sim-${randomUUID()}`,
-      identifier: arg.issue.identifier ?? "SIM-1",
-      title: arg.issue.title,
-      description: arg.issue.description ?? "",
-      url: arg.issue.url ?? null,
-      projectId: arg.issue.projectId ?? "sim-project",
-      projectSlug: arg.issue.projectSlug ?? defaultProjectSlug,
-      teamId: arg.issue.teamId ?? "sim-team",
-      teamKey: arg.issue.teamKey ?? "SIM",
-      stateId: arg.issue.stateId ?? "sim-state",
-      stateName: arg.issue.stateName ?? "Todo",
-      stateType: arg.issue.stateType ?? "unstarted",
-      priority: Number.isFinite(Number(arg.issue.priority)) ? Number(arg.issue.priority) : 3,
-      priorityLabel: arg.issue.priorityLabel ?? "normal",
-      labels: Array.isArray(arg.issue.labels) ? arg.issue.labels : [],
-      metadataTags: Array.isArray(arg.issue.metadataTags) ? arg.issue.metadataTags : [],
-      assigneeId: arg.issue.assigneeId ?? null,
-      assigneeName: arg.issue.assigneeName ?? null,
-      ownerId: arg.issue.ownerId ?? null,
-      creatorId: arg.issue.creatorId ?? null,
-      creatorName: arg.issue.creatorName ?? null,
-      blockerIssueIds: Array.isArray(arg.issue.blockerIssueIds) ? arg.issue.blockerIssueIds : [],
-      hasOpenBlockers: Boolean(arg.issue.hasOpenBlockers),
-      createdAt: arg.issue.createdAt ?? now,
-      updatedAt: arg.issue.updatedAt ?? now,
-      raw: isRecord(arg.issue.raw) ? arg.issue.raw : {},
-    };
-    return ctx.linearRoutingService.simulateRoute({ issue });
-  });
-
-  ipcMain.handle(IPC.ctoGetLinearWorkflowCatalog, async (): Promise<LinearWorkflowCatalog> => {
-    const ctx = getCtx();
-    if (!ctx.linearIssueTracker) throw new Error("Linear issue tracker is not available.");
-    const [users, labels, states] = await Promise.all([
-      ctx.linearIssueTracker.listUsers(),
-      ctx.linearIssueTracker.listLabels(),
-      ctx.linearIssueTracker.listWorkflowStates(),
-    ]);
-    return { users, labels, states };
-  });
-
-  ipcMain.handle(IPC.ctoGetLinearSyncDashboard, async (): Promise<LinearSyncDashboard> => {
-    const ctx = getCtx();
-    if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
-    return ctx.linearSyncService.getDashboard();
-  });
-
-  ipcMain.handle(IPC.ctoRunLinearSyncNow, async (): Promise<LinearSyncDashboard> => {
-    const ctx = getCtx();
-    if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
-    return ctx.linearSyncService.runSyncNow();
-  });
-
-  ipcMain.handle(IPC.ctoListLinearSyncQueue, async (): Promise<LinearSyncQueueItem[]> => {
-    const ctx = getCtx();
-    if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
-    return ctx.linearSyncService.listQueue({ limit: 300 });
-  });
-
-  ipcMain.handle(
-    IPC.ctoResolveLinearSyncQueueItem,
-    async (_event, arg: CtoResolveLinearSyncQueueItemArgs): Promise<LinearSyncQueueItem | null> => {
-      const ctx = getCtx();
-      if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
-      return ctx.linearSyncService.resolveQueueItem(arg);
-    }
-  );
-
-  ipcMain.handle(
-    IPC.ctoGetLinearWorkflowRunDetail,
-    async (_event, arg: CtoGetLinearWorkflowRunDetailArgs): Promise<LinearWorkflowRunDetail | null> => {
-      const ctx = getCtx();
-      if (!ctx.linearSyncService) throw new Error("Linear sync service is not available.");
-      return ctx.linearSyncService.getRunDetail(arg);
-    }
-  );
-
-  ipcMain.handle(IPC.ctoGetLinearIngressStatus, async (): Promise<LinearIngressStatus> => {
-    const ctx = getCtx();
-    if (!ctx.linearIngressService) throw new Error("Linear ingress service is not available.");
-    return ctx.linearIngressService.getStatus();
-  });
-
-  ipcMain.handle(
-    IPC.ctoListLinearIngressEvents,
-    async (_event, arg: CtoListLinearIngressEventsArgs | undefined): Promise<LinearIngressEventRecord[]> => {
-      const ctx = getCtx();
-      if (!ctx.linearIngressService) throw new Error("Linear ingress service is not available.");
-      return ctx.linearIngressService.listRecentEvents(arg?.limit ?? 20);
-    }
-  );
-
-  ipcMain.handle(IPC.ctoEnsureLinearWebhook, async (_event, arg: CtoEnsureLinearWebhookArgs | undefined): Promise<LinearIngressStatus> => {
-    const ctx = getCtx();
-    if (!ctx.linearIngressService) throw new Error("Linear ingress service is not available.");
-    await ctx.linearIngressService.ensureRelayWebhook(arg?.force === true);
-    return ctx.linearIngressService.getStatus();
-  });
 
   // -- W-UX: Onboarding & Identity --
 

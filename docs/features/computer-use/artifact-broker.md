@@ -178,7 +178,7 @@ Artifacts flow into downstream workflow surfaces:
 - **Lane history** — linked lane surfaces the artifact in the lane timeline.
 - **Chat history** — linked chat session surfaces the artifact in the thread.
 - **GitHub PR workflows** — linked PR gets a comment with the artifact reference (when published).
-- **Linear closeout** — linked Linear issue gets a comment + optional state transition.
+- **Linear issue** — a linked Linear issue can get a comment + optional state transition through the shared Linear write surface.
 - **Automations history** — linked automation run shows the artifact in the run log.
 
 Publication paths call `routeArtifact` or `reviewArtifact` depending on the transition — publication always preserves the original link for provenance.
@@ -204,4 +204,4 @@ Publication paths call `routeArtifact` or `reviewArtifact` depending on the tran
 - `README.md` — control-plane role, proof kinds, backend overview.
 - `backends.md` — Ghost OS, agent-browser, ADE local detection and capabilities.
 - `settings-and-readiness.md` — Settings > Computer Use surface.
-- `../cto/linear-integration.md` — Linear closeout attaches broker artifacts via routing.
+- `../linear-integration/README.md` — the Linear write surface used when publishing an artifact to a linked issue.

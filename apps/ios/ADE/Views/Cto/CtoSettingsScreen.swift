@@ -1,70 +1,91 @@
 import SwiftUI
 
+/// CTO settings sheet: identity (name, personality, work style, model), a
+/// read-only Linear connection status, a "what the CTO remembers" memory
+/// summary, and an advanced re-run-onboarding action. Presented as a sheet
+/// from the CTO tab's gear button.
 struct CtoSettingsScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @Environment(\.dismiss) private var dismiss
+
+  let onSnapshotChanged: (CtoSnapshot) -> Void
 
   @State private var snapshot: CtoSnapshot?
-  @State private var budget: AgentBudgetSnapshot?
   @State private var linearStatus: LinearConnectionStatus?
+  @State private var memory: CtoMemory?
+  @State private var memoryUnavailable = false
   @State private var isLoading = false
-  @State private var isSyncing = false
+  @State private var isResettingOnboarding = false
   @State private var errorMessage: String?
-  @State private var syncNotice: String?
   @State private var showingIdentityEditor = false
-  @State private var showingMachineOnlySheet = false
-  @State private var machineOnlyTitle: String = ""
+
+  init(snapshot: CtoSnapshot? = nil, onSnapshotChanged: @escaping (CtoSnapshot) -> Void) {
+    _snapshot = State(initialValue: snapshot)
+    self.onSnapshotChanged = onSnapshotChanged
+  }
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 12) {
-        if let errorMessage, !syncService.connectionState.isHostUnreachable {
-          ADENoticeCard(
-            title: "Settings failed to load",
-            message: errorMessage,
-            icon: "exclamationmark.triangle.fill",
-            tint: ADEColor.danger,
-            actionTitle: "Retry",
-            action: { Task { await reload() } }
-          )
-        }
-
-        if isLoading && snapshot == nil {
-          VStack(spacing: 12) {
-            ADECardSkeleton(rows: 3)
-            ADECardSkeleton(rows: 4)
-            ADECardSkeleton(rows: 3)
+    NavigationStack {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 12) {
+          if let errorMessage, !syncService.connectionState.isHostUnreachable {
+            ADENoticeCard(
+              title: "Settings failed to load",
+              message: errorMessage,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Retry",
+              action: { Task { await reload() } }
+            )
           }
+
+          if isLoading && snapshot == nil {
+            VStack(spacing: 12) {
+              ADECardSkeleton(rows: 3)
+              ADECardSkeleton(rows: 3)
+            }
+          }
+
+          if let snapshot {
+            identitySection(snapshot)
+          }
+
+          integrationsSection
+          memorySection
+          advancedSection
+
+          Color.clear.frame(height: 24)
         }
-
-        if let snapshot {
-          identitySection(snapshot)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+      }
+      .scrollContentBackground(.hidden)
+      .adeScreenBackground()
+      .navigationTitle("CTO settings")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarTrailing) {
+          Button("Done") { dismiss() }
         }
-
-        heartbeatSection
-        budgetSection
-        integrationsSection
-        advancedSection
-
-        Color.clear.frame(height: 32)
       }
-      .padding(.horizontal, 16)
-      .padding(.top, 8)
-    }
-    .scrollContentBackground(.hidden)
-    .adeScreenBackground()
-    .refreshable { await reload() }
-    .task {
-      guard snapshot == nil else { return }
-      await reload()
-    }
-    .sheet(isPresented: $showingIdentityEditor) {
-      CtoIdentityEditor(snapshot: snapshot) { updated in
-        self.snapshot = updated
+      .tint(ADEColor.ctoAccent)
+      .refreshable { await reload() }
+      .task {
+        guard snapshot == nil else {
+          // Still refresh the side data (Linear, memory) even if identity was
+          // seeded from the parent snapshot.
+          await loadSideData()
+          return
+        }
+        await reload()
       }
-    }
-    .sheet(isPresented: $showingMachineOnlySheet) {
-      MachineOnlySheet(title: machineOnlyTitle)
-        .presentationDetents([.fraction(0.3), .medium])
+      .sheet(isPresented: $showingIdentityEditor) {
+        CtoIdentityEditor(snapshot: snapshot) { updated in
+          self.snapshot = updated
+          onSnapshotChanged(updated)
+        }
+        .environmentObject(syncService)
+      }
     }
   }
 
@@ -81,188 +102,17 @@ struct CtoSettingsScreen: View {
     }
   }
 
-  // MARK: - Heartbeat
-
-  private var heartbeatSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      SectionHeader(title: "Heartbeat")
-      VStack(spacing: 0) {
-        RowItem(label: "Policy", value: "Managed in ADE on your machine", disabled: true)
-      }
-      .adeListCard(padding: 0)
-    }
-  }
-
-  // MARK: - Budget
-
-  private var budgetSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      SectionHeader(title: "Budget")
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(alignment: .firstTextBaseline) {
-          HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(companySpentLabel)
-              .font(.system(size: 22, weight: .heavy))
-              .tracking(-0.3)
-              .foregroundStyle(ADEColor.textPrimary)
-            if let capText = companyCap {
-              Text("/ \(capText)")
-                .font(.system(size: 13))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-          }
-          Spacer(minLength: 0)
-          if let pct = companyBudgetPct {
-            ADEStatusPill(
-              text: pct > 80 ? "warning" : "healthy",
-              tint: pct > 80 ? ADEColor.warning : ADEColor.success
-            )
-          }
-        }
-
-        if let pct = companyBudgetPct {
-          Text("\(pct)% this month")
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(ADEColor.textMuted)
-          CtoBudgetBar(percent: pct)
-        }
-
-        Divider().opacity(0.08)
-
-        HStack {
-          Text("Alert threshold")
-            .font(.system(size: 12.5, weight: .medium))
-            .foregroundStyle(ADEColor.textMuted)
-          Spacer(minLength: 0)
-          Text("80%")
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-      }
-      .adeListCard()
-    }
-  }
-
-  private var companySpentLabel: String {
-    guard let budget else { return "$—" }
-    return Self.formatUSD(cents: budget.companySpentMonthlyCents)
-  }
-
-  private var companyCap: String? {
-    guard let cap = budget?.companyCapMonthlyCents else { return nil }
-    return Self.formatUSD(cents: cap)
-  }
-
-  private var companyBudgetPct: Int? {
-    guard let budget else { return nil }
-    return ctoBudgetPercent(spentCents: budget.companySpentMonthlyCents, capCents: budget.companyCapMonthlyCents)
-  }
-
-  private static func formatUSD(cents: Int) -> String {
-    let dollars = Double(cents) / 100.0
-    return String(format: "$%.2f", dollars)
-  }
-
-  // MARK: - Integrations
+  // MARK: - Integrations (read-only)
 
   private var integrationsSection: some View {
     VStack(alignment: .leading, spacing: 6) {
       SectionHeader(title: "Integrations")
-      if let syncNotice {
-        Text(syncNotice)
-          .font(.system(size: 11.5, design: .monospaced))
-          .foregroundStyle(ADEColor.success)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 16)
-      }
-
       VStack(spacing: 0) {
         IntegrationRow(
           name: "Linear",
           subtitle: linearSubtitle,
           connected: linearStatus?.connected == true
         )
-        if linearStatus?.connected == true {
-          Sep()
-          Button {
-            Task { await triggerLinearSync() }
-          } label: {
-            HStack(spacing: 8) {
-              ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                  .fill(ADEColor.purpleAccent.opacity(0.12))
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                  .stroke(ADEColor.purpleAccent.opacity(0.24), lineWidth: 0.5)
-                Group {
-                  if isSyncing {
-                    ProgressView().controlSize(.mini).tint(ADEColor.purpleAccent)
-                  } else {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                      .font(.system(size: 12, weight: .semibold))
-                      .foregroundStyle(ADEColor.purpleAccent)
-                  }
-                }
-              }
-              .frame(width: 26, height: 26)
-
-              VStack(alignment: .leading, spacing: 1) {
-                Text(isSyncing ? "Syncing…" : "Sync now")
-                  .font(.system(size: 13, weight: .semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                Text("Trigger intake & dispatch cycle")
-                  .font(.system(size: 10, design: .monospaced))
-                  .foregroundStyle(ADEColor.textMuted)
-                  .lineLimit(1)
-              }
-              .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-          .disabled(isSyncing)
-          .accessibilityLabel("Sync Linear now")
-        }
-        Sep()
-        RowItem(label: "External MCP", value: "Managed in ADE", disabled: true)
-      }
-      .adeListCard(padding: 0)
-    }
-  }
-
-  private func triggerLinearSync() async {
-    guard !isSyncing else { return }
-    isSyncing = true
-    syncNotice = nil
-    defer { isSyncing = false }
-    do {
-      _ = try await syncService.runLinearSyncNow()
-      syncNotice = "Linear sync completed."
-      Task {
-        try? await Task.sleep(nanoseconds: 4_000_000_000)
-        await MainActor.run { syncNotice = nil }
-      }
-    } catch {
-      syncNotice = "Sync failed: \(error.localizedDescription)"
-    }
-  }
-
-  // MARK: - Advanced
-
-  private var advancedSection: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      SectionHeader(title: "Advanced")
-      VStack(spacing: 0) {
-        RowItem(label: "Re-run onboarding", value: "") {
-          machineOnlyTitle = "Re-run onboarding"
-          showingMachineOnlySheet = true
-        }
-        Sep()
-        RowItem(label: "Re-scan project", value: "") {
-          machineOnlyTitle = "Re-scan project"
-          showingMachineOnlySheet = true
-        }
       }
       .adeListCard(padding: 0)
     }
@@ -278,63 +128,172 @@ struct CtoSettingsScreen: View {
     return "Not connected"
   }
 
+  // MARK: - Memory
+
+  private var memorySection: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      SectionHeader(title: "Memory")
+      CtoMemoryCard(memory: memory, unavailable: memoryUnavailable)
+    }
+  }
+
+  // MARK: - Advanced
+
+  private var advancedSection: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      SectionHeader(title: "Advanced")
+      VStack(spacing: 0) {
+        Button {
+          Task { await rerunOnboarding() }
+        } label: {
+          HStack(spacing: 8) {
+            Text("Re-run setup")
+              .font(.system(size: 13.5, weight: .medium))
+              .foregroundStyle(ADEColor.textPrimary)
+              .frame(maxWidth: .infinity, alignment: .leading)
+            if isResettingOnboarding {
+              ProgressView().controlSize(.mini)
+            } else {
+              Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 12)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(isResettingOnboarding)
+        .accessibilityLabel("Re-run CTO setup")
+      }
+      .adeListCard(padding: 0)
+    }
+  }
+
+  /// Resets onboarding to incomplete so the tab flips back to the setup card.
+  /// The desktop only requires the "identity" step, so an empty
+  /// `completedSteps` (and no `completedAt`) reads as incomplete.
+  private func rerunOnboarding() async {
+    guard !isResettingOnboarding else { return }
+    isResettingOnboarding = true
+    defer { isResettingOnboarding = false }
+    var patch = CtoIdentityPatch()
+    patch.onboardingState = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
+    do {
+      let updated = try await syncService.updateCtoIdentity(patch: patch)
+      snapshot = updated
+      onSnapshotChanged(updated)
+      dismiss()
+    } catch {
+      errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    }
+  }
+
   // MARK: - Data loading
 
-  /// Tolerates partial failures. Linear and budget status should never block
-  /// the identity card from rendering.
   private func reload() async {
     isLoading = true
     errorMessage = nil
     defer { isLoading = false }
 
     do {
-      self.snapshot = try await syncService.fetchCtoState()
+      let updated = try await syncService.fetchCtoState()
+      self.snapshot = updated
+      onSnapshotChanged(updated)
     } catch {
       if self.snapshot == nil {
         self.errorMessage = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
       }
     }
+    await loadSideData()
+  }
 
-    if let value = try? await syncService.fetchCtoBudget() {
-      self.budget = value
-    } else {
-      // Drop stale budget rather than render outdated numbers under a fresh load.
-      self.budget = nil
-    }
+  /// Linear status + memory. Both tolerate failure: Linear falls back to
+  /// "Manage in ADE" and memory falls back to the "not available" row.
+  private func loadSideData() async {
     if let value = try? await syncService.fetchLinearConnectionStatus() {
       self.linearStatus = value
     } else {
-      // Same reasoning — a failed refresh should not preserve the previous integration state.
       self.linearStatus = nil
+    }
+
+    do {
+      self.memory = try await syncService.fetchCtoMemory()
+      self.memoryUnavailable = false
+    } catch {
+      // Older hosts don't implement cto.getMemory — surface a quiet row, not
+      // an error card.
+      self.memory = nil
+      self.memoryUnavailable = true
     }
   }
 }
 
-// MARK: - Budget bar (GeometryReader-free to avoid iOS 26 glass-layer pool churn)
+// MARK: - Memory card
 
-private struct CtoBudgetBar: View {
-  let percent: Int
+/// Renders the CTO's durable memory and rolling thread state as scrollable
+/// monospaced blocks under a "what the CTO remembers" framing. Degrades to a
+/// quiet unavailable row on older hosts.
+private struct CtoMemoryCard: View {
+  let memory: CtoMemory?
+  let unavailable: Bool
 
   var body: some View {
-    let clamped = max(0, min(100, percent))
-    let fill = CGFloat(clamped) / 100.0
-    ZStack(alignment: .leading) {
-      RoundedRectangle(cornerRadius: 3, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(0.5))
-      RoundedRectangle(cornerRadius: 3, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: clamped > 80
-              ? [ADEColor.warning, ADEColor.warning.opacity(0.7)]
-              : [ADEColor.accentDeep, ADEColor.ctoAccent],
-            startPoint: .leading,
-            endPoint: .trailing
-          )
-        )
-        .scaleEffect(x: fill, y: 1, anchor: .leading)
+    VStack(alignment: .leading, spacing: 10) {
+      Text("What the CTO remembers")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+
+      if unavailable {
+        Text("Memory not available on this host version.")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+      } else if let memory, !memory.isEmpty {
+        let trimmedMemory = memory.memory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedThread = memory.threadState.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedMemory.isEmpty {
+          memoryBlock(title: "Durable facts", body: trimmedMemory)
+        }
+        if !trimmedThread.isEmpty {
+          memoryBlock(title: "Current thread", body: trimmedThread)
+        }
+        if let updatedAt = memory.updatedAt, !updatedAt.isEmpty {
+          Text("Updated \(updatedAt)")
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      } else {
+        Text("Nothing saved yet. The CTO writes durable facts here as you work.")
+          .font(.system(size: 12))
+          .foregroundStyle(ADEColor.textMuted)
+      }
     }
-    .frame(height: 5)
-    .frame(maxWidth: .infinity)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .adeListCard()
+  }
+
+  private func memoryBlock(title: String, body: String) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text(title.uppercased())
+        .font(.caption2.weight(.semibold))
+        .tracking(0.4)
+        .foregroundStyle(ADEColor.textMuted)
+      ScrollView {
+        Text(body)
+          .font(.system(size: 11.5, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .textSelection(.enabled)
+      }
+      .frame(maxHeight: 180)
+      .padding(10)
+      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+    }
   }
 }
 
@@ -342,22 +301,13 @@ private struct CtoBudgetBar: View {
 
 private struct SectionHeader: View {
   let title: String
-  var rightLabel: String? = nil
 
   var body: some View {
-    HStack(alignment: .firstTextBaseline) {
-      Text(title.uppercased())
-        .font(.caption.weight(.semibold))
-        .tracking(0.4)
-        .foregroundStyle(ADEColor.textMuted)
-      Spacer(minLength: 8)
-      if let rightLabel {
-        Text(rightLabel)
-          .font(.caption.weight(.medium))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .padding(.top, 6)
+    Text(title.uppercased())
+      .font(.caption.weight(.semibold))
+      .tracking(0.4)
+      .foregroundStyle(ADEColor.textMuted)
+      .padding(.top, 6)
   }
 }
 
@@ -374,13 +324,13 @@ private struct IdentityCard: View {
           RoundedRectangle(cornerRadius: 13, style: .continuous)
             .fill(
               LinearGradient(
-                colors: [ADEColor.purpleAccent.opacity(0.35), ADEColor.accentDeep.opacity(0.55)],
+                colors: [ADEColor.ctoAccent.opacity(0.35), ADEColor.accentDeep.opacity(0.55)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
               )
             )
           RoundedRectangle(cornerRadius: 13, style: .continuous)
-            .stroke(ADEColor.purpleAccent.opacity(0.3), lineWidth: 0.5)
+            .stroke(ADEColor.ctoAccent.opacity(0.3), lineWidth: 0.5)
           Text(initials)
             .font(.system(size: 20, weight: .heavy))
             .foregroundStyle(ADEColor.textPrimary)
@@ -403,10 +353,10 @@ private struct IdentityCard: View {
         Button(action: onEdit) {
           Text("Edit")
             .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
+            .foregroundStyle(ADEColor.ctoAccent)
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
-            .background(ADEColor.accent.opacity(0.14), in: Capsule())
+            .background(ADEColor.ctoAccent.opacity(0.14), in: Capsule())
         }
         .buttonStyle(.plain)
       }
@@ -442,79 +392,8 @@ private struct IdentityCard: View {
     }
     let persona = identity.persona?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if !persona.isEmpty { return persona }
-    return CtoPresetSummary.text(for: identity.personality)
-  }
-}
-
-enum CtoPresetSummary {
-  static func text(for preset: String?) -> String {
-    switch preset {
-    case "professional":
-      return "Professional technical lead. Direct feedback, pragmatic tradeoffs, holds the mental model."
-    case "strategic":
-      return "Strategic thinker. Emphasizes system boundaries, migration safety, and long-term tradeoffs."
-    case "hands_on":
-      return "Hands-on executor. Moves fast, unblocks the team, prefers decisive action."
-    case "casual":
-      return "Casual collaborator. Informal tone, low-friction feedback loops."
-    case "minimal":
-      return "Minimal voice. Short, surgical replies with no filler."
-    case "custom":
-      return "Custom identity. Configure the system prompt extension from ADE on your machine."
-    default:
-      return "Pragmatic senior engineer who holds the mental model so workers don't have to."
-    }
-  }
-}
-
-// MARK: - Row item
-
-private struct RowItem: View {
-  let label: String
-  let value: String
-  var warn: Bool = false
-  var danger: Bool = false
-  var disabled: Bool = false
-  var onTap: (() -> Void)? = nil
-
-  var body: some View {
-    let content = HStack(spacing: 8) {
-      Text(label)
-        .font(.system(size: 13.5, weight: .medium))
-        .foregroundStyle(labelColor)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      if !value.isEmpty {
-        Text(value)
-          .font(.system(size: 11, design: .monospaced))
-          .foregroundStyle(valueColor)
-      }
-      if onTap != nil {
-        Image(systemName: "chevron.right")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .contentShape(Rectangle())
-    .opacity(disabled ? 0.55 : 1.0)
-
-    if let onTap, !disabled {
-      Button(action: onTap) { content }
-        .buttonStyle(.plain)
-    } else {
-      content
-    }
-  }
-
-  private var labelColor: Color {
-    if danger { return ADEColor.danger }
-    return ADEColor.textPrimary
-  }
-
-  private var valueColor: Color {
-    if warn { return ADEColor.warning }
-    return ADEColor.textSecondary
+    return ctoPersonalityPresetOptions.first { $0.id == identity.personality }?.description
+      ?? ctoPersonalityPresetOptions[0].description
   }
 }
 
@@ -556,44 +435,5 @@ private struct IntegrationRow: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 11)
-  }
-}
-
-// MARK: - Separator
-
-private struct Sep: View {
-  var body: some View {
-    Divider()
-      .background(ADEColor.glassBorder)
-      .padding(.leading, 14)
-  }
-}
-
-// MARK: - Machine-only sheet
-
-private struct MachineOnlySheet: View {
-  @Environment(\.dismiss) private var dismiss
-  let title: String
-
-  var body: some View {
-    VStack(spacing: 18) {
-      Image(systemName: "desktopcomputer")
-        .font(.system(size: 36, weight: .semibold))
-        .foregroundStyle(ADEColor.accent)
-        .padding(.top, 24)
-      Text(title.isEmpty ? "Manage in ADE" : title)
-        .font(.headline)
-        .foregroundStyle(ADEColor.textPrimary)
-      Text("Manage this from ADE on your machine for now.")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-        .multilineTextAlignment(.center)
-      Button("Close") { dismiss() }
-        .buttonStyle(.glassProminent)
-        .padding(.top, 4)
-      Spacer()
-    }
-    .frame(maxWidth: .infinity)
-    .adeScreenBackground()
   }
 }

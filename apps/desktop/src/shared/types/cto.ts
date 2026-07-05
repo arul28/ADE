@@ -48,22 +48,9 @@ export type CtoSessionLogEntry = {
   createdAt: string;
 };
 
-export type CtoSubordinateActivityEntry = {
-  id: string;
-  agentId: string;
-  agentName: string;
-  activityType: "chat_turn" | "worker_run";
-  summary: string;
-  sessionId?: string | null;
-  taskKey?: string | null;
-  issueKey?: string | null;
-  createdAt: string;
-};
-
 export type CtoSnapshot = {
   identity: CtoIdentity;
   recentSessions: CtoSessionLogEntry[];
-  recentSubordinateActivity: CtoSubordinateActivityEntry[];
 };
 
 export type CtoGetStateArgs = {
@@ -92,7 +79,7 @@ export type CtoOnboardingState = {
 };
 
 export type CtoSystemPromptPreviewSection = {
-  id: "doctrine" | "personality" | "continuity" | "knowledge" | "capabilities";
+  id: "doctrine" | "personality" | "continuity" | "memory" | "knowledge" | "capabilities";
   title: string;
   content: string;
 };
@@ -264,4 +251,42 @@ export type CtoRunProjectScanArgs = Record<string, never>;
 
 export type CtoRunProjectScanResult = {
   detection: OnboardingDetectionResult | null;
+};
+
+/* ── Smart memory ── */
+
+/**
+ * Snapshot of the CTO's durable memory surface. The iOS client decodes this
+ * exact shape via the `cto.getMemory` sync command, so the field names and
+ * types here are a cross-platform contract — do not rename them.
+ */
+export type CtoMemorySnapshot = {
+  memory: string;
+  threadState: string;
+  dailyLog: string;
+  dailyLogDate: string;
+  updatedAt: string | null;
+};
+
+export type CtoGetMemoryArgs = Record<string, never>;
+
+export type CtoUpdateMemoryArgs = {
+  memory: string;
+};
+
+export type CtoSearchMemoryArgs = {
+  query: string;
+  limit?: number;
+};
+
+export type CtoMemorySearchRow = {
+  file: "MEMORY.md" | "thread-state.md" | "daily";
+  date: string | null;
+  line: number;
+  snippet: string;
+};
+
+export type CtoSearchMemoryResult = {
+  query: string;
+  rows: CtoMemorySearchRow[];
 };

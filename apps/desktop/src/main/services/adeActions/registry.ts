@@ -57,10 +57,7 @@ import type {
   AiSettingsStatus,
   CtoRunProjectScanResult,
   CtoLinearQuickView,
-  CtoSimulateFlowRouteArgs,
   LinearConnectionStatus,
-  LinearRouteDecision,
-  NormalizedLinearIssue,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
@@ -89,20 +86,14 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "onboarding",
   "automation_planner",
   "cto_state",
-  "worker_agent",
   "session",
   "operation",
   "ade_project",
   "project_config",
   "project_secret",
-  "flow_policy",
   "linear_credentials",
   "linear_oauth",
-  "linear_dispatcher",
   "linear_issue_tracker",
-  "linear_sync",
-  "linear_ingress",
-  "linear_routing",
   "github",
   "feedback",
   "usage",
@@ -146,9 +137,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   linear_oauth: ["startSession"],
   github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
   update: ["quitAndInstall"],
-  flow_policy: ["savePolicy", "rollbackRevision"],
-  linear_sync: ["runSyncNow", "resolveQueueItem"],
-  linear_ingress: ["ensureRelayWebhook"],
   automations: ["setWebhookGatewayPublicUrl"],
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
@@ -428,7 +416,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteSession",
     "dispatchSteer",
     "editSteer",
-    "ensureAgentIdentitySession",
     "ensureCtoSession",
     "getAvailableModels",
     "getClaudeSessionInfo",
@@ -521,33 +508,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "runProjectScan",
     "updateIdentity",
   ],
-  worker_agent: [
-    "clearAgentTaskSession",
-    "getBudgetSnapshot",
-    "listAgents",
-    "listAgentRevisions",
-    "listAgentRuns",
-    "listSessionLogs",
-    "listAgentTaskSessions",
-    "removeAgent",
-    "rollbackAgentRevision",
-    "saveAgent",
-    "setAgentStatus",
-    "triggerWakeup",
-  ],
   session: ["backfillDeltas", "deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
   project_secret: ["list", "get", "set", "delete"],
-  flow_policy: [
-    "diffPolicyPaths",
-    "getPolicy",
-    "listRevisions",
-    "normalizePolicy",
-    "rollbackRevision",
-    "savePolicy",
-  ],
   linear_credentials: [
     "clearOAuthClientCredentials",
     "clearToken",
@@ -560,7 +525,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSession",
     "startSession",
   ],
-  linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
   linear_issue_tracker: [
     "addIssueLabel",
     "addLabel",
@@ -585,9 +549,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIssueAssignee",
     "updateIssueState",
   ],
-  linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
-  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents", "startLocalWebhook"],
-  linear_routing: ["simulateRoute"],
   github: [
     "clearToken",
     "clearAppUserAuth",
@@ -1066,20 +1027,6 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         permissionMode: "full-auto",
       });
     },
-    ensureAgentIdentitySession: async (args?: {
-      agentId?: string;
-      modelId?: string | null;
-      reasoningEffort?: string | null;
-    }) => {
-      const agentId = requireNonEmptyString(args?.agentId, "agentId");
-      const laneId = await resolvePrimaryLaneId(runtime);
-      return agentChatService.ensureIdentitySession({
-        identityKey: `agent:${agentId}`,
-        laneId,
-        modelId: args?.modelId ?? null,
-        reasoningEffort: args?.reasoningEffort ?? null,
-      });
-    },
     getParallelLaunchState: (args?: { parentLaneId?: string }) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
@@ -1305,53 +1252,6 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         failed: 0,
       };
     },
-  };
-}
-
-function buildWorkerAgentDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const workerAgentService = runtime.workerAgentService;
-  if (!workerAgentService) return null;
-  return {
-    ...(workerAgentService as unknown as OpaqueService),
-    saveAgent: (args?: { agent?: unknown; actor?: string }) =>
-      requireService(runtime.workerRevisionService, "Worker revision service not available.").saveAgent(
-        args?.agent as never,
-        args?.actor ?? "user",
-      ),
-    removeAgent: (args?: { agentId?: string }) => {
-      workerAgentService.removeAgent(requireNonEmptyString(args?.agentId, "agentId"));
-      runtime.workerHeartbeatService?.syncFromConfig();
-    },
-    setAgentStatus: (args?: { agentId?: string; status?: string }) => {
-      workerAgentService.setAgentStatus(requireNonEmptyString(args?.agentId, "agentId"), args?.status as never);
-      runtime.workerHeartbeatService?.syncFromConfig();
-    },
-    listAgentRevisions: (args?: { agentId?: string; limit?: number }) =>
-      requireService(runtime.workerRevisionService, "Worker revision service not available.").listAgentRevisions(
-        requireNonEmptyString(args?.agentId, "agentId"),
-        args?.limit ?? 20,
-      ),
-    rollbackAgentRevision: (args?: { agentId?: string; revisionId?: string; actor?: string }) =>
-      requireService(runtime.workerRevisionService, "Worker revision service not available.").rollbackAgentRevision(
-        requireNonEmptyString(args?.agentId, "agentId"),
-        requireNonEmptyString(args?.revisionId, "revisionId"),
-        args?.actor ?? "user",
-      ),
-    getBudgetSnapshot: (args?: { monthKey?: string }) =>
-      requireService(runtime.workerBudgetService, "Worker budget service not available.").getBudgetSnapshot(
-        args?.monthKey ? { monthKey: args.monthKey } : {},
-      ),
-    triggerWakeup: (args?: unknown) =>
-      requireService(runtime.workerHeartbeatService, "Worker heartbeat service not available.").triggerWakeup(args as never),
-    listAgentRuns: (args?: unknown) =>
-      requireService(runtime.workerHeartbeatService, "Worker heartbeat service not available.").listRuns(args as never),
-    clearAgentTaskSession: (args?: unknown) =>
-      requireService(runtime.workerTaskSessionService, "Worker task session service not available.").clearAgentTaskSession(args as never),
-    listAgentTaskSessions: (args?: { agentId?: string; limit?: number }) =>
-      requireService(runtime.workerTaskSessionService, "Worker task session service not available.").listAgentTaskSessions(
-        requireNonEmptyString(args?.agentId, "agentId"),
-        args?.limit ?? 40,
-      ),
   };
 }
 
@@ -2755,57 +2655,6 @@ function createEmptyLinearQuickView(connection: LinearConnectionStatus): CtoLine
   };
 }
 
-function normalizeSimulatedLinearIssue(runtime: AdeRuntime, args?: CtoSimulateFlowRouteArgs): NormalizedLinearIssue {
-  const issueInput = args?.issue;
-  if (!issueInput?.title?.trim()) {
-    throw new Error("issue.title is required.");
-  }
-  const policy = runtime.flowPolicyService?.getPolicy();
-  const defaultProjectSlug =
-    policy?.workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []).find(Boolean)
-    ?? policy?.legacyConfig?.projects?.[0]?.slug
-    ?? "sim-project";
-  const now = nowIso();
-  return {
-    id: issueInput.id ?? `sim-${randomUUID()}`,
-    identifier: issueInput.identifier ?? "SIM-1",
-    title: issueInput.title,
-    description: issueInput.description ?? "",
-    url: issueInput.url ?? null,
-    projectId: issueInput.projectId ?? "sim-project",
-    projectSlug: issueInput.projectSlug ?? defaultProjectSlug,
-    teamId: issueInput.teamId ?? "sim-team",
-    teamKey: issueInput.teamKey ?? "SIM",
-    stateId: issueInput.stateId ?? "sim-state",
-    stateName: issueInput.stateName ?? "Todo",
-    stateType: issueInput.stateType ?? "unstarted",
-    priority: Number.isFinite(Number(issueInput.priority)) ? Number(issueInput.priority) : 3,
-    priorityLabel: issueInput.priorityLabel ?? "normal",
-    labels: Array.isArray(issueInput.labels) ? issueInput.labels : [],
-    metadataTags: Array.isArray(issueInput.metadataTags) ? issueInput.metadataTags : [],
-    assigneeId: issueInput.assigneeId ?? null,
-    assigneeName: issueInput.assigneeName ?? null,
-    ownerId: issueInput.ownerId ?? null,
-    creatorId: issueInput.creatorId ?? null,
-    creatorName: issueInput.creatorName ?? null,
-    blockerIssueIds: Array.isArray(issueInput.blockerIssueIds) ? issueInput.blockerIssueIds : [],
-    hasOpenBlockers: Boolean(issueInput.hasOpenBlockers),
-    createdAt: issueInput.createdAt ?? now,
-    updatedAt: issueInput.updatedAt ?? now,
-    raw: isRecord(issueInput.raw) ? issueInput.raw : {},
-  };
-}
-
-function buildLinearRoutingDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const routingService = runtime.linearRoutingService;
-  if (!routingService) return null;
-  return {
-    ...(routingService as unknown as OpaqueService),
-    simulateRoute: (args?: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> =>
-      routingService.simulateRoute({ issue: normalizeSimulatedLinearIssue(runtime, args) }),
-  };
-}
-
 function buildFileDomainService(runtime: AdeRuntime): OpaqueService | null {
   const fileService = runtime.fileService;
   if (!fileService) return null;
@@ -2886,20 +2735,14 @@ export function getAdeActionDomainServices(
     onboarding: toService(runtime.onboardingService),
     automation_planner: automationsEnabled ? toService(runtime.automationPlannerService) : null,
     cto_state: toService(buildCtoStateDomainService(runtime)),
-    worker_agent: toService(buildWorkerAgentDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(runtime.projectSecretService),
-    flow_policy: toService(runtime.flowPolicyService),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),
-    linear_dispatcher: toService(runtime.linearDispatcherService),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),
-    linear_sync: toService(runtime.linearSyncService),
-    linear_ingress: automationsEnabled ? toService(runtime.linearIngressService) : null,
-    linear_routing: toService(buildLinearRoutingDomainService(runtime)),
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),
