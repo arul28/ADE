@@ -301,6 +301,7 @@ ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.5 -
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --print-config --json
+ade chat create --lane lane-id --provider codex --no-parent   # spawned chats default their parent to $ADE_CHAT_SESSION_ID; --parent <session> overrides, --no-parent opts out
 ade chat read session-id --limit 20 --text
 ade code
 ade code --embedded

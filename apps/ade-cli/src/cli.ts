@@ -1446,6 +1446,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --no-fast, --standard   Disable fast mode explicitly.
     --print-config          Print the createSession payload and permission mapping.
     --dry-run               Alias for --print-config; does not create a chat.
+    --parent <sessionId>    Link the new chat as a child of that session.
+                            Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
+    --no-parent             Create the chat without a parent link.
 
   Permission notes:
     full-auto maps Codex to sandbox=danger-full-access and approval=never.
