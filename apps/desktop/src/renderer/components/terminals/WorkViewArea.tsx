@@ -28,6 +28,12 @@ import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
+import {
+  composerTriggerSpansWholeDraft,
+  detectComposerTrigger,
+  replaceComposerTriggerSpan,
+  type ComposerTrigger,
+} from "../../../shared/composerTriggers";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
@@ -317,7 +323,7 @@ function WorkCliContinuationComposer({
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
   const [draft, setDraft] = useState("");
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
-  const [commandMenuTrigger, setCommandMenuTrigger] = useState<{ type: "slash"; query: string; cursorIndex: number } | null>(null);
+  const [commandMenuTrigger, setCommandMenuTrigger] = useState<ComposerTrigger | null>(null);
   const [commandMenuAnchor, setCommandMenuAnchor] = useState<CommandMenuAnchor | null>(null);
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -346,28 +352,38 @@ function WorkCliContinuationComposer({
   const updateDraft = useCallback((next: string, element: HTMLTextAreaElement | null) => {
     setDraft(next);
     setSubmitError(null);
-    if (next.startsWith("/") && !next.slice(1).includes("\n")) {
-      const afterSlash = next.slice(1);
-      if (!/\s/.test(afterSlash)) {
-        const query = afterSlash.match(/^[^\s/]*/)?.[0] ?? "";
-        setCommandMenuTrigger({ type: "slash", query, cursorIndex: 0 });
-        const anchor = getCommandMenuAnchor(element);
-        if (anchor) setCommandMenuAnchor(anchor);
-        return;
-      }
+    // This composer has no file search (sessionId is null), so only slash
+    // triggers open the menu — but they open anywhere in the draft.
+    const trigger = detectComposerTrigger(next, element?.selectionStart ?? next.length);
+    if (trigger?.type === "slash") {
+      setCommandMenuTrigger(trigger);
+      const anchor = getCommandMenuAnchor(element);
+      if (anchor) setCommandMenuAnchor(anchor);
+      return;
     }
     setCommandMenuTrigger(null);
   }, []);
 
   const handleCommandSelect = useCallback((item: ChatCommandMenuItem) => {
-    if (item.type !== "command") return;
+    if (item.type !== "command" || !commandMenuTrigger) return;
     const command = slashCommands.find((candidate) => candidate.name.replace(/^\//, "") === item.name);
-    const argumentHint = command?.argumentHint ? ` ${command.argumentHint}` : "";
-    const next = `/${item.name}${argumentHint} `;
-    setDraft(next);
+    const argumentHint = command?.argumentHint && composerTriggerSpansWholeDraft(draft, commandMenuTrigger)
+      ? ` ${command.argumentHint}`
+      : "";
+    const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, `/${item.name}${argumentHint} `);
+    setDraft(next.text);
     setCommandMenuTrigger(null);
-    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
-  }, [slashCommands]);
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus({ preventScroll: true });
+      try {
+        node.setSelectionRange(next.caret, next.caret);
+      } catch {
+        // selection may not apply if the node is detached; ignore
+      }
+    });
+  }, [commandMenuTrigger, draft, slashCommands]);
 
   const submit = useCallback(async () => {
     const text = draft.trim();

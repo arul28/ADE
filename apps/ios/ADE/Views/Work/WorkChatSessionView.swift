@@ -704,6 +704,7 @@ struct WorkChatSessionView: View {
           provider: chatSummaryContext.provider,
           fallbackContextWindow: chatSummaryContext.contextWindowFallback
         ),
+        laneId: session.laneId,
         dictationTargetId: "work-chat:\(session.id)",
         awaitingInputGate: hasPendingInputGate,
         composerPlaceholder: composerPlaceholderText,
@@ -1566,6 +1567,7 @@ func mergeWorkPendingSteers(
 private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
+  let laneId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
   let composerPlaceholder: String
@@ -1591,6 +1593,7 @@ private struct WorkChatComposerCard: View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
       usageViewModel: usageViewModel,
+      laneId: laneId,
       dictationTargetId: dictationTargetId,
       awaitingInputGate: awaitingInputGate,
       composerPlaceholder: composerPlaceholder,
@@ -1626,6 +1629,7 @@ private struct WorkChatComposerCard: View {
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
   let usageViewModel: WorkContextUsageViewModel?
+  let laneId: String
   let dictationTargetId: String
   let awaitingInputGate: Bool
   let composerPlaceholder: String
@@ -1643,15 +1647,21 @@ private struct WorkChatComposerDraftInput: View {
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
+  @EnvironmentObject private var syncService: SyncService
   @StateObject private var draftState = WorkChatComposerDraftState()
+  @StateObject private var suggestionController = WorkComposerSuggestionController()
   @State private var contextUsagePresented = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
+      WorkComposerSuggestionStrip(controller: suggestionController)
+        .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
+
       WorkChatComposerTextField(
         draftState: draftState,
+        controller: suggestionController,
         canCompose: canCompose,
         placeholder: composerPlaceholder
       )
@@ -1744,6 +1754,15 @@ private struct WorkChatComposerDraftInput: View {
         contextUsagePresented = false
       }
     }
+    .onAppear { configureSuggestionController() }
+    .onChange(of: chatSummary.provider) { _, _ in configureSuggestionController() }
+    .onChange(of: laneId) { _, _ in configureSuggestionController() }
+  }
+
+  private func configureSuggestionController() {
+    suggestionController.provider = chatSummary.provider
+    suggestionController.laneId = laneId.isEmpty ? nil : laneId
+    suggestionController.syncService = syncService
   }
 
   @ViewBuilder
@@ -1955,7 +1974,7 @@ private struct WorkContextUsagePopover: View {
   }
 }
 
-private final class WorkChatComposerDraftState: ObservableObject {
+final class WorkChatComposerDraftState: ObservableObject {
   @Published var text = ""
 
   var trimmedText: String {
@@ -1985,22 +2004,21 @@ private final class WorkChatComposerDraftState: ObservableObject {
 
 private struct WorkChatComposerTextField: View {
   @ObservedObject var draftState: WorkChatComposerDraftState
+  @ObservedObject var controller: WorkComposerSuggestionController
   let canCompose: Bool
   let placeholder: String
-  @FocusState private var composerFocused: Bool
+  @State private var measuredHeight: CGFloat = 24
 
   var body: some View {
-    TextField(placeholder, text: $draftState.text, axis: .vertical)
-      .textFieldStyle(.plain)
-      .lineLimit(1...6)
-      .font(.body)
-      .foregroundStyle(ADEColor.textPrimary)
-      .tint(ADEColor.accent)
-      .disabled(!canCompose)
-      .autocorrectionDisabled(true)
-      .textInputAutocapitalization(.never)
-      .focused($composerFocused)
-      .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+    WorkComposerTextView(
+      draftState: draftState,
+      controller: controller,
+      canCompose: canCompose,
+      placeholder: placeholder,
+      measuredHeight: $measuredHeight
+    )
+    .frame(height: measuredHeight)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 

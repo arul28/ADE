@@ -22,7 +22,8 @@ stream plus session metadata.
 | `ChatSurfaceShell.tsx` | Floating chat header, body, footer layout. Backdrop-blur glass-morphism styling. |
 | `ChatComposerShell.tsx` | Input container chrome reused by the composer. |
 | `ChatAttachmentTray.tsx` | Inline file/image attachment tray inside the composer. Image attachments render an inline thumbnail, open a full-size lightbox on click, and expose a copy-to-clipboard button that ships the image bytes via `window.ade.app.writeClipboardImage` so the user can paste them into another app. Pasted images can pass a seeded preview URL from the composer while the temp file is being saved; tray-only image refs fall back to `window.ade.app.getImageDataUrl`. Non-image attachments fall back to the file glyph. |
-| `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. |
+| `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. Consumes a `ComposerTrigger` from `shared/composerTriggers.ts` (so the menu opens for a mid-draft trigger, not just a leading one), debounces file search at 40 ms, and keeps a per-menu-session query cache (`QUERY_CACHE_MAX = 40`) so cached queries render same-frame while a background revalidation still runs; the cache clears when the menu closes. |
+| `apps/desktop/src/shared/composerTriggers.ts` | Cursor-relative typed-trigger detection shared by the desktop chat composer (rich + textarea), the `WorkViewArea` continue composer, and the ade-code TUI (iOS mirrors the same regexes in Swift). `detectComposerTrigger(text, cursorPos)` finds an in-progress `/command` / `@file` token ending at the cursor at any position; `replaceComposerTriggerSpan` splices exactly that span; `findConfirmedComposerTokens` locates confirmed chip tokens for overlay/prompt styling; `composerTriggerSpansWholeDraft` distinguishes a lone leading command from a mid-sentence one. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Claude-only undo confirmation. Builds a message-scoped file list from SDK dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. |
@@ -117,8 +118,30 @@ and a footer that contains the composer.
   "chat_attach", includeInPr: true, evidence: { chatSessionId } })`
   so the issue appears in the next PR body's "Linked Linear issues"
   block — see [features/linear-integration/README.md](../linear-integration/README.md).
-- **File attach picker** opened with the `@` key. Runs a debounced
-  `ade.agentChat.fileSearch` and discards stale results.
+- **Typed triggers anywhere.** `detectComposerTrigger(text, cursorPos)`
+  (`shared/composerTriggers.ts`) finds an in-progress `/command` or
+  `@file` token that ends at the cursor — at any position in the draft,
+  not just position 0 (`fix @src/foo.ts then run /test`). Both the rich
+  contenteditable and the plain textarea consume it (as do the
+  `WorkViewArea` continue-composer and the ade-code TUI, which import
+  the same module). Selecting a suggestion replaces exactly the trigger
+  span (`replaceComposerTriggerSpan`); a lone leading command keeps the
+  legacy fill-the-draft path so the local `/clear` intercept and
+  argument-hint scaffold still work. Confirmed tokens render as chips:
+  the rich editor inserts non-editable chip nodes
+  (`data-composer-chip-text`, serialized back to their literal text),
+  and the textarea renders a backdrop overlay that styles confirmed
+  `@path`/`/command` tokens while the textarea text goes transparent
+  (overlay only mounts when at least one confirmed token exists). IME
+  composition freezes trigger re-evaluation until `compositionend`.
+- **File attach picker** opened with the `@` key. Runs
+  `ade.agentChat.fileSearch` with a 40 ms debounce, a per-menu-session
+  query cache (cache hits render same-frame and revalidate silently),
+  and a sequence guard that discards stale results. The spinner only
+  shows when there is nothing cached to display. The composer fires an
+  empty-query `fileSearch` when it binds to a session, which the action
+  bridge treats as a warm ping (`fileService.warmQuickOpenIndex`) so
+  the lane's name index is built before the first real query.
 - **Slash commands.** Local commands (`/clear`, `/login`) are available
   where the current provider owns them and are resolved renderer-side.
   SDK commands, Codex prompt files (`.codex/prompts/**/*.md`), Claude
@@ -748,10 +771,20 @@ These modules are pure and unit-testable:
   per session initialisation. If the user switches model mid-session,
   the pane re-fetches. Missing the refetch surfaces slash commands
   from the previous provider.
-- **File-search debounce.** The `@` picker debounces input (150 ms) and
-  stamps each request with a sequence number to discard stale results.
-  Stale-result handling is easy to regress when adjusting the
-  debounce.
+- **File-search debounce.** The `@` picker debounces input (40 ms in
+  `ChatCommandMenu`) and stamps each request with a sequence number to
+  discard stale results; cached queries re-render immediately and
+  revalidate in the background. Stale-result handling is easy to
+  regress when adjusting the debounce.
+- **Trigger detection is cursor-relative.** Both composer inputs and
+  the TUI share `shared/composerTriggers.ts`. Slash tokens require a
+  word boundary before `/` and allow no whitespace or `/` inside, so
+  paths (`/usr/bin`), URLs, and fractions never open the menu. Don't
+  reintroduce `startsWith("/")` gates — that regresses mid-sentence
+  commands. In the rich editor, detection runs on the DOM text run
+  around the caret (`getRichTriggerContext`), NOT on serialized-draft
+  offsets: serialization collapses whitespace and flattens chips, so
+  serialized indices cannot be mapped back onto DOM positions.
 - **Question drafts persistence.** Question answer state (selected
   options + freeform drafts) is local to `InlineQuestionRequestCard`. If
   the user navigates away and back, drafts reset. This is intentional to

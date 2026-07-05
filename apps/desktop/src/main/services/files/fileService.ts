@@ -1374,6 +1374,21 @@ export function createFileService({
       });
     },
 
+    async warmQuickOpenIndex(args: { workspaceId: string; includeIgnored?: boolean }): Promise<void> {
+      try {
+        const workspace = resolveWorkspace(args.workspaceId);
+        await indexService.ensureIndexed({
+          workspaceId: args.workspaceId,
+          rootPath: workspace.rootPath,
+          includeIgnored: Boolean(args.includeIgnored),
+          shouldIgnore: shouldIgnoreForRoot(workspace.rootPath),
+          primeIgnoreCache: primeIgnoreCacheForRoot(workspace.rootPath)
+        });
+      } catch {
+        // Warming is best-effort; the interactive query path reports real errors.
+      }
+    },
+
     async searchText(args: FilesSearchTextArgs): Promise<FilesSearchTextMatch[]> {
       const workspace = resolveWorkspace(args.workspaceId);
       const query = args.query.trim();

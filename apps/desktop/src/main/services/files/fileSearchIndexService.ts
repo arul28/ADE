@@ -6,6 +6,7 @@ import { hasNullByte, normalizeRelative } from "../shared/utils";
 const MAX_INDEXED_FILES = 25_000;
 const MAX_TEXT_FILE_BYTES = 1_000_000;
 const MAX_TOTAL_CONTENT_BYTES = 80 * 1024 * 1024;
+const QUICK_OPEN_QUERY_CACHE_MAX = 50;
 const YIELD_EVERY_FILES = 120;
 const VOLATILE_ADE_PREFIXES = [
   ".ade/artifacts/",
@@ -38,7 +39,9 @@ type IndexedFile = {
   lowerPath: string;
   size: number;
   mtimeMs: number;
+  contentLoaded: boolean;
   hasTextContent: boolean;
+  contentBytes: number;
   lines: string[];
 };
 
@@ -47,6 +50,7 @@ type WorkspaceIndex = {
   rootPath: string;
   includeIgnored: boolean;
   files: Map<string, IndexedFile>;
+  quickOpenCache: Map<string, FilesQuickOpenItem[]>;
   totalContentBytes: number;
   buildingPromise: Promise<void> | null;
   builtAt: string | null;
@@ -85,6 +89,10 @@ async function cooperativeYield(): Promise<void> {
   });
 }
 
+function cloneQuickOpenItems(items: FilesQuickOpenItem[]): FilesQuickOpenItem[] {
+  return items.map((item) => ({ ...item }));
+}
+
 export function createFileSearchIndexService() {
   const byWorkspace = new Map<string, WorkspaceIndex>();
 
@@ -101,6 +109,7 @@ export function createFileSearchIndexService() {
       rootPath,
       includeIgnored,
       files: new Map(),
+      quickOpenCache: new Map(),
       totalContentBytes: 0,
       buildingPromise: null,
       builtAt: null
@@ -111,6 +120,20 @@ export function createFileSearchIndexService() {
 
   const toAbsolute = (rootPath: string, relPath: string): string => path.join(rootPath, normalizeRelative(relPath));
 
+  const invalidateQuickOpenCache = (index: WorkspaceIndex): void => {
+    index.quickOpenCache.clear();
+  };
+
+  const invalidateFileContent = (index: WorkspaceIndex, entry: IndexedFile): void => {
+    if (entry.contentBytes > 0) {
+      index.totalContentBytes = Math.max(0, index.totalContentBytes - entry.contentBytes);
+    }
+    entry.contentLoaded = false;
+    entry.hasTextContent = false;
+    entry.contentBytes = 0;
+    entry.lines = [];
+  };
+
   const removePath = (index: WorkspaceIndex, relPath: string): void => {
     const normalized = normalizeRelative(relPath);
     if (!normalized) return;
@@ -118,9 +141,7 @@ export function createFileSearchIndexService() {
 
     for (const [key, entry] of index.files.entries()) {
       if (key === normalized || key.startsWith(descendantsPrefix)) {
-        if (entry.hasTextContent) {
-          index.totalContentBytes = Math.max(0, index.totalContentBytes - entry.size);
-        }
+        invalidateFileContent(index, entry);
         index.files.delete(key);
       }
     }
@@ -143,44 +164,70 @@ export function createFileSearchIndexService() {
     if (!stat.isFile()) return;
 
     const existing = index.files.get(normalized);
-    if (existing?.hasTextContent) {
-      index.totalContentBytes = Math.max(0, index.totalContentBytes - existing.size);
+    if (existing) {
+      invalidateFileContent(index, existing);
     }
 
-    let hasTextContent = false;
-    let lines: string[] = [];
     const size = stat.size;
-
-    if (size <= MAX_TEXT_FILE_BYTES) {
-      try {
-        const buf = fs.readFileSync(absPath);
-        if (!hasNullByte(buf)) {
-          const nextBytes = index.totalContentBytes + size;
-          if (nextBytes <= MAX_TOTAL_CONTENT_BYTES) {
-            hasTextContent = true;
-            lines = buf.toString("utf8").split("\n");
-            index.totalContentBytes = nextBytes;
-          }
-        }
-      } catch {
-        // keep path-only index entry
-      }
-    }
 
     index.files.set(normalized, {
       path: normalized,
       lowerPath: normalized.toLowerCase(),
       size,
       mtimeMs: stat.mtimeMs,
-      hasTextContent,
-      lines
+      contentLoaded: false,
+      hasTextContent: false,
+      contentBytes: 0,
+      lines: []
     });
+  };
+
+  const loadTextContent = (index: WorkspaceIndex, entry: IndexedFile): void => {
+    if (entry.contentLoaded) return;
+    if (entry.size > MAX_TEXT_FILE_BYTES) {
+      entry.contentLoaded = true;
+      return;
+    }
+
+    const nextBytes = index.totalContentBytes + entry.size;
+    if (nextBytes > MAX_TOTAL_CONTENT_BYTES) {
+      return;
+    }
+
+    try {
+      const buf = fs.readFileSync(toAbsolute(index.rootPath, entry.path));
+      entry.contentLoaded = true;
+      if (hasNullByte(buf)) {
+        return;
+      }
+      entry.hasTextContent = true;
+      entry.contentBytes = entry.size;
+      entry.lines = buf.toString("utf8").split("\n");
+      index.totalContentBytes = nextBytes;
+    } catch {
+      entry.contentLoaded = true;
+    }
+  };
+
+  const quickOpenCacheKey = (query: string, limit: number): string => `${query.toLowerCase().trim()}\0${limit}`;
+
+  const rememberQuickOpenCache = (index: WorkspaceIndex, cacheKey: string, items: FilesQuickOpenItem[]): void => {
+    if (index.quickOpenCache.has(cacheKey)) {
+      index.quickOpenCache.delete(cacheKey);
+    }
+    index.quickOpenCache.set(cacheKey, cloneQuickOpenItems(items));
+    while (index.quickOpenCache.size > QUICK_OPEN_QUERY_CACHE_MAX) {
+      const oldest = index.quickOpenCache.keys().next().value;
+      if (typeof oldest !== "string") break;
+      index.quickOpenCache.delete(oldest);
+    }
   };
 
   const shouldSkipDirectoryName = (name: string): boolean => ALWAYS_SKIPPED_DIRECTORY_NAMES.has(name);
 
   const buildWorkspace = async (index: WorkspaceIndex, opts: IgnoreOptions): Promise<void> => {
     index.files.clear();
+    invalidateQuickOpenCache(index);
     index.totalContentBytes = 0;
 
     const stack: string[] = [""];
@@ -219,6 +266,7 @@ export function createFileSearchIndexService() {
         visitedFiles += 1;
         if (visitedFiles >= MAX_INDEXED_FILES) {
           index.builtAt = new Date().toISOString();
+          invalidateQuickOpenCache(index);
           return;
         }
         if (visitedFiles % YIELD_EVERY_FILES === 0) {
@@ -228,17 +276,22 @@ export function createFileSearchIndexService() {
     }
 
     index.builtAt = new Date().toISOString();
+    // Drop anything cached against the partially-built file map.
+    invalidateQuickOpenCache(index);
   };
 
   const ensureBuilt = async (workspaceId: string, rootPath: string, opts: IgnoreOptions & {
     includeIgnored: boolean;
   }): Promise<WorkspaceIndex> => {
     const index = getOrCreateWorkspaceIndex(workspaceId, rootPath, opts.includeIgnored);
-    if (index.files.size > 0 || index.builtAt) return index;
+    // An in-flight build (e.g. a warmQuickOpenIndex kicked off by the chat
+    // composer) fills `files` incrementally — wait for it rather than serving
+    // a partial index that quickOpen would then cache.
     if (index.buildingPromise) {
       await index.buildingPromise;
       return index;
     }
+    if (index.files.size > 0 || index.builtAt) return index;
 
     index.buildingPromise = buildWorkspace(index, opts).finally(() => {
       index.buildingPromise = null;
@@ -277,6 +330,10 @@ export function createFileSearchIndexService() {
         primeIgnoreCache: args.primeIgnoreCache
       });
 
+      const cacheKey = quickOpenCacheKey(args.query, args.limit);
+      const cached = index.quickOpenCache.get(cacheKey);
+      if (cached) return cloneQuickOpenItems(cached);
+
       const scored: FilesQuickOpenItem[] = [];
       for (const entry of index.files.values()) {
         const score = scorePath(entry.lowerPath, args.query);
@@ -284,7 +341,9 @@ export function createFileSearchIndexService() {
         scored.push({ path: entry.path, score });
       }
       scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-      return scored.slice(0, args.limit);
+      const result = scored.slice(0, args.limit);
+      rememberQuickOpenCache(index, cacheKey, result);
+      return cloneQuickOpenItems(result);
     },
 
     async searchText(args: {
@@ -304,8 +363,16 @@ export function createFileSearchIndexService() {
 
       const out: FilesSearchTextMatch[] = [];
       const queryLower = args.query.toLowerCase();
+      let loadedFiles = 0;
       for (const entry of index.files.values()) {
         if (out.length >= args.limit) break;
+        if (!entry.contentLoaded) {
+          loadTextContent(index, entry);
+          loadedFiles += 1;
+          if (loadedFiles % YIELD_EVERY_FILES === 0) {
+            await cooperativeYield();
+          }
+        }
         if (!entry.hasTextContent) continue;
         for (let i = 0; i < entry.lines.length && out.length < args.limit; i++) {
           const line = entry.lines[i] ?? "";
@@ -338,6 +405,7 @@ export function createFileSearchIndexService() {
       for (const index of matchingIndexes) {
         // If this workspace/mode was never indexed yet, defer indexing until first query.
         if (!index.builtAt && index.files.size === 0) continue;
+        invalidateQuickOpenCache(index);
 
         if (args.oldPath) {
           removePath(index, args.oldPath);
@@ -351,9 +419,13 @@ export function createFileSearchIndexService() {
         void args.shouldIgnore(relPath, index.includeIgnored).then((ignored) => {
           if (ignored || shouldSkipPathPrefix(relPath, index.includeIgnored)) {
             removePath(index, relPath);
-            return;
+          } else {
+            upsertFile(index, relPath);
           }
-          upsertFile(index, relPath);
+          // A quickOpen between the sync invalidation above and this async
+          // update can repopulate the cache from the pre-update file map, so
+          // invalidate again once the entry is actually applied.
+          invalidateQuickOpenCache(index);
         }).catch(() => {
           // ignore indexing failures
         });
