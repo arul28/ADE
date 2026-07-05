@@ -463,6 +463,18 @@ Interrupt transitions all running subagents to `stopped` by emitting a
 `subagent_result` with `status: "stopped"` for each, matching the
 Claude Code CLI behavior.
 
+Claude Workflow runs (the SDK's multi-agent orchestration tool) render in
+the same panel with zero new chrome: `claudeWorkflowProgress.ts` normalizes
+the undocumented `workflow_progress` snapshot and fans each workflow agent
+out as its own subagent row (phase in the summary line, tokens/duration
+from the snapshot, `workflowName` chip), while the parent workflow task row
+falls back to a phase/count rollup summary. Child chat sessions spawned
+with a parent lineage (`ade chat create` from a tracked agent shell,
+`--parent`) also list here via synthetic `subagent_*` events keyed
+`chat:<childSessionId>`; the parent transcript additionally shows a quiet
+"Subagent spawned" chip (a `status:"subagent_spawned"` system_notice) that
+deep-links to the child chat.
+
 Codex parallel agent failures emit a system-notice plus `failed` /
 `stopped` `subagent_result` rows. The agentChatService maps
 `failed | errored | rejected | refused | denied` Codex status values
