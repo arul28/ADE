@@ -327,6 +327,11 @@ struct WorkComposerTextView: UIViewRepresentable {
     layoutManager.addTextContainer(container)
 
     let textView = UITextView(frame: .zero, textContainer: container)
+    // UITextView retains only the text container of a manually-built TextKit 1
+    // stack; keep the storage + layout manager alive on the coordinator or the
+    // stack deallocates out from under the view.
+    context.coordinator.textStorage = textStorage
+    context.coordinator.layoutManager = layoutManager
     textView.delegate = context.coordinator
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
@@ -373,6 +378,9 @@ struct WorkComposerTextView: UIViewRepresentable {
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: WorkComposerTextView
     weak var textView: UITextView?
+    // Strong owners of the manual TextKit 1 stack (see makeUIView).
+    var textStorage: NSTextStorage?
+    var layoutManager: WorkComposerChipLayoutManager?
     /// Committed chip spans, kept in sync with edits so we know which runs to
     /// keep styled and which to de-chip when they're edited into.
     private var chips: [(range: NSRange, text: String)] = []
@@ -473,14 +481,18 @@ struct WorkComposerTextView: UIViewRepresentable {
       if parent.draftState.text != textView.text {
         parent.draftState.text = textView.text
       }
-      // Re-apply chip vs base styling. Skip while marked text (IME/multistage
-      // input) is active so we don't disturb composition.
+      // Skip restyle AND trigger detection while marked text (IME/multistage
+      // input) is active: uncommitted composition can transiently contain
+      // `/`/`@` and must not pop the suggestion strip. Detection re-runs on
+      // the post-commit didChange/didChangeSelection callbacks.
       if textView.markedTextRange == nil {
         restyle()
       }
       updatePlaceholderVisibility()
       updateHeight()
-      detectTrigger()
+      if textView.markedTextRange == nil {
+        detectTrigger()
+      }
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {

@@ -413,9 +413,13 @@ export function createFileSearchIndexService() {
         void args.shouldIgnore(relPath, index.includeIgnored).then((ignored) => {
           if (ignored || shouldSkipPathPrefix(relPath, index.includeIgnored)) {
             removePath(index, relPath);
-            return;
+          } else {
+            upsertFile(index, relPath);
           }
-          upsertFile(index, relPath);
+          // A quickOpen between the sync invalidation above and this async
+          // update can repopulate the cache from the pre-update file map, so
+          // invalidate again once the entry is actually applied.
+          invalidateQuickOpenCache(index);
         }).catch(() => {
           // ignore indexing failures
         });
