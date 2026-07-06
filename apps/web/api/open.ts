@@ -33,6 +33,9 @@ type VercelRes = {
 type OpenTarget =
   | { kind: "lane"; laneId: string }
   | { kind: "session"; sessionId: string; laneId?: string }
+  | { kind: "file"; path: string; line?: number; laneId?: string }
+  | { kind: "commit"; sha: string; laneId?: string }
+  | { kind: "artifact"; artifactId: string }
   | { kind: "branch"; repo: string; branch: string; pr?: number }
   | { kind: "pr"; repo: string; number: number }
   | { kind: "linear-issue"; issue: string; branch?: string }
@@ -73,6 +76,11 @@ function pickQuery(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+function positiveInteger(raw: string): number | undefined {
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
 function parseTarget(query: VercelQuery): OpenTarget {
   const type = pickQuery(query.type).toLowerCase();
   if (type === "lane") {
@@ -86,22 +94,40 @@ function parseTarget(query: VercelQuery): OpenTarget {
       return laneId ? { kind: "session", sessionId, laneId } : { kind: "session", sessionId };
     }
   }
+  if (type === "file") {
+    const path = pickQuery(query.path);
+    if (path) {
+      const line = positiveInteger(pickQuery(query.line));
+      const laneId = pickQuery(query.lane);
+      return { kind: "file", path, ...(line ? { line } : {}), ...(laneId ? { laneId } : {}) };
+    }
+  }
+  if (type === "commit") {
+    const sha = pickQuery(query.sha);
+    if (sha) {
+      const laneId = pickQuery(query.lane);
+      return { kind: "commit", sha, ...(laneId ? { laneId } : {}) };
+    }
+  }
+  if (type === "artifact") {
+    const artifactId = pickQuery(query.id);
+    if (artifactId) return { kind: "artifact", artifactId };
+  }
   if (type === "branch") {
     const repo = pickQuery(query.repo);
     const branch = pickQuery(query.branch);
     if (repo && branch) {
-      const pr = Number(pickQuery(query.pr));
-      return Number.isInteger(pr) && pr > 0
+      const pr = positiveInteger(pickQuery(query.pr));
+      return pr
         ? { kind: "branch", repo, branch, pr }
         : { kind: "branch", repo, branch };
     }
   }
   if (type === "pr") {
     const repo = pickQuery(query.repo);
-    const numberRaw = pickQuery(query.number);
-    const num = Number(numberRaw);
-    if (repo && Number.isInteger(num) && num > 0) {
-      return { kind: "pr", repo, number: num };
+    const number = positiveInteger(pickQuery(query.number));
+    if (repo && number) {
+      return { kind: "pr", repo, number };
     }
   }
   if (type === "linear-issue") {
@@ -127,6 +153,23 @@ function describe(target: OpenTarget): { title: string; description: string } {
         description: target.laneId
           ? `Open this ADE work session in worktree ${target.laneId.slice(0, 8)}…`
           : "Open this ADE work session on your desktop.",
+      };
+    case "file":
+      return {
+        title: "Open file in ADE",
+        description: target.line
+          ? `Open ${target.path} at line ${target.line} in ADE.`
+          : `Open ${target.path} in ADE.`,
+      };
+    case "commit":
+      return {
+        title: "Open commit in ADE",
+        description: `Open commit ${target.sha.slice(0, 12)} in ADE.`,
+      };
+    case "artifact":
+      return {
+        title: "Open artifact in ADE",
+        description: `Open proof artifact ${target.artifactId} in ADE.`,
       };
     case "branch":
       return {

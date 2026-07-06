@@ -79,16 +79,18 @@ func isStoppableRuntimeStatus(_ session: TerminalSessionSummary, status: String)
   return status == "active" || status == "awaiting-input" || status == "idle"
 }
 
-func workSessionDeepLink(sessionId: String, laneId: String?) -> String {
-  let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#[]@!$&'()*+,;="))
-  let queryAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "#&="))
-  let encodedSessionId = sessionId.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? sessionId
-  let trimmedLaneId = laneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  guard !trimmedLaneId.isEmpty else {
-    return "ade://session/\(encodedSessionId)"
-  }
-  let encodedLaneId = trimmedLaneId.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? trimmedLaneId
-  return "ade://session/\(encodedSessionId)?lane=\(encodedLaneId)"
+func workSessionDeepLink(
+  sessionId: String,
+  laneId: String?,
+  envelope: ADEDeeplinkEnvelope? = nil,
+  form: ADEDeeplinkForm = .https
+) -> String {
+  LaneDeeplinkHelpers.sessionLink(
+    sessionId: sessionId,
+    laneId: laneId,
+    envelope: envelope,
+    form: form
+  )
 }
 
 /// Whether the composer gates freeform typing behind a structured reply. Only a

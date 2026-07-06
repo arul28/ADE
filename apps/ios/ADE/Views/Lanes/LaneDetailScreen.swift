@@ -435,7 +435,13 @@ struct LaneDetailScreen: View {
 
   @MainActor
   private func copyLaneLink() {
-    let url = LaneDeeplinkHelpers.laneLink(laneId: laneId)
+    let url = LaneDeeplinkHelpers.laneLink(
+      laneId: laneId,
+      envelope: LaneDeeplinkHelpers.envelope(
+        lane: currentSnapshot.lane,
+        pullRequest: lanePullRequests.first
+      )
+    )
     UIPasteboard.general.string = url
     ADEHaptics.success()
     copiedLinkNotice = "Copied lane link"
@@ -453,12 +459,20 @@ struct LaneDetailScreen: View {
       return
     }
     if let pr = lanePullRequests.first {
-      let url = LaneDeeplinkHelpers.branchLink(repoOwner: pr.repoOwner, repoName: pr.repoName, branch: branch)
+      let url = LaneDeeplinkHelpers.branchLink(
+        repoOwner: pr.repoOwner,
+        repoName: pr.repoName,
+        branch: branch,
+        prNumber: pr.githubPrNumber
+      )
       UIPasteboard.general.string = url
       ADEHaptics.success()
       copiedLinkNotice = "Copied branch link"
     } else {
-      UIPasteboard.general.string = LaneDeeplinkHelpers.laneLink(laneId: laneId)
+      UIPasteboard.general.string = LaneDeeplinkHelpers.laneLink(
+        laneId: laneId,
+        envelope: LaneDeeplinkHelpers.envelope(lane: currentSnapshot.lane, pullRequest: nil)
+      )
       ADEHaptics.success()
       copiedLinkNotice = "No GitHub remote — copied lane link instead"
     }

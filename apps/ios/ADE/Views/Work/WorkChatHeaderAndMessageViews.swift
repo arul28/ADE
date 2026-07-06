@@ -246,7 +246,7 @@ struct WorkChatHeaderMenu: View, Equatable {
     }
 
     Button(action: onCopySessionDeepLink) {
-      Label(model.sessionDeepLinkCopied ? "Copied session deep link" : "Copy session deep link",
+      Label(model.sessionDeepLinkCopied ? "Copied session link" : "Copy session link",
             systemImage: model.sessionDeepLinkCopied ? "checkmark" : "link")
     }
 

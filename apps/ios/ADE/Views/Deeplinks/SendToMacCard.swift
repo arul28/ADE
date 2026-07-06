@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Categorises an ADE URL that iOS can't open natively so the
 /// `SendToMacCard` can render a short, human description ("Lane shared with
@@ -7,6 +8,10 @@ import SwiftUI
 struct SendToMacTarget: Equatable, Identifiable {
   enum Kind: Equatable {
     case lane(id: String)
+    case session(id: String)
+    case file(path: String, line: Int?)
+    case commit(sha: String)
+    case artifact(id: String)
     case repoBranch(owner: String, repo: String, branch: String)
     case pr(owner: String, repo: String, number: Int)
     case linearIssue(identifier: String, branch: String?)
@@ -15,6 +20,7 @@ struct SendToMacTarget: Equatable, Identifiable {
 
   var url: URL
   var kind: Kind
+  var envelope: ADEDeeplinkEnvelope?
 
   /// `Identifiable` conformance powers the `.sheet(item:)` binding in
   /// `ADEApp`; using the URL string keeps repeat shares of the same link
@@ -26,16 +32,47 @@ struct SendToMacTarget: Equatable, Identifiable {
   /// "Open this on your Mac" message rather than refusing to display.
   init(url: URL) {
     self.url = url
+    self.envelope = SendToMacTarget.parseEnvelope(url)
     if let kind = SendToMacTarget.parseHttpsOpenURL(url) {
       self.kind = kind
       return
     }
     let host = url.host?.lowercased()
-    let parts = url.pathComponents.filter { $0 != "/" }
+    let parts = url.pathComponents
+      .filter { $0 != "/" }
+      .map { $0.removingPercentEncoding ?? $0 }
     switch host {
     case "lane":
       if let id = parts.first, !id.isEmpty {
         self.kind = .lane(id: id)
+      } else {
+        self.kind = .other
+      }
+    case "session":
+      if let id = parts.first, ADEDeepLinkURLParsing.isValidOpaqueId(id) {
+        self.kind = .session(id: id)
+      } else {
+        self.kind = .other
+      }
+    case "file":
+      let path = parts.joined(separator: "/")
+      if ADEDeepLinkURLParsing.isValidRepoRelativePath(path) {
+        let line = URLComponents(url: url, resolvingAgainstBaseURL: false)
+          .map(ADEDeepLinkURLParsing.adeQueryValues(from:))
+          .flatMap { ADEDeepLinkURLParsing.positiveInteger($0["line"]) }
+        self.kind = .file(path: path, line: line)
+      } else {
+        self.kind = .other
+      }
+    case "commit":
+      if let sha = parts.first, ADEDeepLinkURLParsing.isValidCommitSha(sha) {
+        self.kind = .commit(sha: sha)
+      } else {
+        self.kind = .other
+      }
+    case "artifact":
+      if let id = parts.first, ADEDeepLinkURLParsing.isValidOpaqueId(id) {
+        self.kind = .artifact(id: id)
       } else {
         self.kind = .other
       }
@@ -95,6 +132,18 @@ struct SendToMacTarget: Equatable, Identifiable {
     case "lane":
       guard let id = query["id"], !id.isEmpty else { return .other }
       return .lane(id: id)
+    case "session":
+      guard let id = query["id"], ADEDeepLinkURLParsing.isValidOpaqueId(id) else { return .other }
+      return .session(id: id)
+    case "file":
+      guard let path = query["path"], ADEDeepLinkURLParsing.isValidRepoRelativePath(path) else { return .other }
+      return .file(path: path, line: ADEDeepLinkURLParsing.positiveInteger(query["line"]))
+    case "commit":
+      guard let sha = query["sha"], ADEDeepLinkURLParsing.isValidCommitSha(sha) else { return .other }
+      return .commit(sha: sha)
+    case "artifact":
+      guard let id = query["id"], ADEDeepLinkURLParsing.isValidOpaqueId(id) else { return .other }
+      return .artifact(id: id)
     case "branch":
       guard let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"]),
             let branch = query["branch"],
@@ -117,9 +166,18 @@ struct SendToMacTarget: Equatable, Identifiable {
     }
   }
 
+  private static func parseEnvelope(_ url: URL) -> ADEDeeplinkEnvelope? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+    return ADEDeepLinkURLParsing.envelope(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
   var headline: String {
     switch kind {
     case .lane: return "Lane shared with you"
+    case .session: return "Chat shared with you"
+    case .file: return "File shared with you"
+    case .commit: return "Commit shared with you"
+    case .artifact: return "Artifact shared with you"
     case .repoBranch(_, _, _): return "Branch shared with you"
     case .pr: return "Pull request shared with you"
     case .linearIssue: return "Linear issue shared with you"
@@ -130,7 +188,27 @@ struct SendToMacTarget: Equatable, Identifiable {
   var detail: String {
     switch kind {
     case .lane(let id):
+      if let repo = envelope?.repoSlug {
+        return "This lane lives in \(repo) on another machine."
+      }
       return "Lane \(shortenedLaneId(id))"
+    case .session(let id):
+      if let repo = envelope?.repoSlug {
+        return "This chat lives in \(repo) on another machine."
+      }
+      return "Session \(id)"
+    case .file(let path, let line):
+      return line.map { "\(path):\($0)" } ?? path
+    case .commit(let sha):
+      if let repo = envelope?.repoSlug {
+        return "Commit \(sha.prefix(12)) in \(repo)"
+      }
+      return "Commit \(sha.prefix(12))"
+    case .artifact(let id):
+      if let repo = envelope?.repoSlug {
+        return "Artifact \(shortenedOpaqueId(id)) in \(repo)"
+      }
+      return "Artifact \(shortenedOpaqueId(id))"
     case .repoBranch(let owner, let repo, let branch):
       return "Branch \(branch) in \(owner)/\(repo)"
     case .pr(let owner, let repo, let number):
@@ -150,6 +228,35 @@ struct SendToMacTarget: Equatable, Identifiable {
     // detail line stays readable on small screens.
     guard id.count > 8, let dash = id.firstIndex(of: "-") else { return id }
     return String(id[..<dash])
+  }
+
+  private func shortenedOpaqueId(_ id: String) -> String {
+    guard id.count > 12 else { return id }
+    return "\(id.prefix(12))..."
+  }
+
+  var usesMonospacedDetail: Bool {
+    switch kind {
+    case .lane, .session, .commit, .artifact:
+      return envelope?.repoSlug == nil
+    case .file, .repoBranch, .pr, .linearIssue, .other:
+      return true
+    }
+  }
+
+  var envelopePullRequestURL: URL? {
+    guard let owner = envelope?.repoOwner,
+          let repo = envelope?.repoName,
+          let prNumber = envelope?.prNumber,
+          prNumber > 0 else {
+      return nil
+    }
+    return URL(string: "https://github.com/\(owner)/\(repo)/pull/\(prNumber)")
+  }
+
+  var envelopeLinearURL: URL? {
+    guard let linearIssue = envelope?.linearIssue else { return nil }
+    return URL(string: "https://linear.app/issue/\(linearIssue)")
   }
 }
 
@@ -214,7 +321,7 @@ struct SendToMacCard: View {
           .font(.system(.subheadline, design: .rounded).weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Text(target.detail)
-          .font(.system(.footnote, design: .monospaced))
+          .font(.system(.footnote, design: target.usesMonospacedDetail ? .monospaced : .rounded))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(2)
           .truncationMode(.middle)
@@ -233,6 +340,10 @@ struct SendToMacCard: View {
   private var targetSymbol: String {
     switch target.kind {
     case .lane: return "square.stack.3d.up"
+    case .session: return "bubble.left.and.bubble.right"
+    case .file: return "doc.text"
+    case .commit: return "point.topleft.down.curvedto.point.bottomright.up"
+    case .artifact: return "shippingbox"
     case .repoBranch: return "arrow.triangle.branch"
     case .pr: return "arrow.triangle.merge"
     case .linearIssue: return "smallcircle.filled.circle"
@@ -325,6 +436,8 @@ struct SendToMacCard: View {
           }
           Text(sendButtonTitle)
             .font(.system(.body, design: .rounded).weight(.semibold))
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 13)
@@ -333,6 +446,8 @@ struct SendToMacCard: View {
       }
       .buttonStyle(.plain)
       .disabled(isSending || sendCompleted)
+
+      externalActions
 
       if let sendStatusMessage {
         Text(sendStatusMessage)
@@ -358,6 +473,48 @@ struct SendToMacCard: View {
     }
   }
 
+  @ViewBuilder
+  private var externalActions: some View {
+    if let url = target.envelopePullRequestURL,
+       let prNumber = target.envelope?.prNumber {
+      externalActionButton(
+        title: "Open PR #\(prNumber) on GitHub",
+        symbol: "arrow.up.right.square",
+        url: url
+      )
+    }
+    if let url = target.envelopeLinearURL {
+      externalActionButton(
+        title: "Open in Linear",
+        symbol: "smallcircle.filled.circle",
+        url: url
+      )
+    }
+  }
+
+  private func externalActionButton(title: String, symbol: String, url: URL) -> some View {
+    Button {
+      openExternal(url)
+    } label: {
+      HStack(spacing: 8) {
+        Image(systemName: symbol)
+          .font(.system(size: 14, weight: .semibold))
+        Text(title)
+          .font(.system(.body, design: .rounded).weight(.medium))
+          .lineLimit(1)
+      }
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 12)
+      .foregroundStyle(ADEColor.textPrimary)
+      .background(ADEColor.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .stroke(ADEColor.border, lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+
   private var sendButtonTitle: String {
     if isSending { return "Sending…" }
     if sendCompleted {
@@ -365,6 +522,12 @@ struct SendToMacCard: View {
       return "Sent"
     }
     if case .dropped = sendOutcome { return "Try again" }
+    if let repo = target.envelope?.repoSlug,
+       let branch = target.envelope?.branch,
+       !repo.isEmpty,
+       !branch.isEmpty {
+      return "Send to Mac to create a lane from \(branch)"
+    }
     return "Send to Mac"
   }
 
@@ -405,5 +568,9 @@ struct SendToMacCard: View {
     case .dropped:
       sendCompleted = false
     }
+  }
+
+  private func openExternal(_ url: URL) {
+    UIApplication.shared.open(url)
   }
 }

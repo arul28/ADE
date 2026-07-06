@@ -1223,10 +1223,17 @@ struct WorkLaneNavigationRequest: Equatable, Identifiable {
 struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let id: String
   let sessionId: String
+  /// Optional anchors parsed from ADE session deeplinks. The Work view keeps
+  /// them for parity with desktop, but currently ignores them because iOS has
+  /// no route-level chat/terminal scroll hook.
+  let event: Int?
+  let offset: Int?
 
-  init(sessionId: String) {
+  init(sessionId: String, event: Int? = nil, offset: Int? = nil) {
     self.id = UUID().uuidString
     self.sessionId = sessionId
+    self.event = event
+    self.offset = offset
   }
 }
 

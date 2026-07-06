@@ -571,7 +571,12 @@ extension WorkSessionDestinationView {
     let laneId = (session ?? initialSession).map {
       resolvedWorkNavigationLaneId(for: $0, lanes: lanes)
     }
-    UIPasteboard.general.string = workSessionDeepLink(sessionId: sessionId, laneId: laneId)
+    let lane = laneId.flatMap { id in lanes.first(where: { $0.id == id }) }
+    UIPasteboard.general.string = workSessionDeepLink(
+      sessionId: sessionId,
+      laneId: laneId,
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: laneOpenPr)
+    )
     sessionDeepLinkCopied = true
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 1_500_000_000)
