@@ -804,3 +804,86 @@ describe("searchService review fixes (PR #709)", () => {
     service.dispose();
   });
 });
+
+describe("searchService review fixes round 2 (PR #709)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test7-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("never indexes a chat-transcript session as a terminal, even with a legacy toolType", async () => {
+    const sessions = [
+      makeSession({ id: "legacy-1", title: "Legacy chat", toolType: "other" as never })
+    ];
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(chatDir, "legacy-1.jsonl"),
+      `${JSON.stringify({ sessionId: "legacy-1", timestamp: "2026-07-05T10:00:00.000Z", event: { type: "user_message", text: "legacy quixote content" } })}\n`
+    );
+    service.notifyChatEvent("legacy-1");
+    service.notifyTerminalData("legacy-1");
+    await service.processPendingNow();
+
+    const result = await service.query({ query: "quixote" });
+    expect(result.results.some((r) => r.kind === "chat")).toBe(true);
+    expect(result.results.some((r) => r.kind === "terminal")).toBe(false);
+    const status = service.indexStatus();
+    expect(status.docCountByKind.terminal ?? 0).toBe(0);
+    service.dispose();
+  });
+
+  it("resolves a lane NAME passed via the laneId arg (CLI --lane)", async () => {
+    const quickOpen = vi.fn(async () => []);
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      lanes: {
+        list: async () => [
+          {
+            id: "lane-uuid-1",
+            name: "fix-login",
+            description: null,
+            laneType: "worktree",
+            baseRef: "main",
+            branchRef: "ade/fix-login",
+            worktreePath: "/tmp/w",
+            parentLaneId: null,
+            childCount: 0,
+            stackDepth: 0,
+            parentStatus: null,
+            isEditProtected: false,
+            status: { dirty: false, ahead: 0, behind: 0 },
+            color: null,
+            icon: null,
+            tags: [],
+            createdAt: "2026-07-01T00:00:00.000Z"
+          } as never
+        ]
+      },
+      files: { quickOpen, searchText: async () => [] },
+      now: () => NOW
+    });
+
+    await service.query({ query: "auth", laneId: "fix-login", kinds: ["file"] });
+    expect(quickOpen).toHaveBeenCalledWith("auth", expect.any(Number), "lane-uuid-1");
+    service.dispose();
+  });
+});

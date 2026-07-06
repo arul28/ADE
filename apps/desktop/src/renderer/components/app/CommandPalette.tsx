@@ -1167,10 +1167,14 @@ export function CommandPalette({
         }
         case "file": {
           // The Files tab only opens absolute paths via its external-open param,
-          // and result paths are repo-relative — resolve against the project
+          // and result paths are repo-relative — resolve against the matched
+          // lane's worktree when the search was lane-scoped, else the project
           // root. Line anchoring isn't supported there, so v1 opens at the top.
           const relative = relativeFilePathForResult(item);
-          const root = project?.rootPath ?? null;
+          const laneWorktree = item.laneId
+            ? lanes.find((lane) => lane.id === item.laneId)?.worktreePath ?? null
+            : null;
+          const root = laneWorktree ?? project?.rootPath ?? null;
           if (relative && root) {
             const separator = root.includes("\\") ? "\\" : "/";
             const absolute = `${root}${
@@ -1209,7 +1213,7 @@ export function CommandPalette({
       }
       onOpenChange(false);
     },
-    [navigate, onOpenChange, project?.rootPath],
+    [lanes, navigate, onOpenChange, project?.rootPath],
   );
 
   const activateFlat = useCallback(

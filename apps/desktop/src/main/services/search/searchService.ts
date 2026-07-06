@@ -593,7 +593,9 @@ export function createSearchService(deps: SearchServiceDeps) {
       removeSessionDocs(sessionId);
       return;
     }
-    if (isChatToolType(session.toolType)) return;
+    // A session with a chat transcript is a chat even when its toolType is a
+    // legacy value like "other" — never index it as a terminal.
+    if (isChatSession(session)) return;
     const sourceId = `term:${sessionId}`;
     withTransaction(() => upsertSessionMetaDoc(session, "terminal"));
     const filePath = terminalTranscriptPathFor(session);
@@ -886,19 +888,20 @@ export function createSearchService(deps: SearchServiceDeps) {
     args: SearchQueryArgs,
     parsed: ParsedSearchQuery
   ): Promise<string | null> => {
-    if (args.laneId) return args.laneId;
-    if (!parsed.lane) return null;
-    if (!deps.lanes) return parsed.lane;
+    // Both the API arg and the inline lane: filter accept a lane id OR name.
+    const requested = args.laneId?.trim() || parsed.lane;
+    if (!requested) return null;
+    if (!deps.lanes) return requested;
     try {
       const lanes = await deps.lanes.list();
-      const needle = parsed.lane.toLowerCase();
+      const needle = requested.toLowerCase();
       const match =
-        lanes.find((lane) => lane.id === parsed.lane) ??
+        lanes.find((lane) => lane.id === requested) ??
         lanes.find((lane) => lane.name.toLowerCase() === needle) ??
         lanes.find((lane) => lane.name.toLowerCase().includes(needle));
-      return match?.id ?? parsed.lane;
+      return match?.id ?? requested;
     } catch {
-      return parsed.lane;
+      return requested;
     }
   };
 
@@ -1113,7 +1116,7 @@ export function createSearchService(deps: SearchServiceDeps) {
           kind: "file",
           title: item.path,
           rankTitle: path.basename(item.path),
-          laneId: null,
+          laneId,
           laneName: null,
           sessionId: null,
           deepLink: `ade://files?path=${encodeURIComponent(item.path)}`,
@@ -1137,7 +1140,7 @@ export function createSearchService(deps: SearchServiceDeps) {
           kind: "file",
           title: `${match.path}:${match.line}`,
           rankTitle: "",
-          laneId: null,
+          laneId,
           laneName: null,
           sessionId: null,
           deepLink: `ade://files?path=${encodeURIComponent(match.path)}&line=${match.line}`,

@@ -71,6 +71,12 @@ describe("parseSearchQuery", () => {
     expect(parsed.sinceIso).toBe("2026-01-02T00:00:00.000Z");
   });
 
+  it("degrades absurd since durations to invalid filters instead of throwing", () => {
+    const parsed = parseSearchQuery("since:100000000000d x", { now: NOW });
+    expect(parsed.sinceIso).toBeNull();
+    expect(parsed.invalidFilters).toEqual(["since:100000000000d"]);
+  });
+
   it("flags unparseable since values", () => {
     const parsed = parseSearchQuery("since:whenever x", { now: NOW });
     expect(parsed.sinceIso).toBeNull();

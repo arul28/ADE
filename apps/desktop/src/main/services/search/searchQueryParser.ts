@@ -35,16 +35,24 @@ const DURATION_MS: Record<string, number> = {
   w: 7 * 86_400_000
 };
 
+// ECMAScript Date range: ±8.64e15 ms from the epoch. Timestamps outside it
+// make toISOString() throw RangeError.
+const MAX_DATE_MS = 8.64e15;
+
 function parseSince(raw: string, now: Date): string | null {
   const durationMatch = DURATION_RE.exec(raw);
   if (durationMatch) {
     const amount = Number(durationMatch[1]);
     const unitMs = DURATION_MS[durationMatch[2]!.toLowerCase()] ?? 0;
     if (!Number.isFinite(amount) || unitMs === 0) return null;
-    return new Date(now.getTime() - amount * unitMs).toISOString();
+    const timestamp = now.getTime() - amount * unitMs;
+    // Absurd durations (since:100000000000d) must degrade to an invalid
+    // filter, not a RangeError out of toISOString().
+    if (!Number.isFinite(timestamp) || Math.abs(timestamp) > MAX_DATE_MS) return null;
+    return new Date(timestamp).toISOString();
   }
   const parsed = Date.parse(raw);
-  if (Number.isNaN(parsed)) return null;
+  if (Number.isNaN(parsed) || Math.abs(parsed) > MAX_DATE_MS) return null;
   return new Date(parsed).toISOString();
 }
 
