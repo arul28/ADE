@@ -139,13 +139,15 @@ describe("signature builders", () => {
 });
 
 describe("createSyncCloudRelayStore", () => {
-  it("mints a stable identity, defaults to disabled, and persists chmod 600", () => {
+  it("mints a stable identity, defaults to enabled, and persists chmod 600", () => {
     const filePath = tempStorePath();
     const store = createSyncCloudRelayStore({ filePath });
     const first = store.getMachineIdentity();
     expect(/^[a-f0-9]{32}$/.test(first.machineKey)).toBe(true);
     expect(first.secret.length).toBe(48);
-    expect(store.isEnabled()).toBe(false);
+    // Relay-everywhere: enabled out of the box; only an explicit kill-switch
+    // false (covered in syncCloudRelayStore.test.ts) keeps it off.
+    expect(store.isEnabled()).toBe(true);
 
     // Re-opening the store keeps the same identity.
     const reopened = createSyncCloudRelayStore({ filePath });

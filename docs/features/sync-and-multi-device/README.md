@@ -371,10 +371,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `~/.ade/secrets/sync-security.json` (chmod `0600`). Owns the
   `requireDpop` flag with the `ADE_SYNC_REQUIRE_DPOP=1|0` env override; both
   the per-project host and the brain ingress handler read it.
-- `syncCloudRelayStore.ts` — persists the optional cloud tunnel-relay
-  identity + enablement at `~/.ade/secrets/sync-cloud-relay.json`
-  (lazily-minted 32-hex `machineKey` + HMAC `secret`, chmod `0600`,
-  default `enabled: false`). Derives the phone-facing
+- `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity +
+  enablement at `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted
+  32-hex `machineKey` + HMAC `secret`, chmod `0600`). **Default
+  `enabled: true`** — a file without the field reads as enabled, while an
+  explicit `false` (the desktop kill-switch or `ade sync relay disable`)
+  is preserved. Derives the phone-facing
   `wss://<relay>/connect/<machineKey>` URL and the canonical host/pipe
   HMAC signing strings shared with the `apps/tunnel-relay` worker.
 - `syncTunnelClientService.ts` — the brain-side tunnel client. When the
@@ -620,12 +622,14 @@ is not supported.
   version ≥ 3 as long as the fields it understands are present.
 - **Address candidates**: the runtime advertises LAN IPs, the saved
   `lastHost` (when it matches the current set), the Tailscale IP,
-  `127.0.0.1`, and — when the operator turns on the cloud tunnel relay —
-  a `relay`-kind candidate carrying a full
+  `127.0.0.1`, and — unless the relay kill-switch is off — a
+  `relay`-kind candidate carrying a full
   `wss://…/connect/<machineKey>` URL. `SyncAddressCandidateKind` is
   `lan | saved | tailscale | loopback | relay`; the relay candidate is
   the lowest-priority transport (see the transport race in
-  `ios-companion.md`).
+  `ios-companion.md`). Already-paired phones also learn the relay URL
+  from `hello_ok` / `brain_status` (`cloudRelayWssUrl`) and persist it
+  with the host profile for reconnects.
 - **mDNS**: `publishLanDiscovery` builds a TXT record whose
   `addresses` CSV includes the Tailscale IP alongside LAN IPs. It also
   advertises `runtimeKind`, `runtimeVersion`, `projects`, and
@@ -848,15 +852,22 @@ project scope split.
   when over tailnet; LAN connections rely on pairing token validation.
   TLS is not enforced for localhost/LAN; the runtime listens on all
   interfaces (intended for trusted LAN and tailnets).
-- **Cloud tunnel relay (optional, off by default)**: when the operator
-  enables it in Settings > Sync, the brain keeps an outbound
-  HMAC-authenticated tunnel to the `apps/tunnel-relay` Cloudflare Worker
-  so a phone off the LAN/tailnet can dial the machine over TLS. The relay
-  only pipes bytes: the normal ADE hello / PIN / paired-secret / DPoP
-  handshake still runs end-to-end, so the relay never sees pairing
-  credentials in the clear. The `machineKey` is an unguessable 32-hex
-  identifier and the tunnel upgrades are HMAC-signed with a per-machine
-  secret.
+- **Cloud tunnel relay (on by default; Settings > Sync is the
+  kill-switch)**: the brain keeps an outbound HMAC-authenticated tunnel
+  to the `apps/tunnel-relay` Cloudflare Worker so a phone off the
+  LAN/tailnet can dial the machine over TLS with zero configuration.
+  Phones always try direct routes first — the relay candidate is
+  strictly the lowest-priority transport. The relay only pipes bytes:
+  the normal ADE hello / PIN / paired-secret / DPoP handshake still runs
+  end-to-end, so the relay never sees pairing credentials in the clear.
+  The `machineKey` is an unguessable 32-hex identifier and the tunnel
+  upgrades are HMAC-signed with a per-machine secret. Operators who
+  never want traffic relayed flip the single "ADE relay" control in
+  Settings > Sync (or `ade sync relay disable`); an explicit off is
+  preserved across upgrades. The live relay URL is also advertised to
+  already-paired phones in `hello_ok` / `brain_status`
+  (`cloudRelayWssUrl`), so devices paired before the relay existed learn
+  the route without re-scanning a QR.
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
 - **Execution isolation**: the ADE runtime runs agents; controllers do not.
@@ -904,7 +915,7 @@ project scope split.
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
 | QR pairing UX | Implemented (payload v3 smart URL + iOS camera scanner; PIN entered separately) |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
-| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented, default off (`syncTunnelClientService` + `apps/tunnel-relay`) |
+| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented, default on with Settings kill-switch (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Lane portability desktop-to-desktop | Planned |

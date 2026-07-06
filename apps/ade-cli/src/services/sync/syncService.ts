@@ -743,6 +743,8 @@ export function createSyncService(args: SyncServiceArgs) {
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
       requireDpop: () => securityStore.getRequireDpop(),
+      getCloudRelayWssUrl: () =>
+        cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
       onStateChanged: () => {
         void refreshRoleState();
       },
@@ -1361,6 +1363,9 @@ export function createSyncService(args: SyncServiceArgs) {
     async setCloudRelayEnabled(enabled: boolean): Promise<SyncCloudRelayStatus> {
       cloudRelayStore.setEnabled(enabled);
       args.onCloudRelayEnabledChanged?.(enabled);
+      // Connected phones learn the flip from brain_status (cloudRelayWssUrl)
+      // without waiting for the next scheduled broadcast.
+      hostService?.broadcastBrainStatusNow?.();
       // The relay candidate rides pairingConnectInfo, so republish status.
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);

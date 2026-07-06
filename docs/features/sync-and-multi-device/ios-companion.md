@@ -425,11 +425,18 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    never the full 8787–8999 stale-port range, which belongs to the
    connect path's recovery sweep. Cloud-relay candidates (full
    `wss://…/connect/<machineKey>` URLs) are appended **last**, as the
-   lowest-priority transport, and only when the user has turned on the
-   "Cloud relay fallback" toggle (App Group key
-   `ade.sync.cloudRelayFallbackEnabled`, default off) — a full-URL relay
-   route cannot be host:port TCP-probed, so it is dialed only after every
-   direct route fails. `reconnectIfPossible` is guarded so overlapping
+   lowest-priority transport — a full-URL relay route cannot be
+   host:port TCP-probed, so it is dialed only after every direct route
+   fails. There is no user toggle: relay candidates always race
+   (LAN → Tailscale → relay, zero config). They arrive from the pairing
+   QR and — for already-paired phones — from `hello_ok` /
+   `brain_status`'s `cloudRelayWssUrl`, persisted into the host
+   profile's `savedRelayCandidates` (an explicit `cloudRelayWssUrl:
+   null` in `brain_status` means the operator flipped the machine's
+   relay kill-switch, and the phone clears its saved relay routes).
+   When the ACTIVE connection is a relay route, the Settings connection
+   header shows one quiet line — "Using ADE relay — Tailscale gives a
+   faster, private connection" — and nothing else changes. `reconnectIfPossible` is guarded so overlapping
    wake-ups never stack TCP/WebSocket attempts, and a reconnect never
    tears down an already-live connection. The socket declares the
    `chunkedEnvelopes` capability and sets a 32 MiB

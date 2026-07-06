@@ -109,7 +109,7 @@ function addressKindLabel(kind: SyncAddressCandidate["kind"]): string {
     case "saved":
       return "Saved";
     case "relay":
-      return "Cloud relay";
+      return "ADE relay";
     default:
       return "Manual";
   }
@@ -700,9 +700,9 @@ function PairPhoneCard({
         <div style={{ ...panelStyle, gap: 10 }}>
           <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
             <div style={{ display: "grid", gap: 4 }}>
-              <div style={LABEL_STYLE}>Cloud relay fallback</div>
+              <div style={LABEL_STYLE}>ADE relay</div>
               <div style={helperTextStyle}>
-                Adds a cloud tunnel as a last-resort route when no LAN or Tailscale path works.
+                Keeps your phone connected when no LAN or Tailscale route works. On by default; turn off to never route through the relay.
               </div>
             </div>
             <SettingsToggle

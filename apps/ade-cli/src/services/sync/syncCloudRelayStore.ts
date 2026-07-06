@@ -6,7 +6,12 @@ import { safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/ser
 const DEFAULT_RELAY_URL = "https://ade-tunnel-relay.arulsharma1028.workers.dev";
 
 export type SyncCloudRelayConfig = {
-  /** When false the tunnel client never claims or connects (default). */
+  /**
+   * When false the tunnel client never claims or connects. Defaults to true
+   * (relay-everywhere, zero-config): a file without the field reads as
+   * enabled, while an explicit `false` — the desktop kill-switch or
+   * `ade sync relay disable` — is preserved.
+   */
   enabled: boolean;
   /** Per-machine identifier phones dial through the relay (32 hex chars). */
   machineKey: string;
@@ -95,7 +100,7 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
           && typeof raw.secret === "string" && raw.secret.length >= 32
         ) {
           return {
-            enabled: raw.enabled === true,
+            enabled: raw.enabled !== false,
             machineKey: raw.machineKey,
             secret: raw.secret,
             relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,
@@ -118,7 +123,9 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       ? raw.secret
       : randomBytes(24).toString("hex");
     const config: SyncCloudRelayConfig = {
-      enabled: raw.enabled === true,
+      // Missing field → enabled (default-on). Only an explicit false — a
+      // toggle/CLI choice the user made — keeps the relay off.
+      enabled: raw.enabled !== false,
       machineKey,
       secret,
       relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,

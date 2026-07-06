@@ -52,6 +52,7 @@ export type PushPhase = "running" | "waiting" | "terminal";
 
 type AlertPublishItem = {
   deviceIds: string[] | null;
+  /** Empty for a silent badge-only item (badge != null). */
   title: string;
   subtitle: string | null;
   body: string | null;
@@ -62,6 +63,13 @@ type AlertPublishItem = {
   collapseId: string | null;
   dedupeKey: string | null;
   phase: PushPhase;
+  /** Passed through top-level (like deepLink) so iOS can act without opening. */
+  sessionId: string | null;
+  itemId: string | null;
+  /** aps.category — binds registered UNNotificationActions on the device. */
+  category: string | null;
+  /** aps.badge — the app icon's awaiting-attention count. */
+  badge: number | null;
 };
 
 type LiveActivityPublishItem = {
@@ -304,7 +312,10 @@ function parseAlertItems(raw: unknown): AlertPublishItem[] {
   for (const entry of raw.slice(0, MAX_PUBLISH_ITEMS)) {
     if (!isRecord(entry)) continue;
     const title = readString(entry, "title");
-    if (!title) continue;
+    const badgeRaw = readNumber(entry, "badge");
+    const badge = badgeRaw != null && badgeRaw >= 0 ? Math.floor(badgeRaw) : null;
+    // A title-less item is valid only as a silent badge sync.
+    if (!title && badge == null) continue;
     const interruption = readString(entry, "interruptionLevel");
     items.push({
       deviceIds: readDeviceIds(entry),
@@ -321,6 +332,10 @@ function parseAlertItems(raw: unknown): AlertPublishItem[] {
       collapseId: readOptionalString(entry, "collapseId"),
       dedupeKey: readOptionalString(entry, "dedupeKey"),
       phase: normalizePhase(readString(entry, "phase")),
+      sessionId: readOptionalString(entry, "sessionId"),
+      itemId: readOptionalString(entry, "itemId"),
+      category: readOptionalString(entry, "category"),
+      badge,
     });
   }
   return items;
@@ -454,19 +469,24 @@ function phaseExpiration(phase: PushPhase, nowSeconds = Math.floor(Date.now() / 
 }
 
 function alertApnsPayload(item: AlertPublishItem): Record<string, unknown> {
-  const aps: Record<string, unknown> = {
-    alert: {
+  const aps: Record<string, unknown> = {};
+  if (item.title) {
+    aps.alert = {
       title: item.title,
       ...(item.subtitle ? { subtitle: item.subtitle } : {}),
       ...(item.body ? { body: item.body } : {}),
-    },
-  };
+    };
+  }
   if (item.sound) aps.sound = item.sound;
   if (item.threadId) aps["thread-id"] = item.threadId;
   if (item.interruptionLevel) aps["interruption-level"] = item.interruptionLevel;
+  if (item.category) aps.category = item.category;
+  if (item.badge != null) aps.badge = item.badge;
   return {
     aps,
     ...(item.deepLink ? { deepLink: item.deepLink } : {}),
+    ...(item.sessionId ? { sessionId: item.sessionId } : {}),
+    ...(item.itemId ? { itemId: item.itemId } : {}),
   };
 }
 

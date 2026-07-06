@@ -223,6 +223,35 @@ describe("buildSyncHostHelloOkPayload", () => {
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
       actions: [remoteCommand, localPresenceCommand],
     });
+    // No relay URL supplied → field omitted for backward-compatible payloads.
+    expect("cloudRelayWssUrl" in payload).toBe(false);
+  });
+
+  it("advertises the cloud relay connect URL so already-paired phones learn the off-LAN route", () => {
+    const metadata = {
+      deviceId: "d",
+      deviceName: "n",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "s",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const payload = buildSyncHostHelloOkPayload({
+      peer: metadata,
+      brain: metadata,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+      cloudRelayWssUrl: "wss://relay.example/connect/abc123",
+    });
+    expect(payload.cloudRelayWssUrl).toBe("wss://relay.example/connect/abc123");
   });
 });
 

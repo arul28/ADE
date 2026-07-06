@@ -54,6 +54,8 @@ type BrainProjectActionsSyncHandlerArgs = {
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
   authTimeoutMs?: number;
+  /** Mirrors SyncHostServiceArgs.getCloudRelayWssUrl for the fallback hello_ok. */
+  getCloudRelayWssUrl?: () => string | null;
 };
 
 type BrainPeerState = {
@@ -778,6 +780,7 @@ export function createBrainProjectActionsSyncHandler(
             remoteCommandDescriptors: [],
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+            cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
           }), envelope.requestId);
           return;
         }

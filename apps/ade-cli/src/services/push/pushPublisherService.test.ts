@@ -25,6 +25,7 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
     agent: "Codex",
     phase: "running",
     detail: null,
+    itemId: null,
     startedAt: 0,
     lastActiveAt: 0,
     metaResolved: true,
@@ -217,7 +218,90 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("suppresses a muted alert but still updates the Live Activity", async () => {
+  it("carries actionable fields: category + sessionId/itemId on the alert, itemId on the waiting LA row, badge count", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications[0].category).toBe("ADE_APPROVAL");
+    expect(payload.notifications[0].sessionId).toBe("s-1");
+    expect(payload.notifications[0].itemId).toBe("i-1");
+    expect(payload.notifications[0].badge).toBe(1);
+    const laRun = payload.liveActivity[0].contentState.runs[0];
+    expect(laRun.phase).toBe("waiting_for_approval");
+    expect(laRun.itemId).toBe("i-1");
+
+    // Resolution clears the pending item id from later content states.
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    const resolvedRun = lastPayload.liveActivity?.[0]?.contentState.runs[0];
+    expect(resolvedRun?.phase).toBe("running");
+    expect(resolvedRun?.itemId).toBeUndefined();
+
+    publisher.dispose();
+  });
+
+  it("sends a silent badge-only item when the awaiting count drops with no alert", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0][0].notifications[0].badge).toBe(1);
+
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    const badgeItem = (lastPayload.notifications ?? []).find(
+      (item: { dedupeKey?: string }) => item.dedupeKey === "alert:badge",
+    );
+    expect(badgeItem).toMatchObject({ title: "", badge: 0, sound: null });
+
+    publisher.dispose();
+  });
+
+  it("publishes a best-effort Live Activity end on shutdown, marking active runs stale", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    await publisher.shutdown();
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    expect(lastPayload.liveActivity[0].event).toBe("end");
+    expect(lastPayload.liveActivity[0].dismissalDate).toBe(
+      Math.floor(Date.parse("2026-07-05T12:00:00.000Z") / 1000) + 60,
+    );
+    expect(lastPayload.liveActivity[0].contentState.runs[0].phase).toBe("stale");
+
+    // Disposed: no further flush can fire.
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publish.mock.calls.at(-1)?.[0]).toBe(lastPayload);
+  });
+
+  it("shutdown is a no-op publish when no Live Activity start was committed", async () => {
+    const { publisher, publish } = makeHarness();
+    await publisher.start();
+    await publisher.shutdown();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("suppresses a muted alert but still updates the Live Activity and badge", async () => {
     const muted = { ...device, prefs: { ...device.prefs, mutedSessionIds: ["s-1"] } };
     const { publisher, publish, emit } = makeHarness(muted);
     await publisher.start();
@@ -227,7 +311,13 @@ describe("createPushPublisherService flush", () => {
 
     expect(publish).toHaveBeenCalledTimes(1);
     const payload = publish.mock.calls[0][0];
-    expect(payload.notifications).toBeUndefined();
+    // The muted alert itself is suppressed, but a muted session still awaits
+    // attention, so a silent badge-only item keeps the app icon honest.
+    expect(payload.notifications).toHaveLength(1);
+    expect(payload.notifications[0].title).toBe("");
+    expect(payload.notifications[0].badge).toBe(1);
+    expect(payload.notifications[0].sound).toBeNull();
+    expect(payload.notifications[0].dedupeKey).toBe("alert:badge");
     expect(payload.liveActivity[0].event).toBe("start");
 
     publisher.dispose();

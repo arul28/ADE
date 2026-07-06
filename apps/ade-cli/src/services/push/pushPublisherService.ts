@@ -19,6 +19,10 @@ import type {
 export const AGENT_RUNS_ACTIVITY_ID = "agent-runs";
 export const AGENT_RUNS_ATTRIBUTES_TYPE = "ADEAgentRunsAttributes";
 export const AGENT_RUNS_DEDUPE_KEY = "la:agent-runs";
+/** UNNotificationCategory id iOS binds Approve/Deny actions to. */
+export const APPROVAL_NOTIFICATION_CATEGORY = "ADE_APPROVAL";
+const BADGE_DEDUPE_KEY = "alert:badge";
+const SHUTDOWN_PUBLISH_TIMEOUT_MS = 2_500;
 const AGENT_RUNS_MAX = 3;
 const DETAIL_MAX_CHARS = 160;
 /** Fixed lock-screen copy for failed runs — never leak error text to the widget. */
@@ -50,6 +54,8 @@ export type AgentRunState = {
   agent: string | null;
   phase: AgentRunPhase;
   detail: string | null;
+  /** Pending approval item id while phase is waiting_for_approval. */
+  itemId: string | null;
   startedAt: number;
   lastActiveAt: number;
   metaResolved: boolean;
@@ -71,6 +77,10 @@ type PendingAlert = {
   threadId?: string | null;
   phase: "running" | "waiting" | "terminal";
   interruptionLevel?: "passive" | "active" | "time-sensitive" | null;
+  /** Approval item id — rides the payload so iOS can act without opening the app. */
+  itemId?: string | null;
+  /** UNNotificationCategory identifier binding actionable buttons on iOS. */
+  category?: string | null;
 };
 
 type PushAgentChatService = {
@@ -215,6 +225,7 @@ export function buildAgentRunsContentState(
     model: string | null;
     lane: string | null;
     detail: string | null;
+    itemId?: string;
   }>;
 } {
   const activeCount = runs.filter((run) => isActivePhase(run.phase)).length;
@@ -229,8 +240,18 @@ export function buildAgentRunsContentState(
       model: run.model ?? null,
       lane: run.lane ?? null,
       detail: run.phase === "failed" ? FAILED_DETAIL : capDetail(run.detail),
+      // Additive optional field (older widgets ignore it): lets the lock
+      // screen render Approve/Deny intents against the pending item.
+      ...(run.phase === "waiting_for_approval" && run.itemId ? { itemId: run.itemId } : {}),
     })),
   };
+}
+
+/** Waiting runs are what the app icon badge counts — agents blocked on the user. */
+export function countAwaitingAttentionRuns(runs: AgentRunState[]): number {
+  return runs.filter(
+    (run) => run.phase === "waiting_for_approval" || run.phase === "waiting_for_input",
+  ).length;
 }
 
 function readOutcomeCount(result: Record<string, unknown> | null | undefined, key: string): number {
@@ -286,6 +307,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastAlertFingerprintByKey = new Map<string, string>();
   let lastLiveActivityFingerprint: string | null = null;
   let liveActivityStarted = false;
+  /** Last app-icon badge count committed to the relay (null = never sent). */
+  let lastSentBadgeCount: number | null = null;
 
   let flushTimer: NodeJS.Timeout | null = null;
   let flushFireAt = 0;
@@ -325,6 +348,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         agent: null,
         phase: "starting",
         detail: null,
+        itemId: null,
         startedAt: ts,
         lastActiveAt: ts,
         metaResolved: false,
@@ -487,6 +511,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const consumedAlerts = pendingAlerts;
     pendingAlerts = [];
 
+    const badgeCount = countAwaitingAttentionRuns([...runs.values()]);
+
     const alertItems: PushRelayAlertItem[] = [];
     const alertCommits: Array<[string, string]> = [];
     for (const alert of consumedAlerts) {
@@ -512,6 +538,30 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         dedupeKey: alert.dedupeKey,
         phase: alert.phase,
         interruptionLevel: alert.interruptionLevel ?? null,
+        sessionId: alert.sessionId ?? null,
+        itemId: alert.itemId ?? null,
+        category: alert.category ?? null,
+        badge: badgeCount,
+      });
+    }
+
+    // The badge must also track *drops* (an approval answered on the Mac), which
+    // produce no alert. A silent badge-only item keeps the icon honest; the
+    // relay's content-hash suppression absorbs unchanged resends.
+    const badgeDeviceIds = devices
+      .filter((device) => Boolean(device.apnsToken) && device.prefs.enabled)
+      .map((device) => device.deviceId);
+    const needsBadgeSync = badgeCount !== lastSentBadgeCount
+      && alertItems.length === 0
+      && badgeDeviceIds.length > 0;
+    if (needsBadgeSync) {
+      alertItems.push({
+        deviceIds: badgeDeviceIds,
+        title: "",
+        sound: null,
+        dedupeKey: BADGE_DEDUPE_KEY,
+        phase: "terminal",
+        badge: badgeCount,
       });
     }
 
@@ -543,6 +593,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         return;
       }
       for (const [key, fingerprint] of alertCommits) lastAlertFingerprintByKey.set(key, fingerprint);
+      if (alertItems.length > 0) lastSentBadgeCount = badgeCount;
       if (laPlan) {
         // Commit the Live Activity plan only if its own targets landed. A mixed
         // publish can report delivered>0 from the alert while the LA push-to-start
@@ -623,6 +674,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       case "approval_request": {
         run.phase = "waiting_for_approval";
         run.detail = event.description ?? run.detail;
+        run.itemId = event.itemId || null;
         enqueueAlert({
           sessionId,
           dedupeKey: `alert:${sessionId}:approval`,
@@ -631,6 +683,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           threadId: sessionId,
           phase: "waiting",
           interruptionLevel: "time-sensitive",
+          itemId: event.itemId || null,
+          category: APPROVAL_NOTIFICATION_CATEGORY,
         });
         immediate = true;
         break;
@@ -654,12 +708,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         if (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input") {
           run.phase = "running";
         }
+        run.itemId = null;
         // Allow a later prompt in the same session to alert again.
         clearAlertDedupe(`alert:${sessionId}:approval`);
         clearAlertDedupe(`alert:${sessionId}:question`);
         break;
       }
       case "status": {
+        if (event.turnStatus !== "started") run.itemId = null;
         if (event.turnStatus === "started") {
           if (isTerminalPhase(run.phase)) run.phase = "running";
         } else if (event.turnStatus === "failed") {
@@ -905,6 +961,52 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       flushTimer = null;
     },
 
+    /**
+     * Daemon-exit path: best-effort `end` for the aggregate Live Activity so
+     * dead agents don't linger on the lock screen until the stale-date dim.
+     * Bounded by a short timeout — shutdown must never hang on the relay —
+     * and only sent when a start was actually committed. Ends with dispose().
+     */
+    async shutdown(): Promise<void> {
+      if (!disposed && liveActivityStarted && !isGated()) {
+        try {
+          const nowMs = now();
+          const deviceIds = deps.store.listDevices()
+            .filter((device) => Boolean(device.pushToStartToken) && shouldDeliverLiveActivityForPrefs(device.prefs))
+            .map((device) => device.deviceId);
+          if (deviceIds.length > 0) {
+            // Mark still-active runs stale — the machine is gone, not the agent done.
+            const finalRuns = [...runs.values()].map((run) =>
+              isActivePhase(run.phase) ? { ...run, phase: "stale" as const } : run,
+            );
+            const item: PushRelayLiveActivityItem = {
+              deviceIds,
+              event: "end",
+              activityId: AGENT_RUNS_ACTIVITY_ID,
+              contentState: buildAgentRunsContentState(finalRuns, nowMs),
+              dedupeKey: AGENT_RUNS_DEDUPE_KEY,
+              phase: "terminal",
+              dismissalDate: Math.floor(nowMs / 1000) + 60,
+            };
+            let timeout: NodeJS.Timeout | null = null;
+            try {
+              await Promise.race([
+                deps.relayClient.publish({ liveActivity: [item] }),
+                new Promise<never>((_, reject) => {
+                  timeout = setTimeout(() => reject(new Error("shutdown publish timed out")), SHUTDOWN_PUBLISH_TIMEOUT_MS);
+                }),
+              ]);
+            } finally {
+              if (timeout) clearTimeout(timeout);
+            }
+          }
+        } catch (error) {
+          logWarn("push.shutdown_end_failed", error);
+        }
+      }
+      this.dispose();
+    },
+
     // Exposed for tests / diagnostics.
     _debug: {
       runs,
@@ -938,4 +1040,12 @@ export function getSharedPushPublisherService(
     sharedPublishers.set(key, existing);
   }
   return existing;
+}
+
+/**
+ * Read-only lookup for shutdown paths: returns the shared publisher only if a
+ * project scope already created it — never mints one just to dispose it.
+ */
+export function peekSharedPushPublisherService(key: string): PushPublisherService | undefined {
+  return sharedPublishers.get(key);
 }

@@ -636,6 +636,13 @@ type SyncHostServiceArgs = {
    * record always require a valid proof regardless of this flag.
    */
   requireDpop?: () => boolean;
+  /**
+   * Live cloud tunnel-relay connect URL (`wss://…/connect/<machineKey>`), or
+   * null when the relay is disabled. Advertised in `hello_ok` and
+   * `brain_status` so already-paired phones learn the off-LAN route without
+   * re-scanning a QR.
+   */
+  getCloudRelayWssUrl?: () => string | null;
 };
 
 function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string | null {
@@ -869,6 +876,7 @@ export function buildSyncHostHelloOkPayload(args: {
   localCommandDescriptors: SyncRemoteCommandDescriptor[];
   compressionThresholdBytes?: number;
   maxProjectCatalogEnvelopeBytes?: number;
+  cloudRelayWssUrl?: string | null;
 }): SyncHelloOkPayload {
   const actions = [
     ...args.remoteCommandDescriptors,
@@ -882,6 +890,7 @@ export function buildSyncHostHelloOkPayload(args: {
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
     projects: args.projectCatalog.projects,
+    ...(args.cloudRelayWssUrl ? { cloudRelayWssUrl: args.cloudRelayWssUrl } : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,
@@ -3150,6 +3159,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function buildBrainStatus(): SyncBrainStatusPayload {
     const brainMetadata = readBrainMetadata();
+    const cloudRelayWssUrl = args.getCloudRelayWssUrl?.() ?? null;
     if (disposed) {
       return {
         brain: brainMetadata,
@@ -3169,6 +3179,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           lastCommandResultLatencyMs,
           lastChangesetAckLatencyMs,
         },
+        cloudRelayWssUrl,
       };
     }
     const dbVersion = args.db.sync.getDbVersion();
@@ -3202,6 +3213,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         lastCommandResultLatencyMs,
         lastChangesetAckLatencyMs,
       },
+      cloudRelayWssUrl,
     };
   }
 
@@ -4293,6 +4305,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         localCommandDescriptors: localPresenceCommandDescriptors,
         compressionThresholdBytes,
         maxProjectCatalogEnvelopeBytes,
+        cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
@@ -4971,6 +4984,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     getBrainStatusSnapshot(): SyncBrainStatusPayload {
       return buildBrainStatus();
+    },
+
+    /**
+     * Push a fresh `brain_status` to every connected peer. Used when a value
+     * it advertises changes outside the normal broadcast cadence (e.g. the
+     * cloud-relay kill-switch flips), so phones don't wait a full interval.
+     */
+    broadcastBrainStatusNow(): void {
+      broadcastBrainStatus();
     },
 
     async broadcastProjectCatalog(): Promise<void> {
