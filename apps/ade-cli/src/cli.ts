@@ -11857,9 +11857,9 @@ Usage:
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
-  ade sync relay status             Cloud relay (phones dial this machine via a tunnel)
+  ade sync relay status             ADE relay (phones dial this machine via a tunnel; on by default)
   ade sync relay enable
-  ade sync relay disable
+  ade sync relay disable            Kill-switch: never route sync through the relay
   ade sync security status          Machine sync security posture (require-DPoP)
   ade sync security require-dpop <on|off>
 `,
@@ -13261,6 +13261,7 @@ async function runServe(
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler },
     { buildRosterSnapshot, createForeignChatTranscriptResolver },
+    { createSyncCloudRelayStore },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -13270,6 +13271,7 @@ async function runServe(
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
     import("./services/sync/brainProjectActionsSyncHandler"),
     import("./services/sync/rosterBuilder"),
+    import("./services/sync/syncCloudRelayStore"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -13603,6 +13605,11 @@ async function runServe(
   const machineCredentialStore = new EncryptedFileCredentialStore({
     secretsDir: layout.secretsDir,
   });
+  // Same file the per-scope sync services read; another store instance is fine
+  // because every read reloads the file.
+  const machineCloudRelayStore = createSyncCloudRelayStore({
+    filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
+  });
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
@@ -13613,6 +13620,8 @@ async function runServe(
       pinPath: path.join(layout.secretsDir, "sync-pin.json"),
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
+      getCloudRelayWssUrl: () =>
+        machineCloudRelayStore.isEnabled() ? machineCloudRelayStore.getRelayWssUrl() : null,
     }),
   );
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
@@ -13681,6 +13690,25 @@ async function runServe(
     return null;
   };
   const disposeServeResources = async () => {
+    // Before scopes detach (which clears the run map): best-effort Live
+    // Activity `end` so the lock screen doesn't show dead agents until the
+    // stale-date dim. Bounded by the publisher's internal timeout.
+    try {
+      const { peekSharedPushPublisherService, resolvePushRelayStateFile } = await import("./services/push/pushPublisherService");
+      await peekSharedPushPublisherService(
+        resolvePushRelayStateFile(layout.secretsDir),
+      )?.shutdown();
+    } catch {
+      // Shutdown must never hang or fail on push cleanup.
+    }
+    try {
+      const { peekSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
+      await peekSharedSyncTunnelClientService(
+        path.join(layout.secretsDir, "sync-cloud-relay.json"),
+      )?.dispose();
+    } catch {
+      // Best-effort tunnel teardown; the process exit closes sockets anyway.
+    }
     await scopeRegistry.disposeAll();
     if (sharedSyncListener) {
       await sharedSyncListener.close().catch(() => {});

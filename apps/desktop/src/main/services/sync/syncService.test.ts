@@ -703,7 +703,14 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       (entry) => entry.kind === "loopback" && entry.host === "127.0.0.1",
     );
     expect(addressCandidates.length).toBeGreaterThan(0);
-    expect(loopbackCandidateIndex).toBe(addressCandidates.length - 1);
+    // Loopback is the last DIRECT candidate; only the cloud-relay candidate
+    // (default-on, strictly lowest priority) may follow it.
+    expect(loopbackCandidateIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      addressCandidates
+        .slice(loopbackCandidateIndex + 1)
+        .every((entry) => entry.kind === "relay"),
+    ).toBe(true);
     expect(
       addressCandidates
         .slice(0, Math.max(loopbackCandidateIndex, 0))

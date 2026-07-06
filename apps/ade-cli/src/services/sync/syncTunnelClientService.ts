@@ -312,6 +312,31 @@ function forward(target: WebSocket, data: RawData, isBinary: boolean): void {
 /** Deadline for the claim POST and every socket to reach OPEN. */
 export const CONNECT_DEADLINE_MS = 15_000;
 
+const sharedTunnelClients = new Map<string, SyncTunnelClientService>();
+
+/**
+ * Machine-level singleton keyed by the relay config file path. Every project
+ * scope in the multi-project daemon shares ONE tunnel client — a per-scope
+ * instance would re-register the same machineKey with the relay on every
+ * project open and churn the host connection paired phones dial through.
+ */
+export function getSharedSyncTunnelClientService(
+  key: string,
+  make: () => SyncTunnelClientService,
+): SyncTunnelClientService {
+  let existing = sharedTunnelClients.get(key);
+  if (!existing) {
+    existing = make();
+    sharedTunnelClients.set(key, existing);
+  }
+  return existing;
+}
+
+/** Shutdown-path lookup: never mints a client just to stop it. */
+export function peekSharedSyncTunnelClientService(key: string): SyncTunnelClientService | undefined {
+  return sharedTunnelClients.get(key);
+}
+
 /**
  * Terminates a socket that has not opened within the deadline so a stalled
  * relay or dead local sync port surfaces as an error + reconnect instead of a

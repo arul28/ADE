@@ -11,8 +11,38 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
+        registerNotificationCategories()
         return true
     }
+
+    /// Register the approval-alert category so approval pushes carry inline
+    /// Approve / Deny actions on the lock screen and in Notification Center. The
+    /// brain stamps `aps.category = "ADE_APPROVAL"` on those alerts; the action
+    /// identifiers are matched in `didReceive response`.
+    private func registerNotificationCategories() {
+        let approve = UNNotificationAction(
+            identifier: ADEAppDelegate.approveActionIdentifier,
+            title: "Approve",
+            options: [.authenticationRequired]
+        )
+        let deny = UNNotificationAction(
+            identifier: ADEAppDelegate.denyActionIdentifier,
+            title: "Deny",
+            options: [.authenticationRequired, .destructive]
+        )
+        let category = UNNotificationCategory(
+            identifier: ADEAppDelegate.approvalCategoryIdentifier,
+            actions: [approve, deny],
+            intentIdentifiers: [],
+            options: []
+        )
+        UNUserNotificationCenter.current().setNotificationCategories([category])
+    }
+
+    // Identifiers shared with the brain's APNs payload contract.
+    static let approvalCategoryIdentifier = "ADE_APPROVAL"
+    static let approveActionIdentifier = "ADE_APPROVE"
+    static let denyActionIdentifier = "ADE_DENY"
 
     func application(
         _ application: UIApplication,
@@ -74,9 +104,33 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse
     ) async {
         let userInfo = response.notification.request.content.userInfo
-        await MainActor.run {
-            PushNotificationService.shared.notePushReceived()
-            DeepLinkRouter.shared.handleNotificationUserInfo(userInfo)
+        let sessionId = (userInfo["sessionId"] as? String) ?? ""
+        let itemId = (userInfo["itemId"] as? String) ?? ""
+
+        // Both ids are required to target the pending approval — a payload
+        // missing either (older host, malformed push) falls through to the
+        // deep-link path so the user lands in the app instead of a command
+        // that cannot resolve.
+        switch response.actionIdentifier {
+        case ADEAppDelegate.approveActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
+            await MainActor.run { PushNotificationService.shared.notePushReceived() }
+            await ADEIntentCommandRegistry.dispatch(
+                .approveSession,
+                payload: ["sessionId": sessionId, "itemId": itemId]
+            )
+        case ADEAppDelegate.denyActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
+            await MainActor.run { PushNotificationService.shared.notePushReceived() }
+            await ADEIntentCommandRegistry.dispatch(
+                .denySession,
+                payload: ["sessionId": sessionId, "itemId": itemId]
+            )
+        default:
+            // Default tap (and any action we don't handle) routes through the
+            // existing deep-link navigation, which knows the payload keys.
+            await MainActor.run {
+                PushNotificationService.shared.notePushReceived()
+                DeepLinkRouter.shared.handleNotificationUserInfo(userInfo)
+            }
         }
     }
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
+import type { PushQuietHours } from "../../../../desktop/src/shared/types/push";
 import { createPushRegistrationStore, type PushRegistrationStore } from "./pushRegistrationStore";
 import { createPushRelayClient } from "./pushRelayClient";
 import {
@@ -25,6 +26,7 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
     agent: "Codex",
     phase: "running",
     detail: null,
+    itemId: null,
     startedAt: 0,
     lastActiveAt: 0,
     metaResolved: true,
@@ -125,7 +127,7 @@ describe("createPushPublisherService flush", () => {
     pushToStartToken: "b".repeat(64),
     bundleId: "com.ade.ios",
     apsEnvironment: "sandbox" as const,
-    prefs: { enabled: true, liveActivitiesEnabled: true, mutedSessionIds: [] as string[], quietHours: null },
+    prefs: { enabled: true, liveActivitiesEnabled: true, mutedSessionIds: [] as string[], quietHours: null as PushQuietHours | null },
     updatedAt: "",
   };
 
@@ -217,7 +219,162 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("suppresses a muted alert but still updates the Live Activity", async () => {
+  it("carries actionable fields: category + sessionId/itemId on the alert, itemId on the waiting LA row, badge count", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications[0].category).toBe("ADE_APPROVAL");
+    expect(payload.notifications[0].sessionId).toBe("s-1");
+    expect(payload.notifications[0].itemId).toBe("i-1");
+    expect(payload.notifications[0].badge).toBe(1);
+    const laRun = payload.liveActivity[0].contentState.runs[0];
+    expect(laRun.phase).toBe("waiting_for_approval");
+    expect(laRun.itemId).toBe("i-1");
+
+    // Resolution clears the pending item id from later content states.
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    const resolvedRun = lastPayload.liveActivity?.[0]?.contentState.runs[0];
+    expect(resolvedRun?.phase).toBe("running");
+    expect(resolvedRun?.itemId).toBeUndefined();
+
+    publisher.dispose();
+  });
+
+  it("badge-syncs devices whose alert was muted while the alert covers the rest", async () => {
+    const deviceB = { ...device, deviceId: "dev-2", prefs: { ...device.prefs, mutedSessionIds: ["s-1"] } };
+    const publish = vi.fn().mockResolvedValue({ ok: true });
+    const store = {
+      hasRegisteredDevices: () => true,
+      getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: 2, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
+      listDevices: () => [device, deviceB],
+      getDevice: () => device,
+      recordPublishResult: vi.fn(),
+      recordRelayContact: vi.fn(),
+    };
+    const relayClient = { publish, health: vi.fn().mockResolvedValue({ ok: true, apnsConfigured: true }), baseUrl: "https://relay.test" };
+    let chatCb: ((env: AgentChatEventEnvelope) => void) | null = null;
+    const emit = (env: AgentChatEventEnvelope) => chatCb?.(env);
+    const publisher = createPushPublisherService({
+      logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as never,
+      store: store as never,
+      relayClient: relayClient as never,
+      machineName: "MacBook",
+      flushDebounceMs: 2_000,
+      promptFlushMs: 150,
+    });
+    publisher.attachSources("scope-1", {
+      agentChatService: {
+        subscribeToEvents: (cb: (env: AgentChatEventEnvelope) => void) => {
+          chatCb = cb;
+          return () => {};
+        },
+        getSessionSummary: vi.fn().mockResolvedValue(null),
+      } as never,
+    });
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls[0][0];
+    const alertItem = payload.notifications.find((item: { title: string }) => item.title.length > 0);
+    const badgeItem = payload.notifications.find((item: { title: string; badge?: number | null }) => item.title === "" && item.badge != null);
+    // The audible alert reaches only the unmuted device...
+    expect(alertItem.deviceIds).toEqual(["dev-1"]);
+    expect(alertItem.badge).toBe(1);
+    // ...while the muted device still gets the new badge count silently.
+    expect(badgeItem.deviceIds).toEqual(["dev-2"]);
+    expect(badgeItem.badge).toBe(1);
+
+    publisher.dispose();
+  });
+
+  it("suppresses the badge-only item for a device inside quiet hours", async () => {
+    // System time is 12:00 UTC (beforeEach); a 00:00→23:59 UTC window is active.
+    const quiet = {
+      ...device,
+      prefs: { ...device.prefs, quietHours: { start: "00:00", end: "23:59", timezone: "UTC" } },
+    };
+    const { publisher, publish, emit } = makeHarness(quiet);
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    // Alert is quiet-hours-filtered AND no badge-only item may replace it —
+    // "mute pushes on a schedule" covers silent badge pushes too. Only the
+    // Live Activity (quiet-hours-exempt) goes out.
+    expect(publish).toHaveBeenCalledTimes(1);
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications).toBeUndefined();
+    expect(payload.liveActivity[0].event).toBe("start");
+
+    publisher.dispose();
+  });
+
+  it("sends a silent badge-only item when the awaiting count drops with no alert", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0][0].notifications[0].badge).toBe(1);
+
+    emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId: "i-1", resolution: "accepted" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    const badgeItem = (lastPayload.notifications ?? []).find(
+      (item: { title: string; badge?: number | null }) => item.title === "" && item.badge != null,
+    );
+    expect(badgeItem).toMatchObject({ title: "", badge: 0, sound: null });
+
+    publisher.dispose();
+  });
+
+  it("publishes a best-effort Live Activity end on shutdown, marking active runs stale", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    await publisher.shutdown();
+    const lastPayload = publish.mock.calls.at(-1)?.[0];
+    expect(lastPayload.liveActivity[0].event).toBe("end");
+    expect(lastPayload.liveActivity[0].dismissalDate).toBe(
+      Math.floor(Date.parse("2026-07-05T12:00:00.000Z") / 1000) + 60,
+    );
+    expect(lastPayload.liveActivity[0].contentState.runs[0].phase).toBe("stale");
+
+    // Disposed: no further flush can fire.
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(publish.mock.calls.at(-1)?.[0]).toBe(lastPayload);
+  });
+
+  it("shutdown is a no-op publish when no Live Activity start was committed", async () => {
+    const { publisher, publish } = makeHarness();
+    await publisher.start();
+    await publisher.shutdown();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("suppresses a muted alert but still updates the Live Activity and badge", async () => {
     const muted = { ...device, prefs: { ...device.prefs, mutedSessionIds: ["s-1"] } };
     const { publisher, publish, emit } = makeHarness(muted);
     await publisher.start();
@@ -227,7 +384,15 @@ describe("createPushPublisherService flush", () => {
 
     expect(publish).toHaveBeenCalledTimes(1);
     const payload = publish.mock.calls[0][0];
-    expect(payload.notifications).toBeUndefined();
+    // The muted alert itself is suppressed, but a muted session still awaits
+    // attention, so a silent badge-only item keeps the app icon honest.
+    expect(payload.notifications).toHaveLength(1);
+    expect(payload.notifications[0].title).toBe("");
+    expect(payload.notifications[0].badge).toBe(1);
+    expect(payload.notifications[0].sound).toBeNull();
+    // No relay dedupeKey: the suppression hash ignores deviceIds, so a shared
+    // key would starve other devices of the same count.
+    expect(payload.notifications[0].dedupeKey).toBeUndefined();
     expect(payload.liveActivity[0].event).toBe("start");
 
     publisher.dispose();

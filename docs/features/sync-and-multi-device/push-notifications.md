@@ -67,6 +67,30 @@ prompt delivery for waiting transitions; two dedupe lines (in-memory JSON
 fingerprint, then the relay's `dedupeKey` content-hash suppression);
 suppressed Live Activity updates never fall back to alert pushes.
 
+Approval alerts are **actionable**: the publisher stamps top-level
+`sessionId` + `itemId` and `aps.category: "ADE_APPROVAL"` on the payload,
+and iOS binds Approve/Deny notification actions to that category (routed
+through the same intent command registry the widgets use — `chat.approve`
+with `decision: accept|decline`), so approvals resolve from the lock
+screen without opening the app.
+
+Every alert also carries `aps.badge` = the machine-wide count of runs in
+`waiting_for_*` phases (`countAwaitingAttentionRuns`). When that count
+changes, the publisher also emits a silent, title-less badge-only item
+(`dedupeKey: "alert:badge"`, no sound) so the icon tracks *drops* too — an
+approval answered on the Mac produces no alert but must still lower the
+badge. That badge-only item targets every alert-enabled device that is
+**not** already carrying an alert in the same flush (a muted session still
+needs the fresh count even though its own alert push is skipped); the
+relay's content-hash suppression absorbs unchanged resends, and the
+relay accepts a title-less item only when it carries a `badge`. iOS
+clears the badge on every foreground.
+
+On daemon shutdown the publisher makes a best-effort Live Activity `end`
+(`dismissalDate` now + 60 s, still-active runs re-stamped `stale`),
+bounded by a short timeout so exit never hangs — dead agents don't linger
+on the lock screen until the stale-date dim.
+
 Per-device preferences are enforced brain-side before publishing: master
 enable, per-session mutes, and quiet hours (evaluated in the device's
 timezone; may span midnight). Live Activity updates ignore quiet hours
@@ -89,6 +113,11 @@ One aggregate activity per machine (`activityId: "agent-runs"`,
   ]
 }
 ```
+
+Additive optional field: a `waiting_for_approval` row carries `itemId`
+(the pending approval item), which the widget uses to render Approve/Deny
+`Button(intent:)` on the lock-screen presentation. Older widgets ignore
+it; the Swift decode stays lenient.
 
 Phases: `starting | running | waiting_for_approval | waiting_for_input |
 completed | failed | stale`. Runs are capped at 3 (most recent first),
@@ -113,6 +142,24 @@ when all runs reach a terminal phase.
   environment, last push received, relay reachability (via
   `push.getStatus`), plus notification/Live-Activity toggles, per-session
   mutes, and quiet hours.
+- Per-session mute is also one tap away in the Work list: the session
+  row's context menu (and the open chat's header menu) offers
+  "Mute notifications" / "Unmute notifications", and muted rows show a
+  subtle `bell.slash` glyph. A muted session still counts toward the
+  badge and Live Activity — only its alert pushes are skipped.
+- Approve/Deny actions appear on approval alerts (long-press or pull
+  down) and on `waiting_for_approval` Live Activity rows. On the alert,
+  `ADEAppDelegate` registers the `ADE_APPROVAL` `UNNotificationCategory`
+  (`ADE_APPROVE` / `ADE_DENY` actions) and its `didReceive response`
+  routes those action ids to `chat.approve`. On the Live Activity, the
+  buttons fire `ApproveSessionIntent` / `DenySessionIntent`, which conform
+  to **`LiveActivityIntent`** (not plain `AppIntent`) precisely so the
+  intent executes in the *app* process — where the command bridge is
+  registered — instead of the widget extension where the bridge is nil.
+  Both paths dispatch through `ADEIntentCommandRegistry`, which queues the
+  command when the bridge isn't live yet; `register()` drains the queue on
+  cold launch and every warm foreground also calls `drainPendingCommands()`,
+  so an approval tapped while the app was dead still lands on the next open.
 
 ## What needs a physical device
 

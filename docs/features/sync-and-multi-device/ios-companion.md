@@ -425,11 +425,18 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    never the full 8787–8999 stale-port range, which belongs to the
    connect path's recovery sweep. Cloud-relay candidates (full
    `wss://…/connect/<machineKey>` URLs) are appended **last**, as the
-   lowest-priority transport, and only when the user has turned on the
-   "Cloud relay fallback" toggle (App Group key
-   `ade.sync.cloudRelayFallbackEnabled`, default off) — a full-URL relay
-   route cannot be host:port TCP-probed, so it is dialed only after every
-   direct route fails. `reconnectIfPossible` is guarded so overlapping
+   lowest-priority transport — a full-URL relay route cannot be
+   host:port TCP-probed, so it is dialed only after every direct route
+   fails. There is no user toggle: relay candidates always race
+   (LAN → Tailscale → relay, zero config). They arrive from the pairing
+   QR and — for already-paired phones — from `hello_ok` /
+   `brain_status`'s `cloudRelayWssUrl`, persisted into the host
+   profile's `savedRelayCandidates` (an explicit `cloudRelayWssUrl:
+   null` in `brain_status` means the operator flipped the machine's
+   relay kill-switch, and the phone clears its saved relay routes).
+   When the ACTIVE connection is a relay route, the Settings connection
+   header shows one quiet line — "Using ADE relay — Tailscale gives a
+   faster, private connection" — and nothing else changes. `reconnectIfPossible` is guarded so overlapping
    wake-ups never stack TCP/WebSocket attempts, and a reconnect never
    tears down an already-live connection. The socket declares the
    `chunkedEnvelopes` capability and sets a 32 MiB
@@ -680,9 +687,26 @@ contract) is documented in
   (runtime-scoped commands the brain forwards to the relay). Every
   foreground transition re-reports tokens and ends orphaned activities;
   unpair/forget sends `push.unregisterDevice` and ends local activities.
-- **Alert payloads deep-link.** A push carries a top-level `deepLink`
-  (`ade://session/<id>`, `ade://pr/<n>`) routed through
+- **Alert payloads deep-link.** A default tap carries a top-level
+  `deepLink` (`ade://session/<id>`, `ade://pr/<n>`) routed through
   `DeepLinkRouter.handleNotificationUserInfo`.
+- **Approval alerts are actionable.** `ADEAppDelegate` registers the
+  `ADE_APPROVAL` notification category so approval pushes (stamped
+  `aps.category = "ADE_APPROVAL"` plus top-level `sessionId` / `itemId` by
+  the brain) show inline Approve / Deny. `didReceive response` maps the
+  `ADE_APPROVE` / `ADE_DENY` action ids to `ADEIntentCommandRegistry`
+  (`chat.approve`), so approvals resolve from the lock screen without
+  opening the app. The `waiting_for_approval` Live Activity row carries the
+  same buttons via `ApproveSessionIntent` / `DenySessionIntent`, which are
+  `LiveActivityIntent`s (so they run in-app, not the widget extension); a
+  tap while the app is dead queues in the registry and drains on the next
+  launch / foreground.
+- **App-icon badge.** The brain stamps `aps.badge` = the machine-wide
+  count of runs awaiting attention on every alert (and a silent badge-only
+  item when the count changes with no alert). The phone clears the badge
+  on every foreground transition (`PushNotificationService.clearAppBadge`,
+  called from `ADEApp`'s scene-phase handler) so a lingering count never
+  reads as stale.
 - **Live Activity** mirrors up to three active agent runs on the Lock
   Screen and Dynamic Island. `LiveActivityService` starts one aggregate
   activity per machine (`activityId: "agent-runs"`), applies brain-pushed
@@ -1096,7 +1120,7 @@ reflected in the phone's UI on the next descriptor read.
 | PIN pairing flow | Implemented |
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
-| Cloud relay fallback (lowest-priority `relay` transport, default off) | Implemented |
+| Cloud relay (lowest-priority `relay` transport, always races, no toggle) | Implemented |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |

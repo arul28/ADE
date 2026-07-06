@@ -17,6 +17,7 @@
 		AA1100000000000000000022 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
 		AA1100000000000000000023 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
 		AA5100000000000000000014 /* AttentionActionIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* AttentionActionIntents.swift */; };
+		AA5100000000000000000024 /* AttentionActionIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* AttentionActionIntents.swift */; };
 		D1C7A70000000000000001B1 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C7A70000000000000001A1 /* DictationController.swift */; };
 		AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000012 /* DeepLinkRouter.swift */; };
 		K10000000000000000000001 /* SendToMacCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000001 /* SendToMacCard.swift */; };
@@ -1199,6 +1200,7 @@
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
+				AA5100000000000000000024 /* AttentionActionIntents.swift in Sources */,
 				AE00000000000000000000C5 /* ADEAgentActivityAttributes.swift in Sources */,
 				AE00000000000000000000B6 /* ADEAgentActivityWidget.swift in Sources */,
 			);

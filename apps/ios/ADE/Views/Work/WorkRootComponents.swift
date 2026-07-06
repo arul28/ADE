@@ -502,6 +502,16 @@ struct WorkSessionListRow: View {
   /// Defaults to a no-op so preview harnesses don't have to wire it.
   var onOpenPullRequest: (TerminalSessionSummary, LanePrTag) -> Void = { _, _ in }
 
+  /// Observed so the muted glyph and menu label re-render the moment a mute
+  /// flips anywhere (this menu, the open chat's header menu, settings).
+  @ObservedObject private var pushNotificationService = PushNotificationService.shared
+
+  /// Mute only applies to chat sessions.
+  private var isMuted: Bool {
+    isChatSession(session)
+      && pushNotificationService.prefs.mutedSessionIds.contains(session.id)
+  }
+
   var body: some View {
     let rowStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
     Button {
@@ -525,6 +535,7 @@ struct WorkSessionListRow: View {
           chatSummary: chatSummary,
           status: rowStatus,
           isArchived: isArchived,
+          isMuted: isMuted,
           transitionNamespace: transitionNamespace,
           isSelectedTransitionSource: selectedSessionId == session.id,
           compact: compact
@@ -606,6 +617,14 @@ struct WorkSessionListRow: View {
       } label: {
         Label(session.pinned ? "Unpin from front" : "Pin to front",
               systemImage: session.pinned ? "pin.slash" : "pin")
+      }
+      if isChatSession(session) {
+        Button {
+          PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
+        } label: {
+          Label(isMuted ? "Unmute notifications" : "Mute notifications",
+                systemImage: isMuted ? "bell" : "bell.slash")
+        }
       }
     }
   }
@@ -790,6 +809,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let pullRequestState: String?
   let status: String
   let isArchived: Bool
+  let isMuted: Bool
   let isSelectedTransitionSource: Bool
   let compact: Bool
 
@@ -800,6 +820,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     chatSummary: AgentChatSessionSummary?,
     status: String,
     isArchived: Bool,
+    isMuted: Bool,
     isSelectedTransitionSource: Bool,
     compact: Bool
   ) {
@@ -819,6 +840,7 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
     self.status = status
     self.isArchived = isArchived
+    self.isMuted = isMuted
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
   }
@@ -831,6 +853,7 @@ struct WorkSessionRow: View, Equatable {
   let chatSummary: AgentChatSessionSummary?
   let status: String
   let isArchived: Bool
+  var isMuted: Bool = false
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
   var compact: Bool = false
@@ -843,6 +866,7 @@ struct WorkSessionRow: View, Equatable {
     chatSummary: AgentChatSessionSummary?,
     status: String,
     isArchived: Bool,
+    isMuted: Bool = false,
     transitionNamespace: Namespace.ID?,
     isSelectedTransitionSource: Bool,
     compact: Bool = false
@@ -853,6 +877,7 @@ struct WorkSessionRow: View, Equatable {
     self.chatSummary = chatSummary
     self.status = status
     self.isArchived = isArchived
+    self.isMuted = isMuted
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
@@ -863,6 +888,7 @@ struct WorkSessionRow: View, Equatable {
       chatSummary: chatSummary,
       status: status,
       isArchived: isArchived,
+      isMuted: isMuted,
       isSelectedTransitionSource: isSelectedTransitionSource,
       compact: compact
     )
@@ -946,6 +972,12 @@ struct WorkSessionRow: View, Equatable {
             Image(systemName: "pin.fill")
               .font(.caption2)
               .foregroundStyle(ADEColor.accent)
+          }
+          if isMuted {
+            Image(systemName: "bell.slash")
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .accessibilityLabel("Notifications muted")
           }
           Spacer(minLength: 6)
           Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))

@@ -293,6 +293,9 @@ private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? 
 
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
+  /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
+  /// into `headerMenuModel` and re-renders the equatable-gated header menu.
+  @ObservedObject private var pushNotificationService = PushNotificationService.shared
   @Environment(\.dismiss) var dismiss
 
   let sessionId: String
@@ -649,7 +652,9 @@ struct WorkSessionDestinationView: View {
       createPrBlockedReason: createPullRequestBlockedReason,
       sessionPinned: session.pinned,
       sessionIdCopied: sessionIdCopied,
-      sessionDeepLinkCopied: sessionDeepLinkCopied
+      sessionDeepLinkCopied: sessionDeepLinkCopied,
+      sessionId: session.id,
+      sessionMuted: pushNotificationService.prefs.mutedSessionIds.contains(session.id)
     )
   }
 

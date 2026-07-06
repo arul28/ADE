@@ -113,6 +113,13 @@ final class PushNotificationService: ObservableObject {
         updateDiagnostics { $0.lastPushReceivedAt = Date() }
     }
 
+    /// Clear the app-icon badge. Called on every foreground transition so the
+    /// badge (a count of runs awaiting attention, set by the brain's alerts)
+    /// never lingers once the user is back in the app.
+    func clearAppBadge() async {
+        try? await UNUserNotificationCenter.current().setBadgeCount(0)
+    }
+
     // MARK: - Live Activity push-to-start token (from LiveActivityService)
 
     /// Records the ActivityKit push-to-start token. Re-registers with the brain

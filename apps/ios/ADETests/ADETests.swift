@@ -5991,6 +5991,85 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(recorder.commands.first?.payload["prId"], "pr_42")
   }
 
+  func testAgentRunsContentStateDecodesOptionalItemId() throws {
+    // The brain stamps `itemId` only on rows blocked on approval; older payloads
+    // omit it. The lenient decoder must keep both shapes working so the lock-
+    // screen Approve/Deny intents resolve the right pending request.
+    let json = Data("""
+    {
+      "updatedAt": 1720000000,
+      "activeCount": 2,
+      "runs": [
+        { "id": "c", "title": "Release checklist", "phase": "waiting_for_approval", "itemId": "item_release_push" },
+        { "id": "a", "title": "Refactor sync transport", "phase": "running" }
+      ]
+    }
+    """.utf8)
+
+    let state = try JSONDecoder().decode(ADEAgentRunsAttributes.ContentState.self, from: json)
+    XCTAssertEqual(state.runs.count, 2)
+    XCTAssertEqual(state.runs[0].resolvedPhase, .waitingForApproval)
+    XCTAssertEqual(state.runs[0].itemId, "item_release_push")
+    XCTAssertNil(state.runs[1].itemId, "runs without an itemId key decode to nil")
+  }
+
+  @MainActor
+  func testSyncMergedRelayCandidatesFoldsAdvertisedFreshestFirst() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    // A host-advertised relay URL is folded to the FRONT (freshest first) and
+    // deduped against the existing saved list.
+    XCTAssertEqual(
+      service.syncMergedRelayCandidates(
+        advertised: "wss://relay.ade.dev/connect/new",
+        existing: ["wss://relay.ade.dev/connect/old", "wss://relay.ade.dev/connect/new"]
+      ),
+      ["wss://relay.ade.dev/connect/new", "wss://relay.ade.dev/connect/old"],
+      "advertised URL leads, duplicate of it is dropped from the tail"
+    )
+
+    // Nil advertised keeps the existing list, filtered to real wss routes.
+    XCTAssertEqual(
+      service.syncMergedRelayCandidates(
+        advertised: nil,
+        existing: ["wss://relay.ade.dev/connect/a", "192.168.1.5:8787"]
+      ),
+      ["wss://relay.ade.dev/connect/a"],
+      "nil advertised preserves existing relay routes, non-wss entries filtered out"
+    )
+
+    // A non-wss advertised value is treated as absent — never wipes saved routes.
+    XCTAssertEqual(
+      service.syncMergedRelayCandidates(
+        advertised: "192.168.1.5:8787",
+        existing: ["wss://relay.ade.dev/connect/a"]
+      ),
+      ["wss://relay.ade.dev/connect/a"],
+      "invalid advertised route is ignored, existing preserved"
+    )
+
+    // The merged list is capped at 3, keeping the freshest (advertised + head).
+    XCTAssertEqual(
+      service.syncMergedRelayCandidates(
+        advertised: "wss://relay.ade.dev/connect/z",
+        existing: [
+          "wss://relay.ade.dev/connect/a",
+          "wss://relay.ade.dev/connect/b",
+          "wss://relay.ade.dev/connect/c",
+        ]
+      ),
+      [
+        "wss://relay.ade.dev/connect/z",
+        "wss://relay.ade.dev/connect/a",
+        "wss://relay.ade.dev/connect/b",
+      ],
+      "cap at 3 keeps the advertised URL and the two freshest existing routes"
+    )
+
+    // Empty inputs yield an empty list (caller stores nil).
+    XCTAssertTrue(service.syncMergedRelayCandidates(advertised: nil, existing: nil).isEmpty)
+  }
+
   func testPrActionAvailabilityMatchesDesktopBaseline() {
     let open = PrActionAvailability(prState: "open")
     XCTAssertTrue(open.showsMerge)

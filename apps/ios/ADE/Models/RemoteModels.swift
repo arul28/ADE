@@ -33,9 +33,11 @@ struct HostConnectionProfile: Codable, Equatable {
   var savedAddressCandidates: [String]
   var discoveredLanAddresses: [String]
   var tailscaleAddress: String?
-  /// Full `wss://…/connect/<machineKey>` cloud-relay URLs from a pairing QR.
-  /// Optional so profiles persisted before the relay feature decode cleanly.
-  /// Always attempted LAST and only when the user enabled the relay fallback.
+  /// Full `wss://…/connect/<machineKey>` cloud-relay URLs learned from a pairing
+  /// QR or advertised live by the host in `hello_ok`/`brain_status`. Optional so
+  /// profiles persisted before the relay feature decode cleanly. Always raced
+  /// LAST (after every LAN and Tailscale route) — unconditionally, no user
+  /// toggle; the relay is a zero-config fallback.
   var savedRelayCandidates: [String]?
   var updatedAt: String
 

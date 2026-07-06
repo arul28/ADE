@@ -456,6 +456,99 @@ describe("push relay", () => {
     expect(db.devices[0]?.apns_token).toBeNull();
   });
 
+  it("passes actionable fields through: category into aps, sessionId/itemId top-level, badge count", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    await handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: `/machines/${MACHINE_KEY}/devices/phone-1`,
+        body: { apnsToken: "ab".repeat(32), bundleId: "com.ade.ios", apsEnvironment: "sandbox" },
+      }),
+      env,
+    );
+
+    const apnsCalls: Array<{ body: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      apnsCalls.push({ body: String(init?.body ?? "") });
+      return new Response(null, { status: 200 });
+    }));
+
+    const publish = await handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: {
+          notifications: [{
+            title: "Claude needs your approval",
+            deepLink: "ade://session/s-1",
+            sessionId: "s-1",
+            itemId: "item-42",
+            category: "ADE_APPROVAL",
+            badge: 2,
+            phase: "waiting",
+          }],
+        },
+      }),
+      env,
+    );
+    expect(publish.status).toBe(200);
+    const body = JSON.parse(apnsCalls[0]?.body ?? "{}") as {
+      aps: { category?: string; badge?: number };
+      sessionId?: string;
+      itemId?: string;
+    };
+    expect(body.aps.category).toBe("ADE_APPROVAL");
+    expect(body.aps.badge).toBe(2);
+    expect(body.sessionId).toBe("s-1");
+    expect(body.itemId).toBe("item-42");
+  });
+
+  it("delivers a silent badge-only item (no title) and rejects a bare empty item", async () => {
+    const env = makeEnv(db, apnsKey);
+    await claimMachine(db, env);
+    await handleRequest(
+      await signedRequest({
+        method: "PUT",
+        path: `/machines/${MACHINE_KEY}/devices/phone-1`,
+        body: { apnsToken: "ab".repeat(32), bundleId: "com.ade.ios", apsEnvironment: "sandbox" },
+      }),
+      env,
+    );
+
+    const apnsCalls: Array<{ body: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      apnsCalls.push({ body: String(init?.body ?? "") });
+      return new Response(null, { status: 200 });
+    }));
+
+    const badgeOnly = await handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: { notifications: [{ title: "", sound: null, badge: 0, phase: "terminal" }] },
+      }),
+      env,
+    );
+    expect(badgeOnly.status).toBe(200);
+    expect(((await badgeOnly.json()) as { delivered: number }).delivered).toBe(1);
+    const body = JSON.parse(apnsCalls[0]?.body ?? "{}") as { aps: { badge?: number; alert?: unknown; sound?: unknown } };
+    expect(body.aps.badge).toBe(0);
+    expect(body.aps.alert).toBeUndefined();
+    expect(body.aps.sound).toBeUndefined();
+
+    // Title-less AND badge-less item is invalid → nothing to publish.
+    const empty = await handleRequest(
+      await signedRequest({
+        method: "POST",
+        path: `/machines/${MACHINE_KEY}/publish`,
+        body: { notifications: [{ body: "no title", phase: "waiting" }] },
+      }),
+      env,
+    );
+    expect(empty.status).toBe(400);
+  });
+
   it("suppresses redundant publishes by dedupe key content hash", async () => {
     const env = makeEnv(db, apnsKey);
     await claimMachine(db, env);

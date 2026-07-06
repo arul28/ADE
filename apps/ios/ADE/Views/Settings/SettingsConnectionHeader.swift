@@ -45,7 +45,17 @@ struct SettingsConnectionHeader: View {
       }
 
       if health.transport.isConnected {
-        SettingsConnectedHostDetails(routeLine: snapshot.routeLine)
+        VStack(alignment: .leading, spacing: 4) {
+          SettingsConnectedHostDetails(routeLine: snapshot.routeLine)
+          if snapshot.usingRelay {
+            // Quiet nudge: we're reachable over the relay, but a direct tailnet
+            // path would be faster and stays private. Nothing modal.
+            Text("Using ADE relay — Tailscale gives a faster, private connection")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
       } else if let hostName = pendingHostName {
         Text(pendingDescription(hostName: hostName))
           .font(.subheadline)

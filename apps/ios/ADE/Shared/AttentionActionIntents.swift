@@ -108,8 +108,13 @@ public enum ADEIntentCommandRegistry {
 
 // MARK: - Session actions
 
+/// Conforms to `LiveActivityIntent` (not plain `AppIntent`): an intent fired
+/// from a Live Activity button only runs in the APP process — where the
+/// command bridge is registered — under that conformance. As a plain AppIntent
+/// it would run in the widget extension, where the bridge is nil and the
+/// command would sit in the pending queue until the next app launch.
 @available(iOS 17.0, *)
-public struct ApproveSessionIntent: AppIntent {
+public struct ApproveSessionIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Approve"
     public static var description = IntentDescription(
         "Approve the pending action in the current ADE session."
@@ -139,8 +144,9 @@ public struct ApproveSessionIntent: AppIntent {
     }
 }
 
+/// See `ApproveSessionIntent` — LiveActivityIntent so the deny runs in-app.
 @available(iOS 17.0, *)
-public struct DenySessionIntent: AppIntent {
+public struct DenySessionIntent: LiveActivityIntent {
     public static var title: LocalizedStringResource = "Deny"
     public static var description = IntentDescription(
         "Deny the pending action in the current ADE session."

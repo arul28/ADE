@@ -9,6 +9,7 @@ const REQUEST_TIMEOUT_MS = 15_000;
 /** APNs alert-push item, matching the relay's `parseAlertItems`. */
 export type PushRelayAlertItem = {
   deviceIds?: string[] | null;
+  /** May be empty for a silent badge-only item (requires `badge`). */
   title: string;
   subtitle?: string | null;
   body?: string | null;
@@ -19,6 +20,14 @@ export type PushRelayAlertItem = {
   collapseId?: string | null;
   dedupeKey?: string | null;
   phase?: "running" | "waiting" | "terminal";
+  /** Chat session the alert refers to; passed through top-level to iOS. */
+  sessionId?: string | null;
+  /** Pending approval item id; passed through top-level to iOS. */
+  itemId?: string | null;
+  /** `aps.category` — binds registered notification actions on iOS. */
+  category?: string | null;
+  /** `aps.badge` — awaiting-attention count for the app icon. */
+  badge?: number | null;
 };
 
 /** Live Activity event item, matching the relay's `parseLiveActivityItems`. */
