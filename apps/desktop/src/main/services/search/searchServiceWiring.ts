@@ -145,7 +145,7 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
       event.reason === "deleted" ? "deleted" : "meta-updated"
     );
   });
-  args.agentChatService?.subscribeToEvents((envelope) => {
+  args.agentChatService?.subscribeToEvents?.((envelope) => {
     searchService.notifyChatEvent(envelope.sessionId);
   });
 

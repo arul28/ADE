@@ -57,12 +57,13 @@ export type SearchQueryArgs = {
   /** Opaque pagination cursor returned by a previous query. */
   cursor?: string;
   /**
-   * Restrictive scope injected by the RPC gate for session-bound non-CTO
-   * callers (mirrors the chat/terminal read scoping): chat and terminal
-   * results are limited to this owning session. Caller-supplied values can
+   * Restrictive scope injected by the RPC gate (mirrors the chat/terminal
+   * read scoping). Session-bound non-CTO callers get chat and terminal
+   * results limited to their owning session; unbound non-external agent
+   * roles get session content excluded entirely. Caller-supplied values can
    * only narrow results, never widen them.
    */
-  callerScope?: { chatSessionId?: string | null };
+  callerScope?: { chatSessionId?: string | null; excludeSessionContent?: boolean };
 };
 
 export type SearchQueryResult = {

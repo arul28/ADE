@@ -927,7 +927,8 @@ export function createSearchService(deps: SearchServiceDeps) {
     kinds: SearchDocKind[],
     laneId: string | null,
     sessionId: string | null,
-    scopeChatSessionId: string | null
+    scopeChatSessionId: string | null,
+    excludeSessionContent: boolean
   ): { candidates: Candidate[]; totals: Partial<Record<SearchDocKind, number>> } => {
     const ftsKinds = kinds.filter((kind) => FTS_KINDS.includes(kind));
     if (ftsKinds.length === 0) return { candidates: [], totals: {} };
@@ -943,7 +944,11 @@ export function createSearchService(deps: SearchServiceDeps) {
       filters.push("d.session_id = ?");
       filterParams.push(sessionId);
     }
-    if (scopeChatSessionId) {
+    if (excludeSessionContent) {
+      // Unbound non-external agent roles get no session content at all
+      // (chat.readTranscript denies these callers outright).
+      filters.push("d.kind NOT IN ('chat', 'terminal')");
+    } else if (scopeChatSessionId) {
       // Session-bound non-CTO callers may only see their own session's chat
       // and terminal content (mirrors scopeChatAdeActionArgs /
       // scopeTerminalAdeActionArgs on the direct read paths).
@@ -1015,6 +1020,17 @@ export function createSearchService(deps: SearchServiceDeps) {
       [matchExpr, ...filterParams]
     );
     for (const row of totalRows) totals[row.kind as SearchDocKind] = row.n;
+    // The title-union above can surface docs the body-match COUNT didn't
+    // include; keep totals >= visible candidates per kind so "show more"
+    // affordances never under-count.
+    const candidateCountByKind = new Map<string, number>();
+    for (const row of rows) {
+      candidateCountByKind.set(row.kind, (candidateCountByKind.get(row.kind) ?? 0) + 1);
+    }
+    for (const [kind, count] of candidateCountByKind) {
+      const key = kind as SearchDocKind;
+      totals[key] = Math.max(totals[key] ?? 0, count);
+    }
     return { candidates: rows.map((row) => docRowToCandidate(row, row.score, row.marked)), totals };
   };
 
@@ -1230,12 +1246,14 @@ export function createSearchService(deps: SearchServiceDeps) {
     const offset = decodeCursor(args.cursor);
 
     const scopeChatSessionId = args.callerScope?.chatSessionId?.trim() || null;
+    const excludeSessionContent = args.callerScope?.excludeSessionContent === true;
     const { candidates: ftsCandidates, totals } = queryFtsCandidates(
       parsed,
       kinds,
       laneId,
       parsed.sessionId,
-      scopeChatSessionId
+      scopeChatSessionId,
+      excludeSessionContent
     );
 
     const delegated: Candidate[] = [];

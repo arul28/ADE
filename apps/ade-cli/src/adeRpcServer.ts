@@ -2547,7 +2547,14 @@ function scopeSearchAdeActionArgs(
   searchArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  if (!callerChatSessionId) return searchArgs;
+  if (!callerChatSessionId) {
+    // Mirror scopeChatAdeActionArgs' unbound-caller policy: an unbound
+    // external caller (user CLI / desktop) keeps whole-project search, while
+    // an unbound agent/orchestrator/evaluator — which chat.readTranscript
+    // would deny outright — gets no session content at all.
+    if (session.identity.role === "external") return searchArgs;
+    return { ...searchArgs, callerScope: { excludeSessionContent: true } };
+  }
   return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
 }
 

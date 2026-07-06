@@ -499,3 +499,66 @@ describe("searchService title-tier candidate union", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("searchService excludeSessionContent scoping", () => {
+  it("removes chat and terminal results entirely while keeping other kinds", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test5-"));
+    const sessions: TerminalSessionSummary[] = [
+      makeSession({ id: "chat-x", title: "Secret chat" })
+    ];
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      lanes: {
+        list: async () => [
+          {
+            id: "lane-1",
+            name: "wombat lane",
+            description: null,
+            laneType: "worktree",
+            baseRef: "main",
+            branchRef: "ade/wombat",
+            worktreePath: "/tmp/x",
+            parentLaneId: null,
+            childCount: 0,
+            stackDepth: 0,
+            parentStatus: null,
+            isEditProtected: false,
+            status: { dirty: false, ahead: 0, behind: 0 },
+            color: null,
+            icon: null,
+            tags: [],
+            createdAt: "2026-07-01T00:00:00.000Z"
+          } as never
+        ]
+      },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(chatDir, "chat-x.jsonl"),
+      `${JSON.stringify({ sessionId: "chat-x", timestamp: "2026-07-05T10:00:00.000Z", event: { type: "user_message", text: "wombat secret" } })}\n`
+    );
+    service.notifyChatEvent("chat-x");
+    await service.processPendingNow();
+
+    const unscoped = await service.query({ query: "wombat" });
+    expect(unscoped.results.some((r) => r.kind === "chat")).toBe(true);
+    expect(unscoped.results.some((r) => r.kind === "lane")).toBe(true);
+
+    const scoped = await service.query({ query: "wombat", callerScope: { excludeSessionContent: true } });
+    expect(scoped.results.some((r) => r.kind === "chat" || r.kind === "terminal")).toBe(false);
+    expect(scoped.results.some((r) => r.kind === "lane")).toBe(true);
+    expect(scoped.totalByKind.chat ?? 0).toBe(0);
+    expect(scoped.totalByKind.terminal ?? 0).toBe(0);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
