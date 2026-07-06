@@ -323,9 +323,9 @@ ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
-ade sync relay status --text                       # cloud relay: wss URL phones dial + on/off state
-ade sync relay enable                              # route phones through the tunnel relay (headless brains have no Settings UI)
-ade sync relay disable
+ade sync relay status --text                       # cloud relay: wss URL phones dial + on/off state (on by default)
+ade sync relay enable                              # re-enable after a disable (relay is on by default; headless brains have no Settings UI)
+ade sync relay disable                             # kill-switch: never route sync through the relay
 ade sync security status --text                    # machine sync security posture (require-DPoP)
 ade sync security require-dpop on                  # reject paired hellos from devices without a Secure Enclave key
 ade secrets list --text

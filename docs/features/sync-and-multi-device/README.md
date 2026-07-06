@@ -374,9 +374,14 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity +
   enablement at `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted
   32-hex `machineKey` + HMAC `secret`, chmod `0600`). **Default
-  `enabled: true`** — a file without the field reads as enabled, while an
-  explicit `false` (the desktop kill-switch or `ade sync relay disable`)
-  is preserved. Derives the phone-facing
+  `enabled: true`** — a file without the field reads as enabled. An
+  `enabled: false` is honored only when the sibling `enabledSetByUser`
+  marker is also written; `setEnabled()` (the desktop kill-switch or
+  `ade sync relay disable`) writes that marker, so a deliberate off
+  survives upgrades. A pre-default-on build's implicit `enabled: false`
+  (persisted on first run before relay-everywhere shipped, no marker)
+  therefore migrates to enabled instead of stranding old machines off
+  the relay. Derives the phone-facing
   `wss://<relay>/connect/<machineKey>` URL and the canonical host/pipe
   HMAC signing strings shared with the `apps/tunnel-relay` worker.
 - `syncTunnelClientService.ts` — the brain-side tunnel client. When the
@@ -863,8 +868,10 @@ project scope split.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
   upgrades are HMAC-signed with a per-machine secret. Operators who
   never want traffic relayed flip the single "ADE relay" control in
-  Settings > Sync (or `ade sync relay disable`); an explicit off is
-  preserved across upgrades. The live relay URL is also advertised to
+  Settings > Sync (or `ade sync relay disable`); a deliberate off is
+  recorded with an `enabledSetByUser` marker in `sync-cloud-relay.json`
+  and preserved across upgrades, while a legacy build's implicit
+  (unmarked) off migrates to on. The live relay URL is also advertised to
   already-paired phones in `hello_ok` / `brain_status`
   (`cloudRelayWssUrl`), so devices paired before the relay existed learn
   the route without re-scanning a QR.

@@ -75,11 +75,16 @@ with `decision: accept|decline`), so approvals resolve from the lock
 screen without opening the app.
 
 Every alert also carries `aps.badge` = the machine-wide count of runs in
-`waiting_for_*` phases. When that count changes with no alert to ride
-(e.g. an approval answered on the Mac), the publisher sends a silent
-title-less badge-only item (`dedupeKey: "alert:badge"`, no sound) so the
-app icon never shows stale attention. iOS clears the badge on every
-foreground.
+`waiting_for_*` phases (`countAwaitingAttentionRuns`). When that count
+changes, the publisher also emits a silent, title-less badge-only item
+(`dedupeKey: "alert:badge"`, no sound) so the icon tracks *drops* too — an
+approval answered on the Mac produces no alert but must still lower the
+badge. That badge-only item targets every alert-enabled device that is
+**not** already carrying an alert in the same flush (a muted session still
+needs the fresh count even though its own alert push is skipped); the
+relay's content-hash suppression absorbs unchanged resends, and the
+relay accepts a title-less item only when it carries a `badge`. iOS
+clears the badge on every foreground.
 
 On daemon shutdown the publisher makes a best-effort Live Activity `end`
 (`dismissalDate` now + 60 s, still-active runs re-stamped `stale`),
@@ -143,9 +148,18 @@ when all runs reach a terminal phase.
   subtle `bell.slash` glyph. A muted session still counts toward the
   badge and Live Activity — only its alert pushes are skipped.
 - Approve/Deny actions appear on approval alerts (long-press or pull
-  down) and on `waiting_for_approval` Live Activity rows; both dispatch
-  through the pending-command registry, so they work even when the app
-  is not running.
+  down) and on `waiting_for_approval` Live Activity rows. On the alert,
+  `ADEAppDelegate` registers the `ADE_APPROVAL` `UNNotificationCategory`
+  (`ADE_APPROVE` / `ADE_DENY` actions) and its `didReceive response`
+  routes those action ids to `chat.approve`. On the Live Activity, the
+  buttons fire `ApproveSessionIntent` / `DenySessionIntent`, which conform
+  to **`LiveActivityIntent`** (not plain `AppIntent`) precisely so the
+  intent executes in the *app* process — where the command bridge is
+  registered — instead of the widget extension where the bridge is nil.
+  Both paths dispatch through `ADEIntentCommandRegistry`, which queues the
+  command when the bridge isn't live yet; `register()` drains the queue on
+  cold launch and every warm foreground also calls `drainPendingCommands()`,
+  so an approval tapped while the app was dead still lands on the next open.
 
 ## What needs a physical device
 

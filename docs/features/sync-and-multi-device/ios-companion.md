@@ -687,9 +687,26 @@ contract) is documented in
   (runtime-scoped commands the brain forwards to the relay). Every
   foreground transition re-reports tokens and ends orphaned activities;
   unpair/forget sends `push.unregisterDevice` and ends local activities.
-- **Alert payloads deep-link.** A push carries a top-level `deepLink`
-  (`ade://session/<id>`, `ade://pr/<n>`) routed through
+- **Alert payloads deep-link.** A default tap carries a top-level
+  `deepLink` (`ade://session/<id>`, `ade://pr/<n>`) routed through
   `DeepLinkRouter.handleNotificationUserInfo`.
+- **Approval alerts are actionable.** `ADEAppDelegate` registers the
+  `ADE_APPROVAL` notification category so approval pushes (stamped
+  `aps.category = "ADE_APPROVAL"` plus top-level `sessionId` / `itemId` by
+  the brain) show inline Approve / Deny. `didReceive response` maps the
+  `ADE_APPROVE` / `ADE_DENY` action ids to `ADEIntentCommandRegistry`
+  (`chat.approve`), so approvals resolve from the lock screen without
+  opening the app. The `waiting_for_approval` Live Activity row carries the
+  same buttons via `ApproveSessionIntent` / `DenySessionIntent`, which are
+  `LiveActivityIntent`s (so they run in-app, not the widget extension); a
+  tap while the app is dead queues in the registry and drains on the next
+  launch / foreground.
+- **App-icon badge.** The brain stamps `aps.badge` = the machine-wide
+  count of runs awaiting attention on every alert (and a silent badge-only
+  item when the count changes with no alert). The phone clears the badge
+  on every foreground transition (`PushNotificationService.clearAppBadge`,
+  called from `ADEApp`'s scene-phase handler) so a lingering count never
+  reads as stale.
 - **Live Activity** mirrors up to three active agent runs on the Lock
   Screen and Dynamic Island. `LiveActivityService` starts one aggregate
   activity per machine (`activityId: "agent-runs"`), applies brain-pushed
