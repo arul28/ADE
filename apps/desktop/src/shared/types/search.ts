@@ -58,10 +58,11 @@ export type SearchQueryArgs = {
   cursor?: string;
   /**
    * Restrictive scope injected by the RPC gate (mirrors the chat/terminal
-   * read scoping). Session-bound non-CTO callers get chat and terminal
-   * results limited to their owning session; unbound non-external agent
-   * roles get session content excluded entirely. Caller-supplied values can
-   * only narrow results, never widen them.
+   * read scoping). Session-bound non-CTO callers — ADE-launched workers —
+   * get chat and terminal results limited to their owning session (attached
+   * terminals match via their owner). Unbound callers keep whole-project
+   * search. Caller-supplied values can only narrow results, never widen
+   * them; excludeSessionContent removes chat/terminal results entirely.
    */
   callerScope?: { chatSessionId?: string | null; excludeSessionContent?: boolean };
 };

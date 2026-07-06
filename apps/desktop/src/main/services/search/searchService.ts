@@ -59,6 +59,7 @@ const MAX_DOC_BODY_CHARS = 32_000;
 const MAX_READ_BYTES_PER_PASS = 4 * 1024 * 1024;
 const COMMITS_PER_LANE = 100;
 const DEFAULT_QUERY_LIMIT = 50;
+const BACKFILL_RETRY_MS = 60_000;
 const MAX_QUERY_LIMIT = 200;
 
 const DEBOUNCE_MS: Record<SourceKind, number> = {
@@ -864,6 +865,13 @@ export function createSearchService(deps: SearchServiceDeps) {
         logger?.warn("search.backfill_failed", {
           error: error instanceof Error ? error.message : String(error)
         });
+        // Allow a later attempt to enqueue the sources this pass missed
+        // (source lists can be transiently unavailable during startup).
+        backfillStarted = false;
+        if (!disposed) {
+          const retry = setTimeout(() => startBackfill(), BACKFILL_RETRY_MS);
+          retry.unref?.();
+        }
       }
     })();
   };
@@ -1359,10 +1367,16 @@ export function createSearchService(deps: SearchServiceDeps) {
     rebuildIndex(): SearchRebuildResult {
       if (disposed) return { started: false };
       queue.clear();
-      clearSearchIndex(ensureDb().db);
-      backfillComplete = false;
-      backfillStarted = false;
-      startBackfill();
+      // Serialize the clear behind any in-flight source processor: clearing
+      // mid-source would let that processor resume, write only its later
+      // chunk, and persist an advanced cursor into the freshly cleared index.
+      workChain = workChain.then(() => {
+        if (disposed) return;
+        clearSearchIndex(ensureDb().db);
+        backfillComplete = false;
+        backfillStarted = false;
+        startBackfill();
+      });
       return { started: true };
     },
 
