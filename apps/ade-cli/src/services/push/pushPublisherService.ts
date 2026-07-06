@@ -31,7 +31,6 @@ export function resolvePushRelayStateFile(secretsDir: string): string {
 }
 /** UNNotificationCategory id iOS binds Approve/Deny actions to. */
 export const APPROVAL_NOTIFICATION_CATEGORY = "ADE_APPROVAL";
-const BADGE_DEDUPE_KEY = "alert:badge";
 const SHUTDOWN_PUBLISH_TIMEOUT_MS = 2_500;
 const AGENT_RUNS_MAX = 3;
 const DETAIL_MAX_CHARS = 160;
@@ -270,6 +269,26 @@ function readOutcomeCount(result: Record<string, unknown> | null | undefined, ke
 }
 
 type RelayLiveActivityOutcome = { delivered: boolean; suppressed: boolean; skipped: boolean };
+
+type RelayAlertOutcome = { deviceId: string; delivered: boolean; suppressed: boolean };
+
+/**
+ * The relay's per-target `outcomes[]` entries filtered to alert items, keyed
+ * by device. Null when the relay response has no outcomes array (legacy/mock
+ * shape) — callers treat that as "no per-device verdicts", not "nothing landed".
+ */
+function readAlertOutcomes(result: Record<string, unknown> | null | undefined): RelayAlertOutcome[] | null {
+  const raw = result?.outcomes;
+  if (!Array.isArray(raw)) return null;
+  return raw
+    .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object"))
+    .filter((entry) => entry.kind === "alert" && typeof entry.deviceId === "string")
+    .map((entry) => ({
+      deviceId: entry.deviceId as string,
+      delivered: entry.delivered === true,
+      suppressed: entry.suppressed === true,
+    }));
+}
 
 /** The relay's per-target `outcomes[]` entries filtered to the Live Activity item. */
 function readLiveActivityOutcomes(result: Record<string, unknown> | null | undefined): RelayLiveActivityOutcome[] | null {
@@ -577,11 +596,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         && lastSentBadgeByDevice.get(device.deviceId) !== badgeCount)
       .map((device) => device.deviceId);
     if (badgeSyncDeviceIds.length > 0) {
+      // No relay dedupeKey here: the relay's suppression hash ignores
+      // deviceIds, so a shared key would suppress the same count for a device
+      // that never received it (fresh registration, quiet hours just ended).
+      // The per-device map above is the only dedupe this item needs.
       alertItems.push({
         deviceIds: badgeSyncDeviceIds,
         title: "",
         sound: null,
-        dedupeKey: BADGE_DEDUPE_KEY,
         phase: "terminal",
         badge: badgeCount,
       });
@@ -616,10 +638,23 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       for (const [key, fingerprint] of alertCommits) lastAlertFingerprintByKey.set(key, fingerprint);
       // Every alert item (including the badge-only sync) carries this flush's
-      // badge count — commit it for exactly the devices that were targeted.
-      for (const item of alertItems) {
-        for (const deviceId of item.deviceIds ?? []) {
-          lastSentBadgeByDevice.set(deviceId, badgeCount);
+      // badge count. Commit it per device from the relay's outcomes: a device
+      // whose send failed transiently must stay unsynced so the next flush
+      // retries its badge. Suppressed counts as synced (identical content was
+      // already delivered); a legacy/mock response without outcomes commits
+      // all targeted devices, mirroring the Live Activity commit rule.
+      const alertOutcomes = readAlertOutcomes(result);
+      if (alertOutcomes == null) {
+        for (const item of alertItems) {
+          for (const deviceId of item.deviceIds ?? []) {
+            lastSentBadgeByDevice.set(deviceId, badgeCount);
+          }
+        }
+      } else {
+        for (const outcome of alertOutcomes) {
+          if (outcome.delivered || outcome.suppressed) {
+            lastSentBadgeByDevice.set(outcome.deviceId, badgeCount);
+          }
         }
       }
       if (laPlan) {

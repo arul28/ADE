@@ -13571,6 +13571,14 @@ async function runServe(
     } catch {
       // Shutdown must never hang or fail on push cleanup.
     }
+    try {
+      const { peekSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
+      await peekSharedSyncTunnelClientService(
+        path.join(layout.secretsDir, "sync-cloud-relay.json"),
+      )?.dispose();
+    } catch {
+      // Best-effort tunnel teardown; the process exit closes sockets anyway.
+    }
     await scopeRegistry.disposeAll();
     if (sharedSyncListener) {
       await sharedSyncListener.close().catch(() => {});

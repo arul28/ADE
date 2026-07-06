@@ -288,7 +288,7 @@ describe("createPushPublisherService flush", () => {
 
     const payload = publish.mock.calls[0][0];
     const alertItem = payload.notifications.find((item: { title: string }) => item.title.length > 0);
-    const badgeItem = payload.notifications.find((item: { dedupeKey?: string }) => item.dedupeKey === "alert:badge");
+    const badgeItem = payload.notifications.find((item: { title: string; badge?: number | null }) => item.title === "" && item.badge != null);
     // The audible alert reaches only the unmuted device...
     expect(alertItem.deviceIds).toEqual(["dev-1"]);
     expect(alertItem.badge).toBe(1);
@@ -338,7 +338,7 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(2_500);
     const lastPayload = publish.mock.calls.at(-1)?.[0];
     const badgeItem = (lastPayload.notifications ?? []).find(
-      (item: { dedupeKey?: string }) => item.dedupeKey === "alert:badge",
+      (item: { title: string; badge?: number | null }) => item.title === "" && item.badge != null,
     );
     expect(badgeItem).toMatchObject({ title: "", badge: 0, sound: null });
 
@@ -390,7 +390,9 @@ describe("createPushPublisherService flush", () => {
     expect(payload.notifications[0].title).toBe("");
     expect(payload.notifications[0].badge).toBe(1);
     expect(payload.notifications[0].sound).toBeNull();
-    expect(payload.notifications[0].dedupeKey).toBe("alert:badge");
+    // No relay dedupeKey: the suppression hash ignores deviceIds, so a shared
+    // key would starve other devices of the same count.
+    expect(payload.notifications[0].dedupeKey).toBeUndefined();
     expect(payload.liveActivity[0].event).toBe("start");
 
     publisher.dispose();

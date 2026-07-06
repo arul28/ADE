@@ -1228,18 +1228,21 @@ export async function createAdeRuntime(args: {
   // The store instance is shared with the sync service so the relay candidate
   // in pairingConnectInfo and the tunnel client always agree on one config file.
   const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
-  const { createSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
-  const cloudRelayStore = createSyncCloudRelayStore({
-    filePath: path.join(
-      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-      "sync-cloud-relay.json",
-    ),
-  });
-  const syncTunnelClientService = createSyncTunnelClientService({
-    logger,
-    configStore: cloudRelayStore,
-    getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
-  });
+  const { createSyncTunnelClientService, getSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
+  const cloudRelayFilePath = path.join(
+    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+    "sync-cloud-relay.json",
+  );
+  const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
+  // ONE tunnel client per machine (keyed by the config file): per-scope
+  // instances would re-register the same machineKey with the relay on every
+  // project open and churn the connection paired phones dial through.
+  const syncTunnelClientService = getSharedSyncTunnelClientService(cloudRelayFilePath, () =>
+    createSyncTunnelClientService({
+      logger,
+      configStore: cloudRelayStore,
+      getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
+    }));
   if (cloudRelayStore.isEnabled()) {
     void syncTunnelClientService.start().catch((error) => {
       logger.warn("sync.tunnel_start_failed", {
@@ -1394,7 +1397,9 @@ export async function createAdeRuntime(args: {
       swallow(() => prPollingService.dispose());
       // Detach only this scope's signals; the shared publisher outlives the scope.
       swallow(() => detachPushSources());
-      void syncTunnelClientService.dispose().catch(() => {});
+      // The tunnel client is machine-level and shared across scopes — closing
+      // one project must not sever the relay for the others. The daemon's
+      // shutdown path (disposeServeResources) stops it.
       swallow(() => automationIngressService?.dispose());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());

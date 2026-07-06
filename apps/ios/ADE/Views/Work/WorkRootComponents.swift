@@ -502,12 +502,14 @@ struct WorkSessionListRow: View {
   /// Defaults to a no-op so preview harnesses don't have to wire it.
   var onOpenPullRequest: (TerminalSessionSummary, LanePrTag) -> Void = { _, _ in }
 
-  /// Read straight from the shared prefs — mute only applies to chat sessions.
-  /// Context menus rebuild each open and `WorkSessionRow` re-evaluates whenever
-  /// the parent list does, so a direct read is enough to keep both in step.
+  /// Observed so the muted glyph and menu label re-render the moment a mute
+  /// flips anywhere (this menu, the open chat's header menu, settings).
+  @ObservedObject private var pushNotificationService = PushNotificationService.shared
+
+  /// Mute only applies to chat sessions.
   private var isMuted: Bool {
     isChatSession(session)
-      && PushNotificationService.shared.prefs.mutedSessionIds.contains(session.id)
+      && pushNotificationService.prefs.mutedSessionIds.contains(session.id)
   }
 
   var body: some View {
@@ -617,12 +619,11 @@ struct WorkSessionListRow: View {
               systemImage: session.pinned ? "pin.slash" : "pin")
       }
       if isChatSession(session) {
-        let muted = PushNotificationService.shared.prefs.mutedSessionIds.contains(session.id)
         Button {
-          PushNotificationService.shared.setMuted(!muted, sessionId: session.id)
+          PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
         } label: {
-          Label(muted ? "Unmute notifications" : "Mute notifications",
-                systemImage: muted ? "bell" : "bell.slash")
+          Label(isMuted ? "Unmute notifications" : "Mute notifications",
+                systemImage: isMuted ? "bell" : "bell.slash")
         }
       }
     }
