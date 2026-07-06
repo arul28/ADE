@@ -1668,3 +1668,54 @@ describe("runtime file actions", () => {
     ]);
   });
 });
+
+describe("search domain", () => {
+  it("exposes the universal search actions through the runtime action surface", () => {
+    expect(isAllowedAdeAction("search", "query")).toBe(true);
+    expect(isAllowedAdeAction("search", "indexStatus")).toBe(true);
+    expect(isAllowedAdeAction("search", "rebuildIndex")).toBe(true);
+    expect(isAllowedAdeAction("search", "dispose")).toBe(false);
+  });
+
+  it("keeps query and indexStatus readable by every role while rebuildIndex stays CTO-only", () => {
+    expect(isCtoOnlyAdeAction("search", "query")).toBe(false);
+    expect(isCtoOnlyAdeAction("search", "indexStatus")).toBe(false);
+    expect(isCtoOnlyAdeAction("search", "rebuildIndex")).toBe(true);
+  });
+
+  it("delegates to runtime.searchService and is unavailable without one", () => {
+    const query = vi.fn().mockResolvedValue({ results: [], totalByKind: {}, nextCursor: null });
+    const indexStatus = vi.fn().mockReturnValue({ ready: true });
+    const rebuildIndex = vi.fn().mockReturnValue({ started: true });
+
+    const withService = getAdeActionDomainServices({
+      searchService: { query, indexStatus, rebuildIndex },
+    } as never);
+    const searchDomain = withService.search as Record<string, (args?: unknown) => unknown>;
+    expect(searchDomain).not.toBeNull();
+    void searchDomain.query!({ query: "hello", kinds: ["chat"] });
+    expect(query).toHaveBeenCalledWith({ query: "hello", kinds: ["chat"] });
+    searchDomain.indexStatus!();
+    expect(indexStatus).toHaveBeenCalled();
+    searchDomain.rebuildIndex!();
+    expect(rebuildIndex).toHaveBeenCalled();
+
+    const withoutService = getAdeActionDomainServices({} as never);
+    expect(withoutService.search).toBeNull();
+  });
+
+  it("lists exactly the implemented allowlisted action names", () => {
+    const services = getAdeActionDomainServices({
+      searchService: {
+        query: () => undefined,
+        indexStatus: () => undefined,
+        rebuildIndex: () => undefined,
+      },
+    } as never);
+    expect(listAllowedAdeActionNames("search", services.search as Record<string, unknown>)).toEqual([
+      "indexStatus",
+      "query",
+      "rebuildIndex",
+    ]);
+  });
+});

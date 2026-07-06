@@ -3861,3 +3861,90 @@ describe("adeRpcServer", () => {
     });
   });
 });
+
+describe("run_ade_action search scoping", () => {
+  const searchServiceMock = () => ({
+    query: vi.fn(async (args: unknown) => ({ results: [], totalByKind: {}, nextCursor: null, receivedArgs: args })),
+    indexStatus: vi.fn(() => ({ ready: true })),
+    rebuildIndex: vi.fn(() => ({ started: true })),
+  });
+
+  it("injects the caller's own session scope for a session-bound agent", async () => {
+    const fixture = createRuntime();
+    const search = searchServiceMock();
+    (fixture.runtime as Record<string, unknown>).searchService = search;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "session-1" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "search",
+      action: "query",
+      args: { query: "kind:chat secrets", callerScope: { chatSessionId: "someone-else" } },
+    });
+    expect(response?.isError).toBeUndefined();
+    expect(search.query).toHaveBeenCalledTimes(1);
+    const args = search.query.mock.calls[0]![0] as { query: string; callerScope?: Record<string, unknown> };
+    expect(args.query).toBe("kind:chat secrets");
+    // The gate overwrites any caller-supplied scope with the bound session.
+    expect(args.callerScope).toEqual({ chatSessionId: "session-1" });
+  });
+
+  it("keeps an unbound agent-role caller unscoped (plain `ade` CLI defaults to role agent)", async () => {
+    const fixture = createRuntime();
+    const search = searchServiceMock();
+    (fixture.runtime as Record<string, unknown>).searchService = search;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-2", role: "agent" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "search",
+      action: "query",
+      args: { query: "aws secret" },
+    });
+    expect(response?.isError).toBeUndefined();
+    const args = search.query.mock.calls[0]![0] as { callerScope?: Record<string, unknown> };
+    expect(args.callerScope).toBeUndefined();
+  });
+
+  it("leaves an unbound external caller unscoped", async () => {
+    const fixture = createRuntime();
+    const search = searchServiceMock();
+    (fixture.runtime as Record<string, unknown>).searchService = search;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "human-cli", role: "external" });
+
+    const response = await callTool(handler, "run_ade_action", {
+      domain: "search",
+      action: "query",
+      args: { query: "whole project" },
+    });
+    expect(response?.isError).toBeUndefined();
+    const args = search.query.mock.calls[0]![0] as { query: string; callerScope?: Record<string, unknown> };
+    expect(args.query).toBe("whole project");
+    expect(args.callerScope).toBeUndefined();
+  });
+
+  it("gates rebuildIndex to CTO role while allowing indexStatus for agents", async () => {
+    const fixture = createRuntime();
+    const search = searchServiceMock();
+    (fixture.runtime as Record<string, unknown>).searchService = search;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-3", role: "agent" });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "search",
+      action: "rebuildIndex",
+      args: {},
+    });
+    expect(denied?.isError).toBe(true);
+    expect(search.rebuildIndex).not.toHaveBeenCalled();
+
+    const status = await callTool(handler, "run_ade_action", {
+      domain: "search",
+      action: "indexStatus",
+      args: {},
+    });
+    expect(status?.isError).toBeUndefined();
+    expect(search.indexStatus).toHaveBeenCalledTimes(1);
+  });
+});

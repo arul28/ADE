@@ -32,7 +32,16 @@ import type {
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
+import type { SearchResultItem } from "../../../shared/types/search";
 import { extractError } from "../../lib/format";
+import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import {
+  ENTITY_SECTION_PREVIEW,
+  SearchResultRow,
+  ShowMoreRow,
+  relativeFilePathForResult,
+  useUniversalSearch,
+} from "./commandPaletteSearch";
 import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
@@ -790,6 +799,21 @@ export function CommandPalette({
     return groups;
   }, [filtered]);
 
+  const trimmedQuery = q.trim();
+  const canEntitySearch =
+    open && mode === "default" && hasActiveProject && trimmedQuery.length > 0;
+
+  const {
+    loading: searchLoading,
+    sections: entitySections,
+    flatEntities,
+    expandedKinds,
+    toggleExpandKind,
+  } = useUniversalSearch(trimmedQuery, canEntitySearch);
+
+  const commandCount = filtered.length;
+  const totalFlat = commandCount + flatEntities.length;
+
   const browseRows = useMemo<BrowseRow[]>(() => {
     if (!browseResult) return [];
     const rows: BrowseRow[] = [];
@@ -947,14 +971,14 @@ export function CommandPalette({
 
   useEffect(() => {
     if (mode !== "default") return;
-    if (filtered.length === 0) {
+    if (totalFlat === 0) {
       if (selectedIdx !== 0) setSelectedIdx(0);
       return;
     }
-    if (selectedIdx >= filtered.length) {
-      setSelectedIdx(Math.max(0, filtered.length - 1));
+    if (selectedIdx >= totalFlat) {
+      setSelectedIdx(Math.max(0, totalFlat - 1));
     }
-  }, [filtered.length, mode, selectedIdx]);
+  }, [mode, selectedIdx, totalFlat]);
 
   useEffect(() => {
     if (!open || mode !== "project-browse") {
@@ -1092,6 +1116,128 @@ export function CommandPalette({
     [onOpenChange],
   );
 
+  const activateResult = useCallback(
+    (item: SearchResultItem) => {
+      switch (item.kind) {
+        case "chat":
+        case "terminal": {
+          const sessionId = item.sessionId;
+          if (!sessionId) break;
+          // The Work tab stays mounted (keep-alive), so its select-session
+          // listener focuses the target; the navigate switches the visible tab.
+          window.dispatchEvent(
+            new CustomEvent("ade:work:select-session", {
+              detail: { sessionId, laneId: item.laneId ?? undefined },
+            }),
+          );
+          navigate(
+            `/work?sessionId=${encodeURIComponent(sessionId)}${
+              item.laneId ? `&laneId=${encodeURIComponent(item.laneId)}` : ""
+            }`,
+          );
+          break;
+        }
+        case "lane": {
+          if (item.laneId) {
+            navigate(
+              `/lanes?laneId=${encodeURIComponent(item.laneId)}&focus=single`,
+            );
+          } else {
+            navigate("/lanes");
+          }
+          break;
+        }
+        case "pr": {
+          const prId = item.id.startsWith("pr:") ? item.id.slice(3) : item.id;
+          navigate(`/prs?prId=${encodeURIComponent(prId)}`);
+          break;
+        }
+        case "commit":
+        case "branch": {
+          // Commit/branch deep-anchoring inside lane detail isn't wired yet;
+          // opening the owning lane is the correct v1 behavior.
+          if (item.laneId) {
+            navigate(
+              `/lanes?laneId=${encodeURIComponent(item.laneId)}&focus=single`,
+            );
+          } else {
+            navigate("/lanes");
+          }
+          break;
+        }
+        case "file": {
+          // The Files tab only opens absolute paths via its external-open param,
+          // and result paths are repo-relative — resolve against the matched
+          // lane's worktree when the search was lane-scoped, else the project
+          // root. Line anchoring isn't supported there, so v1 opens at the top.
+          const relative = relativeFilePathForResult(item);
+          const laneWorktree = item.laneId
+            ? lanes.find((lane) => lane.id === item.laneId)?.worktreePath ?? null
+            : null;
+          const root = laneWorktree ?? project?.rootPath ?? null;
+          if (relative && root) {
+            const separator = root.includes("\\") ? "\\" : "/";
+            const absolute = `${root}${
+              root.endsWith(separator) ? "" : separator
+            }${relative}`;
+            navigate(
+              `/files?externalPath=${encodeURIComponent(
+                absolute,
+              )}&externalOpen=${Date.now()}`,
+            );
+          } else {
+            navigate("/files");
+          }
+          break;
+        }
+        case "linear": {
+          const identifier = item.id.startsWith("linear:")
+            ? item.id.slice(7)
+            : item.id;
+          if (identifier) {
+            requestLinearIssueQuickView({
+              issueIdentifier: identifier,
+              source: "manual",
+            });
+          } else {
+            navigate("/lanes");
+          }
+          break;
+        }
+        case "artifact": {
+          navigate("/history");
+          break;
+        }
+        default:
+          break;
+      }
+      onOpenChange(false);
+    },
+    [lanes, navigate, onOpenChange, project?.rootPath],
+  );
+
+  const activateFlat = useCallback(
+    (index: number) => {
+      if (index < commandCount) {
+        const command = filtered[index];
+        if (command) runCommand(command);
+        return;
+      }
+      const entity = flatEntities[index - commandCount];
+      if (!entity) return;
+      if (entity.type === "result") activateResult(entity.item);
+      else toggleExpandKind(entity.kind);
+    },
+    [
+      activateResult,
+      commandCount,
+      filtered,
+      flatEntities,
+      runCommand,
+      toggleExpandKind,
+    ],
+  );
+
   const activateBrowseRow = useCallback((row: BrowseRow) => {
     setBrowseError(null);
     setBrowseInput(row.path);
@@ -1192,27 +1338,23 @@ export function CommandPalette({
   const handleDefaultKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (event.key === "ArrowDown") {
-        if (filtered.length === 0) return;
+        if (totalFlat === 0) return;
         event.preventDefault();
-        setSelectedIdx((prev) => (prev + 1) % filtered.length);
+        setSelectedIdx((prev) => (prev + 1) % totalFlat);
         return;
       }
       if (event.key === "ArrowUp") {
-        if (filtered.length === 0) return;
+        if (totalFlat === 0) return;
         event.preventDefault();
-        setSelectedIdx(
-          (prev) => (prev - 1 + filtered.length) % filtered.length,
-        );
+        setSelectedIdx((prev) => (prev - 1 + totalFlat) % totalFlat);
         return;
       }
       if (event.key === "Enter") {
         event.preventDefault();
-        const command = filtered[selectedIdx];
-        if (!command) return;
-        runCommand(command);
+        activateFlat(selectedIdx);
       }
     },
-    [filtered, runCommand, selectedIdx],
+    [activateFlat, selectedIdx, totalFlat],
   );
 
   const handleBrowseKeyDown = useCallback(
@@ -1608,6 +1750,13 @@ export function CommandPalette({
                       )}
                       autoFocus
                     />
+                    {!isBrowsing && searchLoading ? (
+                      <CircleNotch
+                        size={14}
+                        weight="bold"
+                        className="shrink-0 animate-spin text-[var(--color-muted-fg)]"
+                      />
+                    ) : null}
                     <span className="hidden shrink-0 rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-2 py-1 text-[10px] font-mono text-[var(--color-muted-fg)] sm:inline-flex">
                       ESC
                     </span>
@@ -1995,15 +2144,31 @@ export function CommandPalette({
                   </>
                 ) : (
                   <div className="flex-1 overflow-auto">
-                    {filtered.length === 0 ? (
-                      <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
-                        No matches.
-                      </div>
+                    {totalFlat === 0 ? (
+                      trimmedQuery.length > 0 && searchLoading ? (
+                        <div className="flex items-center gap-2 px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                          <CircleNotch
+                            size={14}
+                            weight="bold"
+                            className="animate-spin"
+                          />
+                          Searching…
+                        </div>
+                      ) : trimmedQuery.length > 0 ? (
+                        <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                          No matches — try kind:chat, lane:&lt;name&gt;, since:7d,
+                          or &quot;exact phrase&quot;
+                        </div>
+                      ) : (
+                        <div className="px-4 py-6 text-sm text-[var(--color-muted-fg)]">
+                          No matches.
+                        </div>
+                      )
                     ) : (
                       <ul ref={listRef} className="py-2">
                         {(() => {
                           let flatIndex = 0;
-                          return grouped.map((group) => (
+                          const commandNodes = grouped.map((group) => (
                             <li key={group.label}>
                               <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
                                 {group.label}
@@ -2057,6 +2222,59 @@ export function CommandPalette({
                               </ul>
                             </li>
                           ));
+
+                          const entityNodes = entitySections.map((section) => {
+                            const expanded = expandedKinds.has(section.kind);
+                            const visible = expanded
+                              ? section.rows
+                              : section.rows.slice(0, ENTITY_SECTION_PREVIEW);
+                            const showMore =
+                              !expanded &&
+                              section.rows.length > ENTITY_SECTION_PREVIEW;
+                            const hiddenCount =
+                              section.total - ENTITY_SECTION_PREVIEW;
+                            return (
+                              <li key={`entity:${section.kind}`}>
+                                <div className="px-4 py-1.5 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-[var(--color-muted-fg)]">
+                                  {section.label}
+                                </div>
+                                <ul>
+                                  {visible.map((item) => {
+                                    const index = flatIndex++;
+                                    return (
+                                      <SearchResultRow
+                                        key={item.id}
+                                        item={item}
+                                        query={trimmedQuery}
+                                        index={index}
+                                        isSelected={index === selectedIdx}
+                                        onHover={setSelectedIdx}
+                                        onActivate={activateResult}
+                                      />
+                                    );
+                                  })}
+                                  {showMore
+                                    ? (() => {
+                                        const index = flatIndex++;
+                                        return (
+                                          <ShowMoreRow
+                                            key={`more:${section.kind}`}
+                                            kind={section.kind}
+                                            hiddenCount={hiddenCount}
+                                            index={index}
+                                            isSelected={index === selectedIdx}
+                                            onHover={setSelectedIdx}
+                                            onToggle={toggleExpandKind}
+                                          />
+                                        );
+                                      })()
+                                    : null}
+                                </ul>
+                              </li>
+                            );
+                          });
+
+                          return [...commandNodes, ...entityNodes];
                         })()}
                       </ul>
                     )}

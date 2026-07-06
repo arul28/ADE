@@ -14,6 +14,7 @@ const SUBCOMMANDS = [
   "git",
   "diff",
   "files",
+  "search",
   "prs",
   "run",
   "shell",

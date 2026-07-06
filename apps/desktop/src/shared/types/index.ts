@@ -31,3 +31,4 @@ export * from "./projectSecrets";
 
 export * from "./linearSync";
 export * from "./feedback";
+export * from "./search";

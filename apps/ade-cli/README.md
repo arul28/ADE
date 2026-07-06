@@ -287,6 +287,9 @@ ade history show --id operation-id --text
 ade history commits --lane lane-id --text
 ade history export --lane lane-id --out history.json
 ade diff patch --lane lane-id --path src/file.ts --text
+ade search "login redirect" --text                          # full-text search across chats, terminals, PRs, commits, lanes, files, Linear
+ade search "flaky test" --kind chat,terminal --lane fix-login --text  # exit 1 when nothing matches
+ade search --status --text                                  # index doc counts, backfill state, index path
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text

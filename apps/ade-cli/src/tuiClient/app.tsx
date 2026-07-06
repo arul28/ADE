@@ -38,6 +38,7 @@ import type { DiffLineStats, GitConflictState } from "../../../desktop/src/share
 import type { LaneDeleteRisk, LaneLinearIssue, LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop/src/shared/types/feedback";
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
+import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
 import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../desktop/src/shared/types";
 import {
   DEFAULT_CODEX_REASONING_EFFORT,
@@ -705,6 +706,13 @@ function paletteMatchScore(item: CommandPaletteItem, query: string): number | nu
     cursor = found + 1;
   }
   return score + haystack.length;
+}
+
+// Collapse a multi-line search snippet into a single trimmed detail line and cap
+// it so it fits the palette's right-side detail column without wrapping.
+function searchSnippetToDetail(snippet: string): string {
+  const oneLine = snippet.replace(/\s+/g, " ").trim();
+  return oneLine.length > 60 ? `${oneLine.slice(0, 59)}…` : oneLine;
 }
 
 // Rebuild the framework-free FeedbackFormState (feedbackForm.ts) from the
@@ -2812,6 +2820,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandPaletteQuery, setCommandPaletteQuery] = useState("");
   const [commandPaletteIndex, setCommandPaletteIndex] = useState(0);
+  // Universal-search results merged BELOW the local command/lane/chat matches.
+  // A monotonically-increasing generation guards against a slow response
+  // overwriting a newer one (or one from an already-closed palette).
+  const [paletteSearchResults, setPaletteSearchResults] = useState<SearchResultItem[]>([]);
+  const paletteSearchGenerationRef = useRef(0);
   // /help command reference: live filter, focused row, and a small in-memory
   // recents list (most-recent-first) that floats lately-run commands to the top.
   const [helpFilterQuery, setHelpFilterQuery] = useState("");
@@ -4274,17 +4287,76 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       label: session.title ?? session.sessionId,
       detail: `${lanes.find((lane) => lane.id === session.laneId)?.name ?? session.laneId} · ${session.provider}`,
     }));
-    return [...commandItems, ...laneItems, ...chatItems]
+    const localItems = [...commandItems, ...laneItems, ...chatItems]
       .map((item) => ({ item, score: paletteMatchScore(item, commandPaletteQuery) }))
       .filter((entry): entry is { item: CommandPaletteItem; score: number } => entry.score != null)
       .sort((a, b) => a.score - b.score || a.item.label.localeCompare(b.item.label))
       .map((entry) => entry.item)
       .slice(0, 80);
-  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, slashCommands]);
+    // Sessions already surfaced by the local (title/lane) match — a search hit on
+    // the same session's content would otherwise list it twice.
+    const localSessionIds = new Set(
+      localItems
+        .filter((item) => item.key.startsWith("chat:"))
+        .map((item) => item.key.slice("chat:".length)),
+    );
+    // Universal-search hits ride BELOW the local matches. They are already
+    // server-ranked and query-scoped, so we keep their order and only dedupe
+    // against what's shown locally (by owning session).
+    const searchItems: CommandPaletteItem[] = [];
+    const seenSearchSessionIds = new Set<string>();
+    for (const result of paletteSearchResults) {
+      const sessionId = result.sessionId;
+      if (!sessionId || localSessionIds.has(sessionId) || seenSearchSessionIds.has(sessionId)) continue;
+      seenSearchSessionIds.add(sessionId);
+      searchItems.push({
+        key: `search-${result.kind}:${sessionId}`,
+        kind: "chat",
+        label: result.title || sessionId,
+        detail: searchSnippetToDetail(result.snippet),
+      });
+    }
+    return [...localItems, ...searchItems];
+  }, [activeCommandProvider, commandPaletteOpen, commandPaletteQuery, displaySessions, lanes, paletteSearchResults, slashCommands]);
   useEffect(() => {
     if (!commandPaletteOpen) return;
     setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
   }, [commandPaletteItems.length, commandPaletteOpen]);
+  // Universal search: on ≥2-char queries, debounce ~200ms and ask the runtime's
+  // `search.query` action for chat/terminal hits to merge below the local
+  // matches. Every run bumps a generation so a slow response can't clobber a
+  // newer query (or one issued after the palette closed); closing the palette or
+  // shrinking the query below 2 chars cancels the pending merge and clears hits.
+  useEffect(() => {
+    const trimmed = commandPaletteQuery.trim();
+    if (!commandPaletteOpen || trimmed.length < 2) {
+      paletteSearchGenerationRef.current += 1;
+      setPaletteSearchResults((prev) => (prev.length ? [] : prev));
+      return;
+    }
+    const generation = ++paletteSearchGenerationRef.current;
+    const isCurrent = () => paletteSearchGenerationRef.current === generation;
+    const timer = setTimeout(() => {
+      const conn = connectionRef.current;
+      if (!conn) return;
+      void conn
+        .action<SearchQueryResult>("search", "query", {
+          query: trimmed,
+          kinds: ["chat", "terminal"],
+          limit: 15,
+        })
+        .then((result) => {
+          // Ignore stale responses and older runtimes returning a malformed shape.
+          if (!isCurrent() || !result || !Array.isArray(result.results)) return;
+          setPaletteSearchResults(result.results);
+        })
+        // Older runtime without the `search` domain: degrade to local-only.
+        .catch(() => {
+          if (isCurrent()) setPaletteSearchResults((prev) => (prev.length ? [] : prev));
+        });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [commandPaletteOpen, commandPaletteQuery]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
   const [pendingQuestionState, setPendingQuestionState] = useState<PendingQuestionSelectionState | null>(null);
   const pendingQuestionStateRef = useRef<PendingQuestionSelectionState | null>(null);
@@ -9968,8 +10040,31 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (lane) activateLaneWithLastChat(lane, { notify: true });
       return;
     }
-    const sessionId = item.key.slice("chat:".length);
-    const session = displaySessions.find((entry) => entry.sessionId === sessionId) ?? null;
+    // Local chat items key on `chat:<id>`; universal-search hits (rendered with
+    // the same "chat" kind) key on `search-<kind>:<id>` and may point at a
+    // session that isn't in `displaySessions` (e.g. archived, or another lane not
+    // yet listed). Resolve either against the local list first, then fall back to
+    // a fresh listing so the jump still lands.
+    const isSearchItem = item.key.startsWith("search-");
+    const sessionId = isSearchItem
+      ? item.key.slice(item.key.indexOf(":") + 1)
+      : item.key.slice("chat:".length);
+    if (!sessionId) return;
+    let session = displaySessions.find((entry) => entry.sessionId === sessionId) ?? null;
+    if (!session && isSearchItem) {
+      const conn = connectionRef.current;
+      if (conn) {
+        const [freshChatSessions, freshTerminalSessions] = await Promise.all([
+          listChatSessions(conn, null, { includeArchived: true }).catch(() => [] as AgentChatSessionSummary[]),
+          listTerminalSessions(conn).catch(() => [] as ChatTerminalSession[]),
+        ]);
+        session =
+          freshChatSessions.find((entry) => entry.sessionId === sessionId)
+          ?? (freshTerminalSessions
+            .map(terminalSessionToChatSummary)
+            .find((entry) => entry.sessionId === sessionId) ?? null);
+      }
+    }
     if (session) {
       selectActiveLaneId(session.laneId);
       setDrawerLaneId(session.laneId);
@@ -9978,6 +10073,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setSelectedDrawerChatId(session.sessionId);
       applyDrawerChatSelection({ session, action: null });
       addNotice(`Switched to chat ${session.title ?? session.sessionId}.`, "success");
+    } else if (isSearchItem) {
+      addNotice("That chat is no longer available.", "info");
     }
   }, [activateLaneWithLastChat, addNotice, applyDrawerChatSelection, displaySessions, focusChat, lanes, runInlineCommand, runRightCommand, selectActiveLaneId, slashCommands]);
 

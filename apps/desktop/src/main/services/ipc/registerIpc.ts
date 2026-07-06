@@ -530,6 +530,7 @@ import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
+import type { createSearchService } from "../search/searchService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
@@ -880,6 +881,7 @@ export type AppContext = {
   queueLandingService: ReturnType<typeof createQueueLandingService> | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   reviewService: ReturnType<typeof createReviewService> | null;
+  searchService?: ReturnType<typeof createSearchService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
   automationService: ReturnType<typeof createAutomationService> | null;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;

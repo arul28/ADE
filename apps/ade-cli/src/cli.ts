@@ -22,6 +22,7 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -176,7 +177,9 @@ type FormatterId =
   | "actions-list"
   | "action-result"
   | "automation-run-detail"
-  | "automation-ingress";
+  | "automation-ingress"
+  | "search-results"
+  | "search-status";
 
 type CliPlan =
   | { kind: "help"; text: string }
@@ -197,6 +200,11 @@ type CliPlan =
         status?: string;
       };
       writeResultPath?: string;
+      /**
+       * Derive a nonzero exit code from the executed result (e.g. `ade search`
+       * exits 1 when a query returns no results, so scripts can branch on it).
+       */
+      exitCodeFromResult?: (result: unknown) => number;
     }
   | { kind: "ade-code"; rest: string[] }
   | { kind: "desktop"; rest: string[] }
@@ -475,6 +483,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
@@ -959,6 +968,47 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
 };
 
 const HELP_BY_COMMAND: Record<string, string> = {
+  search: `${ADE_BANNER}
+  ADE Search
+
+  Search across everything ADE indexes — chat transcripts, terminal scrollback,
+  CLI sessions, PRs, commits, branches, lanes, files, Linear issues, and proof
+  artifacts — from one deterministic full-text index. Returns ranked matches
+  with a deep link per result. Prefer this over grepping .ade/ internals.
+
+    $ ade search "login redirect" --text
+    $ ade search "flaky test" --kind chat,terminal --text
+    $ ade search "auth" --lane fix-login --limit 10 --json
+    $ ade search "rate limit" --cursor <nextCursor> --text
+    $ ade search --status --text
+    $ ade search --rebuild --text
+
+  Query syntax (passed through to the index):
+    bare terms         AND-ed together        ade search "retry backoff"
+    "quoted phrase"    exact phrase           ade search '"connection refused"'
+    kind:<kind>        restrict to a kind     ade search "kind:pr merge queue"
+    lane:<name>        restrict to a lane     ade search "lane:fix-login timeout"
+    session:<id>       restrict to a session  ade search "session:abc123 panic"
+    since:<date>       recency floor          ade search "since:2026-06-01 crash"
+
+  Flags:
+    --kind, --kinds <a,b>   Comma-separated kinds to include. One or more of:
+                            lane, chat, terminal, pr, commit, branch, file,
+                            linear, artifact. Unknown kinds are rejected.
+    --lane, --lane-id <id>  Restrict to a lane (id or name; the service resolves names).
+    --limit <n>             Max results to return.
+    --cursor <c>            Continue from a previous query's nextCursor.
+    --actions               List the raw search service actions exposed via ADE actions.
+    --status                Show index doc counts, backfill state, and index path.
+    --rebuild               Rebuild the whole index from scratch (CTO-only).
+    --text                  Aligned KIND/TITLE/SNIPPET/ID rows plus a count summary.
+    --json                  Full SearchQueryResult payload (default).
+
+  Exit codes:
+    0  query returned at least one result
+    1  query returned no results (script-friendly)
+    2  usage error (e.g. unknown --kind)
+`,
   desktop: `${ADE_BANNER}
   ADE Desktop
 
@@ -5899,6 +5949,85 @@ function buildHistoryPlan(args: string[]): CliPlan {
   );
 }
 
+const SEARCH_KIND_VALUES = SEARCH_DOC_KINDS;
+
+function searchResultCount(result: unknown): number {
+  if (!isRecord(result)) return 0;
+  const results = result.results;
+  return Array.isArray(results) ? results.length : 0;
+}
+
+function buildSearchPlan(args: string[]): CliPlan {
+  if (readFlag(args, ["--actions"])) {
+    return {
+      kind: "execute",
+      label: "search actions",
+      steps: [listActionsStep("actions", "search")],
+    };
+  }
+  if (readFlag(args, ["--status", "--index-status"])) {
+    return {
+      kind: "execute",
+      label: "search status",
+      formatter: "search-status",
+      steps: [actionStep("result", "search", "indexStatus", {})],
+    };
+  }
+  if (readFlag(args, ["--rebuild", "--rebuild-index"])) {
+    return {
+      kind: "execute",
+      label: "search rebuild",
+      formatter: "search-status",
+      steps: [actionStep("result", "search", "rebuildIndex", {})],
+    };
+  }
+
+  // Consume option flags before grabbing the positional query so a flag value
+  // (e.g. the argument to --lane) can never be mistaken for the query itself.
+  const limit = readIntOption(args, ["--limit"], undefined);
+  const cursor = readValue(args, ["--cursor"]);
+  const laneId = readValue(args, ["--lane", "--lane-id"]);
+  const kindRaw = readValue(args, ["--kind", "--kinds"]);
+  let kinds: string[] | undefined;
+  if (kindRaw != null) {
+    kinds = kindRaw
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    const invalid = kinds.filter(
+      (entry) => !(SEARCH_KIND_VALUES as readonly string[]).includes(entry),
+    );
+    if (invalid.length) {
+      throw new CliUsageError(
+        `Unknown search kind(s): ${invalid.join(", ")}. Valid kinds: ${SEARCH_KIND_VALUES.join(", ")}.`,
+      );
+    }
+  }
+
+  const query = firstPositional(args) ?? readValue(args, ["--query", "-q"]);
+  if (!query || !query.trim()) {
+    throw new CliUsageError(
+      'search requires a query, e.g. ade search "login redirect" --text (or --status / --rebuild).',
+    );
+  }
+
+  const queryArgs: JsonObject = { query };
+  if (kinds && kinds.length) queryArgs.kinds = kinds;
+  if (laneId) queryArgs.laneId = laneId;
+  if (limit != null) queryArgs.limit = limit;
+  if (cursor) queryArgs.cursor = cursor;
+
+  return {
+    kind: "execute",
+    label: "search query",
+    formatter: "search-results",
+    steps: [actionStep("result", "search", "query", queryArgs)],
+    // Script-friendly: a query that matches nothing exits nonzero so callers
+    // can branch on `ade search ... && ...` without parsing the payload.
+    exitCodeFromResult: (result) => (searchResultCount(result) > 0 ? 0 : 1),
+  };
+}
+
 function buildTerminalPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "active";
   if (sub === "actions")
@@ -10345,6 +10474,7 @@ function buildCliPlan(
   if (primary === "git") return buildGitPlan(args);
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
   if (primary === "files" || primary === "file") return buildFilesPlan(args);
+  if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args);
   if (primary === "run" || primary === "process" || primary === "processes")
     return buildRunPlan(args);
@@ -14443,6 +14573,71 @@ function formatRunTable(value: unknown, title: string): string {
   )}`;
 }
 
+function formatSearchResults(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const results = firstArray(value, ["results", "items"]);
+  if (results.length === 0) return "ADE search\n(no results)";
+  const rows = results.map((item) => ({
+    kind: truncateCell(asString(item.kind) ?? "", 10),
+    title: truncateCell(asString(item.title) ?? "", 40),
+    snippet: truncateCell(asString(item.snippet) ?? "", 60),
+    id: truncateCell(asString(item.id) ?? "", 60),
+  }));
+  const kindWidth = Math.max(4, ...rows.map((row) => row.kind.length));
+  const titleWidth = Math.max(5, ...rows.map((row) => row.title.length));
+  const snippetWidth = Math.max(7, ...rows.map((row) => row.snippet.length));
+  const renderRow = (kind: string, title: string, snippet: string, id: string) =>
+    [
+      kind.padEnd(kindWidth),
+      title.padEnd(titleWidth),
+      snippet.padEnd(snippetWidth),
+      id,
+    ]
+      .join("  ")
+      .trimEnd();
+  const lines = [
+    "ADE search",
+    renderRow("KIND", "TITLE", "SNIPPET", "ID"),
+    ...rows.map((row) => renderRow(row.kind, row.title, row.snippet, row.id)),
+  ];
+  const totalByKind = isRecord(record.totalByKind) ? record.totalByKind : {};
+  const breakdown = Object.entries(totalByKind)
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([kind, count]) => `${kind} ${count}`)
+    .join(", ");
+  const summary = `${results.length} result${results.length === 1 ? "" : "s"}${
+    breakdown ? ` (${breakdown})` : ""
+  }`;
+  lines.push("", summary);
+  const nextCursor = asString(record.nextCursor);
+  if (nextCursor) lines.push(`more: --cursor ${nextCursor}`);
+  return lines.join("\n");
+}
+
+function formatSearchStatus(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (record.docCount === undefined && record.started !== undefined) {
+    return renderKeyValues("ADE search index", [
+      ["rebuild started", record.started],
+    ]);
+  }
+  const byKind = isRecord(record.docCountByKind) ? record.docCountByKind : {};
+  const kindLine = Object.entries(byKind)
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([kind, count]) => `${kind} ${count}`)
+    .join(", ");
+  return renderKeyValues("ADE search index", [
+    ["ready", record.ready],
+    ["docs", record.docCount],
+    ["by kind", kindLine],
+    ["backfill complete", record.backfillComplete],
+    ["pending sources", record.pendingSources],
+    ["schema version", record.schemaVersion],
+    ["last updated", record.lastUpdatedAt],
+    ["index path", record.indexPath],
+  ]);
+}
+
 function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   return renderTable(
@@ -15497,6 +15692,10 @@ function formatTextOutput(
       return formatAutomationRunDetail(value);
     case "automation-ingress":
       return formatAutomationIngress(value);
+    case "search-results":
+      return formatSearchResults(value);
+    case "search-status":
+      return formatSearchStatus(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -16189,7 +16388,7 @@ async function runCli(
     }
     return {
       output: formatOutput(result, parsed.options, inferFormatter(plan)),
-      exitCode: 0,
+      exitCode: plan.exitCodeFromResult ? plan.exitCodeFromResult(result) : 0,
     };
   } finally {
     console.log = originalConsole.log;

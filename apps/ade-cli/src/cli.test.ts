@@ -888,6 +888,71 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds typed ADE search commands", () => {
+    const query = expectExecutePlan(
+      buildCliPlan([
+        "search",
+        "login redirect",
+        "--kind",
+        "chat,terminal",
+        "--lane",
+        "fix-login",
+        "--limit",
+        "5",
+        "--cursor",
+        "abc",
+      ]),
+    );
+    expect(query.formatter).toBe("search-results");
+    expect(query.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "search",
+        action: "query",
+        args: {
+          query: "login redirect",
+          kinds: ["chat", "terminal"],
+          laneId: "fix-login",
+          limit: 5,
+          cursor: "abc",
+        },
+      },
+    });
+    // Query invocations exit nonzero when nothing matches, zero otherwise.
+    expect(query.exitCodeFromResult?.({ results: [] })).toBe(1);
+    expect(query.exitCodeFromResult?.({ results: [{ id: "chat:1" }] })).toBe(0);
+
+    // Bare query omits optional args entirely.
+    const bare = expectExecutePlan(buildCliPlan(["search", "just words"]));
+    expect(bare.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "search",
+        action: "query",
+        args: { query: "just words" },
+      },
+    });
+
+    // Unknown kinds are a usage error (exit 2), not a silent pass-through.
+    expect(() => buildCliPlan(["search", "q", "--kind", "chat,bogus"])).toThrow(
+      /Unknown search kind/,
+    );
+
+    // A missing query is a usage error, but --status / --rebuild are not queries.
+    expect(() => buildCliPlan(["search"])).toThrow(/requires a query/);
+    const status = expectExecutePlan(buildCliPlan(["search", "--status"]));
+    expect(status.formatter).toBe("search-status");
+    expect(status.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "search", action: "indexStatus", args: {} },
+    });
+    const rebuild = expectExecutePlan(buildCliPlan(["search", "--rebuild"]));
+    expect(rebuild.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "search", action: "rebuildIndex", args: {} },
+    });
+  });
+
   it("builds PR transcript gist settings commands", () => {
     const enable = buildCliPlan(["settings", "pr-transcript-gists", "enable"]);
     expect(enable.kind).toBe("execute");

@@ -60,6 +60,8 @@ import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedA
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
+import { createProjectSearchService } from "./services/search/searchServiceWiring";
+import type { SearchService } from "./services/search/searchService";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -2143,6 +2145,7 @@ app.whenReady().then(async () => {
     let conflictServiceRef: ReturnType<typeof createConflictService> | null =
       null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
+    const searchServiceHolder: { current: SearchService | null } = { current: null };
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null =
       null;
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
@@ -2260,7 +2263,10 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
-      onLifecycleEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event),
+      onLifecycleEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event);
+        if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
+      },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
@@ -2602,6 +2608,9 @@ app.whenReady().then(async () => {
         category: "runtime",
         payload: { type: "pr_event", event },
       });
+      if (event.type === "prs-updated") {
+        for (const pr of event.prs) searchServiceHolder.current?.notifyPrChanged(pr.id);
+      }
     };
 
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
@@ -2621,6 +2630,7 @@ app.whenReady().then(async () => {
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+          for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
         }
         await Promise.all(
           changes.map(
@@ -2831,6 +2841,7 @@ app.whenReady().then(async () => {
       logger,
       broadcastData: (ev) => {
         broadcastPtyData(ev);
+        searchServiceHolder.current?.notifyTerminalData(ev.sessionId);
         const { projectRoot: _projectRoot, ...syncEvent } = ev;
         syncServiceRef?.handlePtyData(syncEvent);
       },
@@ -3229,6 +3240,25 @@ app.whenReady().then(async () => {
     agentChatService.setComputerUseArtifactBrokerService(
       computerUseArtifactBrokerService,
     );
+
+    // Backfill starts well past the boot window so index writes never compete
+    // with project startup.
+    const searchService = createProjectSearchService({
+      cacheDir: adePaths.cacheDir,
+      transcriptsDir: adePaths.transcriptsDir,
+      chatTranscriptsDir: adePaths.chatTranscriptsDir,
+      logger,
+      sessionService,
+      laneService,
+      agentChatService,
+      prService,
+      gitService,
+      fileService,
+      artifactBroker: computerUseArtifactBrokerService,
+      linearIssueTracker,
+      backfillDelayMs: 10_000,
+    });
+    searchServiceHolder.current = searchService;
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
@@ -3760,6 +3790,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       queueLandingService,
       fileService,
+      searchService,
       ctoStateService,
       ctoMemoryService,
       linearCredentialService,
@@ -4021,6 +4052,7 @@ app.whenReady().then(async () => {
       queueLandingService,
       prSummaryService,
       reviewService,
+      searchService,
       jobEngine,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService,
@@ -4379,6 +4411,13 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.agentChatService?.disposeAll();
+    } catch {
+      // ignore
+    }
+    // After pty/process/chat teardown so their final events cannot land on a
+    // disposed search service.
+    try {
+      ctx.searchService?.dispose();
     } catch {
       // ignore
     }

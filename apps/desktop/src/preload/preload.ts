@@ -623,6 +623,10 @@ import type {
   FeedbackSubmission,
   FeedbackSubmissionEvent,
   FeedbackSubmitDraftArgs,
+  SearchIndexStatus,
+  SearchQueryArgs,
+  SearchQueryResult,
+  SearchRebuildResult,
 } from "../shared/types";
 
 type ShortIpcCache<T> = {
@@ -6064,6 +6068,25 @@ contextBridge.exposeInMainWorld("ade", {
   localhost: {
     probePort: async (port: number): Promise<boolean> =>
       ipcRenderer.invoke(IPC.localhostProbePort, { port }),
+  },
+  // Universal search is daemon-only by design: it always routes through the
+  // ADE runtime action bridge (never an in-process IPC fallback) so packaged
+  // and remote-bound windows behave identically.
+  search: {
+    query: async (args: SearchQueryArgs): Promise<SearchQueryResult> => {
+      const outcome = await callProjectRuntimeActionIfBound<SearchQueryResult>("search", "query", { args });
+      if (outcome.handled && outcome.result) return outcome.result;
+      return { results: [], totalByKind: {}, nextCursor: null };
+    },
+    indexStatus: async (): Promise<SearchIndexStatus | null> => {
+      const outcome = await callProjectRuntimeActionIfBound<SearchIndexStatus>("search", "indexStatus", {});
+      return outcome.handled ? outcome.result ?? null : null;
+    },
+    rebuildIndex: async (): Promise<SearchRebuildResult> => {
+      const outcome = await callProjectRuntimeActionIfBound<SearchRebuildResult>("search", "rebuildIndex", {});
+      if (outcome.handled && outcome.result) return outcome.result;
+      return { started: false };
+    },
   },
   pty: {
     create: async (args: PtyCreateArgs, pin?: OpenProjectBinding | null): Promise<PtyCreateResult> => {

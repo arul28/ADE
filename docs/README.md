@@ -38,6 +38,7 @@ docs/
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
     ├── remote-runtime/                    # local runtime + SSH remote machines
+    ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands
     ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
     └── workspace-graph/                   # React Flow canvas + data sources

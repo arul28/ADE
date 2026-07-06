@@ -699,3 +699,6 @@ config service):
 - [History README](../history/README.md) -- chat sessions are not
   recorded in the operations timeline, but the turns that cause git
   state changes (lane creation, PR creation, commits) are.
+- [Search README](../search/README.md) -- chat transcripts (`.jsonl`) are
+  FTS-indexed per message as the `chat` search source, deep-linking back to
+  the matching message; ⌘K and the TUI palette merge those hits inline.

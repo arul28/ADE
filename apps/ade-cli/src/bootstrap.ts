@@ -24,6 +24,8 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
+import { createProjectSearchService } from "../../desktop/src/main/services/search/searchServiceWiring";
+import type { SearchService } from "../../desktop/src/main/services/search/searchService";
 import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -224,6 +226,7 @@ export type AdeRuntime = {
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   reviewService?: ReturnType<typeof createReviewService> | null;
+  searchService?: SearchService | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   appNavigationService?: {
     navigate(args: AppNavigationRequest): Promise<AppNavigationResult>;
@@ -456,6 +459,7 @@ export async function createAdeRuntime(args: {
   let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
   let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
   let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
+  const searchServiceHolder: { current: SearchService | null } = { current: null };
   let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
   let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
   const publishLinearChatLink = createLinearChatLinkPublisher({
@@ -484,7 +488,10 @@ export async function createAdeRuntime(args: {
       }
     },
     onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
-    onLifecycleEvent: (event) => pushEvent("runtime", { type: "lane_lifecycle_event", event }),
+    onLifecycleEvent: (event) => {
+      pushEvent("runtime", { type: "lane_lifecycle_event", event });
+      if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
+    },
     onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
       const tracker = linearIssueTrackerRef;
       if (!tracker) return;
@@ -731,6 +738,7 @@ export async function createAdeRuntime(args: {
     logger,
     broadcastData: (event) => {
       pushEvent("pty", { type: "pty_data", event });
+      searchServiceHolder.current?.notifyTerminalData(event.sessionId);
       const { projectRoot: _projectRoot, ...syncEvent } = event;
       syncServiceForPtyEvents?.handlePtyData(syncEvent);
     },
@@ -1157,6 +1165,7 @@ export async function createAdeRuntime(args: {
     onPullRequestsChanged: async ({ changedPrs, changes }) => {
       if (changedPrs.length > 0) {
         headlessLinearServices.prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+        for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
       }
       for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
         automationService?.onPullRequestChanged?.({
@@ -1324,6 +1333,28 @@ export async function createAdeRuntime(args: {
     }
   }
 
+  const searchService = createProjectSearchService({
+    cacheDir: paths.cacheDir,
+    transcriptsDir: paths.transcriptsDir,
+    chatTranscriptsDir: paths.chatTranscriptsDir,
+    logger,
+    sessionService,
+    laneService,
+    agentChatService,
+    prService: headlessLinearServices.prService ?? null,
+    gitService,
+    fileService: headlessLinearServices.fileService ?? null,
+    artifactBroker: computerUseArtifactBrokerService,
+    linearIssueTracker: headlessLinearServices.linearIssueTracker ?? null,
+    backfillDelayMs: 5_000,
+  });
+  searchServiceHolder.current = searchService;
+  headlessLinearServices.prService?.setEventEmitter((event) => {
+    if (event.type === "prs-updated") {
+      for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
+    }
+  });
+
   const runtime: AdeRuntime = {
     projectRoot,
     workspaceRoot,
@@ -1358,6 +1389,7 @@ export async function createAdeRuntime(args: {
     ptyService,
     testService,
     reviewService,
+    searchService,
     aiIntegrationService,
     agentChatService,
     orchestrationService,
@@ -1413,6 +1445,7 @@ export async function createAdeRuntime(args: {
       swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());
+      swallow(() => searchService.dispose());
       swallow(() => processRegistry.stop());
       swallow(() => db.flushNow());
       swallow(() => db.close());
