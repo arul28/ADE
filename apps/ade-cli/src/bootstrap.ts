@@ -1223,10 +1223,10 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
-  // Cloud tunnel relay (phone → Cloudflare DO → this brain). Off by default;
-  // the Settings toggle flips the shared store and the client follows. The
-  // store instance is shared with the sync service so the relay candidate in
-  // pairingConnectInfo and the tunnel client always agree on one config file.
+  // Cloud tunnel relay (phone → Cloudflare DO → this brain). On by default —
+  // the Settings kill-switch flips the shared store and the client follows.
+  // The store instance is shared with the sync service so the relay candidate
+  // in pairingConnectInfo and the tunnel client always agree on one config file.
   const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
   const { createSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
   const cloudRelayStore = createSyncCloudRelayStore({

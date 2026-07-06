@@ -1,4 +1,5 @@
 import ActivityKit
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -199,7 +200,34 @@ private struct AgentRunRow: View {
 
     private var phase: AgentRunPhase { run.resolvedPhase }
 
+    /// Inline Approve / Deny only earns space on the full lock-screen row for a
+    /// run actually blocked on approval. The Dynamic Island (`compact`) stays
+    /// glance-only.
+    private var showsApprovalActions: Bool {
+        !compact && phase == .waitingForApproval
+    }
+
     var body: some View {
+        Group {
+            if showsApprovalActions {
+                VStack(alignment: .leading, spacing: 7) {
+                    rowContent
+                    approvalActions
+                }
+            } else {
+                rowContent
+            }
+        }
+        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
+        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
+        .background(
+            phase.needsAttention && !compact
+                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
+                : nil
+        )
+    }
+
+    private var rowContent: some View {
         HStack(spacing: 8) {
             Image(systemName: phase.symbol)
                 .font(.system(size: compact ? 10 : 11, weight: .semibold))
@@ -228,13 +256,40 @@ private struct AgentRunRow: View {
                 .foregroundStyle(phase.needsAttention ? phase.tint : .secondary)
                 .lineLimit(1)
         }
-        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
-        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
-        .background(
-            phase.needsAttention && !compact
-                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
-                : nil
-        )
+    }
+
+    /// Approve / Deny capsules, aligned under the title (past the status glyph).
+    /// Approve carries the phase amber; Deny stays neutral so the destructive
+    /// choice never reads as the primary one.
+    private var approvalActions: some View {
+        HStack(spacing: 8) {
+            Button(intent: ApproveSessionIntent(sessionId: run.id, itemId: run.itemId ?? "")) {
+                approvalLabel("Approve", systemImage: "checkmark", tint: phase.tint)
+            }
+            .buttonStyle(.plain)
+
+            Button(intent: DenySessionIntent(sessionId: run.id, itemId: run.itemId ?? "")) {
+                approvalLabel("Deny", systemImage: "xmark", tint: .secondary)
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 22)
+    }
+
+    private func approvalLabel(_ title: String, systemImage: String, tint: Color) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: systemImage)
+                .font(.system(size: 10, weight: .semibold))
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(tint.opacity(0.16), in: Capsule(style: .continuous))
+        .overlay(Capsule(style: .continuous).stroke(tint.opacity(0.30), lineWidth: 0.6))
     }
 
     /// Prefer the host-supplied detail line; fall back to "lane · model".
@@ -299,7 +354,7 @@ private extension ADEAgentRunsAttributes.ContentState {
             updatedAt: Date().timeIntervalSince1970,
             activeCount: 3,
             runs: [
-                .init(id: "c", title: "Release checklist", phase: "waiting_for_approval", model: "claude", lane: "Primary", detail: "approve git push"),
+                .init(id: "c", title: "Release checklist", phase: "waiting_for_approval", model: "claude", lane: "Primary", detail: "approve git push", itemId: "item_release_push"),
                 .init(id: "a", title: "Refactor sync transport", phase: "running", model: "gpt-5-codex", lane: "Primary"),
             ]
         )

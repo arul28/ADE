@@ -93,6 +93,10 @@ struct WorkChatHeaderMenuModel: Equatable {
   var sessionPinned: Bool
   var sessionIdCopied: Bool
   var sessionDeepLinkCopied: Bool
+  /// Open chat's session id, used by the Mute item to read / toggle push prefs.
+  /// Defaults to empty so the memberwise init at the call site stays source
+  /// compatible; the destination view passes the real id.
+  var sessionId: String = ""
 }
 
 /// Chat header overflow menu, extracted from `WorkSessionDestinationView` and
@@ -245,6 +249,16 @@ struct WorkChatHeaderMenu: View, Equatable {
     Button(action: onTogglePinned) {
       Label(model.sessionPinned ? "Unpin from front" : "Pin to front",
             systemImage: model.sessionPinned ? "pin.slash" : "pin")
+    }
+
+    if !model.sessionId.isEmpty {
+      let muted = PushNotificationService.shared.prefs.mutedSessionIds.contains(model.sessionId)
+      Button {
+        PushNotificationService.shared.setMuted(!muted, sessionId: model.sessionId)
+      } label: {
+        Label(muted ? "Unmute notifications" : "Mute notifications",
+              systemImage: muted ? "bell" : "bell.slash")
+      }
     }
   }
 }

@@ -29,10 +29,14 @@ struct ADEApp: App {
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
           lastActivationSyncAt = Date()
+          await PushNotificationService.shared.clearAppBadge()
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in
           guard newPhase == .active else { return }
+          // Clear the badge on every foreground, independent of the sync
+          // throttle below — a lingering count after re-entry reads as stale.
+          Task { await PushNotificationService.shared.clearAppBadge() }
           guard didBootstrapSync else { return }
           let now = Date()
           guard now.timeIntervalSince(lastActivationSyncAt) > 1.0 else { return }

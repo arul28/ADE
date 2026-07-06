@@ -128,7 +128,7 @@ type SyncServiceArgs = {
    * absent a store is created under the pairing state dir.
    */
   cloudRelayStore?: SyncCloudRelayStore;
-  /** Fired when the "Cloud relay fallback" toggle flips (start/stop tunnel). */
+  /** Fired when the ADE relay kill-switch flips (start/stop tunnel). */
   onCloudRelayEnabledChanged?: (enabled: boolean) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;

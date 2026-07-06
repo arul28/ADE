@@ -649,7 +649,8 @@ struct WorkSessionDestinationView: View {
       createPrBlockedReason: createPullRequestBlockedReason,
       sessionPinned: session.pinned,
       sessionIdCopied: sessionIdCopied,
-      sessionDeepLinkCopied: sessionDeepLinkCopied
+      sessionDeepLinkCopied: sessionDeepLinkCopied,
+      sessionId: session.id
     )
   }
 

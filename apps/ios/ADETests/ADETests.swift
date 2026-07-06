@@ -5991,6 +5991,28 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(recorder.commands.first?.payload["prId"], "pr_42")
   }
 
+  func testAgentRunsContentStateDecodesOptionalItemId() throws {
+    // The brain stamps `itemId` only on rows blocked on approval; older payloads
+    // omit it. The lenient decoder must keep both shapes working so the lock-
+    // screen Approve/Deny intents resolve the right pending request.
+    let json = Data("""
+    {
+      "updatedAt": 1720000000,
+      "activeCount": 2,
+      "runs": [
+        { "id": "c", "title": "Release checklist", "phase": "waiting_for_approval", "itemId": "item_release_push" },
+        { "id": "a", "title": "Refactor sync transport", "phase": "running" }
+      ]
+    }
+    """.utf8)
+
+    let state = try JSONDecoder().decode(ADEAgentRunsAttributes.ContentState.self, from: json)
+    XCTAssertEqual(state.runs.count, 2)
+    XCTAssertEqual(state.runs[0].resolvedPhase, .waitingForApproval)
+    XCTAssertEqual(state.runs[0].itemId, "item_release_push")
+    XCTAssertNil(state.runs[1].itemId, "runs without an itemId key decode to nil")
+  }
+
   func testPrActionAvailabilityMatchesDesktopBaseline() {
     let open = PrActionAvailability(prState: "open")
     XCTAssertTrue(open.showsMerge)

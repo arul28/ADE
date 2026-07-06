@@ -48,8 +48,6 @@ struct ConnectionSettingsView: View {
               snapshot: presentationModel.pairingSnapshot,
               presentedSheet: $presentedSheet
             )
-
-            SettingsCloudRelayToggle()
           }
             .padding(.horizontal, 16)
             .padding(.top, 4)
@@ -191,6 +189,10 @@ struct SettingsConnectionSnapshot: Equatable {
   var savedReconnectPrefersTailnet: Bool
   var errorMessage: String?
   var showTailscaleOffHint = false
+  /// True when the live, connected route is the cloud relay (a full wss:// URL)
+  /// rather than a direct LAN/Tailscale path. Drives the quiet "prefer
+  /// Tailscale" nudge in the header.
+  var usingRelay = false
 }
 
 struct SettingsPairingSnapshot: Equatable {
@@ -275,7 +277,9 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         savedReconnectPrefersTailnet: savedReconnectHost?.tailscaleAddress != nil,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
-        showTailscaleOffHint: syncService.tailscaleOffHintVisible
+        showTailscaleOffHint: syncService.tailscaleOffHintVisible,
+        usingRelay: syncService.connectionState == .connected
+          && (address.map(syncIsFullWebSocketRoute) ?? false)
       )
     )
 
@@ -332,6 +336,11 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
 
   private static func routeLine(address: String?, port: Int?) -> String? {
     guard let address else { return nil }
+    // A full wss:// relay URL carries an opaque `/connect/<machineKey>` path and
+    // its own port — showing it raw is noise. Name the route instead.
+    if syncIsFullWebSocketRoute(address) {
+      return "ADE relay"
+    }
     let prefix = syncIsTailscaleRoute(address) ? "Tailscale " : ""
     if let port {
       return "\(prefix)\(address) · :\(port)"

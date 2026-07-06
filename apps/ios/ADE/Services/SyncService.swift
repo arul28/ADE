@@ -1592,9 +1592,6 @@ final class SyncService: ObservableObject {
   /// shared suite so a synthesized "pending sync" row survives relaunch and is
   /// visible to the same UI regardless of process.
   private let pendingChatCreationsKey = "ade.sync.pendingChatCreations.v1"
-  /// App Group key for the "Cloud relay fallback" toggle (default OFF). When
-  /// off, relay candidates are excluded from every transport race.
-  static let cloudRelayFallbackDefaultsKey = "ade.sync.cloudRelayFallbackEnabled"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
@@ -3896,11 +3893,11 @@ final class SyncService: ObservableObject {
         normalizedCandidateAddresses
       ))
       let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
-      // Relay URLs (full wss://) are attempted LAST and only when the fallback
-      // is enabled. They ride their own path/port, so they're kept out of the
-      // direct port sweep and appended as single attempts.
+      // Relay URLs (full wss://) are attempted LAST, always. They ride their own
+      // path/port, so they're kept out of the direct port sweep and appended as
+      // single attempts after every direct route.
       let normalizedRelayCandidates = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
-      let relayWalkCandidates = isCloudRelayFallbackEnabled ? normalizedRelayCandidates : []
+      let relayWalkCandidates = normalizedRelayCandidates
       syncConnectLog.info(
         "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)] relay=[\(syncLogAddressList(relayWalkCandidates), privacy: .public)]"
       )
@@ -3991,8 +3988,7 @@ final class SyncService: ObservableObject {
           return !syncIsTailscaleRoute(host)
         },
         tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute),
-        // Persist relay candidates regardless of the toggle so enabling the
-        // fallback later reuses them; the toggle only gates whether they race.
+        // Persist relay candidates so later reconnects can race them last.
         savedRelayCandidates: normalizedRelayCandidates.isEmpty ? nil : normalizedRelayCandidates
       )
       currentAddress = preferredAddress
@@ -7797,17 +7793,9 @@ final class SyncService: ObservableObject {
     return false
   }
 
-  /// Whether the user enabled the cloud relay fallback. Read from the App Group
-  /// suite so the value is shared and defaults OFF.
-  var isCloudRelayFallbackEnabled: Bool {
-    ADESharedContainer.defaults.bool(forKey: SyncService.cloudRelayFallbackDefaultsKey)
-  }
-
-  /// Relay `wss://` candidates for a profile, ordered last and gated on the
-  /// user toggle. Empty when the fallback is off so relay is excluded from
-  /// every race.
+  /// Relay `wss://` candidates for a profile. Relay always races, strictly LAST
+  /// (after every LAN and Tailscale route) — zero config, no user toggle.
   private func relayFallbackCandidates(for profile: HostConnectionProfile) -> [String] {
-    guard isCloudRelayFallbackEnabled else { return [] }
     return deduplicatedAddresses((profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute))
   }
 
@@ -8804,6 +8792,23 @@ final class SyncService: ObservableObject {
     let discoveredLan = deduplicatedAddresses(
       matchingDiscovery?.addresses ?? activeHostProfile?.discoveredLanAddresses ?? []
     )
+    // The host advertises its live cloud-relay URL in `hello_ok` (key omitted
+    // when the relay is disabled or on older hosts). Fold it into the saved
+    // relay candidates — freshest first — so an already-paired phone learns
+    // the relay route even when it never scanned a relay QR. Preserve any
+    // previously-saved relay URLs (the rebuilt profile would otherwise drop
+    // them, since the init defaults `savedRelayCandidates` to nil).
+    let advertisedRelayUrl = (payload["cloudRelayWssUrl"] as? String).flatMap { url in
+      syncIsFullWebSocketRoute(url) ? url : nil
+    }
+    let mergedRelayCandidates = Array(
+      deduplicatedAddresses(
+        (advertisedRelayUrl.map { [$0] } ?? [])
+          + (activeHostProfile?.savedRelayCandidates ?? [])
+      )
+      .filter(syncIsFullWebSocketRoute)
+      .prefix(3)
+    )
 
     let profile = HostConnectionProfile(
       hostIdentity: remoteHostIdentity ?? activeHostProfile?.hostIdentity ?? expectedHostIdentity,
@@ -8819,7 +8824,8 @@ final class SyncService: ObservableObject {
       discoveredLanAddresses: discoveredLan,
       tailscaleAddress: matchingDiscovery?.tailscaleAddress
         ?? (syncIsTailscaleRoute(connectedHost) ? connectedHost : nil)
-        ?? activeHostProfile?.tailscaleAddress
+        ?? activeHostProfile?.tailscaleAddress,
+      savedRelayCandidates: mergedRelayCandidates.isEmpty ? nil : mergedRelayCandidates
     )
     saveProfile(profile)
     resetOutboundCursorStateForActiveProject()
@@ -9073,16 +9079,32 @@ final class SyncService: ObservableObject {
       let ack = try decode(payload, as: SyncChangesetAckPayload.self)
       handleChangesetAck(ack)
     case "brain_status":
-      if let dict = payload as? [String: Any], let brain = dict["brain"] as? [String: Any] {
-        hostName = brain["deviceName"] as? String
-        updateProfile { profile in
-          profile.hostName = brain["deviceName"] as? String
-          profile.lastHostDeviceId = brain["deviceId"] as? String
+      if let dict = payload as? [String: Any] {
+        if let brain = dict["brain"] as? [String: Any] {
+          hostName = brain["deviceName"] as? String
+          updateProfile { profile in
+            profile.hostName = brain["deviceName"] as? String
+            profile.lastHostDeviceId = brain["deviceId"] as? String
+          }
+          if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
+            let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
+            let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
+            recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
+          }
         }
-        if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
-          let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
-          let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
-          recordConnectionLoadSample(latencyMs: latencyMs, syncLag: syncLag)
+        // Relay reachability can flip live. `brain_status` always carries
+        // `cloudRelayWssUrl` on new hosts: a wss route when the relay is up,
+        // JSON null when it was turned off. Track both so an already-paired
+        // phone gains the relay the moment the host enables it, and drops it
+        // the moment it goes away. Key absent = older host → leave as-is.
+        if let url = dict["cloudRelayWssUrl"] as? String, syncIsFullWebSocketRoute(url) {
+          updateProfile { profile in
+            profile.savedRelayCandidates = Array(
+              deduplicatedAddresses([url] + (profile.savedRelayCandidates ?? [])).prefix(3)
+            )
+          }
+        } else if dict["cloudRelayWssUrl"] is NSNull {
+          updateProfile { $0.savedRelayCandidates = nil }
         }
       }
       resolve(requestId: requestId, result: .success(payload))

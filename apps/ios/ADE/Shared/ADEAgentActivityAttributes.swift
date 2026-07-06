@@ -58,6 +58,11 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public let model: String?
         public let lane: String?
         public let detail: String?
+        /// Approval item id, present only on rows whose `phase` is
+        /// `waiting_for_approval`. Threaded into the lock-screen Approve/Deny
+        /// intents so they resolve the exact pending request. Optional and
+        /// additive — older payloads without it decode to `nil`.
+        public let itemId: String?
 
         public init(
             id: String,
@@ -65,7 +70,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             phase: String,
             model: String? = nil,
             lane: String? = nil,
-            detail: String? = nil
+            detail: String? = nil,
+            itemId: String? = nil
         ) {
             self.id = id
             self.title = title
@@ -73,10 +79,11 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.model = model
             self.lane = lane
             self.detail = detail
+            self.itemId = itemId
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, title, phase, model, lane, detail
+            case id, title, phase, model, lane, detail, itemId
         }
 
         public init(from decoder: Decoder) throws {
@@ -87,6 +94,7 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.model = try? c.decodeIfPresent(String.self, forKey: .model)
             self.lane = try? c.decodeIfPresent(String.self, forKey: .lane)
             self.detail = try? c.decodeIfPresent(String.self, forKey: .detail)
+            self.itemId = try? c.decodeIfPresent(String.self, forKey: .itemId)
         }
 
         public var resolvedPhase: AgentRunPhase {
