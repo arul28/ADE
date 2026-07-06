@@ -2347,14 +2347,15 @@ function scopeSearchAdeActionArgs(
   searchArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  if (!callerChatSessionId) {
-    // Mirror scopeChatAdeActionArgs' unbound-caller policy: an unbound
-    // external caller (user CLI / desktop) keeps whole-project search, while
-    // an unbound agent/orchestrator/evaluator — which chat.readTranscript
-    // would deny outright — gets no session content at all.
-    if (session.identity.role === "external") return searchArgs;
-    return { ...searchArgs, callerScope: { excludeSessionContent: true } };
-  }
+  // Session-bound callers are ADE-launched workers (ADE exports
+  // ADE_CHAT_SESSION_ID into every tracked agent shell and chat runtime), so
+  // scoping the bound case alone achieves the worker isolation that
+  // chat/terminal reads enforce. Unbound callers are human/dev shells — the
+  // plain `ade` CLI initializes as role "agent" with no session binding — and
+  // whole-project search is this feature's documented contract for them;
+  // unlike chat.readTranscript, search exposes bounded snippets, not full
+  // transcripts.
+  if (!callerChatSessionId) return searchArgs;
   return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
 }
 

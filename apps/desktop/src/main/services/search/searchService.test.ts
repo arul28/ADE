@@ -940,3 +940,28 @@ describe("searchService owner-scoped attached terminals", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 });
+
+describe("searchService since: filter on delegated files", () => {
+  it("omits file results when a since: filter is present (files carry no timestamps)", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test9-"));
+    const quickOpen = vi.fn(async () => [{ path: "src/todo.ts" }]);
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      files: { quickOpen, searchText: async () => [] },
+      now: () => NOW
+    });
+
+    const withSince = await service.query({ query: "todo since:7d", kinds: ["file"] });
+    expect(withSince.results).toEqual([]);
+    expect(quickOpen).not.toHaveBeenCalled();
+
+    const withoutSince = await service.query({ query: "todo", kinds: ["file"] });
+    expect(withoutSince.results.some((r) => r.id === "file:src/todo.ts")).toBe(true);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

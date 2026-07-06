@@ -1111,6 +1111,9 @@ export function createSearchService(deps: SearchServiceDeps) {
     laneId: string | null
   ): Promise<Candidate[]> => {
     if (!deps.files || matchAll) return [];
+    // File hits carry no timestamps, so a since: filter cannot be honored for
+    // them — skip rather than return results of unknown recency.
+    if (parsed.sinceIso) return [];
     const queryText = rankQueryText(parsed);
     if (!queryText) return [];
     const out: Candidate[] = [];
@@ -1206,7 +1209,10 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (!queryText) return [];
     try {
       const { issues } = await deps.linear.searchIssues(queryText);
-      return issues.map((issue) => {
+      const recentEnough = parsed.sinceIso
+        ? issues.filter((issue) => (issue.updatedAt ?? "") >= parsed.sinceIso!)
+        : issues;
+      return recentEnough.map((issue) => {
         let deepLink: string;
         try {
           deepLink = buildDeeplink(

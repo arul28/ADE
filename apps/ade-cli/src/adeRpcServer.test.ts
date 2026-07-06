@@ -3889,7 +3889,7 @@ describe("run_ade_action search scoping", () => {
     expect(args.callerScope).toEqual({ chatSessionId: "session-1" });
   });
 
-  it("excludes session content for an unbound agent-role caller", async () => {
+  it("keeps an unbound agent-role caller unscoped (plain `ade` CLI defaults to role agent)", async () => {
     const fixture = createRuntime();
     const search = searchServiceMock();
     (fixture.runtime as Record<string, unknown>).searchService = search;
@@ -3903,7 +3903,7 @@ describe("run_ade_action search scoping", () => {
     });
     expect(response?.isError).toBeUndefined();
     const args = search.query.mock.calls[0]![0] as { callerScope?: Record<string, unknown> };
-    expect(args.callerScope).toEqual({ excludeSessionContent: true });
+    expect(args.callerScope).toBeUndefined();
   });
 
   it("leaves an unbound external caller unscoped", async () => {
