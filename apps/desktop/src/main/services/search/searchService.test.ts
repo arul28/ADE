@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import { createSearchService, type SearchService } from "./searchService";
 
@@ -291,5 +291,117 @@ describe("searchService", () => {
     expect(status.docCount).toBeGreaterThan(0);
     expect(status.docCountByKind.chat).toBeGreaterThan(0);
     expect(status.indexPath).toContain("search-index.db");
+  });
+});
+
+describe("searchService classification and lane-git dedup", () => {
+  let root: string;
+  let sessions: TerminalSessionSummary[];
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test2-"));
+    sessions = [];
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const writeChatLine = (sessionId: string, event: Record<string, unknown>, timestamp: string) => {
+    const dir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(
+      path.join(dir, `${sessionId}.jsonl`),
+      `${JSON.stringify({ sessionId, timestamp, event })}\n`
+    );
+  };
+
+  it("indexes cursor-chat sessions (toolType 'cursor') as chat", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      now: () => NOW
+    });
+    sessions.push(makeSession({ id: "cursor-1", title: "Cursor chat", toolType: "cursor" }));
+    writeChatLine("cursor-1", { type: "user_message", text: "cursor quimby message" }, "2026-07-05T10:00:00.000Z");
+    service.notifyChatEvent("cursor-1");
+    await service.processPendingNow();
+
+    const result = await service.query({ query: "quimby" });
+    expect(result.results.some((item) => item.kind === "chat" && item.sessionId === "cursor-1")).toBe(true);
+    service.dispose();
+  });
+
+  it("indexes branches only from the primary lane", async () => {
+    const lanes = [
+      {
+        id: "lane-primary",
+        name: "main",
+        laneType: "primary",
+        baseRef: "main",
+        branchRef: "main",
+        worktreePath: "/tmp/a",
+        parentLaneId: null,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: null,
+        isEditProtected: false,
+        status: { dirty: false, ahead: 0, behind: 0 },
+        color: null,
+        icon: null,
+        tags: [],
+        createdAt: "2026-07-01T00:00:00.000Z"
+      },
+      {
+        id: "lane-work",
+        name: "feature",
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "ade/feature",
+        worktreePath: "/tmp/b",
+        parentLaneId: null,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: null,
+        isEditProtected: false,
+        status: { dirty: false, ahead: 0, behind: 0 },
+        color: null,
+        icon: null,
+        tags: [],
+        createdAt: "2026-07-01T00:00:00.000Z"
+      }
+    ] as never[];
+    const listBranches = vi.fn().mockResolvedValue([
+      { name: "main", isCurrent: true, isRemote: false, upstream: null },
+      { name: "ade/feature", isCurrent: false, isRemote: false, upstream: null }
+    ]);
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      lanes: { list: async () => lanes as never },
+      git: {
+        listRecentCommits: async () => [],
+        listBranches
+      },
+      now: () => NOW
+    });
+
+    service.notifyLaneActivity("lane-primary");
+    service.notifyLaneActivity("lane-work");
+    await service.processPendingNow();
+
+    expect(listBranches).toHaveBeenCalledTimes(1);
+    expect(listBranches).toHaveBeenCalledWith({ laneId: "lane-primary" });
+    const result = await service.query({ query: "kind:branch feature" });
+    const branchIds = result.results.map((item) => item.id);
+    expect(branchIds).toEqual(["branch:lane-primary:ade/feature"]);
+    service.dispose();
   });
 });

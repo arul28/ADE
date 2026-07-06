@@ -3356,7 +3356,7 @@ app.whenReady().then(async () => {
       chatTranscriptsDir: adePaths.chatTranscriptsDir,
       logger,
       sessions: {
-        list: async () => sessionService.list({}),
+        list: async () => sessionService.list({ limit: null }),
         get: async (sessionId) => sessionService.get(sessionId),
       },
       lanes: {

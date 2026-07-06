@@ -34,6 +34,7 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
 - Keep IPC contracts, preload types, shared types, and renderer usage in sync whenever an interface changes.
 - For ADE CLI changes, verify both headless mode and the desktop socket-backed ADE RPC path.
 - For computer-use changes, treat policy enforcement and artifact ownership as hard requirements, not prompt guidance.
+- `ade search "<query>" --text` searches everything in ADE (chats, terminal scrollback, PRs, commits, branches, lanes, files, Linear) instead of grepping `.ade/` internals; see the ade-search skill.
 
 ## Validation
 

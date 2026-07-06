@@ -163,7 +163,10 @@ export type SearchServiceDeps = {
 
 function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
-  return toolType.trim().toLowerCase().endsWith("-chat");
+  const normalized = toolType.trim().toLowerCase();
+  // Cursor SDK chats are recorded as plain "cursor" (the CLI variant is
+  // "cursor-cli"); every other chat provider uses a "-chat" suffix.
+  return normalized === "cursor" || normalized.endsWith("-chat");
 }
 
 function clampBody(text: string): string {
@@ -461,8 +464,23 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (fs.existsSync(durable)) return durable;
     const legacy = path.join(deps.transcriptsDir, `${session.id}.chat.jsonl`);
     if (fs.existsSync(legacy)) return legacy;
-    if (session.transcriptPath && fs.existsSync(session.transcriptPath)) return session.transcriptPath;
+    // Only trust the row's transcriptPath when it is a chat JSONL — terminal
+    // sessions carry a .log path here.
+    if (
+      session.transcriptPath &&
+      session.transcriptPath.endsWith(".jsonl") &&
+      fs.existsSync(session.transcriptPath)
+    ) {
+      return session.transcriptPath;
+    }
     return null;
+  };
+
+  /** Chat classification: known chat tool type, or a chat transcript on disk
+   * (legacy rows persisted with toolType "other"). */
+  const isChatSession = (session: TerminalSessionSummary): boolean => {
+    if (isChatToolType(session.toolType)) return true;
+    return chatTranscriptPathFor(session) !== null;
   };
 
   const processChatSession = async (sessionId: string): Promise<void> => {
@@ -471,7 +489,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       removeSessionDocs(sessionId);
       return;
     }
-    if (!isChatToolType(session.toolType)) return;
+    if (!isChatSession(session)) return;
     const sourceId = `chat:${sessionId}`;
     const filePath = chatTranscriptPathFor(session);
     withTransaction(() => upsertSessionMetaDoc(session, "chat"));
@@ -718,10 +736,15 @@ export function createSearchService(deps: SearchServiceDeps) {
     } catch {
       // lane worktree may be unavailable
     }
-    try {
-      branches = await deps.git.listBranches({ laneId });
-    } catch {
-      // ignore
+    // listBranches returns every branch visible from the lane's repo, so
+    // indexing it per lane would duplicate the whole branch list N times.
+    // Branches are indexed once, from the primary lane.
+    if (lane.laneType === "primary") {
+      try {
+        branches = await deps.git.listBranches({ laneId });
+      } catch {
+        // ignore
+      }
     }
     let laneLink: string;
     try {
@@ -808,8 +831,8 @@ export function createSearchService(deps: SearchServiceDeps) {
           if (!liveIds.has(row.session_id)) removeSessionDocs(row.session_id);
         }
         for (const session of sessions) {
-          if (isChatToolType(session.toolType)) enqueue("chat-session", session.id, 0);
-          else enqueue("terminal-session", session.id, 0);
+          if (isChatSession(session)) enqueue("chat-session", session.id, 0);
+          if (!isChatToolType(session.toolType)) enqueue("terminal-session", session.id, 0);
         }
         if (deps.prs) enqueue("pr-sweep", "all", 0);
         if (deps.lanes && deps.git) {
