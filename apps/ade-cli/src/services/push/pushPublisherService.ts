@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { PtyExitEvent } from "../../../../desktop/src/shared/types/sessions";
@@ -19,6 +20,15 @@ import type {
 export const AGENT_RUNS_ACTIVITY_ID = "agent-runs";
 export const AGENT_RUNS_ATTRIBUTES_TYPE = "ADEAgentRunsAttributes";
 export const AGENT_RUNS_DEDUPE_KEY = "la:agent-runs";
+/**
+ * Machine-level push identity/registration file. Also the key of the shared
+ * publisher singleton — bootstrap (create) and the daemon shutdown path (peek)
+ * must resolve the identical path or the shutdown Live-Activity end silently
+ * misses the instance.
+ */
+export function resolvePushRelayStateFile(secretsDir: string): string {
+  return path.join(secretsDir, "push-relay.json");
+}
 /** UNNotificationCategory id iOS binds Approve/Deny actions to. */
 export const APPROVAL_NOTIFICATION_CATEGORY = "ADE_APPROVAL";
 const BADGE_DEDUPE_KEY = "alert:badge";
@@ -546,17 +556,20 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
 
     // The badge must also track *drops* (an approval answered on the Mac), which
-    // produce no alert. A silent badge-only item keeps the icon honest; the
-    // relay's content-hash suppression absorbs unchanged resends.
-    const badgeDeviceIds = devices
-      .filter((device) => Boolean(device.apnsToken) && device.prefs.enabled)
+    // produce no alert — and devices whose alert was muted still need the new
+    // count. A silent badge-only item targets every alert-enabled device NOT
+    // already covered by an alert in this flush; the relay's content-hash
+    // suppression absorbs unchanged resends.
+    const alertCoveredDeviceIds = new Set(alertItems.flatMap((item) => item.deviceIds ?? []));
+    const badgeSyncDeviceIds = devices
+      .filter((device) =>
+        Boolean(device.apnsToken)
+        && device.prefs.enabled
+        && !alertCoveredDeviceIds.has(device.deviceId))
       .map((device) => device.deviceId);
-    const needsBadgeSync = badgeCount !== lastSentBadgeCount
-      && alertItems.length === 0
-      && badgeDeviceIds.length > 0;
-    if (needsBadgeSync) {
+    if (badgeCount !== lastSentBadgeCount && badgeSyncDeviceIds.length > 0) {
       alertItems.push({
-        deviceIds: badgeDeviceIds,
+        deviceIds: badgeSyncDeviceIds,
         title: "",
         sound: null,
         dedupeKey: BADGE_DEDUPE_KEY,
@@ -871,6 +884,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  const dispose = (): void => {
+    disposed = true;
+    for (const scopeKey of [...scopes.keys()]) detachScope(scopeKey);
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = null;
+  };
+
   return {
     /** Warm the APNs-configured cache. Idempotent; safe to call per scope. */
     async start(): Promise<void> {
@@ -954,12 +974,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       return buildDeliveryStatus(deviceId);
     },
 
-    dispose(): void {
-      disposed = true;
-      for (const scopeKey of [...scopes.keys()]) detachScope(scopeKey);
-      if (flushTimer) clearTimeout(flushTimer);
-      flushTimer = null;
-    },
+    dispose,
 
     /**
      * Daemon-exit path: best-effort `end` for the aggregate Live Activity so
@@ -968,6 +983,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
      * and only sent when a start was actually committed. Ends with dispose().
      */
     async shutdown(): Promise<void> {
+      // Stop any scheduled flush first so a timer-driven publish can't race
+      // the shutdown `end`.
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = null;
+      flushFireAt = 0;
       if (!disposed && liveActivityStarted && !isGated()) {
         try {
           const nowMs = now();
@@ -989,9 +1009,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
               dismissalDate: Math.floor(nowMs / 1000) + 60,
             };
             let timeout: NodeJS.Timeout | null = null;
+            // Keep a handle so a publish that loses the race can't surface as
+            // an unhandled rejection after shutdown returns.
+            const publishPromise = deps.relayClient.publish({ liveActivity: [item] });
+            publishPromise.catch(() => {});
             try {
               await Promise.race([
-                deps.relayClient.publish({ liveActivity: [item] }),
+                publishPromise,
                 new Promise<never>((_, reject) => {
                   timeout = setTimeout(() => reject(new Error("shutdown publish timed out")), SHUTDOWN_PUBLISH_TIMEOUT_MS);
                 }),
@@ -1004,7 +1028,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           logWarn("push.shutdown_end_failed", error);
         }
       }
-      this.dispose();
+      dispose();
     },
 
     // Exposed for tests / diagnostics.

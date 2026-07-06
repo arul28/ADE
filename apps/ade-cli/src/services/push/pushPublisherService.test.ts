@@ -249,6 +249,55 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("badge-syncs devices whose alert was muted while the alert covers the rest", async () => {
+    const deviceB = { ...device, deviceId: "dev-2", prefs: { ...device.prefs, mutedSessionIds: ["s-1"] } };
+    const publish = vi.fn().mockResolvedValue({ ok: true });
+    const store = {
+      hasRegisteredDevices: () => true,
+      getStatusSnapshot: () => ({ enabled: true, claimed: true, registeredDeviceCount: 2, lastPublishAt: null, lastPublishError: null, lastRelayContactAt: null }),
+      listDevices: () => [device, deviceB],
+      getDevice: () => device,
+      recordPublishResult: vi.fn(),
+      recordRelayContact: vi.fn(),
+    };
+    const relayClient = { publish, health: vi.fn().mockResolvedValue({ ok: true, apnsConfigured: true }), baseUrl: "https://relay.test" };
+    let chatCb: ((env: AgentChatEventEnvelope) => void) | null = null;
+    const emit = (env: AgentChatEventEnvelope) => chatCb?.(env);
+    const publisher = createPushPublisherService({
+      logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as never,
+      store: store as never,
+      relayClient: relayClient as never,
+      machineName: "MacBook",
+      flushDebounceMs: 2_000,
+      promptFlushMs: 150,
+    });
+    publisher.attachSources("scope-1", {
+      agentChatService: {
+        subscribeToEvents: (cb: (env: AgentChatEventEnvelope) => void) => {
+          chatCb = cb;
+          return () => {};
+        },
+        getSessionSummary: vi.fn().mockResolvedValue(null),
+      } as never,
+    });
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls[0][0];
+    const alertItem = payload.notifications.find((item: { title: string }) => item.title.length > 0);
+    const badgeItem = payload.notifications.find((item: { dedupeKey?: string }) => item.dedupeKey === "alert:badge");
+    // The audible alert reaches only the unmuted device...
+    expect(alertItem.deviceIds).toEqual(["dev-1"]);
+    expect(alertItem.badge).toBe(1);
+    // ...while the muted device still gets the new badge count silently.
+    expect(badgeItem.deviceIds).toEqual(["dev-2"]);
+    expect(badgeItem.badge).toBe(1);
+
+    publisher.dispose();
+  });
+
   it("sends a silent badge-only item when the awaiting count drops with no alert", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();

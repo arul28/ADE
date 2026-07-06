@@ -13564,9 +13564,9 @@ async function runServe(
     // Activity `end` so the lock screen doesn't show dead agents until the
     // stale-date dim. Bounded by the publisher's internal timeout.
     try {
-      const { peekSharedPushPublisherService } = await import("./services/push/pushPublisherService");
+      const { peekSharedPushPublisherService, resolvePushRelayStateFile } = await import("./services/push/pushPublisherService");
       await peekSharedPushPublisherService(
-        path.join(layout.secretsDir, "push-relay.json"),
+        resolvePushRelayStateFile(layout.secretsDir),
       )?.shutdown();
     } catch {
       // Shutdown must never hang or fail on push cleanup.

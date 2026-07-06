@@ -99,7 +99,7 @@ import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowse
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
-import { getSharedPushPublisherService, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
+import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
@@ -1178,7 +1178,7 @@ export async function createAdeRuntime(args: {
   // push-identity file), so a run in one project doesn't clobber the phone's
   // single "agent-runs" Live Activity for another. Each scope wires its own
   // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
-  const pushRelayFilePath = path.join(resolveMachineAdeLayout().secretsDir, "push-relay.json");
+  const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
   const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
     const store = createPushRegistrationStore({ filePath: pushRelayFilePath });
     return {

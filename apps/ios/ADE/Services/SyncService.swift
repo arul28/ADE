@@ -7607,6 +7607,19 @@ final class SyncService: ObservableObject {
     deduplicatedStrings(addresses)
   }
 
+  /// Folds a host-advertised relay URL (from `hello_ok` / `brain_status`
+  /// `cloudRelayWssUrl`) into a profile's saved relay candidates: validated,
+  /// deduplicated, freshest first, capped at 3. Nil/invalid `advertised` keeps
+  /// the existing list (filtered), so an older host never wipes saved routes.
+  func syncMergedRelayCandidates(advertised: String?, existing: [String]?) -> [String] {
+    let validAdvertised = advertised.flatMap { syncIsFullWebSocketRoute($0) ? $0 : nil }
+    return Array(
+      deduplicatedAddresses((validAdvertised.map { [$0] } ?? []) + (existing ?? []))
+        .filter(syncIsFullWebSocketRoute)
+        .prefix(3)
+    )
+  }
+
   private func deduplicatedStrings(_ values: [String]) -> [String] {
     var seen = Set<String>()
     return values
@@ -8798,16 +8811,9 @@ final class SyncService: ObservableObject {
     // the relay route even when it never scanned a relay QR. Preserve any
     // previously-saved relay URLs (the rebuilt profile would otherwise drop
     // them, since the init defaults `savedRelayCandidates` to nil).
-    let advertisedRelayUrl = (payload["cloudRelayWssUrl"] as? String).flatMap { url in
-      syncIsFullWebSocketRoute(url) ? url : nil
-    }
-    let mergedRelayCandidates = Array(
-      deduplicatedAddresses(
-        (advertisedRelayUrl.map { [$0] } ?? [])
-          + (activeHostProfile?.savedRelayCandidates ?? [])
-      )
-      .filter(syncIsFullWebSocketRoute)
-      .prefix(3)
+    let mergedRelayCandidates = syncMergedRelayCandidates(
+      advertised: payload["cloudRelayWssUrl"] as? String,
+      existing: activeHostProfile?.savedRelayCandidates
     )
 
     let profile = HostConnectionProfile(
@@ -9099,9 +9105,8 @@ final class SyncService: ObservableObject {
         // the moment it goes away. Key absent = older host → leave as-is.
         if let url = dict["cloudRelayWssUrl"] as? String, syncIsFullWebSocketRoute(url) {
           updateProfile { profile in
-            profile.savedRelayCandidates = Array(
-              deduplicatedAddresses([url] + (profile.savedRelayCandidates ?? [])).prefix(3)
-            )
+            let merged = syncMergedRelayCandidates(advertised: url, existing: profile.savedRelayCandidates)
+            profile.savedRelayCandidates = merged.isEmpty ? nil : merged
           }
         } else if dict["cloudRelayWssUrl"] is NSNull {
           updateProfile { $0.savedRelayCandidates = nil }

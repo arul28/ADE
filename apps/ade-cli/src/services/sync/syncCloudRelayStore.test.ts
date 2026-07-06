@@ -31,6 +31,16 @@ describe("syncCloudRelayStore enablement default", () => {
     expect(store.getMachineIdentity().machineKey).toBe(machineKey);
   });
 
+  it("migrates a legacy implicit enabled:false (no user marker) to enabled", () => {
+    // Pre-default-on builds persisted `enabled: false` on first run without any
+    // user action. Those files must read as enabled after the flip; only a
+    // marker-stamped false (setEnabled) is a real kill-switch choice.
+    const seeded = createSyncCloudRelayStore({ filePath });
+    const { machineKey, secret } = seeded.getMachineIdentity();
+    fs.writeFileSync(filePath, `${JSON.stringify({ enabled: false, machineKey, secret })}\n`);
+    expect(createSyncCloudRelayStore({ filePath }).isEnabled()).toBe(true);
+  });
+
   it("preserves an explicit kill-switch false across reads", () => {
     const store = createSyncCloudRelayStore({ filePath });
     store.setEnabled(false);

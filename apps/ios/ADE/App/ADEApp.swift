@@ -37,6 +37,10 @@ struct ADEApp: App {
           // Clear the badge on every foreground, independent of the sync
           // throttle below — a lingering count after re-entry reads as stale.
           Task { await PushNotificationService.shared.clearAppBadge() }
+          // Defense-in-depth: drain intent commands queued by an extension
+          // process while the bridge wasn't reachable (cold launch drains via
+          // register(); this covers warm foregrounds).
+          Task { await ADEIntentCommandRegistry.drainPendingCommands() }
           guard didBootstrapSync else { return }
           let now = Date()
           guard now.timeIntervalSince(lastActivationSyncAt) > 1.0 else { return }
