@@ -69,6 +69,7 @@ import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import {
+  collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
   formatStructuredValue,
   groupConsecutiveWorkLogRows,
@@ -98,6 +99,7 @@ import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { CodexContextCompactionChip } from "./codex/CodexContextCompactionChip";
+import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -3779,6 +3781,7 @@ type EventRowProps = {
   sessionId?: string | null;
   runtimeName?: string | null;
   mosaic?: MosaicRenderContext;
+  anchored?: boolean;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -3807,12 +3810,19 @@ const EventRow = React.memo(function EventRow({
   sessionId,
   runtimeName,
   mosaic,
+  anchored,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
     && Boolean(isLatestWorkLog);
   return (
-    <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
+    <div
+      data-chat-anchored-row={anchored ? "true" : undefined}
+      className={cn(
+        "min-w-0 max-w-full space-y-3 overflow-hidden transition-colors duration-700",
+        anchored && "rounded-lg bg-amber-300/[0.08] ring-1 ring-amber-300/15",
+      )}
+    >
       {showTurnDivider ? (
         <div className="my-4 flex items-center gap-3">
           <span className="h-px flex-1 bg-white/[0.06]" />
@@ -4116,6 +4126,51 @@ export function reconcileMeasuredScrollTop({
   return scrollTop;
 }
 
+export function findAnchoredChatEventIndex({
+  events,
+  anchorEvent,
+  hasFullHistory,
+}: {
+  events: AgentChatEventEnvelope[];
+  anchorEvent: number;
+  hasFullHistory: boolean;
+}): number {
+  if (!Number.isInteger(anchorEvent) || anchorEvent < 0) return -1;
+  const sequenceIndex = events.findIndex((envelope) => envelope.sequence === anchorEvent);
+  if (sequenceIndex >= 0) return sequenceIndex;
+  if (!hasFullHistory) return -1;
+  return anchorEvent < events.length ? anchorEvent : -1;
+}
+
+export function resolveAnchoredChatRowIndex({
+  events,
+  groupedRows,
+  anchorEvent,
+  hasFullHistory,
+}: {
+  events: AgentChatEventEnvelope[];
+  groupedRows: TranscriptGroupedEnvelope[];
+  anchorEvent: number;
+  hasFullHistory: boolean;
+}): number {
+  const eventIndex = findAnchoredChatEventIndex({ events, anchorEvent, hasFullHistory });
+  if (eventIndex < 0) return -1;
+  const targetRows = groupConsecutiveWorkLogRows(
+    collapseChatTranscriptEvents(events.slice(0, eventIndex + 1)),
+  );
+  const targetRow = targetRows[targetRows.length - 1];
+  if (!targetRow) return -1;
+  return groupedRows.findIndex((row) => row.key === targetRow.key);
+}
+
+type PendingChatEventAnchor = {
+  event: number;
+  loadRequests: number;
+  waitingForOlderHistory: boolean;
+  sawOlderHistoryLoading: boolean;
+  lastEventsLength: number;
+};
+
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
@@ -4203,6 +4258,10 @@ function AgentChatMessageListMain({
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(0);
   const [measurementTick, setMeasurementTick] = useState(0);
+  const [anchoredRowKey, setAnchoredRowKey] = useState<string | null>(null);
+  const pendingChatEventAnchorRef = useRef<PendingChatEventAnchor | null>(null);
+  const anchorHighlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const anchorCorrectionRafRef = useRef<number | null>(null);
   // Map of row key → measured height (filled in lazily as rows render).
   // Keeping this keyed by row identity prevents stale measurements from a
   // previous row at the same index from creating phantom scroll space.
@@ -4240,6 +4299,22 @@ function AgentChatMessageListMain({
   useEffect(() => {
     onApprovalRef.current = onApproval;
   }, [onApproval]);
+
+  useLayoutEffect(() => {
+    pendingChatEventAnchorRef.current = null;
+    setAnchoredRowKey(null);
+  }, [sessionId]);
+
+  useEffect(() => () => {
+    if (anchorHighlightTimerRef.current) {
+      clearTimeout(anchorHighlightTimerRef.current);
+      anchorHighlightTimerRef.current = null;
+    }
+    if (anchorCorrectionRafRef.current !== null) {
+      cancelAnimationFrame(anchorCorrectionRafRef.current);
+      anchorCorrectionRafRef.current = null;
+    }
+  }, []);
 
   const handleApproval = useCallback((itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => {
     onApprovalRef.current?.(itemId, decision, responseText, answers);
@@ -4478,6 +4553,125 @@ function AgentChatMessageListMain({
     const key = groupedRowKeys[index];
     return key ? (measuredHeights.current.get(key) ?? ESTIMATED_ROW_HEIGHT) : ESTIMATED_ROW_HEIGHT;
   }, [groupedRowKeys]);
+
+  const scrollToRowIndexNearTop = useCallback((rowIndex: number) => {
+    const el = scrollRef.current;
+    if (!el || rowIndex < 0 || rowIndex >= groupedRows.length) return false;
+    const offsets = computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx);
+    const targetTop = computeScrollTopForRow(rowIndex, offsets);
+    const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+    const clamped = Math.max(0, Math.min(maxScroll, targetTop));
+    stickToBottomRef.current = false;
+    setStickToBottom(false);
+    scrollFollowFramesRef.current = 0;
+    if (scrollRafRef.current !== null) {
+      cancelAnimationFrame(scrollRafRef.current);
+      scrollRafRef.current = null;
+    }
+    const before = el.scrollTop;
+    el.scrollTop = clamped;
+    if (el.scrollTop !== before) {
+      programmaticScrollTargetRef.current = el.scrollTop;
+    }
+    setScrollTop(el.scrollTop);
+    return true;
+  }, [groupedRows.length, rowHeight, timelineRowGapPx]);
+
+  const scheduleAnchoredRowCorrection = useCallback((rowKey: string) => {
+    if (anchorCorrectionRafRef.current !== null) {
+      cancelAnimationFrame(anchorCorrectionRafRef.current);
+      anchorCorrectionRafRef.current = null;
+    }
+    let remainingFrames = 2;
+    const run = () => {
+      anchorCorrectionRafRef.current = null;
+      const rowIndex = groupedRowKeys.indexOf(rowKey);
+      if (rowIndex >= 0) scrollToRowIndexNearTop(rowIndex);
+      remainingFrames -= 1;
+      if (remainingFrames > 0) {
+        anchorCorrectionRafRef.current = requestAnimationFrame(run);
+      }
+    };
+    anchorCorrectionRafRef.current = requestAnimationFrame(run);
+  }, [groupedRowKeys, scrollToRowIndexNearTop]);
+
+  useLayoutEffect(() => {
+    if (!sessionId || events.length === 0) return;
+    let pending = pendingChatEventAnchorRef.current;
+    if (!pending) {
+      const queued = peekPendingSessionAnchor(sessionId);
+      if (queued?.event == null) return;
+      const consumed = takePendingSessionAnchor(sessionId);
+      if (consumed?.event == null) return;
+      pending = {
+        event: consumed.event,
+        loadRequests: 0,
+        waitingForOlderHistory: false,
+        sawOlderHistoryLoading: false,
+        lastEventsLength: events.length,
+      };
+      pendingChatEventAnchorRef.current = pending;
+    }
+
+    if (pending.waitingForOlderHistory) {
+      if (loadingOlderHistory) {
+        pending.sawOlderHistoryLoading = true;
+      } else if (!pending.sawOlderHistoryLoading && events.length === pending.lastEventsLength) {
+        return;
+      } else {
+        pending.waitingForOlderHistory = false;
+        pending.sawOlderHistoryLoading = false;
+      }
+    }
+
+    const rowIndex = resolveAnchoredChatRowIndex({
+      events,
+      groupedRows,
+      anchorEvent: pending.event,
+      hasFullHistory: !hasOlderHistory,
+    });
+    if (rowIndex >= 0) {
+      const rowKey = groupedRows[rowIndex]?.key ?? null;
+      pendingChatEventAnchorRef.current = null;
+      if (rowKey) {
+        setAnchoredRowKey(rowKey);
+        if (anchorHighlightTimerRef.current) clearTimeout(anchorHighlightTimerRef.current);
+        anchorHighlightTimerRef.current = setTimeout(() => {
+          anchorHighlightTimerRef.current = null;
+          setAnchoredRowKey((current) => (current === rowKey ? null : current));
+        }, 2000);
+      }
+      scrollToRowIndexNearTop(rowIndex);
+      if (rowKey) scheduleAnchoredRowCorrection(rowKey);
+      return;
+    }
+
+    if (!hasOlderHistory) {
+      pendingChatEventAnchorRef.current = null;
+      return;
+    }
+    if (loadingOlderHistory) return;
+    if (pending.loadRequests >= 10) {
+      pendingChatEventAnchorRef.current = null;
+      return;
+    }
+    pending.loadRequests += 1;
+    pending.waitingForOlderHistory = true;
+    pending.sawOlderHistoryLoading = false;
+    pending.lastEventsLength = events.length;
+    onLoadOlderHistory?.();
+  }, [
+    sessionId,
+    events,
+    groupedRows,
+    hasOlderHistory,
+    loadingOlderHistory,
+    onLoadOlderHistory,
+    location.key,
+    location.search,
+    scrollToRowIndexNearTop,
+    scheduleAnchoredRowCorrection,
+  ]);
 
   /** Callback from MeasuredEventRow when it measures its real DOM height. */
   const measureFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -4751,6 +4945,7 @@ function AgentChatMessageListMain({
     const isLatestWorkLog = index === latestWorkLogIndex;
 
     const rowTurnActive = Boolean(currentTurn && activeTurnId && currentTurn === activeTurnId) && !sessionEnded;
+    const anchored = envelope.key === anchoredRowKey;
 
     if (virtualized) {
       return (
@@ -4783,6 +4978,7 @@ function AgentChatMessageListMain({
           sessionId={sessionId}
           runtimeName={runtimeName}
           mosaic={mosaic}
+          anchored={anchored}
         />
       );
     }
@@ -4814,9 +5010,10 @@ function AgentChatMessageListMain({
         sessionId={sessionId}
         runtimeName={runtimeName}
         mosaic={mosaic}
+        anchored={anchored}
       />
     );
-  }, [activeTurnId, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

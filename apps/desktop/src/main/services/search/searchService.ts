@@ -566,6 +566,9 @@ export function createSearchService(deps: SearchServiceDeps) {
         docSeq += 1;
         const text = chatEventSearchText(envelope);
         if (!text) continue;
+        const eventAnchor = typeof envelope.sequence === "number" && envelope.sequence >= 0
+          ? envelope.sequence
+          : seq;
         const sanitized = sanitizeIndexedText(text);
         upsertDoc({
           docId: `chat:${sessionId}:${seq}`,
@@ -576,7 +579,7 @@ export function createSearchService(deps: SearchServiceDeps) {
           title: session.title,
           rankTitle: null,
           snippetSource: sanitized.slice(0, 240),
-          deepLink: withQueryParam(baseLink, "event", seq),
+          deepLink: withQueryParam(baseLink, "event", eventAnchor),
           updatedAt: envelope.timestamp,
           body: sanitized
         });

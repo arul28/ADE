@@ -111,12 +111,14 @@ export function FilesWorkbench({
   active = true,
   externalOpenPath,
   externalOpenNonce,
+  externalOpenLine,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
   active?: boolean;
   externalOpenPath?: string | null;
   externalOpenNonce?: string | null;
+  externalOpenLine?: number | null;
 }) {
   const project = useAppStore((s) => s.project);
   const projectRootPath = project?.rootPath ?? "";
@@ -170,6 +172,7 @@ export function FilesWorkbench({
     path: string | null;
     pathType: "file" | "directory";
     nonce: string;
+    line?: number | null;
   } | null>(null);
   const handledExternalOpenRef = useRef<string | null>(null);
   const lastGlobalLaneIdRef = useRef(globalLaneId);
@@ -765,7 +768,7 @@ export function FilesWorkbench({
   );
 
   const openExternalPathRequest = useCallback(
-    async (absolutePath: string, nonce: string) => {
+    async (absolutePath: string, nonce: string, line?: number | null) => {
       try {
         const result = await window.ade.files.openExternalPath({ path: absolutePath });
         if (result.workspace.kind === "external") {
@@ -777,6 +780,7 @@ export function FilesWorkbench({
           path: result.openPath,
           pathType: result.pathType,
           nonce,
+          line: line ?? null,
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -790,15 +794,18 @@ export function FilesWorkbench({
     const key = `${externalOpenNonce ?? ""}:${externalOpenPath}`;
     if (handledExternalOpenRef.current === key) return;
     handledExternalOpenRef.current = key;
-    void openExternalPathRequest(externalOpenPath, key);
-  }, [active, externalOpenPath, externalOpenNonce, openExternalPathRequest]);
+    void openExternalPathRequest(externalOpenPath, key, externalOpenLine);
+  }, [active, externalOpenPath, externalOpenNonce, externalOpenLine, openExternalPathRequest]);
 
   useEffect(() => {
     if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
     const pending = pendingWorkspaceOpen;
     setPendingWorkspaceOpen(null);
     if (pending.pathType === "file" && pending.path) {
-      void openFile(pending.path, { preview: false });
+      void openFile(pending.path, {
+        preview: false,
+        ...(pending.line && pending.line > 0 ? { line: pending.line } : {}),
+      });
       return;
     }
     setSelectedNodePath(pending.path);

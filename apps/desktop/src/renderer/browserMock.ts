@@ -3279,6 +3279,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         clearedAt: new Date().toISOString(),
       }),
       listRecent: resolved([]),
+      findForRepo: resolved(null),
       closeCurrent: resolved(undefined),
       resolveIcon: resolvedArg({
         dataUrl: null,

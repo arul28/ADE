@@ -27,6 +27,7 @@ import {
   type WorkPtyLaunchResult,
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
+import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
@@ -678,7 +679,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const stripUrlFilterParams = useCallback(() => {
     if (!isWorkRoute) return;
     const nextParams = new URLSearchParams(searchParams);
-    for (const key of ["laneId", "lane", "status", "sessionId"]) {
+    for (const key of ["laneId", "lane", "status", "sessionId", "event", "offset"]) {
       nextParams.delete(key);
     }
     // Use URLSearchParams.toString() as the stable comparison anchor: if stripping
@@ -1119,6 +1120,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (!session) return;
 
     appliedQuerySessionIdRef.current = sessionParam;
+    // Deeplink anchors (?event=<seq> for chat, ?offset=<bytes> for terminal
+    // scrollback) are handed off one-shot to the session's content surface.
+    const eventRaw = (searchParams.get("event") ?? "").trim();
+    const offsetRaw = (searchParams.get("offset") ?? "").trim();
+    setPendingSessionAnchor(session.id, {
+      event: /^\d+$/.test(eventRaw) ? Number(eventRaw) : undefined,
+      offset: /^\d+$/.test(offsetRaw) ? Number(offsetRaw) : undefined,
+    });
     selectLane(session.laneId);
     focusSession(session.id);
     setProjectViewState((prev) => {

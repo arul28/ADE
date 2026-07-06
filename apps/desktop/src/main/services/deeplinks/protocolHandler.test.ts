@@ -9,6 +9,7 @@ describe("deeplinkToNavigationTarget", () => {
     expect(deeplinkToNavigationTarget({ kind: "lane", laneId: UUID })).toEqual({
       kind: "lane",
       laneId: UUID,
+      envelope: null,
     });
   });
 
@@ -16,6 +17,39 @@ describe("deeplinkToNavigationTarget", () => {
     expect(deeplinkToNavigationTarget({ kind: "session", sessionId: "session-1", laneId: UUID })).toEqual({
       kind: "work",
       sessionId: "session-1",
+      laneId: UUID,
+      envelope: null,
+      event: null,
+      offset: null,
+    });
+  });
+
+  it("preserves session anchors and envelope", () => {
+    expect(
+      deeplinkToNavigationTarget({
+        kind: "session",
+        sessionId: "session-1",
+        laneId: UUID,
+        event: 41,
+        envelope: { repoOwner: "a", repoName: "b", branch: "feat-x" },
+      }),
+    ).toEqual({
+      kind: "work",
+      sessionId: "session-1",
+      laneId: UUID,
+      envelope: { repoOwner: "a", repoName: "b", branch: "feat-x" },
+      event: 41,
+      offset: null,
+    });
+  });
+
+  it("maps file targets", () => {
+    expect(
+      deeplinkToNavigationTarget({ kind: "file", path: "src/app.ts", line: 12, laneId: UUID }),
+    ).toEqual({
+      kind: "file",
+      path: "src/app.ts",
+      line: 12,
       laneId: UUID,
     });
   });
@@ -80,7 +114,7 @@ describe("handleDeeplinkUrl", () => {
     expect(dispatch).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        target: { kind: "lane", laneId: UUID },
+        target: { kind: "lane", laneId: UUID, envelope: null },
         source: "deeplink:test",
       }),
     );

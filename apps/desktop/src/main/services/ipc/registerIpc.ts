@@ -348,6 +348,8 @@ import type {
   ProjectBrowseResult,
   ProjectDetail,
   ProjectIcon,
+  ProjectFindForRepoArgs,
+  ProjectFindForRepoResult,
   ProjectInfo,
   OpenProjectBinding,
   CreateProjectInput,
@@ -540,6 +542,7 @@ import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrows
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
+import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
@@ -3779,6 +3782,13 @@ export function registerIpc({
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
   );
+
+  ipcMain.handle(IPC.projectFindForRepo, async (_event, arg: ProjectFindForRepoArgs): Promise<ProjectFindForRepoResult> => {
+    const repoOwner = typeof arg?.repoOwner === "string" ? arg.repoOwner.trim() : "";
+    const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
+    if (!repoOwner || !repoName) return null;
+    return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+  });
 
   registerRuntimeBridge({
     appVersion: app.getVersion(),

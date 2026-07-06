@@ -38,6 +38,106 @@ describe("parseDeeplink — ade:// scheme", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("parses session links with event and offset anchors", () => {
+    const withEvent = expectOk(parseDeeplink(`ade://session/session-123?lane=${UUID}&event=42`));
+    expect(withEvent).toEqual({ kind: "session", sessionId: "session-123", laneId: UUID, event: 42 });
+    const withOffset = expectOk(parseDeeplink("ade://session/session-123?offset=0"));
+    expect(withOffset).toEqual({ kind: "session", sessionId: "session-123", offset: 0 });
+  });
+
+  it("rejects malformed session anchors", () => {
+    expect(parseDeeplink("ade://session/session-123?event=abc").ok).toBe(false);
+    expect(parseDeeplink("ade://session/session-123?offset=-5").ok).toBe(false);
+  });
+
+  it("round-trips session anchors through the builder", () => {
+    const target: DeeplinkTarget = { kind: "session", sessionId: "s-1", laneId: UUID, event: 7 };
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "https" })))).toEqual(target);
+  });
+
+  it("parses file links with line and lane", () => {
+    const target = expectOk(parseDeeplink(`ade://file/src/main/app.ts?line=42&lane=${UUID}`));
+    expect(target).toEqual({ kind: "file", path: "src/main/app.ts", line: 42, laneId: UUID });
+    const bare = expectOk(parseDeeplink("ade://file/README.md"));
+    expect(bare).toEqual({ kind: "file", path: "README.md" });
+  });
+
+  it("rejects file links with traversal, absolute paths, or bad lines", () => {
+    // Raw AND percent-encoded `..` segments are collapsed by WHATWG URL
+    // normalization before the parser sees them — the ade:// path form can
+    // never escape the root. (The validator still guards the https form.)
+    const normalized = expectOk(parseDeeplink("ade://file/src/../../etc/passwd"));
+    expect(normalized).toEqual({ kind: "file", path: "etc/passwd" });
+    const encoded = expectOk(parseDeeplink("ade://file/src/%2E%2E/secret"));
+    expect(encoded).toEqual({ kind: "file", path: "secret" });
+    expect(parseDeeplink("ade://file/src/app.ts?line=0").ok).toBe(false);
+    expect(parseDeeplink("ade://file/src/app.ts?line=abc").ok).toBe(false);
+    // The https form carries the path as a query param (no URL normalization).
+    expect(parseDeeplink("https://ade-app.dev/open?type=file&path=../etc/passwd").ok).toBe(false);
+    expect(parseDeeplink("https://ade-app.dev/open?type=file&path=/etc/passwd").ok).toBe(false);
+    expect(parseDeeplink("https://ade-app.dev/open?type=file&path=C:/windows").ok).toBe(false);
+  });
+
+  it("round-trips file targets through both builder forms", () => {
+    const target: DeeplinkTarget = { kind: "file", path: "src/a b/file.ts", line: 3, laneId: UUID };
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "https" })))).toEqual(target);
+  });
+
+  it("round-trips portable envelopes on lane and session targets", () => {
+    const envelope = {
+      repoOwner: "anthropics",
+      repoName: "claude-code",
+      branch: "users/arul/feat-x",
+      prNumber: 712,
+      linearIssue: "ADE-123",
+    };
+    const session: DeeplinkTarget = { kind: "session", sessionId: "s-1", laneId: UUID, envelope };
+    expect(expectOk(parseDeeplink(buildDeeplink(session, { form: "ade" })))).toEqual(session);
+    expect(expectOk(parseDeeplink(buildDeeplink(session, { form: "https" })))).toEqual(session);
+    const lane: DeeplinkTarget = { kind: "lane", laneId: UUID, envelope };
+    expect(expectOk(parseDeeplink(buildDeeplink(lane, { form: "ade" })))).toEqual(lane);
+    expect(expectOk(parseDeeplink(buildDeeplink(lane, { form: "https" })))).toEqual(lane);
+  });
+
+  it("round-trips commit targets with lane hint and envelope", () => {
+    const target: DeeplinkTarget = {
+      kind: "commit",
+      sha: "abc1234def5678900000000000000000000000ff",
+      laneId: UUID,
+      envelope: { repoOwner: "anthropics", repoName: "claude-code" },
+    };
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "https" })))).toEqual(target);
+    const short = expectOk(parseDeeplink("ade://commit/abc1234"));
+    expect(short).toEqual({ kind: "commit", sha: "abc1234" });
+    expect(parseDeeplink("ade://commit/xyz").ok).toBe(false);
+    expect(parseDeeplink("ade://commit/abc12").ok).toBe(false);
+  });
+
+  it("round-trips artifact targets", () => {
+    const target: DeeplinkTarget = { kind: "artifact", artifactId: "artifact-42" };
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "ade" })))).toEqual(target);
+    expect(expectOk(parseDeeplink(buildDeeplink(target, { form: "https" })))).toEqual(target);
+    expect(parseDeeplink("ade://artifact/").ok).toBe(false);
+  });
+
+  it("drops malformed envelope components without failing the link", () => {
+    const target = expectOk(
+      parseDeeplink(`ade://lane/${UUID}?repo=notaslash&branch=..%2Fbad&pr=0&linear=nope!`),
+    );
+    expect(target).toEqual({ kind: "lane", laneId: UUID });
+    const partial = expectOk(
+      parseDeeplink(`ade://session/s-1?repo=anthropics/claude-code&pr=abc`),
+    );
+    expect(partial).toEqual({
+      kind: "session",
+      sessionId: "s-1",
+      envelope: { repoOwner: "anthropics", repoName: "claude-code" },
+    });
+  });
+
   it("parses repo/branch links with simple branches", () => {
     const target = expectOk(parseDeeplink("ade://repo/anthropics/claude-code/branch/feat-deeplinks"));
     expect(target).toEqual({

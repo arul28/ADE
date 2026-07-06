@@ -49,12 +49,12 @@ describe("searchService", () => {
   let service: SearchService;
   let sessions: TerminalSessionSummary[];
 
-  const writeChatLine = (sessionId: string, event: Record<string, unknown>, timestamp: string) => {
+  const writeChatLine = (sessionId: string, event: Record<string, unknown>, timestamp: string, sequence?: number) => {
     const dir = path.join(root, "transcripts", "chat");
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(
       path.join(dir, `${sessionId}.jsonl`),
-      `${JSON.stringify({ sessionId, timestamp, event })}\n`
+      `${JSON.stringify({ sessionId, timestamp, event, ...(sequence != null ? { sequence } : {}) })}\n`
     );
   };
 
@@ -129,6 +129,25 @@ describe("searchService", () => {
     expect(hit!.snippet.toLowerCase()).toContain("flaky");
     expect(hit!.matchRanges.length).toBeGreaterThan(0);
     expect(hit!.deepLink).toContain("event=0");
+  });
+
+  it("uses persisted chat envelope sequence for deep link anchors", async () => {
+    const session = makeSession({ id: "chat-sequence", title: "Sequence links" });
+    sessions.push(session);
+    writeChatLine(
+      "chat-sequence",
+      { type: "user_message", text: "please inspect the anchored sequence" },
+      "2026-07-05T10:00:00.000Z",
+      41
+    );
+    service.notifyChatEvent("chat-sequence");
+    await service.processPendingNow();
+
+    const result = await service.query({ query: "anchored sequence" });
+    const hit = result.results.find((item) => item.kind === "chat" && item.sessionId === "chat-sequence");
+    expect(hit).toBeTruthy();
+    expect(hit!.id).toBe("chat:chat-sequence:0");
+    expect(hit!.deepLink).toContain("event=41");
   });
 
   it("indexes only new lines on subsequent appends (incremental cursor)", async () => {

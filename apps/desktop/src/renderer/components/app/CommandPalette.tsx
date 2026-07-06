@@ -46,6 +46,8 @@ import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
+import { parseDeeplink } from "../../../shared/deeplinks";
+import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
@@ -1123,6 +1125,16 @@ export function CommandPalette({
         case "terminal": {
           const sessionId = item.sessionId;
           if (!sessionId) break;
+          // Message/chunk hits carry an anchor in their deep link (event seq
+          // for chat, byte offset for terminal scrollback) — hand it off so
+          // the session's content surface positions to the hit.
+          const linkTarget = parseDeeplink(item.deepLink);
+          if (linkTarget.ok && linkTarget.target.kind === "session") {
+            setPendingSessionAnchor(sessionId, {
+              event: linkTarget.target.event,
+              offset: linkTarget.target.offset,
+            });
+          }
           // The Work tab stays mounted (keep-alive), so its select-session
           // listener focuses the target; the navigate switches the visible tab.
           window.dispatchEvent(
@@ -1169,7 +1181,7 @@ export function CommandPalette({
           // The Files tab only opens absolute paths via its external-open param,
           // and result paths are repo-relative — resolve against the matched
           // lane's worktree when the search was lane-scoped, else the project
-          // root. Line anchoring isn't supported there, so v1 opens at the top.
+          // root. Content hits carry a line anchor the editor reveals on open.
           const relative = relativeFilePathForResult(item);
           const laneWorktree = item.laneId
             ? lanes.find((lane) => lane.id === item.laneId)?.worktreePath ?? null
@@ -1179,11 +1191,12 @@ export function CommandPalette({
             const separator = root.includes("\\") ? "\\" : "/";
             const absolute = `${root}${
               root.endsWith(separator) ? "" : separator
-            }${relative}`;
+            }${relative.path}`;
+            const line = relative.line && relative.line > 0 ? `&line=${relative.line}` : "";
             navigate(
               `/files?externalPath=${encodeURIComponent(
                 absolute,
-              )}&externalOpen=${Date.now()}`,
+              )}&externalOpen=${Date.now()}${line}`,
             );
           } else {
             navigate("/files");

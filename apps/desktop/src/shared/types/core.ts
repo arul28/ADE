@@ -2,6 +2,8 @@
 // Core / project-wide types
 // ---------------------------------------------------------------------------
 
+import type { DeeplinkEnvelope } from "../deeplinks";
+
 export type LocalRuntimeServiceInstallState =
   | "not_attempted"
   | "installing"
@@ -170,11 +172,24 @@ export type AppNavigationTarget =
       kind: "work" | "chat";
       sessionId?: string | null;
       laneId?: string | null;
+      envelope?: DeeplinkEnvelope | null;
+      /** Chat anchor: event sequence number of the message to scroll to. */
+      event?: number | null;
+      /** Terminal anchor: byte offset into the session scrollback. */
+      offset?: number | null;
+    }
+  | {
+      kind: "file";
+      /** Repo-relative path; resolved against the lane worktree when laneId is present. */
+      path: string;
+      line?: number | null;
+      laneId?: string | null;
     }
   | {
       kind: "lane";
       laneId: string;
       sessionId?: string | null;
+      envelope?: DeeplinkEnvelope | null;
     }
   | {
       kind: "pr";
@@ -325,6 +340,16 @@ export type RecentProjectSummary = {
   /** Pinned recents sort above the recency order. */
   pinned?: boolean;
 };
+
+export type ProjectFindForRepoArgs = {
+  repoOwner: string;
+  repoName: string;
+};
+
+export type ProjectFindForRepoResult = {
+  rootPath: string;
+  displayName: string;
+} | null;
 
 export type CreateProjectInput = {
   name: string;

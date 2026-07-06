@@ -13,6 +13,7 @@ import {
 } from "../../state/appStore";
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -116,6 +117,7 @@ type CachedRuntime = {
   invalidFitRetryTimer: ReturnType<typeof setTimeout> | null;
   fitWarningLogged: boolean;
   replayMode: boolean;
+  replayLoadedBytes: number | null;
 };
 
 const HYDRATE_TAIL_BYTES = 2_000_000;
@@ -331,6 +333,67 @@ function hasRenderableTerminalText(data: string): boolean {
     .replace(/\x1b[@-_]/g, "")
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
   return /\S/.test(withoutControlSequences);
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function takePendingTerminalOffsetAnchor(sessionId: string): number | null {
+  const anchor = peekPendingSessionAnchor(sessionId);
+  if (anchor?.offset == null) return null;
+  const consumed = takePendingSessionAnchor(sessionId);
+  return consumed?.offset ?? null;
+}
+
+function canMapReplayOffset(tailLoadedBytes: number | null): tailLoadedBytes is number {
+  // readTranscriptTail returns only text, not total file size. If the replay hit
+  // the cap, the tail's start byte is unknown, so leave replay at its default.
+  return typeof tailLoadedBytes === "number"
+    && tailLoadedBytes > 0
+    && tailLoadedBytes < REPLAY_TRANSCRIPT_MAX_BYTES;
+}
+
+function replayOffsetTargetLine(args: {
+  offset: number;
+  tailLoadedBytes: number;
+  bufferLength: number;
+  rows: number;
+}): number {
+  const tailStartByte = 0;
+  const fraction = clamp01((args.offset - tailStartByte) / args.tailLoadedBytes);
+  return Math.round(fraction * Math.max(0, args.bufferLength - args.rows));
+}
+
+function scheduleReplayOffsetScroll(runtime: CachedRuntime, offset: number): void {
+  const tailLoadedBytes = runtime.replayLoadedBytes;
+  if (!canMapReplayOffset(tailLoadedBytes)) return;
+  requestAnimationFrame(() => {
+    if (runtime.disposed) return;
+    try {
+      const targetLine = replayOffsetTargetLine({
+        offset,
+        tailLoadedBytes,
+        bufferLength: runtime.term.buffer.active.length,
+        rows: runtime.term.rows,
+      });
+      runtime.term.scrollToLine(targetLine);
+      runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
+    } catch {
+      // Best-effort positioning only; replay remains usable if xterm rejects it.
+    }
+  });
+}
+
+function consumePendingTerminalOffsetAnchor(runtime: CachedRuntime): void {
+  const offset = takePendingTerminalOffsetAnchor(runtime.sessionId);
+  if (offset == null || !runtime.replayMode) return;
+  scheduleReplayOffsetScroll(runtime, offset);
 }
 
 function terminalDomHasRenderableText(runtime: CachedRuntime): boolean {
@@ -1393,7 +1456,7 @@ function subscribeRuntimePtyExit(runtime: CachedRuntime): () => void {
 function flushHydrationData(
   runtime: CachedRuntime,
   tail: string,
-  options: { appendPending?: boolean; replay?: boolean } = {},
+  options: { appendPending?: boolean; replay?: boolean; scrollToBottom?: boolean } = {},
 ) {
   // Replay mode already stripped alt-screen/clear-screen sequences before this
   // point, so the entire transcript should be written verbatim. Trimming to a
@@ -1424,7 +1487,9 @@ function flushHydrationData(
       requestAnimationFrame(() => {
         try {
           runtime.term.refresh(0, Math.max(0, runtime.term.rows - 1));
-          runtime.term.scrollToBottom();
+          if (options.scrollToBottom ?? true) {
+            runtime.term.scrollToBottom();
+          }
         } catch {
           // ignore
         }
@@ -1633,7 +1698,15 @@ function startHydration(runtime: CachedRuntime) {
       } catch {
         // ignore options assignment failures after disposal
       }
-      flushHydrationData(runtime, data.text, { appendPending: false, replay: true });
+      runtime.replayLoadedBytes = utf8ByteLength(data.text);
+      const offsetAnchor = takePendingTerminalOffsetAnchor(runtime.sessionId);
+      const shouldApplyOffsetAnchor = offsetAnchor != null && canMapReplayOffset(runtime.replayLoadedBytes);
+      flushHydrationData(runtime, data.text, {
+        appendPending: false,
+        replay: true,
+        scrollToBottom: !shouldApplyOffsetAnchor,
+      });
+      if (shouldApplyOffsetAnchor) scheduleReplayOffsetScroll(runtime, offsetAnchor);
       runtime.hydrationCompleted = true;
       // Surface the exited badge for disposed sessions that never fire
       // pty.onExit (the PTY is already gone before this view mounted).
@@ -1645,6 +1718,8 @@ function startHydration(runtime: CachedRuntime) {
       // Disposed sessions never receive live PTY data, so no backfill polling.
       return;
     }
+    runtime.replayLoadedBytes = null;
+    void takePendingTerminalOffsetAnchor(runtime.sessionId);
     const preferLivePending = runtime.displayedLiveDataBeforeHydration && data.source !== "snapshot";
     if (preferLivePending) {
       runtime.pendingHydrationChunks.length = 0;
@@ -1917,7 +1992,8 @@ function createRuntime(args: {
     pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false,
-    replayMode: false
+    replayMode: false,
+    replayLoadedBytes: null
   };
 
   // Capture-phase paste listener on host: intercepts ALL paste sources (Cmd+V,
@@ -2201,6 +2277,7 @@ export function TerminalView({
     }, 320);
 
     startHydration(runtime);
+    if (runtime.hydrationCompleted) consumePendingTerminalOffsetAnchor(runtime);
 
     const obs = new ResizeObserver(() => {
       clearTextureAtlas(runtime);
@@ -2363,6 +2440,12 @@ export function TerminalView({
       }
     };
   }, [imagePasteMode, runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
+
+  useEffect(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime || runtime.disposed || !runtime.hydrationCompleted) return;
+    consumePendingTerminalOffsetAnchor(runtime);
+  });
 
   useEffect(() => {
     const runtime = runtimeRef.current;
