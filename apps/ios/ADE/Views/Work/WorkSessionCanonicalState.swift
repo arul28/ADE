@@ -106,9 +106,13 @@ func workCanonicalSessionState(
 
   let ended = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "running"
   if ended {
-    // 2. Failure: a non-clean exit is the only deterministic "failed" a
-    // terminal-backed session reports.
+    // 2. Failure: a non-clean exit, an explicit "failed" persisted status
+    // (spawn/setup failures that die before an exit code), or a killed runtime
+    // — all deterministic "failed" signals a terminal-backed session reports.
     if let exitCode, exitCode != 0 {
+      return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+    }
+    if status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed" {
       return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
     }
     if runtimeLower == "killed" {
@@ -224,10 +228,25 @@ func workSessionCapsuleBadge(
     toolType: session.toolType,
     pendingInputItemId: session.pendingInputItemId,
     lastOutputPreview: session.lastOutputPreview,
-    lastActivityAt: workSessionActivityTimestamp(session: session, summary: summary),
+    lastActivityAt: workSessionStaleActivityTimestamp(session: session, summary: summary),
     exitCode: session.exitCode,
     now: now
   ).badge
+}
+
+/// The genuine last-activity timestamp used ONLY to drive the stale check.
+/// Unlike `workSessionActivityTimestamp` (which feeds display/sort and falls
+/// back to `session.startedAt`), this returns nil when no real activity signal
+/// exists — the iOS `TerminalSessionSummary` carries no desktop-style
+/// `lastActivityAt`, so a plain terminal has no output timestamp. Falling back
+/// to `startedAt` would flag any terminal open >20min as Stale even with output
+/// seconds ago; nil disables the check, mirroring the desktop caller which
+/// passes the real `lastActivityAt` or null (never `startedAt`).
+private func workSessionStaleActivityTimestamp(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?
+) -> String? {
+  summary?.lastActivityAt ?? session.chatIdleSinceAt
 }
 
 /// Small attention capsule shown next to a Work row title. Amber for needs_you

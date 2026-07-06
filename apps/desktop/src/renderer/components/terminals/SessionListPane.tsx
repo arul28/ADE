@@ -277,6 +277,9 @@ function useLanePrsByLaneId(): Map<string, PrSummary[]> {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const [prs, setPrs] = useState<PrSummary[]>([]);
   useEffect(() => {
+    // `window.ade.prs` is absent in some renders (e.g. tests with a partial
+    // `window.ade` mock); no-op gracefully so the badge just doesn't render.
+    if (!window.ade?.prs) return;
     let cancelled = false;
     void listPrsCoalesced({ projectRoot })
       .then((list) => {

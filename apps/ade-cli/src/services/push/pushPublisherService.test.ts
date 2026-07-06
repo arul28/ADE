@@ -528,6 +528,35 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("prunes a stale CLI row at the running TTL despite idle heartbeats", async () => {
+    // Regression (Greptile P1): idle heartbeats used to refresh lastActiveAt,
+    // so a quiet CLI's stale row never aged past the 2h TTL and pinned the
+    // Live Activity open forever.
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    // Re-fire idle heartbeats across 2h+; the frozen stale timestamp must let
+    // the row age out, ending the (now-empty) aggregate.
+    for (let i = 0; i < 5; i += 1) {
+      publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+      await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    }
+    publisher.poke();
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const last = publish.mock.calls.at(-1)![0];
+    const lastLa = last.liveActivity?.[0];
+    expect(lastLa?.event).toBe("end");
+
+    publisher.dispose();
+  });
+
   it("publishes a quiet CLI as stale without ending the Live Activity", async () => {
     const { publisher, publish, cliSessions } = makeHarness();
     cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });

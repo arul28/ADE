@@ -899,7 +899,11 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // Signals re-fire on a ~10s heartbeat; only a phase change is worth a
     // Live Activity update (the run row shows phase, not output).
     if (existing && existing.kind === "cli" && existing.phase === phase) {
-      existing.lastActiveAt = now();
+      // A `stale` row must keep its `lastActiveAt` frozen at the moment it went
+      // stale so `pruneRuns` can retire it RUNNING_TTL_MS later. Refreshing it
+      // on every idle heartbeat (idle = no output, not real activity) would
+      // reset that 2h clock and hold the stale Live Activity open forever.
+      if (phase !== "stale") existing.lastActiveAt = now();
       return;
     }
     // A chat run with the same session id would mean a chat-owned shell that

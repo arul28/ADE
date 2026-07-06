@@ -99,9 +99,14 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
 
   const ended = args.status !== "running";
   if (ended) {
-    // 2. Failure: a non-clean exit is the only deterministic "failed" a
-    // terminal-backed session reports.
+    // 2. Failure: a non-clean exit, an explicit "failed" persisted status
+    // (spawn/setup failures that die before an exit code), or a killed
+    // runtime — all deterministic "failed" signals a terminal-backed session
+    // reports.
     if (typeof args.exitCode === "number" && args.exitCode !== 0) {
+      return { phase: "failed", badge: BADGE_BY_KIND.failed };
+    }
+    if (args.status === "failed") {
       return { phase: "failed", badge: BADGE_BY_KIND.failed };
     }
     if (args.runtimeState === "killed") {
