@@ -1,0 +1,32 @@
+---
+title: "v1.2.13"
+description: "Release notes for ADE v1.2.13 - July 6, 2026"
+---
+
+v1.2.13 adds mobile push notifications, Live Activities, smart pairing, and optional cloud relay; makes composer chips work anywhere you type; turns CTO into one persistent-memory thread; and brings richer agent workflow visibility across desktop, ADE Code, and iOS. iOS stays on its current marketing version and gets a build-number-only TestFlight update for the same release train.
+
+---
+
+## Desktop
+
+- **Push and relay infrastructure.** ADE now has deployed push and tunnel relay workers, APNs delivery, Live Activity routing, per-device notification preferences, quiet hours, dead-token cleanup, and brain-side event publishing for chats, terminals, and PR updates.
+- **Smart pairing and sync security.** The desktop pairing QR now carries a universal-link payload with machine identity, address candidates, and relay metadata; paired devices can use Secure Enclave DPoP proofs, fail-closed machine ingress, and an offline outbox that renders queued chat creation while the phone reconnects.
+- **Composer chips anywhere.** Slash commands and `@file` mentions are cursor-relative in desktop composers and ADE Code, with exact trigger-span replacement, faster command-menu debounce, same-frame cache hits, lazy quick-open indexing, and stale-result guards.
+- **Agent workflow visibility.** Claude Workflow progress now fans out into live agent rows, CLI-spawned child chats keep parent lineage and a spawn notice, and Claude-family chats can render strict Mosaic v1 interactive cards without executing agent-authored code.
+- **CTO as one thread.** The CTO tab is now a single long-running agent thread with file-backed smart memory, daily journals, model switching that preserves context, memory tools, a slimmer settings surface, and the old worker/workflow pipeline removed.
+- **ADE Code and remote runtime hardening.** ADE Code gains a per-provider Chat/CLI interface choice, provider-neutral tracked CLI sessions, local provider permission parity, closed-session browsing, `/secrets`, faster TUI rendering, safer JSON-RPC/event-buffer handling, and more resilient remote sync startup.
+- **Remote-first lane and session parity.** CLI sessions appear as real Work entries, lane creation defaults to the desktop remote-first base policy when callers omit a base branch, and transient sync-host conflicts retry instead of stranding paired phones.
+- **Website performance.** The landing page drops heavy looping animations and blur filters, keeps showcase media mounted with cheaper CSS crossfades, and bounds initial image loading so the product page starts faster.
+
+---
+
+## iOS
+
+- **Push notifications and Live Activities.** The app registers for push after pairing, deep-links alert notifications back into ADE, shows up to three active agent runs on the Lock Screen and Dynamic Island, and adds push delivery settings with quiet hours.
+- **Smart pairing, relay fallback, and DPoP.** The scanner understands the new universal-link QR payload, can reconnect an already-paired machine, supports optional cloud relay fallback, and signs paired hellos with Secure Enclave DPoP proofs once upgraded.
+- **Composer chips anywhere.** The mobile composer now detects slash commands and `@file` mentions at the cursor, shows an inline suggestion strip above the keyboard, renders confirmed tokens as chips, and keeps Chat/CLI mode preferences per project.
+- **CTO mobile parity.** The CTO tab matches the new single-thread model with the brain tab icon, one-card setup, personality/work-style choices, memory access, and a non-blocking "Set up later" path.
+- **PR detail rebuild.** Mobile PR details move to a flatter adaptive palette, virtualized overview rows, desktop-style merge requirements, metadata cards, fresh sidecar reloads, comment expansion fixes, and an "Open in PRs tab" action from Work rows.
+- **Connection reliability.** iOS now warns when a saved machine expects Tailscale but the phone is off tailnet, preserves credentials through unattributed auth failures, bounds stale-port probes, and handles Tailscale IPv6 routes correctly.
+- **Work list and lane creation parity.** Standalone CLI sessions show up whether ended or live, failed old CLI sessions no longer pin hub attention, mobile lane creation defaults to remote-first bases, and AI lane naming runs in the background after creation instead of blocking launch.
+- **Terminal live tail.** The terminal view keeps the live tail pinned through keyboard, layout, and font-size changes while preserving manual scroll position when the user scrolls away.
