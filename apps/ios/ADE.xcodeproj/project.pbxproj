@@ -75,6 +75,7 @@
 		E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */; };
 		E10000000000000000000037 /* WorkEventMapping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000037 /* WorkEventMapping.swift */; };
 		E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */; };
+		FB000000000000000000C1C1 /* WorkSessionCanonicalState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C1C1 /* WorkSessionCanonicalState.swift */; };
 		E10000000000000000000039 /* WorkChatSessionView+Timeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */; };
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
@@ -124,6 +125,7 @@
 		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
+		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -280,6 +282,7 @@
 		D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkErrorAndMessageHelpers.swift; path = ADE/Views/Work/WorkErrorAndMessageHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000037 /* WorkEventMapping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkEventMapping.swift; path = ADE/Views/Work/WorkEventMapping.swift; sourceTree = "<group>"; };
 		D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkStatusAndFormattingHelpers.swift; path = ADE/Views/Work/WorkStatusAndFormattingHelpers.swift; sourceTree = "<group>"; };
+		FA000000000000000000C1C1 /* WorkSessionCanonicalState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionCanonicalState.swift; path = ADE/Views/Work/WorkSessionCanonicalState.swift; sourceTree = "<group>"; };
 		D10000000000000000000039 /* WorkChatSessionView+Timeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkChatSessionView+Timeline.swift"; path = "ADE/Views/Work/WorkChatSessionView+Timeline.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003A /* WorkReasoningCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkReasoningCard.swift"; path = "ADE/Views/Work/WorkReasoningCard.swift"; sourceTree = "<group>"; };
 		D1000000000000000000003B /* WorkActivityIndicator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkActivityIndicator.swift; path = ADE/Views/Work/WorkActivityIndicator.swift; sourceTree = "<group>"; };
@@ -329,6 +332,7 @@
 		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
+		FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionCanonicalStateTests.swift; path = ADETests/WorkSessionCanonicalStateTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		781DE0B3C61717AE3057B82D /* VoiceGlossary.json */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.json; name = VoiceGlossary.json; path = ADE/Resources/VoiceGlossary.json; sourceTree = "<group>"; };
@@ -664,6 +668,7 @@
 				D10000000000000000000036 /* WorkErrorAndMessageHelpers.swift */,
 				D10000000000000000000037 /* WorkEventMapping.swift */,
 				D10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift */,
+				FA000000000000000000C1C1 /* WorkSessionCanonicalState.swift */,
 			);
 			name = Work;
 			sourceTree = "<group>";
@@ -829,6 +834,7 @@
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
+				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1156,6 +1162,7 @@
 				E10000000000000000000036 /* WorkErrorAndMessageHelpers.swift in Sources */,
 				E10000000000000000000037 /* WorkEventMapping.swift in Sources */,
 				E10000000000000000000038 /* WorkStatusAndFormattingHelpers.swift in Sources */,
+				FB000000000000000000C1C1 /* WorkSessionCanonicalState.swift in Sources */,
 				H10000000000000000000001 /* CtoRootScreen.swift in Sources */,
 				H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */,
 				H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */,
@@ -1188,6 +1195,7 @@
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
+				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

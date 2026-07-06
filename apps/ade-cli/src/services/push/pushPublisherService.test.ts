@@ -9,6 +9,7 @@ import { createPushRegistrationStore, type PushRegistrationStore } from "./pushR
 import { createPushRelayClient } from "./pushRelayClient";
 import {
   buildAgentRunsContentState,
+  countAwaitingAttentionRuns,
   createPushPublisherService,
   isWithinQuietHours,
   parseHhMm,
@@ -20,6 +21,7 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
   return {
     sessionId: "s",
     scopeKey: "scope",
+    kind: "chat",
     title: "Run",
     lane: "lane",
     model: "gpt-5",
@@ -170,8 +172,13 @@ describe("createPushPublisherService flush", () => {
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
     });
-    publisher.attachSources("scope-1", { agentChatService: agentChatService as never });
-    return { publisher, publish, emit: (env: AgentChatEventEnvelope) => chatCb?.(env), store };
+    const cliSessions = new Map<string, { title: string | null; toolType?: string | null; chatSessionId?: string | null }>();
+    publisher.attachSources("scope-1", {
+      agentChatService: agentChatService as never,
+      resolveLaneName: (laneId: string) => laneId,
+      resolveCliSession: (sessionId: string) => cliSessions.get(sessionId) ?? null,
+    });
+    return { publisher, publish, emit: (env: AgentChatEventEnvelope) => chatCb?.(env), store, cliSessions };
   }
 
   const approval: AgentChatEventEnvelope = {
@@ -454,6 +461,137 @@ describe("createPushPublisherService flush", () => {
     const lastLa = laPayloads[laPayloads.length - 1].liveActivity[0];
     expect(lastLa.contentState.activeCount).toBe(2);
     expect(lastLa.contentState.runs.map((r: { id: string }) => r.id).sort()).toEqual(["s-a", "s-b"]);
+
+    publisher.dispose();
+  });
+
+  it("surfaces CLI runtime signals in the Live Activity without alert pushes", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    const first = publish.mock.calls[0][0];
+    // Live Activity only — a CLI agent hits its prompt after every turn, so
+    // waiting-input must never generate user-facing alert pushes. (A silent
+    // badge-only item — no title — may ride along for icon-count sync.)
+    expect((first.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
+    expect(first.liveActivity).toHaveLength(1);
+    const startRun = first.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
+    expect(startRun.phase).toBe("running");
+    expect(startRun.title).toBe("claude in auth");
+
+    // Heartbeat re-fires of the same state must not churn LA updates.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "waiting-input" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(2);
+    const second = publish.mock.calls[1][0];
+    expect((second.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
+    // A CLI at its prompt is its resting state — it must not badge the icon.
+    // Assert on the counting function directly (a badge-only item is only
+    // emitted on count *changes*, so payload inspection here would be vacuous).
+    expect(countAwaitingAttentionRuns([
+      run({ sessionId: "cli-1", kind: "cli", phase: "waiting_for_input" }),
+    ])).toBe(0);
+    expect(countAwaitingAttentionRuns([
+      run({ sessionId: "s-1", kind: "chat", phase: "waiting_for_input" }),
+    ])).toBe(1);
+    const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
+    expect(waitingRun.phase).toBe("waiting_for_input");
+
+    publisher.dispose();
+  });
+
+  it("drops chat-owned shells and unknown sessions from CLI run tracking", async () => {
+    const { publisher, publish, emit, cliSessions } = makeHarness();
+    cliSessions.set("shell-1", { title: "attached shell", toolType: "shell", chatSessionId: "s-1" });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "shell-1", runtimeState: "running" });
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "ghost-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    // Both rows resolve to nothing user-facing → no alerts, no Live Activity
+    // (the initial silent badge sync is the only thing allowed through).
+    for (const call of publish.mock.calls) {
+      expect((call[0].notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
+      expect(call[0].liveActivity ?? []).toHaveLength(0);
+    }
+
+    // With a real chat run present, the publish payload must still exclude them.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "shell-1", runtimeState: "running" });
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalled();
+    const runs = publish.mock.calls.at(-1)![0].liveActivity[0].contentState.runs;
+    expect(runs.map((r: { id: string }) => r.id)).toEqual(["s-1"]);
+
+    publisher.dispose();
+  });
+
+  it("prunes a stale CLI row at the running TTL despite idle heartbeats", async () => {
+    // Regression (Greptile P1): idle heartbeats used to refresh lastActiveAt,
+    // so a quiet CLI's stale row never aged past the 2h TTL and pinned the
+    // Live Activity open forever.
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    // Re-fire idle heartbeats across 2h+; the frozen stale timestamp must let
+    // the row age out, ending the (now-empty) aggregate.
+    for (let i = 0; i < 5; i += 1) {
+      publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+      await vi.advanceTimersByTimeAsync(25 * 60 * 1000);
+    }
+    publisher.poke();
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const last = publish.mock.calls.at(-1)![0];
+    const lastLa = last.liveActivity?.[0];
+    expect(lastLa?.event).toBe("end");
+
+    publisher.dispose();
+  });
+
+  it("publishes a quiet CLI as stale without ending the Live Activity", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0].liveActivity[0].event).toBe("start");
+
+    // 12s-quiet idle → the row goes stale (not active) but the activity stays
+    // open: ending on a quiet spell would churn end→push-to-start cycles.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(2);
+    const idleItem = publish.mock.calls[1][0].liveActivity[0];
+    expect(idleItem.event).toBe("update");
+    expect(idleItem.contentState.activeCount).toBe(0);
+    expect(idleItem.contentState.runs[0].phase).toBe("stale");
+
+    // Output resumes → back to an active running row on the same activity.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(3);
+    const resumed = publish.mock.calls[2][0].liveActivity[0];
+    expect(resumed.event).toBe("update");
+    expect(resumed.contentState.runs[0].phase).toBe("running");
 
     publisher.dispose();
   });

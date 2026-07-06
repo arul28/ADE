@@ -1,8 +1,14 @@
 import React from "react";
-import { GridFour, WarningCircle, Question } from "@phosphor-icons/react";
+import { GridFour, WarningCircle, Question, Clock } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
-import { sessionStatusDot, sanitizeTerminalInlineText, sessionNeedsChatTabHighlight } from "../../lib/terminalAttention";
+import {
+  sessionStatusDot,
+  sanitizeTerminalInlineText,
+  sessionNeedsChatTabHighlight,
+  sessionCapsuleBadge,
+} from "../../lib/terminalAttention";
+import type { SessionBadge } from "../../../shared/sessionCanonicalState";
 import {
   getStaleRunningCliSessionAgeHours,
   primarySessionLabel,
@@ -109,6 +115,38 @@ function orchestrationRoleA11yLabel(role: OrchestrationRole, tag?: string | null
   return role;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Attention capsule — one-word status from the shared canonical state module.
+   Only ever renders for the three attention states; calm sessions get nothing
+   (so the title row never reflows). Amber "Needs you", red "Failed", and an
+   outlined "Stale" with a clock glyph.
+   ────────────────────────────────────────────────────────────────────────── */
+
+const ATTENTION_CAPSULE_STYLE: Record<SessionBadge["kind"], string> = {
+  needs_you: "border-amber-400/30 bg-amber-400/15 text-amber-300",
+  failed: "border-red-500/30 bg-red-500/15 text-red-300",
+  // Stale is the calm-but-silent state: outlined, muted, no fill.
+  stale: "border-white/15 bg-transparent text-muted-fg/60",
+};
+
+function AttentionCapsule({ badge, compact }: { badge: SessionBadge; compact: boolean }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-0.5 rounded-full border font-semibold leading-none",
+        compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[10px]",
+        ATTENTION_CAPSULE_STYLE[badge.kind],
+      )}
+      title={badge.label}
+      aria-label={badge.label}
+      data-session-badge={badge.kind}
+    >
+      {badge.kind === "stale" ? <Clock size={compact ? 9 : 10} weight="bold" /> : null}
+      {badge.label}
+    </span>
+  );
+}
+
 function getPreviewLine(session: TerminalSessionSummary, primaryText: string): string | null {
   const summary = preferredSessionLabel(session.summary);
   if (summary && summary !== primaryText) return summary;
@@ -151,6 +189,20 @@ export const SessionCard = React.memo(function SessionCard({
     toolType: session.toolType,
     pendingInputItemId: session.pendingInputItemId,
   });
+  // Canonical one-word status capsule (Needs you / Failed / Stale). When the
+  // chat-specific "Awaiting you" chip is already showing the same needs-input
+  // condition, suppress the capsule so a chat card never doubles up amber pills.
+  const capsuleBadge = sessionCapsuleBadge({
+    status: session.status,
+    lastOutputPreview: session.lastOutputPreview,
+    runtimeState: session.runtimeState,
+    toolType: session.toolType,
+    pendingInputItemId: session.pendingInputItemId,
+    lastActivityAt: session.lastActivityAt,
+    exitCode: session.exitCode,
+  });
+  const attentionBadge =
+    capsuleBadge && !(awaitingUser && capsuleBadge.kind === "needs_you") ? capsuleBadge : null;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
@@ -260,6 +312,7 @@ export const SessionCard = React.memo(function SessionCard({
               >
                 {primaryText}
               </span>
+              {attentionBadge ? <AttentionCapsule badge={attentionBadge} compact={compact} /> : null}
               <div className="flex shrink-0 items-center gap-1.5">
                 {session.orchestrationRole ? (
                   <>

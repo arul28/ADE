@@ -58,7 +58,13 @@ re-derives state:
 - `agentChatService.subscribeToEvents` — `approval_request` /
   `structured_question` → waiting phases + alert; `pending_input_resolved`
   clears; failed turn statuses → alert.
-- `ptyService.onExit` — CLI session ended.
+- `ptyService.onSessionRuntimeSignal` — tracked CLI sessions' OSC 133-derived
+  state (`running` / `waiting-input`) feeds Live Activity run rows **only**,
+  never alert pushes: a CLI agent returns to its prompt after every turn, so
+  alerting on waiting-input would ping once per turn. Chat-attached shells and
+  untitled infra rows are filtered out (the chat run already represents them).
+- `ptyService.onExit` — CLI session ended: flips the run to
+  completed/failed in the aggregate; a non-zero exit also alerts.
 - `prPollingService`'s `pr-notification` events — `merge_ready` /
   `checks_failing` alerts (edge-transition gated by that service).
 
@@ -126,6 +132,16 @@ string before it reaches the lock screen. Stuck runs age out of the
 aggregate (2 h running / 24 h waiting) so dead sessions cannot pin
 `activeCount`. `start` fires on 0→N running, `end` (dismissal +5 min)
 when all runs reach a terminal phase.
+
+## One status vocabulary
+
+`apps/desktop/src/shared/sessionCanonicalState.ts` is the canonical mapping
+from session inputs to a phase + attention badge, consumed by the Work tab
+(desktop and the iOS mirror). Its `needs_you` covers the Live Activity's
+`waiting_for_approval`/`waiting_for_input` (wire names unchanged);
+`failed`/`stale`/`running` correspond directly. Its 20-minute stale threshold
+is the human-facing "running but silent" bar — distinct from the relay's APNs
+delivery TTLs and the Live Activity's 10-minute lock-screen stale-date.
 
 ## iOS
 
