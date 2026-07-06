@@ -1,4 +1,5 @@
 import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
+import { canonicalSessionState, type SessionBadge } from "../../shared/sessionCanonicalState";
 import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
@@ -98,16 +99,52 @@ export function sessionIndicatorState(args: {
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
+  pendingInputItemId?: string | null;
 }): SessionUiState {
   if (args.status === "detached") return "ended";
   if (args.status === "running") {
-    if (args.runtimeState === "waiting-input") return "running-needs-attention";
-    if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "running-needs-attention";
+    // Deterministic signals first (pendingInputItemId now counts — it used to
+    // be invisible here); the preview-text heuristic is consulted LAST and can
+    // only upgrade a plain running session, never outvote runtime state.
+    if (args.pendingInputItemId || args.runtimeState === "waiting-input") return "running-needs-attention";
+    if (args.runtimeState === "idle") {
+      return idleRuntimeNeedsAttention(args.toolType) ? "running-needs-attention" : "running-active";
+    }
     return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
   }
   // Agent chats do not "end" like PTY sessions — they idle until deleted.
   if (isChatToolType(args.toolType)) return "running-needs-attention";
   return "ended";
+}
+
+/**
+ * The one-word attention capsule for a session row (desktop SessionCard; iOS
+ * mirrors the vocabulary). Null for every calm state — rows must not shift
+ * layout when no capsule renders. Backed by the shared canonical state module
+ * so the capsule, the Live Activity phase, and notifications always agree.
+ */
+export function sessionCapsuleBadge(session: {
+  status: TerminalSessionStatus;
+  lastOutputPreview: string | null;
+  runtimeState?: TerminalRuntimeState;
+  toolType?: TerminalToolType | null;
+  pendingInputItemId?: string | null;
+  lastActivityAt?: string | null;
+  exitCode?: number | null;
+  nowMs?: number;
+}): SessionBadge | null {
+  return canonicalSessionState({
+    status: session.status,
+    runtimeState: session.runtimeState ?? null,
+    toolType: session.toolType ?? null,
+    pendingInputItemId: session.pendingInputItemId ?? null,
+    lastOutputPreview: session.lastOutputPreview,
+    lastActivityAt: session.lastActivityAt ?? null,
+    exitCode: session.exitCode ?? null,
+    nowMs: session.nowMs,
+    previewSuggestsNeedsInput: runningSessionNeedsAttention,
+    isChatTool: isChatToolType,
+  }).badge;
 }
 
 export function sessionNeedsUserInput(args: {

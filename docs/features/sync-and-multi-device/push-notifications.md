@@ -133,6 +133,16 @@ aggregate (2 h running / 24 h waiting) so dead sessions cannot pin
 `activeCount`. `start` fires on 0→N running, `end` (dismissal +5 min)
 when all runs reach a terminal phase.
 
+## One status vocabulary
+
+`apps/desktop/src/shared/sessionCanonicalState.ts` is the canonical mapping
+from session inputs to a phase + attention badge, consumed by the Work tab
+(desktop and the iOS mirror). Its `needs_you` covers the Live Activity's
+`waiting_for_approval`/`waiting_for_input` (wire names unchanged);
+`failed`/`stale`/`running` correspond directly. Its 20-minute stale threshold
+is the human-facing "running but silent" bar — distinct from the relay's APNs
+delivery TTLs and the Live Activity's 10-minute lock-screen stale-date.
+
 ## iOS
 
 - `aps-environment` entitlement + `remote-notification` background mode +
