@@ -317,8 +317,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastAlertFingerprintByKey = new Map<string, string>();
   let lastLiveActivityFingerprint: string | null = null;
   let liveActivityStarted = false;
-  /** Last app-icon badge count committed to the relay (null = never sent). */
-  let lastSentBadgeCount: number | null = null;
+  /**
+   * Last app-icon badge count delivered per device (absent = never sent).
+   * Per-device because a flush can legitimately exclude some devices (quiet
+   * hours, alert-covered subsets) — a global scalar would mark their stale
+   * badge as already-synced and skip them until the next count change.
+   */
+  const lastSentBadgeByDevice = new Map<string, number>();
 
   let flushTimer: NodeJS.Timeout | null = null;
   let flushFireAt = 0;
@@ -568,9 +573,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         Boolean(device.apnsToken)
         && device.prefs.enabled
         && !isWithinQuietHours(device.prefs.quietHours, nowMs)
-        && !alertCoveredDeviceIds.has(device.deviceId))
+        && !alertCoveredDeviceIds.has(device.deviceId)
+        && lastSentBadgeByDevice.get(device.deviceId) !== badgeCount)
       .map((device) => device.deviceId);
-    if (badgeCount !== lastSentBadgeCount && badgeSyncDeviceIds.length > 0) {
+    if (badgeSyncDeviceIds.length > 0) {
       alertItems.push({
         deviceIds: badgeSyncDeviceIds,
         title: "",
@@ -609,7 +615,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         return;
       }
       for (const [key, fingerprint] of alertCommits) lastAlertFingerprintByKey.set(key, fingerprint);
-      if (alertItems.length > 0) lastSentBadgeCount = badgeCount;
+      // Every alert item (including the badge-only sync) carries this flush's
+      // badge count — commit it for exactly the devices that were targeted.
+      for (const item of alertItems) {
+        for (const deviceId of item.deviceIds ?? []) {
+          lastSentBadgeByDevice.set(deviceId, badgeCount);
+        }
+      }
       if (laPlan) {
         // Commit the Live Activity plan only if its own targets landed. A mixed
         // publish can report delivered>0 from the alert while the LA push-to-start
@@ -963,6 +975,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         logWarn("push.unregister_failed", error);
       }
       deps.store.removeDevice(deviceId);
+      lastSentBadgeByDevice.delete(deviceId);
     },
 
     setPrefs(deviceId: string, prefs: PushNotificationPrefs): boolean {

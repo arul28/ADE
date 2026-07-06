@@ -253,6 +253,36 @@ describe("buildSyncHostHelloOkPayload", () => {
     });
     expect(payload.cloudRelayWssUrl).toBe("wss://relay.example/connect/abc123");
   });
+
+  it("sends an explicit null when the relay is disabled so clients drop saved routes", () => {
+    const metadata = {
+      deviceId: "d",
+      deviceName: "n",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "s",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const payload = buildSyncHostHelloOkPayload({
+      peer: metadata,
+      brain: metadata,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+      cloudRelayWssUrl: null,
+    });
+    // Present-with-null ≠ absent: absent means "older host, keep saved relay
+    // routes"; null means "kill-switch off, clear them".
+    expect("cloudRelayWssUrl" in payload).toBe(true);
+    expect(payload.cloudRelayWssUrl).toBeNull();
+  });
 });
 
 describe("buildSyncProjectCatalogMessages", () => {

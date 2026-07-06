@@ -890,7 +890,12 @@ export function buildSyncHostHelloOkPayload(args: {
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
     projects: args.projectCatalog.projects,
-    ...(args.cloudRelayWssUrl ? { cloudRelayWssUrl: args.cloudRelayWssUrl } : {}),
+    // Explicit null (relay disabled) must reach the wire: clients treat an
+    // ABSENT key as "older host — keep saved relay routes", and the brain
+    // fallback handler never sends brain_status, so hello_ok is the only
+    // clear signal on that path. Omit only when the caller didn't supply
+    // the argument at all.
+    ...(args.cloudRelayWssUrl !== undefined ? { cloudRelayWssUrl: args.cloudRelayWssUrl } : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,

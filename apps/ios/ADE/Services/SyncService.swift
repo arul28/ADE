@@ -8812,16 +8812,17 @@ final class SyncService: ObservableObject {
     let discoveredLan = deduplicatedAddresses(
       matchingDiscovery?.addresses ?? activeHostProfile?.discoveredLanAddresses ?? []
     )
-    // The host advertises its live cloud-relay URL in `hello_ok` (key omitted
-    // when the relay is disabled or on older hosts). Fold it into the saved
-    // relay candidates — freshest first — so an already-paired phone learns
-    // the relay route even when it never scanned a relay QR. Preserve any
-    // previously-saved relay URLs (the rebuilt profile would otherwise drop
-    // them, since the init defaults `savedRelayCandidates` to nil).
-    let mergedRelayCandidates = syncMergedRelayCandidates(
-      advertised: payload["cloudRelayWssUrl"] as? String,
-      existing: activeHostProfile?.savedRelayCandidates
-    )
+    // The host advertises its live cloud-relay URL in `hello_ok`: a wss route
+    // when the relay is up, JSON null when the kill-switch is off (the brain
+    // fallback handler never sends brain_status, so this is the only clear
+    // signal on that path), and no key at all on older hosts. Fold a route in
+    // freshest-first; clear on explicit null; keep saved routes when absent.
+    let mergedRelayCandidates: [String] = payload["cloudRelayWssUrl"] is NSNull
+      ? []
+      : syncMergedRelayCandidates(
+          advertised: payload["cloudRelayWssUrl"] as? String,
+          existing: activeHostProfile?.savedRelayCandidates
+        )
 
     let profile = HostConnectionProfile(
       hostIdentity: remoteHostIdentity ?? activeHostProfile?.hostIdentity ?? expectedHostIdentity,
