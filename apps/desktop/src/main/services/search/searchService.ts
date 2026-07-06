@@ -885,7 +885,12 @@ export function createSearchService(deps: SearchServiceDeps) {
   // ---------------------------------------------------------------------
 
   const effectiveKinds = (args: SearchQueryArgs, parsed: ParsedSearchQuery): SearchDocKind[] => {
-    const fromArgs = (args.kinds ?? []).filter(isSearchDocKind);
+    const suppliedKinds = args.kinds ?? [];
+    const fromArgs = suppliedKinds.filter(isSearchDocKind);
+    // A supplied kinds array whose entries are all invalid (e.g. ["termnal"])
+    // must not silently broaden into the default all-kind set — mirror the
+    // inline `kind:bogus` reject in query() and match nothing instead.
+    if (suppliedKinds.length > 0 && fromArgs.length === 0) return [];
     const fromQuery = parsed.kinds;
     if (fromArgs.length > 0 && fromQuery.length > 0) {
       const intersection = fromArgs.filter((kind) => fromQuery.includes(kind));
@@ -1140,7 +1145,10 @@ export function createSearchService(deps: SearchServiceDeps) {
           laneId,
           laneName: null,
           sessionId: null,
-          deepLink: `ade://files?path=${encodeURIComponent(item.path)}`,
+          deepLink: buildDeeplink(
+            { kind: "file", path: item.path, ...(laneId ? { laneId } : {}) },
+            { form: "ade" }
+          ),
           updatedAt: "",
           bm25: 0,
           snippet: item.path,
@@ -1164,7 +1172,10 @@ export function createSearchService(deps: SearchServiceDeps) {
           laneId,
           laneName: null,
           sessionId: null,
-          deepLink: `ade://files?path=${encodeURIComponent(match.path)}&line=${match.line}`,
+          deepLink: buildDeeplink(
+            { kind: "file", path: match.path, line: match.line, ...(laneId ? { laneId } : {}) },
+            { form: "ade" }
+          ),
           updatedAt: "",
           bm25: 0,
           snippet: match.preview.slice(0, 240),

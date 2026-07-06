@@ -780,6 +780,42 @@ describe("searchService review fixes (PR #709)", () => {
     service.dispose();
   });
 
+  it("returns nothing when a supplied kinds array is entirely invalid", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [makeSession({ id: "c2", title: "Something" })] },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(chatDir, "c2.jsonl"),
+      `${JSON.stringify({ sessionId: "c2", timestamp: "2026-07-05T10:00:00.000Z", event: { type: "user_message", text: "findable text" } })}\n`
+    );
+    service.notifyChatEvent("c2");
+    await service.processPendingNow();
+
+    // All-invalid kinds must not silently broaden to the default kind set.
+    const allInvalid = await service.query({
+      query: "findable",
+      kinds: ["termnal" as never]
+    });
+    expect(allInvalid.results).toEqual([]);
+    expect(allInvalid.totalByKind).toEqual({});
+    expect(allInvalid.nextCursor).toBeNull();
+    // A mixed array keeps the valid entries.
+    const mixed = await service.query({
+      query: "findable",
+      kinds: ["termnal" as never, "chat"]
+    });
+    expect(mixed.results.length).toBeGreaterThan(0);
+    // Omitted kinds still hits the default set.
+    expect((await service.query({ query: "findable" })).results.length).toBeGreaterThan(0);
+    service.dispose();
+  });
+
   it("searches the requested lane's files when a lane filter is present", async () => {
     const quickOpen = vi.fn(async (_query: string, _limit: number, laneId?: string | null) =>
       laneId === "lane-42" ? [{ path: "lane42/file.ts" }] : [{ path: "primary/file.ts" }]
