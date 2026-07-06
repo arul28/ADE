@@ -139,3 +139,69 @@ describe("SessionCard auto-naming status", () => {
     expect(screen.getByText(/running the build/i)).toBeTruthy();
   });
 });
+
+describe("SessionCard attention capsule", () => {
+  it("shows a Failed capsule for a non-zero exit", () => {
+    render(
+      <SessionCard
+        session={makeSession({ toolType: "codex", status: "failed", exitCode: 1 })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Failed")).toBeTruthy();
+  });
+
+  it("shows a Stale capsule for a long-silent running session", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex",
+          status: "running",
+          runtimeState: "running",
+          lastActivityAt: "2020-01-01T00:00:00.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Stale")).toBeTruthy();
+  });
+
+  it("renders no capsule for a calm running session", () => {
+    render(
+      <SessionCard
+        session={makeSession({ toolType: "codex", status: "running", runtimeState: "running" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/^(Needs you|Failed|Stale)$/)).toBeNull();
+  });
+
+  it("does not double up the amber pill for a chat waiting on input", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          runtimeState: "waiting-input",
+          pendingInputItemId: "pending-1",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    // The chat-specific "Awaiting you" chip covers this; the canonical capsule
+    // is suppressed so the card never shows two amber pills.
+    expect(screen.getByLabelText("Awaiting your input")).toBeTruthy();
+    expect(screen.queryByText("Needs you")).toBeNull();
+  });
+});

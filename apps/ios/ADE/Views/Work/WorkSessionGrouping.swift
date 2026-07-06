@@ -55,6 +55,12 @@ struct WorkSessionGroup: Identifiable, Equatable {
     self.laneIcon = laneIcon
   }
 
+  /// Lane id for by-lane sections (id is `lane:<laneId>`); nil for status/time
+  /// groupings whose headers span multiple lanes and carry no single PR tag.
+  var laneId: String? {
+    id.hasPrefix("lane:") ? String(id.dropFirst("lane:".count)) : nil
+  }
+
   static func == (lhs: WorkSessionGroup, rhs: WorkSessionGroup) -> Bool {
     lhs.id == rhs.id
       && lhs.label == rhs.label
