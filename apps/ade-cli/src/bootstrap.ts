@@ -727,6 +727,10 @@ export async function createAdeRuntime(args: {
   // pattern as desktop main. Without this bridge, paired phones only ever
   // receive terminal snapshots, never live terminal_data push.
   let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
+  // Same late-binding for the push publisher: it feeds tracked CLI runtime
+  // states (running / waiting-input from OSC 133 markers) into the phone's
+  // Live Activity, and it's constructed after ptyService.
+  let pushPublisherForPtySignals: PushPublisherService | null = null;
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -746,6 +750,13 @@ export async function createAdeRuntime(args: {
       pushEvent("pty", { type: "pty_exit", event });
       const { projectRoot: _projectRoot, ...syncEvent } = event;
       syncServiceForPtyEvents?.handlePtyExit(syncEvent);
+    },
+    onSessionRuntimeSignal: (signal) => {
+      pushPublisherForPtySignals?.handleCliRuntimeSignal(projectId, {
+        laneId: signal.laneId,
+        sessionId: signal.sessionId,
+        runtimeState: signal.runtimeState,
+      });
     },
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
@@ -1215,7 +1226,21 @@ export async function createAdeRuntime(args: {
         return null;
       }
     },
+    resolveCliSession: (sessionId) => {
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) return null;
+        return {
+          title: session.title ?? null,
+          toolType: session.toolType ?? null,
+          chatSessionId: session.chatSessionId ?? null,
+        };
+      } catch {
+        return null;
+      }
+    },
   });
+  pushPublisherForPtySignals = pushPublisherService;
   void pushPublisherService.start().catch((error) => {
     logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
   });

@@ -20,6 +20,7 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
   return {
     sessionId: "s",
     scopeKey: "scope",
+    kind: "chat",
     title: "Run",
     lane: "lane",
     model: "gpt-5",
@@ -170,8 +171,13 @@ describe("createPushPublisherService flush", () => {
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
     });
-    publisher.attachSources("scope-1", { agentChatService: agentChatService as never });
-    return { publisher, publish, emit: (env: AgentChatEventEnvelope) => chatCb?.(env), store };
+    const cliSessions = new Map<string, { title: string | null; toolType?: string | null; chatSessionId?: string | null }>();
+    publisher.attachSources("scope-1", {
+      agentChatService: agentChatService as never,
+      resolveLaneName: (laneId: string) => laneId,
+      resolveCliSession: (sessionId: string) => cliSessions.get(sessionId) ?? null,
+    });
+    return { publisher, publish, emit: (env: AgentChatEventEnvelope) => chatCb?.(env), store, cliSessions };
   }
 
   const approval: AgentChatEventEnvelope = {
@@ -454,6 +460,60 @@ describe("createPushPublisherService flush", () => {
     const lastLa = laPayloads[laPayloads.length - 1].liveActivity[0];
     expect(lastLa.contentState.activeCount).toBe(2);
     expect(lastLa.contentState.runs.map((r: { id: string }) => r.id).sort()).toEqual(["s-a", "s-b"]);
+
+    publisher.dispose();
+  });
+
+  it("surfaces CLI runtime signals in the Live Activity without alert pushes", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    const first = publish.mock.calls[0][0];
+    // Live Activity only — a CLI agent hits its prompt after every turn, so
+    // waiting-input must never generate alert pushes.
+    expect(first.notifications ?? []).toHaveLength(0);
+    expect(first.liveActivity).toHaveLength(1);
+    const startRun = first.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
+    expect(startRun.phase).toBe("running");
+    expect(startRun.title).toBe("claude in auth");
+
+    // Heartbeat re-fires of the same state must not churn LA updates.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(1);
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "waiting-input" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(2);
+    const second = publish.mock.calls[1][0];
+    expect(second.notifications ?? []).toHaveLength(0);
+    const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
+    expect(waitingRun.phase).toBe("waiting_for_input");
+
+    publisher.dispose();
+  });
+
+  it("drops chat-owned shells and unknown sessions from CLI run tracking", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("shell-1", { title: "attached shell", toolType: "shell", chatSessionId: "s-1" });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "shell-1", runtimeState: "running" });
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "ghost-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    // Both rows resolve to nothing user-facing → no LA content and no publish
+    // (a chat-attached shell is already represented by its chat run).
+    for (const call of publish.mock.calls) {
+      const runs = call[0].liveActivity?.[0]?.contentState.runs ?? [];
+      expect(runs.map((r: { id: string }) => r.id)).not.toContain("shell-1");
+      expect(runs.map((r: { id: string }) => r.id)).not.toContain("ghost-1");
+    }
 
     publisher.dispose();
   });

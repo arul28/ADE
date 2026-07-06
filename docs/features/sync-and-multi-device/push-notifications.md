@@ -58,7 +58,13 @@ re-derives state:
 - `agentChatService.subscribeToEvents` — `approval_request` /
   `structured_question` → waiting phases + alert; `pending_input_resolved`
   clears; failed turn statuses → alert.
-- `ptyService.onExit` — CLI session ended.
+- `ptyService.onSessionRuntimeSignal` — tracked CLI sessions' OSC 133-derived
+  state (`running` / `waiting-input`) feeds Live Activity run rows **only**,
+  never alert pushes: a CLI agent returns to its prompt after every turn, so
+  alerting on waiting-input would ping once per turn. Chat-attached shells and
+  untitled infra rows are filtered out (the chat run already represents them).
+- `ptyService.onExit` — CLI session ended: flips the run to
+  completed/failed in the aggregate; a non-zero exit also alerts.
 - `prPollingService`'s `pr-notification` events — `merge_ready` /
   `checks_failing` alerts (edge-transition gated by that service).
 
