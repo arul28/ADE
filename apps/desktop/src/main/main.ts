@@ -60,6 +60,7 @@ import { recoverOrphanedAdeAgentProcesses } from "./services/processes/orphanedA
 import { createTestService } from "./services/tests/testService";
 import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
+import { createSearchService } from "./services/search/searchService";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -2159,6 +2160,7 @@ app.whenReady().then(async () => {
     let conflictServiceRef: ReturnType<typeof createConflictService> | null =
       null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
+    const searchServiceHolder: { current: ReturnType<typeof createSearchService> | null } = { current: null };
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null =
       null;
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
@@ -2276,7 +2278,10 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
-      onLifecycleEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event),
+      onLifecycleEvent: (event) => {
+        emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event);
+        if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
+      },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
@@ -2618,6 +2623,9 @@ app.whenReady().then(async () => {
         category: "runtime",
         payload: { type: "pr_event", event },
       });
+      if (event.type === "prs-updated") {
+        for (const pr of event.prs) searchServiceHolder.current?.notifyPrChanged(pr.id);
+      }
     };
 
     // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
@@ -2857,6 +2865,7 @@ app.whenReady().then(async () => {
       logger,
       broadcastData: (ev) => {
         broadcastPtyData(ev);
+        searchServiceHolder.current?.notifyTerminalData(ev.sessionId);
         const { projectRoot: _projectRoot, ...syncEvent } = ev;
         syncServiceRef?.handlePtyData(syncEvent);
       },
@@ -3332,6 +3341,69 @@ app.whenReady().then(async () => {
     agentChatService.setComputerUseArtifactBrokerService(
       computerUseArtifactBrokerService,
     );
+
+    const resolvePrimaryLaneIdForSearch = async (): Promise<string | null> => {
+      try {
+        const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+        return lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const searchService = createSearchService({
+      cacheDir: adePaths.cacheDir,
+      transcriptsDir: adePaths.transcriptsDir,
+      chatTranscriptsDir: adePaths.chatTranscriptsDir,
+      logger,
+      sessions: {
+        list: async () => sessionService.list({}),
+        get: async (sessionId) => sessionService.get(sessionId),
+      },
+      lanes: {
+        list: async () => laneService.list({ includeArchived: false, includeStatus: false }),
+      },
+      prs: {
+        listAll: (args) => prService.listAll(args),
+        getDetail: (prId) => prService.getDetail(prId),
+        getComments: (prId) => prService.getComments(prId),
+      },
+      git: {
+        listRecentCommits: (args) => gitService.listRecentCommits(args),
+        listBranches: (args) => gitService.listBranches(args),
+      },
+      files: {
+        quickOpen: async (query, limit) => {
+          const primary = await resolvePrimaryLaneIdForSearch();
+          if (!primary) return [];
+          return fileService.quickOpen({ workspaceId: primary, query, limit });
+        },
+        searchText: async (query, limit) => {
+          const primary = await resolvePrimaryLaneIdForSearch();
+          if (!primary) return [];
+          return fileService.searchText({ workspaceId: primary, query, limit });
+        },
+      },
+      artifacts: {
+        list: (limit) => computerUseArtifactBrokerService.listArtifacts({ limit }),
+      },
+      linear: {
+        searchIssues: (query) => linearIssueTracker.searchIssues({ query, first: 25 }),
+      },
+    });
+    searchServiceHolder.current = searchService;
+    sessionService.onChanged((event) => {
+      searchService.notifySessionChanged(
+        event.sessionId,
+        event.reason === "deleted" ? "deleted" : "meta-updated",
+      );
+    });
+    agentChatService.subscribeToEvents((envelope) => {
+      searchService.notifyChatEvent(envelope.sessionId);
+    });
+    // Backfill starts well past the boot window so index writes never compete
+    // with project startup.
+    const searchBackfillTimer = setTimeout(() => searchService.startBackfill(), 10_000);
+    searchBackfillTimer.unref?.();
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
@@ -4016,6 +4088,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       queueLandingService,
       fileService,
+      searchService,
       ctoStateService,
       workerAgentService,
       workerBudgetService,
@@ -4292,6 +4365,7 @@ app.whenReady().then(async () => {
       queueLandingService,
       prSummaryService,
       reviewService,
+      searchService,
       jobEngine,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService,
@@ -4325,7 +4399,7 @@ app.whenReady().then(async () => {
       configReloadService,
       rpcSocketServer,
       rpcSocketPath,
-      disposeTimers: [staleSessionReconcileTimer],
+      disposeTimers: [staleSessionReconcileTimer, searchBackfillTimer],
     };
   };
 
@@ -4606,6 +4680,11 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.reviewService?.dispose?.();
+    } catch {
+      // ignore
+    }
+    try {
+      ctx.searchService?.dispose();
     } catch {
       // ignore
     }

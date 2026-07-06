@@ -123,6 +123,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "review",
   "issue",
   "orchestration",
+  "search",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -154,6 +155,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "poll", "start", "stop"],
+  search: ["rebuildIndex"],
 };
 
 const ROLE_ORDER: Record<AdeActionRole, number> = {
@@ -707,6 +709,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "subscribe",
     "unsubscribe",
   ],
+  search: ["query", "indexStatus", "rebuildIndex"],
 };
 
 export type AdeActionInputContract = {
@@ -2869,6 +2872,22 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
   };
 }
 
+function buildSearchDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const searchService = runtime.searchService;
+  if (!searchService) return null;
+  return {
+    query(args: unknown) {
+      return searchService.query((args ?? {}) as Parameters<typeof searchService.query>[0]);
+    },
+    indexStatus() {
+      return searchService.indexStatus();
+    },
+    rebuildIndex() {
+      return searchService.rebuildIndex();
+    },
+  } as OpaqueService;
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -2920,6 +2939,7 @@ export function getAdeActionDomainServices(
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
     orchestration: toService(buildOrchestrationDomainService(runtime)),
+    search: toService(buildSearchDomainService(runtime)),
   };
 }
 

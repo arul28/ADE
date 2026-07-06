@@ -638,6 +638,10 @@ import type {
   FeedbackSubmission,
   FeedbackSubmissionEvent,
   FeedbackSubmitDraftArgs,
+  SearchIndexStatus,
+  SearchQueryArgs,
+  SearchQueryResult,
+  SearchRebuildResult,
 } from "../shared/types";
 
 export {};
@@ -1593,6 +1597,11 @@ declare global {
       };
       localhost: {
         probePort: (port: number) => Promise<boolean>;
+      };
+      search: {
+        query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;
+        indexStatus: () => Promise<SearchIndexStatus | null>;
+        rebuildIndex: () => Promise<SearchRebuildResult>;
       };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;

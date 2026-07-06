@@ -455,6 +455,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       removeSessionDocs(sessionId);
       return;
     }
+    if (!isChatToolType(session.toolType)) return;
     const sourceId = `chat:${sessionId}`;
     const filePath = chatTranscriptPathFor(session);
     withTransaction(() => upsertSessionMetaDoc(session, "chat"));
