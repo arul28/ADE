@@ -555,11 +555,16 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         .map((device) => device.deviceId);
       if (eligibleIds.length === 0) continue;
       const copy = alert.render();
+      // itemId is part of the fingerprint: a new approval with identical
+      // rendered copy must still publish, or the phone's Approve/Deny action
+      // keeps targeting the previous (already-resolved) item.
       const fingerprint = JSON.stringify({
         title: copy.title,
         body: copy.body,
         deepLink: alert.deepLink ?? null,
         phase: alert.phase,
+        itemId: alert.itemId ?? null,
+        category: alert.category ?? null,
       });
       if (lastAlertFingerprintByKey.get(alert.dedupeKey) === fingerprint) continue;
       alertCommits.push([alert.dedupeKey, fingerprint]);

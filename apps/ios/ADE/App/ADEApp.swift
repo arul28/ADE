@@ -95,6 +95,17 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .restartSession: mapped = .restartSession
     case .retryPrChecks: mapped = .retryPrChecks
     }
-    await SyncService.shared?.sendRemoteCommand(mapped, payload: payload)
+    guard let sync = SyncService.shared else { return }
+    // A notification action or Live Activity button can background-launch the
+    // app before the sync socket is up; these commands are not queueable
+    // (approving a stale item later would be wrong), so give the socket a
+    // bounded chance to connect — the tap IS a user-initiated reconnect.
+    if sync.connectionState != .connected {
+      await sync.reconnectIfPossible(userInitiated: true)
+      for _ in 0..<20 where sync.connectionState != .connected {
+        try? await Task.sleep(nanoseconds: 250_000_000)
+      }
+    }
+    await sync.sendRemoteCommand(mapped, payload: payload)
   }
 }
