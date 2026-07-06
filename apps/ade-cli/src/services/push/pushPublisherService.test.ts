@@ -499,7 +499,7 @@ describe("createPushPublisherService flush", () => {
   });
 
   it("drops chat-owned shells and unknown sessions from CLI run tracking", async () => {
-    const { publisher, publish, cliSessions } = makeHarness();
+    const { publisher, publish, emit, cliSessions } = makeHarness();
     cliSessions.set("shell-1", { title: "attached shell", toolType: "shell", chatSessionId: "s-1" });
     await publisher.start();
 
@@ -507,13 +507,47 @@ describe("createPushPublisherService flush", () => {
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "ghost-1", runtimeState: "running" });
     await vi.advanceTimersByTimeAsync(2_500);
 
-    // Both rows resolve to nothing user-facing → no LA content and no publish
-    // (a chat-attached shell is already represented by its chat run).
-    for (const call of publish.mock.calls) {
-      const runs = call[0].liveActivity?.[0]?.contentState.runs ?? [];
-      expect(runs.map((r: { id: string }) => r.id)).not.toContain("shell-1");
-      expect(runs.map((r: { id: string }) => r.id)).not.toContain("ghost-1");
-    }
+    // Both rows resolve to nothing user-facing → nothing to publish at all.
+    expect(publish).not.toHaveBeenCalled();
+
+    // With a real chat run present, the publish payload must still exclude them.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "shell-1", runtimeState: "running" });
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalled();
+    const runs = publish.mock.calls.at(-1)![0].liveActivity[0].contentState.runs;
+    expect(runs.map((r: { id: string }) => r.id)).toEqual(["s-1"]);
+
+    publisher.dispose();
+  });
+
+  it("publishes a quiet CLI as stale without ending the Live Activity", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    cliSessions.set("cli-1", { title: "claude in auth", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0].liveActivity[0].event).toBe("start");
+
+    // 12s-quiet idle → the row goes stale (not active) but the activity stays
+    // open: ending on a quiet spell would churn end→push-to-start cycles.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(2);
+    const idleItem = publish.mock.calls[1][0].liveActivity[0];
+    expect(idleItem.event).toBe("update");
+    expect(idleItem.contentState.activeCount).toBe(0);
+    expect(idleItem.contentState.runs[0].phase).toBe("stale");
+
+    // Output resumes → back to an active running row on the same activity.
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "running" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish).toHaveBeenCalledTimes(3);
+    const resumed = publish.mock.calls[2][0].liveActivity[0];
+    expect(resumed.event).toBe("update");
+    expect(resumed.contentState.runs[0].phase).toBe("running");
 
     publisher.dispose();
   });

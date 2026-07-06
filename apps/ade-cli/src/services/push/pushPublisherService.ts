@@ -448,7 +448,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const pruneRuns = (nowMs: number): void => {
     for (const [sessionId, run] of runs) {
       const age = nowMs - run.lastActiveAt;
-      if ((run.phase === "running" || run.phase === "starting") && age > RUNNING_TTL_MS) {
+      if (
+        (run.phase === "running" || run.phase === "starting" || run.phase === "stale")
+        && age > RUNNING_TTL_MS
+      ) {
         runs.delete(sessionId);
       } else if (
         (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input")
@@ -509,11 +512,16 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const allRuns = [...runs.values()];
     const contentState = buildAgentRunsContentState(allRuns, nowMs);
     const activeCount = contentState.activeCount;
+    // Stale rows (quiet CLIs) don't count as active but must not END the
+    // activity either — a 12s-quiet CLI that resumes output would otherwise
+    // churn end→push-to-start cycles. Only an all-completed/failed (or empty)
+    // roster ends the aggregate.
+    const dormantCount = allRuns.filter((run) => run.phase === "stale").length;
 
     let event: "start" | "update" | "end";
     if (activeCount > 0 && !liveActivityStarted) event = "start";
-    else if (activeCount === 0 && liveActivityStarted) event = "end";
-    else if (activeCount === 0 && !liveActivityStarted) return null; // nothing live to report
+    else if (activeCount === 0 && dormantCount === 0 && liveActivityStarted) event = "end";
+    else if (!liveActivityStarted) return null; // nothing live to report (stale-only never starts)
     else event = "update";
 
     const fingerprint = JSON.stringify({ ...contentState, updatedAt: 0 });
@@ -873,7 +881,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const existing = runs.get(signal.sessionId);
     // Exit/kill phases are owned by onPtyExit (which knows the exit code).
     if (signal.runtimeState === "exited" || signal.runtimeState === "killed") return;
-    const phase: AgentRunPhase = signal.runtimeState === "waiting-input" ? "waiting_for_input" : "running";
+    // `idle` = no output for 12s with no OSC prompt marker — we can't prove
+    // the CLI is working OR at a prompt, so publish it as `stale` (dimmed,
+    // not counted active) instead of overstating it as a live running row.
+    const phase: AgentRunPhase = signal.runtimeState === "waiting-input"
+      ? "waiting_for_input"
+      : signal.runtimeState === "idle"
+        ? "stale"
+        : "running";
     // Signals re-fire on a ~10s heartbeat; only a phase change is worth a
     // Live Activity update (the run row shows phase, not output).
     if (existing && existing.kind === "cli" && existing.phase === phase) {

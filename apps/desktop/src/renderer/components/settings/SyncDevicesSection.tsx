@@ -10,6 +10,7 @@ import type {
   SyncTailnetDiscoveryStatus,
 } from "../../../shared/types";
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
+import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
 import { SettingsToggle } from "./settingsSectionUi";
 import {
   COLORS,
@@ -753,25 +754,34 @@ function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
     () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo })),
     [connectInfo],
   );
+  // Same ADE-branded treatment as the welcome modal's TestFlight QR: white
+  // tile, accent-tinted border, excavated ADE mark in the center (which is
+  // why the error-correction level is H).
   return (
     <div style={{ ...panelStyle, gap: 0, padding: 12, placeItems: "center" }}>
       <div
         style={{
           display: "inline-flex",
-          padding: 12,
-          borderRadius: 12,
+          padding: 14,
+          borderRadius: 14,
           background: "#FFFFFF",
-          border: `1px solid ${COLORS.accentBorder}`,
+          border: "1px solid color-mix(in srgb, var(--color-accent, #A78BFA) 30%, transparent)",
         }}
       >
         <QRCodeSVG
           value={qrUrl}
           size={148}
-          level="M"
+          level="H"
           marginSize={1}
           bgColor="#FFFFFF"
           fgColor="#111827"
-          title="Pairing QR code"
+          title="QR code to pair ADE Mobile with this machine"
+          imageSettings={{
+            src: publicAssetUrl("welcome/ade-icon.webp"),
+            height: 32,
+            width: 32,
+            excavate: true,
+          }}
         />
       </div>
     </div>
