@@ -1121,7 +1121,8 @@ export function CommandPalette({
       switch (item.kind) {
         case "chat":
         case "terminal": {
-          const sessionId = item.sessionId ?? "";
+          const sessionId = item.sessionId;
+          if (!sessionId) break;
           // The Work tab stays mounted (keep-alive), so its select-session
           // listener focuses the target; the navigate switches the visible tab.
           window.dispatchEvent(

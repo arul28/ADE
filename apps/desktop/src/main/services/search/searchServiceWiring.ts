@@ -115,15 +115,15 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
       : null,
     files: fileService
       ? {
-          quickOpen: async (query, limit) => {
-            const primary = await resolvePrimaryLaneId();
-            if (!primary) return [];
-            return fileService.quickOpen({ workspaceId: primary, query, limit });
+          quickOpen: async (query, limit, laneId) => {
+            const workspaceId = laneId ?? (await resolvePrimaryLaneId());
+            if (!workspaceId) return [];
+            return fileService.quickOpen({ workspaceId, query, limit });
           },
-          searchText: async (query, limit) => {
-            const primary = await resolvePrimaryLaneId();
-            if (!primary) return [];
-            return fileService.searchText({ workspaceId: primary, query, limit });
+          searchText: async (query, limit, laneId) => {
+            const workspaceId = laneId ?? (await resolvePrimaryLaneId());
+            if (!workspaceId) return [];
+            return fileService.searchText({ workspaceId, query, limit });
           }
         }
       : null,
@@ -139,13 +139,13 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
       : null
   });
 
-  sessionService.onChanged((event) => {
+  const unsubscribeSession = sessionService.onChanged((event) => {
     searchService.notifySessionChanged(
       event.sessionId,
       event.reason === "deleted" ? "deleted" : "meta-updated"
     );
   });
-  args.agentChatService?.subscribeToEvents?.((envelope) => {
+  const unsubscribeChat = args.agentChatService?.subscribeToEvents?.((envelope) => {
     searchService.notifyChatEvent(envelope.sessionId);
   });
 
@@ -156,6 +156,8 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
     ...searchService,
     dispose: () => {
       clearTimeout(backfillTimer);
+      if (typeof unsubscribeSession === "function") unsubscribeSession();
+      if (typeof unsubscribeChat === "function") unsubscribeChat();
       searchService.dispose();
     }
   };

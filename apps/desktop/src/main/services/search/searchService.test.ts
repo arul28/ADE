@@ -743,3 +743,64 @@ describe("chunkTerminalTranscript", () => {
     expect(a).toEqual(b);
   });
 });
+
+describe("searchService review fixes (PR #709)", () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test6-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("rejects queries with invalid inline filters instead of broadening to match-all", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [makeSession({ id: "c1", title: "Something" })] },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(chatDir, "c1.jsonl"),
+      `${JSON.stringify({ sessionId: "c1", timestamp: "2026-07-05T10:00:00.000Z", event: { type: "user_message", text: "findable text" } })}\n`
+    );
+    service.notifyChatEvent("c1");
+    await service.processPendingNow();
+
+    expect((await service.query({ query: "kind:bogus" })).results).toEqual([]);
+    expect((await service.query({ query: "kind:bogus findable" })).results).toEqual([]);
+    expect((await service.query({ query: "since:whenever findable" })).results).toEqual([]);
+    // Valid queries still work.
+    expect((await service.query({ query: "findable" })).results.length).toBeGreaterThan(0);
+    service.dispose();
+  });
+
+  it("searches the requested lane's files when a lane filter is present", async () => {
+    const quickOpen = vi.fn(async (_query: string, _limit: number, laneId?: string | null) =>
+      laneId === "lane-42" ? [{ path: "lane42/file.ts" }] : [{ path: "primary/file.ts" }]
+    );
+    const searchText = vi.fn(async () => []);
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      files: { quickOpen, searchText },
+      now: () => NOW
+    });
+
+    const scoped = await service.query({ query: "file", laneId: "lane-42", kinds: ["file"] });
+    expect(quickOpen).toHaveBeenCalledWith("file", expect.any(Number), "lane-42");
+    expect(scoped.results.some((r) => r.id === "file:lane42/file.ts")).toBe(true);
+
+    const unscoped = await service.query({ query: "file", kinds: ["file"] });
+    expect(quickOpen).toHaveBeenLastCalledWith("file", expect.any(Number), null);
+    expect(unscoped.results.some((r) => r.id === "file:primary/file.ts")).toBe(true);
+    service.dispose();
+  });
+});

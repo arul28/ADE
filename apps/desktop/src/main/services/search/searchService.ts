@@ -126,12 +126,13 @@ export type SearchServiceDeps = {
     listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
     listBranches: (args: { laneId: string }) => Promise<GitBranchSummary[]>;
   } | null;
-  /** Pre-bound to the active project workspace. */
+  /** Pre-bound to the project; pass laneId to search that lane's workspace. */
   files?: {
-    quickOpen: (query: string, limit: number) => Promise<Array<{ path: string }>>;
+    quickOpen: (query: string, limit: number, laneId?: string | null) => Promise<Array<{ path: string }>>;
     searchText: (
       query: string,
-      limit: number
+      limit: number,
+      laneId?: string | null
     ) => Promise<Array<{ path: string; line: number; column: number; preview: string }>>;
   } | null;
   artifacts?: {
@@ -1093,7 +1094,8 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const delegatedFileCandidates = async (
     parsed: ParsedSearchQuery,
-    matchAll: boolean
+    matchAll: boolean,
+    laneId: string | null
   ): Promise<Candidate[]> => {
     if (!deps.files || matchAll) return [];
     const queryText = rankQueryText(parsed);
@@ -1101,7 +1103,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     const out: Candidate[] = [];
     const seen = new Set<string>();
     try {
-      const quick = await deps.files.quickOpen(queryText, DELEGATED_FILE_LIMIT);
+      const quick = await deps.files.quickOpen(queryText, DELEGATED_FILE_LIMIT, laneId);
       for (const item of quick) {
         const docId = `file:${item.path}`;
         if (seen.has(docId)) continue;
@@ -1125,7 +1127,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       // file index unavailable
     }
     try {
-      const matches = await deps.files.searchText(queryText, DELEGATED_FILE_LIMIT);
+      const matches = await deps.files.searchText(queryText, DELEGATED_FILE_LIMIT, laneId);
       for (const match of matches) {
         const docId = `file:${match.path}:${match.line}`;
         if (seen.has(docId)) continue;
@@ -1238,6 +1240,11 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const query = async (args: SearchQueryArgs): Promise<SearchQueryResult> => {
     const parsed = parseSearchQuery(args.query ?? "", { now: now() });
+    // A typoed inline filter (kind:bogus, since:whenever) must not silently
+    // broaden into a match-all across every kind — reject deterministically.
+    if (parsed.invalidFilters.length > 0) {
+      return { results: [], totalByKind: {}, nextCursor: null };
+    }
     const kinds = effectiveKinds(args, parsed);
     if (kinds.length === 0) return { results: [], totalByKind: {}, nextCursor: null };
     const matchAll = isMatchAllQuery(parsed);
@@ -1261,8 +1268,8 @@ export function createSearchService(deps: SearchServiceDeps) {
       if (kinds.includes("lane") && !laneId) {
         delegated.push(...(await delegatedLaneCandidates(parsed, matchAll)));
       }
-      if (kinds.includes("file") && !laneId) {
-        delegated.push(...(await delegatedFileCandidates(parsed, matchAll)));
+      if (kinds.includes("file")) {
+        delegated.push(...(await delegatedFileCandidates(parsed, matchAll, laneId)));
       }
       if (kinds.includes("artifact") && !laneId) {
         delegated.push(...delegatedArtifactCandidates(parsed, matchAll));

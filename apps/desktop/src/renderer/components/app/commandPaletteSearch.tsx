@@ -370,7 +370,12 @@ export function useUniversalSearch(
         out.push({
           type: "showMore",
           kind: section.kind,
-          hiddenCount: section.total - ENTITY_SECTION_PREVIEW,
+          // Expanding only reveals already-fetched rows, so never promise more
+          // than the fetched page actually holds for this kind.
+          hiddenCount: Math.min(
+            section.total - ENTITY_SECTION_PREVIEW,
+            section.rows.length - ENTITY_SECTION_PREVIEW,
+          ),
         });
       }
     }

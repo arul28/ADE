@@ -4354,11 +4354,6 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.searchService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
       ctx.usageTrackingService?.dispose();
     } catch {
       // ignore
@@ -4415,6 +4410,13 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.agentChatService?.disposeAll();
+    } catch {
+      // ignore
+    }
+    // After pty/process/chat teardown so their final events cannot land on a
+    // disposed search service.
+    try {
+      ctx.searchService?.dispose();
     } catch {
       // ignore
     }

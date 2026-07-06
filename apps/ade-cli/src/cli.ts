@@ -998,6 +998,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --lane, --lane-id <id>  Restrict to a lane (id or name; the service resolves names).
     --limit <n>             Max results to return.
     --cursor <c>            Continue from a previous query's nextCursor.
+    --actions               List the raw search service actions exposed via ADE actions.
     --status                Show index doc counts, backfill state, and index path.
     --rebuild               Rebuild the whole index from scratch (CTO-only).
     --text                  Aligned KIND/TITLE/SNIPPET/ID rows plus a count summary.
