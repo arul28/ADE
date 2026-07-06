@@ -119,9 +119,8 @@ Renderer — onboarding:
   of internal/public doc URLs that `DidYouKnow`, `HelpMenu`, and
   glossary surfaces link to.
 - `apps/desktop/src/renderer/components/cto/...` — CTO first-run is a
-  separate lightweight wizard covering minimal identity/personality
-  setup only. Model selection, Linear, and worker hiring are deferred
-  to Settings or the relevant CTO tabs.
+  single lightweight card covering personality and work-style setup.
+  Model selection and Linear are deferred to the CTO Settings sheet.
 
 Renderer — settings:
 
@@ -448,8 +447,7 @@ behavior. Current behavior:
 
 - **guest mode** — deterministic features remain usable; AI-backed
   features degrade cleanly (no narrative generation, no summaries).
-- **subscription mode** — unlocks chat, narratives, summaries, and
-  worker delegation.
+- **subscription mode** — unlocks chat, narratives, and summaries.
 
 Legacy `providers.mode` migration ran during earlier releases and is
 no longer part of the contract; `projectConfigService` still contains

@@ -9,8 +9,8 @@ which lane, and which selection are active so deep links land back on
 the same row.
 
 The Activity feed is sourced from the `operations` SQLite table plus
-in-memory adapters that synthesize timeline rows from chat sessions,
-CTO sessions, and worker runs. Git commits in the Commits
+in-memory adapters that synthesize timeline rows from chat sessions
+and CTO sessions. Git commits in the Commits
 view come from `git log` on the lane's worktree, not from the
 operations table.
 
@@ -35,10 +35,10 @@ the user's local machine — the runtime returns the rows, then the
 desktop's IPC handler writes the CSV/JSON to disk through the native
 save dialog.
 
-Supplemental activity sources (chat sessions, CTO snapshot,
-worker runs) are fetched directly from the renderer through the
-existing per-feature preload bridges and merged into the timeline at
-render time; they are not persisted into `operations`.
+Supplemental activity sources (chat sessions, CTO snapshot) are
+fetched directly from the renderer through the existing per-feature
+preload bridges and merged into the timeline at render time; they are
+not persisted into `operations`.
 
 ## Source file map
 
@@ -62,8 +62,8 @@ Renderer components (`apps/desktop/src/renderer/components/history/`):
 | `HistoryPage.tsx` | Hosts the `TimelineStoreProvider`, the two-pane `PaneTilingLayout` (timeline ~60%, detail ~40%), URL ↔ store hydration for `surface` / `laneId` / `eventId` / `commitSha`, selected-lane mirroring when the URL is not driving lane state, commit-on-lane tracking for destructive action gates, and the auto-refresh poll for running activity events. Surface defaults to `commits`. |
 | `useTimelineStore.ts` | Zustand store: raw + enriched events, WIP-by-lane nodes, surface, focus lane, selected commit/event, view mode, scope level, filters, lane visibility, columns. `fetchEvents` merges `history.listOperations` with `fetchSupplementalTimelineRecords` and sorts/dedupes via `sortTimelineRecords`. |
 | `timelineTypes.ts` | `HistorySurface = "activity" \| "commits"`, `ViewMode = "graph" \| "list" \| "compact"`, `TimelineEvent` (enriched `OperationRecord`), `LaneTrack`, `GraphLayout`, `TimelineFilters`, `LaneVisibility`, `ColumnConfig`, `WIPNode`, `MinimapBucket`. `DEFAULT_COLUMNS` order is timestamp → graph → event → lane → author → status → duration → sha. |
-| `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kinds (`chat.session`, `cto.session`, `worker.run`, `worker.activity`). |
-| `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(limit)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list`, `cto.getState`, and `cto.listAgentRuns`. Synthetic IDs are namespaced (`chat:`, `worker-run:`, `cto-session:`, `cto-activity:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
+| `eventTaxonomy.ts` | Source of truth for event categories, importance levels, node shapes, and the per-kind `EVENT_KIND_META` table that every renderer (graph, list, compact, detail panel) consults. Adds taxonomy entries for the new git head-change kinds (`git_undo_head_change`, `git_redo_head_change`, `git_tag_create`, `git_reset_soft`/`_mixed`/`_hard`) and the unified-feed kinds (`chat.session`, `cto.session`). |
+| `historyActivitySources.ts` | Pure mappers + the single `fetchSupplementalTimelineRecords(limit)` entry point that builds synthetic `OperationRecord` rows from `agentChat.list` and `cto.getState`. Synthetic IDs are namespaced (`chat:`, `cto-session:`) and the actor/eventLabel are embedded in `metadataJson` so the detail panel + graph can render them uniformly. |
 | `historySearch.ts` | Tokenizer + matcher behind the Commits view search input. Supports bare full-text, quoted phrases, and the `message:` / `msg:` / `=` / `author:` / `@` / `commit:` / `sha:` / `#` / `branch:` / `ref:` / `parent:` / `is:` / `type:` keys (e.g. `is:merge`, `is:local`, `type:pushed`). |
 | `commitGraphLayout.ts` | Pure `buildCommitGraphLayout(commitsNewestFirst)` that assigns DAG columns first-parent style, then exposes `commitEdgePath`, `columnCenterX`, `rowCenterY`, and the `COMMIT_ROW_HEIGHT` / `COMMIT_GRAPH_COL_WIDTH` / `COMMIT_GRAPH_PAD_LEFT` constants the SVG layer in `CommitHistoryView` consumes. |
 | `CommitHistoryView.tsx` | Virtualized GitKraken-style commit graph for the focused lane. Loads commits via `git.listRecentCommits` (initial limit 120, expands to 500 on scroll-to-bottom and on non-empty search), `git.listBranches` for ref pills, draws nodes + edges as an SVG layer overlaid on `@tanstack/react-virtual` rows, and dispatches right-click commit actions via `HistoryGitContextMenu`. |
@@ -120,10 +120,10 @@ without leaving the History tab.
 ### Activity
 
 Unified operations feed combining recorded `OperationRecord` rows with
-synthesized rows from chat sessions, CTO snapshots, and
-worker runs (see `historyActivitySources.ts`). `fetchEvents` merges
-them in `useTimelineStore`, deduplicates by `id`, and sorts by
-`startedAt` descending before clamping to `limit`.
+synthesized rows from chat sessions and CTO snapshots (see
+`historyActivitySources.ts`). `fetchEvents` merges them in
+`useTimelineStore`, deduplicates by `id`, and sorts by `startedAt`
+descending before clamping to `limit`.
 
 Three view modes (`graph` / `list` / `compact`) are selectable from
 the toolbar:
@@ -169,7 +169,7 @@ runs the save dialog locally and writes the file. The button shows
 ## What history captures
 
 History records **operations** — discrete, typed actions that changed
-state — plus synthesized rows from the chat/CTO/worker feeds
+state — plus synthesized rows from the chat and CTO feeds
 that pretend to be operations for rendering purposes only. Synthesized
 rows are not written into the `operations` table; they are rebuilt on
 every refresh.
@@ -210,9 +210,7 @@ the activity feed and the detail panel; they will never appear in
 | Kind | Source | Metadata highlights |
 |---|---|---|
 | `chat.session` | `agentChat.list({ includeAutomation: true })` | `sessionId`, `title`, `provider`, `model`, `chatStatus`, `awaitingInput`, `automationId` |
-| `worker.run` | `cto.listAgentRuns({ limit })` | `runId`, `agentId`, `taskKey`, `workerStatus`, `wakeupReason`, `error` |
 | `cto.session` | `cto.getState({ recentLimit }).recentSessions` | `sessionId`, `summary`, `provider`, `model`, `capabilityMode` |
-| `worker.activity` | `cto.getState({ recentLimit }).recentSubordinateActivity` | `agentId`, `agent`, `sessionId`, `taskKey`, `activityType` |
 
 ### Status
 
@@ -443,7 +441,7 @@ these are surfaced on the Activity surface as synthesized rows:
 - **CSV export escaping.** The export path embeds metadata JSON; CSV
   escaping must survive nested quotes. Validate with round-trip
   tests when adjusting export formats.
-- **Synthesized rows do not export.** Chat / CTO / worker
+- **Synthesized rows do not export.** Chat / CTO
   rows are renderer-side only. They appear in the Activity feed and
   the detail panel but never in `ade.history.exportOperations`
   output. Treat the export as the operations table, not the unified
@@ -480,6 +478,6 @@ these are surfaced on the Activity surface as synthesized rows:
 - [Chat README](../chat/README.md) -- chat transcript persistence is
   separate from the operations timeline but parallel in intent, and
   chat sessions also synthesize Activity feed rows.
-- [Agents README](../agents/README.md) -- worker and CTO session logs
-  are tracked in `cto_session_logs` and agent-specific tables; CTO
-  snapshot + worker runs synthesize rows into the Activity feed.
+- [Agents README](../agents/README.md) -- CTO session logs are tracked
+  in `cto_session_logs`; the CTO snapshot synthesizes rows into the
+  Activity feed.

@@ -50,7 +50,7 @@ A rule fires from one of three broad classes of trigger.
 </Tabs>
 
 <Note>
-Linear triggers here are **context only**. The CTO owns Linear issue intake and routing — automations react to Linear events for their own work but never duplicate that pipeline. See [Linear](/integrations/linear).
+Linear triggers here are **context only**. There is no autonomous issue-routing engine — automations react to Linear events for their own work, and any Linear write is an explicit rule action. See [Linear](/integrations/linear).
 </Note>
 
 ## Execution surfaces
@@ -109,9 +109,9 @@ Use the **simulate** path to dry-run a rule against a synthetic trigger before e
 
 <CardGroup cols={2}>
   <Card title="CTO overview" icon="crown" href="/cto/overview">
-    The persistent operator that owns Linear intake and worker delegation.
+    The persistent project-level operator with durable memory.
   </Card>
   <Card title="Linear" icon="layers" href="/integrations/linear">
-    Why Linear routing lives with the CTO, not automations.
+    Attach issues, link PRs, and read issues from ADE.
   </Card>
 </CardGroup>

@@ -498,6 +498,9 @@ struct WorkSessionListRow: View {
   let onCopyId: (TerminalSessionSummary) -> Void
   let onCopyDeepLink: (TerminalSessionSummary) -> Void
   let onGoToLane: (TerminalSessionSummary) -> Void
+  /// Opens the row's linked PR (mapped or GitHub-by-branch) in the PRs tab.
+  /// Defaults to a no-op so preview harnesses don't have to wire it.
+  var onOpenPullRequest: (TerminalSessionSummary, LanePrTag) -> Void = { _, _ in }
 
   var body: some View {
     let rowStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
@@ -580,6 +583,13 @@ struct WorkSessionListRow: View {
         onGoToLane(session)
       } label: {
         Label("Go to lane", systemImage: "arrow.triangle.branch")
+      }
+      if let pullRequest {
+        Button {
+          onOpenPullRequest(session, pullRequest)
+        } label: {
+          Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+        }
       }
       Button {
         onCopyId(session)
@@ -887,10 +897,17 @@ struct WorkSessionRow: View, Equatable {
 
       Spacer(minLength: 6)
 
-      Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
+      if isPendingSyncCreation {
+        Text("Pending sync")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      } else {
+        Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 8)
@@ -1004,7 +1021,15 @@ struct WorkSessionRow: View, Equatable {
 
           Spacer(minLength: 0)
 
-          if isArchived {
+          if isPendingSyncCreation {
+            HStack(spacing: 4) {
+              Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 9, weight: .semibold))
+              Text("Pending sync")
+                .font(.caption2.weight(.semibold))
+            }
+            .foregroundStyle(ADEColor.textMuted)
+          } else if isArchived {
             Text("ARCHIVED")
               .font(.caption2.monospaced().weight(.semibold))
               .foregroundStyle(ADEColor.warning)
@@ -1038,7 +1063,12 @@ struct WorkSessionRow: View, Equatable {
     providerTint(chatSummary?.provider ?? session.toolType)
   }
 
+  var isPendingSyncCreation: Bool {
+    workIsPendingChatCreationSession(session)
+  }
+
   var rowTint: Color {
+    if isPendingSyncCreation { return ADEColor.textMuted }
     if isArchived { return ADEColor.warning }
     return workChatStatusTint(status)
   }

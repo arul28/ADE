@@ -267,11 +267,15 @@ a boolean.
   tab; see `ios-companion.md` for the shape.
 
 **CTO** (`cto.*`)
-- `removeAgent` — drop a worker from the team and trigger a
-  `workerHeartbeatService.syncFromConfig` resync so the live
-  roster reflects the removal immediately. Phone-driven CTO
-  management uses this in tandem with `setAgentStatus`,
-  `triggerAgentWakeup`, and `rollbackAgentRevision`.
+- `ensureSession`, `getState`, `updateIdentity` — resolve the single CTO
+  chat session and read/patch its identity.
+- `getMemory` — return the CTO's memory snapshot (durable `MEMORY.md`,
+  rolling thread state, and today's daily log) for the phone's Memory card.
+- `getLinearConnectionStatus`, `getLinearQuickView`,
+  `getLinearIssuePickerData`, `searchLinearIssues`, `getLinearIssueComments`
+  — the Linear read surface. The former worker-management commands
+  (`removeAgent`, `setAgentStatus`, `triggerAgentWakeup`,
+  `rollbackAgentRevision`) were removed with the worker subsystem.
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.
@@ -384,10 +388,12 @@ A handful have more logic:
   result; a missing `agentChatService`, a thrown error, or an empty name
   all fall back to the supplied `fallbackName` (or, when none was passed,
   a prompt-derived `deriveDeterministicLaneNameFromPrompt`), so naming
-  can never block or fail lane creation. The iOS caller
-  (`SyncService.suggestLaneName`, raced against a 10s deadline in
-  `WorkNewChatScreen`) catches any throw and uses the same deterministic
-  name.
+  can never block or fail lane creation. The iOS callers
+  (`WorkNewChatScreen` and the hub composer) create the lane instantly
+  with the deterministic name, then call `SyncService.suggestLaneName`
+  fire-and-forget after the session launch and apply a differing
+  suggestion via `lanes.rename` — desktop's background-rename pattern;
+  any throw keeps the deterministic name.
 - **`lanes.initEnv` / `lanes.applyTemplate`** — resolves the lane's
   overlay context (`resolveLaneOverlayContext`), merges overrides with
   the template's env init config, and invokes

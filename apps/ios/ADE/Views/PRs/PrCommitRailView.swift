@@ -32,12 +32,12 @@ struct PrCommitRailView: View {
     let status = normalizedStatus(commit.checksState)
     let tint = statusTint(status)
     return HStack(alignment: .top, spacing: 12) {
-      // Timeline gutter: vertical rail + gradient dot.
+      // Timeline gutter: vertical rail + flat dot (HEAD gets a ring).
       ZStack(alignment: .top) {
         // Connector line (hidden on last row).
         if !isLast {
           Rectangle()
-            .fill(Color.white.opacity(0.08))
+            .fill(PrGlassPalette.cardBorder)
             .frame(width: 1.25)
             .padding(.top, 18)
         }
@@ -45,27 +45,17 @@ struct PrCommitRailView: View {
         ZStack {
           if isHead {
             Circle()
-              .fill(tint.opacity(0.55))
-              .frame(width: 18, height: 18)
-              .blur(radius: 6)
+              .strokeBorder(tint.opacity(0.35), lineWidth: 2)
+              .frame(width: 16, height: 16)
           }
           Circle()
-            .fill(
-              LinearGradient(
-                colors: [tint.opacity(0.95), tint.opacity(0.6)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-              )
-            )
-            .frame(width: 10, height: 10)
-          Circle()
-            .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.75)
+            .fill(tint)
             .frame(width: 10, height: 10)
         }
-        .frame(width: 12)
+        .frame(width: 16)
         .padding(.top, 4)
       }
-      .frame(width: 14)
+      .frame(width: 16)
 
       VStack(alignment: .leading, spacing: 3) {
         HStack(spacing: 8) {

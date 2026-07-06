@@ -57,10 +57,7 @@ import type {
   AiSettingsStatus,
   CtoRunProjectScanResult,
   CtoLinearQuickView,
-  CtoSimulateFlowRouteArgs,
   LinearConnectionStatus,
-  LinearRouteDecision,
-  NormalizedLinearIssue,
 } from "../../../shared/types";
 import { getModelById } from "../../../shared/modelRegistry";
 import { matchLaneOverlayPolicies } from "../config/laneOverlayMatcher";
@@ -89,20 +86,15 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "onboarding",
   "automation_planner",
   "cto_state",
-  "worker_agent",
+  "cto_memory",
   "session",
   "operation",
   "ade_project",
   "project_config",
   "project_secret",
-  "flow_policy",
   "linear_credentials",
   "linear_oauth",
-  "linear_dispatcher",
   "linear_issue_tracker",
-  "linear_sync",
-  "linear_ingress",
-  "linear_routing",
   "github",
   "feedback",
   "usage",
@@ -137,6 +129,9 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  // The CTO's durable memory is injected into every CTO session; only the CTO
+  // itself (and the user's own UI, which connects at cto role) may rewrite it.
+  cto_memory: ["updateMemory"],
   linear_credentials: [
     "setToken",
     "setOAuthToken",
@@ -147,9 +142,6 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   linear_oauth: ["startSession"],
   github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
   update: ["quitAndInstall"],
-  flow_policy: ["savePolicy", "rollbackRevision"],
-  linear_sync: ["runSyncNow", "resolveQueueItem"],
-  linear_ingress: ["ensureRelayWebhook"],
   automations: ["setWebhookGatewayPublicUrl"],
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
@@ -430,7 +422,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteSession",
     "dispatchSteer",
     "editSteer",
-    "ensureAgentIdentitySession",
     "ensureCtoSession",
     "getAvailableModels",
     "getClaudeSessionInfo",
@@ -523,33 +514,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "runProjectScan",
     "updateIdentity",
   ],
-  worker_agent: [
-    "clearAgentTaskSession",
-    "getBudgetSnapshot",
-    "listAgents",
-    "listAgentRevisions",
-    "listAgentRuns",
-    "listSessionLogs",
-    "listAgentTaskSessions",
-    "removeAgent",
-    "rollbackAgentRevision",
-    "saveAgent",
-    "setAgentStatus",
-    "triggerWakeup",
-  ],
+  cto_memory: ["getSnapshot", "searchMemory", "updateMemory"],
   session: ["backfillDeltas", "deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
   project_secret: ["list", "get", "set", "delete"],
-  flow_policy: [
-    "diffPolicyPaths",
-    "getPolicy",
-    "listRevisions",
-    "normalizePolicy",
-    "rollbackRevision",
-    "savePolicy",
-  ],
   linear_credentials: [
     "clearOAuthClientCredentials",
     "clearToken",
@@ -562,7 +532,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSession",
     "startSession",
   ],
-  linear_dispatcher: ["dispatchIssue", "getDashboard", "listEmployees", "listQueue"],
   linear_issue_tracker: [
     "addIssueLabel",
     "addLabel",
@@ -587,9 +556,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIssueAssignee",
     "updateIssueState",
   ],
-  linear_sync: ["getDashboard", "getRunDetail", "listQueue", "resolveQueueItem", "runSyncNow"],
-  linear_ingress: ["ensureRelayWebhook", "getStatus", "listRecentEvents", "startLocalWebhook"],
-  linear_routing: ["simulateRoute"],
   github: [
     "clearToken",
     "clearAppUserAuth",
@@ -897,9 +863,70 @@ function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | n
 }
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const FILE_SEARCH_SESSION_LANE_CACHE_MAX = 200;
+// Only non-identity sessions are cached: a regular chat session's lane binding
+// is immutable (updateSession exposes no laneId; handoffs create new sessions),
+// but resumeSession can migrate a primary-pinned identity (CTO/worker) session
+// to the canonical primary lane, so those resolve fresh every call.
+const fileSearchLaneIdBySessionId = new Map<string, string>();
 
 function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: string): string {
   return `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
+}
+
+function rememberFileSearchLaneId(sessionId: string, laneId: string): void {
+  if (fileSearchLaneIdBySessionId.has(sessionId)) {
+    fileSearchLaneIdBySessionId.delete(sessionId);
+  }
+  fileSearchLaneIdBySessionId.set(sessionId, laneId);
+  while (fileSearchLaneIdBySessionId.size > FILE_SEARCH_SESSION_LANE_CACHE_MAX) {
+    const oldest = fileSearchLaneIdBySessionId.keys().next().value;
+    if (typeof oldest !== "string") break;
+    fileSearchLaneIdBySessionId.delete(oldest);
+  }
+}
+
+function readSessionLaneId(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const laneId = value.laneId;
+  return typeof laneId === "string" && laneId.trim() ? laneId.trim() : null;
+}
+
+function isLaneCacheableSession(value: unknown): boolean {
+  return isRecord(value) && !value.identityKey;
+}
+
+async function resolveFileSearchLaneId(agentChatService: unknown, sessionId: string): Promise<string | null> {
+  const cached = fileSearchLaneIdBySessionId.get(sessionId);
+  if (cached) return cached;
+
+  const service = agentChatService as {
+    getSessionSummary?: (sessionId: string) => Promise<unknown> | unknown;
+    listSessions?: () => Promise<unknown> | unknown;
+  };
+
+  if (typeof service.getSessionSummary === "function") {
+    try {
+      const summary = await service.getSessionSummary(sessionId);
+      const laneId = readSessionLaneId(summary);
+      if (laneId) {
+        if (isLaneCacheableSession(summary)) rememberFileSearchLaneId(sessionId, laneId);
+        return laneId;
+      }
+    } catch {
+      // Fall back to listSessions below for older or partially available runtimes.
+    }
+  }
+
+  if (typeof service.listSessions !== "function") return null;
+  const sessions = await service.listSessions();
+  if (!Array.isArray(sessions)) return null;
+  const session = sessions.find((entry) => isRecord(entry) && entry.sessionId === sessionId);
+  const laneId = readSessionLaneId(session);
+  if (laneId) {
+    if (isLaneCacheableSession(session)) rememberFileSearchLaneId(sessionId, laneId);
+  }
+  return laneId;
 }
 
 function normalizeStringList(value: unknown): string[] {
@@ -1069,20 +1096,6 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         permissionMode: "full-auto",
       });
     },
-    ensureAgentIdentitySession: async (args?: {
-      agentId?: string;
-      modelId?: string | null;
-      reasoningEffort?: string | null;
-    }) => {
-      const agentId = requireNonEmptyString(args?.agentId, "agentId");
-      const laneId = await resolvePrimaryLaneId(runtime);
-      return agentChatService.ensureIdentitySession({
-        identityKey: `agent:${agentId}`,
-        laneId,
-        modelId: args?.modelId ?? null,
-        reasoningEffort: args?.reasoningEffort ?? null,
-      });
-    },
     getParallelLaunchState: (args?: { parentLaneId?: string }) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);
@@ -1182,10 +1195,19 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     fileSearch: async (args?: AgentChatFileSearchArgs): Promise<AgentChatFileSearchResult[]> => {
       const sessionId = requireNonEmptyString(args?.sessionId, "sessionId");
       const query = typeof args?.query === "string" ? args.query : "";
-      const session = (await agentChatService.listSessions()).find((entry) => entry.sessionId === sessionId);
-      if (!session?.laneId || !runtime.fileService) return [];
+      const laneId = await resolveFileSearchLaneId(agentChatService, sessionId);
+      if (!laneId || !runtime.fileService) return [];
+      if (!query.trim()) {
+        const warmQuickOpenIndex = (runtime.fileService as {
+          warmQuickOpenIndex?: (args: { workspaceId: string; includeIgnored?: boolean }) => Promise<void>;
+        }).warmQuickOpenIndex;
+        if (typeof warmQuickOpenIndex === "function") {
+          void warmQuickOpenIndex({ workspaceId: laneId }).catch(() => undefined);
+        }
+        return [];
+      }
       const matches = await runtime.fileService.quickOpen({
-        workspaceId: session.laneId,
+        workspaceId: laneId,
         query,
         limit: 20,
       });
@@ -1241,6 +1263,29 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
     runProjectScan: async (): Promise<CtoRunProjectScanResult> => {
       const detection = await runtime.onboardingService?.detectDefaults().catch(() => null) ?? null;
       return { detection };
+    },
+  };
+}
+
+function buildCtoMemoryDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const ctoMemoryService = runtime.ctoMemoryService;
+  if (!ctoMemoryService) return null;
+  return {
+    getSnapshot: () => ctoMemoryService.getSnapshot(),
+    updateMemory: (args?: { memory?: string }) => {
+      // A missing field must not silently blank the durable memory file; only
+      // an explicit string (including a deliberate "") is a valid rewrite —
+      // and clearing writes archive the replaced content.
+      if (typeof args?.memory !== "string") {
+        throw new Error("updateMemory requires a string `memory` field.");
+      }
+      ctoMemoryService.writeMemory(args.memory);
+      return ctoMemoryService.getSnapshot();
+    },
+    searchMemory: (args?: { query?: string; limit?: number }) => {
+      const query = args?.query ?? "";
+      const rows = ctoMemoryService.searchMemory(query, { limit: args?.limit ?? 20 });
+      return { query, rows };
     },
   };
 }
@@ -1308,53 +1353,6 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         failed: 0,
       };
     },
-  };
-}
-
-function buildWorkerAgentDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const workerAgentService = runtime.workerAgentService;
-  if (!workerAgentService) return null;
-  return {
-    ...(workerAgentService as unknown as OpaqueService),
-    saveAgent: (args?: { agent?: unknown; actor?: string }) =>
-      requireService(runtime.workerRevisionService, "Worker revision service not available.").saveAgent(
-        args?.agent as never,
-        args?.actor ?? "user",
-      ),
-    removeAgent: (args?: { agentId?: string }) => {
-      workerAgentService.removeAgent(requireNonEmptyString(args?.agentId, "agentId"));
-      runtime.workerHeartbeatService?.syncFromConfig();
-    },
-    setAgentStatus: (args?: { agentId?: string; status?: string }) => {
-      workerAgentService.setAgentStatus(requireNonEmptyString(args?.agentId, "agentId"), args?.status as never);
-      runtime.workerHeartbeatService?.syncFromConfig();
-    },
-    listAgentRevisions: (args?: { agentId?: string; limit?: number }) =>
-      requireService(runtime.workerRevisionService, "Worker revision service not available.").listAgentRevisions(
-        requireNonEmptyString(args?.agentId, "agentId"),
-        args?.limit ?? 20,
-      ),
-    rollbackAgentRevision: (args?: { agentId?: string; revisionId?: string; actor?: string }) =>
-      requireService(runtime.workerRevisionService, "Worker revision service not available.").rollbackAgentRevision(
-        requireNonEmptyString(args?.agentId, "agentId"),
-        requireNonEmptyString(args?.revisionId, "revisionId"),
-        args?.actor ?? "user",
-      ),
-    getBudgetSnapshot: (args?: { monthKey?: string }) =>
-      requireService(runtime.workerBudgetService, "Worker budget service not available.").getBudgetSnapshot(
-        args?.monthKey ? { monthKey: args.monthKey } : {},
-      ),
-    triggerWakeup: (args?: unknown) =>
-      requireService(runtime.workerHeartbeatService, "Worker heartbeat service not available.").triggerWakeup(args as never),
-    listAgentRuns: (args?: unknown) =>
-      requireService(runtime.workerHeartbeatService, "Worker heartbeat service not available.").listRuns(args as never),
-    clearAgentTaskSession: (args?: unknown) =>
-      requireService(runtime.workerTaskSessionService, "Worker task session service not available.").clearAgentTaskSession(args as never),
-    listAgentTaskSessions: (args?: { agentId?: string; limit?: number }) =>
-      requireService(runtime.workerTaskSessionService, "Worker task session service not available.").listAgentTaskSessions(
-        requireNonEmptyString(args?.agentId, "agentId"),
-        args?.limit ?? 40,
-      ),
   };
 }
 
@@ -2758,57 +2756,6 @@ function createEmptyLinearQuickView(connection: LinearConnectionStatus): CtoLine
   };
 }
 
-function normalizeSimulatedLinearIssue(runtime: AdeRuntime, args?: CtoSimulateFlowRouteArgs): NormalizedLinearIssue {
-  const issueInput = args?.issue;
-  if (!issueInput?.title?.trim()) {
-    throw new Error("issue.title is required.");
-  }
-  const policy = runtime.flowPolicyService?.getPolicy();
-  const defaultProjectSlug =
-    policy?.workflows.flatMap((workflow) => workflow.triggers.projectSlugs ?? []).find(Boolean)
-    ?? policy?.legacyConfig?.projects?.[0]?.slug
-    ?? "sim-project";
-  const now = nowIso();
-  return {
-    id: issueInput.id ?? `sim-${randomUUID()}`,
-    identifier: issueInput.identifier ?? "SIM-1",
-    title: issueInput.title,
-    description: issueInput.description ?? "",
-    url: issueInput.url ?? null,
-    projectId: issueInput.projectId ?? "sim-project",
-    projectSlug: issueInput.projectSlug ?? defaultProjectSlug,
-    teamId: issueInput.teamId ?? "sim-team",
-    teamKey: issueInput.teamKey ?? "SIM",
-    stateId: issueInput.stateId ?? "sim-state",
-    stateName: issueInput.stateName ?? "Todo",
-    stateType: issueInput.stateType ?? "unstarted",
-    priority: Number.isFinite(Number(issueInput.priority)) ? Number(issueInput.priority) : 3,
-    priorityLabel: issueInput.priorityLabel ?? "normal",
-    labels: Array.isArray(issueInput.labels) ? issueInput.labels : [],
-    metadataTags: Array.isArray(issueInput.metadataTags) ? issueInput.metadataTags : [],
-    assigneeId: issueInput.assigneeId ?? null,
-    assigneeName: issueInput.assigneeName ?? null,
-    ownerId: issueInput.ownerId ?? null,
-    creatorId: issueInput.creatorId ?? null,
-    creatorName: issueInput.creatorName ?? null,
-    blockerIssueIds: Array.isArray(issueInput.blockerIssueIds) ? issueInput.blockerIssueIds : [],
-    hasOpenBlockers: Boolean(issueInput.hasOpenBlockers),
-    createdAt: issueInput.createdAt ?? now,
-    updatedAt: issueInput.updatedAt ?? now,
-    raw: isRecord(issueInput.raw) ? issueInput.raw : {},
-  };
-}
-
-function buildLinearRoutingDomainService(runtime: AdeRuntime): OpaqueService | null {
-  const routingService = runtime.linearRoutingService;
-  if (!routingService) return null;
-  return {
-    ...(routingService as unknown as OpaqueService),
-    simulateRoute: (args?: CtoSimulateFlowRouteArgs): Promise<LinearRouteDecision> =>
-      routingService.simulateRoute({ issue: normalizeSimulatedLinearIssue(runtime, args) }),
-  };
-}
-
 function buildFileDomainService(runtime: AdeRuntime): OpaqueService | null {
   const fileService = runtime.fileService;
   if (!fileService) return null;
@@ -2905,20 +2852,15 @@ export function getAdeActionDomainServices(
     onboarding: toService(runtime.onboardingService),
     automation_planner: automationsEnabled ? toService(runtime.automationPlannerService) : null,
     cto_state: toService(buildCtoStateDomainService(runtime)),
-    worker_agent: toService(buildWorkerAgentDomainService(runtime)),
+    cto_memory: toService(buildCtoMemoryDomainService(runtime)),
     session: toService(buildSessionDomainService(runtime)),
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(runtime.projectSecretService),
-    flow_policy: toService(runtime.flowPolicyService),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),
-    linear_dispatcher: toService(runtime.linearDispatcherService),
     linear_issue_tracker: toService(buildLinearIssueTrackerDomainService(runtime)),
-    linear_sync: toService(runtime.linearSyncService),
-    linear_ingress: automationsEnabled ? toService(runtime.linearIngressService) : null,
-    linear_routing: toService(buildLinearRoutingDomainService(runtime)),
     github: buildGithubDomainService(runtime),
     feedback: toService(runtime.feedbackReporterService),
     usage: toService(runtime.usageTrackingService),

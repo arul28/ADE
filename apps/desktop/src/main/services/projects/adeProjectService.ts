@@ -37,7 +37,6 @@ type AdeProjectServiceArgs = {
     };
   };
   ctoStateService?: { getSnapshot?: () => unknown } | null;
-  workerAgentService?: { listAgents?: () => unknown[] } | null;
 };
 
 const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> = [
@@ -428,7 +427,6 @@ export function createAdeProjectService(args: AdeProjectServiceArgs) {
   const runIntegrityCheck = (): AdeCleanupResult => {
     const actions: AdeSyncAction[] = [];
     args.ctoStateService?.getSnapshot?.();
-    args.workerAgentService?.listAgents?.();
     const jsonlTargets = [
       path.join(repair.paths.ctoDir, "sessions.jsonl"),
     ];

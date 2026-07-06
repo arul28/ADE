@@ -63,7 +63,7 @@ GitHub triggers are emitted by three ingress paths: a real webhook (`github-webh
 
 ### Linear-context
 
-Automation rules can react to Linear events as context for their own work. These do not substitute for CTO Linear intake — the CTO still owns issue dispatch.
+Automation rules can react to Linear events as context for their own work. There is no autonomous Linear dispatch engine — these triggers are context-only, and any Linear write is an explicit rule action through the shared Linear client.
 
 - `linear.issue_created`
 - `linear.issue_updated`
@@ -193,4 +193,4 @@ The planner output JSON is extracted with `extractFirstJsonObject` — it handle
 
 - `README.md` — rule structure, execution surfaces, budget.
 - `guardrails.md` — approval gates, confidence thresholds, human review.
-- `../cto/linear-integration.md` — Linear intake boundary.
+- `../linear-integration/README.md` — the Linear read/write surface.

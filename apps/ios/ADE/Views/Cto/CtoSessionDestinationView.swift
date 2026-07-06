@@ -1,15 +1,10 @@
 import SwiftUI
 import UIKit
 
-/// Thin loader that ensures a CTO or worker chat session exists on the host,
-/// then hands the resulting summary straight to `WorkSessionDestinationView`
-/// so the CTO tab reuses the Work chat pipeline verbatim.
+/// Thin loader that ensures the CTO chat session exists on the host, then hands
+/// the resulting summary straight to `WorkSessionDestinationView` so the CTO tab
+/// reuses the Work chat pipeline verbatim.
 struct CtoSessionDestinationView: View {
-  enum Kind: Hashable {
-    case cto
-    case worker(agentId: String, displayName: String)
-  }
-
   enum LoadState {
     case loading
     case ready(AgentChatSessionSummary)
@@ -18,19 +13,18 @@ struct CtoSessionDestinationView: View {
 
   @EnvironmentObject private var syncService: SyncService
 
-  let kind: Kind
   var navigationChrome: WorkSessionNavigationChrome = .pushedDetail
 
   @State private var state: LoadState = .loading
   @State private var ensureTask: Task<Void, Never>?
-  @State private var ensuredKind: Kind?
+  @State private var ensured = false
 
   var body: some View {
     content
       .adeScreenBackground()
       .adeNavigationGlass()
       .tint(ADEColor.ctoAccent)
-      .task(id: kindKey) {
+      .task {
         await MainActor.run { startEnsureSession(force: false) }
       }
       .onDisappear {
@@ -68,7 +62,7 @@ struct CtoSessionDestinationView: View {
       ProgressView()
         .controlSize(.large)
         .tint(ADEColor.ctoAccent)
-      Text(loadingLabel)
+      Text("Waking the CTO chat…")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textSecondary)
     }
@@ -109,21 +103,7 @@ struct CtoSessionDestinationView: View {
     }
   }
 
-  private var navigationTitle: String {
-    switch kind {
-    case .cto: return "CTO"
-    case .worker(let agentId, let displayName):
-      let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-      return trimmed.isEmpty ? agentId : trimmed
-    }
-  }
-
-  private var loadingLabel: String {
-    switch kind {
-    case .cto: return "Waking the CTO chat…"
-    case .worker: return "Opening worker chat…"
-    }
-  }
+  private var navigationTitle: String { "CTO" }
 
   private var isLive: Bool {
     let workStatus = syncService.status(for: .work)
@@ -131,34 +111,20 @@ struct CtoSessionDestinationView: View {
       && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
   }
 
-  private var kindKey: String {
-    switch kind {
-    case .cto: return "cto"
-    case .worker(let agentId, _): return "worker:\(agentId)"
-    }
-  }
-
   /// Cancels any in-flight ensure and starts a fresh one. Without this guard,
-  /// rapid retry taps or a `.task(id:)` re-entry could run two concurrent
-  /// ensure calls and race to overwrite `state`.
+  /// rapid retry taps or a `.task` re-entry could run two concurrent ensure
+  /// calls and race to overwrite `state`.
   @MainActor
   private func startEnsureSession(force: Bool) {
-    if !force, ensuredKind == kind { return }
+    if !force, ensured { return }
     ensureTask?.cancel()
-    let requestedKind = kind
     let task = Task { @MainActor in
       state = .loading
       do {
-        let summary: AgentChatSessionSummary
-        switch requestedKind {
-        case .cto:
-          summary = try await syncService.ensureCtoSession()
-        case .worker(let agentId, _):
-          summary = try await syncService.ensureCtoAgentSession(agentId: agentId)
-        }
+        let summary = try await syncService.ensureCtoSession()
         guard !Task.isCancelled else { return }
         state = .ready(summary)
-        ensuredKind = requestedKind
+        ensured = true
       } catch {
         guard !Task.isCancelled else { return }
         state = .failed(error.localizedDescription)
@@ -179,14 +145,14 @@ struct CtoSessionDestinationView: View {
     TerminalSessionSummary(
       id: summary.sessionId,
       laneId: summary.laneId,
-      laneName: ctoSessionLaneName(for: kind),
+      laneName: "CTO",
       ptyId: nil,
       tracked: true,
       pinned: false,
       manuallyNamed: nil,
       goal: summary.goal,
       toolType: toolTypeForProvider(summary.provider),
-      title: summary.title ?? ctoSessionFallbackTitle(for: kind),
+      title: summary.title ?? "CTO",
       status: summary.endedAt == nil ? "running" : "completed",
       startedAt: summary.startedAt,
       endedAt: summary.endedAt,
@@ -217,24 +183,5 @@ private extension View {
     case .embedded:
       self
     }
-  }
-}
-
-private func ctoSessionFallbackTitle(for kind: CtoSessionDestinationView.Kind) -> String {
-  switch kind {
-  case .cto: return "CTO"
-  case .worker(let agentId, let displayName):
-    let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? agentId : trimmed
-  }
-}
-
-private func ctoSessionLaneName(for kind: CtoSessionDestinationView.Kind) -> String {
-  switch kind {
-  case .cto:
-    return "CTO control room"
-  case .worker(let agentId, let displayName):
-    let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? "Worker: \(agentId)" : "Worker: \(trimmed)"
   }
 }

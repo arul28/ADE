@@ -39,6 +39,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let pullRequests: [PullRequestListItem]
   let githubPrs: [GitHubPrListItem]
   let optimisticSessions: [String: TerminalSessionSummary]
+  let pendingChatCreations: [PendingChatCreation]
   let selectedLaneId: String
   let selectedStatus: WorkSessionStatusFilter
   let searchText: String
@@ -118,6 +119,18 @@ struct WorkRootScreen: View {
       chatSummaries: chatSummaries,
       sessions: sessions + Array(optimisticSessions.values)
     )
+  }
+
+  /// Synthesized optimistic rows for offline chat creations awaiting sync,
+  /// keyed by their synthetic session id.
+  var pendingChatCreationOptimisticSessions: [String: TerminalSessionSummary] {
+    var result: [String: TerminalSessionSummary] = [:]
+    for creation in syncService.pendingChatCreations {
+      let lane = lanes.first(where: { $0.id == creation.laneId })
+      let session = workPendingChatCreationOptimisticSession(creation, lane: lane)
+      result[session.id] = session
+    }
+    return result
   }
 
   var laneById: [String: LaneSummary] {
@@ -233,6 +246,7 @@ struct WorkRootScreen: View {
       pullRequests: pullRequests,
       githubPrs: syncService.laneGithubPrItems,
       optimisticSessions: optimisticSessions,
+      pendingChatCreations: syncService.pendingChatCreations,
       selectedLaneId: selectedLaneId,
       selectedStatus: selectedStatus,
       searchText: searchText,
@@ -369,7 +383,11 @@ struct WorkRootScreen: View {
                   WorkSessionListRow(
                     session: session,
                     lane: rowLaneById[session.laneId],
-                    pullRequest: rowPrTagsByLaneId[session.laneId],
+                    // Fall back to the resolved lane (name/branch match) so
+                    // legacy sessions with a stale laneId still surface their
+                    // PR shortcut — same resolution goToLane/openPullRequest use.
+                    pullRequest: rowPrTagsByLaneId[session.laneId]
+                      ?? rowPrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
                     chatSummary: chatSummaries[session.id],
                     isArchived: rowArchivedSessionIds.contains(session.id),
                     transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
@@ -385,7 +403,8 @@ struct WorkRootScreen: View {
                     onDelete: deleteChatSession,
                     onCopyId: copySessionId,
                     onCopyDeepLink: copySessionDeepLink,
-                    onGoToLane: goToLane
+                    onGoToLane: goToLane,
+                    onOpenPullRequest: openPullRequest
                   )
                   .id(session.id)
                   .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
@@ -406,7 +425,8 @@ struct WorkRootScreen: View {
                         WorkSessionListRow(
                           session: child,
                           lane: rowLaneById[child.laneId],
-                          pullRequest: rowPrTagsByLaneId[child.laneId],
+                          pullRequest: rowPrTagsByLaneId[child.laneId]
+                            ?? rowPrTagsByLaneId[resolvedWorkNavigationLaneId(for: child, lanes: lanes)],
                           chatSummary: chatSummaries[child.id],
                           isArchived: rowArchivedSessionIds.contains(child.id),
                           transitionNamespace: nil,
@@ -423,7 +443,8 @@ struct WorkRootScreen: View {
                           onDelete: deleteChatSession,
                           onCopyId: copySessionId,
                           onCopyDeepLink: copySessionDeepLink,
-                          onGoToLane: goToLane
+                          onGoToLane: goToLane,
+                          onOpenPullRequest: openPullRequest
                         )
                         .id(child.id)
                       }

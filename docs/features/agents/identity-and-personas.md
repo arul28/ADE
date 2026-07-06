@@ -1,36 +1,31 @@
 # Identity and Personas
 
-CTO and worker agents carry persistent identity documents that survive
-across sessions. This doc explains how identity is stored, how it is
-reconstructed into sessions, and how personality/persona overlays shape
-behavior.
+The CTO carries a persistent identity that survives across sessions, context compaction, and model switches. This doc explains how that identity is stored, how it is reconstructed into sessions, how personality/persona overlays shape behavior, and how the smart-memory system keeps the thread grounded.
+
+There is one persistent identity: the CTO. The former worker/hiring agent identities were removed, and `AgentChatIdentityKey` is now just `"cto"`.
 
 ## Source file map
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity CRUD, session logs, subordinate activity feed, system prompt composition, daily logs, onboarding state, and startup reconciliation. |
-| `apps/desktop/src/main/services/cto/workerAgentService.ts` | Worker identity CRUD, adapter config validation, slug generation, secret policy enforcement, and session context assembly. |
-| `apps/desktop/src/main/services/projects/logIntegrityService.ts` | Hash-chained integrity for CTO and worker session logs. |
+| `apps/desktop/src/main/services/cto/ctoStateService.ts` | CTO identity CRUD, session logs, system-prompt composition, onboarding state, reconstruction context, and startup reconciliation. |
+| `apps/desktop/src/main/services/cto/ctoMemoryService.ts` | The smart-memory file store: `MEMORY.md`, `thread-state.md`, daily logs, search, and injection sections. |
+| `apps/desktop/src/main/services/cto/ctoPromptContent.ts` | `buildCtoCapabilityManifest()` — the operator-tool manifest injected into the prompt. |
+| `apps/desktop/src/main/services/projects/logIntegrityService.ts` | Hash-chained integrity for CTO session logs. |
 | `apps/desktop/src/shared/ctoPersonalityPresets.ts` | Built-in personality overlays plus `custom`. |
-| `apps/desktop/src/renderer/components/cto/IdentityEditor.tsx` | UI for editing CTO identity, persona, personality, and communication style. |
-| `apps/desktop/src/shared/types/cto.ts` | CTO identity, onboarding, prompt preview, and capability types. |
-| `apps/desktop/src/shared/types/agents.ts` | Worker identity, role, adapter, runtime, and budget types. |
+| `apps/desktop/src/renderer/components/cto/IdentityEditor.tsx` | UI for editing CTO name, persona, personality, and work style. |
+| `apps/desktop/src/shared/types/cto.ts` | CTO identity, onboarding, prompt-preview, memory, and capability types. |
 
 ## CTO identity
 
-`CtoIdentity` is versioned and stored per project. It contains persona,
-personality overlay, communication style, constraints, model
-preferences, onboarding state, and optional prompt extension.
+`CtoIdentity` is versioned and stored per project. It contains name, persona, personality overlay, communication style (work style), constraints, model preferences, onboarding state, and an optional prompt extension.
 
 Storage:
 
 1. SQLite `cto_identity_state`.
-2. Filesystem `.ade/cto/identity.json`, written atomically.
+2. Filesystem `.ade/cto/identity.yaml`, written atomically.
 
-Startup reconciliation compares versions and writes the newer copy back
-to the stale side. Users should edit through ADE's UI so version
-ordering stays clear.
+Startup reconciliation compares timestamps and writes the newer copy back to the stale side. Users should edit through ADE's UI so version ordering stays clear.
 
 ## Personality presets
 
@@ -45,10 +40,9 @@ ordering stays clear.
 | `minimal` | Concise | Low-noise, direct, focused on decisions, blockers, next actions. |
 | `custom` | Custom | User-supplied overlay text via `customPersonality`. |
 
-`getCtoPersonalityPreset(id)` falls back to `strategic` on unknown ids.
-Do not rename preset ids without a migration.
+`getCtoPersonalityPreset(id)` falls back to `strategic` on unknown ids. Do not rename preset ids without a migration.
 
-## Communication style
+## Communication style (work style)
 
 ```ts
 type CtoCommunicationStyle = {
@@ -58,150 +52,84 @@ type CtoCommunicationStyle = {
 };
 ```
 
-These fields drive prompt adjustments for detail level, initiative, and
-when to escalate.
+These fields drive prompt adjustments for detail level, initiative, and when to escalate. The onboarding card and `IdentityEditor` set them via the `Segmented` work-style rows.
 
-## Immutable doctrine
+## Immutable doctrine and prompt layers
 
-`ctoStateService.ts` defines prompt blocks that are always present in
-CTO sessions:
+`ctoStateService.ts` composes the CTO system prompt from layered sections, immutable first:
 
-- `IMMUTABLE_CTO_DOCTRINE` -- CTO role, responsibilities, and precision
-  rules.
-- `CTO_ENVIRONMENT_KNOWLEDGE` -- ADE surfaces, tools, and task-routing
-  rules.
-- `CTO_CAPABILITY_MANIFEST` -- available operator tools.
+- `IMMUTABLE_CTO_DOCTRINE` — CTO role, responsibilities, and precision rules.
+- Selected personality overlay (+ `customPersonality` for the `custom` preset).
+- `CTO_CONTINUITY_OPERATING_MODEL` — how ADE re-grounds the CTO across compaction and resumes.
+- `CTO_MEMORY_SYSTEM_GUIDANCE` — teaches the CTO that it has durable, model-agnostic memory and how to use the memory tools.
+- Environment knowledge — ADE surfaces, tools, task-routing rules, and the live model registry.
+- `CTO_CAPABILITY_MANIFEST` — the available operator tools, injected verbatim.
 
-The doctrine, personality overlay, persona, recent context, and prompt
-extension are assembled into the first prompt for each CTO session.
+`previewSystemPrompt()` returns exactly these sections, which the settings and onboarding UI render.
+
+## Smart memory system
+
+The CTO's durable knowledge lives in files under `.ade/cto/`, owned by `ctoMemoryService`:
+
+- `MEMORY.md` — curated durable facts (decisions, preferences, standing context) under a `## Facts` list. Written by the `saveMemory` tool and the `CtoMemoryPanel` editor. Always injected (tail-capped for injection; the disk copy is never truncated, with a 64 KiB hard cap that drops oldest facts).
+- `thread-state.md` — a rolling summary of the current goal, recent decisions, and open loops. Rewritten by the continuity flush.
+- `daily/<YYYY-MM-DD>.md` — an append-only per-turn journal (`HH:MM — intent → outcome`).
+
+The CTO reads and writes memory through operator tools: `saveMemory(fact)` (append a durable fact, exact duplicates ignored), `searchMemory(query)` (bounded file search across memory, thread state, and daily logs), and `readMemory()` (durable facts + current thread state).
+
+### Flush and injection lifecycle
+
+The guarantee is a deterministic flush that always runs before anything can be lost; an LLM upgrade of the summary is best-effort on top (both in `agentChatService.ts`, no-op for non-CTO sessions):
+
+1. **Turn-end journal** — after each completed/failed CTO turn, one line is appended to today's daily log. No LLM call.
+2. **Pre-compaction flush** — on the runtime's compaction signal, `flushIdentityContinuityDeterministic` writes the tail snapshot to `thread-state.md` synchronously, then a best-effort LLM summary overwrites it when it returns.
+3. **Pre-model-switch flush** — the same deterministic flush runs before `teardownRuntime` on a model/provider switch, so nothing in the old window is lost.
+
+Cursor and Droid emit no compaction signal, so for those runtimes the turn-end journal plus the switch-time flush are what make a reset recoverable.
 
 ## Reconstruction context
 
-On every CTO session start, and after chat context compaction,
-`buildReconstructionContext()` produces a bounded block with:
+On every CTO session start, and after compaction or a model switch, `ctoStateService.buildReconstructionContext()` produces a bounded block with:
 
-1. Recent CTO session summaries.
-2. Recent subordinate activity.
-3. Daily log contents for the current day when present.
-4. Identity/persona metadata needed to keep the session grounded.
+1. The runtime identity and operating doctrine.
+2. ADE operational/environment knowledge.
+3. Identity metadata (name, persona, preferred model) and recent CTO session summaries.
+4. The memory sections from `ctoMemoryService.buildMemoryContextSections()` — durable memory, thread state, and the recent daily log.
 
-`agentChatService` calls `refreshReconstructionContext()` after
-compaction so identity sessions do not drift into generic chat behavior.
-
-## Worker identity
-
-Workers use `AgentIdentity` with role, adapter, runtime config, budget,
-Linear identity, persona fields, constraints, and system-prompt
-extension.
-
-### Slug generation
-
-`slugify(input)` lowercases, replaces non-alphanumerics with `-`, and
-strips leading/trailing hyphens. Empty results fall back to `"worker"`.
-Collisions append `-2`, `-3`, etc. The slug is used for the SQLite row,
-filesystem directory, and ADE CLI action routing.
-
-Renaming a worker leaves the slug fixed unless the user explicitly
-updates it; the filesystem directory does not move.
-
-### Secret policy
-
-`assertEnvRefSecretPolicy` walks adapter config values for raw secrets.
-Sensitive values must be `${env:VAR_NAME}` references; raw secrets throw
-at write time. Bypassing this check can leak secrets into prompts,
-logs, and transcripts.
-
-### Reconstruction
-
-Worker sessions receive a worker-specific context block:
-
-1. Worker identity, role, persona, constraints, and prompt extension.
-2. Recent worker session logs.
-3. Current lane/project context relevant to the activation.
-
-Workers do not receive the CTO doctrine or full environment knowledge
-block.
+`agentChatService` stages this as `pendingReconstructionContext` and re-injects it via `refreshReconstructionContext()` so the identity session does not drift into generic chat behavior.
 
 ## Session logs
 
-CTO and workers maintain append-only session logs with hash chaining.
-Each entry includes session id, summary, started/ended timestamps,
-provider, model id, capability mode, created-at timestamp, and optional
-`prevHash`.
-
-`logIntegrityService` computes and verifies hashes; a broken chain
-indicates tampering or partial restore.
-
-## Subordinate activity feed
-
-The CTO feed records worker chat turns and worker runs:
-
-```ts
-type CtoSubordinateActivityEntry = {
-  id: string;
-  agentId: string;
-  agentName: string;
-  activityType: "chat_turn" | "worker_run";
-  summary: string;
-  sessionId?: string | null;
-  taskKey?: string | null;
-  issueKey?: string | null;
-  createdAt: string;
-};
-```
-
-The feed is capped and included in the CTO's session context.
-
-## Daily logs
-
-Append-only markdown files:
-
-- CTO: `.ade/cto/daily/<YYYY-MM-DD>.md`
-- Workers: `.ade/agents/<slug>/daily/<YYYY-MM-DD>.md`
-
-Each entry is a session summary or ad-hoc note. The current day's log is
-read into reconstruction context for within-day continuity.
+The CTO maintains an append-only session log with hash chaining. Each entry includes session id, summary, started/ended timestamps, provider, model id, capability mode, created-at timestamp, and an optional `prevHash`. `logIntegrityService` computes and verifies hashes; a broken chain indicates tampering or a partial restore. Logs are reconciled between `sessions.jsonl` and the `cto_session_logs` table on startup.
 
 ## Onboarding state
 
-`CtoOnboardingState` tracks completed setup steps.
-`CTO_REQUIRED_ONBOARDING_STEPS = ["identity"]`; the wizard walks through
-identity setup before enabling the full CTO experience.
+`CtoOnboardingState` tracks completed setup steps. `CTO_REQUIRED_ONBOARDING_STEPS = ["identity"]`; the one-card setup collects personality, work style, and an optional name, then marks the `identity` step complete.
 
 ## IPC surface
 
 | Channel | Purpose |
 |---|---|
-| `ade.cto.getState` | Fetch CTO identity, recent sessions, and subordinate activity. |
-| `ade.cto.getSystemPromptPreview` | Render the current system prompt for settings/onboarding. |
-| `ade.cto.updateIdentity` | Patch identity fields. |
-| `ade.cto.ensureSession` | Get or create the CTO chat session. |
-| `ade.cto.appendSessionLog` / `ade.cto.listSessionLogs` | Session log CRUD. |
-| `ade.cto.appendSubordinateActivity` / `ade.cto.listSubordinateActivity` | Feed CRUD. |
-| `ade.workers.list` / `ade.workers.upsert` / `ade.workers.remove` | Worker CRUD. |
-| `ade.workers.getIdentity` | Single worker fetch. |
+| `ade.cto.getState` | Fetch CTO identity and recent sessions. |
+| `ade.cto.previewSystemPrompt` | Render the current layered system prompt for settings/onboarding. |
+| `ade.cto.updateIdentity` | Patch identity fields (name, personality, work style, model preferences). |
+| `ade.cto.ensureSession` | Get or create the single CTO chat session. |
+| `ade.cto.listSessionLogs` | Read the CTO session log. |
+| `ade.cto.getMemory` / `ade.cto.updateMemory` / `ade.cto.searchMemory` | Read, rewrite, and search durable memory. |
+| `ade.cto.getOnboardingState` / `completeOnboardingStep` / `dismissOnboarding` / `resetOnboarding` | Onboarding lifecycle. |
 
 ## Fragile and tricky wiring
 
-- **Personality preset id stability.** Changing an id silently remaps
-  unknown existing identities to `strategic`.
-- **Custom personality text size.** `customPersonality` is injected
-  as-is. Very long values consume prompt budget.
-- **Worker slug drift.** Renaming a worker does not move its filesystem
-  directory.
-- **Daily log permission.** Files under `.ade/cto/daily/` are written
-  with the default umask. Keep `.ade/` out of shared paths.
-- **Post-compaction identity block size.** Reconstruction is bounded but
-  can still be several thousand tokens on busy projects.
-- **Capability mode is historical.** Logs record the mode in effect at
-  session start; they do not update when ADE CLI becomes available later.
-- **Subordinate activity ordering.** Writes prepend to a capped list;
-  sort by `createdAt` for strict chronology.
+- **Personality preset id stability.** Changing an id silently remaps unknown existing identities to `strategic`.
+- **Custom personality text size.** `customPersonality` is injected as-is; very long values consume prompt budget.
+- **Deterministic flush is the guarantee.** The LLM summary upgrade is best-effort — never make the durable memory write depend on it.
+- **Injected memory is authoritative.** The prompt tells the CTO not to claim memory it does not have injected; injection caps/order in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
+- **Capability manifest is hand-synced.** `buildCtoCapabilityManifest()` must stay aligned with `ctoOperatorTools.ts` registrations.
+- **Daily log permission.** Files under `.ade/cto/daily/` are written with the default umask. Keep `.ade/` out of shared paths.
 
 ## Related docs
 
-- [Agents README](README.md) -- overview of CTO, workers, and chat.
-- [Tool Registration](tool-registration.md) -- how identity flows into
-  ADE CLI-exposed tools.
-- [Chat Agent Routing](../chat/agent-routing.md) -- provider selection
-  and model preferences.
+- [Agents README](README.md) — overview of the CTO and chat agents.
+- [CTO](../cto/README.md) — the full CTO thread, memory system, and settings surface.
+- [Tool Registration](tool-registration.md) — how identity flows into ADE CLI-exposed tools.
+- [Chat Agent Routing](../chat/agent-routing.md) — provider selection and model preferences.

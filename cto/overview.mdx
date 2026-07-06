@@ -1,76 +1,62 @@
 ---
 title: "CTO"
-description: "The CTO is ADE's persistent, project-level operator — one per project. It keeps context across every lane, plans work, and delegates to workers."
+description: "The CTO is ADE's persistent, project-level operator — one per project. It keeps context across every lane and reasons about the whole project in a single chat thread with durable memory."
 icon: "crown"
 ---
 
-The **CTO** is ADE's persistent, project-level operator: one identity per project, not a rotating set of chats. While a lane chat works inside a single worktree, the CTO sees the whole project — every lane, PR, and connected Linear issue — and reasons across them. It carries an identity and persona, continuity across long sessions, plans, and a team of **workers** it delegates execution to.
+The **CTO** is ADE's persistent, project-level operator: one identity per project, not a rotating set of chats. While a lane chat works inside a single worktree, the CTO sees the whole project — every lane, PR, and connected Linear issue — and reasons across them. It is a single long-living chat thread with a memory that carries decisions and context forward across sessions, context compaction, and model switches.
 
-Reach for the CTO when a question or task spans more than one lane, needs planning, or should be handed to workers and tracked to completion.
-
-<Frame caption="The CTO delegates scoped execution to a team of workers.">
-  <img src="/media/features/cto/subagents.webp" alt="The CTO delegating work to a team of worker agents" />
-</Frame>
+Reach for the CTO when a question or task spans more than one lane, needs planning, or benefits from remembering earlier decisions.
 
 ## What the CTO is
 
 <CardGroup cols={2}>
   <Card title="Persistent identity" icon="id-badge">
-    One CTO per project with a name, personality preset, and continuity that survives long conversations — not a fresh chat each time.
+    One CTO per project with a name, personality, and continuity that survives long conversations — not a fresh chat each time.
   </Card>
   <Card title="Project-wide context" icon="diagram-project">
     It reasons across every lane, PR, and connected Linear issue, instead of one worktree at a time.
   </Card>
-  <Card title="Delegates to workers" icon="users">
-    Splits a plan into scoped tasks and hands each to a worker that runs in its own lane.
+  <Card title="Durable memory" icon="brain">
+    It saves the decisions, preferences, and standing facts that matter, and recalls them in later sessions — even after you switch its model.
   </Card>
-  <Card title="Runs Linear workflows" icon="layers">
-    When Linear is connected, the CTO triages issues, dispatches the work, and syncs status back.
+  <Card title="Reads Linear" icon="layers">
+    When Linear is connected, the CTO can browse issues, read comments, and post lightweight updates without leaving the thread.
   </Card>
 </CardGroup>
 
 ## CTO vs. lane chat
 
-The CTO doesn't replace lane chats — it sits above them. A lane chat edits files in one worktree; the CTO plans the work, splits it into lanes, hands pieces to workers, and summarizes the result. Pick whichever matches the altitude of your question.
+The CTO doesn't replace lane chats — it sits above them. A lane chat edits files in one worktree; the CTO holds the project-wide picture, plans the work, and remembers what was decided. Pick whichever matches the altitude of your question.
 
 | Use a lane chat when | Use the CTO when |
 |----------------------|------------------|
 | You know the specific lane and task. | The work spans several lanes or issues. |
-| You want one agent to edit files. | You want planning, routing, or delegation. |
-| You're debugging a local failure. | You need project-wide state summarized. |
-| The change fits in one review. | You want issues run end to end from Linear. |
+| You want one agent to edit files. | You want planning or a project-wide summary. |
+| You're debugging a local failure. | You want context remembered across sessions. |
+| The change fits in one review. | You want to reason about the project as a whole. |
 
 <Note>
-The CTO lives in its own **CTO** tab, organized into Chat, Team, Workflows, and Settings. The Chat surface is light by default — Team, Workflows, and Settings load only when you open them.
+The CTO lives in its own **CTO** tab: a single chat thread plus a Settings sheet. There are no tabs to manage — open it and start talking.
 </Note>
 
-## How delegation works
+## Memory that carries over
 
-Ask the CTO for a plan, approve the shape, and it dispatches the work to **workers** — scoped agents it delegates to, each running in its own lane. You watch the lanes fill in from Work, Lanes, and History, then review diffs and PRs as they land. Nothing merges without your review.
-
-<CardGroup cols={3}>
-  <Card title="Plan" icon="map">
-    The CTO proposes a split into lane-sized tasks.
-  </Card>
-  <Card title="Delegate" icon="share-nodes">
-    Each task goes to a worker running in its own lane.
-  </Card>
-  <Card title="Summarize" icon="list-check">
-    The CTO reports progress, risk, and what's ready to ship.
-  </Card>
-</CardGroup>
-
-Workers are agent identities with roles, model settings, budgets, and activity history. See [Workers](/cto/workers) for the operational model.
+The CTO keeps durable memory as part of the project, so it doesn't start from zero each time. It records the decisions and preferences worth keeping, and ADE re-injects the relevant parts into every session — including after a long conversation is compacted or after you change the model mid-thread. You can see and edit what it remembers from **CTO → Settings → Memory**.
 
 <Tip>
-Ask the CTO for a plan before asking it to delegate. A clean split into small, independent lanes saves time and reduces review noise.
+Ask the CTO to remember something explicitly — "remember that we deploy from `main` only" — and it will save it as a durable fact you can review later.
 </Tip>
+
+## Switch models without losing the thread
+
+You can change the CTO's model at any point from the header badge or Settings. The thread, its transcript, and its memory carry over to the new model — a switch is not a reset. Favor a capable model for project-wide reasoning; drop to a faster one for quick lookups.
 
 <CardGroup cols={2}>
   <Card title="Set up the CTO" icon="wand-magic-sparkles" href="/cto/setup">
-    Pick a provider and persona, connect GitHub and Linear, and add workers.
+    Pick a personality and work style, then optionally choose a model and connect Linear.
   </Card>
-  <Card title="Workers" icon="users" href="/cto/workers">
-    Manage the scoped agents the CTO delegates to.
+  <Card title="Linear" icon="layers" href="/integrations/linear">
+    Connect Linear so the CTO can browse and update issues.
   </Card>
 </CardGroup>

@@ -21,7 +21,6 @@ export * from "./config";
 export * from "./automations";
 export * from "./review";
 export * from "./packs";
-export * from "./agents";
 export * from "./usage";
 export * from "./projectState";
 export * from "./sync";

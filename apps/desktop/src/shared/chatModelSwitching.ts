@@ -1,25 +1,16 @@
-import type { ChatModelSwitchPolicy } from "./types/chat";
-
 type FilterChatModelIdsArgs = {
   availableModelIds: string[];
   activeSessionModelId?: string | null;
   hasConversation: boolean;
   includeActiveSessionModel?: boolean;
-  policy?: ChatModelSwitchPolicy;
 };
 
-type CanSwitchChatSessionModelArgs = {
-  currentModelId?: string | null;
-  nextModelId?: string | null;
-  hasConversation: boolean;
-  policy?: ChatModelSwitchPolicy;
-};
-
-export function canSwitchChatSessionModel(_args: CanSwitchChatSessionModelArgs): boolean {
-  // All switching is permitted — the runtime handles provider transitions.
-  return true;
-}
-
+/**
+ * Normalize the model picker's candidate list. Any model can be selected at any
+ * time (the runtime handles provider transitions), so this only ensures the
+ * session's active model stays visible even when it has dropped out of the
+ * discovered catalog.
+ */
 export function filterChatModelIdsForSession(args: FilterChatModelIdsArgs): string[] {
   const ids = args.availableModelIds.map((entry) => String(entry ?? "").trim()).filter(Boolean);
   const activeModelId = String(args.activeSessionModelId ?? "").trim();

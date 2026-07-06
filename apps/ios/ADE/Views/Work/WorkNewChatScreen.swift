@@ -697,17 +697,20 @@ struct WorkNewChatScreen: View {
     // launch fails immediately afterwards (desktop parity).
     let targetLaneId: String
     var createdLaneId: String?
+    var autoCreatedFallbackName: String?
     if isAutoCreateLane {
       withAnimation(.snappy(duration: 0.16)) {
         autoCreateStatus = "Creating lane…"
       }
       do {
+        let laneName = autoCreatedLaneName(opener: opener)
         let lane = try await syncService.createLane(
-          name: autoCreatedLaneName(opener: opener),
+          name: laneName,
           description: opener.isEmpty ? "" : String(opener.prefix(280))
         )
         targetLaneId = lane.id
         createdLaneId = lane.id
+        autoCreatedFallbackName = laneName
         await onRefreshLanes()
       } catch {
         ADEHaptics.error()
@@ -772,6 +775,9 @@ struct WorkNewChatScreen: View {
             chatIdleSinceAt: nil
           ))
         }
+        if let createdLaneId, let autoCreatedFallbackName {
+          startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
+        }
         busy = false
         return true
       }
@@ -792,9 +798,20 @@ struct WorkNewChatScreen: View {
         codexConfigSource: wire.codexConfigSource,
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
-        cursorModeId: wire.cursorModeId
+        cursorModeId: wire.cursorModeId,
+        pendingDisplayName: opener
       )
       await onStarted(summary, opener)
+      if let createdLaneId, let autoCreatedFallbackName {
+        startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
+      }
+      busy = false
+      return true
+    } catch is QueuedRemoteCommandError {
+      // Offline: the create was queued and a "Pending sync" row now stands in
+      // for it on the Work list. Dismiss cleanly — not an error — and keep the
+      // (existing) lane; the queued command drains on reconnect.
+      ADEHaptics.medium()
       busy = false
       return true
     } catch {
@@ -815,6 +832,35 @@ struct WorkNewChatScreen: View {
   /// lane. The host can still replace this through the best-effort naming call.
   private func autoCreatedLaneName(opener: String) -> String {
     workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix())
+  }
+
+  /// Desktop-parity background lane naming (`startBackgroundLaneNaming` in
+  /// AgentChatPane): the lane was already created with the deterministic
+  /// fallback name, so this runs fire-and-forget after the session launch and
+  /// any failure/timeout/offline is a no-op. `lanes.suggestName` honors the
+  /// host's own titleGenerationEnabled setting and clamps the name; the rename
+  /// applies only when the suggestion differs from the fallback.
+  private func startBackgroundLaneNaming(laneId: String, opener: String, fallbackName: String) {
+    let syncService = syncService
+    let modelId = modelId
+    let onRefreshLanes = onRefreshLanes
+    Task {
+      guard
+        let suggested = try? await syncService.suggestLaneName(
+          laneId: laneId,
+          prompt: opener,
+          modelId: modelId,
+          fallbackName: fallbackName
+        ),
+        suggested != fallbackName
+      else { return }
+      do {
+        try await syncService.renameLane(laneId, name: suggested)
+      } catch {
+        return
+      }
+      await onRefreshLanes()
+    }
   }
 
   private func normalizeSelection(for mode: WorkNewSessionMode) {

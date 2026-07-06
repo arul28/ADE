@@ -1300,9 +1300,16 @@ final class ADETests: XCTestCase {
       syncWebSocketURLString(host: "[fd7a:115c:a1e0::1]:8788", port: 8787),
       "ws://[fd7a:115c:a1e0::1]:8788"
     )
+    // A full wss:// URL is now used verbatim so the relay path (e.g.
+    // `/connect/<machineKey>`) survives — reconstructing scheme://host:port
+    // would drop it and break the tunnel.
     XCTAssertEqual(
       syncWebSocketURLString(host: "wss://sync.ade.example:443/sync", port: 8787),
-      "wss://sync.ade.example:443"
+      "wss://sync.ade.example:443/sync"
+    )
+    XCTAssertEqual(
+      syncWebSocketURLString(host: "wss://relay.ade-app.dev/connect/machinekey123", port: 8787),
+      "wss://relay.ade-app.dev/connect/machinekey123"
     )
   }
 
@@ -1329,7 +1336,11 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(
       syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(SyncDirectHostPorts.fallbackMaxPort)
     )
-    XCTAssertEqual(SyncTailnetDiscovery.portCandidates, SyncDirectHostPorts.portCandidates)
+    // The tailnet discovery probe must stay a bounded sweep: probing the full
+    // stale-port recovery range (213 ports, sequentially, 2 s timeout each)
+    // overruns the 45 s refresh interval whenever the host drops packets.
+    XCTAssertEqual(SyncTailnetDiscovery.probePortCandidates.first, SyncDirectHostPorts.defaultPort)
+    XCTAssertLessThanOrEqual(SyncTailnetDiscovery.probePortCandidates.count, 16)
   }
 
   func testSyncConnectionEndpointAttemptsTryPrimaryPortForEveryAddressFirst() {
@@ -1658,13 +1669,90 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncAuthFailureOnAmbiguousSavedLanRouteKeepsPairing() {
+  func testSyncAuthFailureOnlyInvalidatesPairingWhenRejectionIsAttributedToPairedMachine() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
+    // Unattributed rejections (older host, or a stranger machine on a reused
+    // address) must never destroy the saved pairing — on any route shape.
     XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "192.168.1.8"))
     XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "mac.local"))
     XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "ade-sync"))
-    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "macbook.tailnet.ts.net"))
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "macbook.tailnet.ts.net"))
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: "100.75.20.63"))
+
+    // A rejection from a machine whose identity differs from the pairing is a
+    // wrong-machine dial, not a revocation.
+    XCTAssertFalse(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+      address: "100.75.20.63",
+      respondingHostIdentity: "some-other-machine",
+      expectedHostIdentity: "host-1"
+    ))
+
+    // Only the paired machine itself rejecting this device may drop the
+    // saved credentials — and then on every route shape, including LAN.
+    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+      address: "macbook.tailnet.ts.net",
+      respondingHostIdentity: "host-1",
+      expectedHostIdentity: "host-1"
+    ))
+    XCTAssertTrue(service.shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+      address: "192.168.1.8",
+      respondingHostIdentity: "host-1",
+      expectedHostIdentity: "host-1"
+    ))
+  }
+
+  func testSyncTailscaleIPv6RouteClassification() {
+    XCTAssertTrue(syncIsTailscaleIPv6Address("fd7a:115c:a1e0::1234"))
+    XCTAssertTrue(syncIsTailscaleRoute("ws://[fd7a:115c:a1e0:ab12::42]:8787"))
+    XCTAssertFalse(syncIsTailscaleIPv6Address("fd00::1"))
+    XCTAssertFalse(syncIsTailscaleIPv6Address("fe80::1"))
+    XCTAssertFalse(syncIsTailscaleRoute("fd00::1"))
+  }
+
+  func testSyncTailnetSelfAddressRequiresTunnelInterface() {
+    // Carrier CGNAT on the cellular interface must not read as "on Tailscale".
+    XCTAssertFalse(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "pdp_ip0", address: "100.85.12.9"),
+      SyncNetworkInterfaceAddress(interfaceName: "en0", address: "192.168.1.20"),
+    ]))
+    XCTAssertTrue(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "utun4", address: "100.85.12.9"),
+    ]))
+    XCTAssertTrue(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "utun2", address: "fd7a:115c:a1e0::4"),
+    ]))
+    // A non-Tailscale VPN tunnel is not a tailnet.
+    XCTAssertFalse(syncHasTailnetSelfAddress([
+      SyncNetworkInterfaceAddress(interfaceName: "utun1", address: "10.8.0.2"),
+    ]))
+  }
+
+  func testSyncTailscaleOffHintGating() {
+    func hint(
+      transport: SyncTransportHealth,
+      hasSavedMachine: Bool = true,
+      tailnetRoute: Bool = true,
+      phoneOnTailnet: Bool = false,
+      nearby: Bool = false
+    ) -> Bool {
+      syncShouldShowTailscaleOffHint(
+        transport: transport,
+        hasSavedMachine: hasSavedMachine,
+        savedMachineHasTailnetRoute: tailnetRoute,
+        phoneHasTailnetInterface: phoneOnTailnet,
+        machineDiscoveredNearby: nearby
+      )
+    }
+
+    XCTAssertTrue(hint(transport: .connecting))
+    XCTAssertTrue(hint(transport: .unreachable))
+    XCTAssertTrue(hint(transport: .disconnected))
+    XCTAssertFalse(hint(transport: .connected))
+    XCTAssertFalse(hint(transport: .unreachable, hasSavedMachine: false))
+    XCTAssertFalse(hint(transport: .unreachable, tailnetRoute: false))
+    XCTAssertFalse(hint(transport: .unreachable, phoneOnTailnet: true))
+    XCTAssertFalse(hint(transport: .unreachable, nearby: true))
   }
 
   @MainActor
@@ -7439,6 +7527,87 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(timeline.last?.title, "Opened")
   }
 
+  private func makeTimelineEvent(
+    id: String,
+    kind: PrTimelineEventKind,
+    author: String? = "arul",
+    timestamp: String = "2026-03-20T10:00:00.000Z"
+  ) -> PrTimelineEvent {
+    PrTimelineEvent(
+      id: id,
+      kind: kind,
+      title: "event \(id)",
+      author: author,
+      body: nil,
+      timestamp: timestamp,
+      metadata: nil
+    )
+  }
+
+  func testPrTimelineDisplayItemsFoldConsecutiveSameAuthorCommits() {
+    let events = [
+      makeTimelineEvent(id: "opened", kind: .stateChange),
+      makeTimelineEvent(id: "c1", kind: .commit),
+      makeTimelineEvent(id: "c2", kind: .commit),
+      makeTimelineEvent(id: "c3", kind: .commit),
+      makeTimelineEvent(id: "review-1", kind: .review),
+      makeTimelineEvent(id: "c4", kind: .commit),
+    ]
+
+    let items = buildPrTimelineDisplayItems(events)
+
+    // opened → folded group of 3 → review → trailing single commit.
+    XCTAssertEqual(items.count, 4)
+    XCTAssertEqual(items[0], .event(events[0]))
+    guard case .commitGroup(let groupId, let author, let groupEvents) = items[1] else {
+      return XCTFail("expected a folded commit group, got \(items[1])")
+    }
+    XCTAssertEqual(groupId, "commit-group-c1")
+    XCTAssertEqual(author, "arul")
+    XCTAssertEqual(groupEvents.map(\.id), ["c1", "c2", "c3"])
+    XCTAssertEqual(items[2], .event(events[4]))
+    // A single trailing commit must stay a plain event, not a group of one.
+    XCTAssertEqual(items[3], .event(events[5]))
+  }
+
+  func testPrTimelineDisplayItemsSplitCommitRunsOnAuthorChange() {
+    let events = [
+      makeTimelineEvent(id: "a1", kind: .commit, author: "arul"),
+      makeTimelineEvent(id: "a2", kind: .commit, author: "arul"),
+      makeTimelineEvent(id: "b1", kind: .commit, author: "codex"),
+      makeTimelineEvent(id: "b2", kind: .commit, author: "codex"),
+    ]
+
+    let items = buildPrTimelineDisplayItems(events)
+
+    XCTAssertEqual(items.count, 2)
+    guard case .commitGroup(_, let firstAuthor, let firstEvents) = items[0],
+          case .commitGroup(_, let secondAuthor, let secondEvents) = items[1] else {
+      return XCTFail("expected two folded commit groups, got \(items)")
+    }
+    XCTAssertEqual(firstAuthor, "arul")
+    XCTAssertEqual(firstEvents.map(\.id), ["a1", "a2"])
+    XCTAssertEqual(secondAuthor, "codex")
+    XCTAssertEqual(secondEvents.map(\.id), ["b1", "b2"])
+    // Row ids must stay unique + stable so List identity survives refolds.
+    XCTAssertEqual(Set(items.map(\.id)).count, items.count)
+    XCTAssertEqual(items.map(\.id), ["commit-group-a1", "commit-group-b1"])
+  }
+
+  func testPrTimelineDisplayItemsPassThroughNonCommitFeeds() {
+    let events = [
+      makeTimelineEvent(id: "opened", kind: .stateChange),
+      makeTimelineEvent(id: "comment-1", kind: .comment),
+      makeTimelineEvent(id: "force-1", kind: .forcePush),
+    ]
+
+    let items = buildPrTimelineDisplayItems(events)
+
+    XCTAssertEqual(items.count, events.count)
+    XCTAssertEqual(items.map(\.id), events.map(\.id))
+    XCTAssertEqual(items, events.map { PrTimelineDisplayItem.event($0) })
+  }
+
   func testParsePullRequestPatchBuildsLineNumbers() {
     let lines = parsePullRequestPatch("""
     @@ -1,2 +1,3 @@
@@ -9380,115 +9549,70 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(plain.supportsCodexFastMode)
   }
 
-  func testCtoRosterDecodesCtoSummaryAndWorkerEntries() throws {
-    let ctoSummary: [String: Any] = [
-      "sessionId": "cto-session-1",
-      "laneId": "lane-cto",
-      "provider": "claude",
-      "model": "claude-opus-4-6",
-      "identityKey": "cto",
-      "status": "active",
-      "startedAt": "2026-03-25T00:00:00.000Z",
-      "lastActivityAt": "2026-03-25T00:00:05.000Z",
-    ]
-
-    let workerOneSummary: [String: Any] = [
-      "sessionId": "worker-session-1",
-      "laneId": "lane-cto",
-      "provider": "claude",
-      "model": "claude-sonnet-4-6",
-      "identityKey": "agent:worker-1",
-      "status": "running",
-      "startedAt": "2026-03-25T00:01:00.000Z",
-      "lastActivityAt": "2026-03-25T00:01:10.000Z",
-      "awaitingInput": false,
-    ]
-
+  func testCtoMemoryDecodesFullPayload() throws {
     let payload: [String: Any] = [
-      "cto": ctoSummary,
-      "workers": [
-        [
-          "agentId": "worker-1",
-          "name": "Build Bot",
-          "avatarSeed": "build-bot",
-          "status": "running",
-          "sessionSummary": workerOneSummary,
-        ],
-        [
-          "agentId": "worker-2",
-          "name": "Research Bot",
-          "avatarSeed": NSNull(),
-          "status": "idle",
-          "sessionSummary": NSNull(),
-        ],
-      ],
-    ]
-
-    let data = try JSONSerialization.data(withJSONObject: payload)
-    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
-
-    XCTAssertEqual(roster.cto?.sessionId, "cto-session-1")
-    XCTAssertEqual(roster.cto?.identityKey, "cto")
-    XCTAssertEqual(roster.workers.count, 2)
-
-    let first = roster.workers[0]
-    XCTAssertEqual(first.id, "worker-1")
-    XCTAssertEqual(first.agentId, "worker-1")
-    XCTAssertEqual(first.name, "Build Bot")
-    XCTAssertEqual(first.avatarSeed, "build-bot")
-    XCTAssertEqual(first.status, "running")
-    XCTAssertEqual(first.sessionSummary?.sessionId, "worker-session-1")
-    XCTAssertEqual(first.sessionSummary?.identityKey, "agent:worker-1")
-
-    let second = roster.workers[1]
-    XCTAssertEqual(second.agentId, "worker-2")
-    XCTAssertEqual(second.name, "Research Bot")
-    XCTAssertNil(second.avatarSeed)
-    XCTAssertEqual(second.status, "idle")
-    XCTAssertNil(second.sessionSummary)
-
-    // Round-trip encode + decode to confirm Codable key parity.
-    let encoded = try JSONEncoder().encode(roster)
-    let roundTripped = try JSONDecoder().decode(CtoRoster.self, from: encoded)
-    XCTAssertEqual(roundTripped, roster)
-    XCTAssertEqual(roundTripped.workers.map(\.agentId), ["worker-1", "worker-2"])
-  }
-
-  func testCtoRosterDecodesNullCtoAndEmptyWorkers() throws {
-    let payload: [String: Any] = [
-      "cto": NSNull(),
-      "workers": [] as [Any],
+      "memory": "- Prefers monochrome UI\n- Ships mac-only releases",
+      "threadState": "Goal: finish CTO revamp. Open loop: iOS build.",
+      "dailyLog": "09:12 reviewed onboarding card",
+      "dailyLogDate": "2026-07-04",
+      "updatedAt": "2026-07-04T12:00:00.000Z",
     ]
     let data = try JSONSerialization.data(withJSONObject: payload)
-    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+    let memory = try JSONDecoder().decode(CtoMemory.self, from: data)
 
-    XCTAssertNil(roster.cto)
-    XCTAssertTrue(roster.workers.isEmpty)
+    XCTAssertTrue(memory.memory.contains("monochrome"))
+    XCTAssertTrue(memory.threadState.contains("Open loop"))
+    XCTAssertEqual(memory.dailyLogDate, "2026-07-04")
+    XCTAssertEqual(memory.updatedAt, "2026-07-04T12:00:00.000Z")
+    XCTAssertFalse(memory.isEmpty)
   }
 
-  func testCtoRosterDecodesMissingCtoKey() throws {
-    let payload: [String: Any] = [
-      "workers": [] as [Any],
-    ]
-    let data = try JSONSerialization.data(withJSONObject: payload)
-    let roster = try JSONDecoder().decode(CtoRoster.self, from: data)
+  func testCtoMemoryDecodesPartialAndEmptyPayload() throws {
+    // A host that only returns `memory` (missing/null other fields) must still
+    // decode — the tolerant model defaults the rest to empty strings.
+    let partial: [String: Any] = ["memory": "just one fact", "threadState": NSNull()]
+    let partialData = try JSONSerialization.data(withJSONObject: partial)
+    let partialMemory = try JSONDecoder().decode(CtoMemory.self, from: partialData)
+    XCTAssertEqual(partialMemory.memory, "just one fact")
+    XCTAssertEqual(partialMemory.threadState, "")
+    XCTAssertEqual(partialMemory.dailyLog, "")
+    XCTAssertNil(partialMemory.updatedAt)
+    XCTAssertFalse(partialMemory.isEmpty)
 
-    XCTAssertNil(roster.cto)
-    XCTAssertTrue(roster.workers.isEmpty)
+    let emptyData = try JSONSerialization.data(withJSONObject: [String: Any]())
+    let emptyMemory = try JSONDecoder().decode(CtoMemory.self, from: emptyData)
+    XCTAssertTrue(emptyMemory.isEmpty)
   }
 
-  func testCtoAvatarPaletteIndexIsDeterministic() {
-    let inputs = ["build-bot", "Research Bot", "worker-42"]
-    let paletteSize = 7
-    for input in inputs {
-      let first = ctoAvatarPaletteIndex(for: input, paletteSize: paletteSize)
-      let second = ctoAvatarPaletteIndex(for: input, paletteSize: paletteSize)
-      XCTAssertEqual(first, second, "hash drifted for input '\(input)'")
-      XCTAssertGreaterThanOrEqual(first, 0)
-      XCTAssertLessThan(first, paletteSize)
+  func testCtoOnboardingCompletionMirrorsDesktopRequiredStep() {
+    let incomplete = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)
+    XCTAssertFalse(incomplete.isComplete)
+
+    let viaStep = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
+    XCTAssertTrue(viaStep.isComplete)
+
+    let viaTimestamp = CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: "2026-07-04T00:00:00Z")
+    XCTAssertTrue(viaTimestamp.isComplete)
+  }
+
+  func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
+    func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
+      CtoIdentity(
+        name: "CTO",
+        onboardingState: state,
+        modelPreferences: CtoModelPreferences(provider: "claude", model: "sonnet", reasoningEffort: nil)
+      )
     }
-    // Zero-size palette degrades to 0 rather than crashing on modulo.
-    XCTAssertEqual(ctoAvatarPaletteIndex(for: "anything", paletteSize: 0), 0)
+    // Never set up and never dismissed → setup blocks the tab.
+    XCTAssertTrue(identity(nil).isOnboardingBlocking)
+    XCTAssertTrue(identity(CtoOnboardingState(completedSteps: [], dismissedAt: nil, completedAt: nil)).isOnboardingBlocking)
+    // Dismissed on desktop ("Set up later") → chat must open, not the setup card.
+    let dismissed = CtoOnboardingState(completedSteps: [], dismissedAt: "2026-07-05T00:00:00Z", completedAt: nil)
+    XCTAssertFalse(identity(dismissed).isOnboardingBlocking)
+    XCTAssertFalse(identity(dismissed).isOnboardingComplete)
+    // Completed → unlocked too.
+    let complete = CtoOnboardingState(completedSteps: ["identity"], dismissedAt: nil, completedAt: nil)
+    XCTAssertFalse(identity(complete).isOnboardingBlocking)
   }
 
   func testMergeWorkChatTranscriptsReplacesDuplicatesAndKeepsAssistantItemsStable() {
@@ -12263,7 +12387,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(availabilityForOpen.showsMerge)
     XCTAssertTrue(availabilityForOpen.mergeEnabled)
 
-    // Emulate the derivation used in PrOverviewTab.
+    // Emulate the derivation used by the Overview merge rail.
     let mergeable = true
     let effectiveMergeEnabled = capabilitiesBlock.canMerge && mergeable
     XCTAssertFalse(effectiveMergeEnabled)
@@ -14625,5 +14749,36 @@ final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
       chatSessionId: "chat-gone"
     )
     XCTAssertTrue(workSessionShouldAppearInWorkList(orphanedLiveChild, parentChatSessionIds: []))
+  }
+}
+
+final class TerminalLiveTailPinningTests: XCTestCase {
+  func testViewportRestingAtTailIsAtLiveTail() {
+    // Exactly at the bottom, and within the one-line slack band.
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 4200, viewportHeight: 800, contentHeight: 5000))
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 4170, viewportHeight: 800, contentHeight: 5000))
+    // A real scroll-up past the slack band leaves the tail.
+    XCTAssertFalse(TerminalSessionController.isAtLiveTail(offsetY: 4100, viewportHeight: 800, contentHeight: 5000))
+  }
+
+  func testKeyboardShrinkFlipsTailPredicateWithUnchangedOffset() {
+    // Regression anchor for the keyboard-avoidance bug: with large scrollback,
+    // a pinned viewport (offset unchanged) reads as off-tail purely because the
+    // keyboard shrank the viewport height. The pin state must therefore never
+    // be derived from a layout resize — the controller re-asserts the live
+    // tail on layout size changes instead of consulting this predicate.
+    let offsetAtTailBeforeKeyboard: CGFloat = 4200
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(
+      offsetY: offsetAtTailBeforeKeyboard, viewportHeight: 800, contentHeight: 5000
+    ))
+    XCTAssertFalse(TerminalSessionController.isAtLiveTail(
+      offsetY: offsetAtTailBeforeKeyboard, viewportHeight: 460, contentHeight: 5000
+    ))
+  }
+
+  func testShortTranscriptStaysAtLiveTailThroughKeyboardShrink() {
+    // Content shorter than the shrunken viewport can never leave the tail —
+    // why short/new sessions always survived the keyboard.
+    XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 0, viewportHeight: 460, contentHeight: 300))
   }
 }

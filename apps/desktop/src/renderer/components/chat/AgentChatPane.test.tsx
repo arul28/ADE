@@ -1359,7 +1359,7 @@ describe("AgentChatPane companion drawers", () => {
     });
   });
 
-  it("clears a persistent identity chat view without deleting the session", async () => {
+  it("renders a persistent identity chat view without the legacy clear-view control", async () => {
     const transcript = `${JSON.stringify({
       sessionId: "persistent-session",
       timestamp: "2026-05-12T00:00:00.000Z",
@@ -1380,12 +1380,7 @@ describe("AgentChatPane companion drawers", () => {
     );
 
     expect(await screen.findByText("Persistent identity view text")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Clear view" }));
-
-    await waitFor(() => {
-      expect(screen.queryByText("Persistent identity view text")).toBeNull();
-    });
-    expect(globalThis.window.ade.agentChat.delete).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Clear view" })).toBeNull();
   });
 });
 

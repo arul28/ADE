@@ -31,7 +31,6 @@ import {
 } from "../../desktop/src/shared/agentSkillRoots";
 import { isActionablePrIssueComment } from "../../desktop/src/shared/prIssueResolution";
 import {
-  type LinearWorkflowConfig,
   type ComputerUseBackendStyle,
   type ComputerUseArtifactOwner,
   type LaneLinearIssue,
@@ -1164,6 +1163,40 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "saveMemory",
+    description: "Save a durable fact to your persistent memory (MEMORY.md) — decisions, preferences, conventions, and standing project context you should remember across sessions and model switches. One crisp sentence per fact; exact duplicates are ignored.",
+    inputSchema: {
+      type: "object",
+      required: ["fact"],
+      additionalProperties: false,
+      properties: {
+        fact: { type: "string", minLength: 1 }
+      }
+    }
+  },
+  {
+    name: "searchMemory",
+    description: "Search your persistent memory (MEMORY.md, thread state, and recent daily logs) for prior context before asking the user to restate something.",
+    inputSchema: {
+      type: "object",
+      required: ["query"],
+      additionalProperties: false,
+      properties: {
+        query: { type: "string", minLength: 1 },
+        limit: { type: "number", minimum: 1, maximum: 100 }
+      }
+    }
+  },
+  {
+    name: "readMemory",
+    description: "Read your persistent memory: durable facts (MEMORY.md) and the current thread state.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {}
+    }
+  },
+  {
     name: "listChats",
     description: "List ADE Work chat sessions available to the CTO.",
     inputSchema: {
@@ -1244,96 +1277,6 @@ const CTO_OPERATOR_TOOL_SPECS: ToolSpec[] = [
       }
     }
   },
-  {
-    name: "listLinearWorkflows",
-    description: "List active and queued Linear workflow runs managed by ADE.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
-  },
-  {
-    name: "getLinearRunStatus",
-    description: "Inspect a Linear workflow run in detail.",
-    inputSchema: {
-      type: "object",
-      required: ["runId"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "resolveLinearRunAction",
-    description: "Approve, reject, retry, resume, or explicitly complete a Linear workflow run.",
-    inputSchema: {
-      type: "object",
-      required: ["runId", "action"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 },
-        action: { type: "string", enum: ["approve", "reject", "retry", "complete", "resume"] },
-        note: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "cancelLinearRun",
-    description: "Cancel a Linear workflow run and record the operator reason.",
-    inputSchema: {
-      type: "object",
-      required: ["runId", "reason"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 },
-        reason: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "routeLinearIssueToCto",
-    description: "Route a Linear issue into the persistent CTO session.",
-    inputSchema: {
-      type: "object",
-      required: ["issueId"],
-      additionalProperties: false,
-      properties: {
-        issueId: { type: "string", minLength: 1 },
-        laneId: { type: "string" },
-        reuseExisting: { type: "boolean" }
-      }
-    }
-  },
-  {
-    name: "routeLinearIssueToWorker",
-    description: "Wake a worker agent with a Linear issue as the task context.",
-    inputSchema: {
-      type: "object",
-      required: ["issueId", "agentId"],
-      additionalProperties: false,
-      properties: {
-        issueId: { type: "string", minLength: 1 },
-        agentId: { type: "string", minLength: 1 },
-        taskKey: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "rerouteLinearRun",
-    description: "Recover a Linear workflow run by canceling it if needed and re-routing its issue.",
-    inputSchema: {
-      type: "object",
-      required: ["runId", "target", "reason"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 },
-        target: { type: "string", enum: ["cto", "worker"] },
-        reason: { type: "string", minLength: 1 },
-        laneId: { type: "string" },
-        reuseExisting: { type: "boolean" },
-        agentId: { type: "string" },
-        taskKey: { type: "string" }
-      }
-    }
-  },
 ];
 
 const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
@@ -1379,106 +1322,6 @@ const CTO_LINEAR_SYNC_TOOL_SPECS: ToolSpec[] = [
       }
     }
   },
-  {
-    name: "getLinearSyncDashboard",
-    description: "Read the ADE Linear sync dashboard.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
-  },
-  {
-    name: "runLinearSyncNow",
-    description: "Trigger a Linear sync run now and return the updated dashboard.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
-  },
-  {
-    name: "listLinearSyncQueue",
-    description: "List queued Linear sync items managed by ADE.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
-  },
-  {
-    name: "resolveLinearSyncQueueItem",
-    description: "Resolve a Linear sync queue item through ADE.",
-    inputSchema: {
-      type: "object",
-      required: ["queueItemId", "action"],
-      additionalProperties: false,
-      properties: {
-        queueItemId: { type: "string", minLength: 1 },
-        action: { type: "string", enum: ["approve", "reject", "retry", "complete", "resume"] },
-        note: { type: "string" },
-        employeeOverride: { type: "string" },
-        laneId: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "getLinearWorkflowRunDetail",
-    description: "Read a detailed Linear workflow run record from ADE sync state.",
-    inputSchema: {
-      type: "object",
-      required: ["runId"],
-      additionalProperties: false,
-      properties: {
-        runId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "getLinearIngressStatus",
-    description: "Read the ADE Linear ingress/webhook status.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
-  },
-  {
-    name: "listLinearIngressEvents",
-    description: "List recent ADE Linear ingress events.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        limit: { type: "number", minimum: 1, maximum: 100 }
-      }
-    }
-  },
-  {
-    name: "ensureLinearWebhook",
-    description: "Ensure the ADE Linear relay webhook exists and return ingress status.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        force: { type: "boolean" }
-      }
-    }
-  },
-  {
-    name: "getFlowPolicy",
-    description: "Read the current ADE Linear flow policy.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
-  },
-  {
-    name: "saveFlowPolicy",
-    description: "Update the ADE Linear flow policy.",
-    inputSchema: {
-      type: "object",
-      required: ["policy"],
-      additionalProperties: false,
-      properties: {
-        policy: { type: "object" },
-        actor: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "simulateFlowRoute",
-    description: "Simulate ADE Linear routing for a candidate issue payload.",
-    inputSchema: {
-      type: "object",
-      required: ["issue"],
-      additionalProperties: false,
-      properties: {
-        issue: { type: "object" }
-      }
-    }
-  },
 ];
 
 
@@ -1519,6 +1362,8 @@ const READ_ONLY_TOOLS = new Set([
   "pr_get_checks",
   "pr_get_review_comments",
   "get_cto_state",
+  "searchMemory",
+  "readMemory",
   "listChats",
   "getChatStatus",
   "readChatTranscript",
@@ -1526,21 +1371,13 @@ const READ_ONLY_TOOLS = new Set([
   "getLinearIssuePickerData",
   "searchLinearIssues",
   "getLinearIssueComments",
-  "listLinearWorkflows",
-  "getLinearRunStatus",
-  "getLinearSyncDashboard",
-  "listLinearSyncQueue",
-  "getLinearWorkflowRunDetail",
-  "getLinearIngressStatus",
-  "listLinearIngressEvents",
-  "getFlowPolicy",
-  "simulateFlowRoute",
   "get_environment_info",
   "list_computer_use_artifacts",
   "get_computer_use_backend_status",
 ]);
 
 const MUTATION_TOOLS = new Set([
+  "saveMemory",
   "create_lane",
   "run_ade_action",
   "start_cli_session",
@@ -1576,15 +1413,6 @@ const MUTATION_TOOLS = new Set([
   "spawnChat",
   "sendChatMessage",
   "interruptChat",
-  "resolveLinearRunAction",
-  "cancelLinearRun",
-  "routeLinearIssueToCto",
-  "routeLinearIssueToWorker",
-  "rerouteLinearRun",
-  "runLinearSyncNow",
-  "resolveLinearSyncQueueItem",
-  "ensureLinearWebhook",
-  "saveFlowPolicy",
   "launch_app",
   "interact_gui",
   "screenshot_environment",
@@ -2073,39 +1901,11 @@ function requireAgentChatService(runtime: AdeRuntime): NonNullable<AdeRuntime["a
   return runtime.agentChatService;
 }
 
-function requireLinearSyncService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearSyncService"]> {
-  if (!runtime.linearSyncService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearSyncService is not available in this ADE runtime configuration");
-  }
-  return runtime.linearSyncService;
-}
-
 function requireLinearIssueTracker(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIssueTracker"]> {
   if (!runtime.linearIssueTracker) {
     throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIssueTracker is not available in this ADE runtime configuration");
   }
   return runtime.linearIssueTracker;
-}
-
-function requireLinearIngressService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearIngressService"]> {
-  if (!runtime.linearIngressService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearIngressService is not available in this ADE runtime configuration");
-  }
-  return runtime.linearIngressService;
-}
-
-function requireFlowPolicyService(runtime: AdeRuntime): NonNullable<AdeRuntime["flowPolicyService"]> {
-  if (!runtime.flowPolicyService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "flowPolicyService is not available in this ADE runtime configuration");
-  }
-  return runtime.flowPolicyService;
-}
-
-function requireLinearRoutingService(runtime: AdeRuntime): NonNullable<AdeRuntime["linearRoutingService"]> {
-  if (!runtime.linearRoutingService) {
-    throw new JsonRpcError(JsonRpcErrorCode.internalError, "linearRoutingService is not available in this ADE runtime configuration");
-  }
-  return runtime.linearRoutingService;
 }
 
 async function buildCliLinearConnectionStatus(runtime: AdeRuntime): Promise<LinearConnectionStatus> {
@@ -2583,13 +2383,11 @@ async function runCtoOperatorBridgeTool(
     sessionService: runtime.sessionService,
     resolveExecutionLane: async ({ requestedLaneId }) => requestedLaneId?.trim() || defaultLaneId,
     laneService: runtime.laneService,
-    workerAgentService: runtime.workerAgentService,
-    linearDispatcherService: runtime.linearDispatcherService ?? null,
-    flowPolicyService: runtime.flowPolicyService ?? null,
     prService: runtime.prService ?? null,
     fileService: runtime.fileService ?? null,
     processService: runtime.processService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
+    ctoMemoryService: runtime.ctoMemoryService ?? null,
     listChats: agentChatService.listSessions,
     getChatStatus: agentChatService.getSessionSummary,
     getChatTranscript: agentChatService.getChatTranscript,
@@ -3314,68 +3112,6 @@ async function runTool(args: {
       const issueId = assertNonEmptyString(toolArgs.issueId, "issueId");
       const tracker = requireLinearIssueTracker(runtime);
       return await tracker.fetchIssueComments(issueId);
-    }
-
-    if (name === "getLinearSyncDashboard") {
-      return requireLinearSyncService(runtime).getDashboard();
-    }
-
-    if (name === "runLinearSyncNow") {
-      return await requireLinearSyncService(runtime).runSyncNow();
-    }
-
-    if (name === "listLinearSyncQueue") {
-      return requireLinearSyncService(runtime).listQueue({ limit: 300 });
-    }
-
-    if (name === "resolveLinearSyncQueueItem") {
-      const action = assertNonEmptyString(toolArgs.action, "action");
-      if (!new Set(["approve", "reject", "retry", "complete", "resume"]).has(action)) {
-        throw new JsonRpcError(
-          JsonRpcErrorCode.invalidParams,
-          "action must be one of: approve, reject, retry, complete, resume",
-        );
-      }
-      return await requireLinearSyncService(runtime).resolveQueueItem({
-        queueItemId: assertNonEmptyString(toolArgs.queueItemId, "queueItemId"),
-        action: action as "approve" | "reject" | "retry" | "complete" | "resume",
-        note: asOptionalTrimmedString(toolArgs.note) ?? undefined,
-        employeeOverride: asOptionalTrimmedString(toolArgs.employeeOverride) ?? undefined,
-        laneId: asOptionalTrimmedString(toolArgs.laneId) ?? undefined,
-      });
-    }
-
-    if (name === "getLinearWorkflowRunDetail") {
-      const runId = assertNonEmptyString(toolArgs.runId, "runId");
-      return await requireLinearSyncService(runtime).getRunDetail({ runId });
-    }
-
-    if (name === "getLinearIngressStatus") {
-      return requireLinearIngressService(runtime).getStatus();
-    }
-
-    if (name === "listLinearIngressEvents") {
-      return requireLinearIngressService(runtime).listRecentEvents(asNumber(toolArgs.limit, 20) ?? 20);
-    }
-
-    if (name === "ensureLinearWebhook") {
-      const ingress = requireLinearIngressService(runtime);
-      await ingress.ensureRelayWebhook(asBoolean(toolArgs.force, false));
-      return ingress.getStatus();
-    }
-
-    if (name === "getFlowPolicy") {
-      return requireFlowPolicyService(runtime).getPolicy();
-    }
-
-    if (name === "saveFlowPolicy") {
-      const policy = safeObject(toolArgs.policy) as unknown as LinearWorkflowConfig;
-      return requireFlowPolicyService(runtime).savePolicy(policy, asOptionalTrimmedString(toolArgs.actor) ?? "user");
-    }
-
-    if (name === "simulateFlowRoute") {
-      const issue = safeObject(toolArgs.issue);
-      return requireLinearRoutingService(runtime).simulateRoute({ issue: issue as any });
     }
 
     throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);

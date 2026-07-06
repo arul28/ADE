@@ -15,6 +15,9 @@ does and does not travel, and the layers that implement it. Deep-dives:
   SQLite, pairing, tab structure, command routing from phone to runtime.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
+- `push-notifications.md` — the APNs push + Live Activity pipeline:
+  Cloudflare push relay, brain publisher, per-device prefs, and the
+  Live Activity content-state contract.
 
 ## Where the sync authority runs
 
@@ -168,7 +171,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   false so a second runtime becomes a viewer instead of stealing the
   sync authority role.
 - `syncHostService.ts` — the per-project WebSocket host. Owns
-  connection acceptance, hello/pairing handshakes, per-peer state,
+  connection acceptance, hello/pairing handshakes (an `auth_failed`
+  rejection is attributed with the rejecting machine's
+  `host: { deviceId, name }` — read from `readBrainMetadata()` — so a
+  client can only ever drop a saved pairing when the rejection came from
+  the machine it is actually paired with), per-peer state,
   changeset fan-out + ack tracking (bounded, windowed exports — see
   `crdt-model.md`), chat-first scheduling (chat events are pumped before
   background changesets, and peers with active chat subscriptions get
@@ -259,7 +266,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `brainProjectActionsSyncHandler.ts` — machine-wide fallback sync
   handler used by `ade serve` before any project host is active. It
   authenticates the same PIN / paired-secret / bootstrap paths as the
-  per-project host, applies the same failed-PIN cooldown, and serves
+  per-project host, applies the same failed-PIN cooldown, attributes its
+  `auth_failed` rejections with the same `host: { deviceId, name }`
+  identity the per-project host sends (so a phone that reaches this
+  fallback over a stale address still won't destroy a pairing it can't
+  attribute), and serves
   project catalog plus runtime-scoped project actions so a phone can
   add/open/create/clone/remove a project even from the project-home state.
   It also answers `command` envelopes: when no project host owns the peer
@@ -350,6 +361,33 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   Settings > Sync.
 - `resolveTailscaleCliPath.ts` — Tailscale CLI discovery used for the
   tailnet `tailscale serve` publication path.
+- `syncDpop.ts` — device-bound pairing (DPoP) helpers: the canonical
+  signing string builder, `evaluatePairedHelloDpop` (validates a
+  `SyncDpopProof` against the stored P-256 public key and TOFU-adopts an
+  offered key for legacy devices), and `createSyncDpopNonceCache` (bounded
+  per-host replay guard). Shared by `syncHostService` and the brain
+  ingress handler.
+- `syncSecurityStore.ts` — machine-level sync security posture stored at
+  `~/.ade/secrets/sync-security.json` (chmod `0600`). Owns the
+  `requireDpop` flag with the `ADE_SYNC_REQUIRE_DPOP=1|0` env override; both
+  the per-project host and the brain ingress handler read it.
+- `syncCloudRelayStore.ts` — persists the optional cloud tunnel-relay
+  identity + enablement at `~/.ade/secrets/sync-cloud-relay.json`
+  (lazily-minted 32-hex `machineKey` + HMAC `secret`, chmod `0600`,
+  default `enabled: false`). Derives the phone-facing
+  `wss://<relay>/connect/<machineKey>` URL and the canonical host/pipe
+  HMAC signing strings shared with the `apps/tunnel-relay` worker.
+- `syncTunnelClientService.ts` — the brain-side tunnel client. When the
+  cloud relay is enabled it keeps an outbound WebSocket registered with
+  the relay worker (HMAC-signed host/pipe upgrades, exponential backoff
+  with jitter capped at 60 s) so phones off the LAN/tailnet can dial the
+  machine through the relay; the normal ADE sync hello/pairing then runs
+  end-to-end over the piped connection.
+
+Push publisher (`apps/ade-cli/src/services/push/`) — the APNs push +
+Live Activity pipeline (`pushPublisherService.ts`,
+`pushRegistrationStore.ts`, `pushRelayClient.ts`). See
+`push-notifications.md` for the full topology.
 
 Desktop client adapter (`apps/desktop/src/main/services/sync/`):
 
@@ -570,13 +608,24 @@ is not supported.
   the runtime rejects further attempts from that IP for 10 minutes
   (`PAIR_FAILURE_THRESHOLD = 5`, `PAIR_COOLDOWN_MS = 10 * 60_000` in
   `syncHostService.ts`).
-- **QR payload**: `SyncPairingQrPayload` is **version 2**. It carries
-  machine identity, port, and address candidates only — it no longer
-  embeds a pairing code or expiry. The phone still needs the PIN
-  manually.
+- **QR payload**: `SyncPairingQrPayload` is **version 3**, encoded as a
+  single **smart pairing URL** (`https://ade-app.dev/pair#<base64url(JSON)>`,
+  codec in `apps/desktop/src/shared/pairingQr.ts`). The payload rides the
+  URL fragment, so it is scannable by the system camera and safe to open
+  in a browser without the JSON ever reaching a web server. It carries
+  machine identity, port, and address candidates (plus the cloud-relay
+  `relayUrl` when enabled) — it never embeds a pairing code or expiry, so
+  the phone still needs the PIN manually. Newer payload versions parse
+  leniently: the iOS scanner (`PairingQrPayload.swift`) accepts any
+  version ≥ 3 as long as the fields it understands are present.
 - **Address candidates**: the runtime advertises LAN IPs, the saved
-  `lastHost` (when it matches the current set), the Tailscale IP, and
-  `127.0.0.1` (`SyncAddressCandidateKind` includes `loopback`).
+  `lastHost` (when it matches the current set), the Tailscale IP,
+  `127.0.0.1`, and — when the operator turns on the cloud tunnel relay —
+  a `relay`-kind candidate carrying a full
+  `wss://…/connect/<machineKey>` URL. `SyncAddressCandidateKind` is
+  `lan | saved | tailscale | loopback | relay`; the relay candidate is
+  the lowest-priority transport (see the transport race in
+  `ios-companion.md`).
 - **mDNS**: `publishLanDiscovery` builds a TXT record whose
   `addresses` CSV includes the Tailscale IP alongside LAN IPs. It also
   advertises `runtimeKind`, `runtimeVersion`, `projects`, and
@@ -661,7 +710,15 @@ snapshots, `file_response`, and large `command_result` payloads can
 no longer kill the connection with "Message too long".
 
 `SyncHelloErrorPayload.code` is trimmed to `auth_failed |
-invalid_hello`. `SyncPairingResultPayload.error.code` is one of
+invalid_hello`. An `auth_failed` payload also carries an optional
+`host: { deviceId, name }` naming the machine that rejected the hello —
+both the project host and the brain-level fallback handler send it. This
+is the client's only safe basis for destroying a saved pairing: a phone
+drops its credentials **only** when the rejecting `host.deviceId` matches
+the paired machine's identity. An unattributed rejection (older host, or
+a stranger machine reached over a reused DHCP lease / mDNS alias / stale
+Tailscale candidate) keeps the pairing and the client moves on to other
+routes. `SyncPairingResultPayload.error.code` is one of
 `invalid_pin | pin_not_set | pairing_failed`.
 
 Heartbeat interval is 30 seconds. Desktop peers close after **two**
@@ -716,8 +773,8 @@ payload.
 
 ## Command routing and execution isolation
 
-Controllers never run agent processes. CTO heartbeats and worker
-activations are runtime-exclusive.
+Controllers never run agent processes. Agent runtimes and CTO chat
+turns are runtime-exclusive.
 
 Two categories of controller write:
 
@@ -751,6 +808,24 @@ project scope split.
 
 ## Security model
 
+- **Device-bound pairing (DPoP)**: iOS keeps a P-256 key in the Secure
+  Enclave. `pairing_request` registers the public key
+  (`SyncPairingRecord.dpopPublicKey`), and every paired `hello` must then
+  carry a fresh signed challenge (`SyncDpopProof`: nonce + timestamp,
+  signature over `ade-dpop-v1\n deviceId\n sha256(pairedSecret)\n ts\n
+  nonce` — see `syncDpop.ts`). Binding the secret hash scopes proofs to
+  one host; a bounded nonce cache kills same-host replays. Legacy paired
+  devices upgrade on their next connect (TOFU adoption of the offered
+  key); once a key is on record the host fails closed, and bootstrap-token
+  hellos for that deviceId are rejected (no downgrade path). The
+  machine-level `sync-security.json` store (`requireDpop`, env override
+  `ADE_SYNC_REQUIRE_DPOP`) additionally rejects paired hellos from
+  devices that never registered a key. The same DPoP evaluation binds on
+  the **brain ingress path** too (`brainProjectActionsSyncHandler` — the
+  machine-wide fallback handler that answers before any project host is
+  active), so a paired hello cannot skip proof-of-possession by racing a
+  connection during a host restart. Keys are not restorable from
+  device backups — a restored phone re-pairs with the PIN.
 - **Pairing**: two independent paths. Machine-to-machine pairing uses
   the shared bootstrap token from the machine secrets directory.
   Phone pairing uses a **user-set 6-digit PIN** stored in
@@ -773,6 +848,15 @@ project scope split.
   when over tailnet; LAN connections rely on pairing token validation.
   TLS is not enforced for localhost/LAN; the runtime listens on all
   interfaces (intended for trusted LAN and tailnets).
+- **Cloud tunnel relay (optional, off by default)**: when the operator
+  enables it in Settings > Sync, the brain keeps an outbound
+  HMAC-authenticated tunnel to the `apps/tunnel-relay` Cloudflare Worker
+  so a phone off the LAN/tailnet can dial the machine over TLS. The relay
+  only pipes bytes: the normal ADE hello / PIN / paired-secret / DPoP
+  handshake still runs end-to-end, so the relay never sees pairing
+  credentials in the clear. The `machineKey` is an unguessable 32-hex
+  identifier and the tunnel upgrades are HMAC-signed with a per-machine
+  secret.
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
 - **Execution isolation**: the ADE runtime runs agents; controllers do not.
@@ -818,7 +902,10 @@ project scope split.
 | PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
 | iOS local replicated DB | Implemented |
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
-| QR pairing UX | Implemented (payload v2; PIN entered separately) |
+| QR pairing UX | Implemented (payload v3 smart URL + iOS camera scanner; PIN entered separately) |
+| Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
+| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented, default off (`syncTunnelClientService` + `apps/tunnel-relay`) |
+| Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Lane portability desktop-to-desktop | Planned |
 

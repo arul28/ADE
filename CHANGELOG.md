@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-07-06
+
+### Added
+
+- Added mobile push notifications, Live Activities, APNs-backed delivery, deployed push/tunnel relay workers, per-device notification preferences, and optional cloud relay fallback.
+- Added smart universal-link pairing QR payloads, Secure Enclave DPoP proofs for paired hellos, fail-closed sync ingress controls, and an offline outbox for queued mobile chat creation.
+- Added cursor-relative slash command and `@file` composer chips across desktop, ADE Code, and iOS.
+- Added Claude Workflow progress rows, CLI-spawned child-chat lineage, "Subagent spawned" transcript notices, and strict Mosaic v1 interactive cards for Claude-family chats.
+
+### Changed
+
+- Reworked CTO into one persistent-memory agent thread across desktop and iOS, with file-backed memory, daily journals, model-switch preservation, memory tools, and a simpler setup/settings flow.
+- Improved ADE Code and CLI reliability with per-provider Chat/CLI mode, provider-neutral tracked CLI sessions, faster TUI rendering, safer JSON-RPC/event-buffer handling, closed-session browsing, `/secrets`, and remote sync hardening.
+- Improved mobile PR details with virtualized timeline rows, desktop-style merge requirements, metadata cards, freshness reloads, and Work-row "Open in PRs tab" routing.
+- Improved mobile connection, Work list, lane creation, and terminal behavior, including Tailscale-off warnings, attributed pairing revocation, bounded port probes, standalone CLI rows, remote-first lane bases, background AI lane naming, and live-tail terminal pinning.
+- Improved the landing page with lighter animations, cheaper showcase transitions, and bounded media loading.
+- Kept the current mobile marketing version for a build-number-only iOS TestFlight update.
+
+### Removed
+
+- Removed the legacy CTO worker/hiring subsystem, Linear workflow engine, pipeline builder, Team/Workflows surfaces, and dead CTO/flow CLI paths.
+
+### Fixed
+
+- Fixed stale quick-open cache races, partially-built quick-open index reads, unmatched composer-token dead keys, iOS suggestion cache drift, and iOS TextKit retention during composer chip usage.
+- Fixed sync-host startup loops after transient cross-channel conflicts, queue handling for `host_unavailable`, old failed CLI sessions pinning hub attention, and terminal live-tail drift after keyboard or font layout changes.
+
 ## [1.2.12] - 2026-07-03
 
 ### Added
@@ -529,7 +556,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.12...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.13...HEAD
+[1.2.13]: https://github.com/arul28/ADE/compare/v1.2.12...v1.2.13
 [1.2.12]: https://github.com/arul28/ADE/compare/v1.2.11...v1.2.12
 [1.2.11]: https://github.com/arul28/ADE/compare/v1.2.10...v1.2.11
 [1.2.10]: https://github.com/arul28/ADE/compare/v1.2.9...v1.2.10

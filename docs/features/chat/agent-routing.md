@@ -377,14 +377,16 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
 3. The CTO system prompt includes the immutable CTO doctrine,
    environment knowledge, and active personality overlay
    (`CtoPersonalityPreset`). See `ctoStateService.ts`.
-4. Extra tooling: CTO sessions receive `ctoOperatorTools` and Linear
+4. Extra tooling: CTO sessions receive `ctoOperatorTools` (including the
+   `saveMemory` / `searchMemory` / `readMemory` memory tools) and Linear
    tools when connected.
 5. Guarded permission defaults: Claude defaults to `"default"` (ask
    before dangerous ops); OpenCode defaults to `"edit"`. `full-auto`
    is only applied when explicitly requested.
 
-Worker sessions (`identityKey: "agent:<id>"`) follow a similar pattern
-through `workerAgentService`.
+`AgentChatIdentityKey` is now just `"cto"` — the `"cto"` thread is the
+only identity session. The former `"agent:<id>"` worker sessions were
+removed.
 
 ## Fragile and tricky wiring
 
@@ -418,11 +420,11 @@ through `workerAgentService`.
   (native-to-abstract) requires provider-specific logic; switching a
   provider-native field without also updating the abstract field
   leaves them out of sync.
-- **Claude post-compaction re-injection.** When a CTO or worker session
+- **Claude post-compaction re-injection.** When the CTO session
   undergoes context compaction, the service must call
-  `refreshReconstructionContext()` to re-inject identity. Losing this
-  strips persona mid-session and results in the agent forgetting it is
-  the CTO.
+  `refreshReconstructionContext()` to re-inject identity and durable
+  memory. Losing this strips persona and memory mid-session and results
+  in the agent forgetting it is the CTO.
 - **OAuth redirect ports.** `oauthRedirectService.ts` binds to an
   ephemeral port and writes the URI into the provider config. If
   another process grabs that port between detection and callback, the
@@ -434,6 +436,6 @@ through `workerAgentService`.
 - [Composer and UI](composer-and-ui.md) -- where model selection and
   permission controls surface in the UI.
 - [Agents identity and personas](../agents/identity-and-personas.md) --
-  how CTO and worker identities feed into routing.
+  how the CTO identity and its memory system feed into routing.
 </content>
 </invoke>

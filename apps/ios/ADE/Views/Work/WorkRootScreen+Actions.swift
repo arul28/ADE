@@ -13,7 +13,10 @@ extension WorkRootScreen {
     let lanesSnapshot = lanes
     let pullRequestsSnapshot = pullRequests
     let githubPrsSnapshot = syncService.laneGithubPrItems
+    // Fold offline "Pending sync" chat-creation rows into the optimistic set so
+    // they render through the same machinery; committed rows win on id collision.
     let optimisticSessionsSnapshot = optimisticSessions
+      .merging(pendingChatCreationOptimisticSessions) { current, _ in current }
     let archivedSessionIdsSnapshot = archivedSessionIds
     let selectedStatusSnapshot = selectedStatus
     let selectedLaneIdSnapshot = selectedLaneId
@@ -335,7 +338,27 @@ extension WorkRootScreen {
     }
   }
 
+  func openPullRequest(_ session: TerminalSessionSummary, tag: LanePrTag) {
+    let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+    Task { @MainActor in
+      // Same menu-dismissal wait as goToLane so the cross-tab request isn't
+      // published while the context menu is still animating away.
+      try? await Task.sleep(for: .milliseconds(450))
+      if let prId = tag.prId, !prId.isEmpty {
+        syncService.requestedPrNavigation = PrNavigationRequest(
+          prId: prId,
+          prNumber: tag.githubPrNumber,
+          laneId: laneId.isEmpty ? nil : laneId
+        )
+      } else {
+        syncService.requestedPrNavigation = PrNavigationRequest(prNumber: tag.githubPrNumber)
+      }
+    }
+  }
+
   func openSession(_ session: TerminalSessionSummary) {
+    // A pending-sync row has no synced session to open yet.
+    guard !workIsPendingChatCreationSession(session) else { return }
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
     selectedSessionTransitionId = session.id
@@ -395,6 +418,11 @@ extension WorkRootScreen {
   }
 
   func deleteChatSession(_ session: TerminalSessionSummary) {
+    // Deleting a pending-sync row cancels the queued creation locally.
+    if workIsPendingChatCreationSession(session) {
+      syncService.cancelPendingChatCreation(id: workPendingChatCreationCommandId(session))
+      return
+    }
     Task {
       do {
         try await syncService.deleteChatSession(sessionId: session.id)

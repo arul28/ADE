@@ -2,6 +2,54 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// Synthetic session-id prefix for an offline "Pending sync" chat-creation row.
+/// The row rides the normal optimistic-session machinery but is non-interactive
+/// (open is a no-op; only delete/cancel is allowed).
+let workPendingChatCreationIdPrefix = "pending-create:"
+
+func workIsPendingChatCreationSession(_ session: TerminalSessionSummary) -> Bool {
+  session.id.hasPrefix(workPendingChatCreationIdPrefix)
+}
+
+/// The queued `chat.create` command id behind a pending-sync row, recovered
+/// from the synthetic session id.
+func workPendingChatCreationCommandId(_ session: TerminalSessionSummary) -> String {
+  String(session.id.dropFirst(workPendingChatCreationIdPrefix.count))
+}
+
+/// Builds the optimistic row for an offline chat creation. Buckets as a running
+/// chat (top of the list) and carries the user's chosen title/model/lane.
+func workPendingChatCreationOptimisticSession(
+  _ creation: PendingChatCreation,
+  lane: LaneSummary?
+) -> TerminalSessionSummary {
+  TerminalSessionSummary(
+    id: workPendingChatCreationIdPrefix + creation.id,
+    laneId: creation.laneId,
+    laneName: lane?.name ?? creation.laneId,
+    ptyId: nil,
+    tracked: true,
+    pinned: false,
+    manuallyNamed: nil,
+    goal: nil,
+    toolType: toolTypeForProvider(creation.provider),
+    title: creation.name,
+    status: "running",
+    startedAt: creation.queuedAt,
+    endedAt: nil,
+    exitCode: nil,
+    transcriptPath: "",
+    headShaStart: nil,
+    headShaEnd: nil,
+    lastOutputPreview: nil,
+    summary: nil,
+    runtimeState: "running",
+    resumeCommand: nil,
+    resumeMetadata: nil,
+    chatIdleSinceAt: nil
+  )
+}
+
 func isChatSession(_ session: TerminalSessionSummary) -> Bool {
   let raw = session.toolType?
     .trimmingCharacters(in: .whitespacesAndNewlines)

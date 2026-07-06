@@ -2,7 +2,7 @@
 
 Automations are rule-based background workflows. Each rule has a trigger, a target execution surface, a prompt template or action chain, an optional tool palette, an optional output contract, and guardrails. Automations sit between the CTO (heavy, stateful, chat-driven) and raw cron (deterministic, no AI). The execution surface choice is the key control point.
 
-Automations never duplicate Linear issue intake — the CTO owns that. Automations can consume Linear as context or write to it as an action, but the canonical intake and routing logic lives in the CTO/Linear services hosted by the ADE runtime.
+There is no autonomous Linear intake pipeline (the CTO's Linear workflow engine was removed). Automations can react to Linear events as context or write to Linear as an action through the shared Linear client, but no rule "owns" issue dispatch — the CTO is a chat thread that reads and lightly updates issues, not a router.
 
 ## Runtime ownership
 
@@ -22,7 +22,7 @@ These services are loaded by the ADE runtime's project scope (and by the desktop
 - `automationPlannerService.ts` — natural-language rule authoring. `parseNaturalLanguage`, `validateDraft`, `saveDraft`, `simulate`. Runs a planner subprocess (Claude or Codex) to turn a free-text brief into an `AutomationRuleDraft`.
 - `automationIngressService.ts` — HTTP webhook ingress (GitHub, custom webhooks) and polling-relay ingress (GitHub relay API). Signature verification for webhooks. `AutomationIngressEventRecord` is the normalized event shape. Accepts `automationService: null` for the **PR-freshness-only mode** described under [Runtime ownership](#runtime-ownership): the relay poll still feeds `prService.ingestGithubWebhook`, but rule dispatch, the local webhook server, and ingress status/event reads are skipped. In that mode the relay cursor is persisted through an injected `ingressCursorStore` — `createKvIngressCursorStore(db)`, which reads/writes `automations.ingress.cursor.<source>` in the kv table — instead of `automationService`'s cursor storage. A missing GitHub App user token puts the hosted relay poll into a quiet 5-minute auth-pending cooldown (relay status `disabled`, a single `automations.github_relay_auth_pending` info log) rather than warning every tick; `pollNow()` bypasses the cooldown.
 - `githubPollingService.ts` — direct GitHub REST polling for the origin repo plus `extraRepos`. Diffs per-poll snapshots of issues/PRs/comments to emit `github.issue_*` and `github.pr_*` trigger events without requiring a webhook or relay. Cursor format is `<slug>=<iso>|<slug>=<iso>` to support multi-repo state in a single stored string; see `readCursor`/`writeCursor` for the legacy-compat parser.
-- `automationSecretService.ts` — secret resolution for automation actions (env-ref style, same policy as CTO workers). Referenced as `${env:VAR}` in action config; resolved at execution time.
+- `automationSecretService.ts` — secret resolution for automation actions (env-ref style). Referenced as `${env:VAR}` in action config; resolved at execution time.
 
 ### GitHub relay and App
 
@@ -134,7 +134,7 @@ Automations accept inbound events from four sources (`AutomationIngressSource`):
   - `github-webhook` events verify HMAC-SHA256 via `safeCompareSignature` (timing-safe). Secret read from `automations.githubWebhook.secret`.
   - `webhook` events are custom inbound webhooks with optional shared-secret verification.
 - `github-relay` — the default hosted path. A Cloudflare Worker (`apps/webhook-relay/`) receives GitHub App webhooks, verifies the GitHub HMAC signature, and writes each delivery into D1. ADE polls **repo-scoped** Worker routes — `GET /github/repos/:owner/:repo/status` for App-installation/webhook state and `GET /github/repos/:owner/:repo/events?after=<cursor>` for new deliveries. Hosted relay reads use an expiring GitHub App user access token created through GitHub device flow, not the user's general ADE GitHub PAT/OAuth/`gh auth` token. The relay uses that app-limited token only to ask GitHub whether the authenticated user has push/write, maintain, or admin access, and rejects read-only public-repo callers with 403. The same Worker also exposes two repo-scoped webhook-maintenance routes for drift recovery and diagnostics — `POST .../webhook/heal` (admin-gated re-sync of the App's webhook secret) and `GET .../webhook/deliveries` (push-gated, repo-filtered proxy of the App delivery log); see the source file map above. The relay base URL defaults to `DEFAULT_GITHUB_RELAY_API_BASE_URL`. The legacy `automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken` **project-token** routes (`/projects/:projectId/github/...`) remain for self-hosted relays — chosen only when a non-default base URL plus project id and access token are all set (`shouldUseLegacyGitHubRelayProjectRoute`) and do not require GitHub App user authorization.
-- `linear-relay` — Linear event relay (shared with CTO intake; Linear triggers here are context-only).
+- `linear-relay` — Linear event relay for automation triggers; Linear triggers here are context-only.
 - `github-polling` — `githubPollingService` polls the GitHub REST API directly for the origin repo and any `extraRepos`, diffing per-poll snapshots to synthesize `github.issue_*` / `github.pr_*` events (opened / edited / labeled / closed / commented, and PR merged). No relay or webhook infra required. Cursor is a `<slug>=<iso>|<slug>=<iso>` string stored via `automationService.setIngressCursor({ source: "github-polling" })`; default interval is 30s.
 
 Ingress events normalize to `AutomationIngressEventRecord` with `source`, `eventKey`, `triggerType`, `summary`, plus `cursor` for relay/polling replay. Matching rules are resolved by `eventKey`-to-rule-id mapping. An optional `repo` filter on a rule's trigger (e.g. `github.issue_opened` with `repo: "owner/name"`) restricts dispatch when multiple repos are polled.
@@ -155,7 +155,7 @@ Automations route outputs based on `outputs.disposition`:
 
 - `comment-only` — write a comment to the automation log or PR.
 - `open-pr` — open a draft PR from the target lane.
-- `linear-comment` — post a Linear comment (uses CTO's Linear client).
+- `linear-comment` — post a Linear comment (uses the project's shared Linear client).
 - `in-app-notification` — push a desktop notification.
 - `evidence-only` — leave the run record; no external output.
 
@@ -168,7 +168,7 @@ Automations route outputs based on `outputs.disposition`:
 
 ## Boundaries
 
-- **CTO owns Linear intake.** Automations cannot define `linear.issue_created` intake logic that competes with CTO workflows. Automations can trigger on Linear events for their own context, but the CTO's `linearDispatcherService` is the canonical dispatch path for Linear issues.
+- **No autonomous Linear dispatch.** There is no CTO workflow engine to compete with; Linear triggers in automations are context-only. If a rule needs to act on an issue it does so with an explicit action (comment, state update) through the shared Linear client — nothing auto-routes issues to agents.
 - **Built-in actions are deterministic.** They should not wrap an AI call. Use `agent-session` for AI-driven logic.
 
 ## Gotchas
@@ -185,5 +185,5 @@ Automations route outputs based on `outputs.disposition`:
 
 - `triggers-and-actions.md` — full trigger and action surface.
 - `guardrails.md` — approval gates, safety boundaries, verification modes.
-- `../cto/linear-integration.md` — the CTO owns Linear intake; automations do not duplicate it.
+- `../linear-integration/README.md` — the Linear read/write surface automations use for context and actions.
 - `../computer-use/README.md` — automations can request computer-use proof.

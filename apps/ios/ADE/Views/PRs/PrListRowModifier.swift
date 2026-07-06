@@ -32,9 +32,10 @@ extension View {
 // adding a new file. These are purely visual tokens; no new app state.
 
 enum PrsGlass {
-  // Backdrop + ink.
-  static let ink = Color(red: 0x07 / 255, green: 0x06 / 255, blue: 0x09 / 255)
-  static let deepInk = Color(red: 0x04 / 255, green: 0x03 / 255, blue: 0x07 / 255)
+  // Backdrop + ink — route to the adaptive PR surface token so the PRs root
+  // matches the detail surface in both themes.
+  static var ink: Color { PrGlassPalette.ink }
+  static var deepInk: Color { PrGlassPalette.ink }
 
   // Ambient glows.
   static let glowPurple = Color(red: 0xA7 / 255, green: 0x8B / 255, blue: 0xFA / 255)
@@ -57,10 +58,10 @@ enum PrsGlass {
   static let closedTop = Color(red: 0xF8 / 255, green: 0x71 / 255, blue: 0x71 / 255)
   static let closedBottom = Color(red: 0xDC / 255, green: 0x26 / 255, blue: 0x26 / 255)
 
-  // Text.
-  static let textPrimary = Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255)
-  static let textSecondary = Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255)
-  static let textMuted = Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255)
+  // Text — alias the app-wide adaptive tokens (fixes light mode).
+  static var textPrimary: Color { ADEColor.textPrimary }
+  static var textSecondary: Color { ADEColor.textSecondary }
+  static var textMuted: Color { ADEColor.textMuted }
 
   static func statusGradient(_ state: String) -> (Color, Color) {
     switch state {

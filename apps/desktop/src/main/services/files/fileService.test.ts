@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createExternalFilesWorkspaceRegistry, createFileService } from "./fileService";
+import { createFileSearchIndexService } from "./fileSearchIndexService";
 
 function createLaneServiceStub(rootPath: string) {
   return {
@@ -496,6 +497,56 @@ describe("fileService", () => {
     }
   });
 
+  it("warms the quick open index for subsequent lookups", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-warm-search-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "warmTarget.ts"), "export const warmed = true;\n", "utf8");
+
+      await expect(service.warmQuickOpenIndex({ workspaceId: "workspace-1" })).resolves.toBeUndefined();
+
+      const readdirSync = vi.spyOn(fs, "readdirSync").mockImplementation((() => {
+        throw new Error("quickOpen should use the warmed index");
+      }) as typeof fs.readdirSync);
+      try {
+        const quickOpen = await service.quickOpen({
+          workspaceId: "workspace-1",
+          query: "warmTarget",
+        });
+
+        expect(quickOpen).toEqual([expect.objectContaining({ path: "src/warmTarget.ts" })]);
+        expect(readdirSync).not.toHaveBeenCalled();
+      } finally {
+        readdirSync.mockRestore();
+      }
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("swallows warmQuickOpenIndex errors for unknown workspaces", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-warm-missing-"));
+    const laneService = {
+      ...createLaneServiceStub(rootPath),
+      resolveWorkspaceById: vi.fn(() => {
+        throw new Error("unknown workspace");
+      }),
+    } as any;
+    const service = createFileService({ laneService });
+
+    try {
+      await expect(service.warmQuickOpenIndex({ workspaceId: "missing" })).resolves.toBeUndefined();
+      expect(laneService.resolveWorkspaceById).toHaveBeenCalledWith("missing");
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
   it("lists only the requested tree depth without extra file metadata", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-tree-"));
     const { execSync } = await import("node:child_process");
@@ -803,6 +854,286 @@ describe("fileService", () => {
       fs.mkdirSync(laneRoot, { recursive: true });
       expect(service.listWorkspaces().map((workspace) => workspace.id)).toEqual(["primary", "lane-existing"]);
     } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+});
+
+// fileSearchIndexService is an internal helper consumed only by fileService,
+// so its contract tests live here with the parent module's suite.
+const shouldIgnore = vi.fn(async () => false);
+const primeIgnoreCache = vi.fn(async () => undefined);
+
+function createTempWorkspace(prefix: string): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+async function flushFileChange(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+describe("fileSearchIndexService", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    shouldIgnore.mockClear();
+    primeIgnoreCache.mockClear();
+  });
+
+  it("waits for an in-flight build so quickOpen never caches a partial index", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-inflight-build-");
+    const service = createFileSearchIndexService();
+
+    try {
+      for (let i = 0; i < 10; i += 1) {
+        fs.writeFileSync(path.join(rootPath, `alpha-${i}.ts`), `export const v${i} = ${i};\n`, "utf8");
+      }
+      // Slow the walk down so the quickOpen below is issued mid-build.
+      const slowIgnore = vi.fn(async () => {
+        await new Promise<void>((resolve) => setTimeout(resolve, 1));
+        return false;
+      });
+
+      const warm = service.ensureIndexed({
+        workspaceId: "workspace-1",
+        rootPath,
+        includeIgnored: false,
+        shouldIgnore: slowIgnore,
+      });
+      const matches = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 20,
+        includeIgnored: false,
+        shouldIgnore: slowIgnore,
+        primeIgnoreCache,
+      });
+      expect(matches).toHaveLength(10);
+
+      await warm;
+      const cached = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 20,
+        includeIgnored: false,
+        shouldIgnore: slowIgnore,
+        primeIgnoreCache,
+      });
+      expect(cached).toHaveLength(10);
+    } finally {
+      service.dispose();
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("returns quickOpen matches without reading file contents", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-quick-open-");
+    const service = createFileSearchIndexService();
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "src", "feature.ts"), "const secret = 'needle';\n", "utf8");
+      const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((() => {
+        throw new Error("quickOpen should not read file contents");
+      }) as typeof fs.readFileSync);
+
+      const matches = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "feature",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+
+      expect(matches).toEqual([expect.objectContaining({ path: "src/feature.ts" })]);
+      expect(readFileSync).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("loads text content lazily for searchText and reuses cached lines", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-lazy-text-");
+    const service = createFileSearchIndexService();
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "notes"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "notes", "plan.md"), "alpha\nlazy needle\n", "utf8");
+      const readFileSync = vi.spyOn(fs, "readFileSync");
+
+      await expect(service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "plan",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      })).resolves.toEqual([expect.objectContaining({ path: "notes/plan.md" })]);
+      expect(readFileSync).not.toHaveBeenCalled();
+
+      const firstSearch = await service.searchText({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "lazy needle",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(firstSearch).toEqual([
+        expect.objectContaining({ path: "notes/plan.md", line: 2, column: 1 }),
+      ]);
+      expect(readFileSync).toHaveBeenCalledTimes(1);
+
+      readFileSync.mockClear();
+      await expect(service.searchText({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "lazy needle",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      })).resolves.toEqual(firstSearch);
+      expect(readFileSync).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("caches quickOpen queries and invalidates them after file changes", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-cache-");
+    const service = createFileSearchIndexService();
+
+    try {
+      fs.writeFileSync(path.join(rootPath, "alpha-one.ts"), "export const one = 1;\n", "utf8");
+
+      const first = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(first.map((item) => item.path)).toEqual(["alpha-one.ts"]);
+
+      fs.writeFileSync(path.join(rootPath, "alpha-two.ts"), "export const two = 2;\n", "utf8");
+      const cached = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(cached.map((item) => item.path)).toEqual(["alpha-one.ts"]);
+
+      service.onFileChanged({
+        workspaceId: "workspace-1",
+        rootPath,
+        path: "alpha-two.ts",
+        type: "created",
+        shouldIgnore,
+      });
+      await flushFileChange();
+
+      const afterCreate = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(afterCreate.map((item) => item.path)).toEqual(["alpha-one.ts", "alpha-two.ts"]);
+
+      fs.rmSync(path.join(rootPath, "alpha-one.ts"), { force: true });
+      service.onFileChanged({
+        workspaceId: "workspace-1",
+        rootPath,
+        path: "alpha-one.ts",
+        type: "deleted",
+        shouldIgnore,
+      });
+
+      const afterDelete = await service.quickOpen({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "alpha",
+        limit: 10,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      });
+      expect(afterDelete.map((item) => item.path)).toEqual(["alpha-two.ts"]);
+    } finally {
+      service.dispose();
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps content byte accounting bounded across repeated invalidations", async () => {
+    const rootPath = createTempWorkspace("ade-file-index-content-bytes-");
+    const service = createFileSearchIndexService();
+    const filePath = path.join(rootPath, "budget.txt");
+    const padding = "x".repeat(999_980);
+
+    try {
+      for (let i = 0; i < 86; i += 1) {
+        fs.writeFileSync(filePath, `needle ${i}\n${padding}`, "utf8");
+        service.onFileChanged({
+          workspaceId: "workspace-1",
+          rootPath,
+          path: "budget.txt",
+          type: i === 0 ? "created" : "modified",
+          shouldIgnore,
+        });
+        await flushFileChange();
+
+        const matches = await service.searchText({
+          workspaceId: "workspace-1",
+          rootPath,
+          query: "needle",
+          limit: 1,
+          includeIgnored: false,
+          shouldIgnore,
+          primeIgnoreCache,
+        });
+        expect(matches).toEqual([
+          expect.objectContaining({ path: "budget.txt", preview: `needle ${i}` }),
+        ]);
+      }
+
+      fs.rmSync(filePath, { force: true });
+      service.onFileChanged({
+        workspaceId: "workspace-1",
+        rootPath,
+        path: "budget.txt",
+        type: "deleted",
+        shouldIgnore,
+      });
+
+      await expect(service.searchText({
+        workspaceId: "workspace-1",
+        rootPath,
+        query: "needle",
+        limit: 1,
+        includeIgnored: false,
+        shouldIgnore,
+        primeIgnoreCache,
+      })).resolves.toEqual([]);
+    } finally {
+      service.dispose();
       fs.rmSync(rootPath, { recursive: true, force: true });
     }
   });

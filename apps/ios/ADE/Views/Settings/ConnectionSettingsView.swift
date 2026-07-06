@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UserNotifications
 
 struct ConnectionSettingsView: View {
   let syncService: SyncService
@@ -47,6 +48,8 @@ struct ConnectionSettingsView: View {
               snapshot: presentationModel.pairingSnapshot,
               presentedSheet: $presentedSheet
             )
+
+            SettingsCloudRelayToggle()
           }
             .padding(.horizontal, 16)
             .padding(.top, 4)
@@ -58,6 +61,12 @@ struct ConnectionSettingsView: View {
             .padding(.horizontal, 16)
 
           SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
+            .padding(.horizontal, 16)
+
+          SettingsPushDeliverySection(
+            snapshot: presentationModel.pushDeliverySnapshot,
+            pushService: PushNotificationService.shared
+          )
             .padding(.horizontal, 16)
 
           Spacer(minLength: 20)
@@ -105,6 +114,15 @@ struct ConnectionSettingsView: View {
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .onAppear {
         presentationModel.bind(to: syncService)
+        if let request = syncService.requestedPairingQrNavigation {
+          syncService.requestedPairingQrNavigation = nil
+          handleScannedPairingCode(request.raw)
+        }
+      }
+      .onChange(of: syncService.requestedPairingQrNavigation?.id) { _, _ in
+        guard let request = syncService.requestedPairingQrNavigation else { return }
+        syncService.requestedPairingQrNavigation = nil
+        handleScannedPairingCode(request.raw)
       }
     }
   }
@@ -126,6 +144,39 @@ struct ConnectionSettingsView: View {
         pinPreset = .manual(host: host, port: port)
       }
       .presentationDetents([.medium])
+
+    case .scan:
+      SettingsPairingScannerSheet { payload in
+        presentedSheet = nil
+        routePairingQr(payload)
+      }
+    }
+  }
+
+  /// Parses a scanned/deep-linked pairing code and dispatches it. Unparseable
+  /// strings (e.g. an unrelated deep link) are ignored.
+  private func handleScannedPairingCode(_ raw: String) {
+    guard let payload = PairingQrPayload.parse(raw) else { return }
+    routePairingQr(payload)
+  }
+
+  /// Already paired → refresh routes and reconnect silently. New machine → open
+  /// PIN entry pre-filled from the payload (the user only types the PIN).
+  private func routePairingQr(_ payload: PairingQrPayload) {
+    let directCandidates = payload.directCandidateHosts
+    let relayCandidates = payload.relayCandidateHosts
+    Task { @MainActor in
+      let reconnected = await syncService.reconnectUsingPairingQr(
+        hostIdentity: payload.hostIdentity.deviceId,
+        port: payload.port,
+        directCandidates: directCandidates,
+        relayCandidates: relayCandidates
+      )
+      if reconnected {
+        ADEHaptics.medium()
+      } else {
+        pinPreset = .qr(payload)
+      }
     }
   }
 }
@@ -139,6 +190,7 @@ struct SettingsConnectionSnapshot: Equatable {
   var canReconnectToSavedHost: Bool
   var savedReconnectPrefersTailnet: Bool
   var errorMessage: String?
+  var showTailscaleOffHint = false
 }
 
 struct SettingsPairingSnapshot: Equatable {
@@ -170,9 +222,11 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
   )
   @Published private(set) var pairingSnapshot = SettingsPairingSnapshot()
   @Published private(set) var diagnosticsSnapshot = SettingsDiagnosticsSnapshot()
+  @Published private(set) var pushDeliverySnapshot = SettingsPushDeliverySnapshot()
 
   private weak var boundService: SyncService?
   private var cancellable: AnyCancellable?
+  private var pushCancellable: AnyCancellable?
 
   func bind(to syncService: SyncService) {
     guard boundService !== syncService else {
@@ -189,6 +243,13 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
           guard let syncService else { return }
           self?.refresh(from: syncService)
         }
+      }
+    // Push-delivery state lives on its own singleton; mirror its changes into
+    // the panel snapshot so the section stays a pure function of Equatable state.
+    pushCancellable = PushNotificationService.shared.objectWillChange
+      .throttle(for: .milliseconds(200), scheduler: RunLoop.main, latest: true)
+      .sink { [weak self] _ in
+        Task { @MainActor in self?.refreshPushSnapshot() }
       }
   }
 
@@ -213,7 +274,8 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         routeLine: Self.routeLine(address: address, port: activeProfile?.port),
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         savedReconnectPrefersTailnet: savedReconnectHost?.tailscaleAddress != nil,
-        errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil
+        errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
+        showTailscaleOffHint: syncService.tailscaleOffHintVisible
       )
     )
 
@@ -233,6 +295,34 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         deviceIdentity: activeProfile?.pairedDeviceId.map(Self.shortIdentity)
       )
     )
+
+    refreshPushSnapshot()
+  }
+
+  private func refreshPushSnapshot() {
+    let push = PushNotificationService.shared
+    let diagnostics = push.diagnostics
+    var snapshot = SettingsPushDeliverySnapshot()
+    snapshot.registrationState = push.registrationState
+    snapshot.permissionStatus = push.permissionStatus
+    snapshot.apnsEnvironment = diagnostics.apsEnvironment
+    snapshot.tokenSuffix = diagnostics.tokenSuffix
+    snapshot.lastRegisteredAt = diagnostics.lastRegisteredAt
+    snapshot.lastPushReceivedAt = diagnostics.lastPushReceivedAt
+    snapshot.lastError = diagnostics.lastError
+    snapshot.liveActivityTokenPresent = diagnostics.liveActivityPushToStartTokenSuffix != nil
+    if let relay = push.relayStatus {
+      snapshot.relayResolved = true
+      snapshot.publisherEnabled = relay.publisherEnabled
+      snapshot.relayApnsConfigured = relay.relayApnsConfigured
+      snapshot.relayUrl = relay.relayUrl
+      snapshot.deviceRegistered = relay.deviceRegistered
+      snapshot.registeredDeviceCount = relay.registeredDeviceCount
+      snapshot.lastPublishAt = relay.lastPublishAt
+      snapshot.lastPublishError = relay.lastPublishError
+      snapshot.lastRelayContactAt = relay.lastRelayContactAt
+    }
+    update(&pushDeliverySnapshot, to: snapshot)
   }
 
   private func update<Value: Equatable>(_ value: inout Value, to nextValue: Value) {
@@ -242,7 +332,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
 
   private static func routeLine(address: String?, port: Int?) -> String? {
     guard let address else { return nil }
-    let prefix = syncIsTailscaleIPv4Address(address) ? "Tailscale " : ""
+    let prefix = syncIsTailscaleRoute(address) ? "Tailscale " : ""
     if let port {
       return "\(prefix)\(address) · :\(port)"
     }

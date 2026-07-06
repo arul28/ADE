@@ -189,12 +189,8 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
   if (!group) {
     return usage(
       "Linear",
-      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from|workflows|run|route|sync|ingress> ...",
+      "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from> ...",
     );
-  }
-
-  if (group === "workflows") {
-    return tool("Linear workflows", "listLinearWorkflows");
   }
 
   if (group === "attach" || group === "attach-issue" || group === "attach-linear-issue") {
@@ -350,104 +346,8 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     }));
   }
 
-  if (group === "run") {
-    const mode = modeArg ?? "status";
-    const runId = optionString(options, "runId", "run") ?? rest[0] ?? null;
-    if (mode === "status") {
-      if (!runId) return usage("Linear run", "Usage: /linear run status <run-id>");
-      return tool("Linear run status", "getLinearRunStatus", { runId });
-    }
-    if (mode === "resolve") {
-      const action = optionString(options, "action") ?? rest[1] ?? null;
-      if (!runId || !action) return usage("Linear run resolve", "Usage: /linear run resolve <run-id> <approve|reject|retry|resume|complete>");
-      return tool("Linear run resolve", "resolveLinearRunAction", {
-        runId,
-        action,
-        note: optionString(options, "note") ?? undefined,
-      });
-    }
-    if (mode === "cancel") {
-      const reason = optionString(options, "reason") ?? rest.slice(1).join(" ");
-      if (!runId || !reason) return usage("Linear run cancel", "Usage: /linear run cancel <run-id> --reason <reason>");
-      return tool("Linear run cancel", "cancelLinearRun", { runId, reason });
-    }
-    if (mode === "reroute") {
-      const target = optionString(options, "target") ?? rest[1] ?? null;
-      const reason = optionString(options, "reason") ?? rest.slice(2).join(" ");
-      if (!runId || !target || !reason) return usage("Linear run reroute", "Usage: /linear run reroute <run-id> <cto|worker> --reason <reason>");
-      return tool("Linear run reroute", "rerouteLinearRun", {
-        runId,
-        target,
-        reason,
-        laneId: optionString(options, "laneId", "lane") ?? undefined,
-        reuseExisting: optionBoolean(options, "reuseExisting"),
-        launch: optionBoolean(options, "launch"),
-        runMode: optionString(options, "runMode") ?? undefined,
-        agentId: optionString(options, "agentId", "agent") ?? undefined,
-        taskKey: optionString(options, "taskKey") ?? undefined,
-      });
-    }
-    return usage("Linear run", "Usage: /linear run <status|resolve|cancel|reroute> ...");
-  }
-
-  if (group === "route") {
-    const mode = modeArg ?? "cto";
-    const issueId = optionString(options, "issueId", "issue") ?? rest[0] ?? null;
-    if (!issueId) return usage("Linear route", "Usage: /linear route <cto|worker> <issue-id>");
-    if (mode === "cto") {
-      return tool("Linear route cto", "routeLinearIssueToCto", {
-        issueId,
-        laneId: optionString(options, "laneId", "lane") ?? undefined,
-        reuseExisting: optionBoolean(options, "reuseExisting"),
-      });
-    }
-    if (mode === "worker") {
-      const agentId = optionString(options, "agentId", "agent") ?? rest[1] ?? null;
-      if (!agentId) return usage("Linear route worker", "Usage: /linear route worker <issue-id> <agent-id>");
-      return tool("Linear route worker", "routeLinearIssueToWorker", {
-        issueId,
-        agentId,
-        taskKey: optionString(options, "taskKey") ?? undefined,
-      });
-    }
-    return usage("Linear route", "Usage: /linear route <cto|worker> ...");
-  }
-
-  if (group === "sync") {
-    const mode = modeArg ?? "dashboard";
-    if (mode === "dashboard") return tool("Linear sync dashboard", "getLinearSyncDashboard");
-    if (mode === "run") return tool("Linear sync run", "runLinearSyncNow");
-    if (mode === "queue") return tool("Linear sync queue", "listLinearSyncQueue");
-    if (mode === "detail") {
-      const runId = optionString(options, "runId", "run") ?? rest[0] ?? null;
-      if (!runId) return usage("Linear sync detail", "Usage: /linear sync detail <run-id>");
-      return tool("Linear sync detail", "getLinearWorkflowRunDetail", { runId });
-    }
-    if (mode === "resolve") {
-      const queueItemId = optionString(options, "queueItemId", "queueItem") ?? rest[0] ?? null;
-      const action = optionString(options, "action") ?? rest[1] ?? null;
-      if (!queueItemId || !action) return usage("Linear sync resolve", "Usage: /linear sync resolve <queue-item-id> <approve|reject|retry|resume|complete>");
-      return tool("Linear sync resolve", "resolveLinearSyncQueueItem", {
-        queueItemId,
-        action,
-        note: optionString(options, "note") ?? undefined,
-        employeeOverride: optionString(options, "employeeOverride") ?? undefined,
-        laneId: optionString(options, "laneId", "lane") ?? undefined,
-      });
-    }
-    return usage("Linear sync", "Usage: /linear sync <dashboard|run|queue|resolve|detail> ...");
-  }
-
-  if (group === "ingress") {
-    const mode = modeArg ?? "status";
-    if (mode === "status") return tool("Linear ingress status", "getLinearIngressStatus");
-    if (mode === "events") return tool("Linear ingress events", "listLinearIngressEvents", { limit: options.limit ?? undefined });
-    if (mode === "webhook") return tool("Linear ingress webhook", "ensureLinearWebhook", { force: optionBoolean(options, "force") });
-    return usage("Linear ingress", "Usage: /linear ingress <status|events|webhook>");
-  }
-
   return usage(
     "Linear",
-    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from|workflows|run|route|sync|ingress> ...",
+    "Usage: /linear <attach|detach|issues|comment|set-state|assign|label|issue|graphql|create-from> ...",
   );
 }

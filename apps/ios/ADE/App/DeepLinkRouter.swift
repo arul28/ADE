@@ -28,6 +28,7 @@ final class DeepLinkRouter {
   ///
   /// Unknown hosts are ignored rather than crashing on malformed input.
   func handle(_ url: URL) {
+    if routePairingURL(url) { return }
     if routeHttpsOpenURL(url) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
@@ -82,6 +83,30 @@ final class DeepLinkRouter {
     default:
       return
     }
+  }
+
+  /// Routes a scanned/opened pairing URL — `https://ade-app.dev/pair#<payload>`
+  /// or `ade://pair#<payload>` — into the pairing flow. The payload rides the
+  /// fragment; we hand the whole URL to `SyncService` for the settings screen
+  /// to parse and present (reconnect for a known machine, PIN for a new one).
+  private func routePairingURL(_ url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    let scheme = components.scheme?.lowercased()
+    let isHttpsPair = scheme == "https"
+      && ADEDeepLinkURLParsing.isADEWebHost(components.host)
+      && (components.path == "/pair" || components.path.hasSuffix("/pair"))
+    let isCustomPair = scheme == "ade" && url.host?.lowercased() == "pair"
+    guard isHttpsPair || isCustomPair else { return false }
+    // A pairing URL with no fragment carries no payload — swallow it so it
+    // doesn't fall through to other handlers, but there's nothing to present.
+    guard components.fragment?.isEmpty == false else { return true }
+    SyncService.shared?.requestedPairingQrNavigation = PairingQrNavigationRequest(raw: url.absoluteString)
+    NotificationCenter.default.post(
+      name: .adeDeepLinkRequested,
+      object: nil,
+      userInfo: ["kind": "pairing", "identifier": url.absoluteString]
+    )
+    return true
   }
 
   private func routeHttpsOpenURL(_ url: URL) -> Bool {

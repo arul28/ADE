@@ -205,6 +205,7 @@ import type {
   AdeCliInstallResult,
   AdeCliStatus,
   OpenCodeRuntimeSnapshot,
+  SyncCloudRelayStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -218,27 +219,11 @@ import type {
   CtoListSessionLogsArgs,
   CtoSnapshot,
   CtoSessionLogEntry,
-  AgentIdentity,
-  AgentSessionLogEntry,
-  AgentConfigRevision,
-  AgentBudgetSnapshot,
-  WorkerAgentRun,
-  CtoListAgentsArgs,
-  CtoSaveAgentArgs,
-  CtoRemoveAgentArgs,
-  CtoSetAgentStatusArgs,
-  CtoListAgentRevisionsArgs,
-  CtoRollbackAgentRevisionArgs,
-  CtoEnsureAgentSessionArgs,
-  AgentTaskSession,
-  CtoListAgentTaskSessionsArgs,
-  CtoClearAgentTaskSessionArgs,
-  CtoGetBudgetSnapshotArgs,
-  CtoTriggerAgentWakeupArgs,
-  CtoTriggerAgentWakeupResult,
-  CtoListAgentRunsArgs,
-  CtoListAgentSessionLogsArgs,
   CtoUpdateIdentityArgs,
+  CtoMemorySnapshot,
+  CtoUpdateMemoryArgs,
+  CtoSearchMemoryArgs,
+  CtoSearchMemoryResult,
   CtoOnboardingState,
   CtoSystemPromptPreview,
   CtoLinearProject,
@@ -253,23 +238,6 @@ import type {
   CtoRunProjectScanResult,
   LinearConnectionStatus,
   CtoSetLinearTokenArgs,
-  CtoSaveFlowPolicyArgs,
-  CtoFlowPolicyRevision,
-  CtoRollbackFlowPolicyRevisionArgs,
-  CtoSimulateFlowRouteArgs,
-  LinearRouteDecision,
-  LinearSyncDashboard,
-  LinearSyncQueueItem,
-  LinearWorkflowRunDetail,
-  LinearIngressEventRecord,
-  LinearIngressStatus,
-  LinearWorkflowCatalog,
-  LinearWorkflowEventPayload,
-  CtoGetLinearWorkflowRunDetailArgs,
-  CtoResolveLinearSyncQueueItemArgs,
-  CtoEnsureLinearWebhookArgs,
-  CtoListLinearIngressEventsArgs,
-  LinearWorkflowConfig,
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
@@ -939,6 +907,8 @@ declare global {
         setRuntimeName: (name: string) => Promise<SyncRoleSnapshot>;
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
+        getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
+        setCloudRelayEnabled: (enabled: boolean) => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };
       agentTools: {
@@ -2102,73 +2072,14 @@ declare global {
           args?: CtoListSessionLogsArgs,
         ) => Promise<CtoSessionLogEntry[]>;
         updateIdentity: (args: CtoUpdateIdentityArgs) => Promise<CtoSnapshot>;
-        listAgents: (args?: CtoListAgentsArgs) => Promise<AgentIdentity[]>;
-        saveAgent: (args: CtoSaveAgentArgs) => Promise<AgentIdentity>;
-        removeAgent: (args: CtoRemoveAgentArgs) => Promise<void>;
-        setAgentStatus: (args: CtoSetAgentStatusArgs) => Promise<void>;
-        listAgentRevisions: (
-          args: CtoListAgentRevisionsArgs,
-        ) => Promise<AgentConfigRevision[]>;
-        rollbackAgentRevision: (
-          args: CtoRollbackAgentRevisionArgs,
-        ) => Promise<AgentIdentity>;
-        ensureAgentSession: (
-          args: CtoEnsureAgentSessionArgs,
-        ) => Promise<AgentChatSession>;
-        getBudgetSnapshot: (
-          args?: CtoGetBudgetSnapshotArgs,
-        ) => Promise<AgentBudgetSnapshot>;
-        triggerAgentWakeup: (
-          args: CtoTriggerAgentWakeupArgs,
-        ) => Promise<CtoTriggerAgentWakeupResult>;
-        listAgentRuns: (
-          args?: CtoListAgentRunsArgs,
-        ) => Promise<WorkerAgentRun[]>;
-        listAgentSessionLogs: (
-          args: CtoListAgentSessionLogsArgs,
-        ) => Promise<AgentSessionLogEntry[]>;
+        getMemory: () => Promise<CtoMemorySnapshot>;
+        updateMemory: (args: CtoUpdateMemoryArgs) => Promise<CtoMemorySnapshot>;
+        searchMemory: (args: CtoSearchMemoryArgs) => Promise<CtoSearchMemoryResult>;
         getLinearConnectionStatus: () => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,
         ) => Promise<LinearConnectionStatus>;
         clearLinearToken: () => Promise<LinearConnectionStatus>;
-        getFlowPolicy: () => Promise<LinearWorkflowConfig>;
-        saveFlowPolicy: (
-          args: CtoSaveFlowPolicyArgs,
-        ) => Promise<LinearWorkflowConfig>;
-        listFlowPolicyRevisions: () => Promise<CtoFlowPolicyRevision[]>;
-        rollbackFlowPolicyRevision: (
-          args: CtoRollbackFlowPolicyRevisionArgs,
-        ) => Promise<LinearWorkflowConfig>;
-        simulateFlowRoute: (
-          args: CtoSimulateFlowRouteArgs,
-        ) => Promise<LinearRouteDecision>;
-        getLinearSyncDashboard: () => Promise<LinearSyncDashboard>;
-        runLinearSyncNow: () => Promise<LinearSyncDashboard>;
-        listLinearSyncQueue: () => Promise<LinearSyncQueueItem[]>;
-        getLinearWorkflowRunDetail: (
-          args: CtoGetLinearWorkflowRunDetailArgs,
-        ) => Promise<LinearWorkflowRunDetail | null>;
-        resolveLinearSyncQueueItem: (
-          args: CtoResolveLinearSyncQueueItemArgs,
-        ) => Promise<LinearSyncQueueItem | null>;
-        getLinearWorkflowCatalog: () => Promise<LinearWorkflowCatalog>;
-        getLinearIngressStatus: () => Promise<LinearIngressStatus>;
-        listLinearIngressEvents: (
-          args?: CtoListLinearIngressEventsArgs,
-        ) => Promise<LinearIngressEventRecord[]>;
-        ensureLinearWebhook: (
-          args?: CtoEnsureLinearWebhookArgs,
-        ) => Promise<LinearIngressStatus>;
-        onLinearWorkflowEvent: (
-          cb: (event: LinearWorkflowEventPayload) => void,
-        ) => () => void;
-        listAgentTaskSessions: (
-          args: CtoListAgentTaskSessionsArgs,
-        ) => Promise<AgentTaskSession[]>;
-        clearAgentTaskSession: (
-          args: CtoClearAgentTaskSessionArgs,
-        ) => Promise<void>;
         getOnboardingState: () => Promise<CtoOnboardingState>;
         completeOnboardingStep: (args: {
           stepId: string;

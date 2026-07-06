@@ -12,6 +12,11 @@ export type SyncPairingRecord = {
   peerName: string;
   peerPlatform: string;
   peerDeviceType: string;
+  /**
+   * Base64 X9.63 P-256 public key of the device's Secure Enclave DPoP key.
+   * Once present, paired hellos from this device must carry a valid proof.
+   */
+  dpopPublicKey?: string | null;
 };
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
@@ -23,6 +28,20 @@ type SyncPairingStoreArgs = {
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
+}
+
+/**
+ * A pairing record's DPoP key must be a base64 uncompressed X9.63 P-256 point
+ * (65 bytes, 0x04 prefix). Persisting anything else would fail-closed-lock the
+ * device out of every future hello, so malformed input is treated as absent.
+ */
+export function isValidDpopPublicKey(value: string): boolean {
+  try {
+    const raw = Buffer.from(value, "base64");
+    return raw.length === 65 && raw[0] === 0x04;
+  } catch {
+    return false;
+  }
 }
 
 function safeHashEquals(expectedHash: string, actualHash: string): boolean {
@@ -50,7 +69,9 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   };
 
   const writeRecords = (records: PairingSecretsFile): void => {
-    writeTextAtomic(args.filePath, `${JSON.stringify(records, null, 2)}\n`);
+    // 0o600 at temp-file creation so pairing secrets/DPoP keys are never
+    // world-readable, even briefly before the post-write chmod.
+    writeTextAtomic(args.filePath, `${JSON.stringify(records, null, 2)}\n`, { mode: 0o600 });
     try {
       fs.chmodSync(args.filePath, 0o600);
     } catch {
@@ -59,7 +80,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   };
 
   return {
-    pairPeer(peer: SyncPeerMetadata, pin: string): { deviceId: string; secret: string } {
+    pairPeer(peer: SyncPeerMetadata, pin: string, options?: { dpopPublicKey?: string | null }): { deviceId: string; secret: string } {
       if (!args.pinStore.hasPin()) {
         throw pairingError("pin_not_set", "No pairing PIN is set on this computer.");
       }
@@ -69,6 +90,8 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       const secret = randomBytes(24).toString("hex");
       const records = readRecords();
       const existing = records[peer.deviceId] ?? null;
+      const offeredDpopKey = options?.dpopPublicKey?.trim() || null;
+      const dpopPublicKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey) ? offeredDpopKey : null;
       records[peer.deviceId] = {
         secretHash: hashSecret(secret),
         createdAt: existing?.createdAt ?? nowIso(),
@@ -76,12 +99,33 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         peerName: peer.deviceName,
         peerPlatform: peer.platform,
         peerDeviceType: peer.deviceType,
+        // Re-pairing (PIN gated) may rotate or introduce the device key; a
+        // re-pair without a key keeps the existing one rather than downgrading.
+        dpopPublicKey: dpopPublicKey ?? existing?.dpopPublicKey ?? null,
       };
       writeRecords(records);
       return {
         deviceId: peer.deviceId,
         secret,
       };
+    },
+
+    /**
+     * TOFU upgrade for legacy pairings: adopt a device key on the next
+     * successfully authenticated connection. Returns false when a different
+     * key is already on record (never silently swap keys outside re-pairing).
+     */
+    adoptDpopPublicKey(deviceId: string, dpopPublicKey: string): boolean {
+      const normalized = deviceId.trim();
+      const key = dpopPublicKey.trim();
+      if (!normalized || !key || !isValidDpopPublicKey(key)) return false;
+      const records = readRecords();
+      const entry = records[normalized];
+      if (!entry) return false;
+      if (entry.dpopPublicKey) return entry.dpopPublicKey === key;
+      entry.dpopPublicKey = key;
+      writeRecords(records);
+      return true;
     },
 
     authenticate(deviceId: string, secret: string): boolean {

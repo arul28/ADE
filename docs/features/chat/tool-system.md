@@ -12,7 +12,7 @@ worker to respawn.
 | `apps/desktop/src/main/services/ai/tools/executableTool.ts` | Thin wrapper around Zod + a handler function. Produces the common tool interface the Claude/Codex/OpenCode adapters consume. |
 | `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, todo, web fetch/search, ask-user. Available to every agent. |
 | `apps/desktop/src/main/services/ai/tools/workflowTools.ts` | `createLane`, `createPrFromLane`, `captureScreenshot`, `reportCompletion`, and the four PR issue-resolution tools. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, worker management, Linear dispatch, pipeline settings, issue inventory. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. |
 | `apps/desktop/src/main/services/ai/tools/linearTools.ts` | Linear-only tools for CTO when Linear is connected. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on which tool names are present. |
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
@@ -21,7 +21,7 @@ worker to respawn.
 
 ## Tier 1: universal tools
 
-Available to every agent (CTO, workers, regular chat, coordinator).
+Available to every agent (CTO, regular chat, coordinator).
 Built by `createUniversalToolSet()` in `universalTools.ts`.
 
 | Tool | Purpose | Gate |
@@ -114,10 +114,9 @@ uses to act on ADE itself:
 | `interruptChat`, `handoffChat` | Mid-session control over other chat sessions. |
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |
-| `listWorkers`, `createAgent`, `updateAgent`, `triggerAgentWakeup` | Worker agent management. |
-| Linear tools (when connected) | Intake, dispatch, reply, close. |
-| `getPipelineSettings`, `updatePipelineSettings` | Pipeline/flow policy. |
-| `getIssueInventory`, `refreshIssueInventory` | Issue tracking. |
+| `saveMemory`, `searchMemory`, `readMemory` | Durable CTO memory: save facts, search prior context, review what it knows. |
+| Linear tools (when connected) | Read and lightly update issues: list/inspect, comment, state, assignee, label. |
+| `listLinearIssues`, `getLinearIssue` | Issue reads. |
 | `listTestSuites`, `runTestSuite`, `stopTestSuite`, `listTestRuns` | Test orchestration. |
 
 The system prompt's capability manifest is driven by which tool names

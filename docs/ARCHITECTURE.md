@@ -8,7 +8,7 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is the **ADE brain**: the always-on, machine-owned ADE process for one channel. The brain hosts every project on that machine through a project registry, exposes a multi-project JSON-RPC surface on the channel's local endpoint, serves the sync websocket for ADE Mobile, and carries executor authority. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all **clients** that attach to a local brain or remote runtime transport and invoke runtime-owned actions through that one surface.
 
-The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, multi-provider agent chat, work-session orchestration, a Linear-integrated CTO agent acting as a team lead, worker delegation, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
+The brain owns everything that needs to survive a client closing: worktree-per-lane git isolation, multi-provider agent chat, work-session orchestration, a persistent CTO agent with durable memory and a Linear read/write surface, rule-based automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
 ADE ships as one computer install, ADE Mobile, and the marketing site:
 
@@ -131,7 +131,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`.
 
-**Action surface.** First-class command families cover lanes (including `ade lanes link-linear-issue` / `detach-linear-issue` for post-creation Linear issue linking, and `ade lanes create-from-linear` / `batch-create-from-linear` to spin up one or many issue lanes — optionally launching an agent chat with `--start-chat`), git, diffs, files, PRs, runs, shells, chats (including `ade chat create --prompt` for a persistent Work chat followed by an initial `chat.sendMessage`, `ade chat read <session>` for recent transcript messages, `ade chat create --from-linear-issue <id>`, and `ade chat attach-linear-issue` / `detach-linear-issue` / `linear-issues` for session-scoped issue attachment), agents, CTO, Linear (the write bridge an attached CLI agent uses: `ade linear attach` / `detach` / `issues` / `issue` / `comment` / `set-state` / `assign` / `label`, with `--this-session` resolving the issue id from `$ADE_LINEAR_ISSUE_IDS` so a launched agent needs no Linear token — see [features/linear-integration/README.md](./features/linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)), tests, proof, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE runtime endpoint), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), universal search (`ade search "<query>"` over chats, terminals, PRs, commits, branches, lanes, files, and Linear — see [features/search/README.md](./features/search/README.md)), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The chat action surface includes `chat.createSession`, `chat.sendMessage` (returns an accepted acknowledgement while provider dispatch continues asynchronously), `chat.readTranscript`, and model-catalog actions; session-bound non-CTO callers are restricted to their own chat for `chat.sendMessage` and `chat.readTranscript`. The action allow-list adds three domains for these surfaces: `app_control` (every public method on `AppControlService`), `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`), named iOS Simulator actions for launch, live view, inspection, input, and Preview Lab workflows, and `search` (`query`, `indexStatus`, and the CTO-only `rebuildIndex` against `searchService`; session-bound non-CTO callers get chat/terminal hits scoped to their own session).
+**Action surface.** First-class command families cover lanes (including `ade lanes link-linear-issue` / `detach-linear-issue` for post-creation Linear issue linking, and `ade lanes create-from-linear` / `batch-create-from-linear` to spin up one or many issue lanes — optionally launching an agent chat with `--start-chat`), git, diffs, files, PRs, runs, shells, chats (including `ade chat create --prompt` for a persistent Work chat followed by an initial `chat.sendMessage`, `ade chat read <session>` for recent transcript messages, `ade chat create --from-linear-issue <id>`, `ade chat attach-linear-issue` / `detach-linear-issue` / `linear-issues` for session-scoped issue attachment, and `--parent <sessionId>` / `--no-parent` to control child-chat lineage — a chat created via `ade chat create` / `ade new --mode chat` defaults its parent to `$ADE_CHAT_SESSION_ID` (the spawning agent's own chat, injected into every tracked agent shell) so it lists in the parent's subagents panel instead of becoming an orphan, and `--no-parent` opts out), agents, CTO, Linear (the write bridge an attached CLI agent uses: `ade linear attach` / `detach` / `issues` / `issue` / `comment` / `set-state` / `assign` / `label`, with `--this-session` resolving the issue id from `$ADE_LINEAR_ISSUE_IDS` so a launched agent needs no Linear token — see [features/linear-integration/README.md](./features/linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)), tests, proof, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE runtime endpoint), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), universal search (`ade search "<query>"` over chats, terminals, PRs, commits, branches, lanes, files, and Linear — see [features/search/README.md](./features/search/README.md)), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The chat action surface includes `chat.createSession`, `chat.sendMessage` (returns an accepted acknowledgement while provider dispatch continues asynchronously), `chat.readTranscript`, and model-catalog actions; session-bound non-CTO callers are restricted to their own chat for `chat.sendMessage` and `chat.readTranscript`. The action allow-list adds three domains for these surfaces: `app_control` (every public method on `AppControlService`), `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`), named iOS Simulator actions for launch, live view, inspection, input, and Preview Lab workflows, and `search` (`query`, `indexStatus`, and the CTO-only `rebuildIndex` against `searchService`; session-bound non-CTO callers get chat/terminal hits scoped to their own session).
 
 **Proof subcommands** — `ade proof capture` (alias of `screenshot`), `ade proof attach <path>`, `ade proof record`, `ade proof launch`, `ade proof interact`, `ade proof list/status/environment/ingest`. `attach` infers the artifact kind from the file extension and routes through `ingest_computer_use_artifacts` with `backendStyle: "manual"`. Capture-style commands set `preferHeadless: true` on the plan so the connection layer drops to headless mode unless `--socket` is explicitly requested. All proof subcommands accept `--owner-kind` / `--owner-id` (with `chat` and `pr` aliases) to layer an explicit owner on top of the inferred session identity.
 
@@ -200,9 +200,11 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 
 - Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
 - CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
-- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`.
-- Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings.
-- Shipped: one Lock Screen widget for prioritized agent, PR, sync, offline, and idle status.
+- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`, `DpopKeyService.swift` (Secure Enclave P-256 pairing proof), `PushNotificationService.swift`, `LiveActivityService.swift`.
+- Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings (including a Push delivery panel).
+- Shipped widgets: a Lock Screen widget for prioritized agent/PR/sync/offline/idle status, plus an ActivityKit Live Activity + Dynamic Island for active agent runs (`ADEWidgets/ADEAgentActivityWidget.swift`).
+- Push: APNs alert pushes (deep-linked) and Live Activity updates arrive via the Cloudflare push relay (§2.6); the phone hands tokens/prefs to the brain over the paired sync WebSocket.
+- Pairing: user-set 6-digit PIN over a v3 smart-URL QR (or discovery / manual entry), hardened with device-bound DPoP proofs.
 - Planned: Automations, Graph, History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
@@ -211,6 +213,14 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 A Vite/React SPA that serves the public marketing site, download page, and the deeplink landing page. Five pages: `HomePage`, `DownloadPage`, `OpenPage`, `PrivacyPage`, `TermsPage`. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
 
 The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app.dev/open?type=...&...`). `apps/web/api/open.ts` is a Vercel serverless function that self-fetches `index.html`, rewrites OpenGraph + Twitter meta tags from the query params so chat-app unfurlers (Slack, Discord, iMessage, Gmail, Linear) show a rich card without executing JavaScript, then hands the SPA over to `OpenPage` which attempts the `ade://` upgrade in the browser and falls back to an install/marketing card if no handler is registered. Supported targets include lanes, Work sessions, repo branches, PRs, and Linear issues. See [features/deeplinks/README.md](./features/deeplinks/README.md).
+
+### 2.6 Cloudflare relay workers (`apps/push-relay/`, `apps/tunnel-relay/`, `apps/webhook-relay/`)
+
+Three independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
+
+- **`apps/push-relay/`** — fans ADE agent-state transitions out to iPhones as APNs alert pushes and Live Activity updates (Worker + a single D1 database; free-plan compatible, no Durable Objects). The brain is the only publisher: it claims an unguessable 32–64-hex `machineKey` with a relay secret (`POST /machines/:key/claim`, first-writer-wins) and HMAC-signs every later call (`x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`). It stores only device tokens and in-flight notification payloads — no chat/PR content. APNs auth is an ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID`). Brain-side publisher lives at `apps/ade-cli/src/services/push/`. See [features/sync-and-multi-device/push-notifications.md](./features/sync-and-multi-device/push-notifications.md).
+- **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a phone and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket; a phone dials `/connect/:machineKey`; the DO pairs the phone with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the end-to-end ADE hello / PIN / DPoP handshake is untouched (the relay is byte transport only). Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`, gated by the off-by-default "Cloud relay fallback" toggle. Advertised to phones as the lowest-priority `relay` address candidate.
+- **`apps/webhook-relay/`** — the pre-existing GitHub webhook relay (different trust model and lifecycle again). See its own docs.
 
 ---
 
@@ -269,11 +279,12 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 │   ├── cto/
 │   │   ├── identity.yaml        # Local CTO identity (ignored)
 │   │   ├── CURRENT.md           # Running status markdown (ignored)
-│   │   └── daily/<YYYY-MM-DD>.md
-│   ├── agents/<slug>/           # Per-worker identity and daily logs (runtime, ignored)
+│   │   ├── MEMORY.md            # Curated durable facts (ignored)
+│   │   ├── thread-state.md      # Rolling thread summary (ignored)
+│   │   └── daily/<YYYY-MM-DD>.md # Per-turn journal
 │   ├── templates/               # Lane and automation templates (tracked when human-authored)
 │   ├── skills/                  # Exported skill markdown (tracked when human-authored)
-│   ├── workflows/linear/        # Linear workflow config (tracked when present)
+│   ├── workflows/linear/        # Reserved scaffold dir; the legacy Linear workflow-config subsystem was removed and nothing writes here anymore
 │   ├── project-icons/           # Imported project icon overrides (tracked when ade.yaml.iconPath points at one)
 │   ├── ade.sock                 # Unix socket for ADE RPC (runtime)
 │   └── secrets/                 # Machine-local secret material (ignored)
@@ -295,7 +306,7 @@ Types for these tables are split into domain modules under `apps/desktop/src/sha
 
 **Project scaffold modes.** `initializeOrRepairAdeProject(projectRoot, { mode })` controls whether a project gets the full shared scaffold or stays local-only:
 
-- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, the tracked placeholder `.gitkeep`s, plus local-only CTO identity state) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`, `linearWorkflowFileService.save`).
+- `mode: "shared"` always materializes the canonical files (`.ade/.gitignore`, `ade.yaml`, the tracked placeholder `.gitkeep`s, plus local-only CTO identity state) and scrubs any leftover `.ade/` ignore lines from `.gitignore` / `.git/info/exclude`. Triggered automatically from `createLocalProject`, every shared-config save, and any helper that calls `ensureSharedAdeProjectScaffold(projectRoot)` (e.g. `setProjectIconOverrideFromSelection`).
 - `mode: "auto"` (the default for `openProject`) keeps the project local-only when no shared scaffold files exist yet — it ensures `.git/info/exclude` has a `.ade/` entry so a brand-new clone or a personal-only setup never accidentally promotes runtime state into git, and only flips to the shared layout when shared scaffold files are already present (or after a save call promotes them).
 - `mode: "local"` is reserved for force-local repair flows.
 
@@ -506,7 +517,7 @@ High-frequency events flow from main → renderer via `webContents.send(channel,
 | `ade.tests.event` | testService | Test panel |
 | `ade.conflicts.event` | conflictService | Conflicts page, Graph overlay |
 | `ade.prs.event` | prPollingService | PRs page, stacked queue |
-| `ade.agents.event` | CTO/worker services | CTO tab feed |
+| `ade.agents.event` | CTO service | CTO tab feed |
 | `ade.lanes.lifecycle.event` | laneService / runtime `lane_lifecycle_event` | AppShell toast stack |
 | `ade.lanes.rebaseSuggestions.event` / `ade.lanes.autoRebase.event` / `ade.lanes.rebase.event` | rebase services | Lanes + Graph; automated terminal-state rebase outcomes also feed AppShell toasts |
 | `ade.project.missing` | projectService | Shell banner |
@@ -532,7 +543,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `computerUse/` | `computerUseArtifactBrokerService.ts`, `controlPlane.ts`, `localComputerUse.ts`, `agentBrowserArtifactAdapter.ts`, `syntheticToolResult.ts` | Proof-artifact broker (ingests, owner links, review state, routing), control-plane snapshot helpers, macOS capture capability descriptor, agent-browser payload parser, and the synthetic-tool-result helper used by the Claude compaction path. `proofObserver.ts` was removed in the rebuild — there is no passive auto-ingest. |
 | `config/` | `projectConfigService.ts`, `laneOverlayMatcher.ts` | Load/save `.ade/ade.yaml` + `local.yaml`; trust enforcement; lane overlays. |
 | `conflicts/` | `conflictService.ts` | Pairwise dry-merge simulation, risk matrix, proposal generation. |
-| `cto/` | `ctoStateService.ts`, `workerAgentService.ts`, `workerBudgetService.ts`, `workerHeartbeatService.ts`, `linearSyncService.ts`, `linearIngressService.ts`, `linearOAuthService.ts`, `linearRoutingService.ts`, `linearDispatcherService.ts`, `linearCloseoutService.ts`, `flowPolicyService.ts`, `linearLaneCardService.ts` | CTO identity, worker agents, session logs, and Linear sync/ingress/OAuth/routing/dispatcher/closeout. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL. |
+| `cto/` | `ctoStateService.ts`, `ctoMemoryService.ts`, `ctoPromptContent.ts`, `linearClient.ts`, `linearIssueTracker.ts`, `linearCredentialService.ts`, `linearOAuthService.ts`, `linearTokenRefresh.ts`, `linearLaneCardService.ts`, `linearLiveStatusService.ts` | CTO identity, the smart-memory file store, session logs, and the Linear read/credential/OAuth surface. `linearLaneCardService` posts the Linear attachment card and builds the cross-machine ADE deeplink that backs the card's URL; `linearLiveStatusService` is the optional launch/PR/merge status round-trip. |
 | `deeplinks/` | `protocolHandler.ts` | Registers the `ade://` OS protocol handler for the packaged Stable desktop build, owns the single-instance lock, buffers cold-start URLs until `app.whenReady()`, and dispatches parsed URLs through `IPC.appNavigate` to the focused window. Beta, Alpha, and source builds can receive explicitly delivered links but do not claim the OS-default handler. Re-used by the iOS Send-to-Mac sync command (`syncRemoteCommandService.deeplinks.open`). Shared parser + builder live in `apps/desktop/src/shared/deeplinks.ts`; the PR "Open in ADE" footer is in `apps/desktop/src/shared/adeDeeplinkFooter.ts`. See [features/deeplinks/README.md](./features/deeplinks/README.md). |
 | `devTools/` | `devToolsService.ts` | Probe for git + `gh` CLI availability. |
 | `diffs/` | `diffService.ts` | Diff computation for file panes. |
@@ -629,8 +640,8 @@ conflicts/      # risk matrix, simulation, resolution
 graph/          # WorkspaceGraphPage (decomposed into nodes/edges/dialogs)
 prs/            # PR list/detail, stacked queue, shared/
 history/        # operation timeline
-automations/    # rule list, pipeline builder
-cto/            # CTO page, identity editor, team panel, pipeline, shared/designTokens.ts
+automations/    # rule list, action editor, templates
+cto/            # single-thread CTO page, settings/memory/prompt panels, onboarding card, identity editor, shared/designTokens.ts
 orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, PlanningTimeline, ValidationFindings
 onboarding/     # first-run flows
 settings/       # keybindings, agents, data, context, sync
@@ -806,7 +817,7 @@ Related Git docs: [Lanes](./features/lanes/README.md), [Lane runtime isolation](
 ## 10. Context Continuity
 
 ADE carries continuity through the records owned by each runtime surface:
-chat transcripts, CTO and worker session logs, daily logs, and explicit
+chat transcripts, CTO session logs, CTO durable memory, daily logs, and explicit
 context documents. These are read directly by the services that need them;
 there is no separate retrieval layer in between.
 
@@ -910,8 +921,10 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
   (`work.startCliSession`), whose provider command construction is
   shared with the desktop Work tab through
   `apps/desktop/src/shared/cliLaunch.ts`.
-- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
-- Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. Home Screen, Control Center, and ActivityKit surfaces are not registered.
+- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is a **v3 smart URL** (`https://ade-app.dev/pair#<base64url(JSON)>` — host identity + port + address candidates + optional cloud-relay URL, no pairing code); the iOS camera scanner parses it. Pairing is hardened with **device-bound DPoP**: iOS keeps a Secure Enclave P-256 key and every paired hello carries a signed proof (`requireDpop` / `ADE_SYNC_REQUIRE_DPOP` on the host, enforced on both the project host and the brain ingress path).
+- Off-LAN transport: an optional, off-by-default **cloud tunnel relay** (`apps/tunnel-relay`, §2.6) advertised as the lowest-priority `relay` address candidate; the phone dials it only after every direct route fails and only when the user enabled it.
+- Push: APNs alert pushes (deep-linked) and Live Activity updates via `apps/push-relay` (§2.6); the phone hands tokens/prefs to the brain over the paired sync WebSocket (`push.*` runtime-scoped commands) and never talks to the relay directly.
+- Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. `ADEAgentActivityWidget` registers an ActivityKit Live Activity + Dynamic Island for active agent runs. Home Screen and Control Center surfaces are not registered.
 - Tabs: Lanes, Files, Work, PRs, CTO, Settings.
 
 ### 13.4 Conflict resolution semantics
@@ -941,7 +954,10 @@ ADE/
 │   ├── ade-cli/        # ADE brain, manual runtime entry points, `ade` CLI, `ade code`
 │   ├── desktop/        # Electron client (multi-window; local + SSH-bound runtime bindings)
 │   ├── ios/            # Native SwiftUI controller (WebSocket to ADE machine)
-│   └── web/            # Marketing + download landing (Vite + React)
+│   ├── web/            # Marketing + download landing (Vite + React)
+│   ├── push-relay/     # Cloudflare Worker + D1: APNs push + Live Activity relay
+│   ├── tunnel-relay/   # Cloudflare Worker + Durable Object: off-LAN sync tunnel
+│   └── webhook-relay/  # Cloudflare Worker: GitHub webhook relay
 ├── docs/
 │   ├── PRD.md
 │   ├── features/
@@ -975,20 +991,23 @@ Per-app scripts:
 | `apps/ade-cli` | `dev`, `build`, `typecheck`, `test` (typed CLI commands, headless runtime, and Ink Work chat TUI). |
 | `apps/web` | `dev`, `build`, `preview`, `typecheck`. |
 | `apps/ios` | Xcode project; tests via `xcodebuild test` / Xcode. |
+| `apps/push-relay`, `apps/tunnel-relay`, `apps/webhook-relay` | Cloudflare Workers: `typecheck`, `test` (vitest), `deploy` (wrangler). |
 
 ### 14.2 CI (`.github/workflows/ci.yml`)
 
 Stages:
 
-1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, and web with a shared cache keyed on those lockfiles.
+1. **Install** (`install` job) — checkout, setup Node 22, parallel `npm ci` across desktop, ade-cli, web, webhook-relay, and push-relay with a shared cache keyed on those lockfiles. (`apps/tunnel-relay` has its own lockfile and is not in the shared cache; its jobs `npm ci` inline.)
 2. **Parallel checks**:
    - `secret-scan` — gitleaks on full history.
    - `typecheck-desktop` — `cd apps/desktop && npm run typecheck`.
    - `typecheck-ade-cli` — `cd apps/ade-cli && npm run typecheck`.
    - `typecheck-web` — `cd apps/web && npm run typecheck`.
+   - `typecheck-webhook-relay`, `typecheck-push-relay`, `typecheck-tunnel-relay` — the three Cloudflare Workers.
    - `lint-desktop` — ESLint on `src/**/*.{ts,tsx}`.
    - `test-desktop` — **8-way shard matrix**: `npx vitest run --shard=${{ matrix.shard }}/8` across shards 1–8.
-   - `test-ade-cli` — full ade-cli vitest.
+   - `test-ade-cli` — full ade-cli vitest (covers the brain push publisher and tunnel client under `services/push/` + `services/sync/`).
+   - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay` — the three Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).

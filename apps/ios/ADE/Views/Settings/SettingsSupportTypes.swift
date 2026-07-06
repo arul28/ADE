@@ -3,11 +3,13 @@ import SwiftUI
 enum SettingsPairSheetRoute: Identifiable {
   case discover
   case manual
+  case scan
 
   var id: String {
     switch self {
     case .discover: return "discover"
     case .manual: return "manual"
+    case .scan: return "scan"
     }
   }
 }
@@ -15,6 +17,9 @@ enum SettingsPairSheetRoute: Identifiable {
 enum PinPreset: Identifiable {
   case discover(DiscoveredSyncHost)
   case manual(host: String, port: Int)
+  /// A new machine from a scanned pairing QR — the user still types the PIN,
+  /// but the host/port/candidates (incl. relay) come from the payload.
+  case qr(PairingQrPayload)
 
   var id: String {
     switch self {
@@ -22,6 +27,8 @@ enum PinPreset: Identifiable {
       return "discover-\(host.id)"
     case .manual(let host, let port):
       return "manual-\(host)-\(port)"
+    case .qr(let payload):
+      return "qr-\(payload.hostIdentity.deviceId)-\(payload.port)"
     }
   }
 
@@ -31,6 +38,8 @@ enum PinPreset: Identifiable {
       return host.hostName
     case .manual(let host, _):
       return host
+    case .qr(let payload):
+      return payload.hostIdentity.name
     }
   }
 }
@@ -43,6 +52,7 @@ enum PinPreset: Identifiable {
 enum PinSetupRoute: Identifiable {
   case host(DiscoveredSyncHost)
   case manual(host: String, port: Int)
+  case qr(PairingQrPayload)
 
   var id: String {
     switch self {
@@ -50,6 +60,8 @@ enum PinSetupRoute: Identifiable {
       return "pinsetup-\(host.id)"
     case .manual(let host, let port):
       return "pinsetup-manual-\(host)-\(port)"
+    case .qr(let payload):
+      return "pinsetup-qr-\(payload.hostIdentity.deviceId)-\(payload.port)"
     }
   }
 
@@ -62,6 +74,9 @@ enum PinSetupRoute: Identifiable {
     case .manual(let host, _):
       let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
       return trimmed.isEmpty ? "this machine" : trimmed
+    case .qr(let payload):
+      let trimmed = payload.hostIdentity.name.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? "this machine" : trimmed
     }
   }
 
@@ -72,6 +87,8 @@ enum PinSetupRoute: Identifiable {
       return .discover(host)
     case .manual(let host, let port):
       return .manual(host: host, port: port)
+    case .qr(let payload):
+      return .qr(payload)
     }
   }
 }

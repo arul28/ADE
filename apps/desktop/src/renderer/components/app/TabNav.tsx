@@ -66,7 +66,7 @@ const TAB_TOOLTIP_BY_PATH: Record<string, Omit<SmartTooltipContent, "label">> = 
     docUrl: docs.prsOverview,
   },
   "/cto": {
-    description: "Use the persistent project CTO, worker team, Linear workflows, and identity settings.",
+    description: "Chat with the persistent project CTO and manage its identity and settings.",
     docUrl: docs.ctoOverview,
   },
   "/graph": {

@@ -88,7 +88,7 @@ import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModel
 import { toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
-import { AgentChatMessageList } from "./AgentChatMessageList";
+import { AgentChatMessageList, type MosaicRenderContext } from "./AgentChatMessageList";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
@@ -2505,6 +2505,15 @@ export function buildParallelLaunchPrompt(args: {
   return { sendText: displayText, displayText };
 }
 
+/** Deterministic djb2 hash → stable, collision-resilient mosaic card key suffix. */
+function djb2Hash(input: string): string {
+  let hash = 5381;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}
+
 export type ParallelLaunchCleanupIssue = {
   phase: "delete" | "refresh";
   laneId: string | null;
@@ -2737,6 +2746,7 @@ export function AgentChatPane({
   hideSessionTabs = false,
   hideNativeControls = false,
   hideWorkspaceChrome = false,
+  hideSurfaceHeader = false,
   hideLaneToolDrawers = false,
   forceNewSession = false,
   forceDraftMode = false,
@@ -2779,6 +2789,8 @@ export function AgentChatPane({
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
   hideWorkspaceChrome?: boolean;
+  /** Suppress the WorkSurfaceHeader row entirely (the host surface renders its own header, e.g. the CTO page). */
+  hideSurfaceHeader?: boolean;
   /** Work owns these lane-scoped drawers; proof remains chat-scoped here. */
   hideLaneToolDrawers?: boolean;
   forceNewSession?: boolean;
@@ -2882,7 +2894,6 @@ export function AgentChatPane({
   const surfaceProfile: ChatSurfaceProfile = presentation?.profile ?? "standard";
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const showWorkspaceChrome = !hideWorkspaceChrome;
-  const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const workDraftStorageKind = normalizeWorkDraftStorageKind();
   const isWorkDraftComposer = forceDraft && embeddedWorkLayout && !lockSessionId && !initialSessionId;
   const draftLaunchConfigLaneScopeId = isWorkDraftComposer ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
@@ -4501,7 +4512,6 @@ export function AgentChatPane({
       activeSessionModelId: selectedSessionModelId,
       hasConversation: selectedEvents.length > 0,
       includeActiveSessionModel: !modelSelectionConstrained,
-      policy: modelSwitchPolicy,
     });
     if (modelSelectionConstrained) return filterCursorModelIdsForDraftKind(base, workDraftKind);
     const catalog = getSharedRuntimeCatalog();
@@ -4511,7 +4521,7 @@ export function AgentChatPane({
     const merged = new Set(base);
     for (const id of runtimeIds) merged.add(id);
     return filterCursorModelIdsForDraftKind([...merged], workDraftKind);
-  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, modelSwitchPolicy, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
+  }, [availableModelIds, availableModelIdsOverride, modelSelectionConstrained, selectedSessionModelId, selectedEvents.length, runtimeCatalogVersion, workDraftKind]);
   const modelPickerProviderAuthStatus = useMemo(
     () => (aiStatus ? familiesFromStatus(aiStatus) : undefined),
     [aiStatus],
@@ -6337,6 +6347,37 @@ export function AgentChatPane({
       setBusy(false);
     }
   }, [refreshAvailableModels, refreshSessions, rejectAuthRetry, touchSession]);
+
+  // Mosaic card submit → structured reply through the normal chat send path.
+  const handleMosaicSubmit = useCallback(async (submission: { text: string; displayText: string }) => {
+    const sessionId = selectedSessionIdRef.current;
+    if (!sessionId) return;
+    try {
+      setError(null);
+      touchSession(sessionId);
+      await window.ade.agentChat.send({ sessionId, text: submission.text, displayText: submission.displayText });
+      void refreshSessions().catch(() => {});
+    } catch (mosaicSendError) {
+      setError(mosaicSendError instanceof Error ? mosaicSendError.message : String(mosaicSendError));
+      throw mosaicSendError;
+    }
+  }, [refreshSessions, touchSession]);
+
+  const mosaicCardKeyFor = useCallback(
+    // Scope (the transcript row key) keeps byte-identical cards at different
+    // positions independently answerable.
+    (source: string, scope: string) => `${selectedSessionIdRef.current ?? "draft"}:${scope}:${djb2Hash(source)}`,
+    [],
+  );
+
+  // Interactive mosaic cards are Claude-family only; other runtimes fall back to
+  // the plain code fence. Memoized so AgentChatMessageList's row memo holds.
+  const mosaicContext = useMemo<MosaicRenderContext | undefined>(() => {
+    if (sessionProvider !== "claude") return undefined;
+    // Pass the promise through — the card awaits it and rolls back its
+    // answered latch when the send rejects.
+    return { cardKeyFor: mosaicCardKeyFor, onSubmit: handleMosaicSubmit };
+  }, [sessionProvider, mosaicCardKeyFor, handleMosaicSubmit]);
 
   // The inline re-login card dispatches CHAT_RETRY_AUTH_TURN_EVENT on "Retry
   // turn"; only the pane that owns the session resends.
@@ -9538,17 +9579,6 @@ export function AgentChatPane({
               {deletingChatSessionId === selectedSessionId ? "Deleting..." : "Delete chat"}
             </button>
           ) : null}
-          {isPersistentIdentitySurface && selectedSessionId ? (
-            <button
-              type="button"
-              className="inline-flex items-center rounded-md border border-white/[0.06] px-2 py-0.5 font-sans text-[10px] font-medium text-muted-fg/50 transition-colors hover:border-white/[0.1] hover:text-fg"
-              onClick={() => {
-                clearSessionView(selectedSessionId);
-              }}
-            >
-              Clear view
-            </button>
-          ) : null}
     </>
   );
   const shellHeader = (
@@ -9691,7 +9721,7 @@ export function AgentChatPane({
   // scrolled out of view. Reuses the self-contained login pill (styled + own
   // dismiss); it hides itself once the session reconnects. Only shown when the
   // chat header login pill is absent so the two never double up.
-  const chatHeaderLoginPromptVisible = !compactShell && chatTerminalVisible && Boolean(selectedSessionId);
+  const chatHeaderLoginPromptVisible = !compactShell && !hideSurfaceHeader && chatTerminalVisible && Boolean(selectedSessionId);
   const authStickyBar = showClaudeLoginPrompt && selectedSessionId && !chatHeaderLoginPromptVisible ? (
     <div className="mb-1.5 flex justify-start px-0.5">
       <ClaudeLoginPromptButton
@@ -10370,7 +10400,7 @@ export function AgentChatPane({
         chromeTint={chatChromeTint}
         shellGeometry={chatShellGeometry}
         className={compactShell ? cn("border-0 shadow-none rounded-none bg-transparent") : undefined}
-        header={compactShell ? undefined : shellHeader}
+        header={compactShell || hideSurfaceHeader ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined
           : composerWithTypographyRoot}
@@ -10558,6 +10588,7 @@ export function AgentChatPane({
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}
+                      mosaic={subagentView ? undefined : mosaicContext}
                     />
                     {sessionDelta ? (
                       <div className="flex items-center gap-3 border-t border-white/[0.05] px-4 py-2 font-mono text-[11px]">

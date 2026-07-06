@@ -126,7 +126,7 @@ describe("isAllowedAdeAction", () => {
 });
 
 describe("getAdeActionDomainServices feature gates", () => {
-  it("hides Automations and Linear ingress domains in packaged builds", () => {
+  it("hides Automations domains in packaged builds", () => {
     withEnv(
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
@@ -138,12 +138,10 @@ describe("getAdeActionDomainServices feature gates", () => {
           automationService: {},
           automationPlannerService: {},
           automationIngressService: {},
-          linearIngressService: {},
         } as never);
 
         expect(services.automation_planner).toBeNull();
         expect(services.automations).toBeNull();
-        expect(services.linear_ingress).toBeNull();
       },
     );
   });
@@ -158,11 +156,9 @@ describe("getAdeActionDomainServices feature gates", () => {
         const services = getAdeActionDomainServices({
           isPackaged: false,
           automationPlannerService: { parseNaturalLanguage: () => undefined },
-          linearIngressService: { getStatus: () => undefined },
         } as never);
 
         expect(services.automation_planner).not.toBeNull();
-        expect(services.linear_ingress).not.toBeNull();
       },
     );
   });
@@ -310,7 +306,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("getIssuePickerData");
     expect(actions).toContain("getConnectionStatus");
     expect(actions).toContain("getQuickView");
-    expect(ADE_ACTION_ALLOWLIST.linear_routing ?? []).toContain("simulateRoute");
     expect(ADE_ACTION_ALLOWLIST.linear_oauth ?? []).toEqual(expect.arrayContaining([
       "getSession",
       "startSession",
@@ -320,7 +315,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
   it("exposes CTO identity session and scan wrappers for runtime-backed CTO views", () => {
     const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(chatActions).toContain("ensureCtoSession");
-    expect(chatActions).toContain("ensureAgentIdentitySession");
     expect(chatActions).toContain("getSubagentTranscript");
     expect(chatActions).toContain("modelCatalog");
     expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
@@ -439,6 +433,71 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "next" });
     await expect(chat.sendMessage?.({ sessionId: "chat-1", text: "   " })).rejects.toThrow(/text/);
     expect(sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves chat fileSearch lanes from getSessionSummary and caches the result", async () => {
+    const sessionId = "file-search-summary-session";
+    const getSessionSummary = vi.fn(async (id: string) => ({ sessionId: id, laneId: "lane-fast" }));
+    const listSessions = vi.fn(async () => [{ sessionId, laneId: "lane-slow" }]);
+    const quickOpen = vi.fn(async () => [{ path: "src/fast.ts", score: 600 }]);
+    const runtime = {
+      agentChatService: {
+        getSessionSummary,
+        listSessions,
+      },
+      fileService: {
+        quickOpen,
+        warmQuickOpenIndex: vi.fn(async () => undefined),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      fileSearch?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.fileSearch?.({ sessionId, query: "fast" })).resolves.toEqual([
+      { path: "src/fast.ts", score: 600 },
+    ]);
+    await expect(chat.fileSearch?.({ sessionId, query: "fast" })).resolves.toEqual([
+      { path: "src/fast.ts", score: 600 },
+    ]);
+
+    expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    expect(getSessionSummary).toHaveBeenCalledWith(sessionId);
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(quickOpen).toHaveBeenCalledTimes(2);
+    expect(quickOpen).toHaveBeenNthCalledWith(1, {
+      workspaceId: "lane-fast",
+      query: "fast",
+      limit: 20,
+    });
+  });
+
+  it("returns empty chat fileSearch results for whitespace queries and warms quickOpen", async () => {
+    const sessionId = "file-search-warm-session";
+    const getSessionSummary = vi.fn(async (id: string) => ({ sessionId: id, laneId: "lane-warm" }));
+    const quickOpen = vi.fn(async () => [{ path: "src/unused.ts", score: 600 }]);
+    const warmQuickOpenIndex = vi.fn(() => new Promise<void>(() => undefined));
+    const runtime = {
+      agentChatService: {
+        getSessionSummary,
+        listSessions: vi.fn(async () => []),
+      },
+      fileService: {
+        quickOpen,
+        warmQuickOpenIndex,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      fileSearch?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.fileSearch?.({ sessionId, query: "   " })).resolves.toEqual([]);
+
+    expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    expect(quickOpen).not.toHaveBeenCalled();
+    expect(warmQuickOpenIndex).toHaveBeenCalledWith({ workspaceId: "lane-warm" });
   });
 
   it("falls back to headless chat transcript reads when readTranscript is unavailable", async () => {

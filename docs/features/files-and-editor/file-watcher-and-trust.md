@@ -189,6 +189,23 @@ with the watcher:
 - Mass invalidation resets the index and triggers a full rebuild on
   next query
 
+The name index and the content index are split: the build walk only
+stats paths (no file reads), so `quickOpen` never waits on content.
+File contents load lazily inside `searchText` (bounded per-file and in
+total, binary-sniffed, cooperative yields) and are cached on the entry
+until the watcher invalidates it. `quickOpen` results are additionally
+cached per `(query, limit)` per index; any watcher mutation clears the
+query cache. `fileService.warmQuickOpenIndex({ workspaceId })` is a
+best-effort warm hook — the chat action bridge calls it for empty
+`chat.fileSearch` queries so the composer's first `@` builds the index
+before the first real query. To turn a chat `sessionId` into the
+workspace to search, the bridge (`adeActions/registry.ts`) caches the
+session's `laneId` in `fileSearchLaneIdBySessionId` (capped at 200,
+LRU). Only non-identity sessions are cached, because their lane binding
+is immutable; primary-pinned identity sessions (CTO / worker) can be
+migrated to the canonical primary lane by `resumeSession`, so they
+resolve fresh each call.
+
 The index has a soft cap on entries (workspaces over the cap fall
 back to on-demand glob scanning).
 

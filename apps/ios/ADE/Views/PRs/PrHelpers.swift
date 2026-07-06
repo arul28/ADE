@@ -889,24 +889,21 @@ private final class PrMarkdownAttributedStringBox: NSObject {
 // without renaming existing callsites). Do NOT rename existing tokens.
 
 extension PrGlassPalette {
-  // Surface fills.
-  static let cardFill = Color(red: 0x14 / 255, green: 0x13 / 255, blue: 0x1C / 255)
-  static let cardElevated = Color(red: 0x1B / 255, green: 0x1F / 255, blue: 0x26 / 255)
+  // Surface fills — route to the adaptive card tokens defined alongside the
+  // base palette (PrMergeGateCard.swift) so light mode renders correctly.
+  static var cardFill: Color { threadCard }
+  static var cardElevated: Color { panelCard }
 
-  // Text hierarchy (mirror the PrsGlass values so the two palettes stay in
-  // sync without forcing callers to switch enums).
-  static let textPrimary = Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255)
-  static let textSecondary = Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255)
-  static let textMuted = Color(red: 0x5E / 255, green: 0x5A / 255, blue: 0x70 / 255)
+  // Text hierarchy — alias the app-wide adaptive tokens.
+  static var textPrimary: Color { ADEColor.textPrimary }
+  static var textSecondary: Color { ADEColor.textSecondary }
+  static var textMuted: Color { ADEColor.textMuted }
 
-  // Eyebrow tint (muted violet for section labels).
-  static let eyebrow = Color(red: 0x8F / 255, green: 0x7B / 255, blue: 0xC7 / 255)
+  // Eyebrow tint for section labels.
+  static var eyebrow: Color { ADEColor.textSecondary }
 
   // Info accent (soft blue, used for non-critical callouts).
-  static let info = Color(red: 0x6B / 255, green: 0x8A / 255, blue: 0xFD / 255)
-
-  // Aliases for spec vocabulary. `purpleSoft` = existing `purple`.
-  static var purpleSoft: Color { purple }
+  static var info: Color { ADEColor.info }
 }
 
 // MARK: - Shared PRs tab view helpers

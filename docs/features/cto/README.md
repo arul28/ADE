@@ -1,154 +1,148 @@
 # CTO
 
-The CTO is ADE's persistent, project-level operator identity. One identity per project, not a family of rotating chats or a constantly running daemon. It owns persistent identity, shared project understanding, worker management, Linear dispatch and sync, and the operator-facing chat surface.
+The CTO is ADE's persistent, project-level operator identity — one per project, not a family of rotating chats or a background daemon. It is a single long-living chat thread that behaves as if it remembers everything discussed about the project, plus a small settings surface. There are no workers, no hiring, and no Linear workflow engine: those subsystems were removed. What remains is a durable thread with a smart memory system, first-class mid-thread model switching, and a light Linear read/write surface.
 
-The runtime is organized around one contract: the CTO tab should be usable as a daily chat surface without forcing every optional subsystem (Linear, realtime ingress, budget telemetry) to fully hydrate on mount.
+The whole surface is built around one contract: the CTO is a daily chat you can open and use immediately, and its identity, memory, and context survive across sessions, context compaction, and model switches.
 
 ## Source file map
 
-### Main services (apps/desktop/src/main/services/cto/)
+### Main services (`apps/desktop/src/main/services/cto/`)
 
-- `ctoStateService.ts` — identity, session logs, daily logs, system-prompt preview; owns immutable doctrine, personality overlay, CTO continuity model, environment knowledge, and capability manifest constants.
-- `workerAgentService.ts` — worker CRUD, worker identity, config revisions, org tree.
-- `workerHeartbeatService.ts` — heartbeat policy and worker-activity telemetry.
-- `workerBudgetService.ts` — budget snapshots per worker and CTO org.
-- `workerRevisionService.ts` — worker config revision history.
-- `workerTaskSessionService.ts` — task-scoped worker sessions.
-- `workerAdapterRuntimeService.ts` — adapter lifecycle for the three supported worker adapters: `claude-local`, `codex-local`, and `process`.
-- `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage and token status. Backed by the active project's `.ade/secrets` store so separate ADE projects can use separate Linear workspaces, with a one-time migration from the legacy project-scoped files. See [Linear integration](../linear-integration/README.md#source-file-map).
-- `linearOAuthService.ts` — PKCE loopback OAuth flow on port 19836.
-- `linearClient.ts` — Linear GraphQL client (shared by desktop and headless ADE CLI). The shared issue fragment fetches cycle metadata, label colors, and enriched child-issue fields. `fetchIssueComments(issueId)` returns the comment thread for the issue detail pane. `addIssueLabel(issueId, labelId)` / `removeIssueLabel(issueId, labelId)` add/remove a label by id (back the `ade linear label` write-bridge command).
-- `linearIssueTracker.ts` / `issueTracker.ts` — Linear issue cache, change detection, `fetchIssueComments` forwarding, and the `addIssueLabel` / `removeIssueLabel` write surface alongside the existing `updateIssueState` / `updateIssueAssignee` / `createComment` / `addLabel` writes.
-- `linearLiveStatusService.ts` — optional live status round-trip that reflects an ADE agent's progress (launch → In Progress + self-assign + branch comment; PR open → PR-link comment; merge → Done) back into Linear via the existing `issueTracker` write surface. Gated OFF unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`. See [Linear integration](../linear-integration/README.md#live-status-round-trip).
-- `flowPolicyService.ts` — canonical `LinearWorkflowConfig` (intake, workflows, migration), file-backed via `linearWorkflowFileService`.
-- `linearWorkflowFileService.ts` — repo YAML persistence for workflows.
-- `linearTemplateService.ts` — workflow template metadata.
-- `linearIntakeService.ts` — issue intake rules (active/terminal state types).
-- `linearRoutingService.ts` — match a normalized issue against the workflow list and produce a `LinearWorkflowMatchResult`.
-- `linearIngressService.ts` — optional realtime webhook/relay ingress; auto-starts only if configured.
-- `linearSyncService.ts` — background polling loop; short-circuits when idle/disconnected.
-- `linearDispatcherService.ts` — launches target runs (employee_session, worker_run, run, pr_resolution, review_gate), tracks run state, emits events.
-- `linearCloseoutService.ts` — success/failure Linear state transitions, comments, proof attachment.
-- `linearOutboundService.ts` — outbound Linear writes (state, comments, assignees).
+- `ctoStateService.ts` — identity (name, personality, work style, model preferences), session logs, onboarding state, and the system-prompt preview. Owns the immutable doctrine, personality overlays, continuity model, memory-system guidance, environment knowledge, and capability manifest constants. `buildReconstructionContext()` assembles the memory-enriched context injected on session start, compaction, and model switch; `previewSystemPrompt()` returns the same layered prompt the settings UI renders verbatim.
+- `ctoMemoryService.ts` — the smart-memory file store under `.ade/cto/`. Reads/writes `MEMORY.md` and `thread-state.md` (atomic writes), appends per-turn lines to `daily/<YYYY-MM-DD>.md`, exposes `searchMemory(query)` (bounded, file-based, most-recent-first), `getSnapshot()`, and `buildMemoryContextSections()` (the capped copies used for injection). No new database or vector dependency.
+- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool manifest injected into the prompt. Kept in sync with `ctoOperatorTools.ts` by hand, not auto-generated.
+- `linearClient.ts` — Linear GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues`, `getQuickView`, `fetchIssueComments`, `listLabels`, `listUsers`. Writes: `updateIssueState`, `updateIssueAssignee`, `createComment`, `addIssueLabel` / `removeIssueLabel`.
+- `linearIssueTracker.ts` / `issueTracker.ts` — issue cache, change detection, and the `getQuickView` / `searchIssues` / `fetchIssueComments` read shims plus the `updateIssueState` / `updateIssueAssignee` / `createComment` / `addLabel` write surface renderer surfaces call through.
+- `linearGraphQLInput.ts` — GraphQL input builders shared by the client and tracker.
+- `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage, backed by the active project's `.ade/secrets`, with `ensureFreshToken()` for automatic OAuth refresh.
+- `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — PKCE loopback OAuth flow (port 19836), a cross-process refresh lock, and the token-refresh exchange.
+- `linearLaneCardService.ts` — builds the "Open in ADE" Linear attachments for lanes, PRs, issue quick-view links, and chat sessions.
+- `linearLiveStatusService.ts` — optional live-status round-trip that reflects an ADE agent's progress (launch → In Progress + self-assign + branch comment; PR open → PR-link comment; merge → Done) back into Linear. Gated OFF unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`.
 
-### ADE runtime parity
+The Linear services above are shared plumbing, not CTO-owned workflow machinery. See [Linear integration](../linear-integration/README.md) for the canonical description; this doc only covers what the CTO thread itself uses.
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the `ade serve` runtime, plus a headless `workerHeartbeatService`, `workerTaskSessionService`, and the supporting `fileService` / `processService` / `prService` / `automationSecretService` instances the dispatcher needs to actually launch targets. The CTO is no longer "desktop-only" — every Linear capability runs identically inside the runtime, so a headless runtime can intake issues, dispatch worker runs, and close out tickets with the same code path the desktop renderer drives.
+### Renderer (`apps/desktop/src/renderer/components/cto/`)
 
-### Renderer (apps/desktop/src/renderer/components/cto/)
+- `CtoPage.tsx` — the `/cto` shell. A single full-bleed chat thread (`AgentChatPane` with a locked session), not tabs. Slim header: name, personality chip, an interactive model badge (a `ModelPicker` that live-switches the running thread), and a Settings gear. When onboarding is incomplete the thread is replaced by a single `CtoOnboardingCard`. The primary session is cached module-side so it stays warm across tab switches, and is obtained via `window.ade.cto.ensureSession()`.
+- `CtoSettingsPanel.tsx` — the right-side settings sheet. Sections, in order: Identity (`IdentityEditor`), Model (`ModelPicker` + reasoning-effort picker), Memory (`CtoMemoryPanel`), Prompt (collapsible `CtoPromptPreview`), and Setup (re-run setup + collapsible session history).
+- `CtoMemoryPanel.tsx` — "what the CTO remembers": an editable `MEMORY.md` textarea (save via `window.ade.cto.updateMemory`), a read-only current thread-state, and a collapsible today's daily log. Loads via `window.ade.cto.getMemory`.
+- `CtoOnboardingCard.tsx` — the one-card first-run setup: personality preset (with a custom-overlay textarea for `custom`), work style (verbosity / proactivity / escalation via `Segmented`), and an optional name. Completing it saves identity and marks the `identity` onboarding step done.
+- `IdentityEditor.tsx` — edits name, personality preset, custom overlay, and work style. It does not edit the model (that lives in the Model section).
+- `CtoPromptPreview.tsx` — renders the effective, layered system prompt (doctrine, personality overlay, continuity, memory guidance, environment knowledge, capabilities).
+- `personalityTheme.ts` — maps each personality preset to a hue/icon used across the avatar, chip, and selected tiles; also owns `DEFAULT_COMMUNICATION_STYLE`, `WORK_STYLE_ROWS`, and `normalizeCommunicationStyle`.
+- `Segmented.tsx` — the compact three-option control used for work-style rows. `useCtoModelOptions.ts` — loads the user's configured model IDs so the header badge and Model section share the composer's catalog. `ctoSessionViewState.ts` — view-state helpers. `identityPresets.ts` — re-export of `shared/ctoPersonalityPresets`. `shared/designTokens.ts` + `shared/TimelineEntry.tsx` — shared class tokens and the session-history timeline row.
 
-- `CtoPage.tsx` — the `/cto` shell. Four tabs: Chat, Team, Workflows, Settings. Lazy-loads history and budget data.
-- `AgentSidebar.tsx` — memoized worker tree; budget footer isolated so budget refresh does not rerender siblings.
-- `OnboardingBanner.tsx` / `OnboardingWizard.tsx` — minimal first-run flow: personality preset only.
-- `IdentityEditor.tsx` — editable identity surface (personality preset + custom overlay + model). No longer a full identity-prompt editor.
-- `CtoSettingsPanel.tsx` — identity, recent sessions, and onboarding reset.
-- `CtoPromptPreview.tsx` — prompt preview: doctrine, personality overlay, CTO continuity, environment knowledge, and capabilities.
-- `TeamPanel.tsx` — worker editor and detail view.
-- `WorkerCreationWizard.tsx` — two-step wizard: template selection then configure.
-- `WorkerActivityFeed.tsx` — recent worker sessions and runs.
-- `LinearConnectionPanel.tsx` — API key and OAuth connect surface.
-- `LinearSyncPanel.tsx` / `LinearSyncPanel.test.ts` — workflow list, sync dashboard, run timeline, "Watch It Live" monitor.
-- `identityPresets.ts` — re-exports from `shared/ctoPersonalityPresets`.
-- `shared/designTokens.ts` — CTO-wide class patterns (`cardCls`, `stageCardCls`, `pipelineCanvasCls`, ACCENT palette, `WORKER_TEMPLATES`).
-- `shared/AgentStatusBadge.tsx`, `shared/ConnectionStatusDot.tsx`, `shared/StepWizard.tsx`, `shared/TimelineEntry.tsx` — shared visual building blocks.
-- `pipeline/` — the visual pipeline builder (see `pipeline-builder.md`). This is the newest surface; flagged fragile.
+### Shared and tools
 
-### Shared
+- `apps/desktop/src/shared/ctoPersonalityPresets.ts` — `CTO_PERSONALITY_PRESETS` (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`) with label, description, and `systemOverlay`.
+- `apps/desktop/src/shared/types/chat.ts` — `AgentChatIdentityKey`, now just the literal `"cto"`. The old `agent:<id>` worker identity keys are gone.
+- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface registered for the CTO session, including the memory tools `saveMemory`, `searchMemory`, and `readMemory`.
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind, the memory flush hooks, and the reconstruction-context injection (all detailed below).
 
-- `apps/desktop/src/shared/ctoPersonalityPresets.ts` — `CTO_PERSONALITY_PRESETS` (strategic, professional, hands_on, casual, minimal, custom) with label, description, and `systemOverlay` body.
-- `apps/desktop/src/shared/linearWorkflowPresets.ts` — `LinearWorkflowVisualPlan` type, `deriveVisualPlan`, `rebuildWorkflowSteps`, completion contract tables, step synthesis.
-- `apps/desktop/src/shared/types/linearSync.ts` — `LinearWorkflowDefinition`, `LinearWorkflowTarget`, trigger groups, step types, closeout types. `NormalizedLinearIssue` carries cycle metadata, per-label colors, and structured child issues.
-- `apps/desktop/src/shared/types/cto.ts` — `CtoGetLinearIssueCommentsArgs` and `CtoLinearIssueComment` types for the issue detail comment thread.
-- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — complete operator tool surface registered for CTO chat sessions.
+### iOS companion (`apps/ios/ADE/Views/Cto/`)
 
-### iOS companion (apps/ios/ADE/Views/Cto/)
+- `CtoRootScreen.swift` — renders the CTO chat inline as the tab body (single thread, kind `.cto`) with a top-bar gear that opens settings as a sheet. No Team/Workflows navigation.
+- `CtoSessionDestinationView.swift` — resolves the always-on CTO session (`ensureCtoSession()`) and reuses the Work chat pipeline to render it.
+- `CtoSetup.swift` — the first-run card (name, personality preset, work-style rows) shown when onboarding is incomplete.
+- `CtoSettingsScreen.swift` — sections: Identity (edit via `CtoIdentityEditor`), Integrations (read-only Linear connection status), Memory (durable facts + thread summary via `cto.getMemory`), and Advanced (re-run setup).
+- `CtoIdentityEditor.swift` / `CtoReloadHelpers.swift` — the identity edit sheet and reload plumbing.
 
-- `CtoTabShell.swift` — segmented mobile shell for Chat / Team /
-  Workflows with shared glass navigation styling.
-- `CtoTeamScreen.swift` — worker roster, hire action, worker rows,
-  quick actions, and per-worker context menus.
-- `CtoWorkflowsScreen.swift` — mobile workflow dashboard, policy list,
-  recent sync events, and connection/not-connected states backed by the
-  same Linear workflow command surface as desktop.
+The CTO tab icon is the SF Symbol `brain` (`apps/ios/ADE/App/ContentView.swift`), matching the desktop Phosphor Brain glyph.
 
 ## Domain model
 
-### Identity layers (immutable to user-editable, in order)
+### Identity layers
 
-1. **Immutable doctrine** — `IMMUTABLE_CTO_DOCTRINE` in `ctoStateService.ts`. Defines the CTO role, ADE environment, precision rules. Always injected. Not user-editable. Not compacted away. Runs even after context compaction via `refreshReconstructionContext()`.
-2. **Personality overlay** — one of six presets (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`). Only the `custom` preset reads `customPersonality` from the identity record.
-3. **CTO continuity model** — the runtime describes doctrine, current context, and compaction/recovery rules.
-4. **Environment knowledge** — `CTO_ENVIRONMENT_KNOWLEDGE` is a glossary of ADE entities (lanes, chats vs terminals vs subprocess agents, runs, workers, convergence, conflicts) plus the intent-to-tool routing guide. Distinguishes `spawnChat` from `createTerminal` from `spawn_agent` explicitly.
-5. **Capability manifest** — `CTO_CAPABILITY_MANIFEST` lists the complete operator tool surface. It is intentionally kept in sync with `ctoOperatorTools.ts` tool registrations, not auto-generated.
+The system prompt is assembled from layered sections (`ctoStateService.previewSystemPrompt`), immutable first:
 
-These layers combine into `CtoSystemPromptPreview` which the onboarding and settings surfaces render verbatim, so the UI matches the runtime.
+1. **Immutable doctrine** (`IMMUTABLE_CTO_DOCTRINE`) — the CTO role, the ADE environment description, and precision rules. Always injected, never user-editable, never compacted away.
+2. **Personality overlay** — one of six presets. Only `custom` reads `customPersonality` from the identity record.
+3. **Continuity model** (`CTO_CONTINUITY_OPERATING_MODEL`) — how ADE re-grounds the CTO across compaction and resumes.
+4. **Persistent memory guidance** (`CTO_MEMORY_SYSTEM_GUIDANCE`) — teaches the CTO that it has durable, model-agnostic memory and how to use the `saveMemory` / `searchMemory` / `readMemory` tools proactively.
+5. **Environment knowledge** — a glossary of ADE entities (lanes, chats vs terminals, PRs, conflicts, automations, Linear reads) plus intent-to-tool routing, including the live model registry.
+6. **Capability manifest** — the full operator tool surface, injected verbatim so the CTO can pick the right tool.
 
-### Persistent state
+### Identity record and work style
 
-On disk under `.ade/cto/`:
+Persisted under `.ade/cto/` and mirrored into the `cto_identity_state` DB row (newest wins on reconcile):
 
-- `identity.yaml` — name, personality preset, custom overlay, model, reasoningEffort.
-- `CURRENT.md` — current working context (recent sessions, worker activity).
-Portability rule: identity YAML is git-tracked; generated CTO continuity files and session state are local or ADE-sync only.
+- `identity.yaml` — name, personality preset, `customPersonality`, `communicationStyle` (verbosity / proactivity / escalationThreshold — the "work style"), `modelPreferences` (provider, model, modelId, reasoningEffort), constraints, onboarding state, version.
+- `CURRENT.md` — ADE-generated working context (recent CTO sessions), refreshed on identity and session-log changes.
+- `sessions.jsonl` — hash-chained session log, reconciled with the `cto_session_logs` table.
 
-### Tab model (`CtoPage.tsx`)
+The entire `cto/` directory is local runtime state by default (git-ignored unless force-added).
 
-| Tab | What loads | When |
-| --- | --- | --- |
-| Chat | CTO session, subordinate activity summary | Immediate |
-| Team | Agents, revisions, worker runs | On tab activation |
-| Workflows | `LinearSyncPanel` (dashboard + run detail + pipeline) | On tab activation; refresh debounced |
-| Settings | Identity and session logs | On tab activation |
+### Smart memory system
 
-The sidebar worker tree is precomputed and memoized. The budget footer is isolated so a budget refresh does not rerender the tree.
+Files under `.ade/cto/`, owned by `ctoMemoryService`:
 
-## Wiring and IPC
+| File | Role | Written by | Injected |
+| --- | --- | --- | --- |
+| `MEMORY.md` | Curated durable facts (decisions, preferences, standing context) under a `## Facts` list | `saveMemory` tool, `CtoMemoryPanel` edits | Always (tail-capped at ~8k chars for injection; disk copy never truncated, hard byte cap 64 KiB drops oldest facts) |
+| `thread-state.md` | Rolling summary of the current goal, recent decisions, open loops | Deterministic + best-effort LLM flush | Always (head-capped ~4k chars) |
+| `daily/<date>.md` | Per-turn journal: `HH:MM — intent → outcome` | Turn-end append (no LLM) | Today + yesterday (tail-capped ~4k chars) |
 
-The renderer never reaches into services directly. It goes through `window.ade.cto`, `window.ade.linearSync`, `window.ade.automations`, etc. (see `apps/desktop/src/preload/preload.ts` and `global.d.ts`). The main process registers those handlers in `apps/desktop/src/main/services/ipc/registerIpc.ts` and dispatches to the service instances created during project bootstrap.
+`buildMemoryContextSections()` returns the capped, labeled copies; `ctoStateService.buildReconstructionContext()` appends them after the identity/doctrine/environment sections. Only the injected copies are truncated.
 
-Event flow for a Linear workflow run:
+### Flush and injection lifecycle
 
-```
-Linear poll / webhook
-   -> linearIngressService (optional realtime path)
-   -> linearSyncService (reconciliation loop)
-   -> linearRoutingService (match triggers against LinearWorkflowConfig)
-   -> linearDispatcherService (launch target; emit linear-workflow-run events)
-   -> workerAgentService / agentChatService / prService (target-specific launch)
-   -> linearCloseoutService (on completion)
-   -> renderer via emitRunEvent + ipc channel
-   -> LinearSyncPanel dashboard / run timeline
-```
+The guarantee is that a deterministic flush always runs before anything can be lost; an LLM upgrade of the summary is best-effort on top. All flush paths live in `agentChatService.ts` and no-op for non-CTO sessions.
 
-## CTO operator tools
+- **Turn-end journal (deterministic, cheap).** After each completed or failed CTO turn, `appendCtoTurnJournal` appends one `HH:MM — intent → outcome` line to today's daily log. No LLM call.
+- **Pre-compaction flush.** On the runtime's `compacting` / compaction-boundary signal, `maybeRefreshIdentityContinuitySummary(managed, "compaction")` runs `flushIdentityContinuityDeterministic` first (writes the tail-based snapshot to the session and to `thread-state.md`), then kicks off a best-effort LLM summary that overwrites `thread-state.md` when it returns. `refreshReconstructionContext` re-injects afterward.
+- **Pre-model/provider-switch flush.** The model-switch path calls the same flush before `teardownRuntime`, so nothing in the old provider window is lost, then rebinds. Both the synchronous switch and the deferred (cursor-busy) switch take this path.
+- **Injection** happens by staging `pendingReconstructionContext` and delivering it on the next turn after session start, compaction, and model/provider switch.
 
-Registered in `ctoOperatorTools.ts` and exposed as ADE CLI actions to the CTO chat session. Organized by domain: lanes, chats, workers, git, PRs, convergence, conflicts, files, context, processes, tests, terminals, Linear, automations, events, project health, computer use, budget, and CTO continuity. When the CTO wants to surface something in the UI it returns an `OperatorNavigationSuggestion` instead of silently switching tabs.
+### Model switching is first-class
 
-The environment knowledge block inside the system prompt teaches intent-to-tool routing (e.g. "start a chat" -> `spawnChat`, "open a terminal" -> `createTerminal`). The capability manifest is injected in full, not summarized, so the CTO can pick the right tool even for less common actions.
+- Changing the model from the header badge or the Settings Model section routes through `agentChatService.updateSession` for a live session, moving the same ADE session and transcript to the new provider/model. Before a session exists, the picker writes `identity.modelPreferences` so `ensureSession` reconciles to it.
+- The live selection is persisted back into `identity.modelPreferences` (`persistCtoModelPreference`) so the identity file stays the single source of truth in both directions.
+- Switch order: flush durable memory → `refreshReconstructionContext` (now memory-rich) → `teardownRuntime` → rebind. Claude→Claude keeps the fast `setModel` path.
 
-## Cross-links
+### Single session, project-level
 
-- `../agents/identity-and-personas.md` — personality presets, identity reconstruction, daily logs, post-compaction recovery.
-- `pipeline-builder.md` — the new visual Linear workflow builder (fragile area).
-- `linear-integration.md` — connection model, workflow engine, dispatcher, sync loop, ingress, headless parity.
-- `workers.md` — worker creation wizard, team panel, adapter types, budgets.
-- `onboarding.md` — `OnboardingBanner`, `OnboardingWizard`, identity editor.
-- `../automations/README.md` — automations as event-driven rules; note CTO owns Linear intake, Automations never duplicate it.
-- `../computer-use/README.md` — computer-use proof appears in workflow closeout.
+`AgentChatIdentityKey` is just `"cto"`. `ensureIdentitySession` reuses the newest CTO session regardless of which lane it was last active on: if nothing lives on the canonical lane but a CTO session exists elsewhere, it reuses that session and rebinds it to the canonical lane instead of forking a parallel thread. There is only ever one CTO thread per project.
 
-## Current product contract
+## Tab model
 
-- Default chat path is light; subsystems hydrate only when their tab is active.
-- Setup finishes without Linear; Linear connects after.
-- Linear sync short-circuits when no workflows are enabled and no runs are active.
-- Ingress only auto-starts when realtime config is actually present.
-- Management surfaces (Team, Workflows, Settings) hydrate lazily without weakening persistent identity.
-- The `ade serve` runtime uses the same Linear services as the desktop renderer; the CTO is not a desktop-only feature.
-- Worker adapter type is one of `claude-local`, `codex-local`, or `process`. There are no other adapter types — anything that needs to wrap an external service does so as a `process` adapter.
+The CTO tab is a single persistent thread plus a settings sheet — there is no Chat/Team/Workflows/Settings tab bar. The header exposes the name, personality, live model badge, and a gear that slides in `CtoSettingsPanel` from the right. Onboarding, when incomplete, takes over the whole surface as one card.
+
+## IPC surface
+
+Registered in `apps/desktop/src/main/services/ipc/registerIpc.ts`, named in `apps/desktop/src/shared/ipc.ts`, reached from the renderer via `window.ade.cto.*`:
+
+- Thread + identity: `ctoEnsureSession`, `ctoGetState`, `ctoUpdateIdentity`, `ctoListSessionLogs`, `ctoPreviewSystemPrompt`, `ctoRunProjectScan`.
+- Onboarding: `ctoGetOnboardingState`, `ctoCompleteOnboardingStep`, `ctoDismissOnboarding`, `ctoResetOnboarding`.
+- Memory: `ctoGetMemory`, `ctoUpdateMemory`, `ctoSearchMemory`.
+- Linear read + credentials/OAuth: `ctoGetLinearConnectionStatus`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`.
+
+There are no worker, workflow, flow-policy, sync, or ingress IPC channels — they were removed with those subsystems.
+
+## Sync command surface
+
+Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` and consumed by the iOS client's `SyncService`:
+
+- `cto.ensureSession`, `cto.getState`, `cto.updateIdentity`.
+- `cto.getMemory` — returns the `CtoMemorySnapshot` (durable memory + thread state + today's daily log) the iOS Memory card decodes.
+- `cto.getLinearConnectionStatus`, `cto.getLinearQuickView`, `cto.getLinearIssuePickerData`, `cto.searchLinearIssues`, `cto.getLinearIssueComments`.
+
+The legacy `cto.getBudgetSnapshot` and `cto.runLinearSyncNow` commands were removed.
+
+## Setup
+
+First run is one card. The user picks a personality preset, optionally adjusts the work-style rows and a name, and the CTO is ready to chat. Only the `identity` step is required (`CTO_REQUIRED_ONBOARDING_STEPS`). Model, reasoning effort, and Linear all layer in afterward from Settings; nothing else is required to start. Setup can be re-run any time from Settings → Setup → Re-run setup.
 
 ## Gotchas and fragile areas
 
-- **Pipeline builder** (`pipeline/`) is the newest surface. Nested `downstreamTarget` chain is stored recursively but edited as a flat list via `flattenTargetChain` / `rebuildTargetChain`. See `pipeline-builder.md` for the detailed mapping.
-- **Identity re-injection after compaction** happens inside `refreshReconstructionContext()` — changes to the doctrine, personality, CTO continuity model, or capability manifest must keep the preview and runtime in sync. The capability manifest is the single place to keep aligned with tool registrations.
-- **Workflow match precedence** runs by `priority` descending; values inside a trigger group are OR-ed, populated groups are AND-ed. A `watchOnly` route logs a match without launching.
-- **Dynamic employee delegation** — when routing resolves no employee, runs enter `awaiting_delegation` instead of dispatching to an invalid target. Do not assume dispatch always happens.
+- **The deterministic flush is the guarantee.** `flushIdentityContinuityDeterministic` runs synchronously and unconditionally before teardown and after compaction; the LLM summary upgrade is best-effort and may be skipped or fail without affecting correctness. Never make the durable write depend on the LLM path.
+- **Cursor and Droid emit no compaction signal.** For those runtimes there is no pre-compaction flush hook, so the turn-end daily journal plus the switch-time flush are what make any provider reset recoverable. Treat the daily log as the safety net there.
+- **Injected memory is authoritative.** The prompt tells the CTO never to claim memory it does not have injected — changes to injection caps or ordering in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
+- **Capability manifest stays hand-synced.** `ctoPromptContent.buildCtoCapabilityManifest()` must be kept aligned with `ctoOperatorTools.ts` registrations; it is injected in full and is not generated from the tool list.
+- **One CTO session.** Do not create a second CTO session on a foreign lane; `ensureIdentitySession` rebinds the existing one. Session-creation paths that bypass it would fork the thread.
+
+## Cross-links
+
+- [`../agents/identity-and-personas.md`](../agents/identity-and-personas.md) — the persistent-identity model, personality presets, and memory-backed reconstruction.
+- [`../linear-integration/README.md`](../linear-integration/README.md) — the canonical Linear doc: connection model, read surface, developer lane/PR flow, live-status round-trip, and the `ade linear` bridge.
+- [`../chat/README.md`](../chat/README.md) — the underlying agent-chat session the CTO thread is built on.
+- [`../automations/README.md`](../automations/README.md) — event-driven automation rules (independent of the CTO; the CTO no longer owns any intake).

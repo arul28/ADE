@@ -10,6 +10,14 @@ struct SettingsPairingSection: View {
     GlassEffectContainer(spacing: 8) {
       VStack(spacing: 8) {
         SettingsPairActionRow(
+          icon: "qrcode.viewfinder",
+          title: "Scan pairing code",
+          subtitle: "Point at the QR in ADE on your computer"
+        ) {
+          presentedSheet = .scan
+        }
+
+        SettingsPairActionRow(
           icon: "dot.radiowaves.left.and.right",
           title: "Discover on network",
           subtitle: discoverSubtitle
@@ -38,6 +46,39 @@ struct SettingsPairingSection: View {
       return "Looking nearby"
     }
     return count == 1 ? "1 nearby machine found" : "\(count) nearby machines found"
+  }
+}
+
+/// Compact toggle for routing through ADE's cloud relay when no direct path
+/// works. Default OFF; stored in the App Group suite so the value is shared.
+struct SettingsCloudRelayToggle: View {
+  @AppStorage(SyncService.cloudRelayFallbackDefaultsKey, store: ADESharedContainer.defaults)
+  private var cloudRelayFallbackEnabled = false
+
+  var body: some View {
+    Toggle(isOn: $cloudRelayFallbackEnabled) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Cloud relay fallback")
+          .font(.body.weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("Route through ADE's cloud relay when no direct path works.")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+    }
+    .tint(ADEColor.purpleAccent)
+    .padding(.horizontal, 16)
+    .padding(.vertical, 12)
+    .background(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .fill(ADEColor.surfaceBackground.opacity(0.5))
+    )
+    .glassEffect(in: .rect(cornerRadius: 16))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.18), lineWidth: 0.75)
+    )
+    .accessibilityHint("Use ADE's cloud relay as a last resort when direct connections fail.")
   }
 }
 

@@ -50,19 +50,10 @@ import { createPrPollingService } from "../../desktop/src/main/services/prs/prPo
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
-import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
-import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
-import { createWorkerRevisionService } from "../../desktop/src/main/services/cto/workerRevisionService";
-import type { createWorkerHeartbeatService } from "../../desktop/src/main/services/cto/workerHeartbeatService";
-import type { createWorkerTaskSessionService } from "../../desktop/src/main/services/cto/workerTaskSessionService";
+import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
-import type { createFlowPolicyService } from "../../desktop/src/main/services/cto/flowPolicyService";
-import type { createLinearDispatcherService } from "../../desktop/src/main/services/cto/linearDispatcherService";
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearIngressService } from "../../desktop/src/main/services/cto/linearIngressService";
-import type { createLinearRoutingService } from "../../desktop/src/main/services/cto/linearRoutingService";
-import type { createLinearSyncService } from "../../desktop/src/main/services/cto/linearSyncService";
 import {
   createLinearChatLinkPublisher,
   publishLinearLaneCard,
@@ -108,6 +99,9 @@ import {
 } from "./services/builtInBrowser/desktopBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
+import { createPushRelayClient } from "./services/push/pushRelayClient";
+import { getSharedPushPublisherService, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
@@ -211,19 +205,10 @@ export type AdeRuntime = {
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
-  workerAgentService: ReturnType<typeof createWorkerAgentService>;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerTaskSessionService?: ReturnType<typeof createWorkerTaskSessionService> | null;
+  ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
-  linearDispatcherService?: ReturnType<typeof createLinearDispatcherService> | null;
   linearIssueTracker?: ReturnType<typeof createLinearIssueTracker> | null;
-  linearSyncService?: ReturnType<typeof createLinearSyncService> | null;
-  linearIngressService?: ReturnType<typeof createLinearIngressService> | null;
-  linearRoutingService?: ReturnType<typeof createLinearRoutingService> | null;
   processService?: ReturnType<typeof createProcessService> | null;
   githubService?: ReturnType<typeof createGithubService> | null;
   automationService?: ReturnType<typeof createAutomationService> | null;
@@ -234,6 +219,7 @@ export type AdeRuntime = {
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
+  pushPublisherService?: PushPublisherService | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
@@ -829,15 +815,15 @@ export async function createAdeRuntime(args: {
     dismiss: (args) => rebaseSuggestionService.dismiss(args),
   };
 
+  const ctoMemoryService = createCtoMemoryService({
+    adeDir: paths.adeDir,
+    logger,
+  });
   const ctoStateService = createCtoStateService({
     db,
     projectId,
     adeDir: paths.adeDir,
-  });
-  const workerAgentService = createWorkerAgentService({
-    db,
-    projectId,
-    adeDir: paths.adeDir,
+    ctoMemoryService,
   });
   const adeProjectService = createAdeProjectService({
     projectRoot,
@@ -846,18 +832,6 @@ export async function createAdeRuntime(args: {
     logger,
     projectConfigService,
     ctoStateService,
-    workerAgentService,
-  });
-  const workerBudgetService = createWorkerBudgetService({
-    db,
-    projectId,
-    workerAgentService,
-    projectConfigService,
-  });
-  const workerRevisionService = createWorkerRevisionService({
-    db,
-    projectId,
-    workerAgentService,
   });
   const computerUseArtifactBrokerService = createComputerUseArtifactBrokerService({
     db,
@@ -936,15 +910,9 @@ export async function createAdeRuntime(args: {
     laneService,
     operationService,
     conflictService,
-    workerAgentService,
-    workerBudgetService,
-    computerUseArtifactBrokerService,
     openExternal: async () => {},
     onGitHubStatusChanged: (status) =>
       pushEvent("runtime", { type: "github_status_changed", event: status }),
-    onLinearWorkflowEvent: (event) =>
-      pushEvent("runtime", { type: "linear_workflow_event", event }),
-    getAutomationService: () => automationServiceRef,
   });
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
@@ -989,11 +957,7 @@ export async function createAdeRuntime(args: {
       adeDir: paths.adeDir,
       transcriptsDir: paths.transcriptsDir,
       fileService: headlessLinearServices.fileService,
-      workerAgentService,
-      workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
-      flowPolicyService: headlessLinearServices.flowPolicyService,
-      getLinearDispatcherService: () => headlessLinearServices.linearDispatcherService,
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
@@ -1003,7 +967,6 @@ export async function createAdeRuntime(args: {
       getAutomationService: () => automationServiceRef,
       getGitService: () => gitService,
       conflictService,
-      getWorkerBudgetService: () => workerBudgetService,
       computerUseArtifactBrokerService,
       laneService,
       sessionService,
@@ -1011,6 +974,7 @@ export async function createAdeRuntime(args: {
       projectConfigService,
       aiIntegrationService,
       ctoStateService,
+      ctoMemoryService,
       logger,
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
@@ -1136,8 +1100,28 @@ export async function createAdeRuntime(args: {
   // `pr.listQueueStates` call over the local runtime fails with "is not
   // callable". Mirror the desktop main-process wiring (see main.ts) so the PRs
   // tab loads against the local runtime.
+  // Fan-out for the push publisher: PR merge-ready / checks-failing notifications
+  // are bridged here so the publisher never has to poll GitHub itself. Populated
+  // by pushPublisherService.start() (declared below), so it stays empty and inert
+  // when push publishing is not running.
+  const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
   const emitPrEvent = (event: PrEventPayload): void => {
     pushEvent("runtime", { type: "pr_event", event });
+    if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
+      const notification: PushPrNotification = {
+        kind: event.kind,
+        prNumber: event.prNumber,
+        prTitle: event.prTitle ?? null,
+        laneId: event.laneId ?? null,
+      };
+      for (const subscriber of pushPrNotificationSubscribers) {
+        try {
+          subscriber(notification);
+        } catch {
+          // ignore subscriber failures
+        }
+      }
+    }
   };
   const queueLandingService = createQueueLandingService({
     db,
@@ -1194,6 +1178,47 @@ export async function createAdeRuntime(args: {
   });
   prPollingService.start();
 
+  // Brain → Cloudflare push relay publisher. Owns push registration (from the
+  // paired phone via `push.*` sync commands) and fans agent/PR state transitions
+  // out as APNs alerts + the aggregate "agent-runs" Live Activity. Machine-level
+  // identity lives next to the sync pairing secrets under ~/.ade/secrets.
+  // One machine-level publisher shared by every project scope (keyed by the
+  // push-identity file), so a run in one project doesn't clobber the phone's
+  // single "agent-runs" Live Activity for another. Each scope wires its own
+  // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
+  const pushRelayFilePath = path.join(resolveMachineAdeLayout().secretsDir, "push-relay.json");
+  const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
+    const store = createPushRegistrationStore({ filePath: pushRelayFilePath });
+    return {
+      logger,
+      store,
+      relayClient: createPushRelayClient({ store, logger }),
+      machineName: os.hostname(),
+    };
+  });
+  const detachPushSources = pushPublisherService.attachSources(projectId, {
+    agentChatService: agentChatService ?? null,
+    ptyService,
+    subscribePrNotifications: (cb) => {
+      pushPrNotificationSubscribers.add(cb);
+      return () => pushPrNotificationSubscribers.delete(cb);
+    },
+    resolveLaneName: (laneId) => {
+      try {
+        const row = db.get<{ name: string }>(
+          "select name from lanes where id = ? and project_id = ? limit 1",
+          [laneId, projectId],
+        );
+        return row?.name ?? null;
+      } catch {
+        return null;
+      }
+    },
+  });
+  void pushPublisherService.start().catch((error) => {
+    logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
+
   const usageTrackingService = createUsageTrackingService({
     logger,
     pollIntervalMs: 120_000,
@@ -1206,6 +1231,31 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
+  // Cloud tunnel relay (phone → Cloudflare DO → this brain). Off by default;
+  // the Settings toggle flips the shared store and the client follows. The
+  // store instance is shared with the sync service so the relay candidate in
+  // pairingConnectInfo and the tunnel client always agree on one config file.
+  const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
+  const { createSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
+  const cloudRelayStore = createSyncCloudRelayStore({
+    filePath: path.join(
+      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+      "sync-cloud-relay.json",
+    ),
+  });
+  const syncTunnelClientService = createSyncTunnelClientService({
+    logger,
+    configStore: cloudRelayStore,
+    getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
+  });
+  if (cloudRelayStore.isEnabled()) {
+    void syncTunnelClientService.start().catch((error) => {
+      logger.warn("sync.tunnel_start_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+
   let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
@@ -1235,15 +1285,11 @@ export async function createAdeRuntime(args: {
       autoRebaseService,
       computerUseArtifactBrokerService,
       agentChatService,
-      workerAgentService,
-      workerBudgetService,
-      workerRevisionService,
-      workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
+      pushPublisherService,
       ctoStateService,
-      flowPolicyService: headlessLinearServices.flowPolicyService,
-      getLinearIngressService: () => headlessLinearServices.linearIngressService,
+      ctoMemoryService,
+      linearCredentialService: headlessLinearServices.linearCredentialService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
-      getLinearSyncService: () => headlessLinearServices.linearSyncService,
       processService,
       sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
@@ -1254,6 +1300,16 @@ export async function createAdeRuntime(args: {
       foreignChatProvider: resolvedArgs.syncRuntime.foreignChatProvider,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
+      cloudRelayStore,
+      onCloudRelayEnabledChanged: (enabled) => {
+        const action = enabled ? syncTunnelClientService.start() : syncTunnelClientService.stop();
+        void action.catch((error) => {
+          logger.warn("sync.tunnel_toggle_failed", {
+            enabled,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      },
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
     syncServiceForPtyEvents = syncService;
@@ -1326,6 +1382,7 @@ export async function createAdeRuntime(args: {
     gitService,
     diffService,
     syncService,
+    pushPublisherService,
     syncHostService: syncService?.getHostService() ?? null,
     laneWorktreeLockService,
     ptyService,
@@ -1336,25 +1393,16 @@ export async function createAdeRuntime(args: {
     agentChatService,
     orchestrationService,
     ctoStateService,
-    workerAgentService,
+    ctoMemoryService,
     adeProjectService,
-    workerBudgetService,
-    workerRevisionService,
     githubService: headlessLinearServices.githubService,
-    workerTaskSessionService: headlessLinearServices.workerTaskSessionService,
-    workerHeartbeatService: headlessLinearServices.workerHeartbeatService,
     linearCredentialService: headlessLinearServices.linearCredentialService,
     linearOAuthService,
     prService: headlessLinearServices.prService,
     queueLandingService,
     prSummaryService,
     fileService: headlessLinearServices.fileService,
-    flowPolicyService: headlessLinearServices.flowPolicyService,
-    linearDispatcherService: headlessLinearServices.linearDispatcherService,
     linearIssueTracker: headlessLinearServices.linearIssueTracker,
-    linearSyncService: headlessLinearServices.linearSyncService,
-    linearIngressService: headlessLinearServices.linearIngressService,
-    linearRoutingService: headlessLinearServices.linearRoutingService,
     processService,
     feedbackReporterService,
     usageTrackingService,
@@ -1375,6 +1423,9 @@ export async function createAdeRuntime(args: {
       }
       void configReloadService.dispose().catch(() => {});
       swallow(() => prPollingService.dispose());
+      // Detach only this scope's signals; the shared publisher outlives the scope.
+      swallow(() => detachPushSources());
+      void syncTunnelClientService.dispose().catch(() => {});
       swallow(() => automationIngressService?.dispose());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());

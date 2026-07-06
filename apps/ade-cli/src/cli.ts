@@ -491,8 +491,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -573,12 +573,6 @@ function commandHelpText(key: string): string | undefined {
       AUTOMATIONS_COMING_SOON_MESSAGE,
       "ADE_ENABLE_AUTOMATIONS",
     );
-  }
-  if (key === "linear" && !automationsCliEnabled()) {
-    return HELP_BY_COMMAND.linear
-      .replace(/    \$ ade linear ingress status --text\s+Show Linear ingress status\n/, "")
-      .replace(/    \$ ade linear ingress start --text\s+Ensure Linear webhook and start relay ingress\n/, "")
-      .replace(/    \$ ade linear ingress start-local --text\s+Start only the local Linear webhook listener\n/, "");
   }
   return HELP_BY_COMMAND[key];
 }
@@ -1501,6 +1495,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --no-fast, --standard   Disable fast mode explicitly.
     --print-config          Print the createSession payload and permission mapping.
     --dry-run               Alias for --print-config; does not create a chat.
+    --parent <sessionId>    Link the new chat as a child of that session.
+                            Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
+    --no-parent             Create the chat without a parent link.
 
   Permission notes:
     full-auto maps Codex to sandbox=danger-full-access and approval=never.
@@ -1535,6 +1532,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --print                 Start the session runtime in print mode.
     --print-config          Print the resolved CLI launch config.
     --dry-run               Alias for --print-config; no session is created.
+    --parent <sessionId>    Link the new chat as a child of that session.
+                            Defaults to $ADE_CHAT_SESSION_ID when run from a
+                            tracked agent shell (the spawning chat).
+    --no-parent             Create the chat without a parent link.
 
   Permission mapping highlights:
     codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.
@@ -1890,15 +1891,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade secrets set TOKEN --value-file token.txt
     $ ade secrets delete STRIPE_API_KEY             Delete a secret
 `,
-  cto: `${ADE_BANNER}
-  CTO and Work state
-
-    $ ade cto state --text                          Read CTO identity, recent sessions
-    $ ade cto chats list --text                     List CTO work chats
-    $ ade cto chats spawn --lane <lane> --prompt "plan this"
-    $ ade cto chats send <session> --text "continue"
-    $ ade actions run worker_agent.listAgents --input-json '{"includeDeleted":false}'
-`,
   linear: `${ADE_BANNER}
   Linear workflows
 
@@ -1931,26 +1923,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Search issues for the lane Linear-issue picker
     $ ade --role cto linear issue-comments --issue-id <id>
                                                     Fetch comments on a Linear issue
-    $ ade linear workflows --text                   List configured workflows
-    $ ade linear sync dashboard --text              Show sync dashboard
-    $ ade linear sync run                           Trigger a sync run
-    $ ade linear sync queue --text                  List sync queue items
-    $ ade linear sync resolve --queue-item <id> --action approve
-    $ ade linear ingress status --text              Show Linear ingress status
-    $ ade linear ingress start --text               Ensure Linear webhook and start relay ingress
-    $ ade linear ingress start-local --text         Start only the local Linear webhook listener
-    $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
-    $ ade linear install                            Register ADE as the "Open in coding tool" target
-    $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
-`,
-  flow: `${ADE_BANNER}
-  Flow policy
-
-    $ ade flow policy get --text                    Read current workflow policy
-    $ ade flow policy validate --input-json '{...}' Validate policy JSON
-    $ ade flow policy save --input-json '{...}'     Save policy JSON
-    $ ade flow policy revisions --text              List saved revisions
-    $ ade flow policy rollback <revision-id>        Restore a prior revision
 `,
   coordinator: `${ADE_BANNER}
   Coordinator runtime tools
@@ -2331,6 +2303,27 @@ function collectGenericObjectArgs(
 
 function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
+}
+
+/**
+ * Parent chat-session lineage for spawned chat sessions. Defaults to the
+ * spawning agent's own session — ADE injects ADE_CHAT_SESSION_ID into every
+ * tracked agent shell (chat runtimes and tracked CLI/PTY sessions) — so a
+ * child created via `ade chat create` links back to the chat that spawned it
+ * instead of becoming an orphan. `--parent <sessionId>` overrides the
+ * default; `--no-parent` opts out entirely.
+ */
+function readParentSessionId(args: string[]): string | undefined {
+  const override = readValue(args, ["--parent", "--parent-session", "--parent-session-id"]);
+  const noParent = readFlag(args, ["--no-parent"]);
+  if (override && noParent) {
+    throw new CliUsageError("--parent cannot be combined with --no-parent.");
+  }
+  if (noParent) return undefined;
+  const explicit = override?.trim();
+  if (explicit) return explicit;
+  const env = process.env.ADE_CHAT_SESSION_ID?.trim();
+  return env?.length ? env : undefined;
 }
 
 type ToolClaimArgs = {
@@ -3815,6 +3808,11 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     return createdLaneId;
   };
 
+  // Consume the flags in both modes so they never leak into the generic arg
+  // bag; lineage only applies to chat mode (a PTY session is not a chat
+  // record, so there is nothing to link).
+  const parentSessionId = readParentSessionId(args);
+  const orchestrationParentSessionId = mode === "chat" ? parentSessionId : undefined;
   const launchArgs = mode === "chat"
     ? collectGenericObjectArgs(args, {
         provider,
@@ -3822,6 +3820,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         modelId: modelArg,
         reasoningEffort,
         permissionMode,
+        ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
         droidPermissionMode: readValue(args, [
           "--droid-permission-mode",
           "--droid-autonomy",
@@ -6403,12 +6402,14 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
+    const orchestrationParentSessionId = readParentSessionId(args);
     const createStep = actionStep(
       "result",
       "chat",
       "createSession",
       collectGenericObjectArgs(args, {
         laneId: readLaneId(args),
+        ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
         provider: readValue(args, ["--provider"]),
         model: modelArg,
         modelId: modelArg,
@@ -9271,70 +9272,6 @@ function buildAgentPlan(args: string[]): CliPlan {
   };
 }
 
-function buildCtoPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "state";
-  if (sub === "state")
-    return {
-      kind: "execute",
-      label: "CTO state",
-      steps: [
-        actionCallStep(
-          "result",
-          "get_cto_state",
-          collectGenericObjectArgs(args, {
-            recentLimit: readIntOption(args, ["--recent-limit", "--limit"]),
-          }),
-        ),
-      ],
-    };
-  if (sub === "chats" || sub === "chat") {
-    const mode = firstPositional(args) ?? "list";
-    const toolByMode: Record<string, string> = {
-      list: "listChats",
-      spawn: "spawnChat",
-      status: "getChatStatus",
-      transcript: "readChatTranscript",
-      send: "sendChatMessage",
-      interrupt: "interruptChat",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "cto chats supports list, spawn, status, transcript, send, or interrupt.",
-      );
-    return {
-      kind: "execute",
-      label: `CTO chats ${mode}`,
-      steps: [
-        actionCallStep(
-          "result",
-          tool,
-          collectGenericObjectArgs(args, {
-            sessionId:
-              readValue(args, ["--session", "--session-id"]) ??
-              firstPositional(args),
-            text: readValue(args, ["--text", "--message"]) ?? args.join(" "),
-            laneId: readLaneId(args),
-            modelId: readValue(args, ["--model", "--model-id"]),
-            initialPrompt: readValue(args, ["--prompt"]),
-          }),
-        ),
-      ],
-    };
-  }
-  return {
-    kind: "execute",
-    label: `CTO ${sub}`,
-    steps: [
-      actionCallStep(
-        "result",
-        sub.replace(/-/g, "_"),
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
-}
-
 function parseDraftInput(args: string[]): JsonObject {
   const text = readFileTextInput(args);
   if (text == null) {
@@ -9745,7 +9682,7 @@ function buildAutomationsPlan(args: string[]): CliPlan {
 }
 
 function buildLinearPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "workflows";
+  const sub = firstPositional(args) ?? "quick-view";
   // --- Daemon-bridge commands for a CLI-session agent ---
   // These let an agent running inside a tracked ADE CLI session read and write
   // its attached Linear issue without holding Linear credentials: every call is
@@ -9990,170 +9927,10 @@ function buildLinearPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "workflows")
-    return {
-      kind: "execute",
-      label: "Linear workflows",
-      steps: [
-        actionCallStep(
-          "result",
-          "listLinearWorkflows",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  if (sub === "run") {
-    const mode = firstPositional(args) ?? "status";
-    const toolByMode: Record<string, string> = {
-      status: "getLinearRunStatus",
-      resolve: "resolveLinearRunAction",
-      cancel: "cancelLinearRun",
-      reroute: "rerouteLinearRun",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "linear run supports status, resolve, cancel, or reroute.",
-      );
-    return {
-      kind: "execute",
-      label: `Linear run ${mode}`,
-      steps: [
-        actionCallStep(
-          "result",
-          tool,
-          collectGenericObjectArgs(args, {
-            runId:
-              readValue(args, ["--run", "--run-id"]) ?? firstPositional(args),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "route") {
-    const mode = firstPositional(args) ?? "cto";
-    const toolByMode: Record<string, string> = {
-      cto: "routeLinearIssueToCto",
-      worker: "routeLinearIssueToWorker",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError("linear route supports cto or worker.");
-    return {
-      kind: "execute",
-      label: `Linear route ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-  if (sub === "sync") {
-    const mode = firstPositional(args) ?? "dashboard";
-    const toolByMode: Record<string, string> = {
-      dashboard: "getLinearSyncDashboard",
-      run: "runLinearSyncNow",
-      queue: "listLinearSyncQueue",
-      resolve: "resolveLinearSyncQueueItem",
-      detail: "getLinearWorkflowRunDetail",
-    };
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "linear sync supports dashboard, run, queue, resolve, or detail.",
-      );
-    return {
-      kind: "execute",
-      label: `Linear sync ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-  if (sub === "ingress") {
-    assertAutomationsCliEnabled();
-    const mode = firstPositional(args) ?? "status";
-    const toolByMode: Record<string, string> = {
-      status: "getLinearIngressStatus",
-      events: "listLinearIngressEvents",
-      webhook: "ensureLinearWebhook",
-    };
-    if (mode === "start" || mode === "listen" || mode === "ensure") {
-      return {
-        kind: "execute",
-        label: "Linear ingress start",
-        steps: [actionStep("result", "linear_ingress", "ensureRelayWebhook")],
-      };
-    }
-    if (mode === "start-local" || mode === "local-webhook") {
-      return {
-        kind: "execute",
-        label: "Linear ingress local webhook",
-        steps: [actionStep("result", "linear_ingress", "startLocalWebhook")],
-      };
-    }
-    const tool = toolByMode[mode];
-    if (!tool)
-      throw new CliUsageError(
-        "linear ingress supports status, events, webhook, start, or start-local.",
-      );
-    return {
-      kind: "execute",
-      label: `Linear ingress ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-  return {
-    kind: "execute",
-    label: `Linear ${sub}`,
-    steps: [
-      actionStep(
-        "result",
-        "linear_dispatcher",
-        sub,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
-}
-
-function buildFlowPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "policy";
-  if (sub !== "policy")
-    return {
-      kind: "execute",
-      label: `flow ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "flow_policy",
-          sub,
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  const mode = firstPositional(args) ?? "get";
-  const actionByMode: Record<string, string> = {
-    get: "getPolicy",
-    save: "savePolicy",
-    validate: "validatePolicy",
-    normalize: "normalizePolicy",
-    revisions: "listRevisions",
-    rollback: "rollbackRevision",
-    diff: "diffPolicyPaths",
-  };
-  const action = actionByMode[mode];
-  if (!action)
-    throw new CliUsageError(
-      "flow policy supports get, save, validate, normalize, revisions, rollback, or diff.",
-    );
-  return {
-    kind: "execute",
-    label: `flow policy ${mode}`,
-    steps: [
-      actionStep(
-        "result",
-        "flow_policy",
-        action,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
+  throw new CliUsageError(
+    `Unknown linear command '${sub}'. Supported: quick-view, picker-data, issues, my-issues, `
+      + `search-issues, issue, comments, attach, detach, comment, assign, label, set-state, graphql.`,
+  );
 }
 
 function buildCoordinatorPlan(args: string[]): CliPlan {
@@ -10387,6 +10164,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--reasoning",
   "--recent-limit",
   "--ref",
+  "--require-dpop",
   "--role",
   "--root",
   "--root-lane",
@@ -10593,7 +10371,7 @@ function buildCliPlan(
   }
   if (primary === "linear") {
     // `ade linear install` is the deeplink installer; every other `ade linear`
-    // subcommand (workflows, sync, quick-view, route, picker-data, ...) belongs
+    // subcommand (quick-view, issues, comment, set-state, picker-data, ...) belongs
     // to buildLinearPlan below. Only route to the deeplink handler when the
     // first positional looks like "install". Use a non-mutating peek so
     // buildLinearPlan still sees the original args.
@@ -10706,13 +10484,11 @@ function buildCliPlan(
   if (primary === "chat" || primary === "chats" || primary === "work")
     return buildChatPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
-  if (primary === "cto") return buildCtoPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
     assertAutomationsCliEnabled();
     return buildAutomationsPlan(args);
   }
-  if (primary === "flow") return buildFlowPlan(args);
   if (primary === "coordinator" || primary === "coord")
     return buildCoordinatorPlan(args);
   if (primary === "ask")
@@ -12080,6 +11856,11 @@ Usage:
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
+  ade sync relay status             Cloud relay (phones dial this machine via a tunnel)
+  ade sync relay enable
+  ade sync relay disable
+  ade sync security status          Machine sync security posture (require-DPoP)
+  ade sync security require-dpop <on|off>
 `,
     };
   }
@@ -12181,6 +11962,92 @@ Usage:
       label: "sync name set",
       steps: [{ key: "result", method: "sync.setRuntimeName", params: { name } }],
     };
+  }
+  if (sub === "relay") {
+    // Cloud relay toggle. Headless brains have no desktop Settings popover, so
+    // the CLI is the only surface for enabling the tunnel phones dial into.
+    const action = firstPositional(args) ?? "status";
+    if (action === "status" || action === "show" || action === "get") {
+      return {
+        kind: "execute",
+        label: "sync relay status",
+        steps: [{ key: "result", method: "sync.getCloudRelayStatus" }],
+      };
+    }
+    if (action === "enable" || action === "on") {
+      return {
+        kind: "execute",
+        label: "sync relay enable",
+        steps: [
+          {
+            key: "result",
+            method: "sync.setCloudRelayEnabled",
+            params: { enabled: true },
+          },
+        ],
+      };
+    }
+    if (action === "disable" || action === "off") {
+      return {
+        kind: "execute",
+        label: "sync relay disable",
+        steps: [
+          {
+            key: "result",
+            method: "sync.setCloudRelayEnabled",
+            params: { enabled: false },
+          },
+        ],
+      };
+    }
+    throw new CliUsageError(`Unsupported sync relay action: ${action}`);
+  }
+  if (sub === "security") {
+    // Machine-level sync security posture. Today the only knob is require-DPoP,
+    // otherwise reachable solely via ADE_SYNC_REQUIRE_DPOP; headless operators
+    // need a persistent CLI toggle.
+    const action = firstPositional(args) ?? "status";
+    if (action === "status" || action === "show" || action === "get") {
+      return {
+        kind: "execute",
+        label: "sync security status",
+        steps: [{ key: "result", method: "sync.getRequireDpop" }],
+      };
+    }
+    if (action === "require-dpop" || action === "dpop") {
+      const raw = requireValue(
+        readValue(args, ["--require-dpop"]) ?? firstPositional(args),
+        "on|off",
+      );
+      const normalized = raw.toLowerCase();
+      const enabled =
+        normalized === "on" ||
+        normalized === "true" ||
+        normalized === "enable" ||
+        normalized === "1";
+      const disabled =
+        normalized === "off" ||
+        normalized === "false" ||
+        normalized === "disable" ||
+        normalized === "0";
+      if (!enabled && !disabled) {
+        throw new CliUsageError(
+          "sync security require-dpop expects on or off.",
+        );
+      }
+      return {
+        kind: "execute",
+        label: `sync security require-dpop ${enabled ? "on" : "off"}`,
+        steps: [
+          {
+            key: "result",
+            method: "sync.setRequireDpop",
+            params: { requireDpop: enabled },
+          },
+        ],
+      };
+    }
+    throw new CliUsageError(`Unsupported sync security action: ${action}`);
   }
   throw new CliUsageError(`Unsupported sync command: ${sub}`);
 }

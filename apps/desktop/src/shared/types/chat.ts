@@ -104,7 +104,6 @@ export type DelegationContract = {
 
 export type ChatSurfaceMode = "standard" | "resolver";
 export type ChatSurfaceProfile = "standard" | "persistent_identity";
-export type ChatModelSwitchPolicy = "same-family-after-launch" | "any-after-launch";
 
 export type ChatSurfaceChipTone = "accent" | "success" | "warning" | "danger" | "info" | "muted";
 
@@ -126,7 +125,6 @@ export type ChatSurfaceChip = {
 export type ChatSurfacePresentation = {
   mode: ChatSurfaceMode;
   profile?: ChatSurfaceProfile;
-  modelSwitchPolicy?: ChatModelSwitchPolicy;
   title?: string | null;
   subtitle?: string | null;
   accentColor?: string | null;
@@ -189,6 +187,17 @@ export type AgentChatNoticeDetail = {
   metrics?: AgentChatNoticeDetailMetric[];
   sections?: AgentChatNoticeDetailSection[];
   permissionModeTransition?: "entered_plan_mode" | "exited_plan_mode";
+  /**
+   * Deep-link to a child chat session spawned from this one (the
+   * "Subagent spawned" chip on `status: "subagent_spawned"` notices).
+   * Desktop navigates to the session; the TUI switches to it; iOS renders
+   * the notice message (extra fields are ignored by its decoder).
+   */
+  spawnedSession?: {
+    sessionId: string;
+    laneId?: string | null;
+    title?: string;
+  };
 };
 
 export type AgentChatLocalFileRef = {
@@ -871,7 +880,7 @@ export type OrchestrationSessionFields = {
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
 };
-export type AgentChatIdentityKey = "cto" | `agent:${string}`;
+export type AgentChatIdentityKey = "cto";
 export type AgentChatSurface = "work" | "automation";
 export type AgentChatCursorConfigValue = string | boolean | number;
 export type AgentChatCursorConfigSelectOption = {

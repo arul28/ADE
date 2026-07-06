@@ -127,6 +127,14 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       "\(item.status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized): \(item.description)"
     }
     return .todoUpdate(items: renderedItems, turnId: turnId)
+  // TODO(subagent-spawn-link): host emits `status: "subagent_spawned"` notices
+  // (noticeKind "info") carrying `detail.spawnedSession { sessionId, laneId?, title? }`
+  // for CLI/spawnAgent child chats. Desktop renders a tappable "Subagent spawned"
+  // chip deep-linking to the child session (see AgentChatMessageList.tsx
+  // "subagent_spawned" branch). iOS deliberately falls back to the generic
+  // system-notice row for now (message + pretty-printed detail JSON) — a real
+  // link row needs cross-session navigation plumbing (resolve child in roster,
+  // thread selection up from the transcript), which is out of scope here.
   case .systemNotice(let noticeKind, let message, let detail, let turnId, let steerId):
     return .systemNotice(kind: noticeKind.rawValue, message: message, detail: prettyPrintedRemoteJSONValue(detail), turnId: turnId, steerId: steerId)
   case .error(let message, let turnId, _, let errorInfo):

@@ -288,9 +288,8 @@ using the active lane worktree as `cwd`, so lane-local
 and bundled ADE resources appear before inherited environment,
 packaged app, and source-fallback roots. The same full root list is
 joined into `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions,
-headless worker launches, Work-tab CLI launches, ADE Code/TUI
-sessions, CTO worker prompts, and mobile-started work that
-runs through ADE's runtime.
+Work-tab CLI launches, ADE Code/TUI sessions, the CTO, and
+mobile-started work that runs through ADE's runtime.
 
 The guidance tells the agent that `ade` *should* be available, and
 gives it an ordered fallback chain when `command -v ade` fails:

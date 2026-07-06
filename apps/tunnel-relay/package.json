@@ -1,0 +1,19 @@
+{
+  "name": "ade-tunnel-relay",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260620.0",
+    "@types/node": "^20.11.30",
+    "typescript": "^5.7.3",
+    "vitest": "^0.34.6",
+    "wrangler": "^4.53.0"
+  }
+}

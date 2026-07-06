@@ -451,9 +451,29 @@ export type SyncProjectListMyGitHubReposResultPayload = {
   result?: ListMyGitHubReposResult | null;
 };
 
+/**
+ * Device-bound proof-of-possession attached to a paired hello. The phone keeps
+ * a P-256 private key in the Secure Enclave; pairing registers the public key
+ * with the host, and every connection signs a fresh challenge. A stolen paired
+ * secret without the enclave key is useless once the key is on record.
+ */
+export type SyncDpopProof = {
+  /**
+   * Base64 X9.63 (04 || X || Y) P-256 public key. Sent while upgrading a
+   * legacy pairing record that has no key yet; ignored once a key is stored.
+   */
+  publicKey?: string | null;
+  /** Unix seconds; the host rejects proofs outside a small skew window. */
+  timestamp: number;
+  /** Random single-use value; the host keeps a short replay cache. */
+  nonce: string;
+  /** Base64 DER ECDSA-SHA256 signature over the canonical challenge string. */
+  signature: string;
+};
+
 export type SyncHelloAuth =
   | { kind: "bootstrap"; token: string }
-  | { kind: "paired"; deviceId: string; secret: string };
+  | { kind: "paired"; deviceId: string; secret: string; dpop?: SyncDpopProof | null };
 
 export type SyncHelloOkPayload = {
   peer: SyncPeerMetadata;
@@ -474,9 +494,21 @@ export type SyncHelloOkPayload = {
 export type SyncHelloErrorPayload = {
   code: "auth_failed" | "invalid_hello";
   message: string;
+  /**
+   * Identity of the machine that rejected this hello. Lets a client tell
+   * "the machine I'm paired with revoked this device" (safe to drop the
+   * saved pairing) apart from "a different machine answered on a reused
+   * address" (keep the pairing and try other routes). Older hosts omit it,
+   * in which case clients must treat the rejection as unattributed and
+   * never destroy saved credentials over it.
+   */
+  host?: {
+    deviceId: string;
+    name?: string;
+  };
 };
 
-export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback";
+export type SyncAddressCandidateKind = "lan" | "saved" | "tailscale" | "loopback" | "relay";
 
 export type SyncAddressCandidate = {
   host: string;
@@ -497,9 +529,47 @@ export type SyncPairingConnectInfo = {
   addressCandidates: SyncAddressCandidate[];
 };
 
+/**
+ * Machine-level cloud tunnel relay posture (Settings > Sync "Cloud relay
+ * fallback"). When enabled, the brain keeps an outbound tunnel registered and
+ * a `relay`-kind address candidate (a full wss:// URL) is advertised to
+ * phones as the lowest-priority transport.
+ */
+export type SyncCloudRelayStatus = {
+  enabled: boolean;
+  /** `wss://…/connect/<machineKey>` — what phones dial. */
+  relayWssUrl: string;
+  machineKey: string;
+  /** http(s) base URL of the relay worker. */
+  relayUrl: string;
+};
+
+/**
+ * Payload behind the desktop pairing QR: a single smart URL
+ * (`https://ade-app.dev/pair#<base64url(JSON)>`) carrying everything the phone
+ * needs to find the machine. The PIN is never embedded — the user still types
+ * it, so a photographed QR alone cannot pair a device. The payload rides the
+ * URL fragment so it never reaches any web server's logs.
+ */
+export type SyncPairingQrPayload = {
+  version: 3;
+  hostIdentity: SyncPairingHostIdentity;
+  port: number;
+  addressCandidates: SyncAddressCandidate[];
+  /** Full wss:// URL of the cloud tunnel relay, when the user enabled it. */
+  relayUrl?: string | null;
+  /** Reserved for off-LAN pairing claims once the relay pairing flow ships. */
+  claimToken?: string | null;
+};
+
 export type SyncPairingRequestPayload = {
   code: string;
   peer: SyncPeerMetadata;
+  /**
+   * Base64 X9.63 P-256 public key of the device's Secure Enclave DPoP key.
+   * Stored with the pairing record so later hellos must prove possession.
+   */
+  dpopPublicKey?: string | null;
 };
 
 export type SyncPairingResultPayload = {
@@ -887,31 +957,15 @@ export type SyncRemoteCommandAction =
   | "chat.modelCatalog"
   | "chat.getChatEventHistoryPage"
   | "agentChat.getEventHistoryPage"
-  | "cto.getRoster"
   | "cto.ensureSession"
-  | "cto.ensureAgentSession"
   | "cto.getState"
-  | "cto.listAgents"
-  | "cto.getBudgetSnapshot"
-  | "cto.listAgentRuns"
-  | "cto.listAgentSessionLogs"
-  | "cto.listAgentRevisions"
-  | "cto.getFlowPolicy"
+  | "cto.getMemory"
   | "cto.getLinearConnectionStatus"
   | "cto.getLinearQuickView"
   | "cto.getLinearIssuePickerData"
   | "cto.searchLinearIssues"
   | "cto.getLinearIssueComments"
-  | "cto.getLinearSyncDashboard"
-  | "cto.runLinearSyncNow"
-  | "cto.listLinearSyncQueue"
-  | "cto.listLinearIngressEvents"
   | "cto.updateIdentity"
-  | "cto.saveAgent"
-  | "cto.removeAgent"
-  | "cto.setAgentStatus"
-  | "cto.triggerAgentWakeup"
-  | "cto.rollbackAgentRevision"
   | "git.getChanges"
   | "git.getFile"
   | "files.writeTextAtomic"

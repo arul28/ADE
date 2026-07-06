@@ -12,6 +12,13 @@ import {
 } from "../../../desktop/src/shared/modelRegistry";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
+import {
+  composerTriggerSpansWholeDraft,
+  detectComposerTrigger,
+  findConfirmedComposerTokens,
+  replaceComposerTriggerSpan,
+  type ComposerTokenRange,
+} from "../../../desktop/src/shared/composerTriggers";
 import type {
   AgentChatClaudePlugin,
   AgentChatReloadClaudePluginsResult,
@@ -2009,13 +2016,29 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
   return "No terminal login command is known for this provider.";
 }
 
-function activeMention(value: string): { start: number; query: string } | null {
-  const match = value.match(/(^|\s)@([^\s@]*)$/);
-  if (!match || match.index == null) return null;
-  return {
-    start: match.index + match[1].length,
-    query: match[2] ?? "",
-  };
+/**
+ * Split a visual prompt row's text into plain and confirmed-token segments so
+ * the renderer can style `@file` / `/command` chips. `rowStart` is the prompt
+ * code-unit offset of `text[0]`; token ranges are in prompt coordinates.
+ */
+function segmentPromptLineText(
+  text: string,
+  rowStart: number,
+  tokens: ComposerTokenRange[],
+): Array<{ text: string; kind: "plain" | "file" | "command" }> {
+  if (!tokens.length || !text) return text ? [{ text, kind: "plain" }] : [];
+  const segments: Array<{ text: string; kind: "plain" | "file" | "command" }> = [];
+  let pos = 0;
+  for (const token of tokens) {
+    const start = Math.max(0, token.start - rowStart);
+    const end = Math.min(text.length, token.end - rowStart);
+    if (end <= pos || start >= text.length) continue;
+    if (start > pos) segments.push({ text: text.slice(pos, start), kind: "plain" });
+    segments.push({ text: text.slice(Math.max(pos, start), end), kind: token.kind });
+    pos = end;
+  }
+  if (pos < text.length) segments.push({ text: text.slice(pos), kind: "plain" });
+  return segments;
 }
 
 export const MENTION_REMOTE_DEBOUNCE_MS = 160;
@@ -3882,6 +3905,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
   const centerWidth = resolveCenterPaneWidth(columns, drawerOpen, rightPaneWidth);
   const promptPaneWidth = Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(columns, MIN_CENTER_PANE_WIDTH));
+  // Confirmed chip tokens in the prompt: mentions that were actually inserted
+  // from the picker and /commands matching the known catalog. Rendered as
+  // colored tokens in the prompt rows below.
+  const promptTokenRanges = useMemo<ComposerTokenRange[]>(() => {
+    if (!prompt) return [];
+    const mentionTexts = new Set(selectedMentions.map((mention) => mention.insertText));
+    const commandNames = new Set([
+      ...BUILTIN_COMMANDS.map((command) => command.name.replace(/^\//, "").toLowerCase()),
+      ...slashCommands.map((command) => command.name.replace(/^\//, "").toLowerCase()),
+    ]);
+    return findConfirmedComposerTokens(prompt, {
+      isFile: (body) => mentionTexts.has(`@${body}`),
+      isCommand: (body) => commandNames.has(body.toLowerCase()),
+    });
+  }, [prompt, selectedMentions, slashCommands]);
   const promptDisplay = promptDisplayRowsWithCursor(prompt, Math.max(1, promptPaneWidth - 5), promptCursor, PROMPT_MAX_ROWS);
   const promptRows = promptDisplay.rows;
   const chatRowBudget = Math.max(4, rows - 8 - (promptRows.length - 1) - statusRows - goalBannerRows - addModeRows - backgroundLaunchRows);
@@ -4211,14 +4249,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setSelectedDrawerChatAction(action);
     applyDrawerChatSelection({ session: session ?? null, action });
   }, [applyDrawerChatSelection, openDrawerSessions, selectActiveLaneId]);
+  const activeComposerTrigger = useMemo(() => (
+    activePane === "chat" ? detectComposerTrigger(prompt, promptCursor) : null
+  ), [activePane, prompt, promptCursor]);
   const activeMentionRange = useMemo(() => (
-    activePane === "chat" ? activeMention(prompt) : null
-  ), [activePane, prompt]);
-	  const slashRows = useMemo(() => (
-	    activePane === "chat" && prompt.startsWith("/")
-	      ? paletteCommands(prompt, slashCommands, { provider: activeCommandProvider })
-	      : []
-	  ), [activeCommandProvider, activePane, prompt, slashCommands]);
+    activeComposerTrigger?.type === "at"
+      ? { start: activeComposerTrigger.start, query: activeComposerTrigger.query }
+      : null
+  ), [activeComposerTrigger]);
+  const slashComposerTrigger = activeComposerTrigger?.type === "slash" ? activeComposerTrigger : null;
+  const slashRows = useMemo(() => (
+    slashComposerTrigger
+      ? paletteCommands(`/${slashComposerTrigger.query}`, slashCommands, { provider: activeCommandProvider })
+      : []
+  ), [activeCommandProvider, slashComposerTrigger, slashCommands]);
+  // Mid-sentence slash triggers complete into the draft on Enter instead of
+  // submitting/running, mirroring the desktop command menu.
+  const slashTriggerMidSentence = slashComposerTrigger != null
+    && !composerTriggerSpansWholeDraft(prompt, slashComposerTrigger);
   const commandPaletteItems = useMemo<CommandPaletteItem[]>(() => {
     if (!commandPaletteOpen) return [];
     const commandItems = paletteCommands("", slashCommands, { provider: activeCommandProvider }).map((command) => ({
@@ -10367,10 +10415,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [addNotice, chatRowBudget, lanes, models, refreshState, registerOptimisticTerminalSession, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
-    const range = activeMention(prompt);
-    if (!range) return;
-    const nextPrompt = `${prompt.slice(0, range.start)}${suggestion.insertText} ${prompt.slice(range.start + range.query.length + 1)}`;
-    setPromptValue(nextPrompt, range.start + suggestion.insertText.length + 1);
+    const trigger = detectComposerTrigger(prompt, promptCursorRef.current);
+    if (trigger?.type !== "at") return;
+    const next = replaceComposerTriggerSpan(prompt, trigger, `${suggestion.insertText} `);
+    setPromptValue(next.text, next.caret);
     setSelectedMentions((prev) => {
       if (prev.some((entry) => entry.insertText === suggestion.insertText)) return prev;
       return [...prev, suggestion].slice(-12);
@@ -10379,12 +10427,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setMentionIndex(0);
   }, [prompt, setPromptValue]);
 
+  const insertSlashCommandRow = useCallback((selected: { name: string; argumentHint?: string }) => {
+    const trigger = detectComposerTrigger(prompt, promptCursorRef.current);
+    if (trigger?.type !== "slash" || composerTriggerSpansWholeDraft(prompt, trigger)) {
+      // Lone leading command keeps the legacy fill-the-prompt behavior.
+      setPromptValue(`${selected.name}${selected.argumentHint ? " " : ""}`);
+      return;
+    }
+    const next = replaceComposerTriggerSpan(prompt, trigger, `${selected.name} `);
+    setPromptValue(next.text, next.caret);
+  }, [prompt, setPromptValue]);
+
   const insertSlashCommand = useCallback(() => {
     const selected = slashRows[slashIndex] ?? slashRows[0];
     if (!selected) return;
-    const nextPrompt = `${selected.name}${selected.argumentHint ? " " : ""}`;
-    setPromptValue(nextPrompt);
-  }, [setPromptValue, slashIndex, slashRows]);
+    insertSlashCommandRow(selected);
+  }, [insertSlashCommandRow, slashIndex, slashRows]);
 
   const applyModelState = useCallback((updater: (prev: AdeCodeModelState) => AdeCodeModelState) => {
     setModelState((prev) => {
@@ -11989,8 +12047,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       // When the slash-command suggester or @-mention list is open, ↑/↓ belong
       // exclusively to that palette (handled just below) — don't let cursor /
-      // history movement swallow them.
-      const slashOrMentionOpen = prompt.startsWith("/") || activeMentionRange != null;
+      // history movement swallow them. Keyed off the live rows (not a leading
+      // "/") so mid-sentence triggers get palette navigation too.
+      const slashOrMentionOpen = slashRows.length > 0 || activeMentionRange != null;
       if (key.upArrow && !slashOrMentionOpen) {
         if (prompt.length === 0 && attachedImageChips.length === 0) {
           recallPromptHistory("previous");
@@ -12029,7 +12088,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const pageDown = Boolean((key as { pageDown?: boolean }).pageDown);
       const home = Boolean((key as { home?: boolean }).home);
       const end = Boolean((key as { end?: boolean }).end);
-      const paletteOpen = activeMentionRange != null || prompt.startsWith("/");
+      const paletteOpen = activeMentionRange != null || slashRows.length > 0;
       const pageRows = Math.max(1, chatRowBudget - 2);
       if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0 && !pendingQuestionKeyActive) {
         setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
@@ -12076,7 +12135,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setSlashIndex((index) => (index + 1) % slashRows.length);
           return;
         }
-        if (key.tab) {
+        if (key.tab || (key.return && slashTriggerMidSentence)) {
           insertSlashCommand();
           return;
         }
@@ -13137,7 +13196,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setSlashIndex((index) => (index + 1) % slashRows.length);
       return;
     }
-    if (pane === "chat" && key.tab && slashRows.length) {
+    if (pane === "chat" && (key.tab || (key.return && slashTriggerMidSentence)) && slashRows.length) {
       insertSlashCommand();
       return;
     }
@@ -13479,7 +13538,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const rightPaneShowsAgents = rightPaneVisible && rightPane.kind === "chat-info";
   const showCommandPalette = commandPaletteOpen;
   const showMentionPalette = activeMentionRange != null;
-  const showSlashPalette = prompt.startsWith("/");
+  const showSlashPalette = slashComposerTrigger != null;
   const errorRows = error ? (!connection ? 2 : 1) : 0;
   const paletteBottomRows = 5
     + (promptRows.length - 1)
@@ -13950,7 +14009,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           rect: { x: paletteOverlayLeft + 1, y: paletteOverlayTop + index + 1, w: paletteOverlayWidth, h: 1 },
           onClick: () => {
             setSlashIndex(index);
-            setPrompt(`${row.name}${row.argumentHint ? " " : ""}`);
+            insertSlashCommandRow(row);
           },
           onHover: (hovered) => { if (hovered) setSlashIndex(index); },
           zIndex: 20,
@@ -14423,6 +14482,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     inlineRowFocus.cell,
     inlineRowFocused,
     insertMention,
+    insertSlashCommandRow,
     lanes,
     liveAgentCount,
     mentionSuggestions,
@@ -14771,7 +14831,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         {!showCommandPalette && !showMentionPalette && showSlashPalette ? (
           <Box position="absolute" marginTop={paletteOverlayTop} marginLeft={paletteOverlayLeft}>
             <SlashPalette
-              query={prompt}
+              query={slashComposerTrigger ? `/${slashComposerTrigger.query}` : prompt}
               userCommands={slashCommands}
               selectedIndex={slashIndex}
               provider={activeCommandProvider}
@@ -14833,17 +14893,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             const beforeCursor = cursorParts?.before ?? line.text;
             const cursorText = cursorParts ? (cursorParts.selected || " ") : "";
             const afterCursor = cursorParts?.after ?? "";
+            const renderSegments = (text: string, rowStart: number, keyPrefix: string) =>
+              segmentPromptLineText(text, rowStart, promptTokenRanges).map((segment, segmentIndex) => (
+                <Text
+                  key={`${keyPrefix}${segmentIndex}`}
+                  color={segment.kind === "plain" ? undefined : segment.kind === "command" ? PURPLE : "cyan"}
+                  bold={segment.kind !== "plain"}
+                >
+                  {segment.text}
+                </Text>
+              ));
             return (
               <Box key={`${index}:${line.text}:${line.start}:${line.end}`} flexDirection="row">
                 <Text color={PURPLE}>{index === 0 ? "› " : "  "}</Text>
                 {hasCursor ? (
                   <>
-                    <Text>{beforeCursor}</Text>
+                    {renderSegments(beforeCursor, line.start, "b")}
                     <Text inverse>{cursorText}</Text>
-                    <Text>{afterCursor}</Text>
+                    {renderSegments(afterCursor, line.start + beforeCursor.length + cursorText.length, "a")}
                   </>
                 ) : (
-                  <Text>{line.text}</Text>
+                  renderSegments(line.text, line.start, "t")
                 )}
                 {index === 0 && !prompt ? <Text color={theme.color.mutedFg} dimColor>{"  ^V paste image"}</Text> : null}
                 {last && streaming && !goalBannerText ? <Text color={theme.color.mutedFg} dimColor>{"  · streaming"}</Text> : null}

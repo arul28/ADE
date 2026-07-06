@@ -28,12 +28,12 @@ docs/
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
     ├── conflicts/                         # detection + simulation + resolution
-    ├── cto/                               # CTO agent: identity, pipeline, workers, Linear
+    ├── cto/                               # CTO agent: single thread, smart memory, model switching, Linear
     ├── files-and-editor/                  # watcher, editor, Monaco, search
     ├── history/                           # operations timeline, transcripts, export
     ├── ios-simulator/                     # chat-side iOS Simulator drawer + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
-    ├── linear-integration/                # dispatch, sync, workflow presets
+    ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation

@@ -26,7 +26,7 @@ user's local machine).
 | `apps/desktop/src/main/services/sessions/sessionService.ts` | Terminal session lifecycle (writes `terminal_sessions` rows and persists transcripts to disk). |
 | `apps/desktop/src/shared/chatTranscript.ts` | JSON-lines parser for chat transcripts; used to reconstruct chat state, generate summaries, and derive activity signals. |
 | `apps/desktop/src/main/services/ipc/registerIpc.ts` | `ade.history.listOperations` and `ade.history.exportOperations` handlers, plus the new git IPC the History toolbar relies on (`gitCreateTag`, `gitResetToCommit`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, multi-mode `gitPull`). |
-| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list`, `cto.getState`, and `cto.listAgentRuns`. These rows are not written to the operations table. |
+| `apps/desktop/src/renderer/components/history/historyActivitySources.ts` | Renderer-side adapters that synthesize Activity-feed rows from `agentChat.list` and `cto.getState`. These rows are not written to the operations table. |
 
 ## Recording pattern
 
@@ -207,19 +207,17 @@ through `historyLaneActions.runHistoryLaneAction`.
 ## Synthesized Activity rows
 
 The Activity surface in the History UI merges persisted
-`OperationRecord` rows with synthesized rows pulled from chat,
-CTO, and worker feeds. Synthesis happens in
+`OperationRecord` rows with synthesized rows pulled from the chat
+and CTO feeds. Synthesis happens in
 `apps/desktop/src/renderer/components/history/historyActivitySources.ts`
 and never writes to the operations table.
 
-The renderer fetches the four feeds in parallel with
+The renderer fetches the feeds in parallel with
 `fetchSupplementalTimelineRecords(limit)` and folds the results into
 `OperationRecord`-shaped objects with namespaced IDs (`chat:`,
-`worker-run:`, `cto-session:`, `cto-activity:`). Each
-record carries:
+`cto-session:`). Each record carries:
 
-- `kind` -- `chat.session`, `worker.run`, `cto.session`, or
-  `worker.activity`. The taxonomy in
+- `kind` -- `chat.session` or `cto.session`. The taxonomy in
   `eventTaxonomy.ts` ensures each kind has a category, icon, and
   importance level.
 - `status` -- mapped from the source's status enum (for example,
@@ -357,7 +355,7 @@ so CSV consumers must respect RFC 4180-style quoting.
 - [History README](README.md) -- overview and IPC surface.
 - [Chat Transcript and Turns](../chat/transcript-and-turns.md) -- the
   full event union and render pipeline for chat streams.
-- [Agents README](../agents/README.md) -- CTO and worker session
-  logs (tracked separately in `cto_session_logs`).
+- [Agents README](../agents/README.md) -- CTO session logs (tracked
+  separately in `cto_session_logs`).
 </content>
 </invoke>

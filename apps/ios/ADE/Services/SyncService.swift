@@ -324,7 +324,16 @@ enum SyncTailnetDiscovery {
   static let hostCandidates = [
     "ade-sync",
   ]
-  static let portCandidates = SyncDirectHostPorts.portCandidates
+  /// Bounded discovery sweep. The full stale-port recovery range
+  /// (`SyncDirectHostPorts.portCandidates`, 8787–8999) belongs to the actual
+  /// connect path; probing all 213 ports here — sequentially, 2 s timeout
+  /// each, on a 45 s cadence — overruns the refresh interval by minutes and
+  /// keeps the radio hot whenever the tailnet host is resolvable but dropping
+  /// packets (asleep Mac). Saved-profile ports are injected separately via
+  /// `SyncTailnetProbe.preferredPortsProvider` so a drifted port is still found.
+  static let probePortCandidates = Array(
+    SyncDirectHostPorts.defaultPort...(SyncDirectHostPorts.defaultPort + 8)
+  )
 }
 
 enum SyncDirectHostPorts {
@@ -468,7 +477,24 @@ func syncStalePortRecoveryEndpointAttempts(
   }
 }
 
+/// True when a candidate carries a full `ws://`/`wss://` URL (the cloud relay
+/// candidate). Such candidates keep their path (e.g. `/connect/<machineKey>`)
+/// and must not be reconstructed as `scheme://host:port` or TCP-probed against
+/// the wrong host/port.
+func syncIsFullWebSocketRoute(_ address: String) -> Bool {
+  address
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .range(of: "^wss?://", options: [.regularExpression, .caseInsensitive]) != nil
+}
+
 func syncWebSocketURLString(host rawHost: String, port defaultPort: Int) -> String? {
+  let trimmedHost = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+  // A full ws/wss URL (the relay candidate) is used verbatim — it carries a
+  // path we must preserve, and its own port. Reconstructing scheme://host:port
+  // would drop `/connect/<machineKey>` and break the tunnel.
+  if syncIsFullWebSocketRoute(trimmedHost), URL(string: trimmedHost) != nil {
+    return trimmedHost
+  }
   guard let endpoint = syncParseRouteEndpoint(rawHost) else { return nil }
   let port = endpoint.port ?? defaultPort
   guard syncValidRoutePort(port) != nil else { return nil }
@@ -497,6 +523,91 @@ func syncIsTailscaleIPv4Address(_ host: String) -> Bool {
   return first == 100 && (64...127).contains(second)
 }
 
+/// Tailscale assigns every node an IPv6 address inside fd7a:115c:a1e0::/48
+/// alongside the CGNAT IPv4. Classifying it keeps tailnet-preference ordering
+/// and cellular roaming correct when a host advertises its v6 address.
+func syncIsTailscaleIPv6Address(_ host: String) -> Bool {
+  let normalized = host
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+  guard let v6 = IPv6Address(normalized) else { return false }
+  let bytes = v6.rawValue
+  guard bytes.count == 16 else { return false }
+  return bytes[0] == 0xfd && bytes[1] == 0x7a && bytes[2] == 0x11 && bytes[3] == 0x5c
+    && bytes[4] == 0xa1 && bytes[5] == 0xe0
+}
+
+struct SyncNetworkInterfaceAddress: Equatable {
+  let interfaceName: String
+  let address: String
+}
+
+/// True when this device itself holds a Tailscale-assigned address — CGNAT
+/// IPv4 (100.64.0.0/10) or the Tailscale IPv6 slice (fd7a:115c:a1e0::/48) —
+/// on a tunnel interface. The utun scoping is load-bearing: cellular carriers
+/// hand phones CGNAT 100.64/10 addresses on pdp_ip*, so an unscoped address
+/// scan would read as "on Tailscale" whenever the phone is on LTE.
+func syncHasTailnetSelfAddress(_ interfaces: [SyncNetworkInterfaceAddress]) -> Bool {
+  interfaces.contains { entry in
+    entry.interfaceName.hasPrefix("utun")
+      && (syncIsTailscaleIPv4Address(entry.address) || syncIsTailscaleIPv6Address(entry.address))
+  }
+}
+
+/// Snapshot of the device's current interface addresses via getifaddrs.
+func syncCopyNetworkInterfaceAddresses() -> [SyncNetworkInterfaceAddress] {
+  var result: [SyncNetworkInterfaceAddress] = []
+  var head: UnsafeMutablePointer<ifaddrs>?
+  guard getifaddrs(&head) == 0, let first = head else { return result }
+  defer { freeifaddrs(first) }
+  var cursor: UnsafeMutablePointer<ifaddrs>? = first
+  while let entry = cursor {
+    cursor = entry.pointee.ifa_next
+    guard let addrPtr = entry.pointee.ifa_addr else { continue }
+    let family = Int32(addrPtr.pointee.sa_family)
+    guard family == AF_INET || family == AF_INET6 else { continue }
+    let addressLength = family == AF_INET
+      ? socklen_t(MemoryLayout<sockaddr_in>.size)
+      : socklen_t(MemoryLayout<sockaddr_in6>.size)
+    var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+    guard getnameinfo(addrPtr, addressLength, &hostBuffer, socklen_t(hostBuffer.count), nil, 0, NI_NUMERICHOST) == 0 else {
+      continue
+    }
+    var address = String(cString: hostBuffer)
+    // Drop the IPv6 zone suffix (fe80::1%utun3 → fe80::1).
+    if let percent = address.firstIndex(of: "%") {
+      address = String(address[..<percent])
+    }
+    result.append(SyncNetworkInterfaceAddress(
+      interfaceName: String(cString: entry.pointee.ifa_name),
+      address: address
+    ))
+  }
+  return result
+}
+
+/// The saved machine advertises a Tailscale route, it is not discoverable on
+/// the current network, and this phone holds no tailnet address — the one
+/// user action that fixes the connection is turning Tailscale on (or moving
+/// back onto the machine's Wi-Fi). Never shown while connected: a user on a
+/// working VPN-to-LAN route (LAN probes succeed) simply connects.
+func syncShouldShowTailscaleOffHint(
+  transport: SyncTransportHealth,
+  hasSavedMachine: Bool,
+  savedMachineHasTailnetRoute: Bool,
+  phoneHasTailnetInterface: Bool,
+  machineDiscoveredNearby: Bool
+) -> Bool {
+  guard hasSavedMachine, savedMachineHasTailnetRoute else { return false }
+  guard !phoneHasTailnetInterface, !machineDiscoveredNearby else { return false }
+  switch transport {
+  case .connecting, .unreachable, .disconnected:
+    return true
+  case .connected:
+    return false
+  }
+}
+
 func syncNormalizedRouteHost(_ address: String) -> String {
   syncEndpointHost(address)?
     .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -507,6 +618,7 @@ func syncIsTailscaleRoute(_ address: String) -> Bool {
   let host = syncNormalizedRouteHost(address)
   if host.isEmpty { return false }
   return syncIsTailscaleIPv4Address(host)
+    || syncIsTailscaleIPv6Address(host)
     || syncIsTailnetDiscoveryHost(host)
     || host.hasSuffix(".ts.net")
 }
@@ -587,13 +699,27 @@ func syncTcpProbe(host: String, port: Int, timeoutNanoseconds: UInt64) async -> 
 func syncRaceAddressCandidates(
   addresses: [String],
   port: Int,
-  timeoutNanoseconds: UInt64 = 1_500_000_000
+  timeoutNanoseconds: UInt64 = 1_500_000_000,
+  tailscaleTimeoutNanoseconds: UInt64 = 3_000_000_000
 ) async -> [String] {
   guard addresses.count > 1 else { return addresses }
   return await withTaskGroup(of: (Int, Bool).self) { group in
     for (index, address) in addresses.enumerated() {
+      // First contact over a Tailscale route can ride a cold DERP relay and
+      // exceed the LAN-sized budget — exactly on the networks where the
+      // tailnet is the only working route. Give those candidates more room
+      // so they don't get demoted to the fallback tail.
+      let probeTimeout = syncIsTailscaleRoute(address)
+        ? max(timeoutNanoseconds, tailscaleTimeoutNanoseconds)
+        : timeoutNanoseconds
       group.addTask {
-        (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: timeoutNanoseconds))
+        // A full-URL relay candidate can't be host:port TCP-probed — probing
+        // its host against `port` would be wrong. Treat it as an unprobed
+        // last resort so it keeps its (already last) position in the tail.
+        if syncIsFullWebSocketRoute(address) {
+          return (index, false)
+        }
+        return (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: probeTimeout))
       }
     }
     var reachable: [Int] = []
@@ -768,6 +894,9 @@ private func syncLogPathSummary(_ snapshot: SyncNetworkPathSnapshot?) -> String 
 }
 
 private let syncAmbiguousRouteAuthFailureKey = "ADEAmbiguousRouteAuthFailure"
+/// userInfo key carrying `hello_error.host.deviceId` — the identity of the
+/// machine that rejected the hello, when the host was new enough to send it.
+private let syncRespondingHostIdentityKey = "ADERespondingHostIdentity"
 
 private func syncLogProfileSummary(_ profile: HostConnectionProfile) -> String {
   [
@@ -931,7 +1060,7 @@ enum SyncUserFacingError {
   static func message(for error: Error) -> String {
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
-      return "Reached a different ADE machine on this route. ADE kept the saved pairing and will keep trying other routes."
+      return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
     }
     if let code = nsError.userInfo["ADEErrorCode"] as? String, code == "auth_failed" {
       return "This phone is no longer paired with this machine. Pair again from Settings."
@@ -1098,6 +1227,19 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   init(sessionId: String) {
     self.id = UUID().uuidString
     self.sessionId = sessionId
+  }
+}
+
+/// Carries a scanned/deep-linked pairing QR into the connection settings so it
+/// can present the pairing flow (reconnect for a known machine, or PIN entry
+/// pre-filled for a new one). Mirrors the other `requested*Navigation` shapes.
+struct PairingQrNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let raw: String
+
+  init(raw: String) {
+    self.id = UUID().uuidString
+    self.raw = raw
   }
 }
 
@@ -1273,6 +1415,9 @@ enum TerminalStreamEvent {
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
   @Published private(set) var hostName: String?
+  /// Whether this phone currently holds a Tailscale-assigned address on a
+  /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
+  @Published private(set) var phoneHasTailnetInterface = false
   @Published private(set) var activeHostProfile: HostConnectionProfile?
   @Published private(set) var projects: [MobileProjectSummary] = []
   @Published private(set) var activeProjectId: String?
@@ -1298,6 +1443,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
+  /// Offline new-chat creations awaiting sync. The Work list renders one
+  /// "Pending sync" row per entry.
+  @Published private(set) var pendingChatCreations: [PendingChatCreation] = []
   @Published private(set) var localStateRevision = 0
   @Published private(set) var lanesProjectionRevision = 0
   @Published private(set) var laneDetailProjectionRevision = 0
@@ -1345,6 +1493,9 @@ final class SyncService: ObservableObject {
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
+  /// Set when a pairing QR arrives via the system Camera app / universal link
+  /// so the connection settings can open the pairing flow.
+  @Published var requestedPairingQrNavigation: PairingQrNavigationRequest?
 
   // MARK: - Durable PR action / detail state
   //
@@ -1437,6 +1588,13 @@ final class SyncService: ObservableObject {
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
   private let hiddenProjectsKey = "ade.sync.hiddenProjects"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
+  /// App Group key for offline new-chat creation snapshots. Stored in the
+  /// shared suite so a synthesized "pending sync" row survives relaunch and is
+  /// visible to the same UI regardless of process.
+  private let pendingChatCreationsKey = "ade.sync.pendingChatCreations.v1"
+  /// App Group key for the "Cloud relay fallback" toggle (default OFF). When
+  /// off, relay candidates are excluded from every transport race.
+  static let cloudRelayFallbackDefaultsKey = "ade.sync.cloudRelayFallbackEnabled"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
@@ -2681,6 +2839,7 @@ final class SyncService: ObservableObject {
     // returns here. `activeProjectId` stays set so the roster's live overlay and
     // on-tap chat opening have a synced project to work with.
     pendingOperationCount = loadPendingOperations().count
+    pendingChatCreations = loadPendingChatCreations()
     resetOutboundCursorStateForActiveProject()
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
     remoteCommandDescriptors = loadRemoteCommandDescriptors()
@@ -2701,6 +2860,12 @@ final class SyncService: ObservableObject {
       Task { @MainActor in
         self?.tailnetDiscoveredHosts = hosts
         self?.publishMergedDiscoveredHosts()
+      }
+    }
+    tailnetDiscovery.preferredPortsProvider = { [weak self] in
+      await MainActor.run {
+        guard let self else { return [] }
+        return self.loadSavedProfiles().values.map(\.port)
       }
     }
     tailnetDiscovery.start()
@@ -3305,6 +3470,54 @@ final class SyncService: ObservableObject {
     await reconnectIfPossible(userInitiated: true, preferTailnet: preferTailnet)
   }
 
+  /// The saved profile paired to this QR's machine (matched by host identity)
+  /// when it still has credentials — the phone can reconnect without a PIN.
+  /// `nil` means the machine is new and must go through PIN entry.
+  func savedProfileForPairingQr(hostIdentity: String) -> HostConnectionProfile? {
+    let trimmed = hostIdentity.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return loadSavedProfiles().values.first { profile in
+      (profile.hostIdentity == trimmed || profile.lastHostDeviceId == trimmed)
+        && tokenForProfile(profile) != nil
+    }
+  }
+
+  /// Refreshes a known machine's saved routes from a scanned QR (direct hosts,
+  /// relay URLs, port) and reconnects without a PIN. Returns false when no
+  /// matching credentialed profile exists — the caller presents PIN entry.
+  @discardableResult
+  func reconnectUsingPairingQr(
+    hostIdentity: String,
+    port: Int,
+    directCandidates: [String],
+    relayCandidates: [String]
+  ) async -> Bool {
+    guard var profile = savedProfileForPairingQr(hostIdentity: hostIdentity) else { return false }
+    let directHosts = directCandidates.compactMap { syncEndpointHost($0) }
+    let relayHosts = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
+    profile.savedAddressCandidates = deduplicatedAddresses(profile.savedAddressCandidates + directHosts)
+    profile.discoveredLanAddresses = deduplicatedAddresses(
+      profile.discoveredLanAddresses
+        + directHosts.filter { !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0) }
+    )
+    if profile.tailscaleAddress == nil, let tailnet = directHosts.first(where: syncIsTailscaleRoute) {
+      profile.tailscaleAddress = tailnet
+    }
+    if !relayHosts.isEmpty {
+      profile.savedRelayCandidates = deduplicatedAddresses((profile.savedRelayCandidates ?? []) + relayHosts)
+    }
+    if port > 0 { profile.port = port }
+    profile.updatedAt = ISO8601DateFormatter().string(from: Date())
+    if let key = profileStorageKey(profile) {
+      var profiles = loadSavedProfilesRaw()
+      profiles[key] = profile
+      saveSavedProfiles(profiles)
+    }
+    saveProfile(profile)
+    await reconnectIfPossible(userInitiated: true)
+    return true
+  }
+
   func reconnectIfPossible(userInitiated: Bool = false, preferTailnet: Bool = false) async {
     do {
       try ensureDatabaseReady()
@@ -3481,9 +3694,43 @@ final class SyncService: ObservableObject {
     refreshReducedSyncLoad()
   }
 
+  /// Rescan interfaces for a tailnet self-address. Called on network-path
+  /// changes (NWPathMonitor fires when a VPN tunnel comes up or down), on
+  /// foreground transitions, and before surfacing an unreachable state.
+  private func refreshPhoneTailnetInterfaceState() {
+    let hasTailnet = syncHasTailnetSelfAddress(syncCopyNetworkInterfaceAddresses())
+    if phoneHasTailnetInterface != hasTailnet {
+      phoneHasTailnetInterface = hasTailnet
+    }
+  }
+
+  /// True when the "iPhone isn't on Tailscale" hint should show on connection
+  /// surfaces (Hub blank states, Settings header). See
+  /// `syncShouldShowTailscaleOffHint` for the gating rationale.
+  var tailscaleOffHintVisible: Bool {
+    guard let profile = activeHostProfile ?? loadProfile(),
+          tokenForProfile(profile) != nil else {
+      return false
+    }
+    // Any live discovery hit means the current network already reaches the
+    // machine (Bonjour ⇒ same LAN; the tailnet probe only resolves when the
+    // tunnel is up), so the hint would be noise.
+    let machineDiscoveredNearby = discoveredHosts.contains { host in
+      matchesDiscoveredHost(host, profile: profile)
+    }
+    return syncShouldShowTailscaleOffHint(
+      transport: connectionHealth.transport,
+      hasSavedMachine: true,
+      savedMachineHasTailnetRoute: profileHasTailnetRoute(profile),
+      phoneHasTailnetInterface: phoneHasTailnetInterface,
+      machineDiscoveredNearby: machineDiscoveredNearby
+    )
+  }
+
   private func handleNetworkPathChange(_ snapshot: SyncNetworkPathSnapshot) {
     let previous = lastNetworkPathSnapshot
     lastNetworkPathSnapshot = snapshot
+    refreshPhoneTailnetInterfaceState()
     refreshReducedSyncLoad()
     guard previous != nil else { return }
     guard canReconnectToSavedHost,
@@ -3548,7 +3795,13 @@ final class SyncService: ObservableObject {
   }
 
   func handleForegroundTransition() async {
+    refreshPhoneTailnetInterfaceState()
     guard !reconnectConnectInFlight else { return }
+    // Push registration + Live Activity token re-reporting are independent of
+    // the connection branch below, so kick them off up front. They no-op when
+    // no machine is paired.
+    Task { await PushNotificationService.shared.enableIfPaired() }
+    Task { await LiveActivityService.shared.handleForegroundTransition() }
     if canSendLiveRequests() {
       lastError = nil
       await restoreTrackedOpenLanesAfterReconnect()
@@ -3584,7 +3837,8 @@ final class SyncService: ObservableObject {
     hostName: String? = nil,
     siteId: String? = nil,
     candidateAddresses: [String] = [],
-    tailscaleAddress: String? = nil
+    tailscaleAddress: String? = nil,
+    relayCandidates: [String] = []
   ) async {
     do {
       try ensureDatabaseReady()
@@ -3642,8 +3896,13 @@ final class SyncService: ObservableObject {
         normalizedCandidateAddresses
       ))
       let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
+      // Relay URLs (full wss://) are attempted LAST and only when the fallback
+      // is enabled. They ride their own path/port, so they're kept out of the
+      // direct port sweep and appended as single attempts.
+      let normalizedRelayCandidates = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
+      let relayWalkCandidates = isCloudRelayFallbackEnabled ? normalizedRelayCandidates : []
       syncConnectLog.info(
-        "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)]"
+        "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)] relay=[\(syncLogAddressList(relayWalkCandidates), privacy: .public)]"
       )
       // If we have multiple candidates (e.g. discovered LAN + loopback + tailscale),
       // walk them in order and only fail if every one fails to open a socket.
@@ -3652,10 +3911,12 @@ final class SyncService: ObservableObject {
       var openedAddress: String?
       var openedPort: Int?
       var lastOpenError: Error?
-      guard !addressCandidates.isEmpty else {
+      guard !addressCandidates.isEmpty || !relayWalkCandidates.isEmpty else {
         throw noConnectableAddressError()
       }
-      for attempt in syncConnectionEndpointAttempts(addresses: addressCandidates, ports: portCandidates) {
+      let directAttempts = syncConnectionEndpointAttempts(addresses: addressCandidates, ports: portCandidates)
+      let relayAttempts = relayWalkCandidates.map { SyncConnectionEndpointAttempt(address: $0, port: requestedPort) }
+      for attempt in directAttempts + relayAttempts {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
@@ -3683,10 +3944,16 @@ final class SyncService: ObservableObject {
       }
       let requestId = makeRequestId()
       let raw = try await awaitResponse(requestId: requestId) {
-        self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: [
+        var pairingPayload: [String: Any] = [
           "code": code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
           "peer": self.currentPeerMetadata(),
-        ])
+        ]
+        // Register this device's DPoP public key at pairing time so the host
+        // has a key on record from the first paired hello onward.
+        if let dpopPublicKey = DpopKeyService.shared.publicKeyX963Base64() {
+          pairingPayload["dpopPublicKey"] = dpopPublicKey
+        }
+        self.sendEnvelope(type: "pairing_request", requestId: requestId, payload: pairingPayload)
       }
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
@@ -3723,7 +3990,10 @@ final class SyncService: ObservableObject {
           if host == "127.0.0.1" { return false }
           return !syncIsTailscaleRoute(host)
         },
-        tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
+        tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute),
+        // Persist relay candidates regardless of the toggle so enabling the
+        // fallback later reuses them; the toggle only gates whether they race.
+        savedRelayCandidates: normalizedRelayCandidates.isEmpty ? nil : normalizedRelayCandidates
       )
       currentAddress = preferredAddress
       try await hello(
@@ -3737,6 +4007,11 @@ final class SyncService: ObservableObject {
       )
       keychain.saveToken(secret)
       keychain.saveToken(secret, hostKey: profileStorageKey(activeHostProfile ?? profile))
+      // Pairing just succeeded — this is the moment to ask for notification
+      // permission (never on first launch) and begin observing Live Activity
+      // tokens so the brain can start / update remote activities.
+      Task { await PushNotificationService.shared.enableIfPaired() }
+      LiveActivityService.shared.start()
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -3802,6 +4077,7 @@ final class SyncService: ObservableObject {
       keychain.clearToken()
       saveProfile(nil)
       saveRemoteCommandDescriptors([])
+      clearPendingChatCreations()
       resetChatEventState(clearHistory: true)
       resetTerminalSubscriptionState(clearHistory: false)
       activeHostProfile = nil
@@ -3811,6 +4087,9 @@ final class SyncService: ObservableObject {
   }
 
   func forgetHost() {
+    // Best-effort: drop this device from the relay and end any Live Activity
+    // before we tear down the pairing credentials.
+    PushNotificationService.shared.handleUnpair()
     disconnect(clearCredentials: true)
     remoteProjectCatalog = []
     refreshProjectCatalog()
@@ -3993,23 +4272,11 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func fetchCtoRoster() async throws -> CtoRoster {
-    try await sendDecodableCommand(action: "cto.getRoster", as: CtoRoster.self)
-  }
-
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
     try await sendDecodableCommand(action: "cto.ensureSession", as: AgentChatSessionSummary.self)
   }
 
-  func ensureCtoAgentSession(agentId: String) async throws -> AgentChatSessionSummary {
-    try await sendDecodableCommand(
-      action: "cto.ensureAgentSession",
-      args: ["agentId": agentId],
-      as: AgentChatSessionSummary.self
-    )
-  }
-
-  // MARK: - CTO org / worker management
+  // MARK: - CTO state + memory
 
   func fetchCtoState(recentLimit: Int? = nil) async throws -> CtoSnapshot {
     var args: [String: Any] = [:]
@@ -4017,46 +4284,12 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "cto.getState", args: args, as: CtoSnapshot.self)
   }
 
-  func fetchCtoAgents(includeDeleted: Bool = false) async throws -> [AgentIdentity] {
-    try await sendDecodableCommand(
-      action: "cto.listAgents",
-      args: ["includeDeleted": includeDeleted],
-      as: [AgentIdentity].self
-    )
-  }
-
-  func fetchCtoBudget() async throws -> AgentBudgetSnapshot {
-    try await sendDecodableCommand(action: "cto.getBudgetSnapshot", as: AgentBudgetSnapshot.self)
-  }
-
-  func listAgentRuns(agentId: String, limit: Int? = nil) async throws -> [WorkerAgentRun] {
-    var args: [String: Any] = ["agentId": agentId]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(action: "cto.listAgentRuns", args: args, as: [WorkerAgentRun].self)
-  }
-
-  func listAgentSessionLogs(agentId: String, limit: Int? = nil) async throws -> [AgentSessionLogEntry] {
-    var args: [String: Any] = ["agentId": agentId]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(
-      action: "cto.listAgentSessionLogs",
-      args: args,
-      as: [AgentSessionLogEntry].self
-    )
-  }
-
-  func listAgentRevisions(agentId: String, limit: Int? = nil) async throws -> [AgentConfigRevision] {
-    var args: [String: Any] = ["agentId": agentId]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(
-      action: "cto.listAgentRevisions",
-      args: args,
-      as: [AgentConfigRevision].self
-    )
-  }
-
-  func fetchFlowPolicy() async throws -> LinearWorkflowConfig {
-    try await sendDecodableCommand(action: "cto.getFlowPolicy", as: LinearWorkflowConfig.self)
+  /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
+  /// today's daily log. The host command is version-gated: older hosts respond
+  /// with a command error, which callers surface as a quiet "not available"
+  /// row rather than an error card.
+  func fetchCtoMemory() async throws -> CtoMemory {
+    try await sendDecodableCommand(action: "cto.getMemory", as: CtoMemory.self)
   }
 
   func fetchLinearConnectionStatus() async throws -> LinearConnectionStatus {
@@ -4087,71 +4320,12 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchLinearSyncDashboard() async throws -> LinearSyncDashboard {
-    try await sendDecodableCommand(action: "cto.getLinearSyncDashboard", as: LinearSyncDashboard.self)
-  }
-
-  func runLinearSyncNow() async throws -> LinearSyncDashboard {
-    try await sendDecodableCommand(action: "cto.runLinearSyncNow", as: LinearSyncDashboard.self)
-  }
-
-  func removeAgent(agentId: String) async throws {
-    _ = try await sendCommand(action: "cto.removeAgent", args: ["agentId": agentId])
-  }
-
-  func saveAgent(_ agent: AgentUpsertInput, actor: String = "mobile") async throws -> AgentIdentity {
-    let payload = CtoSaveAgentPayload(agent: agent, actor: actor)
-    return try await sendDecodableCommand(
-      action: "cto.saveAgent",
-      args: try encodedCommandArgs(from: payload),
-      as: AgentIdentity.self
-    )
-  }
-
-  func listLinearSyncQueue() async throws -> [LinearSyncQueueItem] {
-    try await sendDecodableCommand(action: "cto.listLinearSyncQueue", as: [LinearSyncQueueItem].self)
-  }
-
-  func listLinearIngressEvents(limit: Int? = nil) async throws -> [LinearIngressEventRecord] {
-    var args: [String: Any] = [:]
-    if let limit { args["limit"] = limit }
-    return try await sendDecodableCommand(
-      action: "cto.listLinearIngressEvents",
-      args: args,
-      as: [LinearIngressEventRecord].self
-    )
-  }
-
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
     let patchArgs = try encodedCommandArgs(from: patch)
     return try await sendDecodableCommand(
       action: "cto.updateIdentity",
       args: ["patch": patchArgs],
       as: CtoSnapshot.self
-    )
-  }
-
-  func setAgentStatus(agentId: String, status: String) async throws {
-    _ = try await sendCommand(
-      action: "cto.setAgentStatus",
-      args: ["agentId": agentId, "status": status]
-    )
-  }
-
-  func triggerAgentWakeup(agentId: String, reason: String? = nil) async throws -> CtoTriggerAgentWakeupResult {
-    var args: [String: Any] = ["agentId": agentId]
-    if let reason { args["reason"] = reason }
-    return try await sendDecodableCommand(
-      action: "cto.triggerAgentWakeup",
-      args: args,
-      as: CtoTriggerAgentWakeupResult.self
-    )
-  }
-
-  func rollbackAgentRevision(agentId: String, revisionId: String) async throws {
-    _ = try await sendCommand(
-      action: "cto.rollbackAgentRevision",
-      args: ["agentId": agentId, "revisionId": revisionId]
     )
   }
 
@@ -5275,17 +5449,20 @@ final class SyncService: ObservableObject {
   /// `titleGenerationEnabled` setting and clamps the name; it returns a
   /// deterministic fallback when naming is disabled/unavailable. This command is
   /// NOT queueable, so an offline phone throws here rather than queueing — the
-  /// caller is expected to catch and fall back to its own deterministic name.
+  /// caller is expected to catch and keep its own deterministic name.
   ///
-  /// The request is short (10s) and non-disconnecting: it's a best-effort lookup
-  /// that the caller races against its own 10s UI deadline, so a slow/stuck host
-  /// must not strain the connection or trigger a probe/reconnect that could
-  /// disrupt the chat/CLI session started right after the lane is created.
+  /// Callers run this fire-and-forget AFTER the lane is created with the
+  /// deterministic name (desktop's `startBackgroundLaneNaming` pattern), so the
+  /// request is short (10s) and non-disconnecting: a slow/stuck host must not
+  /// strain the connection or trigger a probe/reconnect that could disrupt the
+  /// chat/CLI session just started in the new lane.
   func suggestLaneName(
     laneId: String,
     prompt: String,
     modelId: String,
-    fallbackName: String
+    fallbackName: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> String {
     let args: [String: Any] = [
       "laneId": laneId,
@@ -5298,6 +5475,8 @@ final class SyncService: ObservableObject {
       args: args,
       disconnectOnTimeout: false,
       timeoutNanoseconds: 10_000_000_000,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
       as: SuggestLaneNameResult.self
     )
     let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5386,8 +5565,18 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "lanes.listUnregisteredWorktrees", as: [UnregisteredLaneCandidate].self)
   }
 
-  func renameLane(_ laneId: String, name: String) async throws {
-    _ = try await sendCommand(action: "lanes.rename", args: ["laneId": laneId, "name": name])
+  func renameLane(
+    _ laneId: String,
+    name: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws {
+    _ = try await sendCommand(
+      action: "lanes.rename",
+      args: ["laneId": laneId, "name": name],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
   }
 
   func reparentLane(
@@ -5916,7 +6105,8 @@ final class SyncService: ObservableObject {
     computerUse: RemoteJSONValue? = nil,
     requestedCwd: String? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    pendingDisplayName: String? = nil
   ) async throws -> AgentChatSessionSummary {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
@@ -5971,6 +6161,34 @@ final class SyncService: ObservableObject {
     }
     if let requestedCwd, !requestedCwd.isEmpty {
       args["requestedCwd"] = requestedCwd
+    }
+    // Offline: queue the create with a stable command id and record a snapshot
+    // so the Work list shows a "Pending sync" row until the queued command
+    // drains after reconnect. `chat.create` is not queued by the generic
+    // offline path (it's not host-advertised as queueable while disconnected),
+    // so enqueue it explicitly here.
+    if !canSendLiveRequests() {
+      let commandId = makeRequestId()
+      try enqueueOperation(
+        kind: "command",
+        action: "chat.create",
+        args: args,
+        id: commandId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      let trimmedName = pendingDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+      recordPendingChatCreation(PendingChatCreation(
+        id: commandId,
+        projectId: targetProjectId ?? activeProjectId,
+        projectRootPath: targetProjectRootPath ?? activeProjectRootPath,
+        laneId: laneId,
+        name: (trimmedName?.isEmpty == false ? trimmedName! : "New chat"),
+        provider: provider,
+        model: trimmedModel,
+        queuedAt: syncDateFormatter.string(from: Date())
+      ))
+      throw QueuedRemoteCommandError(action: "chat.create")
     }
     return try await sendDecodableCommand(
       action: "chat.create",
@@ -7579,6 +7797,20 @@ final class SyncService: ObservableObject {
     return false
   }
 
+  /// Whether the user enabled the cloud relay fallback. Read from the App Group
+  /// suite so the value is shared and defaults OFF.
+  var isCloudRelayFallbackEnabled: Bool {
+    ADESharedContainer.defaults.bool(forKey: SyncService.cloudRelayFallbackDefaultsKey)
+  }
+
+  /// Relay `wss://` candidates for a profile, ordered last and gated on the
+  /// user toggle. Empty when the fallback is off so relay is excluded from
+  /// every race.
+  private func relayFallbackCandidates(for profile: HostConnectionProfile) -> [String] {
+    guard isCloudRelayFallbackEnabled else { return [] }
+    return deduplicatedAddresses((profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute))
+  }
+
   private func prioritizedAddresses(for profile: HostConnectionProfile) -> [String] {
     let preferTailnet = shouldPreferTailnetReconnect()
     let matchingDiscovery = discoveredHosts.filter { host in
@@ -7622,7 +7854,8 @@ final class SyncService: ObservableObject {
         + savedProfileTailnet
         + savedTailnet
     }
-    return deduplicatedAddresses(prioritizedLive + fallbackSaved)
+    // Relay is the last-resort route: only tried when no direct path opened.
+    return deduplicatedAddresses(prioritizedLive + fallbackSaved + relayFallbackCandidates(for: profile))
   }
 
   private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
@@ -7640,6 +7873,7 @@ final class SyncService: ObservableObject {
         + (profile.tailscaleAddress.map { [$0] } ?? [])
         + savedTailnet
         + (preferTailnet ? lastSuccessfulTailnet : [])
+        + relayFallbackCandidates(for: profile)
       )
     }
 
@@ -7661,7 +7895,7 @@ final class SyncService: ObservableObject {
     let prioritizedLive = preferTailnet
       ? liveLastSuccessfulTailnet + liveTailscale + savedTailnetFallback + liveLastSuccessfulLan + liveLan
       : liveLastSuccessful + liveLan + liveTailscale + savedTailnetFallback
-    return deduplicatedAddresses(prioritizedLive)
+    return deduplicatedAddresses(prioritizedLive + relayFallbackCandidates(for: profile))
   }
 
   private func connectUsingProfile(
@@ -7741,7 +7975,11 @@ final class SyncService: ObservableObject {
         syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
         return (host: attempt.address, port: attempt.port)
       } catch {
-        let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: attempt.address)
+        let reconnectError = errorByMarkingAmbiguousRouteAuthFailure(
+          error,
+          attemptedAddress: attempt.address,
+          expectedHostIdentity: profile.hostIdentity
+        )
         syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
         lastFailure = reconnectError
         if shouldInvalidateSavedPairing(for: reconnectError) {
@@ -7841,10 +8079,13 @@ final class SyncService: ObservableObject {
     networkPathReconnectTask = nil
     clearReconnectConnectInFlight()
     autoReconnectAwaitingLiveDiscovery = false
+    refreshPhoneTailnetInterfaceState()
     let machineName = syncTrimmedNonEmptyName(profile?.hostName)
       ?? syncTrimmedNonEmptyName(hostName)
       ?? "this machine"
-    lastError = "Can't reach \(machineName)."
+    lastError = tailscaleOffHintVisible
+      ? "Can't reach \(machineName). This iPhone isn't connected to Tailscale, which ADE needs when you're away from the machine's Wi-Fi."
+      : "Can't reach \(machineName)."
     connectionState = .error
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
   }
@@ -7872,37 +8113,33 @@ final class SyncService: ObservableObject {
     return nsError.userInfo["ADEErrorCode"] as? String == "auth_failed"
   }
 
-  private func isAmbiguousSavedRoute(_ attemptedAddress: String) -> Bool {
-    let host = syncNormalizedRouteHost(attemptedAddress)
-    if host.isEmpty { return false }
-    if syncIsTailnetDiscoveryHost(host) { return true }
-    if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local") { return true }
-    if let v4 = IPv4Address(host) {
-      let bytes = v4.rawValue
-      guard bytes.count == 4 else { return false }
-      let a = bytes[0], b = bytes[1]
-      return a == 127
-        || a == 10
-        || (a == 172 && (16...31).contains(b))
-        || (a == 192 && b == 168)
-        || (a == 169 && b == 254)
-    }
-    if let v6 = IPv6Address(host) {
-      let bytes = v6.rawValue
-      guard bytes.count == 16 else { return false }
-      if bytes == Data([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) { return true }
-      if (bytes[0] & 0xfe) == 0xfc { return true }
-      if bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80 { return true }
-    }
-    return false
-  }
-
-  private func errorByMarkingAmbiguousRouteAuthFailure(_ error: Error, attemptedAddress: String) -> Error {
+  /// A destructive `forgetHost()` needs positive attribution: the rejection
+  /// must come from the exact machine this profile is paired with. A reused
+  /// DHCP lease, an mDNS alias, or a stale Tailscale candidate can all dial a
+  /// stranger whose auth check fails — and older hosts omit their identity
+  /// from `hello_error` entirely. Anything unattributed is marked ambiguous so
+  /// `shouldInvalidateSavedPairing` keeps the saved pairing and the reconnect
+  /// loop moves on to other routes.
+  private func errorByMarkingAmbiguousRouteAuthFailure(
+    _ error: Error,
+    attemptedAddress: String,
+    expectedHostIdentity: String?
+  ) -> Error {
     let nsError = error as NSError
-    guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed",
-          isAmbiguousSavedRoute(attemptedAddress) else {
+    guard nsError.userInfo["ADEErrorCode"] as? String == "auth_failed" else {
       return error
     }
+    let responding = syncNonEmpty(nsError.userInfo[syncRespondingHostIdentityKey] as? String)
+    if let responding,
+       let expected = syncNonEmpty(expectedHostIdentity),
+       responding == expected {
+      // The paired machine itself rejected this device — the pairing is
+      // genuinely revoked and the saved credentials may be dropped.
+      return error
+    }
+    syncConnectLog.info(
+      "ADE_SYNC_TRACE auth failure kept pairing (unattributed) address=\(attemptedAddress, privacy: .public) expected=\(expectedHostIdentity ?? "none", privacy: .public) responding=\(responding ?? "none", privacy: .public)"
+    )
     var userInfo = nsError.userInfo
     userInfo[syncAmbiguousRouteAuthFailureKey] = true
     return NSError(domain: nsError.domain, code: nsError.code, userInfo: userInfo)
@@ -8240,11 +8477,21 @@ final class SyncService: ObservableObject {
     let requestId = makeRequestId()
     let auth: [String: Any]
     if authKind == "paired", let pairedDeviceId {
-      auth = [
+      var pairedAuth: [String: Any] = [
         "kind": "paired",
         "deviceId": pairedDeviceId,
         "secret": token,
       ]
+      // A fresh device-bound proof rides EVERY paired hello (nonce is
+      // single-use). Once the host has a key on record, hellos without a valid
+      // proof are rejected. Key/sign failure is soft — the legacy path still
+      // works until the host stores a key for us.
+      if let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: token) {
+        pairedAuth["dpop"] = proof
+      } else {
+        syncConnectLog.info("ADE_SYNC_TRACE dpop proof unavailable; sending legacy paired hello")
+      }
+      auth = pairedAuth
     } else {
       auth = [
         "kind": "bootstrap",
@@ -8364,17 +8611,25 @@ final class SyncService: ObservableObject {
     currentPeerMetadata()["dbVersion"] as? Int ?? -1
   }
 
-  func shouldInvalidateSavedPairingAfterAuthFailureForTesting(address: String) -> Bool {
-    let error = NSError(
-      domain: "ADE",
-      code: 3,
-      userInfo: [
-        NSLocalizedDescriptionKey: "Authentication failed.",
-        "ADEErrorCode": "auth_failed",
-      ]
-    )
+  func shouldInvalidateSavedPairingAfterAuthFailureForTesting(
+    address: String,
+    respondingHostIdentity: String? = nil,
+    expectedHostIdentity: String? = nil
+  ) -> Bool {
+    var userInfo: [String: Any] = [
+      NSLocalizedDescriptionKey: "Authentication failed.",
+      "ADEErrorCode": "auth_failed",
+    ]
+    if let respondingHostIdentity {
+      userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
+    }
+    let error = NSError(domain: "ADE", code: 3, userInfo: userInfo)
     return shouldInvalidateSavedPairing(
-      for: errorByMarkingAmbiguousRouteAuthFailure(error, attemptedAddress: address)
+      for: errorByMarkingAmbiguousRouteAuthFailure(
+        error,
+        attemptedAddress: address,
+        expectedHostIdentity: expectedHostIdentity
+      )
     )
   }
 
@@ -8738,16 +8993,26 @@ final class SyncService: ObservableObject {
          "project_list_my_github_repos_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
-      let code = ((payload as? [String: Any])?["code"] as? String) ?? "auth_failed"
-      let message = ((payload as? [String: Any])?["message"] as? String) ?? "Authentication failed."
+      let errorPayload = payload as? [String: Any]
+      let code = (errorPayload?["code"] as? String) ?? "auth_failed"
+      let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+      // Newer hosts attribute the rejection: the identity of the machine that
+      // refused the hello. Without it (older host, or a stranger machine on a
+      // reused address) the client must never destroy its saved pairing.
+      let respondingHostIdentity = ((errorPayload?["host"] as? [String: Any])?["deviceId"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
       connectionState = .error
+      var userInfo: [String: Any] = [
+        NSLocalizedDescriptionKey: message,
+        "ADEErrorCode": code,
+      ]
+      if let respondingHostIdentity, !respondingHostIdentity.isEmpty {
+        userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
+      }
       resolve(requestId: requestId, result: .failure(NSError(
         domain: "ADE",
         code: 5,
-        userInfo: [
-          NSLocalizedDescriptionKey: message,
-          "ADEErrorCode": code,
-        ]
+        userInfo: userInfo
       )))
     case "pairing_result":
       resolve(requestId: requestId, result: .success(payload))
@@ -9483,6 +9748,67 @@ final class SyncService: ObservableObject {
     pendingOperationCount = operations.count
   }
 
+  // MARK: - Offline chat-creation snapshots
+
+  private func loadPendingChatCreations() -> [PendingChatCreation] {
+    guard let data = ADESharedContainer.defaults.data(forKey: pendingChatCreationsKey) else { return [] }
+    return (try? decoder.decode([PendingChatCreation].self, from: data)) ?? []
+  }
+
+  private func savePendingChatCreations(_ creations: [PendingChatCreation]) {
+    if creations.isEmpty {
+      ADESharedContainer.defaults.removeObject(forKey: pendingChatCreationsKey)
+    } else if let data = try? encoder.encode(creations) {
+      ADESharedContainer.defaults.set(data, forKey: pendingChatCreationsKey)
+    }
+    if pendingChatCreations != creations {
+      pendingChatCreations = creations
+    }
+  }
+
+  private func recordPendingChatCreation(_ creation: PendingChatCreation) {
+    var creations = loadPendingChatCreations()
+    creations.removeAll { $0.id == creation.id }
+    creations.append(creation)
+    savePendingChatCreations(creations)
+  }
+
+  private func removePendingChatCreation(id: String) {
+    var creations = loadPendingChatCreations()
+    let before = creations.count
+    creations.removeAll { $0.id == id }
+    if creations.count != before {
+      savePendingChatCreations(creations)
+    }
+  }
+
+  /// Cancels a queued offline chat creation: drops both the pending `chat.create`
+  /// operation and its snapshot so the "Pending sync" row disappears.
+  func cancelPendingChatCreation(id: String) {
+    var queued = loadPendingOperations()
+    let filtered = queued.filter { !($0.kind == "command" && $0.action == "chat.create" && $0.id == id) }
+    if filtered.count != queued.count {
+      queued = filtered
+      savePendingOperations(queued)
+    }
+    removePendingChatCreation(id: id)
+  }
+
+  private func clearPendingChatCreations() {
+    let creations = loadPendingChatCreations()
+    guard !creations.isEmpty else { return }
+    // Also drop the queued `chat.create` commands, not just the UI snapshots —
+    // otherwise flushPendingOperations would replay them against the next paired
+    // host and silently recreate chats the user forgot.
+    let ids = Set(creations.map(\.id))
+    let queued = loadPendingOperations()
+    let filtered = queued.filter { !(ids.contains($0.id) && $0.kind == "command" && $0.action == "chat.create") }
+    if filtered.count != queued.count {
+      savePendingOperations(filtered)
+    }
+    savePendingChatCreations([])
+  }
+
   private func schedulePendingOperationFlush(delayNanoseconds: UInt64 = 2_000_000_000) {
     guard pendingOperationFlushTask == nil else { return }
     pendingOperationFlushTask = Task { @MainActor [weak self] in
@@ -9643,6 +9969,11 @@ final class SyncService: ObservableObject {
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
         }
         removePendingOperation(operation)
+        // A drained chat.create produced a real session; drop the optimistic
+        // "Pending sync" snapshot so the synced row takes over.
+        if operation.kind == "command", operation.action == "chat.create" {
+          removePendingChatCreation(id: operation.id)
+        }
       } catch {
         lastError = SyncUserFacingError.message(for: error)
         let stillLive = canSendLiveRequests()
@@ -9654,6 +9985,9 @@ final class SyncService: ObservableObject {
         }
         if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
           removePendingOperation(operation)
+          if operation.kind == "command", operation.action == "chat.create" {
+            removePendingChatCreation(id: operation.id)
+          }
           queued = loadPendingOperations()
           continue
         }
@@ -9773,6 +10107,26 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath
     )
     return ["queued": true]
+  }
+
+  /// True when this device is paired to a machine (active or last-saved
+  /// profile). Push registration only runs while paired.
+  var hasPairedHost: Bool {
+    (activeHostProfile ?? loadProfile())?.authKind == "paired"
+  }
+
+  /// Thin wrapper for the runtime-scoped `push.*` commands used by
+  /// `PushNotificationService` / `LiveActivityService`. Runtime-scoped and never
+  /// queued — a failed registration is simply retried on the next foreground.
+  func sendPushCommand(action: String, args: [String: Any]) async throws -> [String: Any] {
+    let response = try await sendCommand(action: action, args: args)
+    if let payload = response as? [String: Any] {
+      if payload["queued"] as? Bool == true {
+        throw QueuedRemoteCommandError(action: action)
+      }
+      return payload
+    }
+    return [:]
   }
 
   private func chatSubscriptionPayload(
@@ -10713,6 +11067,9 @@ extension SyncService {
 
 private final class SyncTailnetProbe {
   var onHostsChanged: (([DiscoveredSyncHost]) -> Void)?
+  /// Live saved-profile ports injected by SyncService so a host serving on a
+  /// drifted port is still discovered without sweeping the whole port range.
+  var preferredPortsProvider: (() async -> [Int])?
 
   private let connectionQueue = DispatchQueue(label: "com.ade.sync.tailnet-probe")
   private var probeTask: Task<Void, Never>?
@@ -10734,9 +11091,13 @@ private final class SyncTailnetProbe {
   }
 
   private func refresh() async {
+    let preferredPorts = await preferredPortsProvider?() ?? []
+    var seenPorts = Set<Int>()
+    let ports = (preferredPorts + SyncTailnetDiscovery.probePortCandidates)
+      .filter { (1...65_535).contains($0) && seenPorts.insert($0).inserted }
     var nextHosts: [String: DiscoveredSyncHost] = [:]
     for host in SyncTailnetDiscovery.hostCandidates {
-      for port in SyncTailnetDiscovery.portCandidates {
+      for port in ports {
         guard !Task.isCancelled else { return }
         let result = await probe(host: host, port: port)
         guard result != .unresolvedHost else { break }

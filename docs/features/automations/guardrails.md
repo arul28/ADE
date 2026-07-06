@@ -7,7 +7,7 @@ Confidence scoring, queue evaluation, sandbox cwd checks, and secret resolution 
 ## Source file map
 
 - `apps/desktop/src/main/services/automations/automationService.ts` — review queue, confidence scoring, verification gating, publish disposition, status mapping.
-- `apps/desktop/src/main/services/automations/automationSecretService.ts` — secret policy (env-ref only, same as CTO worker adapters). The ADE runtime resolves `${env:VAR}` at dispatch time from the runtime process environment, not from the desktop renderer.
+- `apps/desktop/src/main/services/automations/automationSecretService.ts` — secret policy (env-ref only). The ADE runtime resolves `${env:VAR}` at dispatch time from the runtime process environment, not from the desktop renderer.
 - `apps/desktop/src/main/services/automations/automationPlannerService.ts` — rule validation before persistence.
 
 ## Guardrail structure on a rule
@@ -117,7 +117,7 @@ The queue dashboard surfaces the severity summary, suggested actions, and any pr
 
 ## Secrets
 
-`automationSecretService.ts` enforces the same env-ref policy as CTO worker adapters:
+`automationSecretService.ts` enforces an env-ref-only secret policy:
 
 - Raw secret-like values at sensitive keys are rejected.
 - Only `${env:VAR_NAME}` references are allowed.
@@ -168,4 +168,3 @@ Every run writes:
 
 - `README.md` — rule structure and execution surfaces.
 - `triggers-and-actions.md` — trigger surface and built-in action catalog.
-- `../cto/workers.md` — same env-ref secret policy.

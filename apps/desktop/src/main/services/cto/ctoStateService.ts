@@ -6,7 +6,6 @@ import type {
   CtoIdentity,
   CtoOnboardingState,
   CtoSessionLogEntry,
-  CtoSubordinateActivityEntry,
   CtoSnapshot,
   CtoSystemPromptPreview,
 } from "../../../shared/types";
@@ -17,11 +16,21 @@ import type { AdeDb } from "../state/kvDb";
 import { nowIso, parseIsoToEpoch, safeJsonParse, uniqueStrings, writeTextAtomic } from "../shared/utils";
 import { createLogIntegrityService } from "../projects/logIntegrityService";
 import { buildCtoCapabilityManifest } from "./ctoPromptContent";
+import type { CtoMemoryService } from "./ctoMemoryService";
 
 type CtoStateServiceArgs = {
   db: AdeDb;
   projectId: string;
   adeDir: string;
+  /**
+   * Smart-memory service. Optional so ctoStateService can be constructed
+   * standalone (e.g. capability-manifest preview), but wired in production so
+   * durable memory is injected into the reconstruction context and prompt.
+   */
+  ctoMemoryService?: Pick<
+    CtoMemoryService,
+    "buildMemoryContextSections"
+  > | null;
 };
 
 type AppendCtoSessionLogArgs = {
@@ -34,15 +43,6 @@ type AppendCtoSessionLogArgs = {
   capabilityMode: "full_tooling" | "fallback";
 };
 
-type AppendCtoSubordinateActivityArgs = {
-  agentId: string;
-  agentName: string;
-  activityType: "chat_turn" | "worker_run";
-  summary: string;
-  sessionId?: string | null;
-  taskKey?: string | null;
-  issueKey?: string | null;
-};
 
 type PersistedDoc<T> = {
   payload: T;
@@ -76,16 +76,16 @@ function buildCtoModelSelectionKnowledge(): string[] {
     "",
     "ADE's model registry is the source of truth for model IDs, short IDs, defaults, and provider routing. Current registered provider groups:",
     ...providerLines,
-    "  Local models: Ollama and LM Studio models are discovered at runtime; use their full resolved modelId when spawning chats/workers.",
+    "  Local models: Ollama and LM Studio models are discovered at runtime; use their full resolved modelId when spawning chats.",
     "  Reasoning effort: use the model's supported reasoning tiers when available. Do not invent tiers for a model that does not advertise them.",
-    "  IMPORTANT: When the user says 'use opus', 'use sonnet', 'use gpt-5.5', or another short name, resolve it to the current full modelId from ADE's registry before calling spawnChat or worker tools. Never pass only the shortId, and never silently fall back to a default when the user specified a model.",
+    "  IMPORTANT: When the user says 'use opus', 'use sonnet', 'use gpt-5.5', or another short name, resolve it to the current full modelId from ADE's registry before calling spawnChat. Never pass only the shortId, and never silently fall back to a default when the user specified a model.",
     "",
   ];
 }
 
 const IMMUTABLE_CTO_DOCTRINE = [
   "You are the CTO for the current project inside ADE.",
-  "ADE (Autonomous Development Environment) is a local-first Electron desktop app that wraps your entire development workflow: git branching via lanes, AI chat sessions, terminal shells, PR management, worker agents, conflict resolution, test execution, Linear integration, and more.",
+  "ADE (Autonomous Development Environment) is a local-first Electron desktop app that wraps your entire development workflow: git branching via lanes, AI chat sessions, terminal shells, PR management, conflict resolution, test execution, automations, and Linear issue reading, and more.",
   "You are not a generic assistant. You are the persistent technical and operational lead for this project inside ADE. You have deep knowledge of every ADE feature and can perform any action the app supports through your operator tools.",
   "Answer identity questions as the project's CTO. Do not reframe yourself as Codex, Claude, or a detached chatbot.",
   "",
@@ -93,10 +93,10 @@ const IMMUTABLE_CTO_DOCTRINE = [
   "- Own architecture, execution quality, engineering continuity, and technical direction",
   "- Keep a working mental model of conventions, active work, known risks, and prior decisions",
   "- Use ADE surfaces and delegation paths when they help move the project forward",
-  "- Search the repo and reconstructed CTO/worker context before asking the user for context that ADE already has",
+  "- Search the repo and reconstructed CTO context before asking the user for context that ADE already has",
   "- Be decisive when the tradeoff is clear, and escalate when a decision is risky or irreversible",
   "- Execute user requests precisely — when a user asks for a specific model, lane, or configuration, honor the request exactly",
-  "- Proactively check project health, recent events, and worker status to stay aware of the project state",
+  "- Proactively check project health and recent events to stay aware of the project state",
   "",
   "Precision rules:",
   "- When the user specifies a model (e.g. 'use opus', 'use gpt-5.5'), pass the exact modelId to spawnChat or other tools. Never silently fall back to a default.",
@@ -111,13 +111,28 @@ const IMMUTABLE_CTO_DOCTRINE = [
 const CTO_CONTINUITY_OPERATING_MODEL = [
   "ADE continuity model:",
   "1. Immutable doctrine: ADE always re-applies this CTO doctrine. It is not user-editable and it is not compacted away.",
-  `2. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. ADE maintains this project-level state for recent sessions and worker activity.`,
+  `2. Current working context: ${CTO_CURRENT_CONTEXT_RELATIVE_PATH}. ADE maintains this project-level state for recent sessions.`,
   "",
   "Compaction and recovery rules:",
   "- Treat injected CTO continuity as current operating context, not optional notes.",
   "- Before non-trivial work, before asking the user to restate context, and before entering an unfamiliar subsystem, re-ground yourself in the current context ADE already injects.",
   "- ADE already injects reconstructed CTO state into the session. Do not spend turns shell-reading relative .ade/cto files from the workspace unless an explicit absolute file path is required.",
   "- Do not write ephemeral turn-by-turn status, scratch notes, or one-off observations that can be recovered from the repo or recent chat history.",
+].join("\n");
+
+const CTO_MEMORY_SYSTEM_GUIDANCE = [
+  "You have persistent memory that survives across sessions, model switches, and context compaction.",
+  "ADE stores it as files under .ade/cto/ and re-injects the relevant parts into every session:",
+  "- Durable memory (MEMORY.md): decisions, preferences, and standing project facts that should never be forgotten.",
+  "- Thread state: a rolling summary of the current goal, recent decisions, and open loops.",
+  "- Recent daily log: a compact per-turn journal of what was asked and done.",
+  "",
+  "How to use it:",
+  "- Save durable facts proactively with the saveMemory tool: architectural decisions, user preferences, naming conventions, environment quirks, and anything you would want to remember weeks from now. Keep each fact one crisp sentence.",
+  "- Search prior context with the searchMemory tool before asking the user to restate something, and readMemory to review what you already know.",
+  "- The injected memory below is authoritative. Never claim to remember something that is not present in your injected memory or the current conversation — if you don't have it, say so or search for it.",
+  "- Your memory is model-agnostic. When the user switches your model, the same memory carries over; do not treat a switch as a reset.",
+  "- Never store secrets in memory: no API keys, tokens, passwords, or credentials. Memory files are plaintext on disk and re-injected into prompts. Reference secrets by name (e.g. \"the LINEAR_API_KEY in ade secrets\") instead of by value; ADE also scrubs secret-shaped content on write as a backstop.",
 ].join("\n");
 
 function buildCtoEnvironmentKnowledge(): string {
@@ -141,11 +156,6 @@ function buildCtoEnvironmentKnowledge(): string {
   "",
   "PTY Terminal: A shell terminal session (runs any CLI command). Created with createTerminal({ laneId, title?, startupCommand? }). No ADE tool integration — use for raw shell commands only.",
   "",
-  "Worker: A named agent instance (engineer, QA, researcher, etc.) that runs in a lane executing tasks autonomously.",
-  "  - Workers have a budget, heartbeat, and can be woken with specific tasks.",
-  "  - Status: idle, active, running, paused.",
-  "  - Tools: listWorkers, createWorker, updateWorker, removeWorker, wakeWorker, getWorkerStatus.",
-  "",
   "Conflict Resolution: ADE can predict, simulate, propose, and apply merge conflict resolutions across lanes.",
   "  - Risk matrix shows potential conflicts before they happen.",
   "  - AI-generated proposals can be applied or undone.",
@@ -158,7 +168,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  /lanes — Lane browser showing all lanes, their status, git actions, diffs, stacks, and PR panels.",
   "  /files — File explorer for browsing and editing project files.",
   "  /prs — Pull request management: list, detail view, queue, GitHub integration.",
-  "  /cto — CTO settings page: your identity, team/workers, Linear integration.",
+  "  /cto — CTO page: your persistent chat thread plus settings (identity, personality, Linear connection).",
   "  /graph — Workspace dependency graph visualization showing lane relationships.",
   "  /history — Operation history timeline showing all past actions.",
   "  /automations — Automation rule builder: create rules triggered by events (PR opened, test failed, etc.).",
@@ -202,11 +212,9 @@ function buildCtoEnvironmentKnowledge(): string {
   "",
   "## Linear Integration",
   "",
-  "  ADE integrates with Linear for issue tracking and workflow automation.",
+  "  ADE integrates with Linear for issue reading and lightweight issue updates (no workflow engine).",
   "  - List and inspect Linear issues: listLinearIssues, getLinearIssue.",
   "  - Update issues: updateLinearIssueAssignee, addLinearIssueLabel, updateLinearIssueState, commentOnLinearIssue.",
-  "  - Route issues to work: routeLinearIssueToCto (handle yourself) or routeLinearIssueToWorker (delegate).",
-  "  - Workflow management: listLinearWorkflows, getLinearRunStatus, resolveLinearRunAction, cancelLinearRun, rerouteLinearRun.",
   "",
   "## Automation System",
   "",
@@ -216,7 +224,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "",
   "## CTO Continuity",
   "",
-  "  ADE keeps CTO continuity through the current working context, recent sessions, and worker activity.",
+  "  ADE keeps CTO continuity through the current working context and recent sessions, re-injected across compaction and model switches.",
   "",
   "## Tests",
   "",
@@ -245,7 +253,6 @@ function buildCtoEnvironmentKnowledge(): string {
   "  'Search the code for [pattern]' → searchWorkspaceText({ query }) or searchCodebase({ pattern }).",
   "  'What model is this using?' → report the current session's model from your identity state.",
   "  'Review browser screenshots' → listComputerUseArtifacts, getArtifactPreview, reviewArtifact.",
-  "  'How much are we spending?' → getProjectBudgetStatus or getWorkerCostBreakdown.",
   "  'Review this PR's code' → getPullRequestDiff, then approvePullRequest or requestPrChanges.",
   "  'Show me the Linear issues' → listLinearIssues.",
   "  'What processes are running?' → listManagedProcesses.",
@@ -441,28 +448,6 @@ function normalizeSessionLogEntry(input: unknown): CtoSessionLogEntry | null {
   };
 }
 
-function normalizeSubordinateActivityEntry(input: unknown): CtoSubordinateActivityEntry | null {
-  if (!input || typeof input !== "object") return null;
-  const source = input as Record<string, unknown>;
-  const agentId = typeof source.agentId === "string" ? source.agentId.trim() : "";
-  const agentName = typeof source.agentName === "string" ? source.agentName.trim() : "";
-  const summary = typeof source.summary === "string" ? source.summary.trim() : "";
-  const createdAt = typeof source.createdAt === "string" ? source.createdAt.trim() : "";
-  if (!agentId || !agentName || !summary || !createdAt) return null;
-  const activityType = source.activityType === "worker_run" ? "worker_run" : "chat_turn";
-  return {
-    id: typeof source.id === "string" && source.id.trim().length ? source.id.trim() : randomUUID(),
-    agentId,
-    agentName,
-    activityType,
-    summary,
-    sessionId: typeof source.sessionId === "string" && source.sessionId.trim().length ? source.sessionId.trim() : null,
-    taskKey: typeof source.taskKey === "string" && source.taskKey.trim().length ? source.taskKey.trim() : null,
-    issueKey: typeof source.issueKey === "string" && source.issueKey.trim().length ? source.issueKey.trim() : null,
-    createdAt,
-  };
-}
-
 function makeDefaultIdentity(): CtoIdentity {
   const timestamp = nowIso();
   return {
@@ -487,7 +472,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   // the entire cto/ directory ignored unless a user force-adds it.
   const currentContextPath = path.join(ctoDir, "CURRENT.md");
   const sessionsPath = path.join(ctoDir, "sessions.jsonl");
-  const subordinateActivityPath = path.join(ctoDir, "subordinate-activity.jsonl");
 
   fs.mkdirSync(ctoDir, { recursive: true });
 
@@ -600,25 +584,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return logIntegrityService.appendEntry(sessionsPath, entry) as CtoSessionLogEntry;
   };
 
-  const listSubordinateActivityFromFile = (): CtoSubordinateActivityEntry[] => {
-    if (!fs.existsSync(subordinateActivityPath)) return [];
-    const raw = fs.readFileSync(subordinateActivityPath, "utf8");
-    const entries: CtoSubordinateActivityEntry[] = [];
-    for (const line of raw.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed.length) continue;
-      const parsed = safeJsonParse<unknown>(trimmed, null);
-      const normalized = normalizeSubordinateActivityEntry(parsed);
-      if (normalized) entries.push(normalized);
-    }
-    return entries;
-  };
-
-  const appendSubordinateActivityToFile = (entry: CtoSubordinateActivityEntry): void => {
-    fs.mkdirSync(path.dirname(subordinateActivityPath), { recursive: true });
-    fs.appendFileSync(subordinateActivityPath, `${JSON.stringify(entry)}\n`, "utf8");
-  };
-
   const insertSessionLogToDb = (entry: CtoSessionLogEntry): void => {
     args.db.run(
       `
@@ -708,7 +673,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return {
       identity,
       recentSessions: getSessionLogs(recentLimit),
-      recentSubordinateActivity: getSubordinateActivityLogs(recentLimit),
     };
   };
 
@@ -720,19 +684,6 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
       }
     } else {
       lines.push("- No recent CTO sessions recorded.");
-    }
-
-    if (snapshot.recentSubordinateActivity.length > 0) {
-      lines.push("", "## Recent worker activity");
-      for (const entry of snapshot.recentSubordinateActivity) {
-        const detailParts = [
-          entry.taskKey ? `task ${entry.taskKey}` : "",
-          entry.issueKey ? `issue ${entry.issueKey}` : "",
-        ].filter((part) => part.length > 0);
-        lines.push(
-          `- [${entry.createdAt}] ${entry.agentName}${detailParts.length ? ` (${detailParts.join(", ")})` : ""}: ${clipText(entry.summary, 220)}`
-        );
-      }
     }
 
     return lines;
@@ -780,39 +731,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return written;
   };
 
-  const getSubordinateActivityLogs = (limit = 20): CtoSubordinateActivityEntry[] => {
-    reconcileAll();
-    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
-    return listSubordinateActivityFromFile()
-      .sort((a, b) => parseIsoToEpoch(b.createdAt) - parseIsoToEpoch(a.createdAt))
-      .slice(0, safeLimit);
-  };
-
-  const appendSubordinateActivity = (entry: AppendCtoSubordinateActivityArgs): CtoSubordinateActivityEntry => {
-    reconcileAll();
-    const next: CtoSubordinateActivityEntry = {
-      id: randomUUID(),
-      agentId: entry.agentId.trim(),
-      agentName: entry.agentName.trim() || entry.agentId.trim(),
-      activityType: entry.activityType,
-      summary: entry.summary.trim() || "Worker activity recorded.",
-      sessionId: typeof entry.sessionId === "string" && entry.sessionId.trim().length ? entry.sessionId.trim() : null,
-      taskKey: typeof entry.taskKey === "string" && entry.taskKey.trim().length ? entry.taskKey.trim() : null,
-      issueKey: typeof entry.issueKey === "string" && entry.issueKey.trim().length ? entry.issueKey.trim() : null,
-      createdAt: nowIso(),
-    };
-    appendSubordinateActivityToFile(next);
-    syncDerivedContextDoc();
-    return next;
-  };
-
   const buildReconstructionContext = (recentLimit = 8): string => {
     const snapshot = getSnapshot(recentLimit);
     const sections: string[] = [];
     sections.push("CTO Context");
     sections.push("The CTO state below is already reconstructed by ADE for this session. Do not burn turns trying to rediscover it by shelling into relative .ade/cto paths.");
     sections.push("- Runtime identity and operating doctrine keep you in the CTO role.");
-    sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions and worker activity through session resumes.`);
+    sections.push(`- Current working context at ${CTO_CURRENT_CONTEXT_RELATIVE_PATH} carries recent sessions through session resumes.`);
     sections.push("");
     sections.push("ADE Operational Knowledge");
     sections.push(buildCtoEnvironmentKnowledge());
@@ -824,6 +749,13 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sections.push("");
     sections.push("Current working context");
     sections.push(...buildCurrentContextLines(snapshot));
+
+    const memorySections = args.ctoMemoryService?.buildMemoryContextSections() ?? [];
+    for (const section of memorySections) {
+      sections.push("");
+      sections.push(section.title);
+      sections.push(section.body);
+    }
 
     return sections.join("\n").trim();
   };
@@ -921,6 +853,11 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         content: CTO_CONTINUITY_OPERATING_MODEL,
       },
       {
+        id: "memory",
+        title: "Persistent memory",
+        content: CTO_MEMORY_SYSTEM_GUIDANCE,
+      },
+      {
         id: "knowledge",
         title: "ADE environment knowledge",
         content: buildCtoEnvironmentKnowledge(),
@@ -951,11 +888,9 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
   return {
     getIdentity,
     getSessionLogs,
-    getSubordinateActivityLogs,
     getSnapshot,
     updateIdentity,
     appendSessionLog,
-    appendSubordinateActivity,
     buildReconstructionContext,
     getOnboardingState,
     completeOnboardingStep,

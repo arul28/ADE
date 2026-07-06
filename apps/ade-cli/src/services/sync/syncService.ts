@@ -4,6 +4,7 @@ import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
   SyncAddressCandidate,
+  SyncCloudRelayStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
@@ -16,15 +17,9 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
-import type { createFlowPolicyService } from "../../../../desktop/src/main/services/cto/flowPolicyService";
+import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
-import type { createLinearIngressService } from "../../../../desktop/src/main/services/cto/linearIngressService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import type { createLinearSyncService } from "../../../../desktop/src/main/services/cto/linearSyncService";
-import type { createWorkerAgentService } from "../../../../desktop/src/main/services/cto/workerAgentService";
-import type { createWorkerBudgetService } from "../../../../desktop/src/main/services/cto/workerBudgetService";
-import type { createWorkerHeartbeatService } from "../../../../desktop/src/main/services/cto/workerHeartbeatService";
-import type { createWorkerRevisionService } from "../../../../desktop/src/main/services/cto/workerRevisionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
@@ -56,11 +51,14 @@ import {
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
+import { createSyncSecurityStore } from "./syncSecurityStore";
+import { createSyncCloudRelayStore, type SyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
@@ -96,21 +94,17 @@ type SyncServiceArgs = {
     typeof createComputerUseArtifactBrokerService
   >;
   agentChatService: ReturnType<typeof createAgentChatService>;
-  workerAgentService?: ReturnType<typeof createWorkerAgentService> | null;
-  workerBudgetService?: ReturnType<typeof createWorkerBudgetService> | null;
-  workerHeartbeatService?: ReturnType<typeof createWorkerHeartbeatService> | null;
-  workerRevisionService?: ReturnType<typeof createWorkerRevisionService> | null;
+  /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
+  pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
-  flowPolicyService?: ReturnType<typeof createFlowPolicyService> | null;
+  ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   /**
    * Resolvers for services that are constructed AFTER createSyncService in
    * main.ts. Using lazy getters lets the sync router forward remote commands
    * to them without requiring a specific init order.
    */
-  getLinearIngressService?: () => ReturnType<typeof createLinearIngressService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
-  getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
@@ -128,6 +122,14 @@ type SyncServiceArgs = {
    */
   forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
+  /**
+   * Shared cloud-relay config store. The daemon passes the machine-level
+   * instance it also hands to the tunnel client so both read one file; when
+   * absent a store is created under the pairing state dir.
+   */
+  cloudRelayStore?: SyncCloudRelayStore;
+  /** Fired when the "Cloud relay fallback" toggle flips (start/stop tunnel). */
+  onCloudRelayEnabledChanged?: (enabled: boolean) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
@@ -153,6 +155,8 @@ const TOKEN_FILE = "sync-bootstrap-token";
 const PIN_FILE = "sync-pin.json";
 const PAIRED_DEVICES_FILE = "sync-paired-devices.json";
 const RUNTIME_NAME_FILE = "sync-runtime-name.json";
+const SECURITY_FILE = "sync-security.json";
+const CLOUD_RELAY_FILE = "sync-cloud-relay.json";
 
 function readPairingRecords(filePath: string): Record<string, unknown> {
   try {
@@ -374,9 +378,15 @@ function isViewerDraftTransportError(error: unknown): boolean {
 
 function buildPairingConnectInfo(argsIn: {
   localDevice: SyncRoleSnapshot["localDevice"];
+  relayWssUrl?: string | null;
 }): SyncPairingConnectInfo {
   const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
   const addressCandidates = buildAddressCandidates(argsIn.localDevice);
+  // The cloud relay is the lowest-priority path: phones try every direct
+  // candidate first and fall back to the tunnel only when nothing answers.
+  if (argsIn.relayWssUrl) {
+    addressCandidates.push({ host: argsIn.relayWssUrl, kind: "relay" });
+  }
   const hostIdentity = {
     deviceId: argsIn.localDevice.deviceId,
     siteId: argsIn.localDevice.siteId,
@@ -490,6 +500,12 @@ export function createSyncService(args: SyncServiceArgs) {
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
     pinStore,
+  });
+  const securityStore = createSyncSecurityStore({
+    filePath: path.join(pairingStateDir, SECURITY_FILE),
+  });
+  const cloudRelayStore = args.cloudRelayStore ?? createSyncCloudRelayStore({
+    filePath: path.join(pairingStateDir, CLOUD_RELAY_FILE),
   });
 
   const deviceRegistryService = createDeviceRegistryService({
@@ -622,16 +638,11 @@ export function createSyncService(args: SyncServiceArgs) {
     diffService: args.diffService,
     conflictService: args.conflictService,
     agentChatService: args.agentChatService,
-    workerAgentService: args.workerAgentService,
-    workerBudgetService: args.workerBudgetService,
-    workerHeartbeatService: args.workerHeartbeatService,
-    workerRevisionService: args.workerRevisionService,
+    pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
-    flowPolicyService: args.flowPolicyService,
+    ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
-    getLinearIngressService: args.getLinearIngressService,
     getLinearIssueTracker: args.getLinearIssueTracker,
-    getLinearSyncService: args.getLinearSyncService,
     projectConfigService: args.projectConfigService,
     processService: args.processService,
     portAllocationService: args.portAllocationService,
@@ -704,16 +715,11 @@ export function createSyncService(args: SyncServiceArgs) {
       ptyService: args.ptyService,
       processService: args.processService,
       agentChatService: args.agentChatService,
-      workerAgentService: args.workerAgentService,
-      workerBudgetService: args.workerBudgetService,
-      workerHeartbeatService: args.workerHeartbeatService,
-      workerRevisionService: args.workerRevisionService,
+      pushPublisherService: args.pushPublisherService,
       ctoStateService: args.ctoStateService,
-      flowPolicyService: args.flowPolicyService,
+      ctoMemoryService: args.ctoMemoryService,
       linearCredentialService: args.linearCredentialService,
-      getLinearIngressService: args.getLinearIngressService,
       getLinearIssueTracker: args.getLinearIssueTracker,
-      getLinearSyncService: args.getLinearSyncService,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,
@@ -736,6 +742,7 @@ export function createSyncService(args: SyncServiceArgs) {
       foreignChatProvider: args.foreignChatProvider,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,
+      requireDpop: () => securityStore.getRequireDpop(),
       onStateChanged: () => {
         void refreshRoleState();
       },
@@ -1175,7 +1182,10 @@ export function createSyncService(args: SyncServiceArgs) {
         runtimeName: runtimeNameStore.getRuntimeName(),
         pairingConnectInfo:
           canHostPhonePairing
-            ? buildPairingConnectInfo({ localDevice })
+            ? buildPairingConnectInfo({
+                localDevice,
+                relayWssUrl: cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+              })
             : null,
         connectedPeers,
         tailnetDiscovery: canHostPhonePairing && hostService
@@ -1326,6 +1336,35 @@ export function createSyncService(args: SyncServiceArgs) {
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;
+    },
+
+    getRequireDpop(): boolean {
+      return securityStore.getRequireDpop();
+    },
+
+    setRequireDpop(requireDpop: boolean): boolean {
+      securityStore.setRequireDpop(requireDpop);
+      // Return the effective value: ADE_SYNC_REQUIRE_DPOP can override the store.
+      return securityStore.getRequireDpop();
+    },
+
+    getCloudRelayStatus(): SyncCloudRelayStatus {
+      const config = cloudRelayStore.getConfig();
+      return {
+        enabled: config.enabled,
+        relayWssUrl: cloudRelayStore.getRelayWssUrl(),
+        machineKey: config.machineKey,
+        relayUrl: cloudRelayStore.getRelayUrl(),
+      };
+    },
+
+    async setCloudRelayEnabled(enabled: boolean): Promise<SyncCloudRelayStatus> {
+      cloudRelayStore.setEnabled(enabled);
+      args.onCloudRelayEnabledChanged?.(enabled);
+      // The relay candidate rides pairingConnectInfo, so republish status.
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return service.getCloudRelayStatus();
     },
 
     async setActiveLanePresence(laneIds: string[]): Promise<void> {

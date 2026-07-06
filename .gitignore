@@ -74,6 +74,8 @@ ios-signing/
 package-lock.json
 !/apps/ade-code/package-lock.json
 !/apps/webhook-relay/package-lock.json
+!/apps/push-relay/package-lock.json
+!/apps/tunnel-relay/package-lock.json
 /apps/desktop/release-alpha
 /apps/desktop/release-beta
 apps/desktop/resources/runtime/ade-*

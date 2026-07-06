@@ -28,7 +28,7 @@ private enum RootTab: Hashable, CaseIterable, Identifiable {
     case .lanes: return "square.stack.3d.up"
     case .prs: return "arrow.triangle.pull"
     case .files: return "doc.text"
-    case .cto: return "brain.head.profile"
+    case .cto: return "brain"
     }
   }
 }
@@ -159,7 +159,7 @@ struct ContentView: View {
     CtoRootScreen(isTabActive: selectedTab == .cto)
       .tag(RootTab.cto)
       .tabItem {
-        Label("CTO", systemImage: "brain.head.profile")
+        Label("CTO", systemImage: "brain")
       }
   }
 }

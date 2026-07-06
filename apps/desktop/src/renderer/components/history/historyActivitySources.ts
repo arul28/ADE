@@ -2,7 +2,6 @@ import type {
   AgentChatSessionSummary,
   CtoSnapshot,
   OperationRecord,
-  WorkerAgentRun,
 } from "../../../shared/types";
 
 type OperationStatus = OperationRecord["status"];
@@ -10,7 +9,6 @@ type OperationStatus = OperationRecord["status"];
 export type HistoryActivitySourceData = {
   chats?: AgentChatSessionSummary[];
   ctoSnapshot?: CtoSnapshot | null;
-  workerRuns?: WorkerAgentRun[];
 };
 
 function cleanString(value: unknown): string | null {
@@ -35,29 +33,6 @@ function terminalEndedAt(status: OperationStatus, timestamp: string): string | n
 
 function chatStatus(status: AgentChatSessionSummary["status"]): OperationStatus {
   return status === "active" ? "running" : "succeeded";
-}
-
-function workerStatus(status: WorkerAgentRun["status"]): OperationStatus {
-  switch (status) {
-    case "completed":
-    case "skipped":
-      return "succeeded";
-    case "failed":
-      return "failed";
-    case "cancelled":
-      return "canceled";
-    default:
-      return "running";
-  }
-}
-
-function laneFromContext(context: Record<string, unknown>): {
-  laneId: string | null;
-  laneName: string | null;
-} {
-  const laneId = cleanString(context.laneId) ?? cleanString(context.sourceLaneId);
-  const laneName = cleanString(context.laneName) ?? cleanString(context.sourceLaneName);
-  return { laneId, laneName };
 }
 
 function chatRecord(chat: AgentChatSessionSummary): OperationRecord | null {
@@ -102,42 +77,6 @@ function chatRecord(chat: AgentChatSessionSummary): OperationRecord | null {
   };
 }
 
-function workerRunRecord(run: WorkerAgentRun): OperationRecord | null {
-  const timestamp =
-    validIso(run.finishedAt) ??
-    validIso(run.startedAt) ??
-    validIso(run.updatedAt) ??
-    validIso(run.createdAt);
-  if (!timestamp) return null;
-  const status = workerStatus(run.status);
-  const lane = laneFromContext(run.context);
-  const taskLabel = cleanString(run.taskKey) ?? cleanString(run.issueKey) ?? run.id;
-
-  return {
-    id: `worker-run:${run.id}`,
-    laneId: lane.laneId,
-    laneName: lane.laneName,
-    kind: "worker.run",
-    startedAt: timestamp,
-    endedAt: terminalEndedAt(status, timestamp),
-    status,
-    preHeadSha: null,
-    postHeadSha: null,
-    metadataJson: metadataJson({
-      source: "workerRun",
-      eventLabel: `Worker task: ${taskLabel}`,
-      runId: run.id,
-      agentId: run.agentId,
-      taskKey: run.taskKey ?? null,
-      issueKey: run.issueKey ?? null,
-      workerStatus: run.status,
-      wakeupReason: run.wakeupReason,
-      actor: run.agentId,
-      error: run.errorMessage ?? null,
-    }),
-  };
-}
-
 function ctoSessionRecords(snapshot: CtoSnapshot): OperationRecord[] {
   return snapshot.recentSessions
     .map((entry): OperationRecord | null => {
@@ -172,38 +111,6 @@ function ctoSessionRecords(snapshot: CtoSnapshot): OperationRecord[] {
     .filter((record): record is OperationRecord => record != null);
 }
 
-function ctoActivityRecords(snapshot: CtoSnapshot): OperationRecord[] {
-  return snapshot.recentSubordinateActivity
-    .map((entry): OperationRecord | null => {
-      const timestamp = validIso(entry.createdAt);
-      if (!timestamp) return null;
-      return {
-        id: `cto-activity:${entry.id}`,
-        laneId: null,
-        laneName: null,
-        kind: "worker.activity",
-        startedAt: timestamp,
-        endedAt: timestamp,
-        status: "succeeded",
-        preHeadSha: null,
-        postHeadSha: null,
-        metadataJson: metadataJson({
-          source: "ctoActivity",
-          eventLabel: `${entry.agentName}: ${entry.summary}`,
-          agentId: entry.agentId,
-          agent: entry.agentName,
-          sessionId: entry.sessionId ?? null,
-          taskKey: entry.taskKey ?? null,
-          issueKey: entry.issueKey ?? null,
-          activityType: entry.activityType,
-          summary: entry.summary,
-          actor: entry.agentName,
-        }),
-      };
-    })
-    .filter((record): record is OperationRecord => record != null);
-}
-
 export function buildSupplementalTimelineRecords(
   data: HistoryActivitySourceData,
 ): OperationRecord[] {
@@ -214,14 +121,8 @@ export function buildSupplementalTimelineRecords(
     if (record) records.push(record);
   }
 
-  for (const run of data.workerRuns ?? []) {
-    const record = workerRunRecord(run);
-    if (record) records.push(record);
-  }
-
   if (data.ctoSnapshot) {
     records.push(...ctoSessionRecords(data.ctoSnapshot));
-    records.push(...ctoActivityRecords(data.ctoSnapshot));
   }
 
   return records;
@@ -242,22 +143,18 @@ export async function fetchSupplementalTimelineRecords(
   const safeLimit = Number.isFinite(roundedLimit)
     ? Math.max(1, Math.min(500, roundedLimit))
     : 500;
-  const [chats, ctoSnapshot, workerRuns] = await Promise.all([
+  const [chats, ctoSnapshot] = await Promise.all([
     typeof window.ade?.agentChat?.list === "function"
       ? settle(window.ade.agentChat.list({ includeAutomation: true }))
       : Promise.resolve(null),
     typeof window.ade?.cto?.getState === "function"
       ? settle(window.ade.cto.getState({ recentLimit: Math.min(100, safeLimit) }))
       : Promise.resolve(null),
-    typeof window.ade?.cto?.listAgentRuns === "function"
-      ? settle(window.ade.cto.listAgentRuns({ limit: Math.min(100, safeLimit) }))
-      : Promise.resolve(null),
   ]);
 
   return buildSupplementalTimelineRecords({
     chats: chats ?? [],
     ctoSnapshot,
-    workerRuns: workerRuns ?? [],
   });
 }
 

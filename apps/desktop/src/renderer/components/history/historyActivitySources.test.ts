@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSessionSummary,
   CtoSnapshot,
-  WorkerAgentRun,
 } from "../../../shared/types";
 import { getEventMeta } from "./eventTaxonomy";
 import {
@@ -23,21 +22,6 @@ const chat: AgentChatSessionSummary = {
   lastActivityAt: "2026-05-22T00:10:00.000Z",
   lastOutputPreview: "Working on the fix",
   summary: "Investigating the checkout failure",
-};
-
-const workerRun: WorkerAgentRun = {
-  id: "run-1",
-  agentId: "agent-1",
-  status: "failed",
-  wakeupReason: "manual",
-  taskKey: "task-7",
-  issueKey: null,
-  context: { laneId: "lane-1", laneName: "History lane" },
-  errorMessage: "Tests failed",
-  startedAt: "2026-05-22T00:12:00.000Z",
-  finishedAt: "2026-05-22T00:13:00.000Z",
-  createdAt: "2026-05-22T00:11:00.000Z",
-  updatedAt: "2026-05-22T00:13:00.000Z",
 };
 
 const ctoSnapshot: CtoSnapshot = {
@@ -61,18 +45,6 @@ const ctoSnapshot: CtoSnapshot = {
       createdAt: "2026-05-22T00:02:00.000Z",
     },
   ],
-  recentSubordinateActivity: [
-    {
-      id: "activity-1",
-      agentId: "agent-1",
-      agentName: "Worker 1",
-      activityType: "worker_run",
-      summary: "Completed review",
-      taskKey: "task-8",
-      issueKey: null,
-      createdAt: "2026-05-22T00:03:00.000Z",
-    },
-  ],
 };
 
 describe("history supplemental activity sources", () => {
@@ -80,21 +52,18 @@ describe("history supplemental activity sources", () => {
     vi.unstubAllGlobals();
   });
 
-  it("maps chats, CTO logs, and worker task runs into timeline records", () => {
+  it("maps chats and CTO logs into timeline records", () => {
     const records = buildSupplementalTimelineRecords({
       chats: [chat],
-      workerRuns: [workerRun],
       ctoSnapshot,
     });
 
     expect(records.map((record) => record.kind)).toEqual(expect.arrayContaining([
       "chat.session",
-      "worker.run",
       "cto.session",
-      "worker.activity",
     ]));
     expect(records.find((record) => record.id === "chat:chat-1")?.status).toBe("running");
-    expect(records.find((record) => record.id === "worker-run:run-1")?.status).toBe("failed");
+    expect(records.find((record) => record.id === "cto-session:cto-log-1")?.status).toBe("succeeded");
   });
 
   it("uses source metadata labels when enriching supplemental records", () => {
@@ -108,16 +77,14 @@ describe("history supplemental activity sources", () => {
     expect(event.metadata?.sessionId).toBe("chat-1");
   });
 
-  it("fetches chats, CTO state, and worker runs through renderer APIs", async () => {
+  it("fetches chats and CTO state through renderer APIs", async () => {
     const agentChatList = vi.fn(async () => [chat]);
     const ctoGetState = vi.fn(async () => ctoSnapshot);
-    const listAgentRuns = vi.fn(async () => [workerRun]);
     vi.stubGlobal("window", {
       ade: {
         agentChat: { list: agentChatList },
         cto: {
           getState: ctoGetState,
-          listAgentRuns,
         },
       },
     });
@@ -126,12 +93,9 @@ describe("history supplemental activity sources", () => {
 
     expect(agentChatList).toHaveBeenCalledWith({ includeAutomation: true });
     expect(ctoGetState).toHaveBeenCalledWith({ recentLimit: 100 });
-    expect(listAgentRuns).toHaveBeenCalledWith({ limit: 100 });
     expect(records.map((record) => record.kind)).toEqual(expect.arrayContaining([
       "chat.session",
-      "worker.run",
       "cto.session",
-      "worker.activity",
     ]));
   });
 

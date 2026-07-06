@@ -1,39 +1,35 @@
 ---
 title: "Set up the CTO"
-description: "Give the CTO a persona and model, connect GitHub and Linear, add a worker or two, and start with a planning prompt."
+description: "Pick a personality and work style, optionally choose a model and connect Linear, and start with a planning prompt."
 icon: "wand-magic-sparkles"
 ---
 
-The CTO is usable in minutes. First-run setup is intentionally short — you pick a **personality** for the operator and it's ready to chat. A capable model, GitHub, Linear, and workers all layer in afterward, only when you need them.
-
-<Frame caption="Start the CTO from a chat and let it operate across the project.">
-  <img src="/media/features/agent-chat/run-orchestrator.webp" alt="Running the CTO operator from a chat" />
-</Frame>
+The CTO is usable in minutes. First-run setup is one card — you pick a **personality** and a **work style** and it's ready to chat. A capable model and Linear layer in afterward, only when you need them.
 
 ## First run
 
-The first time you open the CTO tab, a short wizard asks you to pick a **personality preset** — the only required step. Everything else is deferred to Settings and the relevant tabs.
+The first time you open the CTO tab, a single setup card asks for a personality preset and a work style. A name is optional. Everything else is deferred to Settings.
 
 <Steps>
   <Step title="Pick a personality">
     Choose a preset — strategic, professional, hands-on, casual, minimal, or custom. Custom lets you write your own overlay. This sets the CTO's tone; its core doctrine is fixed by ADE and not editable.
   </Step>
+  <Step title="Set a work style">
+    Choose how much detail you want, how proactive the CTO should be, and how readily it escalates decisions to you. These are three quick toggles on the same card.
+  </Step>
+  <Step title="Name it (optional)">
+    Give the CTO a name, or leave it as "CTO".
+  </Step>
   <Step title="Choose a model (optional)">
     In CTO Settings, set the provider, model, and reasoning effort. The CTO reasons across the whole project, so favor a capable model over a fast one. Until you pick one, the CTO uses the project's default model.
   </Step>
-  <Step title="Connect GitHub">
-    Recommended for PR summaries, CI explanations, and review follow-up across lanes.
-  </Step>
   <Step title="Connect Linear (optional)">
-    Connect it when issues should drive lanes, PRs, and status updates. See [Linear](/integrations/linear).
-  </Step>
-  <Step title="Add workers (optional)">
-    Create worker identities for recurring responsibilities such as testing or review. See [Workers](/cto/workers).
+    Connect it when you want the CTO to browse and update issues from the thread. See [Linear](/integrations/linear).
   </Step>
 </Steps>
 
 <Note>
-Setup finishes without Linear, a model choice, or any workers — those connect later. The CTO is meant to be a daily chat surface first.
+Setup finishes without a model choice or Linear — those connect later. The CTO is meant to be a daily chat surface first.
 </Note>
 
 ## Personality presets
@@ -44,17 +40,17 @@ The preset shapes the CTO's communication style. The underlying operator doctrin
   <Card title="Strategic" icon="chess">
     Big-picture framing and trade-offs.
   </Card>
-  <Card title="Professional" icon="briefcase">
-    Measured, businesslike updates.
+  <Card title="Executive" icon="briefcase">
+    Calm, structured, leadership-oriented.
   </Card>
   <Card title="Hands-on" icon="wrench">
     Pragmatic and execution-focused.
   </Card>
-  <Card title="Casual" icon="handshake">
-    Relaxed, conversational tone.
+  <Card title="Collaborative" icon="handshake">
+    Warm, conversational, easy to work with.
   </Card>
-  <Card title="Minimal" icon="bolt">
-    Terse, low-noise replies.
+  <Card title="Concise" icon="bolt">
+    Low-noise, direct replies.
   </Card>
   <Card title="Custom" icon="sparkles">
     Write your own personality overlay.
@@ -62,12 +58,12 @@ The preset shapes the CTO's communication style. The underlying operator doctrin
 </CardGroup>
 
 <Tip>
-You can re-run the wizard any time from **CTO &rarr; Settings &rarr; Reset Onboarding**, and edit the persona and model from the identity editor without resetting anything.
+You can re-run setup any time from **CTO &rarr; Settings &rarr; Re-run setup**, and edit the persona, work style, and model from Settings without resetting anything.
 </Tip>
 
 ## First useful prompts
 
-Lead with planning and summarization before delegation — that's where the CTO earns its keep.
+Lead with planning and summarization — that's where the CTO earns its keep.
 
 ```text
 Summarize the current project state and identify the highest-risk open work.
@@ -82,14 +78,14 @@ Read Linear issue ENG-142 and recommend the first lane to create.
 ```
 
 <Tip>
-Treat the CTO's first plan as a draft. Refine the split in chat until the lanes are small and independent, then approve before any worker starts coding.
+Ask the CTO to remember decisions as you make them — it keeps durable memory across sessions and model switches, so you don't have to restate context next time.
 </Tip>
 
 <CardGroup cols={2}>
-  <Card title="Workers" icon="users" href="/cto/workers">
-    Manage the delegated agent identities the CTO assigns work to.
+  <Card title="CTO overview" icon="crown" href="/cto/overview">
+    What the CTO is and when to reach for it.
   </Card>
   <Card title="Linear" icon="layers" href="/integrations/linear">
-    Connect Linear so the CTO can triage and route issues.
+    Connect Linear so the CTO can browse and update issues.
   </Card>
 </CardGroup>

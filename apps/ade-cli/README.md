@@ -190,6 +190,8 @@ sync.forgetDevice
 sync.getTransferReadiness sync.transferBrainToLocal
 sync.getPin   sync.setPin   sync.clearPin
 sync.setActiveLanePresence
+sync.getCloudRelayStatus  sync.setCloudRelayEnabled
+sync.getRequireDpop       sync.setRequireDpop
 ```
 
 `runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`.
@@ -304,6 +306,7 @@ ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.5 -
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --print-config --json
+ade chat create --lane lane-id --provider codex --no-parent   # spawned chats default their parent to $ADE_CHAT_SESSION_ID; --parent <session> overrides, --no-parent opts out
 ade chat read session-id --limit 20 --text
 ade code
 ade code --embedded
@@ -323,6 +326,11 @@ ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
+ade sync relay status --text                       # cloud relay: wss URL phones dial + on/off state
+ade sync relay enable                              # route phones through the tunnel relay (headless brains have no Settings UI)
+ade sync relay disable
+ade sync security status --text                    # machine sync security posture (require-DPoP)
+ade sync security require-dpop on                  # reject paired hellos from devices without a Secure Enclave key
 ade secrets list --text
 ade secrets get STRIPE_API_KEY --text
 ade secrets set STRIPE_API_KEY --value sk_...

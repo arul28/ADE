@@ -5,6 +5,9 @@ import path from "node:path";
 import { query, startup } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildOpenCodePromptParts, startOpenCodeSession } from "../opencode/openCodeRuntime";
+import { openKvDb } from "../state/kvDb";
+import { createCtoStateService } from "../cto/ctoStateService";
+import { createCtoMemoryService } from "../cto/ctoMemoryService";
 import {
   clearOpenCodeInventoryCache,
   peekOpenCodeInventoryCache,
@@ -1224,6 +1227,7 @@ function createMockSessionService() {
     updateMeta: vi.fn((args: any) => {
       const row = sessions.get(args.sessionId);
       if (row) {
+        if (typeof args.laneId === "string" && args.laneId.trim().length) row.laneId = args.laneId.trim();
         if (args.title !== undefined) row.title = args.title;
         if (args.goal !== undefined) row.goal = args.goal;
         if (args.manuallyNamed !== undefined) row.manuallyNamed = args.manuallyNamed;
@@ -4100,7 +4104,10 @@ describe("createAgentChatService", () => {
       expect(session.permissionMode).toBe("full-auto");
     });
 
-    it("does not reuse a foreign-lane identity session or auto-close it during migration", async () => {
+    it("reuses a foreign-lane CTO session and rebinds it onto the canonical lane", async () => {
+      // The CTO is a single project-level thread (D5): a session left on a
+      // non-canonical lane must be reused and rebound to the canonical lane
+      // rather than forking a second parallel thread.
       const { service, sessionService } = createService();
 
       const legacy = await service.createSession({
@@ -4116,8 +4123,9 @@ describe("createAgentChatService", () => {
         laneId: "lane-2",
       });
 
-      expect(canonical.id).not.toBe(legacy.id);
+      expect(canonical.id).toBe(legacy.id);
       expect(canonical.laneId).toBe("lane-1");
+      expect(sessionService.get(legacy.id)?.laneId).toBe("lane-1");
       expect(sessionService.get(legacy.id)?.status).not.toBe("ended");
 
       const reused = await service.ensureIdentitySession({
@@ -4142,24 +4150,6 @@ describe("createAgentChatService", () => {
         laneId: "lane-2",
       });
 
-      expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
-    });
-
-    it("pins worker identity execution state to the primary lane", async () => {
-      vi.mocked(runGit).mockImplementation(async (_args, opts) => ({
-        stdout: String(opts?.cwd ?? "").includes(path.join(tmpRoot, "lane-2")) ? "lane-2-sha\n" : "lane-1-sha\n",
-        stderr: "",
-        exitCode: 0,
-      }));
-
-      const { service, sessionService } = createService();
-      const session = await service.ensureIdentitySession({
-        identityKey: "agent:worker-1",
-        laneId: "lane-2",
-      });
-
-      expect(session.laneId).toBe("lane-1");
-      expect(session.permissionMode).toBe("full-auto");
       expect(sessionService.setHeadShaStart).toHaveBeenLastCalledWith(session.id, "lane-1-sha");
     });
 
@@ -4188,7 +4178,7 @@ describe("createAgentChatService", () => {
       expect(session.interactionMode).not.toBe("plan");
     });
 
-    it("ignores native codex permission overrides for worker identities on create", async () => {
+    it("ignores native codex permission overrides for the CTO identity on create", async () => {
       // Locally map modes so full-auto => danger-full-access / never and the
       // default mapping (used when no permissionMode is passed) stays on the
       // on-request / read-only baseline. This lets us prove the IPC-provided
@@ -4206,7 +4196,7 @@ describe("createAgentChatService", () => {
         provider: "codex",
         model: "gpt-5-codex",
         modelId: "gpt-5-codex",
-        identityKey: "agent:worker-1",
+        identityKey: "cto",
         codexApprovalPolicy: "untrusted",
         codexSandbox: "read-only",
       });
@@ -4243,6 +4233,63 @@ describe("createAgentChatService", () => {
       }
       expect(updated.codexApprovalPolicy).not.toBe("untrusted");
       expect(updated.codexSandbox).not.toBe("read-only");
+    });
+  });
+
+  describe("CTO memory + model-switch-safe thread", () => {
+    async function createCtoServices() {
+      const adeDir = path.join(tmpRoot, ".ade");
+      fs.mkdirSync(adeDir, { recursive: true });
+      const db = await openKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
+      const ctoMemoryService = createCtoMemoryService({ adeDir });
+      const ctoStateService = createCtoStateService({
+        db,
+        projectId: "project-test",
+        adeDir,
+        ctoMemoryService,
+      });
+      return { db, ctoStateService, ctoMemoryService };
+    }
+
+    it("persists a CTO model switch back into identity model preferences (D3)", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "opencode/openai/gpt-5.2",
+      });
+
+      const prefs = ctoStateService.getIdentity().modelPreferences;
+      expect(prefs.modelId).toBe("opencode/openai/gpt-5.2");
+      expect(prefs.provider).toBe("opencode");
+
+      db.close();
+    });
+
+    it("injects durable memory into the CTO reconstruction context", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+      ctoMemoryService.appendMemoryFact("The build long-pole is the Windows runner.");
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const session = await service.ensureIdentitySession({
+        identityKey: "cto",
+        laneId: "lane-1",
+      });
+
+      // ensureIdentitySession refreshes the reconstruction context; the durable
+      // memory fact must be present so it survives a fresh provider thread.
+      const reconstruction = ctoStateService.buildReconstructionContext(8);
+      expect(reconstruction).toContain("Durable memory (MEMORY.md)");
+      expect(reconstruction).toContain("The build long-pole is the Windows runner.");
+      expect(session.identityKey).toBe("cto");
+
+      db.close();
     });
   });
 
@@ -6069,6 +6116,173 @@ describe("createAgentChatService", () => {
           endTimestamp: "2026-06-30T01:02:00.000Z",
         }),
       ]);
+    });
+  });
+
+  // --------------------------------------------------------------------------
+  // Claude Workflow runs (workflow_progress fan-out) + child spawn lineage
+  // --------------------------------------------------------------------------
+
+  describe("claude workflow progress fan-out", () => {
+    it("fans workflow agents out as subagent rows with stable identity and closes stragglers on workflow end", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let turnDone: (() => void) | null = null;
+      const turnDonePromise = new Promise<void>((resolve) => { turnDone = resolve; });
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-wf-1", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "wf-1",
+          description: "Run review workflow",
+          task_type: "local_workflow",
+          workflow_name: "review",
+        };
+        // Tick 1: phase + one running agent, one queued agent (no startedAt).
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "wf-1",
+          description: "Run review workflow",
+          usage: { total_tokens: 100, tool_uses: 1, duration_ms: 50 },
+          workflow_progress: [
+            { type: "workflow_phase", index: 0, title: "Scan" },
+            { type: "workflow_agent", index: 0, state: "start", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 100 },
+            { type: "workflow_agent", index: 1, state: "start", label: "scan:db" },
+          ],
+        };
+        // Tick 2: agent-a finishes, the queued agent starts.
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          task_id: "wf-1",
+          description: "Run review workflow",
+          usage: { total_tokens: 900, tool_uses: 4, duration_ms: 900 },
+          workflow_progress: [
+            { type: "workflow_phase", index: 0, title: "Scan" },
+            { type: "workflow_agent", index: 0, state: "done", startedAt: 1, label: "scan:auth", agentId: "agent-a", tokens: 900, durationMs: 800 },
+            { type: "workflow_agent", index: 1, state: "start", startedAt: 5, label: "scan:db" },
+          ],
+        };
+        // Workflow ends while scan:db is still running.
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          task_id: "wf-1",
+          status: "completed",
+          summary: "workflow done",
+        };
+        await turnDonePromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-wf-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run the workflow." });
+
+      await waitForEvent(
+        events,
+        (e): e is AgentChatEventEnvelope =>
+          e.event.type === "subagent_result" && (e.event as any).taskId === "wf-1",
+      );
+
+      const agentEvents = events.filter((e) => (e.event as any).agentId === "agent-a");
+      const started = agentEvents.filter((e) => e.event.type === "subagent_started");
+      const results = agentEvents.filter((e) => e.event.type === "subagent_result");
+      // Stable identity: exactly one started + one result despite cumulative re-emission.
+      expect(started).toHaveLength(1);
+      expect(results).toHaveLength(1);
+      expect((started[0]!.event as any).taskId).toBe("wf-1::a0");
+      expect((started[0]!.event as any).description).toBe("scan:auth");
+      expect((started[0]!.event as any).workflowName).toBe("review");
+      expect((started[0]!.event as any).background).toBe(true);
+      expect((results[0]!.event as any).status).toBe("completed");
+      expect((results[0]!.event as any).usage?.totalTokens).toBe(900);
+
+      // The queued agent only materializes once it starts, then is closed as
+      // stopped when the workflow ends before it finishes.
+      const dbRow = events.filter((e) => (e.event as any).taskId === "wf-1::a1");
+      expect(dbRow.some((e) => e.event.type === "subagent_started")).toBe(true);
+      const dbResult = dbRow.find((e) => e.event.type === "subagent_result");
+      expect((dbResult?.event as any)?.status).toBe("stopped");
+      expect((dbResult?.event as any)?.finalSummary).toContain("Workflow ended");
+
+      // Parent workflow row derives a phase/count summary when the SDK sends none.
+      const parentProgress = events.find(
+        (e) => e.event.type === "subagent_progress" && (e.event as any).taskId === "wf-1",
+      );
+      expect((parentProgress?.event as any)?.summary).toContain("Scan");
+
+      turnDone!();
+      await expect(sendPromise).resolves.toBeUndefined();
+    });
+  });
+
+  describe("child chat spawn lineage", () => {
+    it("notifies the parent session with a spawn chip notice and a live subagent row", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-lineage", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-lineage",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Fix flaky tests",
+        orchestrationParentSessionId: parent.id,
+      });
+
+      const parentEvents = events.filter((e) => e.sessionId === parent.id);
+      const notice = parentEvents.find(
+        (e) => e.event.type === "system_notice" && (e.event as any).status === "subagent_spawned",
+      );
+      expect(notice).toBeTruthy();
+      expect((notice!.event as any).message).toContain("Fix flaky tests");
+      expect((notice!.event as any).detail?.spawnedSession?.sessionId).toBe(child.id);
+
+      const row = parentEvents.find(
+        (e) => e.event.type === "subagent_started" && (e.event as any).taskId === `chat:${child.id}`,
+      );
+      expect(row).toBeTruthy();
+      expect((row!.event as any).agentId).toBe(child.id);
+      expect((row!.event as any).description).toBe("Fix flaky tests");
+
+      expect(child.orchestrationParentSessionId).toBe(parent.id);
     });
   });
 

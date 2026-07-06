@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSwitchChatSessionModel, filterChatModelIdsForSession } from "./chatModelSwitching";
+import { filterChatModelIdsForSession } from "./chatModelSwitching";
 
 describe("chatModelSwitching", () => {
   it("returns all models regardless of family after launch", () => {
@@ -20,22 +20,17 @@ describe("chatModelSwitching", () => {
     ]);
   });
 
-  it("allows launched CTO-style chats to switch across families", () => {
+  it("keeps the active session model visible when it fell out of the catalog", () => {
     expect(
       filterChatModelIdsForSession({
-        availableModelIds: [
-          "anthropic/claude-sonnet-4-6",
-          "openai/gpt-5.4",
-          "openai/gpt-5.2",
-        ],
-        activeSessionModelId: "anthropic/claude-sonnet-4-6",
+        availableModelIds: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
+        activeSessionModelId: "openai/gpt-5.2",
         hasConversation: true,
-        policy: "any-after-launch",
       }),
     ).toEqual([
+      "openai/gpt-5.2",
       "anthropic/claude-sonnet-4-6",
       "openai/gpt-5.4",
-      "openai/gpt-5.2",
     ]);
   });
 
@@ -48,44 +43,5 @@ describe("chatModelSwitching", () => {
         includeActiveSessionModel: false,
       }),
     ).toEqual(["anthropic/claude-sonnet-4-6"]);
-  });
-
-  it("allows same-family switches after launch", () => {
-    expect(
-      canSwitchChatSessionModel({
-        currentModelId: "openai/gpt-5.4",
-        nextModelId: "openai/gpt-5.2",
-        hasConversation: true,
-      }),
-    ).toBe(true);
-  });
-
-  it("allows cross-family switches after launch", () => {
-    expect(
-      canSwitchChatSessionModel({
-        currentModelId: "anthropic/claude-sonnet-4-6",
-        nextModelId: "openai/gpt-5.4",
-        hasConversation: true,
-      }),
-    ).toBe(true);
-
-    expect(
-      canSwitchChatSessionModel({
-        currentModelId: "anthropic/claude-sonnet-4-6",
-        nextModelId: "openai/gpt-5.4",
-        hasConversation: true,
-        policy: "any-after-launch",
-      }),
-    ).toBe(true);
-  });
-
-  it("allows any switch before the conversation starts", () => {
-    expect(
-      canSwitchChatSessionModel({
-        currentModelId: "anthropic/claude-sonnet-4-6",
-        nextModelId: "openai/gpt-5.4",
-        hasConversation: false,
-      }),
-    ).toBe(true);
   });
 });
