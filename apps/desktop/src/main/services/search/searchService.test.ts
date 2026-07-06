@@ -887,3 +887,56 @@ describe("searchService review fixes round 2 (PR #709)", () => {
     service.dispose();
   });
 });
+
+describe("searchService owner-scoped attached terminals", () => {
+  it("keeps a chat's attached terminal visible to that chat's scoped caller", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test8-"));
+    const sessions = [
+      makeSession({
+        id: "attached-term",
+        title: "chat shell",
+        toolType: "shell",
+        chatSessionId: "my-chat",
+        status: "completed",
+        endedAt: "2026-07-05T12:00:00.000Z"
+      }),
+      makeSession({
+        id: "foreign-term",
+        title: "other shell",
+        toolType: "shell",
+        chatSessionId: "other-chat",
+        status: "completed",
+        endedAt: "2026-07-05T12:00:00.000Z"
+      })
+    ];
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      now: () => NOW
+    });
+    fs.mkdirSync(path.join(root, "transcripts"), { recursive: true });
+    fs.appendFileSync(path.join(root, "transcripts", "attached-term.log"), "octopus output mine\n");
+    fs.appendFileSync(path.join(root, "transcripts", "foreign-term.log"), "octopus output theirs\n");
+    service.notifyTerminalData("attached-term");
+    service.notifyTerminalData("foreign-term");
+    await service.processPendingNow();
+
+    const scoped = await service.query({ query: "octopus", callerScope: { chatSessionId: "my-chat" } });
+    const scopedSessions = new Set(scoped.results.map((r) => r.sessionId));
+    expect(scopedSessions.has("attached-term")).toBe(true);
+    expect(scopedSessions.has("foreign-term")).toBe(false);
+
+    // session: filter also resolves owner-attached terminals.
+    const bySession = await service.query({ query: "octopus session:my-chat" });
+    expect(bySession.results.some((r) => r.sessionId === "attached-term")).toBe(true);
+    expect(bySession.results.some((r) => r.sessionId === "foreign-term")).toBe(false);
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

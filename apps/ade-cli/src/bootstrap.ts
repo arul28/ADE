@@ -1165,6 +1165,7 @@ export async function createAdeRuntime(args: {
     onPullRequestsChanged: async ({ changedPrs, changes }) => {
       if (changedPrs.length > 0) {
         headlessLinearServices.prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+        for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
       }
       for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
         automationService?.onPullRequestChanged?.({

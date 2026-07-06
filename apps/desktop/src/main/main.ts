@@ -2630,6 +2630,7 @@ app.whenReady().then(async () => {
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
           prService.markHotRefresh(changedPrs.map((pr) => pr.id));
+          for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
         }
         await Promise.all(
           changes.map(

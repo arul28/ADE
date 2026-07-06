@@ -340,6 +340,8 @@ export function createSearchService(deps: SearchServiceDeps) {
     laneId: string | null;
     laneName: string | null;
     sessionId: string | null;
+    /** Owning chat session for attached terminals (terminal_sessions.chatSessionId). */
+    ownerSessionId?: string | null;
     title: string;
     rankTitle: string | null;
     snippetSource: string | null;
@@ -354,13 +356,14 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (existing) {
       db.prepare("DELETE FROM docs_fts WHERE rowid = ?").run(existing.id);
       db.prepare(
-        `UPDATE docs SET kind = ?, lane_id = ?, lane_name = ?, session_id = ?, title = ?, rank_title = ?,
+        `UPDATE docs SET kind = ?, lane_id = ?, lane_name = ?, session_id = ?, owner_session_id = ?, title = ?, rank_title = ?,
            snippet_source = ?, deep_link = ?, updated_at = ? WHERE id = ?`
       ).run(
         doc.kind,
         doc.laneId,
         doc.laneName,
         doc.sessionId,
+        doc.ownerSessionId ?? null,
         doc.title,
         doc.rankTitle,
         doc.snippetSource,
@@ -376,14 +379,15 @@ export function createSearchService(deps: SearchServiceDeps) {
       return;
     }
     db.prepare(
-      `INSERT INTO docs (doc_id, kind, lane_id, lane_name, session_id, title, rank_title, snippet_source, deep_link, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO docs (doc_id, kind, lane_id, lane_name, session_id, owner_session_id, title, rank_title, snippet_source, deep_link, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       doc.docId,
       doc.kind,
       doc.laneId,
       doc.laneName,
       doc.sessionId,
+      doc.ownerSessionId ?? null,
       doc.title,
       doc.rankTitle,
       doc.snippetSource,
@@ -453,6 +457,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       laneId: session.laneId || null,
       laneName: session.laneName || null,
       sessionId: session.id,
+      ownerSessionId: kind === "terminal" ? session.chatSessionId ?? null : null,
       title: session.title,
       rankTitle: session.title,
       snippetSource: session.summary || session.lastOutputPreview || session.goal || null,
@@ -642,6 +647,7 @@ export function createSearchService(deps: SearchServiceDeps) {
           laneId: session.laneId || null,
           laneName: session.laneName || null,
           sessionId,
+          ownerSessionId: session.chatSessionId ?? null,
           title: session.title,
           rankTitle: null,
           snippetSource: chunk.text.slice(0, 240),
@@ -945,8 +951,8 @@ export function createSearchService(deps: SearchServiceDeps) {
       filterParams.push(laneId);
     }
     if (sessionId) {
-      filters.push("d.session_id = ?");
-      filterParams.push(sessionId);
+      filters.push("(d.session_id = ? OR d.owner_session_id = ?)");
+      filterParams.push(sessionId, sessionId);
     }
     if (excludeSessionContent) {
       // Unbound non-external agent roles get no session content at all
@@ -955,9 +961,13 @@ export function createSearchService(deps: SearchServiceDeps) {
     } else if (scopeChatSessionId) {
       // Session-bound non-CTO callers may only see their own session's chat
       // and terminal content (mirrors scopeChatAdeActionArgs /
-      // scopeTerminalAdeActionArgs on the direct read paths).
-      filters.push("(d.kind NOT IN ('chat', 'terminal') OR d.session_id = ?)");
-      filterParams.push(scopeChatSessionId);
+      // scopeTerminalAdeActionArgs on the direct read paths). Terminals owned
+      // by the caller's chat (attached shells) match via owner_session_id,
+      // the same owner path direct terminal reads authorize.
+      filters.push(
+        "(d.kind NOT IN ('chat', 'terminal') OR d.session_id = ? OR d.owner_session_id = ?)"
+      );
+      filterParams.push(scopeChatSessionId, scopeChatSessionId);
     }
     if (parsed.sinceIso) {
       filters.push("d.updated_at >= ?");

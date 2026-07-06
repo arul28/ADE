@@ -17,7 +17,7 @@ const { DatabaseSync } = require("node:sqlite") as {
  * cheap as deleting the file. Bump the schema version for any DDL change —
  * mismatches drop and recreate the database instead of migrating.
  */
-export const SEARCH_INDEX_SCHEMA_VERSION = 1;
+export const SEARCH_INDEX_SCHEMA_VERSION = 2;
 
 export const SEARCH_INDEX_DB_FILENAME = "search-index.db";
 
@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS docs (
   lane_id TEXT,
   lane_name TEXT,
   session_id TEXT,
+  owner_session_id TEXT,
   title TEXT NOT NULL,
   rank_title TEXT,
   snippet_source TEXT,
@@ -41,6 +42,7 @@ CREATE TABLE IF NOT EXISTS docs (
 );
 CREATE INDEX IF NOT EXISTS docs_kind_idx ON docs(kind, updated_at);
 CREATE INDEX IF NOT EXISTS docs_session_idx ON docs(session_id);
+CREATE INDEX IF NOT EXISTS docs_owner_session_idx ON docs(owner_session_id);
 CREATE INDEX IF NOT EXISTS docs_lane_idx ON docs(lane_id);
 CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
   rank_title,
