@@ -107,14 +107,18 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         let sessionId = (userInfo["sessionId"] as? String) ?? ""
         let itemId = (userInfo["itemId"] as? String) ?? ""
 
+        // Both ids are required to target the pending approval — a payload
+        // missing either (older host, malformed push) falls through to the
+        // deep-link path so the user lands in the app instead of a command
+        // that cannot resolve.
         switch response.actionIdentifier {
-        case ADEAppDelegate.approveActionIdentifier where !sessionId.isEmpty:
+        case ADEAppDelegate.approveActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
             await MainActor.run { PushNotificationService.shared.notePushReceived() }
             await ADEIntentCommandRegistry.dispatch(
                 .approveSession,
                 payload: ["sessionId": sessionId, "itemId": itemId]
             )
-        case ADEAppDelegate.denyActionIdentifier where !sessionId.isEmpty:
+        case ADEAppDelegate.denyActionIdentifier where !sessionId.isEmpty && !itemId.isEmpty:
             await MainActor.run { PushNotificationService.shared.notePushReceived() }
             await ADEIntentCommandRegistry.dispatch(
                 .denySession,

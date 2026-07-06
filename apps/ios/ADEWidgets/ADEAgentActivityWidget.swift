@@ -201,10 +201,12 @@ private struct AgentRunRow: View {
     private var phase: AgentRunPhase { run.resolvedPhase }
 
     /// Inline Approve / Deny only earns space on the full lock-screen row for a
-    /// run actually blocked on approval. The Dynamic Island (`compact`) stays
-    /// glance-only.
+    /// run actually blocked on approval — and only when the host supplied the
+    /// pending `itemId` (older hosts omit it; a button dispatching an empty
+    /// item id could not target the approval, so the row stays tap-to-open).
+    /// The Dynamic Island (`compact`) stays glance-only.
     private var showsApprovalActions: Bool {
-        !compact && phase == .waitingForApproval
+        !compact && phase == .waitingForApproval && !(run.itemId ?? "").isEmpty
     }
 
     var body: some View {
