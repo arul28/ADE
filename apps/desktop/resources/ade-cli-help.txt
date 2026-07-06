@@ -35,6 +35,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
@@ -134,6 +135,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
@@ -233,6 +235,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
@@ -474,6 +477,52 @@ _    ____  _____
     $ ade files mkdir --workspace <lane> src/new
     $ ade files search --workspace <lane> -q <text> Search text in a workspace
     $ ade files quick-open --workspace <lane> -q app
+
+## ade search --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  ADE Search
+
+  Search across everything ADE indexes — chat transcripts, terminal scrollback,
+  CLI sessions, PRs, commits, branches, lanes, files, Linear issues, and proof
+  artifacts — from one deterministic full-text index. Returns ranked matches
+  with a deep link per result. Prefer this over grepping .ade/ internals.
+
+    $ ade search "login redirect" --text
+    $ ade search "flaky test" --kind chat,terminal --text
+    $ ade search "auth" --lane fix-login --limit 10 --json
+    $ ade search "rate limit" --cursor <nextCursor> --text
+    $ ade search --status --text
+    $ ade search --rebuild --text
+
+  Query syntax (passed through to the index):
+    bare terms         AND-ed together        ade search "retry backoff"
+    "quoted phrase"    exact phrase           ade search '"connection refused"'
+    kind:<kind>        restrict to a kind     ade search "kind:pr merge queue"
+    lane:<name>        restrict to a lane     ade search "lane:fix-login timeout"
+    session:<id>       restrict to a session  ade search "session:abc123 panic"
+    since:<date>       recency floor          ade search "since:2026-06-01 crash"
+
+  Flags:
+    --kind, --kinds <a,b>   Comma-separated kinds to include. One or more of:
+                            lane, chat, terminal, pr, commit, branch, file,
+                            linear, artifact. Unknown kinds are rejected.
+    --lane, --lane-id <id>  Restrict to a lane (id or name; the service resolves names).
+    --limit <n>             Max results to return.
+    --cursor <c>            Continue from a previous query's nextCursor.
+    --status                Show index doc counts, backfill state, and index path.
+    --rebuild               Rebuild the whole index from scratch (CTO-only).
+    --text                  Aligned KIND/TITLE/SNIPPET/ID rows plus a count summary.
+    --json                  Full SearchQueryResult payload (default).
+
+  Exit codes:
+    0  query returned at least one result
+    1  query returned no results (script-friendly)
+    2  usage error (e.g. unknown --kind)
 
 ## ade prs --help
 _    ____  _____
@@ -1081,6 +1130,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
     $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions

@@ -4,6 +4,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types/sessions";
 import { createSearchService, type SearchService } from "./searchService";
+import { parseSearchQuery } from "./searchQueryParser";
+import {
+  RANK_TIER_BODY,
+  RANK_TIER_TITLE_EXACT,
+  RANK_TIER_TITLE_PREFIX,
+  RANK_TIER_TITLE_SUBSTRING,
+  extractSnippetRanges,
+  rankCandidates,
+  titleRankTier
+} from "./searchRanking";
+import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking";
 
 const NOW = new Date("2026-07-06T12:00:00.000Z");
 
@@ -560,5 +571,175 @@ describe("searchService excludeSessionContent scoping", () => {
 
     service.dispose();
     fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+// ── Ranking primitives (searchRanking.ts is only consumed by searchService) ──
+
+describe("titleRankTier", () => {
+  it("orders exact > prefix > substring > body", () => {
+    expect(titleRankTier("Fix login", "fix login")).toBe(RANK_TIER_TITLE_EXACT);
+    expect(titleRankTier("Fix login flow", "fix login")).toBe(RANK_TIER_TITLE_PREFIX);
+    expect(titleRankTier("Hotfix login flow", "fix login")).toBe(RANK_TIER_TITLE_SUBSTRING);
+    expect(titleRankTier("Unrelated", "fix login")).toBe(RANK_TIER_BODY);
+  });
+});
+
+describe("rankCandidates determinism", () => {
+  const parsed = parseSearchQuery("search index");
+
+  const corpus = [
+    { docId: "d-body-good", rankTitle: "Terminal output", updatedAt: "2026-07-01T00:00:00.000Z", bm25: -3.5 },
+    { docId: "d-exact", rankTitle: "Search index", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -0.1 },
+    { docId: "d-substr", rankTitle: "The search index rebuild", updatedAt: "2026-07-04T00:00:00.000Z", bm25: -0.2 },
+    { docId: "d-prefix", rankTitle: "Search index rebuild", updatedAt: "2026-07-02T00:00:00.000Z", bm25: -0.2 },
+    { docId: "d-body-weak", rankTitle: "Chat transcript", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -1.0 }
+  ];
+
+  it("produces the exact expected ordering", () => {
+    const ranked = rankCandidates(corpus, parsed);
+    expect(ranked.map((r) => r.docId)).toEqual([
+      "d-exact",
+      "d-prefix",
+      "d-substr",
+      "d-body-good",
+      "d-body-weak"
+    ]);
+  });
+
+  it("is stable across input permutations", () => {
+    const reversed = rankCandidates([...corpus].reverse(), parsed);
+    const shuffled = rankCandidates(
+      [corpus[2]!, corpus[4]!, corpus[0]!, corpus[3]!, corpus[1]!],
+      parsed
+    );
+    const expected = rankCandidates(corpus, parsed).map((r) => r.docId);
+    expect(reversed.map((r) => r.docId)).toEqual(expected);
+    expect(shuffled.map((r) => r.docId)).toEqual(expected);
+  });
+
+  it("ties within a title tier break by updatedAt desc then docId asc", () => {
+    const ranked = rankCandidates(
+      [
+        { docId: "b", rankTitle: "Search index a", updatedAt: "2026-07-01T00:00:00.000Z", bm25: 0 },
+        { docId: "a", rankTitle: "Search index b", updatedAt: "2026-07-01T00:00:00.000Z", bm25: 0 },
+        { docId: "c", rankTitle: "Search index c", updatedAt: "2026-07-03T00:00:00.000Z", bm25: 0 }
+      ],
+      parsed
+    );
+    expect(ranked.map((r) => r.docId)).toEqual(["c", "a", "b"]);
+  });
+
+  it("body ties break by bm25 (lower is better) before recency", () => {
+    const ranked = rankCandidates(
+      [
+        { docId: "recent-weak", rankTitle: "", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -1 },
+        { docId: "old-strong", rankTitle: "", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -2 }
+      ],
+      parsed
+    );
+    expect(ranked.map((r) => r.docId)).toEqual(["old-strong", "recent-weak"]);
+  });
+});
+
+describe("extractSnippetRanges", () => {
+  it("converts marker chars to typed ranges", () => {
+    const { snippet, matchRanges } = extractSnippetRanges(
+      "indexing terminal scrollback and chats"
+    );
+    expect(snippet).toBe("indexing terminal scrollback and chats");
+    expect(matchRanges).toEqual([
+      { start: 9, end: 17 },
+      { start: 33, end: 38 }
+    ]);
+  });
+
+  it("ignores unbalanced markers", () => {
+    const { snippet, matchRanges } = extractSnippetRanges("no markers here");
+    expect(snippet).toBe("no markers here");
+    expect(matchRanges).toEqual([]);
+  });
+});
+
+describe("rankCandidates body-only docs", () => {
+  it("keeps empty-rankTitle docs in the body tier even when their session title would match", () => {
+    const parsed = parseSearchQuery("search index");
+    const ranked = rankCandidates(
+      [
+        // A message doc from a session titled "search index" ranks body-only.
+        { docId: "msg", rankTitle: "", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -5 },
+        { docId: "meta", rankTitle: "search index", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -0.1 }
+      ],
+      parsed
+    );
+    expect(ranked.map((r) => r.docId)).toEqual(["meta", "msg"]);
+  });
+});
+
+// ── Terminal chunking (terminalChunking.ts is only consumed by searchService) ──
+
+describe("sanitizeIndexedText", () => {
+  it("replaces control chars but keeps newlines and tabs", () => {
+    expect(sanitizeIndexedText("a\u0001b\u0007c\nd\te\u007f")).toBe("a b c\nd\te ");
+  });
+});
+
+describe("chunkTerminalTranscript", () => {
+  it("consumes complete lines and defers a partial tail", () => {
+    const raw = Buffer.from("line one\nline two\npartial", "utf8");
+    const { chunks, consumedBytes } = chunkTerminalTranscript(raw, 0);
+    expect(consumedBytes).toBe(Buffer.byteLength("line one\nline two\n"));
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.text).toBe("line one\nline two");
+    expect(chunks[0]!.startOffset).toBe(0);
+    expect(chunks[0]!.endOffset).toBe(consumedBytes);
+  });
+
+  it("consumes the partial tail when forced", () => {
+    const raw = Buffer.from("done\ntail without newline", "utf8");
+    const { chunks, consumedBytes } = chunkTerminalTranscript(raw, 100, { force: true });
+    expect(consumedBytes).toBe(raw.length);
+    expect(chunks.map((c) => c.text).join("|")).toContain("tail without newline");
+    expect(chunks[0]!.startOffset).toBe(100);
+    expect(chunks.at(-1)!.endOffset).toBe(100 + raw.length);
+  });
+
+  it("splits oversized input at newline boundaries", () => {
+    const line = `${"x".repeat(50)}\n`;
+    const raw = Buffer.from(line.repeat(10), "utf8");
+    const { chunks, consumedBytes } = chunkTerminalTranscript(raw, 0, { maxChunkRawBytes: 128 });
+    expect(consumedBytes).toBe(raw.length);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.endOffset - chunk.startOffset).toBeLessThanOrEqual(128);
+      expect(raw.subarray(chunk.startOffset, chunk.endOffset).at(-1)).toBe(0x0a);
+    }
+    // Chunks tile the input exactly.
+    expect(chunks[0]!.startOffset).toBe(0);
+    for (let i = 1; i < chunks.length; i++) {
+      expect(chunks[i]!.startOffset).toBe(chunks[i - 1]!.endOffset);
+    }
+  });
+
+  it("never splits a UTF-8 codepoint on hard cuts", () => {
+    const raw = Buffer.from("é".repeat(200), "utf8"); // 2 bytes each, no newlines
+    const { chunks } = chunkTerminalTranscript(raw, 0, { force: true, maxChunkRawBytes: 65 });
+    for (const chunk of chunks) {
+      const roundTrip = raw.subarray(chunk.startOffset, chunk.endOffset).toString("utf8");
+      expect(roundTrip).not.toContain("�");
+    }
+  });
+
+  it("strips ANSI sequences from indexed text", () => {
+    const raw = Buffer.from("\u001b[31mred error\u001b[0m plain\n", "utf8");
+    const { chunks } = chunkTerminalTranscript(raw, 0);
+    expect(chunks[0]!.text).toBe("red error plain");
+  });
+
+  it("is deterministic for the same input", () => {
+    const raw = Buffer.from("a\n".repeat(5000), "utf8");
+    const a = chunkTerminalTranscript(raw, 0, { maxChunkRawBytes: 256 });
+    const b = chunkTerminalTranscript(raw, 0, { maxChunkRawBytes: 256 });
+    expect(a).toEqual(b);
   });
 });

@@ -111,6 +111,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 - [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Process lifecycle tracking, AI-title pipeline, lazy resume-target hydration, and stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
+- [**Universal Search**](./features/search/README.md) — One deterministic FTS5 index (disposable `.ade/cache/search-index.db`) over chat/terminal/PR/commit/branch text, unioned at query time with delegated lanes/files/artifacts/Linear. Debounced off-hot-path ingestion, deterministic ranking tiers, one `search` action domain behind ⌘K, the TUI palette, and `ade search`.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
 
