@@ -4,6 +4,7 @@ import path from "node:path";
 import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
+import type { PushQuietHours } from "../../../../desktop/src/shared/types/push";
 import { createPushRegistrationStore, type PushRegistrationStore } from "./pushRegistrationStore";
 import { createPushRelayClient } from "./pushRelayClient";
 import {
@@ -126,7 +127,7 @@ describe("createPushPublisherService flush", () => {
     pushToStartToken: "b".repeat(64),
     bundleId: "com.ade.ios",
     apsEnvironment: "sandbox" as const,
-    prefs: { enabled: true, liveActivitiesEnabled: true, mutedSessionIds: [] as string[], quietHours: null },
+    prefs: { enabled: true, liveActivitiesEnabled: true, mutedSessionIds: [] as string[], quietHours: null as PushQuietHours | null },
     updatedAt: "",
   };
 
@@ -294,6 +295,29 @@ describe("createPushPublisherService flush", () => {
     // ...while the muted device still gets the new badge count silently.
     expect(badgeItem.deviceIds).toEqual(["dev-2"]);
     expect(badgeItem.badge).toBe(1);
+
+    publisher.dispose();
+  });
+
+  it("suppresses the badge-only item for a device inside quiet hours", async () => {
+    // System time is 12:00 UTC (beforeEach); a 00:00→23:59 UTC window is active.
+    const quiet = {
+      ...device,
+      prefs: { ...device.prefs, quietHours: { start: "00:00", end: "23:59", timezone: "UTC" } },
+    };
+    const { publisher, publish, emit } = makeHarness(quiet);
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    // Alert is quiet-hours-filtered AND no badge-only item may replace it —
+    // "mute pushes on a schedule" covers silent badge pushes too. Only the
+    // Live Activity (quiet-hours-exempt) goes out.
+    expect(publish).toHaveBeenCalledTimes(1);
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications).toBeUndefined();
+    expect(payload.liveActivity[0].event).toBe("start");
 
     publisher.dispose();
   });

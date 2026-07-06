@@ -559,12 +559,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // produce no alert — and devices whose alert was muted still need the new
     // count. A silent badge-only item targets every alert-enabled device NOT
     // already covered by an alert in this flush; the relay's content-hash
-    // suppression absorbs unchanged resends.
+    // suppression absorbs unchanged resends. Quiet hours block it too — the
+    // setting promises "no pushes on a schedule", and a stale badge self-heals
+    // on the next foreground (which clears it) or the first post-window flush.
     const alertCoveredDeviceIds = new Set(alertItems.flatMap((item) => item.deviceIds ?? []));
     const badgeSyncDeviceIds = devices
       .filter((device) =>
         Boolean(device.apnsToken)
         && device.prefs.enabled
+        && !isWithinQuietHours(device.prefs.quietHours, nowMs)
         && !alertCoveredDeviceIds.has(device.deviceId))
       .map((device) => device.deviceId);
     if (badgeCount !== lastSentBadgeCount && badgeSyncDeviceIds.length > 0) {
