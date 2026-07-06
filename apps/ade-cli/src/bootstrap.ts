@@ -24,7 +24,8 @@ import { createConflictService } from "../../desktop/src/main/services/conflicts
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
 import { createDiffService } from "../../desktop/src/main/services/diffs/diffService";
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
-import { createSearchService } from "../../desktop/src/main/services/search/searchService";
+import { createProjectSearchService } from "../../desktop/src/main/services/search/searchServiceWiring";
+import type { SearchService } from "../../desktop/src/main/services/search/searchService";
 import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -239,7 +240,7 @@ export type AdeRuntime = {
   budgetCapService?: ReturnType<typeof createBudgetCapService> | null;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   reviewService?: ReturnType<typeof createReviewService> | null;
-  searchService?: ReturnType<typeof createSearchService> | null;
+  searchService?: SearchService | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   appNavigationService?: {
     navigate(args: AppNavigationRequest): Promise<AppNavigationResult>;
@@ -472,7 +473,7 @@ export async function createAdeRuntime(args: {
   let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
   let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
   let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
-  const searchServiceHolder: { current: ReturnType<typeof createSearchService> | null } = { current: null };
+  const searchServiceHolder: { current: SearchService | null } = { current: null };
   let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
   let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
   const publishLinearChatLink = createLinearChatLinkPublisher({
@@ -1275,74 +1276,27 @@ export async function createAdeRuntime(args: {
     }
   }
 
-  const resolvePrimaryLaneIdForSearch = async (): Promise<string | null> => {
-    try {
-      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
-      return lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null;
-    } catch {
-      return null;
-    }
-  };
-  const searchService = createSearchService({
+  const searchService = createProjectSearchService({
     cacheDir: paths.cacheDir,
     transcriptsDir: paths.transcriptsDir,
     chatTranscriptsDir: paths.chatTranscriptsDir,
     logger,
-    sessions: {
-      list: async () => sessionService.list({ limit: null }),
-      get: async (sessionId) => sessionService.get(sessionId)
-    },
-    lanes: {
-      list: async () => laneService.list({ includeArchived: false, includeStatus: false })
-    },
-    prs: headlessLinearServices.prService
-      ? {
-          listAll: (args) => headlessLinearServices.prService.listAll(args),
-          getDetail: (prId) => headlessLinearServices.prService.getDetail(prId),
-          getComments: (prId) => headlessLinearServices.prService.getComments(prId)
-        }
-      : null,
-    git: {
-      listRecentCommits: (args) => gitService.listRecentCommits(args),
-      listBranches: (args) => gitService.listBranches(args)
-    },
-    files: headlessLinearServices.fileService
-      ? {
-          quickOpen: async (query, limit) => {
-            const primary = await resolvePrimaryLaneIdForSearch();
-            if (!primary) return [];
-            return headlessLinearServices.fileService!.quickOpen({ workspaceId: primary, query, limit });
-          },
-          searchText: async (query, limit) => {
-            const primary = await resolvePrimaryLaneIdForSearch();
-            if (!primary) return [];
-            return headlessLinearServices.fileService!.searchText({ workspaceId: primary, query, limit });
-          }
-        }
-      : null,
-    artifacts: {
-      list: (limit) => computerUseArtifactBrokerService.listArtifacts({ limit })
-    },
-    linear: headlessLinearServices.linearIssueTracker
-      ? {
-          searchIssues: (query) => headlessLinearServices.linearIssueTracker!.searchIssues({ query, first: 25 })
-        }
-      : null
+    sessionService,
+    laneService,
+    agentChatService,
+    prService: headlessLinearServices.prService ?? null,
+    gitService,
+    fileService: headlessLinearServices.fileService ?? null,
+    artifactBroker: computerUseArtifactBrokerService,
+    linearIssueTracker: headlessLinearServices.linearIssueTracker ?? null,
+    backfillDelayMs: 5_000,
   });
   searchServiceHolder.current = searchService;
-  sessionService.onChanged((event) => {
-    searchService.notifySessionChanged(event.sessionId, event.reason === "deleted" ? "deleted" : "meta-updated");
-  });
-  agentChatService?.subscribeToEvents?.((envelope) => {
-    searchService.notifyChatEvent(envelope.sessionId);
-  });
   headlessLinearServices.prService?.setEventEmitter((event) => {
     if (event.type === "prs-updated") {
       for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
     }
   });
-  const searchBackfillTimer = setTimeout(() => searchService.startBackfill(), 5_000);
-  searchBackfillTimer.unref?.();
 
   const runtime: AdeRuntime = {
     projectRoot,
@@ -1439,7 +1393,7 @@ export async function createAdeRuntime(args: {
       swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
       swallow(() => ptyService.disposeAll());
-      swallow(() => { clearTimeout(searchBackfillTimer); searchService.dispose(); });
+      swallow(() => searchService.dispose());
       swallow(() => processRegistry.stop());
       swallow(() => db.flushNow());
       swallow(() => db.close());

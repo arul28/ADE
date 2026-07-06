@@ -2534,6 +2534,23 @@ function scopeChatAdeActionArgs(
   return scopedArgs;
 }
 
+/**
+ * Universal search scoping for session-bound non-CTO callers: chat and
+ * terminal results are limited to the caller's own session, mirroring
+ * scopeChatAdeActionArgs / scopeTerminalAdeActionArgs on the direct read
+ * paths. Unbound callers (user CLI, desktop, CTO) keep whole-project search;
+ * pr/commit/branch/lane/file kinds are unaffected because those surfaces are
+ * already readable unscoped through their own actions.
+ */
+function scopeSearchAdeActionArgs(
+  session: SessionState,
+  searchArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!callerChatSessionId) return searchArgs;
+  return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
+}
+
 async function runCtoOperatorBridgeTool(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3436,6 +3453,11 @@ async function runTool(args: {
       scopedObjectArgs = scopeChatAdeActionArgs(
         session,
         action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (!callerIsCto && domain === "search" && action === "query") {
+      scopedObjectArgs = scopeSearchAdeActionArgs(
+        session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
     }

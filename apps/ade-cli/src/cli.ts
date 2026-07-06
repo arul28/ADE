@@ -22,6 +22,7 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -5948,17 +5949,7 @@ function buildHistoryPlan(args: string[]): CliPlan {
   );
 }
 
-const SEARCH_KIND_VALUES = [
-  "lane",
-  "chat",
-  "terminal",
-  "pr",
-  "commit",
-  "branch",
-  "file",
-  "linear",
-  "artifact",
-] as const;
+const SEARCH_KIND_VALUES = SEARCH_DOC_KINDS;
 
 function searchResultCount(result: unknown): number {
   if (!isRecord(result)) return 0;

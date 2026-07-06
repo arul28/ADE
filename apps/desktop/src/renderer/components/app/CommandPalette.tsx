@@ -9,20 +9,13 @@ import * as Dialog from "@radix-ui/react-dialog";
 import {
   ArrowLeft,
   ArrowRight,
-  Camera,
-  ChatCircle,
-  Circle,
   CircleNotch,
   Clock,
   DesktopTower,
-  FileText,
   Folder,
   FolderOpen,
-  GitCommit,
-  GitPullRequest,
   MagnifyingGlass,
   Stack,
-  Terminal,
   Warning,
   X,
 } from "@phosphor-icons/react";
@@ -39,13 +32,16 @@ import type {
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
-import type {
-  SearchDocKind,
-  SearchMatchRange,
-  SearchResultItem,
-} from "../../../shared/types/search";
-import { extractError, relativeTimeCompact } from "../../lib/format";
+import type { SearchResultItem } from "../../../shared/types/search";
+import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import {
+  ENTITY_SECTION_PREVIEW,
+  SearchResultRow,
+  ShowMoreRow,
+  relativeFilePathForResult,
+  useUniversalSearch,
+} from "./commandPaletteSearch";
 import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
@@ -255,137 +251,6 @@ function pathLabel(input: string | null | undefined): string {
   return segments[segments.length - 1] ?? input;
 }
 
-// Debounce before hitting the universal search backend as the user types.
-const SEARCH_DEBOUNCE_MS = 150;
-// Rows rendered per entity section before a "Show N more" affordance appears.
-const ENTITY_SECTION_PREVIEW = 5;
-// Batch of results requested per query; enough to fill several sections at once.
-const SEARCH_QUERY_LIMIT = 60;
-
-// Section order + labels for typed entity results, matching the task spec.
-const ENTITY_KIND_ORDER: SearchDocKind[] = [
-  "chat",
-  "terminal",
-  "pr",
-  "lane",
-  "commit",
-  "branch",
-  "file",
-  "linear",
-  "artifact",
-];
-
-const ENTITY_KIND_LABEL: Record<SearchDocKind, string> = {
-  chat: "Chats",
-  terminal: "Terminals",
-  pr: "PRs",
-  lane: "Lanes",
-  commit: "Commits",
-  branch: "Branches",
-  file: "Files",
-  linear: "Issues",
-  artifact: "Artifacts",
-};
-
-function KindIcon({ kind }: { kind: SearchDocKind }) {
-  const className = "shrink-0 text-[var(--color-muted-fg)]";
-  switch (kind) {
-    case "chat":
-      return <ChatCircle size={15} weight="regular" className={className} />;
-    case "terminal":
-      return <Terminal size={15} weight="regular" className={className} />;
-    case "pr":
-      return <GitPullRequest size={15} weight="regular" className={className} />;
-    case "lane":
-      return <LaneIcon size={14} weight="bold" className={className} />;
-    case "commit":
-      return <GitCommit size={15} weight="regular" className={className} />;
-    case "branch":
-      return <BranchIcon size={14} weight="bold" className={className} />;
-    case "file":
-      return <FileText size={15} weight="regular" className={className} />;
-    case "linear":
-      return <Circle size={13} weight="bold" className={className} />;
-    case "artifact":
-      return <Camera size={15} weight="regular" className={className} />;
-    default:
-      return <Circle size={13} weight="bold" className={className} />;
-  }
-}
-
-// Bold the first case-insensitive substring hit of the query inside a title.
-function highlightTitle(title: string, query: string): React.ReactNode {
-  const needle = query.trim();
-  if (!needle) return title;
-  const idx = title.toLowerCase().indexOf(needle.toLowerCase());
-  if (idx < 0) return title;
-  return (
-    <>
-      {title.slice(0, idx)}
-      <span className="font-semibold text-[var(--color-fg)]">
-        {title.slice(idx, idx + needle.length)}
-      </span>
-      {title.slice(idx + needle.length)}
-    </>
-  );
-}
-
-// Accent the backend-provided match offsets inside a snippet (no heavy box).
-function highlightRanges(
-  snippet: string,
-  ranges: SearchMatchRange[],
-): React.ReactNode {
-  if (!ranges || ranges.length === 0) return snippet;
-  const sorted = ranges
-    .filter((range) => range.end > range.start && range.start >= 0)
-    .slice()
-    .sort((a, b) => a.start - b.start);
-  if (sorted.length === 0) return snippet;
-  const nodes: React.ReactNode[] = [];
-  let cursor = 0;
-  sorted.forEach((range, i) => {
-    const start = Math.max(cursor, Math.min(range.start, snippet.length));
-    const end = Math.max(start, Math.min(range.end, snippet.length));
-    if (start > cursor) nodes.push(snippet.slice(cursor, start));
-    if (end > start) {
-      nodes.push(
-        <span key={i} className="text-[var(--color-accent)]">
-          {snippet.slice(start, end)}
-        </span>,
-      );
-    }
-    cursor = end;
-  });
-  if (cursor < snippet.length) nodes.push(snippet.slice(cursor));
-  return nodes;
-}
-
-// Recover the repo-relative file path from a `file` result's deepLink (falling
-// back to its doc id, which is `file:<path>` or `file:<path>:<line>`).
-function relativeFilePathForResult(item: SearchResultItem): string | null {
-  try {
-    const parsed = new URL(item.deepLink);
-    const path = parsed.searchParams.get("path");
-    if (path) return path;
-  } catch {
-    // Non-URL deepLink; fall through to id parsing.
-  }
-  let rest = item.id.startsWith("file:") ? item.id.slice(5) : item.id;
-  rest = rest.replace(/:\d+$/, "");
-  return rest.length > 0 ? rest : null;
-}
-
-type EntitySection = {
-  kind: SearchDocKind;
-  label: string;
-  rows: SearchResultItem[];
-  total: number;
-};
-
-type FlatEntity =
-  | { type: "result"; item: SearchResultItem }
-  | { type: "showMore"; kind: SearchDocKind; hiddenCount: number };
-
 export function CommandPalette({
   open,
   onOpenChange,
@@ -410,16 +275,6 @@ export function CommandPalette({
     useState<ProjectActionOutcome | null>(null);
   const [q, setQ] = useState("");
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [searchResults, setSearchResults] = useState<SearchResultItem[] | null>(
-    null,
-  );
-  const [searchTotalByKind, setSearchTotalByKind] = useState<
-    Partial<Record<SearchDocKind, number>>
-  >({});
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [expandedKinds, setExpandedKinds] = useState<Set<SearchDocKind>>(
-    () => new Set(),
-  );
   const [browseInput, setBrowseInput] = useState(
     defaultBrowseInput(project?.rootPath),
   );
@@ -447,9 +302,6 @@ export function CommandPalette({
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
-  // Monotonic generation guard so a slow search response can never overwrite the
-  // results of a newer query.
-  const searchRequestRef = useRef(0);
   // Tracks the location whose path is currently loaded into `browseInput`, so
   // the location-change effect can restore the right per-location path without
   // re-running on every browseInput keystroke.
@@ -601,7 +453,6 @@ export function CommandPalette({
       setMode("default");
       setQ("");
       setSelectedIdx(0);
-      setExpandedKinds(new Set());
       setBrowseError(null);
       setBrowseLoading(false);
       setOpenProjectPending(false);
@@ -952,85 +803,13 @@ export function CommandPalette({
   const canEntitySearch =
     open && mode === "default" && hasActiveProject && trimmedQuery.length > 0;
 
-  // Debounced universal entity search. Generation-guarded so stale responses
-  // never clobber newer ones, and previously-rendered results stay visible
-  // while a fresh query is in flight (we only clear on an empty query).
-  useEffect(() => {
-    if (!canEntitySearch) {
-      searchRequestRef.current += 1;
-      setSearchResults(null);
-      setSearchTotalByKind({});
-      setSearchLoading(false);
-      return;
-    }
-    const queryApi = window.ade.search?.query;
-    if (!queryApi) return;
-    const requestId = ++searchRequestRef.current;
-    setSearchLoading(true);
-    const timeout = globalThis.setTimeout(() => {
-      void Promise.resolve()
-        .then(() => queryApi({ query: trimmedQuery, limit: SEARCH_QUERY_LIMIT }))
-        .then((result) => {
-          if (searchRequestRef.current !== requestId) return;
-          setSearchResults(result.results);
-          setSearchTotalByKind(result.totalByKind);
-          setSearchLoading(false);
-        })
-        .catch(() => {
-          if (searchRequestRef.current !== requestId) return;
-          // Keep the last results rather than blanking the surface on error.
-          setSearchLoading(false);
-        });
-    }, SEARCH_DEBOUNCE_MS);
-    return () => {
-      globalThis.clearTimeout(timeout);
-    };
-  }, [canEntitySearch, trimmedQuery]);
-
-  // Group results by kind (preserving backend order within each kind) into the
-  // fixed section order, carrying the pre-limit total for the "show more" copy.
-  const entitySections = useMemo<EntitySection[]>(() => {
-    if (!searchResults || searchResults.length === 0) return [];
-    const byKind = new Map<SearchDocKind, SearchResultItem[]>();
-    for (const item of searchResults) {
-      const bucket = byKind.get(item.kind);
-      if (bucket) bucket.push(item);
-      else byKind.set(item.kind, [item]);
-    }
-    const sections: EntitySection[] = [];
-    for (const kind of ENTITY_KIND_ORDER) {
-      const rows = byKind.get(kind);
-      if (!rows || rows.length === 0) continue;
-      sections.push({
-        kind,
-        label: ENTITY_KIND_LABEL[kind],
-        rows,
-        total: searchTotalByKind[kind] ?? rows.length,
-      });
-    }
-    return sections;
-  }, [searchResults, searchTotalByKind]);
-
-  // Flattened, keyboard-navigable sequence of entity rows + show-more rows,
-  // continuing after the command items in the shared flat index.
-  const flatEntities = useMemo<FlatEntity[]>(() => {
-    const out: FlatEntity[] = [];
-    for (const section of entitySections) {
-      const expanded = expandedKinds.has(section.kind);
-      const visible = expanded
-        ? section.rows
-        : section.rows.slice(0, ENTITY_SECTION_PREVIEW);
-      for (const item of visible) out.push({ type: "result", item });
-      if (!expanded && section.rows.length > ENTITY_SECTION_PREVIEW) {
-        out.push({
-          type: "showMore",
-          kind: section.kind,
-          hiddenCount: section.total - ENTITY_SECTION_PREVIEW,
-        });
-      }
-    }
-    return out;
-  }, [entitySections, expandedKinds]);
+  const {
+    loading: searchLoading,
+    sections: entitySections,
+    flatEntities,
+    expandedKinds,
+    toggleExpandKind,
+  } = useUniversalSearch(trimmedQuery, canEntitySearch);
 
   const commandCount = filtered.length;
   const totalFlat = commandCount + flatEntities.length;
@@ -1336,15 +1115,6 @@ export function CommandPalette({
     },
     [onOpenChange],
   );
-
-  const toggleExpandKind = useCallback((kind: SearchDocKind) => {
-    setExpandedKinds((prev) => {
-      const next = new Set(prev);
-      if (next.has(kind)) next.delete(kind);
-      else next.add(kind);
-      return next;
-    });
-  }, []);
 
   const activateResult = useCallback(
     (item: SearchResultItem) => {
@@ -1964,7 +1734,6 @@ export function CommandPalette({
                         }
                         setQ(event.target.value);
                         setSelectedIdx(0);
-                        setExpandedKinds(new Set());
                       }}
                       onKeyDown={
                         isBrowsing ? handleBrowseKeyDown : handleDefaultKeyDown
@@ -2482,29 +2251,16 @@ export function CommandPalette({
                                   {showMore
                                     ? (() => {
                                         const index = flatIndex++;
-                                        const isSelected =
-                                          index === selectedIdx;
                                         return (
-                                          <li key={`more:${section.kind}`}>
-                                            <button
-                                              type="button"
-                                              data-cmd-item
-                                              className={cn(
-                                                "mx-2 flex w-[calc(100%-1rem)] items-center gap-2 rounded-lg border px-3 py-1.5 text-left text-xs transition-colors",
-                                                isSelected
-                                                  ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)] text-[var(--color-fg)]"
-                                                  : "border-transparent text-[var(--color-muted-fg)] hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
-                                              )}
-                                              onMouseEnter={() =>
-                                                setSelectedIdx(index)
-                                              }
-                                              onClick={() =>
-                                                toggleExpandKind(section.kind)
-                                              }
-                                            >
-                                              Show {hiddenCount} more
-                                            </button>
-                                          </li>
+                                          <ShowMoreRow
+                                            key={`more:${section.kind}`}
+                                            kind={section.kind}
+                                            hiddenCount={hiddenCount}
+                                            index={index}
+                                            isSelected={index === selectedIdx}
+                                            onHover={setSelectedIdx}
+                                            onToggle={toggleExpandKind}
+                                          />
                                         );
                                       })()
                                     : null}
@@ -2943,64 +2699,3 @@ function StatusChip({
     </span>
   );
 }
-
-const SearchResultRow = React.memo(function SearchResultRow({
-  item,
-  query,
-  index,
-  isSelected,
-  onHover,
-  onActivate,
-}: {
-  item: SearchResultItem;
-  query: string;
-  index: number;
-  isSelected: boolean;
-  onHover: (index: number) => void;
-  onActivate: (item: SearchResultItem) => void;
-}) {
-  const time = relativeTimeCompact(item.updatedAt);
-  const snippet = item.snippet?.trim() ? item.snippet : "";
-  return (
-    <li>
-      <button
-        type="button"
-        data-cmd-item
-        className={cn(
-          "mx-2 flex w-[calc(100%-1rem)] items-center gap-2.5 rounded-lg border px-3 py-1.5 text-left transition-colors",
-          isSelected
-            ? "border-[var(--color-accent)] bg-[var(--color-accent-muted)]"
-            : "border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-muted)]",
-        )}
-        onMouseEnter={() => onHover(index)}
-        onClick={() => onActivate(item)}
-      >
-        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-          <KindIcon kind={item.kind} />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm text-[var(--color-fg)]">
-            {highlightTitle(item.title, query)}
-          </div>
-          {snippet ? (
-            <div className="mt-0.5 truncate text-xs text-[var(--color-muted-fg)]">
-              {highlightRanges(snippet, item.matchRanges)}
-            </div>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {item.laneName ? (
-            <span className="max-w-[140px] truncate rounded-md border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 text-[10px] text-[var(--color-muted-fg)]">
-              {item.laneName}
-            </span>
-          ) : null}
-          {time ? (
-            <span className="text-[10px] tabular-nums text-[var(--color-muted-fg)]">
-              {time}
-            </span>
-          ) : null}
-        </div>
-      </button>
-    </li>
-  );
-});

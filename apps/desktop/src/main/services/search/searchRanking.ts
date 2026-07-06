@@ -15,7 +15,12 @@ export const RANK_TIER_BODY = 1;
 
 export type RankableCandidate = {
   docId: string;
-  title: string;
+  /**
+   * Title used for the ranking tiers. Session/PR/commit/branch docs carry
+   * their real title here; message/chunk docs carry "" so they rank body-only
+   * and a chat's every message does not inherit its session-title rank.
+   */
+  rankTitle: string;
   updatedAt: string;
   /** SQLite bm25() output: lower = more relevant. 0 for non-FTS candidates. */
   bm25: number;
@@ -45,13 +50,23 @@ export function compareRanked(
   return a.docId < b.docId ? -1 : a.docId > b.docId ? 1 : 0;
 }
 
+/**
+ * The production ranking pass: tier every candidate by its rankTitle (empty
+ * rankTitle = body tier), then apply the deterministic comparator. This is
+ * the exact ordering `searchService.query` returns.
+ */
 export function rankCandidates<T extends RankableCandidate>(
   candidates: T[],
   parsed: ParsedSearchQuery
 ): Array<T & { tier: number }> {
   const normalizedQuery = rankQueryText(parsed);
   return candidates
-    .map((candidate) => ({ ...candidate, tier: titleRankTier(candidate.title, normalizedQuery) }))
+    .map((candidate) => ({
+      ...candidate,
+      tier: candidate.rankTitle
+        ? titleRankTier(candidate.rankTitle, normalizedQuery)
+        : RANK_TIER_BODY
+    }))
     .sort(compareRanked);
 }
 

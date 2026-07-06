@@ -23,11 +23,11 @@ describe("rankCandidates determinism", () => {
   const parsed = parseSearchQuery("search index");
 
   const corpus = [
-    { docId: "d-body-good", title: "Terminal output", updatedAt: "2026-07-01T00:00:00.000Z", bm25: -3.5 },
-    { docId: "d-exact", title: "Search index", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -0.1 },
-    { docId: "d-substr", title: "The search index rebuild", updatedAt: "2026-07-04T00:00:00.000Z", bm25: -0.2 },
-    { docId: "d-prefix", title: "Search index rebuild", updatedAt: "2026-07-02T00:00:00.000Z", bm25: -0.2 },
-    { docId: "d-body-weak", title: "Chat transcript", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -1.0 }
+    { docId: "d-body-good", rankTitle: "Terminal output", updatedAt: "2026-07-01T00:00:00.000Z", bm25: -3.5 },
+    { docId: "d-exact", rankTitle: "Search index", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -0.1 },
+    { docId: "d-substr", rankTitle: "The search index rebuild", updatedAt: "2026-07-04T00:00:00.000Z", bm25: -0.2 },
+    { docId: "d-prefix", rankTitle: "Search index rebuild", updatedAt: "2026-07-02T00:00:00.000Z", bm25: -0.2 },
+    { docId: "d-body-weak", rankTitle: "Chat transcript", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -1.0 }
   ];
 
   it("produces the exact expected ordering", () => {
@@ -55,9 +55,9 @@ describe("rankCandidates determinism", () => {
   it("ties within a title tier break by updatedAt desc then docId asc", () => {
     const ranked = rankCandidates(
       [
-        { docId: "b", title: "Search index a", updatedAt: "2026-07-01T00:00:00.000Z", bm25: 0 },
-        { docId: "a", title: "Search index b", updatedAt: "2026-07-01T00:00:00.000Z", bm25: 0 },
-        { docId: "c", title: "Search index c", updatedAt: "2026-07-03T00:00:00.000Z", bm25: 0 }
+        { docId: "b", rankTitle: "Search index a", updatedAt: "2026-07-01T00:00:00.000Z", bm25: 0 },
+        { docId: "a", rankTitle: "Search index b", updatedAt: "2026-07-01T00:00:00.000Z", bm25: 0 },
+        { docId: "c", rankTitle: "Search index c", updatedAt: "2026-07-03T00:00:00.000Z", bm25: 0 }
       ],
       parsed
     );
@@ -67,8 +67,8 @@ describe("rankCandidates determinism", () => {
   it("body ties break by bm25 (lower is better) before recency", () => {
     const ranked = rankCandidates(
       [
-        { docId: "recent-weak", title: "x", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -1 },
-        { docId: "old-strong", title: "y", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -2 }
+        { docId: "recent-weak", rankTitle: "", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -1 },
+        { docId: "old-strong", rankTitle: "", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -2 }
       ],
       parsed
     );
@@ -92,5 +92,20 @@ describe("extractSnippetRanges", () => {
     const { snippet, matchRanges } = extractSnippetRanges("no markers here");
     expect(snippet).toBe("no markers here");
     expect(matchRanges).toEqual([]);
+  });
+});
+
+describe("rankCandidates body-only docs", () => {
+  it("keeps empty-rankTitle docs in the body tier even when their session title would match", () => {
+    const parsed = parseSearchQuery("search index");
+    const ranked = rankCandidates(
+      [
+        // A message doc from a session titled "search index" ranks body-only.
+        { docId: "msg", rankTitle: "", updatedAt: "2026-07-05T00:00:00.000Z", bm25: -5 },
+        { docId: "meta", rankTitle: "search index", updatedAt: "2026-01-01T00:00:00.000Z", bm25: -0.1 }
+      ],
+      parsed
+    );
+    expect(ranked.map((r) => r.docId)).toEqual(["meta", "msg"]);
   });
 });

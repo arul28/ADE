@@ -405,3 +405,97 @@ describe("searchService classification and lane-git dedup", () => {
     service.dispose();
   });
 });
+
+describe("searchService caller scoping", () => {
+  let root: string;
+  let sessions: TerminalSessionSummary[];
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test3-"));
+    sessions = [];
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("limits chat/terminal results to the caller's own session while keeping other kinds", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+    for (const id of ["mine", "theirs"]) {
+      sessions.push(makeSession({ id, title: `Chat ${id}` }));
+      fs.appendFileSync(
+        path.join(chatDir, `${id}.jsonl`),
+        `${JSON.stringify({ sessionId: id, timestamp: "2026-07-05T10:00:00.000Z", event: { type: "user_message", text: `confidential payload ${id}` } })}\n`
+      );
+      service.notifyChatEvent(id);
+    }
+    await service.processPendingNow();
+
+    const unscoped = await service.query({ query: "confidential payload" });
+    expect(new Set(unscoped.results.map((r) => r.sessionId))).toEqual(new Set(["mine", "theirs"]));
+
+    const scoped = await service.query({
+      query: "confidential payload",
+      callerScope: { chatSessionId: "mine" }
+    });
+    expect(scoped.results.length).toBeGreaterThan(0);
+    expect(scoped.results.every((r) => r.sessionId === "mine")).toBe(true);
+    // totals must not leak the other session either
+    expect(scoped.totalByKind.chat).toBeLessThan(unscoped.totalByKind.chat ?? 0);
+    service.dispose();
+  });
+});
+
+describe("searchService title-tier candidate union", () => {
+  it("keeps an exact-title match on top even when body matches saturate the bm25 candidate window", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-test4-"));
+    const sessions: TerminalSessionSummary[] = [];
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+
+    // One session whose TITLE is the query...
+    sessions.push(makeSession({ id: "titled", title: "quorum", lastActivityAt: "2026-01-01T00:00:00.000Z" }));
+    fs.appendFileSync(
+      path.join(chatDir, "titled.jsonl"),
+      `${JSON.stringify({ sessionId: "titled", timestamp: "2026-01-01T00:00:00.000Z", event: { type: "user_message", text: "unrelated hello" } })}\n`
+    );
+    service.notifyChatEvent("titled");
+
+    // ...and one noisy session with far more than FTS_CANDIDATE_LIMIT body matches.
+    sessions.push(makeSession({ id: "noisy", title: "logs", lastActivityAt: "2026-07-05T00:00:00.000Z" }));
+    let noisy = "";
+    for (let i = 0; i < 450; i++) {
+      noisy += `${JSON.stringify({ sessionId: "noisy", timestamp: "2026-07-05T00:00:00.000Z", event: { type: "text", text: `quorum event number ${i}` } })}\n`;
+    }
+    fs.appendFileSync(path.join(chatDir, "noisy.jsonl"), noisy);
+    service.notifyChatEvent("noisy");
+    await service.processPendingNow();
+
+    const result = await service.query({ query: "quorum", limit: 5 });
+    expect(result.results[0]!.id).toBe("chat:titled:meta");
+
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});

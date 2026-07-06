@@ -32,13 +32,11 @@ import {
   type ParsedSearchQuery
 } from "./searchQueryParser";
 import {
-  RANK_TIER_BODY,
   SNIPPET_MARK_END,
   SNIPPET_MARK_START,
-  compareRanked,
   extractSnippetRanges,
-  rankQueryText,
-  titleRankTier
+  rankCandidates,
+  rankQueryText
 } from "./searchRanking";
 import { chunkTerminalTranscript, sanitizeIndexedText } from "./terminalChunking";
 
@@ -226,6 +224,10 @@ export function createSearchService(deps: SearchServiceDeps) {
   let workChain: Promise<void> = Promise.resolve();
 
   const ensureDb = (): SearchIndexDb => {
+    // A source processor resuming from an await after dispose() must not
+    // re-open the just-closed database (handle leak + writes after teardown);
+    // the throw is caught and logged by the queue drain's per-source catch.
+    if (disposed) throw new Error("search index disposed");
     if (!index) index = openSearchIndexDb(deps.cacheDir);
     return index;
   };
@@ -538,7 +540,11 @@ export function createSearchService(deps: SearchServiceDeps) {
       enqueue("chat-session", sessionId, 0);
       return;
     }
-    const consumed = lastNewline >= 0 ? lastNewline + 1 : readEnd === stat.size ? buf.length : 0;
+    // Never consume an unterminated tail: the writer appends whole
+    // `JSON.stringify(envelope) + "\n"` lines, so a missing trailing newline
+    // means a torn in-progress write — consuming it would advance the cursor
+    // past a half-written event and permanently drop it from the index.
+    const consumed = lastNewline >= 0 ? lastNewline + 1 : 0;
     if (consumed === 0) return;
 
     const envelopes = parseAgentChatTranscript(buf.subarray(0, consumed).toString("utf8"));
@@ -920,7 +926,8 @@ export function createSearchService(deps: SearchServiceDeps) {
     parsed: ParsedSearchQuery,
     kinds: SearchDocKind[],
     laneId: string | null,
-    sessionId: string | null
+    sessionId: string | null,
+    scopeChatSessionId: string | null
   ): { candidates: Candidate[]; totals: Partial<Record<SearchDocKind, number>> } => {
     const ftsKinds = kinds.filter((kind) => FTS_KINDS.includes(kind));
     if (ftsKinds.length === 0) return { candidates: [], totals: {} };
@@ -935,6 +942,13 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (sessionId) {
       filters.push("d.session_id = ?");
       filterParams.push(sessionId);
+    }
+    if (scopeChatSessionId) {
+      // Session-bound non-CTO callers may only see their own session's chat
+      // and terminal content (mirrors scopeChatAdeActionArgs /
+      // scopeTerminalAdeActionArgs on the direct read paths).
+      filters.push("(d.kind NOT IN ('chat', 'terminal') OR d.session_id = ?)");
+      filterParams.push(scopeChatSessionId);
     }
     if (parsed.sinceIso) {
       filters.push("d.updated_at >= ?");
@@ -961,8 +975,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       return { candidates: rows.map((row) => docRowToCandidate(row, 0, null)), totals };
     }
 
-    const rows = all<DocRow & { score: number; marked: string }>(
-      `SELECT d.doc_id, d.kind, d.lane_id, d.lane_name, d.session_id, d.title, d.rank_title,
+    const candidateSql = `SELECT d.doc_id, d.kind, d.lane_id, d.lane_name, d.session_id, d.title, d.rank_title,
               d.snippet_source, d.deep_link, d.updated_at,
               bm25(docs_fts) AS score,
               snippet(docs_fts, 1, '${SNIPPET_MARK_START}', '${SNIPPET_MARK_END}', '…', 14) AS marked
@@ -970,9 +983,28 @@ export function createSearchService(deps: SearchServiceDeps) {
        JOIN docs d ON d.id = docs_fts.rowid
        WHERE docs_fts MATCH ? AND ${filters.join(" AND ")}
        ORDER BY score ASC, d.updated_at DESC, d.doc_id ASC
-       LIMIT ${FTS_CANDIDATE_LIMIT}`,
-      [matchExpr, ...filterParams]
-    );
+       LIMIT ${FTS_CANDIDATE_LIMIT}`;
+    const rows = all<DocRow & { score: number; marked: string }>(candidateSql, [
+      matchExpr,
+      ...filterParams
+    ]);
+    // The candidate window above is capped in bm25 order, so on very
+    // high-frequency terms a strong TITLE match could fall outside it and
+    // never reach the title-tier promotion. Union in a title-scoped candidate
+    // set so the specified ranking (exact title > prefix > substring > body)
+    // holds regardless of body-match volume.
+    if (rows.length === FTS_CANDIDATE_LIMIT) {
+      const titleExpr = buildFtsMatchExpression(parsed, { column: "rank_title" });
+      if (titleExpr) {
+        const seenDocIds = new Set(rows.map((row) => row.doc_id));
+        for (const row of all<DocRow & { score: number; marked: string }>(candidateSql, [
+          titleExpr,
+          ...filterParams
+        ])) {
+          if (!seenDocIds.has(row.doc_id)) rows.push(row);
+        }
+      }
+    }
     const totals: Partial<Record<SearchDocKind, number>> = {};
     const totalRows = all<{ kind: string; n: number }>(
       `SELECT d.kind, COUNT(*) AS n
@@ -1197,11 +1229,13 @@ export function createSearchService(deps: SearchServiceDeps) {
     const limit = Math.max(1, Math.min(args.limit ?? DEFAULT_QUERY_LIMIT, MAX_QUERY_LIMIT));
     const offset = decodeCursor(args.cursor);
 
+    const scopeChatSessionId = args.callerScope?.chatSessionId?.trim() || null;
     const { candidates: ftsCandidates, totals } = queryFtsCandidates(
       parsed,
       kinds,
       laneId,
-      parsed.sessionId
+      parsed.sessionId,
+      scopeChatSessionId
     );
 
     const delegated: Candidate[] = [];
@@ -1224,16 +1258,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       totals[candidate.kind] = (totals[candidate.kind] ?? 0) + 1;
     }
 
-    // Title tiers rank against rankTitle (not the display title) so a chat's
-    // every message does not inherit its session title rank; message/chunk
-    // docs rank body-only.
-    const queryText = rankQueryText(parsed);
-    const tiered = [...ftsCandidates, ...delegated]
-      .map((candidate) => ({
-        ...candidate,
-        tier: candidate.rankTitle ? titleRankTier(candidate.rankTitle, queryText) : RANK_TIER_BODY
-      }))
-      .sort((a, b) => compareRanked(a, b));
+    const tiered = rankCandidates([...ftsCandidates, ...delegated], parsed);
 
     const page = tiered.slice(offset, offset + limit);
     const results: SearchResultItem[] = page.map((candidate) => ({

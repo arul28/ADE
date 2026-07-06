@@ -171,18 +171,24 @@ function escapeFtsString(value: string): string {
  * Build a deterministic FTS5 MATCH expression: every bare term is a quoted
  * prefix token, every phrase is a quoted phrase, all AND-ed. Returns null for
  * match-all queries (callers must not run FTS at all in that case).
+ * Pass `options.column` to scope every part to one FTS column (e.g. only
+ * title matches).
  */
-export function buildFtsMatchExpression(parsed: ParsedSearchQuery): string | null {
+export function buildFtsMatchExpression(
+  parsed: ParsedSearchQuery,
+  options?: { column?: string }
+): string | null {
+  const prefix = options?.column ? `${options.column} : ` : "";
   const parts: string[] = [];
   for (const term of parsed.terms) {
     const cleaned = term.trim();
     if (!cleaned) continue;
-    parts.push(`"${escapeFtsString(cleaned)}"*`);
+    parts.push(`${prefix}"${escapeFtsString(cleaned)}"*`);
   }
   for (const phrase of parsed.phrases) {
     const cleaned = phrase.trim();
     if (!cleaned) continue;
-    parts.push(`"${escapeFtsString(cleaned)}"`);
+    parts.push(`${prefix}"${escapeFtsString(cleaned)}"`);
   }
   if (parts.length === 0) return null;
   return parts.join(" AND ");
