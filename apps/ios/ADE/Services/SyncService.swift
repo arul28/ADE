@@ -7925,16 +7925,21 @@ final class SyncService: ObservableObject {
     let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
-    let addresses = connectableAddresses(from: rawAddresses)
+    // Relay routes (full wss:// URLs) carry their own path and port: keep them
+    // out of the TCP probe race and the port sweep — crossing one with the
+    // fallback port list would retry the identical URL once per port. Each is
+    // a single attempt, strictly after every direct address × port pair.
+    let relayRoutes = rawAddresses.filter(syncIsFullWebSocketRoute)
+    let addresses = connectableAddresses(from: rawAddresses.filter { !syncIsFullWebSocketRoute($0) })
     let portCandidates = syncConnectPortCandidates(
       primaryPort: primaryPort,
       addresses: addresses,
       allowFallbackSweep: !preferLiveCandidatesOnly || livePorts.isEmpty
     )
     syncConnectLog.info(
-      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)]"
+      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)] relay=[\(syncLogAddressList(relayRoutes), privacy: .public)]"
     )
-    guard !addresses.isEmpty else {
+    guard !addresses.isEmpty || !relayRoutes.isEmpty else {
       if rawAddresses.isEmpty {
         throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this machine."])
       }
@@ -7951,9 +7956,14 @@ final class SyncService: ObservableObject {
       )
     }
 
-    let endpointAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
+    let directAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
       ? syncStalePortRecoveryEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
       : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
+    // Relay routes: one attempt each, after the whole direct sweep. openSocket
+    // uses the full URL verbatim; the port field is informational.
+    let endpointAttempts = directAttempts + relayRoutes.map { route in
+      SyncConnectionEndpointAttempt(address: route, port: portCandidates.first ?? profile.port)
+    }
 
     for attempt in endpointAttempts {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {

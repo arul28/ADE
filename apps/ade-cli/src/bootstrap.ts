@@ -1243,7 +1243,13 @@ export async function createAdeRuntime(args: {
       configStore: cloudRelayStore,
       getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
     }));
-  if (cloudRelayStore.isEnabled()) {
+  // Only the runtime that actually hosts phone sync (owns the brain-level
+  // shared listener) may register the relay tunnel. The relay DO keeps ONE
+  // host socket per machineKey (last wins), so a headless one-shot CLI
+  // runtime or embedded fallback starting the tunnel would steal the relay
+  // from `ade serve` and then fail every phone /connect (no sync port).
+  const canHostRelayTunnel = resolvedArgs.syncRuntime?.sharedSyncListener != null;
+  if (canHostRelayTunnel && cloudRelayStore.isEnabled()) {
     void syncTunnelClientService.start().catch((error) => {
       logger.warn("sync.tunnel_start_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -1297,6 +1303,9 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
       onCloudRelayEnabledChanged: (enabled) => {
+        // Same gate as startup: only the sync-hosting runtime may register
+        // the relay tunnel (see canHostRelayTunnel above).
+        if (enabled && !canHostRelayTunnel) return;
         const action = enabled ? syncTunnelClientService.start() : syncTunnelClientService.stop();
         void action.catch((error) => {
           logger.warn("sync.tunnel_toggle_failed", {
