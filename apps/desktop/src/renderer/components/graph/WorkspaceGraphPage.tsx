@@ -49,6 +49,7 @@ import type {
   IntegrationProposal
 } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
 import {
   buildIntegrationSourcesByLaneId,
   isIntegrationLaneFromMetadata,
@@ -179,6 +180,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
     () => refreshLanes({ includeStatus: true, includeConflictStatus: false, includeRebaseSuggestions: false, includeAutoRebaseStatus: false }),
     [refreshLanes]
   );
+  useLaneListInvalidation({ active: active && Boolean(projectRoot), refreshLanes, freshnessKey: lanes });
   const [environmentMappings, setEnvironmentMappings] = React.useState<EnvironmentMapping[]>([]);
   const [prs, setPrs] = React.useState<PrWithConflicts[]>(() => readGraphPrCache(projectRoot));
   const [syncByLaneId, setSyncByLaneId] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});

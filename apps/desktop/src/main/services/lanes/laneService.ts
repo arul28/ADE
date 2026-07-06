@@ -4851,6 +4851,13 @@ export function createLaneService({
 
       db.run("update lanes set name = ? where id = ? and project_id = ?", [trimmed, laneId, projectId]);
       invalidateLaneListCache();
+      broadcastLifecycleEvent({
+        type: "lane-renamed",
+        laneId,
+        laneName: trimmed,
+        previousLaneName: lane.name,
+        color: lane.color,
+      });
     },
 
     updateAppearance({ laneId, color, icon, tags }: UpdateLaneAppearanceArgs): void {
@@ -4932,6 +4939,12 @@ export function createLaneService({
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
       invalidateLaneListCache();
+      broadcastLifecycleEvent({
+        type: "lane-unarchived",
+        laneId,
+        laneName: row.name,
+        color: row.color,
+      });
     },
 
     listDeleteProgress(): LaneDeleteProgress[] {

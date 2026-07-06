@@ -4861,6 +4861,89 @@ describe("preload OAuth bridge", () => {
     expect(callback).toHaveBeenCalledTimes(2);
   });
 
+  it("fans out lane lifecycle events from local IPC and remote runtime events", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const laneEvent = {
+      type: "lane-created",
+      laneId: "lane-new",
+      laneName: "new lane",
+      color: "#22c55e",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeStreamEvents) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.app.getWindowSession();
+
+    const callback = vi.fn();
+    const unsubscribe = bridge.lanes.onLifecycleEvent(callback);
+
+    const lifecycleListener = on.mock.calls.find(([channel]) => channel === IPC.lanesLifecycleEvent)?.[1];
+    expect(typeof lifecycleListener).toBe("function");
+    lifecycleListener({}, laneEvent);
+    expect(callback).toHaveBeenCalledWith(laneEvent);
+
+    const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+    expect(typeof runtimeListener).toBe("function");
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 1,
+        timestamp: "2026-07-06T12:00:01.000Z",
+        category: "runtime",
+        payload: { type: "lane_lifecycle_event", event: laneEvent },
+      },
+    });
+    expect(callback).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC.lanesLifecycleEvent, lifecycleListener);
+
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      event: {
+        id: 2,
+        timestamp: "2026-07-06T12:00:02.000Z",
+        category: "runtime",
+        payload: { type: "lane_lifecycle_event", event: laneEvent },
+      },
+    });
+    expect(callback).toHaveBeenCalledTimes(2);
+  });
+
   it("multiplexes local session and PR event subscriptions through one IPC listener", async () => {
     const sessionEvent = {
       sessionId: "session-1",

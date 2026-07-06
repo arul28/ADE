@@ -7,11 +7,13 @@ import type {
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
+  generation: number;
 };
 
 const laneListInFlight = new Map<string, InFlightEntry<LaneSummary[]>>();
 const laneSnapshotInFlight = new Map<string, InFlightEntry<LaneListSnapshot[]>>();
 const keybindingsInFlight = new Map<string, InFlightEntry<KeybindingsSnapshot>>();
+let laneReadGeneration = 0;
 
 function projectKey(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "active";
@@ -38,9 +40,10 @@ function coalesceInFlight<T>(
   cache: Map<string, InFlightEntry<T>>,
   key: string,
   load: () => Promise<T>,
+  generation = 0,
 ): Promise<T> {
   const existing = cache.get(key);
-  if (existing) return existing.promise;
+  if (existing && existing.generation === generation) return existing.promise;
 
   let promise: Promise<T>;
   promise = load().finally(() => {
@@ -48,7 +51,7 @@ function coalesceInFlight<T>(
       cache.delete(key);
     }
   });
-  cache.set(key, { promise });
+  cache.set(key, { promise, generation });
   return promise;
 }
 
@@ -60,6 +63,7 @@ export function listLanesCoalesced(
     laneListInFlight,
     keyFor(options?.projectRoot, args),
     () => window.ade.lanes.list(args),
+    laneReadGeneration,
   );
 }
 
@@ -71,6 +75,7 @@ export function listLaneSnapshotsCoalesced(
     laneSnapshotInFlight,
     keyFor(options?.projectRoot, args),
     () => window.ade.lanes.listSnapshots(args),
+    laneReadGeneration,
   );
 }
 
@@ -88,4 +93,11 @@ export function clearLaneReadInFlightForTest(): void {
   laneListInFlight.clear();
   laneSnapshotInFlight.clear();
   keybindingsInFlight.clear();
+  laneReadGeneration += 1;
+}
+
+export function invalidateLaneReadCache(): void {
+  laneListInFlight.clear();
+  laneSnapshotInFlight.clear();
+  laneReadGeneration += 1;
 }

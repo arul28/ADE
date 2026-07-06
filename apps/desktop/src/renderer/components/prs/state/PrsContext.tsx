@@ -48,6 +48,7 @@ type RefreshCoreOptions = {
 };
 
 const REFRESH_ERROR_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
+const PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS = 180;
 
 function normalizePrRefreshArgs(args?: PrRefreshArgs): PrRefreshArgs | undefined {
   const prIds = [
@@ -889,6 +890,37 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       skipFreshWarmCache: true,
       githubRefreshMode: "background",
     });
+  }, [active, refreshCore]);
+
+  useEffect(() => {
+    if (!active) return;
+    let refreshTimer: number | null = null;
+    let pendingHiddenRefresh = false;
+    const scheduleRefresh = () => {
+      if (document.visibilityState !== "visible") {
+        pendingHiddenRefresh = true;
+        return;
+      }
+      if (refreshTimer != null) return;
+      pendingHiddenRefresh = false;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void refreshCore();
+      }, PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS);
+    };
+    const refreshPendingIfVisible = () => {
+      if (!pendingHiddenRefresh) return;
+      scheduleRefresh();
+    };
+    const unsubscribe = window.ade.lanes.onLifecycleEvent(scheduleRefresh);
+    window.addEventListener("focus", refreshPendingIfVisible);
+    document.addEventListener("visibilitychange", refreshPendingIfVisible);
+    return () => {
+      unsubscribe();
+      if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      window.removeEventListener("focus", refreshPendingIfVisible);
+      document.removeEventListener("visibilitychange", refreshPendingIfVisible);
+    };
   }, [active, refreshCore]);
 
   useEffect(() => {

@@ -161,6 +161,7 @@ function installAdeStub() {
         handlers.port = handler;
         return vi.fn();
       }),
+      onLifecycleEvent: vi.fn(() => vi.fn()),
     },
     processes: {
       listDefinitions: vi.fn().mockResolvedValue([]),

@@ -5216,12 +5216,14 @@ describe("laneService rename", () => {
         worktreePath: path.join(repoRoot, "lane-a"),
       });
 
+      const onLifecycleEvent = vi.fn();
       const service = createLaneService({
         db,
         projectRoot: repoRoot,
         projectId: "proj-rename",
         defaultBaseRef: "main",
         worktreesDir: path.join(repoRoot, "worktrees"),
+        onLifecycleEvent,
         logger: createLogger(),
       });
 
@@ -5232,6 +5234,13 @@ describe("laneService rename", () => {
         ["lane-a", "proj-rename"],
       );
       expect(row?.name).toBe("new-name");
+      expect(onLifecycleEvent).toHaveBeenCalledWith({
+        type: "lane-renamed",
+        laneId: "lane-a",
+        laneName: "new-name",
+        previousLaneName: "old-name",
+        color: null,
+      });
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
