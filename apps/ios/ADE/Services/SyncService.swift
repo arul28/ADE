@@ -7075,6 +7075,13 @@ final class SyncService: ObservableObject {
       && lhs.savedAddressCandidates == rhs.savedAddressCandidates
       && lhs.discoveredLanAddresses == rhs.discoveredLanAddresses
       && lhs.tailscaleAddress == rhs.tailscaleAddress
+      // Relay routes change rarely (host advertisement flips) but MUST refresh
+      // the in-memory profile: a relay-only write that skips the refresh leaves
+      // `activeHostProfile` stale, and the next updateProfile — which starts
+      // from the in-memory copy — would write the old relay list back to disk.
+      // Only the high-churn cursor fields (lastRemoteDbVersion,
+      // remoteDbVersionBySite, updatedAt) stay excluded.
+      && lhs.savedRelayCandidates == rhs.savedRelayCandidates
   }
 
   private func markSyncActivity(force: Bool = false) {
