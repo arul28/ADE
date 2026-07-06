@@ -275,10 +275,17 @@ export function buildAgentRunsContentState(
   };
 }
 
-/** Waiting runs are what the app icon badge counts — agents blocked on the user. */
+/**
+ * Waiting runs are what the app icon badge counts — agents blocked on the
+ * user. CLI runs are excluded: a CLI at its prompt reports waiting_for_input
+ * as its normal resting state (mirroring the no-alert rule for CLI prompts),
+ * so counting it would pin the badge non-zero forever.
+ */
 export function countAwaitingAttentionRuns(runs: AgentRunState[]): number {
   return runs.filter(
-    (run) => run.phase === "waiting_for_approval" || run.phase === "waiting_for_input",
+    (run) =>
+      run.kind !== "cli"
+      && (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input"),
   ).length;
 }
 

@@ -475,8 +475,9 @@ describe("createPushPublisherService flush", () => {
     expect(publish).toHaveBeenCalledTimes(1);
     const first = publish.mock.calls[0][0];
     // Live Activity only — a CLI agent hits its prompt after every turn, so
-    // waiting-input must never generate alert pushes.
-    expect(first.notifications ?? []).toHaveLength(0);
+    // waiting-input must never generate user-facing alert pushes. (A silent
+    // badge-only item — no title — may ride along for icon-count sync.)
+    expect((first.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
     expect(first.liveActivity).toHaveLength(1);
     const startRun = first.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
     expect(startRun.phase).toBe("running");
@@ -491,7 +492,9 @@ describe("createPushPublisherService flush", () => {
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalledTimes(2);
     const second = publish.mock.calls[1][0];
-    expect(second.notifications ?? []).toHaveLength(0);
+    expect((second.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
+    // A CLI at its prompt is its resting state — it must not badge the icon.
+    for (const item of second.notifications ?? []) expect(item.badge).toBe(0);
     const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
     expect(waitingRun.phase).toBe("waiting_for_input");
 
@@ -507,8 +510,12 @@ describe("createPushPublisherService flush", () => {
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "ghost-1", runtimeState: "running" });
     await vi.advanceTimersByTimeAsync(2_500);
 
-    // Both rows resolve to nothing user-facing → nothing to publish at all.
-    expect(publish).not.toHaveBeenCalled();
+    // Both rows resolve to nothing user-facing → no alerts, no Live Activity
+    // (the initial silent badge sync is the only thing allowed through).
+    for (const call of publish.mock.calls) {
+      expect((call[0].notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
+      expect(call[0].liveActivity ?? []).toHaveLength(0);
+    }
 
     // With a real chat run present, the publish payload must still exclude them.
     publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "shell-1", runtimeState: "running" });
