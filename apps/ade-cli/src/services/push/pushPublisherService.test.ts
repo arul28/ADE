@@ -9,6 +9,7 @@ import { createPushRegistrationStore, type PushRegistrationStore } from "./pushR
 import { createPushRelayClient } from "./pushRelayClient";
 import {
   buildAgentRunsContentState,
+  countAwaitingAttentionRuns,
   createPushPublisherService,
   isWithinQuietHours,
   parseHhMm,
@@ -494,7 +495,14 @@ describe("createPushPublisherService flush", () => {
     const second = publish.mock.calls[1][0];
     expect((second.notifications ?? []).filter((n: { title: string }) => n.title)).toHaveLength(0);
     // A CLI at its prompt is its resting state — it must not badge the icon.
-    for (const item of second.notifications ?? []) expect(item.badge).toBe(0);
+    // Assert on the counting function directly (a badge-only item is only
+    // emitted on count *changes*, so payload inspection here would be vacuous).
+    expect(countAwaitingAttentionRuns([
+      run({ sessionId: "cli-1", kind: "cli", phase: "waiting_for_input" }),
+    ])).toBe(0);
+    expect(countAwaitingAttentionRuns([
+      run({ sessionId: "s-1", kind: "chat", phase: "waiting_for_input" }),
+    ])).toBe(1);
     const waitingRun = second.liveActivity[0].contentState.runs.find((r: { id: string }) => r.id === "cli-1");
     expect(waitingRun.phase).toBe("waiting_for_input");
 

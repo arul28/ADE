@@ -169,29 +169,29 @@ function StickyGroupHeader({
   const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
     <div className={cn(isLane ? "mb-1.5" : "mt-0.5 first:mt-0")}>
-      <button
-        type="button"
-        className={cn(
-          "ade-lane-group-header sticky top-0 z-10 flex w-full items-center text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
-          isLane ? "gap-1.5 rounded-lg px-3 py-2" : "gap-1.5 rounded-md px-2 py-1.5",
-          laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
-        )}
-        style={{
-          background: laneTint.background,
-          border: isLane
-            ? laneTint.border ?? "1px solid rgba(255, 255, 255, 0.08)"
-            : undefined,
-          borderBottom: isLane ? undefined : "1px solid rgba(255, 255, 255, 0.04)",
-          boxShadow: isLane
-            ? "0 1px 6px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)"
-            : undefined,
-        }}
-        onClick={onToggleCollapsed}
-        onContextMenu={onContextMenu}
-        data-section-id={sectionId}
-      >
-        {isLane ? (
-          <div className="flex w-full min-w-0 items-center gap-1.5">
+      {isLane ? (
+        // The lane header is a flex row, NOT one big <button>: the PR badge is
+        // itself interactive, and nesting interactive elements inside a native
+        // button is invalid HTML (breaks focus order / assistive tech). The
+        // collapse toggle button spans everything left of the badge cluster.
+        <div
+          className={cn(
+            "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-lg px-3 py-2 transition-colors backdrop-blur-xl select-none",
+            laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+          )}
+          style={{
+            background: laneTint.background,
+            border: laneTint.border ?? "1px solid rgba(255, 255, 255, 0.08)",
+            boxShadow: "0 1px 6px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
+          }}
+          data-section-id={sectionId}
+        >
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+            onClick={onToggleCollapsed}
+            onContextMenu={onContextMenu}
+          >
             {collapsed ? (
               <CaretRight size={12} className="shrink-0 text-muted-fg/35" />
             ) : (
@@ -218,14 +218,30 @@ function StickyGroupHeader({
                 </span>
               </div>
             ) : null}
-            <div className="ml-auto flex shrink-0 items-center gap-1.5">
-              {prBadge}
-              <span className="rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
-                {count}
-              </span>
-            </div>
+          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            {prBadge}
+            <span className="rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
+              {count}
+            </span>
           </div>
-        ) : (
+        </div>
+      ) : (
+      <button
+        type="button"
+        className={cn(
+          "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
+          laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+        )}
+        style={{
+          background: laneTint.background,
+          borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
+        }}
+        onClick={onToggleCollapsed}
+        onContextMenu={onContextMenu}
+        data-section-id={sectionId}
+      >
+        {(
           <>
             {collapsed ? (
               <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
@@ -245,6 +261,7 @@ function StickyGroupHeader({
           </>
         )}
       </button>
+      )}
       {/* Children slide out/retract smoothly; the header stays put (no reflow jump). */}
       <AnimatePresence initial={false}>
         {!collapsed && count > 0 ? (
