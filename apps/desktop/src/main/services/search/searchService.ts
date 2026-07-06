@@ -19,7 +19,12 @@ import type {
 } from "../../../shared/types/search";
 import { SEARCH_DOC_KINDS, isSearchDocKind } from "../../../shared/types/search";
 import type { Logger } from "../logging/logger";
-import { clearSearchIndex, openSearchIndexDb, type SearchIndexDb } from "./searchIndexDb";
+import {
+  SEARCH_INDEX_SCHEMA_VERSION,
+  clearSearchIndex,
+  openSearchIndexDb,
+  type SearchIndexDb
+} from "./searchIndexDb";
 import {
   buildFtsMatchExpression,
   isMatchAllQuery,
@@ -212,6 +217,7 @@ export function createSearchService(deps: SearchServiceDeps) {
 
   const queue = new Map<string, QueueEntry>();
   let timer: NodeJS.Timeout | null = null;
+  let timerDueAt = Number.POSITIVE_INFINITY;
   // All queue drains serialize through this chain so concurrent callers can
   // never lose freshly-enqueued work to an in-flight drain.
   let workChain: Promise<void> = Promise.resolve();
@@ -237,16 +243,24 @@ export function createSearchService(deps: SearchServiceDeps) {
   // Ingestion queue
   // ---------------------------------------------------------------------
 
+  const armTimer = (dueAt: number): void => {
+    // The queue lives on hot paths (PTY data, chat events): only re-arm when
+    // the new work is due before the already-armed wakeup.
+    if (disposed || dueAt >= timerDueAt) return;
+    if (timer) clearTimeout(timer);
+    timerDueAt = dueAt;
+    timer = setTimeout(() => {
+      timer = null;
+      timerDueAt = Number.POSITIVE_INFINITY;
+      void processQueue();
+    }, Math.max(0, dueAt - Date.now()));
+    timer.unref?.();
+  };
+
   const scheduleTimer = (): void => {
     if (disposed || queue.size === 0) return;
     const nextDue = Math.min(...[...queue.values()].map((entry) => entry.dueAt));
-    const delay = Math.max(0, nextDue - Date.now());
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => {
-      timer = null;
-      void processQueue();
-    }, delay);
-    timer.unref?.();
+    armTimer(nextDue);
   };
 
   const enqueue = (sourceKind: SourceKind, id: string, debounceMs?: number): void => {
@@ -256,8 +270,10 @@ export function createSearchService(deps: SearchServiceDeps) {
     const existing = queue.get(key);
     // Keep the earlier due time so a steady stream of events cannot starve
     // the source forever.
-    queue.set(key, { sourceKind, id, dueAt: existing ? Math.min(existing.dueAt, dueAt) : dueAt });
-    scheduleTimer();
+    const effectiveDueAt = existing ? Math.min(existing.dueAt, dueAt) : dueAt;
+    if (existing) existing.dueAt = effectiveDueAt;
+    else queue.set(key, { sourceKind, id, dueAt: effectiveDueAt });
+    armTimer(effectiveDueAt);
   };
 
   const yieldLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
@@ -1238,7 +1254,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       );
       return {
         ready: true,
-        schemaVersion: 1,
+        schemaVersion: SEARCH_INDEX_SCHEMA_VERSION,
         docCount: countDocs(),
         docCountByKind: byKind,
         pendingSources: queue.size,
