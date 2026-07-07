@@ -331,6 +331,9 @@ ade sync relay enable                              # re-enable after a disable (
 ade sync relay disable                             # kill-switch: never route sync through the relay
 ade sync security status --text                    # machine sync security posture (require-DPoP)
 ade sync security require-dpop on                  # reject paired hellos from devices without a Secure Enclave key
+ade sync web --text                                # print the browser web-client pairing link + code (app.ade-app.dev)
+ade sync web --open                                # also open the pairing link in the default browser
+ade sync web --no-clipboard                        # print only; don't copy the link to the clipboard
 ade secrets list --text
 ade secrets get STRIPE_API_KEY --text
 ade secrets set STRIPE_API_KEY --value sk_...
@@ -359,6 +362,7 @@ ade link commit abc1234 --lane <lane-uuid> --no-envelope
 ade link artifact proof-artifact-id
 ade link branch owner/repo my-branch --pr 42
 ade link pr owner/repo 42 --ade
+ade link lane <lane-uuid> --web                     # hosted web-client URL form (app.ade-app.dev/open), mutually exclusive with --ade
 ade link linear-issue ADE-123 --branch arul/ade-123-fix
 ade linear install
 ade skill list --text

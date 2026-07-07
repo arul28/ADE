@@ -62,6 +62,12 @@ path unless explicitly noted.
 - **iOS app** — client/controller-only, always. Connects to a runtime over
   WebSocket using the same `SyncEnvelope` protocol the desktop uses
   internally.
+- **Browser web client** — client/controller-only, hosted static SPA
+  (`device_type: "browser"`). Pairs over the same sync WebSocket with
+  PIN + per-device secret + WebCrypto DPoP, but keeps **no** local SQLite
+  replica: it treats changeset batches as invalidation signals and reads
+  through remote commands, file requests, and chat/terminal streams. See
+  `../web-client/README.md`.
 - **Cluster state** — a singleton `sync_cluster_state` row with
   the legacy columns `brain_device_id` and `brain_epoch` tracks which
   device currently owns execution within a cluster.
@@ -582,7 +588,7 @@ metadata. Fields (see `SyncDeviceRecord`):
 | `site_id` | Stable cr-sqlite site id |
 | `name` | User-assigned device name |
 | `platform` | `macOS`, `iOS`, `linux`, `windows`, `unknown` |
-| `device_type` | `desktop`, `phone`, `vps`, `unknown` |
+| `device_type` | `desktop`, `phone`, `vps`, `browser`, `unknown` (`browser` is the hosted web client — see `../web-client/README.md`) |
 | `created_at` / `updated_at` / `last_seen_at` | Timestamps |
 | `last_host` / `last_port` | Last manual-connect address |
 | `tailscale_ip` | Tailscale IP if available |

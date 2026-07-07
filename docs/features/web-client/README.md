@@ -83,8 +83,24 @@ Browser shell and routes:
 - `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
   switcher, project switcher, forget machine, reconnect hint, and "Open in
   desktop" button.
+- `apps/desktop/src/renderer/webclient/shell/MachinePicker.tsx`,
+  `ProjectPicker.tsx`, `PinInput.tsx`, `Welcome.tsx`, and `ScreenShell.tsx` -
+  the pair/switch UI pieces the boot sequence composes (saved-machine list,
+  project list, 6-digit PIN entry, first-run welcome, and the shared screen
+  frame); `shellTokens.ts` holds the standalone-shell design tokens.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
+
+Reused desktop renderer (web-mode adaptation):
+
+- `apps/desktop/src/renderer/lib/webClientMode.ts` - `isWebClientMode()` reads
+  the `window.__adeWebClient` flag the bootstrap stamps before the App module
+  loads, and `WEB_CLIENT_TAB_PATHS` lists the only surfaced tabs
+  (`/work`, `/lanes`, `/files`, `/prs`). Desktop-only chrome
+  (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
+  `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
+  updater, the onboarding tour, and tabs with no sync-protocol backing instead
+  of rendering broken affordances.
 
 Machine runtime and sync host:
 
@@ -93,9 +109,11 @@ Machine runtime and sync host:
   project switch, file/chat/terminal sub-protocols, and command routing
   advertisement.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
-  command registry. This lane adds 45 web-parity `register("...")` entries
-  for Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
-  status, history, orchestration, and rebase surfaces.
+  command registry. It carries 45 web-parity `register("...")` entries for
+  Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
+  status, history, orchestration, and rebase surfaces, plus the
+  runtime-scoped `sync.getWebPairingInfo` command (pairing URL, PIN,
+  machine name, relay availability) that backs the iOS "Pair a browser" sheet.
 - `apps/ade-cli/src/services/sync/syncPairingStore.ts` - PIN pairing result
   store: per-device secret plus optional DPoP public key.
 - `apps/ade-cli/src/services/sync/syncDpop.ts` - host-side P-256 proof
@@ -128,10 +146,15 @@ Pairing, links, and entry points:
 - `apps/ade-cli/src/tuiClient/deeplinkRow.ts` and
   `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` - TUI web-link helpers.
 - `apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx` and
-  `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` - desktop
-  "Open in web" entry points.
+  `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` /
+  `SessionContextMenu.tsx` - desktop "Open in web" entry points.
 - `apps/web/src/app/pages/PairPage.tsx` - marketing-site `/pair` hash-forward
   to the hosted web client.
+- `apps/ios/ADE/Views/Settings/SettingsWebClientPairSheet.swift` - iOS
+  Settings > Pairing > "Pair a browser" sheet. It fetches the machine's
+  pairing URL, PIN, machine name, and relay availability over the
+  `sync.getWebPairingInfo` remote command and renders a QR, copyable link,
+  and pairing code so a browser can be paired from the phone.
 
 Tests:
 
