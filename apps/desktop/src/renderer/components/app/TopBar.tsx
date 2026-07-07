@@ -2304,7 +2304,7 @@ export function TopBar() {
         ) : null}
       </div>
 
-      {showPublishPill ? (
+      {!webMode && showPublishPill ? (
         <SmartTooltip
           content={{
             label: "Publish to GitHub",
