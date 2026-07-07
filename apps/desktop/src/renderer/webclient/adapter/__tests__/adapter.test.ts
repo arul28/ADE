@@ -3,9 +3,11 @@ import type { ProjectInfo } from "../../../../shared/types";
 import type {
   SyncChatEventPayload,
   SyncFileBlob,
+  SyncTerminalHistoryResponsePayload,
   SyncMobileProjectSummary,
   SyncRemoteCommandDescriptor,
   SyncTerminalDataPayload,
+  SyncTerminalSnapshotPayload,
 } from "../../../../shared/types/sync";
 import { createAdeWebAdapter } from "../index";
 import type { AdeSyncClient, ChatHandlers, TerminalHandlers } from "../../sync";
@@ -195,6 +197,74 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("keeps the live terminal subscription while preview and transcript tail read history", async () => {
+    fake.descriptors = descriptors(["work.listSessions"]);
+    fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1", status: "running" }]);
+    fake.terminalHistoryResults.set("session-1", {
+      sessionId: "session-1",
+      data: "scrollback\n",
+      startOffset: 0,
+      endOffset: 11,
+      atStart: true,
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project);
+
+    await adapter.ade.sessions.list();
+    const ptyData: unknown[] = [];
+    const offData = adapter.ade.pty.onData((event) => ptyData.push(event));
+    await adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] });
+
+    expect(fake.terminalSubscribeCalls).toEqual([{ sessionId: "session-1", opts: { maxBytes: 1024 } }]);
+    fake.emitTerminalSnapshot("session-1", {
+      sessionId: "session-1",
+      transcript: "scrollback\n",
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "scrollback",
+      capturedAt: "2026-07-07T00:00:01.000Z",
+      startOffset: 0,
+      endOffset: 11,
+      live: true,
+    });
+    expect(ptyData).toEqual([]);
+
+    await expect(adapter.ade.terminal.preview({ terminalId: "session-1", maxBytes: 4096 })).resolves.toMatchObject({
+      terminalId: "session-1",
+      transcript: "scrollback\n",
+      source: "transcript",
+    });
+    expect(ptyData).toEqual([]);
+
+    await expect(adapter.ade.sessions.readTranscriptTail({ sessionId: "session-1", maxBytes: 4096, raw: true })).resolves.toBe("scrollback\n");
+    expect(fake.terminalSubscribeCalls).toHaveLength(1);
+    expect(fake.terminalUnsubscribeCalls).toEqual([]);
+    expect(fake.terminalHistoryCalls).toEqual([
+      { sessionId: "session-1", beforeOffset: Number.MAX_SAFE_INTEGER, maxBytes: 4096 },
+      { sessionId: "session-1", beforeOffset: Number.MAX_SAFE_INTEGER, maxBytes: 4096 },
+    ]);
+
+    fake.emitTerminalData("session-1", {
+      sessionId: "session-1",
+      ptyId: "pty-1",
+      data: "live\n",
+      at: "2026-07-07T00:00:02.000Z",
+      offset: 16,
+    });
+    expect(ptyData).toEqual([
+      {
+        ptyId: "pty-1",
+        sessionId: "session-1",
+        data: "live\n",
+        offset: 16,
+      },
+    ]);
+
+    offData();
+    adapter.dispose();
+    expect(fake.terminalUnsubscribeCalls).toEqual(["session-1"]);
+  });
+
   it("keeps unknown namespaces harmless and logs once per missing leaf", async () => {
     const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const adapter = createAdeWebAdapter(fake.asClient());
@@ -250,6 +320,12 @@ type CommandCall = {
   opts: { projectId?: string | null; timeoutMs?: number };
 };
 
+type TerminalHistoryCall = {
+  sessionId: string;
+  beforeOffset: number;
+  maxBytes?: number;
+};
+
 class FakeAdeSyncClient {
   descriptors: SyncRemoteCommandDescriptor[] = [];
   commandResults = new Map<string, unknown>();
@@ -262,6 +338,10 @@ class FakeAdeSyncClient {
   fileCalls: Array<{ action: string; args: Record<string, unknown>; opts: { projectId?: string | null; timeoutMs?: number } }> = [];
   terminalInputs: Array<{ sessionId: string; data: string }> = [];
   terminalResizes: Array<{ sessionId: string; cols: number; rows: number }> = [];
+  terminalSubscribeCalls: Array<{ sessionId: string; opts: { maxBytes?: number } }> = [];
+  terminalUnsubscribeCalls: string[] = [];
+  terminalHistoryCalls: TerminalHistoryCall[] = [];
+  terminalHistoryResults = new Map<string, SyncTerminalHistoryResponsePayload>();
   projects: SyncMobileProjectSummary[] = [
     {
       id: "project-1",
@@ -328,9 +408,14 @@ class FakeAdeSyncClient {
     return () => this.chatHandlers.delete(sessionId);
   }
 
-  subscribeTerminal(sessionId: string, _opts: unknown, handlers: TerminalHandlers): () => void {
+  subscribeTerminal(sessionId: string, opts: unknown, handlers: TerminalHandlers): () => void {
+    const normalizedOpts = opts && typeof opts === "object" ? { ...(opts as { maxBytes?: number }) } : {};
+    this.terminalSubscribeCalls.push({ sessionId, opts: normalizedOpts });
     this.terminalHandlers.set(sessionId, handlers);
-    return () => this.terminalHandlers.delete(sessionId);
+    return () => {
+      this.terminalUnsubscribeCalls.push(sessionId);
+      if (this.terminalHandlers.get(sessionId) === handlers) this.terminalHandlers.delete(sessionId);
+    };
   }
 
   sendTerminalInput(sessionId: string, data: string): void {
@@ -342,6 +427,9 @@ class FakeAdeSyncClient {
   }
 
   async requestTerminalHistory(args: { sessionId: string; beforeOffset: number; maxBytes?: number }): Promise<{ sessionId: string; data: string; startOffset: number; endOffset: number; atStart: boolean }> {
+    this.terminalHistoryCalls.push(args);
+    const result = this.terminalHistoryResults.get(args.sessionId);
+    if (result) return result;
     return {
       sessionId: args.sessionId,
       data: "",
@@ -392,5 +480,9 @@ class FakeAdeSyncClient {
 
   emitTerminalData(sessionId: string, payload: SyncTerminalDataPayload): void {
     this.terminalHandlers.get(sessionId)?.data?.(payload);
+  }
+
+  emitTerminalSnapshot(sessionId: string, payload: SyncTerminalSnapshotPayload): void {
+    this.terminalHandlers.get(sessionId)?.snapshot?.(payload);
   }
 }

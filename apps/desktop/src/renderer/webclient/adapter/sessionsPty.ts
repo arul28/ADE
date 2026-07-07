@@ -6,9 +6,14 @@ import type {
   PtySendToSessionResult,
   TerminalSessionSummary,
 } from "../../../shared/types";
-import type { SyncTerminalSnapshotPayload } from "../../../shared/types/sync";
+import type {
+  SyncTerminalHistoryResponsePayload,
+  SyncTerminalSnapshotPayload,
+} from "../../../shared/types/sync";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
+
+const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 1_024;
 
 export type SessionsPtyNamespaces = {
   sessions: AdeNamespace<"sessions">;
@@ -25,7 +30,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     terminalRegistry.register(sessionId, ptyId ?? terminalRegistry.ptyForSession(sessionId));
     const unsubscribe = client.subscribeTerminal(
       sessionId,
-      { maxBytes: 512 * 1024 },
+      { maxBytes: LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES },
       {
         data: (payload) => {
           terminalRegistry.register(payload.sessionId, payload.ptyId);
@@ -81,28 +86,17 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   async function captureSnapshot(sessionId: string, maxBytes?: number | null): Promise<SyncTerminalSnapshotPayload | null> {
     if (!sessionId) return null;
-    return await new Promise((resolve) => {
-      let settled = false;
-      const finish = (snapshot: SyncTerminalSnapshotPayload | null) => {
-        if (settled) return;
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
-        resolve(snapshot);
-      };
-      const unsubscribe = client.subscribeTerminal(
+    try {
+      const history = await client.requestTerminalHistory({
         sessionId,
-        { maxBytes: maxBytes ?? 128 * 1024 },
-        {
-          snapshot: (payload) => {
-            terminalRegistry.register(payload.sessionId, terminalRegistry.ptyForSession(payload.sessionId));
-            finish(payload);
-          },
-          error: () => finish(null),
-        }
-      );
-      const timer = setTimeout(() => finish(null), 2_000);
-    });
+        beforeOffset: Number.MAX_SAFE_INTEGER,
+        maxBytes: maxBytes ?? 128 * 1024,
+      });
+      terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
+      return historyToSnapshot(history);
+    } catch {
+      return null;
+    }
   }
 
   const sessions: Record<string, unknown> = {
@@ -138,7 +132,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const maxBytes = numberField(record, "maxBytes");
       if (!sessionId) return "";
       const snapshot = await captureSnapshot(sessionId, maxBytes);
-      if (snapshot?.transcript) return snapshot.transcript;
+      if (snapshot) return snapshot.transcript;
       try {
         const history = await client.requestTerminalHistory({
           sessionId,
@@ -368,5 +362,18 @@ function emptyPreview(terminalId: string): ChatTerminalPreviewResult {
     snapshot: null,
     transcript: null,
     capturedAt: new Date().toISOString(),
+  };
+}
+
+function historyToSnapshot(history: SyncTerminalHistoryResponsePayload): SyncTerminalSnapshotPayload {
+  return {
+    sessionId: history.sessionId,
+    transcript: history.data,
+    status: null,
+    runtimeState: null,
+    lastOutputPreview: null,
+    capturedAt: new Date().toISOString(),
+    startOffset: history.startOffset,
+    endOffset: history.endOffset,
   };
 }
