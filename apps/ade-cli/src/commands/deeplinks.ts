@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 
 import {
   ADE_DEEPLINK_HTTPS_BASE_URL,
+  ADE_DEEPLINK_HTTPS_HOST,
   ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
   isAdeDeeplinkHttpsHost,
@@ -20,7 +21,7 @@ import {
   type DeeplinkEnvelope,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
-import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
+import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
 
 export class CliDeeplinkUsageError extends Error {}
@@ -180,7 +181,7 @@ function openAndReport(url: string): DeeplinkCliResult {
   return { output: `Opened ${url}\n`, exitCode: 0 };
 }
 
-function openUrlViaOs(url: string): { failed: boolean; message: string } {
+export function openUrlViaOs(url: string): { failed: boolean; message: string } {
   const platform = process.platform;
   let cmd: string;
   let args: string[];
@@ -419,7 +420,7 @@ function parsePositiveInteger(value: string, label: string): number {
 function finishLink(url: string, skipClipboard: boolean): DeeplinkCliResult {
   // Round-trip gate: never print/copy a link the shared parser would reject
   // (e.g. `ade link file ../secret` or a malformed commit sha).
-  const roundTrip = parseDeeplink(url);
+  const roundTrip = parseMintedLink(url);
   if (!roundTrip.ok) {
     const reason = "reason" in roundTrip.error ? roundTrip.error.reason : roundTrip.error.kind;
     throw new CliDeeplinkUsageError(`refusing to mint an invalid link (${reason}): ${url}`);
@@ -431,6 +432,26 @@ function finishLink(url: string, skipClipboard: boolean): DeeplinkCliResult {
     }
   }
   return { output: `${url}${clipboardNote}\n`, exitCode: 0 };
+}
+
+function parseMintedLink(url: string): ReturnType<typeof parseDeeplink> {
+  const roundTrip = parseDeeplink(url);
+  if (roundTrip.ok) return roundTrip;
+  try {
+    const parsed = new URL(url);
+    const webBase = new URL(WEB_CLIENT_BASE_URL);
+    if (
+      parsed.protocol === webBase.protocol &&
+      parsed.host === webBase.host &&
+      parsed.pathname === ADE_DEEPLINK_HTTPS_PATH
+    ) {
+      parsed.host = ADE_DEEPLINK_HTTPS_HOST;
+      return parseDeeplink(parsed.toString());
+    }
+  } catch {
+    // Fall through to the original parser error.
+  }
+  return roundTrip;
 }
 
 // ---------------------------------------------------------------------------

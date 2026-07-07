@@ -81,6 +81,7 @@ ade link <url>                                             # round-trip an exist
 # Flags
 --ade            # emit ade:// instead of https:// (default: https)
 --no-envelope    # skip best-effort repo/branch/PR envelope lookup
+--web            # emit the hosted web client URL (https://app.ade-app.dev/...)
 --no-clipboard   # print without copying
 ```
 
@@ -95,6 +96,18 @@ Concrete examples:
 ade link file apps/desktop/src/shared/deeplinks.ts --line 12 --ade --no-clipboard
 ade link commit abc1234 --lane 550e8400-e29b-41d4-a716-446655440000 --no-clipboard
 ```
+
+## Pairing a browser — `ade sync web`
+
+Run `ade sync web --text` on, or pointed at, an ADE machine to print the
+web-client pairing link and 6-digit code. Open the link in any browser, enter
+the code, and the ADE web client (Work, Lanes, Files, PRs) pairs to that
+machine — the browser analogue of scanning the phone pairing QR.
+
+Use `--open` to launch the pairing link in the default browser. Human output
+copies the link by default; add `--no-clipboard` for scripts. The same link
+from desktop Settings > Sync > Web client or the iOS "Pair a browser" screen
+does the same thing.
 
 ## Opening a deeplink — `ade open`
 

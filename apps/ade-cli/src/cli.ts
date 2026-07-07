@@ -15,6 +15,7 @@ import {
 } from "./cursorCloud";
 import {
   CliDeeplinkUsageError,
+  openUrlViaOs,
   runDeeplinkCommandAsync,
   type LinkEnvelopeContext,
 } from "./commands/deeplinks";
@@ -89,6 +90,7 @@ import {
   runAdeCodeRemote,
   takeAdeCodeRemoteArgs,
 } from "./tuiClient/remoteLauncher";
+import { copyToClipboard } from "./lib/clipboard";
 
 type JsonObject = Record<string, unknown>;
 
@@ -215,6 +217,8 @@ type CliPlan =
         status?: string;
       };
       writeResultPath?: string;
+      syncWebOpen?: boolean;
+      syncWebNoClipboard?: boolean;
       /**
        * Derive a nonzero exit code from the executed result (e.g. `ade search`
        * exits 1 when a query returns no results, so scripts can branch on it).
@@ -491,7 +495,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
-    $ ade sync web                                  Print the web client pairing link + code
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -11869,7 +11873,7 @@ function buildSyncPlan(args: string[]): CliPlan {
       text: `${ADE_BANNER}
 Usage:
   ade sync status [--include-transfer-readiness]
-  ade sync web                         Print the web client pairing link + code
+  ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
   ade sync refresh
   ade sync devices
   ade sync pin get
@@ -11888,10 +11892,14 @@ Usage:
     };
   }
   if (sub === "web" || sub === "web-pair" || sub === "webclient") {
+    const open = readFlag(args, ["--open"]);
+    const noClipboard = readFlag(args, ["--no-clipboard"]);
     return {
       kind: "execute",
       label: "sync web",
       formatter: "sync-web",
+      syncWebOpen: open,
+      syncWebNoClipboard: noClipboard,
       steps: [{ key: "result", method: "sync.getStatus" }],
     };
   }
@@ -16495,6 +16503,50 @@ function formatOutput(
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
 }
 
+function appendOutputSuffix(output: string, suffix: string): string {
+  if (!suffix) return output;
+  if (output.endsWith("\n")) return `${output.slice(0, -1)}${suffix}\n`;
+  return `${output}${suffix}\n`;
+}
+
+function applySyncWebPairingFlags(
+  plan: CliPlan & { kind: "execute" },
+  options: GlobalOptions,
+  result: unknown,
+  deps: {
+    copy?: (text: string) => boolean;
+    open?: (url: string) => { failed: boolean; message: string };
+  } = {},
+): { outputSuffix: string; exitCode: number | null } {
+  if (plan.label !== "sync web" || !isSyncWebPairingCliOutput(result)) {
+    return { outputSuffix: "", exitCode: null };
+  }
+  if (!result.pairingUrl) {
+    return { outputSuffix: "", exitCode: null };
+  }
+
+  let outputSuffix = "";
+  if (options.text && !plan.syncWebNoClipboard) {
+    const copy = deps.copy ?? copyToClipboard;
+    if (copy(result.pairingUrl)) {
+      outputSuffix += "\n(copied to clipboard)";
+    }
+  }
+
+  if (plan.syncWebOpen) {
+    const open = deps.open ?? openUrlViaOs;
+    const openResult = open(result.pairingUrl);
+    if (openResult.failed) {
+      if (options.text) {
+        outputSuffix += `\nCould not invoke OS opener: ${openResult.message}`;
+      }
+      return { outputSuffix, exitCode: 1 };
+    }
+  }
+
+  return { outputSuffix, exitCode: null };
+}
+
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
@@ -16657,9 +16709,16 @@ async function runCli(
         exitCode: 0,
       };
     }
+    const formatter = inferFormatter(plan);
+    const flagEffects = applySyncWebPairingFlags(plan, parsed.options, result);
     return {
-      output: formatOutput(result, parsed.options, inferFormatter(plan)),
-      exitCode: plan.exitCodeFromResult ? plan.exitCodeFromResult(result) : 0,
+      output: appendOutputSuffix(
+        formatOutput(result, parsed.options, formatter),
+        flagEffects.outputSuffix,
+      ),
+      exitCode:
+        flagEffects.exitCode ??
+        (plan.exitCodeFromResult ? plan.exitCodeFromResult(result) : 0),
     };
   } finally {
     console.log = originalConsole.log;
@@ -16749,6 +16808,7 @@ export {
   formatOutput,
   graphWaitState,
   inferFormatter,
+  applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,

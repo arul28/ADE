@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  applySyncWebPairingFlags,
   buildAdeCodeArgs,
   buildCliPlan,
   checkLinearReadiness,
@@ -629,6 +630,8 @@ describe("ADE CLI", () => {
     if (web.kind !== "execute") return;
     expect(web.label).toBe("sync web");
     expect(web.formatter).toBe("sync-web");
+    expect(web.syncWebOpen).toBe(false);
+    expect(web.syncWebNoClipboard).toBe(false);
     expect(web.steps).toEqual([
       {
         key: "result",
@@ -641,6 +644,12 @@ describe("ADE CLI", () => {
       expect(aliasPlan.label).toBe("sync web");
       expect(aliasPlan.steps[0]?.method).toBe("sync.getStatus");
     }
+
+    const webWithFlags = expectExecutePlan(
+      buildCliPlan(["sync", "web", "--open", "--no-clipboard"]),
+    );
+    expect(webWithFlags.syncWebOpen).toBe(true);
+    expect(webWithFlags.syncWebNoClipboard).toBe(true);
 
     const setPin = buildCliPlan(["sync", "pin", "set", "123456"]);
     expect(setPin.kind).toBe("execute");
@@ -706,6 +715,105 @@ describe("ADE CLI", () => {
     });
     expect(formatOutput(result, { text: true } as any, inferFormatter(plan)))
       .toContain("  Code   123456");
+  });
+
+  it("applies sync web clipboard and open flags only when a link exists", () => {
+    const options = {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    };
+    const plan = expectExecutePlan(buildCliPlan(["sync", "web", "--open"]));
+    const pairing = {
+      pairingUrl: "https://app.ade-app.dev/pair#payload",
+      code: "123456",
+      pinConfigured: true,
+      machineName: "Arul's Mac Studio",
+      relayEnabled: false,
+    };
+    const calls: string[] = [];
+
+    const effects = applySyncWebPairingFlags(plan, options, pairing, {
+      copy: (url) => {
+        calls.push(`copy:${url}`);
+        return true;
+      },
+      open: (url) => {
+        calls.push(`open:${url}`);
+        return { failed: false, message: "" };
+      },
+    });
+
+    expect(effects).toEqual({
+      outputSuffix: "\n(copied to clipboard)",
+      exitCode: null,
+    });
+    expect(calls).toEqual([
+      "copy:https://app.ade-app.dev/pair#payload",
+      "open:https://app.ade-app.dev/pair#payload",
+    ]);
+
+    const noLinkEffects = applySyncWebPairingFlags(
+      plan,
+      options,
+      { ...pairing, pairingUrl: null },
+      {
+        copy: () => {
+          throw new Error("should not copy");
+        },
+        open: () => {
+          throw new Error("should not open");
+        },
+      },
+    );
+    expect(noLinkEffects).toEqual({ outputSuffix: "", exitCode: null });
+  });
+
+  it("does not copy sync web pairing links for JSON output or --no-clipboard", () => {
+    const pairing = {
+      pairingUrl: "https://app.ade-app.dev/pair#payload",
+      code: "123456",
+      pinConfigured: true,
+      machineName: "Arul's Mac Studio",
+      relayEnabled: false,
+    };
+    const baseOptions = {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+    };
+    const jsonPlan = expectExecutePlan(buildCliPlan(["sync", "web"]));
+    let copied = false;
+    const jsonEffects = applySyncWebPairingFlags(
+      jsonPlan,
+      { ...baseOptions, text: false },
+      pairing,
+      {
+        copy: () => {
+          copied = true;
+          return true;
+        },
+      },
+    );
+    expect(jsonEffects).toEqual({ outputSuffix: "", exitCode: null });
+    expect(copied).toBe(false);
+
+    const noClipboardPlan = expectExecutePlan(
+      buildCliPlan(["sync", "web", "--no-clipboard"]),
+    );
+    const noClipboardEffects = applySyncWebPairingFlags(
+      noClipboardPlan,
+      { ...baseOptions, text: true },
+      pairing,
+      {
+        copy: () => {
+          copied = true;
+          return true;
+        },
+      },
+    );
+    expect(noClipboardEffects).toEqual({ outputSuffix: "", exitCode: null });
   });
 
   it("prints a sync web no-address message cleanly", () => {
