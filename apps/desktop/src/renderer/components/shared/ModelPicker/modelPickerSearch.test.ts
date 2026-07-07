@@ -83,7 +83,7 @@ describe("scoreModelPickerSearch", () => {
       {
         family: "cursor",
         providerDisplayName: "Cursor",
-        name: "Opus 4.5",
+        name: "Claude Opus 4.5",
       },
       "opu",
     );
