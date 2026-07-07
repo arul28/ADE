@@ -32,6 +32,14 @@ or historical `ProcessRuntime` rows in memory, each identified by `runId`. The
 Run page renders those runs on a single card and the aggregate persisted
 snapshot (the most recent run) is what lives in the `process_runtime` table.
 
+## External session import
+
+Users can browse provider-native CLI sessions created outside ADE and continue
+or fork them inside Work. See
+[External Session Import](external-session-import.md) for the intended use
+case, provider storage formats, capability matrix, CLI/chat import paths,
+mobile routing, authorization model, and current open items.
+
 ## Source file map
 
 Service files. Same sources back the ADE runtime and the limited
@@ -115,7 +123,8 @@ and in tests.
   `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
   used when forking or importing a Claude session into a different lane cwd;
   `discoveryUtils.ts` owns safe filesystem reads, cwd slug resolution, cheap
-  previews, limits, and sorting.
+  previews, limits, and sorting. Deep detail:
+  [external-session-import.md](external-session-import.md).
 
 Shared types and IPC:
 
@@ -909,6 +918,10 @@ Processes (managed):
 
 ## Cross-links
 
+- External session import:
+  [external-session-import.md](external-session-import.md) — provider-native
+  session discovery/import, the Open/Fork x ADE-chat/CLI-session model, and
+  mobile/host constraints.
 - Lanes feature: [lanes/](../lanes/)
 - Files surface used by terminals for the transcript: see
   [../files-and-editor/](../files-and-editor/) (the file watcher is

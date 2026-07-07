@@ -324,7 +324,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `ADE_AGENT_SKILLS_DIRS` stay lane-aware. External-session imports share
   the desktop external-session service and DTOs: list returns provider
   summaries and import returns either a tracked CLI PTY id or a native ADE
-  chat id.
+  chat id. See
+  [External Session Import](../terminals-and-sessions/external-session-import.md)
+  for the provider storage formats, host/runtime requirements, and mobile
+  testing constraints.
   Lane snapshot commands accept decoration flags so mobile can refresh
   runtime/session buckets without recomputing conflict status, rebase
   suggestions, or auto-rebase status on every light refresh; lane detail
@@ -830,7 +833,9 @@ project scope split.
 ## External session import commands
 
 Paired controllers can browse and import provider-native CLI sessions through
-the same runtime command registry that starts Work CLI sessions:
+the same runtime command registry that starts Work CLI sessions. The full
+feature detail lives in
+[External Session Import](../terminals-and-sessions/external-session-import.md).
 
 | Command | Policy | Purpose |
 |---|---|---|
@@ -843,6 +848,13 @@ trusted controller for the runtime machine. The controller never reads provider
 session files or launches provider CLIs locally; it sends a command envelope,
 and the sync authority runtime does discovery, cwd validation, chat transcript
 seeding, PTY creation, and provider resume/fork execution on the host.
+
+The feature must be present on the host brain the controller is paired to.
+Desktop can point at an isolated lane-built brain with an isolated `ADE_HOME`,
+but mobile normally cannot because there is one sync host on the shared
+port/mDNS/tunnel surface. Real mobile E2E therefore requires the paired host to
+contain the external-session service and `work.*` commands, either because the
+feature is merged or because a deliberately isolated-port host is running.
 
 ## Security model
 

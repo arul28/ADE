@@ -88,3 +88,4 @@ apps/desktop/resources/whisper/*
 
 .claude/scheduled_tasks.lock
 apps/web/public/images/updatedImages/
+.derivedData/

@@ -380,7 +380,9 @@ delegates `target: "chat"` imports to
 `agentChatService.importExternalChatSession`, which creates a normal
 lane-scoped `AgentChatSession`, stamps `importedFrom` provenance, seeds the ADE
 transcript from the external history, and then binds future turns to the
-imported provider identity.
+imported provider identity. The full feature doc, including CLI imports,
+provider storage, mobile routing, and testing constraints, is
+[External Session Import](../terminals-and-sessions/external-session-import.md).
 
 Claude imports read the source JSONL from Claude project storage. When the
 source cwd differs from the target lane, ADE makes a non-destructive copied
