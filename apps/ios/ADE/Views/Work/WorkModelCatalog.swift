@@ -279,7 +279,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         models: [
           WorkModelOption(id: "claude-fable-5-thinking-high", displayName: "Claude Fable 5 Thinking High", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
           WorkModelOption(id: "claude-fable-5-thinking-xhigh", displayName: "Claude Fable 5 Thinking XHigh", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
-          WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
+          WorkModelOption(id: "cursor/claude-4.6-sonnet-medium", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "cursor"),
         ]
       ),
       WorkModelProvider(

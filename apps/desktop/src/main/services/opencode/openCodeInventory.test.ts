@@ -181,9 +181,9 @@ describe("openCodeInventory", () => {
     });
 
     expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-7");
     expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
-    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-7");
+    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-8");
     expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -281,6 +281,65 @@ describe("openCodeInventory", () => {
     });
     expect(opusDescriptor?.reasoningTiers).toEqual(["max"]);
     expect(opusDescriptor?.serviceTiers).toEqual(["fast"]);
+  });
+
+  it("preserves legacy OpenCode runtime ids when canonical rows are not advertised", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["anthropic"],
+        all: [
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-6": {
+                id: "claude-sonnet-4-6",
+                name: "Claude Sonnet 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+              },
+              "opus": {
+                id: "opus",
+                name: "Opus",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    expect(result.modelIds).toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.modelIds).toContain("opencode/anthropic/opus");
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-5");
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-4-6")).toMatchObject({
+      displayName: "Claude Sonnet 5",
+      openCodeModelId: "claude-sonnet-4-6",
+      providerModelId: "anthropic/claude-sonnet-4-6",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/opus")).toMatchObject({
+      displayName: "Claude Opus 4.8 1M",
+      openCodeModelId: "opus",
+      providerModelId: "anthropic/opus",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
   });
 
   it("classifies OpenCode SDK model variants and v2 capabilities", async () => {

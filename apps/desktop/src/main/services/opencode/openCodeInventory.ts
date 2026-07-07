@@ -157,6 +157,7 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
 function normalizeOpenCodeProviderModel(
   providerId: string,
   modelId: string,
+  availableProviderModelIds: Set<string>,
   displayName?: string,
 ): { modelId: string; displayName?: string; contextWindow?: number; maxOutputTokens?: number; preferredDuplicateSource: boolean } {
   if (providerId.trim().toLowerCase() !== "anthropic") {
@@ -164,6 +165,8 @@ function normalizeOpenCodeProviderModel(
   }
   const normalized = modelId.trim().toLowerCase();
   const preferredDuplicateSource = normalized === "claude-sonnet-5" || normalized === "claude-opus-4-8";
+  const hasCanonicalSonnet = availableProviderModelIds.has("claude-sonnet-5");
+  const hasCanonicalOpus = availableProviderModelIds.has("claude-opus-4-8");
   if (normalized === "claude-sonnet-5") {
     return {
       modelId: "claude-sonnet-5",
@@ -184,7 +187,7 @@ function normalizeOpenCodeProviderModel(
   }
   if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
     return {
-      modelId: "claude-sonnet-5",
+      modelId: hasCanonicalSonnet ? "claude-sonnet-5" : modelId,
       displayName: "Claude Sonnet 5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -197,7 +200,7 @@ function normalizeOpenCodeProviderModel(
     || normalized === "opus"
   ) {
     return {
-      modelId: "claude-opus-4-8",
+      modelId: hasCanonicalOpus ? "claude-opus-4-8" : modelId,
       displayName: "Claude Opus 4.8 1M",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -325,6 +328,14 @@ export async function probeOpenCodeProviderInventory(args: {
           // local-provider catalog; only show models ADE just discovered as loaded.
           if (isLocal && !discoveryExists) continue;
           const models = provider.models ?? {};
+          const availableProviderModelIds = new Set(
+            Object.values(models)
+              .map((model) => {
+                const record = model as Record<string, unknown>;
+                return typeof record.id === "string" ? record.id.trim().toLowerCase() : "";
+              })
+              .filter(Boolean),
+          );
           for (const model of Object.values(models)) {
             const modelRecord = model as Record<string, unknown>;
             const mid = typeof modelRecord.id === "string" ? modelRecord.id.trim() : "";
@@ -333,7 +344,7 @@ export async function probeOpenCodeProviderInventory(args: {
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
             const variants = classifyOpenCodeVariants(modelRecord);
             const rawDisplayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
-            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, rawDisplayName);
+            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, availableProviderModelIds, rawDisplayName);
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
               ? modelRecord.limit as { context?: number; output?: number }
               : null;

@@ -144,6 +144,7 @@ describe("discoverDroidCliModelDescriptors", () => {
           { id: "claude-opus-4-7", displayName: "Claude Opus 4.7" },
           { id: "opus-4-7", displayName: "Opus 4.7" },
           { id: "opus", displayName: "Opus" },
+          { id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M" },
           { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
         ],
       },
@@ -164,6 +165,31 @@ describe("discoverDroidCliModelDescriptors", () => {
       "claude-opus-4-8",
       "claude-sonnet-5",
     ]);
+  });
+
+  it("preserves removed Droid runtime ids when canonical replacements are absent", async () => {
+    mockCreateSession.mockResolvedValueOnce({
+      initResult: {
+        availableModels: [
+          { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
+          { id: "opus", displayName: "Opus" },
+        ],
+      },
+      close: vi.fn(async () => {}),
+    });
+
+    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+
+    expect(descriptors.map((descriptor) => descriptor.id)).not.toContain("droid/claude-sonnet-5");
+    expect(descriptors.map((descriptor) => descriptor.id)).not.toContain("droid/claude-opus-4-8");
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/sonnet-4-6")).toMatchObject({
+      displayName: "Sonnet 5 (1.2x)",
+      providerModelId: "sonnet-4-6",
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/opus")).toMatchObject({
+      displayName: "Opus 4.8 1M",
+      providerModelId: "opus",
+    });
   });
 
   it("preserves Droid SDK reasoning and media metadata without exposing tier as a toggle", async () => {

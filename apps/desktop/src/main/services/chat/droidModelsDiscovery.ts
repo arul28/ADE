@@ -244,13 +244,21 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   return rows;
 }
 
-function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
+function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow, availableModelIds: Set<string>): DroidExecHelpModelRow {
   const id = row.id.trim().toLowerCase();
   if (id === "claude-sonnet-4-6" || id === "sonnet-4-6") {
-    return { ...row, id: "claude-sonnet-5", displayName: "Sonnet 5 (1.2x)" };
+    return {
+      ...row,
+      id: availableModelIds.has("claude-sonnet-5") ? "claude-sonnet-5" : row.id,
+      displayName: "Sonnet 5 (1.2x)",
+    };
   }
   if (id === "claude-opus-4-7" || id === "opus-4-7" || id === "opus") {
-    return { ...row, id: "claude-opus-4-8", displayName: "Opus 4.8 1M" };
+    return {
+      ...row,
+      id: availableModelIds.has("claude-opus-4-8") ? "claude-opus-4-8" : row.id,
+      displayName: "Opus 4.8 1M",
+    };
   }
   return row;
 }
@@ -373,11 +381,16 @@ export async function discoverDroidCliModelDescriptors(
   // Merge custom models from ~/.factory/config.json so vibeproxy-injected
   // models appear even when the CLI help output doesn't list them.
   const customRows = await readFactoryConfigCustomModels();
+  const availableModelIds = new Set(
+    [...baseRows, ...customRows]
+      .map((row) => row.id.trim().toLowerCase())
+      .filter(Boolean),
+  );
 
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];
   for (const rawRow of [...baseRows, ...customRows]) {
-    const row = normalizeDroidDiscoveredModel(rawRow);
+    const row = normalizeDroidDiscoveredModel(rawRow, availableModelIds);
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);

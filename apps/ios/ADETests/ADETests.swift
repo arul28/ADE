@@ -11261,6 +11261,20 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cursorGroup?.providers.first?.models.first?.provider, "claude")
   }
 
+  func testCuratedCursorSonnetUsesCursorRuntimeDescriptorId() {
+    let cursorGroup = workModelCatalogGroups(currentModelId: "", currentProvider: "cursor")
+      .first(where: { $0.key == "cursor" })
+    let sonnet = cursorGroup?
+      .providers
+      .first(where: { $0.key == "anthropic" })?
+      .models
+      .first(where: { $0.displayName == "Claude Sonnet 5" })
+
+    XCTAssertEqual(sonnet?.id, "cursor/claude-4.6-sonnet-medium")
+    XCTAssertEqual(sonnet?.provider, "cursor")
+    XCTAssertEqual(workResolveCliProvider(for: sonnet?.id ?? "", provider: "cursor"), "cursor")
+  }
+
   func testWorkModelCatalogFiltersCursorModelsByChatAndCliAvailability() {
     let groups = [
       WorkModelCatalogGroup(
