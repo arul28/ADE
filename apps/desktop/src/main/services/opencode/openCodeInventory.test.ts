@@ -368,6 +368,12 @@ describe("openCodeInventory", () => {
       providerModelId: "anthropic/claude-sonnet-5",
       contextWindow: 200_000,
       maxOutputTokens: 32_000,
+      capabilities: expect.objectContaining({
+        tools: true,
+        vision: true,
+        reasoning: true,
+      }),
+      reasoningTiers: ["low", "medium", "high", "max"],
     });
     expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toMatchObject({
       displayName: "Claude Opus 4.8 1M",
@@ -375,6 +381,13 @@ describe("openCodeInventory", () => {
       providerModelId: "anthropic/claude-opus-4-8",
       contextWindow: 200_000,
       maxOutputTokens: 32_000,
+      capabilities: expect.objectContaining({
+        tools: true,
+        vision: true,
+        reasoning: true,
+      }),
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
     });
   });
 

@@ -710,6 +710,51 @@ export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: stri
   }
 }
 
+function normalizeAnthropicRuntimeAlias(modelId: string): {
+  modelId: string;
+  displayName: string;
+  capabilities: ModelCapabilities;
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+  wasAlias: boolean;
+} | null {
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized.length) return null;
+  if (
+    normalized === "claude-sonnet-5"
+    || normalized === "claude-sonnet-4-6"
+    || normalized === "sonnet-4-6"
+  ) {
+    return {
+      modelId: "claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "max"],
+      wasAlias: normalized !== "claude-sonnet-5",
+    };
+  }
+  if (
+    normalized === "claude-opus-4-8"
+    || normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "opus-4.7"
+    || normalized === "claude-opus-4-6"
+    || normalized === "opus-4-6"
+    || normalized === "opus-4.6"
+    || normalized === "opus"
+  ) {
+    return {
+      modelId: "claude-opus-4-8",
+      displayName: "Claude Opus 4.8 1M",
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+      wasAlias: normalized !== "claude-opus-4-8",
+    };
+  }
+  return null;
+}
+
 function formatOpenCodeDisplayName(modelId: string): string {
   return modelId
     .split(/[-_/]+/g)
@@ -764,21 +809,36 @@ export function createDynamicOpenCodeModelDescriptor(
   options?: DynamicOpenCodeModelDescriptorOptions,
 ): ModelDescriptor {
   const opPid = options?.openCodeProviderId?.trim();
-  const opMid = options?.openCodeModelId?.trim();
+  const rawOpMid = options?.openCodeModelId?.trim();
+  const anthropicRuntime = opPid?.toLowerCase() === "anthropic" && rawOpMid
+    ? normalizeAnthropicRuntimeAlias(rawOpMid)
+    : null;
+  const opMid = anthropicRuntime?.modelId ?? rawOpMid;
   const normalizedModelId = modelId.trim();
   const usesPairedIds = Boolean(opPid && opMid);
   const id = usesPairedIds ? encodeOpenCodeRegistryId(opPid!, opMid!) : `opencode/${normalizedModelId}`;
   const shortId = usesPairedIds ? opMid! : normalizedModelId;
   const providerModelId = usesPairedIds ? `${opPid}/${opMid}` : normalizedModelId;
   const displayName =
-    options?.displayName?.trim()
+    (anthropicRuntime?.wasAlias ? anthropicRuntime.displayName : undefined)
+    || options?.displayName?.trim()
+    || anthropicRuntime?.displayName
     || (usesPairedIds ? formatOpenCodeDisplayName(opMid!) : formatOpenCodeDisplayName(normalizedModelId));
+  const canonicalCapabilities = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.capabilities)
+    ? anthropicRuntime.capabilities
+    : undefined;
   const capabilities: ModelCapabilities = {
-    tools: options?.capabilities?.tools ?? true,
-    vision: options?.capabilities?.vision ?? false,
-    reasoning: options?.capabilities?.reasoning ?? true,
-    streaming: options?.capabilities?.streaming ?? true,
+    tools: canonicalCapabilities?.tools ?? options?.capabilities?.tools ?? true,
+    vision: canonicalCapabilities?.vision ?? options?.capabilities?.vision ?? false,
+    reasoning: canonicalCapabilities?.reasoning ?? options?.capabilities?.reasoning ?? true,
+    streaming: canonicalCapabilities?.streaming ?? options?.capabilities?.streaming ?? true,
   };
+  const reasoningTiers = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.reasoningTiers?.length)
+    ? anthropicRuntime.reasoningTiers
+    : options?.reasoningTiers;
+  const serviceTiers = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.serviceTiers?.length)
+    ? anthropicRuntime.serviceTiers
+    : options?.serviceTiers;
   const aliases = options?.aliases?.map((alias) => alias.trim()).filter(Boolean) ?? [];
   const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
   const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
@@ -797,8 +857,8 @@ export function createDynamicOpenCodeModelDescriptor(
     providerRoute: "opencode",
     providerModelId,
     ...(usesPairedIds ? { openCodeProviderId: opPid, openCodeModelId: opMid } : {}),
-    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
-    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
+    ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(isLocal || options?.harnessProfile ? { harnessProfile: options?.harnessProfile ?? "guarded" } : {}),
     isCliWrapped: false,
@@ -1147,11 +1207,15 @@ export function createDynamicDroidCliModelDescriptor(
     capabilities?: Partial<ModelCapabilities>;
   },
 ): ModelDescriptor {
-  const trimmedProviderModelId = providerModelId.trim();
+  const rawProviderModelId = providerModelId.trim();
+  const canonicalDroid = normalizeAnthropicRuntimeAlias(rawProviderModelId);
+  const trimmedProviderModelId = canonicalDroid?.modelId ?? rawProviderModelId;
   const id = `droid/${trimmedProviderModelId}`;
   const knownCompact = KNOWN_DROID_COMPACT_DISPLAY_NAMES[trimmedProviderModelId.toLowerCase()];
   const display =
-    knownCompact
+    canonicalDroid?.wasAlias
+      ? knownCompact ?? canonicalDroid.displayName
+      : knownCompact
       ? knownCompact
       : typeof cliDisplayName === "string" && cliDisplayName.trim().length
       ? cliDisplayName.trim()

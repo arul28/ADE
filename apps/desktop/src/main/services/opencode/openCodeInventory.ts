@@ -5,6 +5,7 @@ import {
   createDynamicOpenCodeModelDescriptor,
   isLocalProviderFamily,
   replaceDynamicOpenCodeModelDescriptors,
+  type ModelCapabilities,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { stableStringify } from "../shared/utils";
@@ -98,6 +99,13 @@ const OPENCODE_SERVICE_VARIANT_ALIASES: Record<string, string> = {
   fast: "fast",
 };
 
+const CANONICAL_ANTHROPIC_MODEL_CAPABILITIES: ModelCapabilities = {
+  tools: true,
+  vision: true,
+  reasoning: true,
+  streaming: true,
+};
+
 function addUnique(out: string[], value: string): void {
   if (!out.some((entry) => entry.trim().toLowerCase() === value)) out.push(value);
 }
@@ -159,7 +167,16 @@ function normalizeOpenCodeProviderModel(
   modelId: string,
   availableProviderModelIds: Set<string>,
   displayName?: string,
-): { modelId: string; displayName?: string; contextWindow?: number; maxOutputTokens?: number; preferredDuplicateSource: boolean } {
+): {
+  modelId: string;
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+  capabilities?: ModelCapabilities;
+  preferredDuplicateSource: boolean;
+} {
   if (providerId.trim().toLowerCase() !== "anthropic") {
     return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource: true };
   }
@@ -190,6 +207,8 @@ function normalizeOpenCodeProviderModel(
       modelId: "claude-sonnet-5",
       displayName: "Claude Sonnet 5",
       ...(hasCanonicalSonnet ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
+      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "max"],
       preferredDuplicateSource,
     };
   }
@@ -205,6 +224,9 @@ function normalizeOpenCodeProviderModel(
       modelId: "claude-opus-4-8",
       displayName: "Claude Opus 4.8 1M",
       ...(hasCanonicalOpus ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
+      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
       preferredDuplicateSource,
     };
   }
@@ -367,7 +389,9 @@ export async function probeOpenCodeProviderInventory(args: {
                 : Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
               ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
               ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
-              capabilities: readOpenCodeModelCapabilities(modelRecord),
+              ...(normalizedModel.reasoningTiers?.length ? { reasoningTiers: normalizedModel.reasoningTiers } : {}),
+              ...(normalizedModel.serviceTiers?.length ? { serviceTiers: normalizedModel.serviceTiers } : {}),
+              capabilities: normalizedModel.capabilities ?? readOpenCodeModelCapabilities(modelRecord),
             });
             const existingIndex = descriptorIds.get(descriptor.id);
             if (existingIndex !== undefined) {

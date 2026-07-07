@@ -41,6 +41,29 @@ describe("modelRegistry", () => {
     expect(d.openCodeModelId).toBe("openai/gpt-oss-20b");
   });
 
+  it("canonicalizes persisted OpenCode Anthropic aliases before launch", () => {
+    const sonnet = getModelById("opencode/anthropic/claude-sonnet-4-6");
+    const opus = getModelById("opencode/anthropic/opus-4.6");
+
+    expect(sonnet).toMatchObject({
+      id: "opencode/anthropic/claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      providerModelId: "anthropic/claude-sonnet-5",
+      openCodeModelId: "claude-sonnet-5",
+      capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
+      reasoningTiers: ["low", "medium", "high", "max"],
+    });
+    expect(opus).toMatchObject({
+      id: "opencode/anthropic/claude-opus-4-8",
+      displayName: "Claude Opus 4.8 1M",
+      providerModelId: "anthropic/claude-opus-4-8",
+      openCodeModelId: "claude-opus-4-8",
+      capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+    });
+  });
+
   it("resolves runtime-discovered local model ids", () => {
     const descriptor = resolveModelDescriptor("ollama/qwen2.5-coder:32b");
     expect(descriptor).toBeTruthy();
@@ -363,6 +386,23 @@ describe("modelRegistry", () => {
     expect(descriptor).toBeTruthy();
     expect(descriptor?.displayName).toBe("Claude Sonnet 5 (High)");
   });
+
+  it("canonicalizes persisted Droid Anthropic aliases before launch", () => {
+    const sonnet = getModelById("droid/claude-sonnet-4-6");
+    const opus = getModelById("droid/opus-4-6");
+
+    expect(sonnet).toMatchObject({
+      id: "droid/claude-sonnet-5",
+      providerModelId: "claude-sonnet-5",
+      displayName: "Sonnet 5 (1.2x)",
+    });
+    expect(opus).toMatchObject({
+      id: "droid/claude-opus-4-8",
+      providerModelId: "claude-opus-4-8",
+      displayName: "Opus 4.8 1M",
+    });
+  });
+
 
   it("keeps Droid custom models in their own picker group", () => {
     expect(droidCliLineGroupFromModelId("custom:claude-sonnet-5-thinking-32000")).toBe("custom");
