@@ -12,6 +12,7 @@ import type {
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
+  AgentChatLaunchArgs,
   AgentChatModelCatalogArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatModelCatalogMode,
@@ -948,6 +949,19 @@ function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCrea
   if ("requestedCwd" in value) parsed.requestedCwd = value.requestedCwd == null ? undefined : requireString(value.requestedCwd, "chat.create requires a non-empty requestedCwd when provided.");
 
   return parsed;
+}
+
+function parseAgentChatLaunchArgs(value: Record<string, unknown>): AgentChatLaunchArgs {
+  const launchArgs: AgentChatLaunchArgs = {
+    ...parseAgentChatCreateArgs(value),
+    kickoffText: requireString(value.kickoffText, "chat.launch requires kickoffText."),
+  };
+  const kickoffDisplayText = asTrimmedString(value.kickoffDisplayText);
+  if (kickoffDisplayText) launchArgs.kickoffDisplayText = kickoffDisplayText;
+  if (Array.isArray(value.contextAttachments)) {
+    launchArgs.contextAttachments = value.contextAttachments as AgentChatLaunchArgs["contextAttachments"];
+  }
+  return launchArgs;
 }
 
 function parseAgentChatSendArgs(value: Record<string, unknown>): AgentChatSendArgs {
@@ -2000,10 +2014,10 @@ async function deleteLaneWithRuntimeCleanup(
   return { ok: true };
 }
 
-async function resolveChatCreateArgs(
+async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   service: ReturnType<typeof createAgentChatService>,
-  payload: AgentChatCreateArgs,
-): Promise<AgentChatCreateArgs> {
+  payload: T,
+): Promise<T> {
   if (payload.model.trim().length > 0) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
@@ -2650,6 +2664,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);
     const session = await agentChatService.createSession(await resolveChatCreateArgs(agentChatService, parsed));
+    return summarizeChatSessionForRemote(agentChatService, session);
+  });
+  register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseAgentChatLaunchArgs(payload);
+    const session = await agentChatService.launchHeadless(await resolveChatCreateArgs(agentChatService, parsed));
     return summarizeChatSessionForRemote(agentChatService, session);
   });
   register("chat.send", { viewerAllowed: true, queueable: true }, async (payload) => {

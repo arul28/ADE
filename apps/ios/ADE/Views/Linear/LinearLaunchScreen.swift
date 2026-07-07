@@ -287,10 +287,11 @@ struct LinearLaunchScreen: View {
       },
       launchChat: { laneId, cfg in
         let wire = workRuntimeWireFields(provider: cfg.provider, mode: cfg.runtimeMode)
-        let summary = try await sync.createChatSession(
+        let summary = try await sync.launchChatSession(
           laneId: laneId,
           provider: cfg.provider,
           model: cfg.modelId,
+          kickoffText: cfg.kickoff,
           reasoningEffort: cfg.reasoningEffort.isEmpty ? nil : cfg.reasoningEffort,
           codexFastMode: fastSupported ? cfg.codexFastMode : nil,
           permissionMode: wire.permissionMode,
@@ -304,11 +305,6 @@ struct LinearLaunchScreen: View {
           cursorModeId: wire.cursorModeId,
           pendingDisplayName: cfg.kickoff
         )
-        // Fire the kickoff turn; a transient send failure keeps the session
-        // (the user can type) rather than rolling the lane back.
-        if !cfg.kickoff.isEmpty {
-          _ = try? await sync.sendChatMessage(sessionId: summary.sessionId, text: cfg.kickoff)
-        }
         return summary.sessionId
       },
       launchCli: { laneId, cfg in
@@ -351,16 +347,10 @@ struct LinearLaunchScreen: View {
       }
       syncService.linearPanePresented = false
     } catch is LinearQueuedAgentLaunchError {
-      if config.sessionType == .chat {
-        ADEHaptics.error()
-        errorMessage = "Chat creation was queued, but the kickoff prompt was not sent. Reconnect your machine, wait for the chat to appear, then send the prompt again."
-        busy = false
-      } else {
-        // Offline after lane creation: CLI launch queues with its initial input,
-        // so this handoff is complete from the sheet's view.
-        ADEHaptics.medium()
-        syncService.linearPanePresented = false
-      }
+      // Offline after lane creation: both chat and CLI launches queue with
+      // their initial input, so this handoff is complete from the sheet's view.
+      ADEHaptics.medium()
+      syncService.linearPanePresented = false
     } catch is QueuedRemoteCommandError {
       if config.sessionType.needsAgentConfig {
         ADEHaptics.error()

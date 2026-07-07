@@ -966,6 +966,7 @@ export type SyncRemoteCommandAction =
   | "chat.listSubagents"
   | "chat.getSubagentTranscript"
   | "chat.create"
+  | "chat.launch"
   | "chat.send"
   | "chat.interrupt"
   | "chat.steer"

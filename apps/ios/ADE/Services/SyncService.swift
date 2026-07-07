@@ -6286,6 +6286,162 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     pendingDisplayName: String? = nil
   ) async throws -> AgentChatSessionSummary {
+    let (args, trimmedModel) = chatSessionCreateArgs(
+      laneId: laneId,
+      provider: provider,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode,
+      sessionProfile: sessionProfile,
+      permissionMode: permissionMode,
+      interactionMode: interactionMode,
+      claudePermissionMode: claudePermissionMode,
+      codexApprovalPolicy: codexApprovalPolicy,
+      codexSandbox: codexSandbox,
+      codexConfigSource: codexConfigSource,
+      opencodePermissionMode: opencodePermissionMode,
+      droidPermissionMode: droidPermissionMode,
+      cursorModeId: cursorModeId,
+      cursorConfigValues: cursorConfigValues,
+      computerUse: computerUse,
+      requestedCwd: requestedCwd
+    )
+    // Offline: queue the create with a stable command id and record a snapshot
+    // so the Work list shows a "Pending sync" row until the queued command
+    // drains after reconnect. `chat.create` is not queued by the generic
+    // offline path (it's not host-advertised as queueable while disconnected),
+    // so enqueue it explicitly here.
+    if !canSendLiveRequests() {
+      let commandId = makeRequestId()
+      try enqueueOperation(
+        kind: "command",
+        action: "chat.create",
+        args: args,
+        id: commandId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      let trimmedName = pendingDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+      recordPendingChatCreation(PendingChatCreation(
+        id: commandId,
+        projectId: targetProjectId ?? activeProjectId,
+        projectRootPath: targetProjectRootPath ?? activeProjectRootPath,
+        laneId: laneId,
+        name: (trimmedName?.isEmpty == false ? trimmedName! : "New chat"),
+        provider: provider,
+        model: trimmedModel,
+        queuedAt: syncDateFormatter.string(from: Date())
+      ))
+      throw QueuedRemoteCommandError(action: "chat.create")
+    }
+    return try await sendDecodableCommand(
+      action: "chat.create",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: AgentChatSessionSummary.self
+    )
+  }
+
+  func launchChatSession(
+    laneId: String,
+    provider: String,
+    model: String = "",
+    kickoffText: String,
+    reasoningEffort: String? = nil,
+    codexFastMode: Bool? = nil,
+    sessionProfile: String? = nil,
+    permissionMode: String? = nil,
+    interactionMode: String? = nil,
+    claudePermissionMode: String? = nil,
+    codexApprovalPolicy: String? = nil,
+    codexSandbox: String? = nil,
+    codexConfigSource: String? = nil,
+    opencodePermissionMode: String? = nil,
+    droidPermissionMode: String? = nil,
+    cursorModeId: String? = nil,
+    cursorConfigValues: [String: RemoteJSONValue]? = nil,
+    computerUse: RemoteJSONValue? = nil,
+    requestedCwd: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil,
+    pendingDisplayName: String? = nil
+  ) async throws -> AgentChatSessionSummary {
+    var (args, trimmedModel) = chatSessionCreateArgs(
+      laneId: laneId,
+      provider: provider,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode,
+      sessionProfile: sessionProfile,
+      permissionMode: permissionMode,
+      interactionMode: interactionMode,
+      claudePermissionMode: claudePermissionMode,
+      codexApprovalPolicy: codexApprovalPolicy,
+      codexSandbox: codexSandbox,
+      codexConfigSource: codexConfigSource,
+      opencodePermissionMode: opencodePermissionMode,
+      droidPermissionMode: droidPermissionMode,
+      cursorModeId: cursorModeId,
+      cursorConfigValues: cursorConfigValues,
+      computerUse: computerUse,
+      requestedCwd: requestedCwd
+    )
+    args["kickoffText"] = kickoffText
+
+    if !canSendLiveRequests() {
+      let commandId = makeRequestId()
+      try enqueueOperation(
+        kind: "command",
+        action: "chat.launch",
+        args: args,
+        id: commandId,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+      let trimmedName = pendingDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+      recordPendingChatCreation(PendingChatCreation(
+        id: commandId,
+        projectId: targetProjectId ?? activeProjectId,
+        projectRootPath: targetProjectRootPath ?? activeProjectRootPath,
+        laneId: laneId,
+        name: (trimmedName?.isEmpty == false ? trimmedName! : "New chat"),
+        provider: provider,
+        model: trimmedModel,
+        queuedAt: syncDateFormatter.string(from: Date())
+      ))
+      throw QueuedRemoteCommandError(action: "chat.launch")
+    }
+
+    return try await sendDecodableCommand(
+      action: "chat.launch",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: AgentChatSessionSummary.self
+    )
+  }
+
+  private func chatSessionCreateArgs(
+    laneId: String,
+    provider: String,
+    model: String,
+    reasoningEffort: String?,
+    codexFastMode: Bool?,
+    sessionProfile: String?,
+    permissionMode: String?,
+    interactionMode: String?,
+    claudePermissionMode: String?,
+    codexApprovalPolicy: String?,
+    codexSandbox: String?,
+    codexConfigSource: String?,
+    opencodePermissionMode: String?,
+    droidPermissionMode: String?,
+    cursorModeId: String?,
+    cursorConfigValues: [String: RemoteJSONValue]?,
+    computerUse: RemoteJSONValue?,
+    requestedCwd: String?
+  ) -> ([String: Any], String) {
     let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
     var args: [String: Any] = [
       "laneId": laneId,
@@ -6340,41 +6496,7 @@ final class SyncService: ObservableObject {
     if let requestedCwd, !requestedCwd.isEmpty {
       args["requestedCwd"] = requestedCwd
     }
-    // Offline: queue the create with a stable command id and record a snapshot
-    // so the Work list shows a "Pending sync" row until the queued command
-    // drains after reconnect. `chat.create` is not queued by the generic
-    // offline path (it's not host-advertised as queueable while disconnected),
-    // so enqueue it explicitly here.
-    if !canSendLiveRequests() {
-      let commandId = makeRequestId()
-      try enqueueOperation(
-        kind: "command",
-        action: "chat.create",
-        args: args,
-        id: commandId,
-        targetProjectId: targetProjectId,
-        targetProjectRootPath: targetProjectRootPath
-      )
-      let trimmedName = pendingDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines)
-      recordPendingChatCreation(PendingChatCreation(
-        id: commandId,
-        projectId: targetProjectId ?? activeProjectId,
-        projectRootPath: targetProjectRootPath ?? activeProjectRootPath,
-        laneId: laneId,
-        name: (trimmedName?.isEmpty == false ? trimmedName! : "New chat"),
-        provider: provider,
-        model: trimmedModel,
-        queuedAt: syncDateFormatter.string(from: Date())
-      ))
-      throw QueuedRemoteCommandError(action: "chat.create")
-    }
-    return try await sendDecodableCommand(
-      action: "chat.create",
-      args: args,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath,
-      as: AgentChatSessionSummary.self
-    )
+    return (args, trimmedModel)
   }
 
   func fetchChatSummary(sessionId: String) async throws -> AgentChatSessionSummary {
@@ -10031,11 +10153,15 @@ final class SyncService: ObservableObject {
     }
   }
 
-  /// Cancels a queued offline chat creation: drops both the pending `chat.create`
+  private func isQueuedChatCreationAction(_ action: String) -> Bool {
+    action == "chat.create" || action == "chat.launch"
+  }
+
+  /// Cancels a queued offline chat creation: drops both the pending command
   /// operation and its snapshot so the "Pending sync" row disappears.
   func cancelPendingChatCreation(id: String) {
     var queued = loadPendingOperations()
-    let filtered = queued.filter { !($0.kind == "command" && $0.action == "chat.create" && $0.id == id) }
+    let filtered = queued.filter { !($0.kind == "command" && isQueuedChatCreationAction($0.action) && $0.id == id) }
     if filtered.count != queued.count {
       queued = filtered
       savePendingOperations(queued)
@@ -10046,12 +10172,12 @@ final class SyncService: ObservableObject {
   private func clearPendingChatCreations() {
     let creations = loadPendingChatCreations()
     guard !creations.isEmpty else { return }
-    // Also drop the queued `chat.create` commands, not just the UI snapshots —
+    // Also drop the queued chat creation commands, not just the UI snapshots —
     // otherwise flushPendingOperations would replay them against the next paired
     // host and silently recreate chats the user forgot.
     let ids = Set(creations.map(\.id))
     let queued = loadPendingOperations()
-    let filtered = queued.filter { !(ids.contains($0.id) && $0.kind == "command" && $0.action == "chat.create") }
+    let filtered = queued.filter { !(ids.contains($0.id) && $0.kind == "command" && isQueuedChatCreationAction($0.action)) }
     if filtered.count != queued.count {
       savePendingOperations(filtered)
     }
@@ -10218,9 +10344,9 @@ final class SyncService: ObservableObject {
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
         }
         removePendingOperation(operation)
-        // A drained chat.create produced a real session; drop the optimistic
+        // A drained chat creation produced a real session; drop the optimistic
         // "Pending sync" snapshot so the synced row takes over.
-        if operation.kind == "command", operation.action == "chat.create" {
+        if operation.kind == "command", isQueuedChatCreationAction(operation.action) {
           removePendingChatCreation(id: operation.id)
         }
       } catch {
@@ -10234,7 +10360,7 @@ final class SyncService: ObservableObject {
         }
         if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
           removePendingOperation(operation)
-          if operation.kind == "command", operation.action == "chat.create" {
+          if operation.kind == "command", isQueuedChatCreationAction(operation.action) {
             removePendingChatCreation(id: operation.id)
           }
           queued = loadPendingOperations()

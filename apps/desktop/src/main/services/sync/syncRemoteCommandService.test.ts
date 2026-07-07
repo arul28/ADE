@@ -88,6 +88,7 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "chat.modelCatalog",
   "chat.listSessions",
   "chat.create",
+  "chat.launch",
   "chat.getSummary",
   "chat.getTranscript",
   "chat.getChatEventHistory",
@@ -384,6 +385,15 @@ function createMockAgentChatService() {
       createdAt: "2026-01-01T00:00:00.000Z",
       lastActivityAt: "2026-01-01T00:00:00.000Z",
     }),
+    launchHeadless: vi.fn().mockResolvedValue({
+      id: "chat-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-4",
+      status: "idle",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastActivityAt: "2026-01-01T00:00:00.000Z",
+    }),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     interrupt: vi.fn().mockResolvedValue(undefined),
     steer: vi.fn().mockResolvedValue(undefined),
@@ -584,6 +594,7 @@ describe("createSyncRemoteCommandService", () => {
       expect(actions).toContain("git.push");
       expect(actions).toContain("git.getFileHistory");
       expect(actions).toContain("chat.create");
+      expect(actions).toContain("chat.launch");
       expect(actions).toContain("chat.send");
       expect(actions).toContain("chat.getCodexGoal");
       expect(actions).toContain("chat.setCodexGoal");
@@ -1708,6 +1719,38 @@ describe("createSyncRemoteCommandService", () => {
         },
         requestedCwd: "apps/ios",
       });
+    });
+
+    it("chat.launch headlessly creates a chat, preserves kickoff text, and returns a mobile summary", async () => {
+      const result = await service.execute(makePayload("chat.launch", {
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        kickoffText: "Start from this Linear issue.",
+      }));
+
+      expect(agentChatService.launchHeadless).toHaveBeenCalledWith({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-4",
+        kickoffText: "Start from this Linear issue.",
+      });
+      expect(agentChatService.getSessionSummary).toHaveBeenCalledWith("chat-1");
+      expect(result).toEqual(expect.objectContaining({ sessionId: "chat-1", startedAt: "2026-01-01T00:00:00.000Z" }));
+    });
+
+    it("chat.launch resolves model from available models before launching", async () => {
+      await service.execute(makePayload("chat.launch", {
+        laneId: "lane-1",
+        provider: "codex",
+        model: "",
+        kickoffText: "Start from this Linear issue.",
+      }));
+
+      expect(agentChatService.getAvailableModels).toHaveBeenCalledWith({ provider: "codex" });
+      expect(agentChatService.launchHeadless).toHaveBeenCalledWith(
+        expect.objectContaining({ model: "model-1", modelId: "m1", kickoffText: "Start from this Linear issue." }),
+      );
     });
 
     it("chat.send requires sessionId and text", async () => {
