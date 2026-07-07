@@ -9647,6 +9647,31 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(unrelatedUpdate.cursorModeIdWasCleared)
     summary.applyModeUpdate(unrelatedUpdate)
     XCTAssertEqual(summary.cursorModeId, "agent")
+
+    // The cache fold above is only half the story: the open chat view rebuilds
+    // its LIVE summary from the cache via `mergeModeFields(from:)`, which copies
+    // only non-nil cursor modes. An explicit clear must still reach that live
+    // summary, so the reconcile threads a `cursorModeIdCleared` flag.
+    var cachedAfterClear = summary
+    cachedAfterClear.cursorModeId = nil
+    var liveSummary = summary
+    liveSummary.cursorModeId = "agent"
+    // Without the cleared flag, a plain merge preserves the live mode (the
+    // invariant: a partial summary merge never nulls an unrelated field).
+    var mergedNoClear = liveSummary
+    mergedNoClear.mergeModeFields(from: cachedAfterClear)
+    XCTAssertEqual(mergedNoClear.cursorModeId, "agent")
+    // With the cleared flag, the nil propagates to the live summary/composer.
+    var mergedCleared = liveSummary
+    mergedCleared.mergeModeFields(from: cachedAfterClear, cursorModeIdCleared: true)
+    XCTAssertNil(mergedCleared.cursorModeId)
+    // A non-nil cache mode still wins even under the cleared flag (belt-and-
+    // suspenders: a re-set mode is never clobbered to nil).
+    var cachedWithMode = summary
+    cachedWithMode.cursorModeId = "plan"
+    var mergedReset = liveSummary
+    mergedReset.mergeModeFields(from: cachedWithMode, cursorModeIdCleared: true)
+    XCTAssertEqual(mergedReset.cursorModeId, "plan")
   }
 
   func testAgentChatSessionDecodesCodexFastModeFlag() throws {

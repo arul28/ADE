@@ -7309,11 +7309,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             ...(meta.codexConfigSource !== undefined ? { codexConfigSource: meta.codexConfigSource } : {}),
             ...(meta.opencodePermissionMode !== undefined ? { opencodePermissionMode: meta.opencodePermissionMode } : {}),
             ...(meta.droidPermissionMode !== undefined ? { droidPermissionMode: meta.droidPermissionMode } : {}),
-            ...(meta.cursorModeId !== undefined || meta.cursorModeSnapshot !== undefined
+            ...("cursorModeId" in meta || meta.cursorModeSnapshot !== undefined
               ? {
-                  cursorModeId: meta.cursorModeId ?? meta.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
+                  // An explicit cursorModeId (present in the event) is
+                  // authoritative — including a `null` clear, which must reach
+                  // the composer rather than `??`-falling-back to a stale
+                  // mode/snapshot. Only when the key is absent do we derive the
+                  // current mode from a snapshot; a partial event carrying
+                  // neither leaves the mode unchanged.
+                  cursorModeId: "cursorModeId" in meta
+                    ? (meta.cursorModeId ?? null)
+                    : (meta.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId),
                   cursorAvailableModeIds: meta.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
                 }
+              : {}),
+            // An explicit cursorConfigValues in the event is authoritative (the
+            // host recomputes the snapshot only on mode changes, so config-only
+            // edits arrive here). Absent = no change; an explicit null clears.
+            ...(meta.cursorConfigValues !== undefined
+              ? { cursorConfigValues: meta.cursorConfigValues ?? {} }
               : {}),
           };
           modelStateRef.current = next;

@@ -5910,8 +5910,16 @@ export function AgentChatPane({
             || meta.cursorConfigValues !== undefined
           ) {
             const snapshot = meta.cursorModeSnapshot;
-            if (meta.cursorModeId !== undefined || snapshot !== undefined) {
-              setCursorModeId(meta.cursorModeId ?? snapshot?.currentModeId ?? initialNativeControls.cursorModeId);
+            if ("cursorModeId" in meta) {
+              // The event carries an explicit cursorModeId — including a `null`
+              // clear, which must reach the composer rather than `??`-falling
+              // back to a stale mode/snapshot. summaryPatch above already stored
+              // the same cleared value, so the two stay in agreement.
+              setCursorModeId(meta.cursorModeId ?? null);
+            } else if (snapshot !== undefined) {
+              // Key absent but a snapshot arrived: derive the current mode from
+              // it. A partial event with neither field leaves the mode unchanged.
+              setCursorModeId(snapshot.currentModeId ?? initialNativeControls.cursorModeId);
             }
             // An explicit cursorConfigValues in the event is authoritative (it
             // carries config-only changes the snapshot may not reflect, since

@@ -1189,7 +1189,12 @@ struct WorkSessionDestinationView: View {
           let cached = syncService.chatSummaryCache[sessionId],
           cached.sessionId == current.sessionId
     else { return }
-    current.mergeModeFields(from: cached)
+    current.mergeModeFields(
+      from: cached,
+      // A cache-side explicit `cursorModeId: null` clear must reach the live
+      // composer; the non-nil-only merge would otherwise leave the stale mode.
+      cursorModeIdCleared: syncService.cursorModeClearedSessionIds.contains(sessionId)
+    )
     if current != chatSummary {
       chatSummary = current
     }

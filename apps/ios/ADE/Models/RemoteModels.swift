@@ -917,7 +917,17 @@ extension AgentChatSessionSummary {
   /// Overlay the non-nil mode fields from another summary (used to fold a
   /// cache-side mode patch into an open view's live summary). Only non-nil
   /// source values win, so it never blanks a field the source didn't populate.
-  mutating func mergeModeFields(from other: AgentChatSessionSummary) {
+  ///
+  /// `cursorModeIdCleared` is the one deliberate exception: when the cache
+  /// recorded an explicit `cursorModeId: null` clear (a folded
+  /// `session_meta_updated`), pass `true` so the nil propagates to the live
+  /// summary — the non-nil-only copy below would otherwise leave the stale
+  /// mode in place. It defaults to `false`, so a plain summary→summary merge
+  /// still never nulls cursorModeId (or any field) off a source nil.
+  mutating func mergeModeFields(
+    from other: AgentChatSessionSummary,
+    cursorModeIdCleared: Bool = false
+  ) {
     if let v = other.permissionMode { permissionMode = v }
     if let v = other.interactionMode { interactionMode = v }
     if let v = other.claudePermissionMode { claudePermissionMode = v }
@@ -926,7 +936,11 @@ extension AgentChatSessionSummary {
     if let v = other.codexConfigSource { codexConfigSource = v }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
-    if let v = other.cursorModeId { cursorModeId = v }
+    if let v = other.cursorModeId {
+      cursorModeId = v
+    } else if cursorModeIdCleared {
+      cursorModeId = nil
+    }
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
     if let v = other.cursorConfigValues { cursorConfigValues = v }
   }
