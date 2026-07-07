@@ -84,6 +84,26 @@ assumes a capability exists for all runtimes breaks the ones that lack it.
 **Check:** When a lane touches subagent/worker logic, verify the capability is
 gated per-runtime, not assumed globally.
 
+## 6.5 Mobile host compatibility contract
+
+**Class:** A new mobile app can auto-update before the user's host brain does. If
+sync handshake or command routing becomes strict, the phone cannot connect long
+enough to show the update banner or ask the host to update itself.
+
+**Check:** When a lane touches `apps/desktop/src/shared/types/sync.ts`,
+`syncHostService`, `syncRemoteCommandService`, iOS `SyncService`, mobile-facing
+remote commands, or host update flows, verify:
+
+- `hello_ok` remains additive. Missing new feature flags must degrade to limited
+  capability mode, not reject the WebSocket connection.
+- `apps/desktop/src/shared/syncMobileCompatibility.ts` includes every host
+  command ADE Mobile requires, and the brain advertises missing required actions
+  through `features.mobileCompatibility`.
+- iOS gates unsupported actions locally before queueing/sending them and keeps
+  the connection alive for update guidance.
+- Tests cover legacy hosts that omit `mobileCompatibility` and hosts that report
+  missing required actions.
+
 ## 7. Node / test-env discipline
 
 **Check:** Desktop/renderer tests run under **Node 22** (`.nvmrc`); a newer

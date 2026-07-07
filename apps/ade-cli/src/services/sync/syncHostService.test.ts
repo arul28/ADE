@@ -12,6 +12,10 @@ import type {
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
 import {
+  MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
+  MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
+} from "../../../../desktop/src/shared/syncMobileCompatibility";
+import {
   CHAT_EVENT_REPLAY_MAX_BYTES,
   CHAT_EVENT_REPLAY_MAX_EVENTS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
@@ -222,6 +226,14 @@ describe("buildSyncHostHelloOkPayload", () => {
       mode: "allowlisted",
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
       actions: [remoteCommand, localPresenceCommand],
+    });
+    expect(payload.features.mobileCompatibility).toEqual({
+      contractVersion: MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
+      mode: "limited",
+      requiredActions: [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
+      missingActions: MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS.filter(
+        (action) => action !== remoteCommand.action && action !== localPresenceCommand.action,
+      ),
     });
     // No relay URL supplied → field omitted for backward-compatible payloads.
     expect("cloudRelayWssUrl" in payload).toBe(false);

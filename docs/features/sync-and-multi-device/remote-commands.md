@@ -114,6 +114,17 @@ Controllers read `SyncRemoteCommandDescriptor`s from the brain (via the
 `getSupportedActions` / `getDescriptors` surface) and gate UI
 accordingly — the brain's policy and scope are always authoritative.
 
+Mobile compatibility is a separate product contract layered on top of those
+descriptors. The required iOS action set lives in
+`apps/desktop/src/shared/syncMobileCompatibility.ts`; the brain evaluates the
+actual registry against that list and advertises
+`features.mobileCompatibility` in `hello_ok`. A missing action must produce
+`mode: "limited"` and a `missingActions` list, not a rejected connection. iOS
+then keeps the WebSocket alive, hides or blocks unsupported actions locally, and
+surfaces update guidance. When adding, renaming, or removing a remote command
+that ADE Mobile uses, update the shared compatibility list and iOS tests in the
+same change.
+
 ## Registry
 
 Commands are registered by calling `register(action, policy, handler,

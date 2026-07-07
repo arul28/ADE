@@ -1154,6 +1154,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade brain start
     $ ade brain stop
     $ ade brain restart
+    $ ade brain update --text
+    $ ade brain update status --text
     $ ade brain pin generate
     $ ade brain pin set 123456
     $ ade brain pin clear
@@ -1161,6 +1163,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Notes:
     "start" enables and loads the login service.
     "stop" disables and unloads the login service.
+    "update" downloads the standalone runtime for this channel, stages it under
+    ADE_HOME, then hands off to a detached helper that restarts the brain.
     Pairing PIN commands are aliases for the machine sync PIN.
 `,
   serve: `${ADE_BANNER}
@@ -13338,8 +13342,20 @@ async function runBrainCommand(
     };
   }
 
+  if (sub === "update") {
+    const { BrainUpdateUsageError, runBrainUpdateCommand } = await import("./commands/brainUpdate");
+    try {
+      return await runBrainUpdateCommand(args, { currentVersion: VERSION });
+    } catch (error) {
+      if (error instanceof BrainUpdateUsageError) {
+        throw new CliUsageError(error.message);
+      }
+      throw error;
+    }
+  }
+
   throw new CliUsageError(
-    "brain supports status, show, start, stop, restart, or pin.",
+    "brain supports status, show, start, stop, restart, update, or pin.",
   );
 }
 

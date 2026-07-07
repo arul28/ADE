@@ -8,6 +8,11 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import {
+  MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
+  MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
+  evaluateMobileSyncCompatibility,
+} from "../../../../desktop/src/shared/syncMobileCompatibility";
 import type {
   AgentChatEventEnvelope,
   AgentChatEventHistorySnapshot,
@@ -896,6 +901,11 @@ export function buildSyncHostHelloOkPayload(args: {
     ...args.remoteCommandDescriptors,
     ...args.localCommandDescriptors,
   ];
+  const supportedActions = [
+    ...args.remoteCommandSupportedActions,
+    ...args.localCommandDescriptors.map((entry) => entry.action),
+  ];
+  const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
   const payload: SyncHelloOkPayload = {
     peer: args.peer,
     brain: args.brain,
@@ -935,11 +945,14 @@ export function buildSyncHostHelloOkPayload(args: {
       },
       commandRouting: {
         mode: "allowlisted",
-        supportedActions: [
-          ...args.remoteCommandSupportedActions,
-          ...args.localCommandDescriptors.map((entry) => entry.action),
-        ],
+        supportedActions,
         actions,
+      },
+      mobileCompatibility: {
+        contractVersion: MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
+        mode: mobileCompatibility.mode,
+        requiredActions: [...MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS],
+        missingActions: mobileCompatibility.missingActions,
       },
     },
   };

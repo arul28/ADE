@@ -335,9 +335,15 @@ If `ci-pass` is red, **do not tag.** Fix the failing check on a new commit, land
 
    Leave `isDraft=true`. Do not publish.
 
-   Expect the draft to carry the macOS-only **per-arch** asset set once `publish-release`
-   runs (the Windows/runtime surface is currently disabled in `release-core.yml`):
+   Expect the draft to carry the macOS **per-arch** desktop assets plus the
+   standalone runtime assets once `publish-release` runs:
    - `ADE-<version>-arm64.dmg`, `ADE-<version>-arm64.zip`, `ADE-<version>-x64.dmg`, `ADE-<version>-x64.zip`, `latest-mac.yml`
+   - `install.sh`
+   - `SHA256SUMS`
+   - `ade-darwin-arm64`, `ade-darwin-arm64.native.tar.gz`
+   - `ade-darwin-x64`, `ade-darwin-x64.native.tar.gz`
+   - `ade-linux-arm64`, `ade-linux-arm64.native.tar.gz`
+   - `ade-linux-x64`, `ade-linux-x64.native.tar.gz`
 
 ---
 
@@ -540,14 +546,24 @@ Before printing the summary, verify the draft release carries every expected ass
 gh release view "v<VERSION>" --json assets --jq '.assets[].name' | sort
 ```
 
-The mac build runs a **per-arch matrix** (arm64 + x64), so the expected set is
-**5 assets** (releases are macOS-only; Windows publishing is commented out in
-`release-core.yml`):
+The mac build runs a **per-arch matrix** (arm64 + x64), and the runtime build
+publishes darwin/linux standalone brain artifacts, so the expected set is
+**15 assets**:
 - `ADE-<version>-arm64.dmg`
 - `ADE-<version>-arm64.zip`
 - `ADE-<version>-x64.dmg`
 - `ADE-<version>-x64.zip`
 - `latest-mac.yml`
+- `install.sh`
+- `SHA256SUMS`
+- `ade-darwin-arm64`
+- `ade-darwin-arm64.native.tar.gz`
+- `ade-darwin-x64`
+- `ade-darwin-x64.native.tar.gz`
+- `ade-linux-arm64`
+- `ade-linux-arm64.native.tar.gz`
+- `ade-linux-x64`
+- `ade-linux-x64.native.tar.gz`
 
 > This skill previously expected a single `-universal.*` set plus a `.blockmap`.
 > That changed when the build moved to the parallel-arch matrix (v1.2.5). There
@@ -565,8 +581,9 @@ grep -oE 'ADE-[^ ]+\.(zip|dmg)' /tmp/latest-mac.yml | sort -u | while read f; do
 done
 ```
 
-If a referenced file is missing, or the 5-asset set is incomplete → the mac build
-or upload broke; re-inspect the `build-mac-release` matrix jobs.
+If a referenced file is missing, or the 14-asset set is incomplete → the build
+or upload broke; re-inspect the `build-mac-release` matrix jobs and the runtime
+artifact download/publish step.
 
 Then print a single final block and stop:
 

@@ -47,8 +47,6 @@ Three ways to put `ade` on a machine:
 
 1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers.
 
-   > **Currently unavailable:** releases ship macOS desktop assets only — the runtime binaries and `install.sh` are built by `release-core.yml` but not published as release assets (the publish block is commented out there). The script below only works once that block is re-enabled. Headless machines reached over SSH don't need it: the desktop app uploads its bundled runtime binaries on first connect.
-
    ```bash
    curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
    ```
@@ -56,11 +54,11 @@ Three ways to put `ade` on a machine:
    Environment overrides accepted by `install.sh`:
 
    - `ADE_VERSION=vX.Y.Z` — install a specific release tag (default `latest`).
-   - `ADE_INSTALL_DIR=/usr/local/bin` — destination directory for the binary.
+   - `ADE_INSTALL_DIR=/custom/bin` — destination directory for the binary (default `$ADE_HOME/bin`).
    - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
    - `ADE_HOME=/custom/.ade` — change the per-machine state root.
 
-   The script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`, extracts `ade-<platform-arch>.native.tar.gz` to `~/.ade/runtime/<platform-arch>/`, runs `ade --version` to verify, and best-effort registers the per-user login service on macOS / systemd.
+   The script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`, verifies it and `ade-<platform-arch>.native.tar.gz` against `SHA256SUMS`, extracts the archive to `$ADE_HOME/runtime/<platform-arch>/`, runs `ade --version` to verify, and best-effort registers the per-user login service on macOS / systemd.
 
 2. **Desktop bundle** — every packaged ADE.app ships the CLI. macOS path:
 
@@ -104,6 +102,8 @@ Manage the service from the CLI:
 ade brain start                   # enable/load the login service
 ade brain stop                    # disable/unload the login service
 ade brain status --text           # endpoint state, service state, sync state
+ade brain update --text           # stage/apply the latest standalone brain release and restart the service
+ade brain update status --text    # last headless update state
 ade brain restart                 # re-exec after an app update
 
 # Compatibility wrappers (same backend):
@@ -118,7 +118,7 @@ ade brain pin set 123456
 ade brain pin clear
 ```
 
-The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. After a packaged app update, ADE refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
+The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade`, which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
 ## Internal process command
 
@@ -326,6 +326,8 @@ ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
+ade sync web --text                                # print + copy the web client pairing link + code (open app.ade-app.dev in a browser and enter the code)
+ade sync web --open                                # also launch the pairing link in the default browser (--no-clipboard to skip the copy)
 ade sync relay status --text                       # cloud relay: wss URL phones dial + on/off state (on by default)
 ade sync relay enable                              # re-enable after a disable (relay is on by default; headless brains have no Settings UI)
 ade sync relay disable                             # kill-switch: never route sync through the relay

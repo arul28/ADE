@@ -15,6 +15,7 @@ import {
   buildLocalRuntimeNodeEnv,
   buildLocalRuntimeNodePath,
   buildLocalRuntimeServeArgs,
+  compareRuntimeVersionStrings,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
   isLocalChannelBuildOutputPath,
@@ -171,6 +172,18 @@ async function shutdownRuntime(socketPath: string): Promise<void> {
 }
 
 describe("local runtime connection pool", () => {
+  it("compares ADE runtime versions without requiring exact tag formatting", () => {
+    expect(compareRuntimeVersionStrings("v1.2.14", "1.2.13")).toBe(1);
+    expect(compareRuntimeVersionStrings("1.2.12", "v1.2.13")).toBe(-1);
+    expect(compareRuntimeVersionStrings("1.2.13", "v1.2.13")).toBe(0);
+    expect(compareRuntimeVersionStrings("v1.2.14-beta.2", "1.2.14-beta.1")).toBe(1);
+    expect(compareRuntimeVersionStrings("1.2.14", "1.2.14-beta.2")).toBe(1);
+    expect(compareRuntimeVersionStrings("1.2.14-beta.2", "1.2.14")).toBe(-1);
+    expect(compareRuntimeVersionStrings("0.0.0", "1.2.13")).toBe(-1);
+    expect(compareRuntimeVersionStrings(null, "1.2.13")).toBeNull();
+    expect(compareRuntimeVersionStrings("next", "1.2.13")).toBeNull();
+  });
+
   it("starts fallback runtimes with sync enabled by default", () => {
     const args = buildLocalRuntimeServeArgs("/opt/ade/cli.cjs", "/tmp/ade.sock");
 
@@ -356,6 +369,9 @@ describe("local runtime connection pool", () => {
 
     expect(pool.getStatus()).toMatchObject({
       connectionState: "idle",
+      versionSkew: {
+        state: "none",
+      },
       serviceInstall: {
         state: "not_attempted",
         attempted: false,
@@ -1284,6 +1300,14 @@ describe("local runtime connection pool", () => {
       expect(() => process.kill(oldPid, 0)).not.toThrow();
       const connection = await (pool as unknown as { connection: Promise<{ socketPath: string }> }).connection;
       expect(connection.socketPath).not.toBe(socketPath);
+      expect(pool.getStatus()).toMatchObject({
+        runtimeMode: "isolated",
+        versionSkew: {
+          state: "runtime_older",
+          appVersion: "2.0.0",
+          runtimeVersion: "1.0.0",
+        },
+      });
       const isolatedClient = await RawRuntimeSocketClient.connect(connection.socketPath);
       try {
         const initialized = await isolatedClient.request("ade/initialize", {
@@ -1323,6 +1347,96 @@ describe("local runtime connection pool", () => {
       else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
       removeTempDir(projectRoot);
       removeTempDir(secondProjectRoot);
+      removeTempDir(adeHome);
+    }
+  }, 45_000);
+
+  it("does not repair over a newer local brain", async () => {
+    const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
+    const cliPath = path.join(adeCliRoot, "src", "cli.ts");
+    const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    expect(fs.existsSync(cliPath)).toBe(true);
+    expect(fs.existsSync(tsxLoaderPath)).toBe(true);
+
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-newer-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      NODE_OPTIONS: process.env.NODE_OPTIONS,
+    };
+    const daemonEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      ADE_CLI_VERSION: "2.0.0",
+      NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
+    };
+    const daemon = startServeProcess({
+      cliPath,
+      cwd: adeCliRoot,
+      env: daemonEnv,
+      socketPath,
+    });
+    const daemonPid = daemon.pid!;
+    expect(daemonPid).toBeGreaterThan(0);
+
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    let pool: LocalRuntimeConnectionPool | null = null;
+
+    try {
+      await waitForRuntimeSocket(socketPath);
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_HOME = adeHome;
+      process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
+      process.env.NODE_OPTIONS = daemonEnv.NODE_OPTIONS;
+
+      pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
+        disableSync: true,
+        preferServiceRepair: true,
+      });
+      const internals = pool as unknown as {
+        tryConnect: (socketPath: string) => Promise<{ socketPath: string } | null>;
+        tryRepairServiceConnection: (...args: unknown[]) => Promise<unknown>;
+      };
+      const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection");
+      const connection = await internals.tryConnect(socketPath);
+
+      expect(connection?.socketPath).toBeTruthy();
+      expect(connection?.socketPath).not.toBe(socketPath);
+      expect(tryRepair).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith("local_runtime.newer_brain_preserved", expect.objectContaining({
+        appVersion: "1.0.0",
+        runtimeVersion: "2.0.0",
+        runtimePid: daemonPid,
+      }));
+      expect(pool.getStatus()).toMatchObject({
+        runtimeMode: "isolated",
+        versionSkew: {
+          state: "runtime_newer",
+          appVersion: "1.0.0",
+          runtimeVersion: "2.0.0",
+        },
+      });
+      expect(() => process.kill(daemonPid, 0)).not.toThrow();
+    } finally {
+      pool?.dispose();
+      await shutdownRuntime(socketPath);
+      if (!daemon.killed) daemon.kill("SIGKILL");
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
       removeTempDir(adeHome);
     }
   }, 45_000);

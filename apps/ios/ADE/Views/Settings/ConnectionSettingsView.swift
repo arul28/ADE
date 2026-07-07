@@ -193,6 +193,8 @@ struct SettingsConnectionSnapshot: Equatable {
   var savedReconnectPrefersTailnet: Bool
   var errorMessage: String?
   var showTailscaleOffHint = false
+  var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
+  var hostCompatibilityMissingActions: [String] = []
   /// True when the live, connected route is the cloud relay (a full wss:// URL)
   /// rather than a direct LAN/Tailscale path. Drives the quiet "prefer
   /// Tailscale" nudge in the header.
@@ -282,6 +284,8 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         savedReconnectPrefersTailnet: savedReconnectHost?.tailscaleAddress != nil,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
         showTailscaleOffHint: syncService.tailscaleOffHintVisible,
+        hostCompatibilityMode: syncService.hostCompatibilityMode,
+        hostCompatibilityMissingActions: syncService.hostCompatibilityMissingActions,
         usingRelay: syncService.connectionState == .connected
           && (address.map(syncIsFullWebSocketRoute) ?? false)
       )

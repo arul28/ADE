@@ -460,33 +460,32 @@ jobs:
             release-assets/mac/latest-mac.yml
           rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
 
-      # Windows artifacts and the standalone runtime assets (ade-* binaries,
-      # native tarballs, install.sh) are intentionally NOT published right now.
-      # The release surface is macOS-only and kept minimal: the DMG for humans,
-      # plus the zip + blockmap + latest-mac.yml that electron-updater requires
-      # for auto-update (macOS auto-update installs from the zip, NOT the DMG —
-      # removing those three assets silently bricks updates for every install).
-      # The runtime binaries are still BUILT above because the macOS app bundles
-      # them as sidecars (local brain + remote-runtime bootstrap payloads).
-      # To publish them again, restore the blocks below.
-      #
+      # Windows artifacts are intentionally NOT published right now. The
+      # standalone runtime assets are published because headless brains and
+      # mobile-driven recovery updates depend on the same release payloads the
+      # desktop bundle uploads for remote runtime bootstrap.
       # - name: Download Windows release artifacts
       #   uses: actions/download-artifact@v4
       #   with:
       #     name: ade-win-release-${{ inputs.release_tag }}
       #     path: release-assets/win
-      #
-      # - name: Download ADE runtime binaries
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     pattern: ade-runtime-*
-      #     path: release-assets/runtime
-      #     merge-multiple: true
-      #
-      # - name: Add standalone runtime installer
-      #   run: |
-      #     cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
-      #     chmod 755 release-assets/runtime/install.sh
+
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: release-assets/runtime
+          merge-multiple: true
+
+      - name: Add standalone runtime installer
+        run: |
+          cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
+          chmod 755 release-assets/runtime/install.sh
+
+      - name: Generate standalone runtime checksums
+        run: |
+          set -euo pipefail
+          (cd release-assets/runtime && sha256sum install.sh ade-* | LC_ALL=C sort -k2 > SHA256SUMS)
 
       - name: Validate publish asset manifest
         run: |
@@ -519,25 +518,26 @@ jobs:
           require_glob 'release-assets/mac/*.zip' 'macOS zip'
           require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
 
-          # Windows + standalone runtime assets are not published right now.
-          # Restore these checks together with the publish blocks above.
+          # Windows artifacts are not published right now.
           # require_glob 'release-assets/win/*.exe' 'Windows installer'
           # require_glob 'release-assets/win/*.exe.blockmap' 'Windows blockmap'
           # require_file 'release-assets/win/latest.yml' 'Windows auto-update metadata'
-          # require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
-          # if [ ! -x 'release-assets/runtime/install.sh' ]; then
-          #   echo "::error::Standalone runtime installer is not executable."
-          #   exit 1
-          # fi
-          #
-          # for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-          #   require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
-          #   require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
-          #   tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" | grep -q '^\./node_modules/' || {
-          #     echo "::error::ADE native dependency archive for $target is missing node_modules."
-          #     exit 1
-          #   }
-          # done
+          require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
+          if [ ! -x 'release-assets/runtime/install.sh' ]; then
+            echo "::error::Standalone runtime installer is not executable."
+            exit 1
+          fi
+          require_file 'release-assets/runtime/SHA256SUMS' 'standalone runtime checksum manifest'
+          (cd release-assets/runtime && sha256sum -c SHA256SUMS)
+
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+            require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
+            require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
+            tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" | grep -q '^\./node_modules/' || {
+              echo "::error::ADE native dependency archive for $target is missing node_modules."
+              exit 1
+            }
+          done
 
       - name: Create or update draft GitHub release
         env:
@@ -559,8 +559,9 @@ jobs:
             # release-assets/win/*.exe
             # release-assets/win/*.exe.blockmap
             # release-assets/win/latest.yml
-            # release-assets/runtime/install.sh
-            # release-assets/runtime/ade-*
+            release-assets/runtime/install.sh
+            release-assets/runtime/SHA256SUMS
+            release-assets/runtime/ade-*
           )
 
           if [ "${#files[@]}" -eq 0 ]; then

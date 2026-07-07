@@ -428,11 +428,58 @@ function isCompatibleRuntimeVersion(args: {
   );
 }
 
+export function compareRuntimeVersionStrings(left: string | null, right: string | null): number | null {
+  if (!left?.trim() || !right?.trim()) return null;
+  const parse = (value: string): { core: number[]; prerelease: string[] } | null => {
+    const withoutBuild = value.trim().replace(/^v/i, "").split("+")[0] ?? "";
+    const match = /^(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?$/.exec(withoutBuild);
+    if (!match) return null;
+    return {
+      core: match[1].split(".").map((part) => Number.parseInt(part, 10)),
+      prerelease: match[2] ? match[2].split(".") : [],
+    };
+  };
+  const comparePrereleaseIdentifier = (a: string, b: string): number => {
+    const aNumeric = /^\d+$/.test(a);
+    const bNumeric = /^\d+$/.test(b);
+    if (aNumeric && bNumeric) return Number(a) - Number(b);
+    if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
+    return a.localeCompare(b);
+  };
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (!leftParts || !rightParts) return null;
+  const length = Math.max(leftParts.core.length, rightParts.core.length, 3);
+  for (let index = 0; index < length; index += 1) {
+    const a = leftParts.core[index] ?? 0;
+    const b = rightParts.core[index] ?? 0;
+    if (a > b) return 1;
+    if (a < b) return -1;
+  }
+  if (leftParts.prerelease.length === 0 && rightParts.prerelease.length > 0) return 1;
+  if (leftParts.prerelease.length > 0 && rightParts.prerelease.length === 0) return -1;
+  const prereleaseLength = Math.max(leftParts.prerelease.length, rightParts.prerelease.length);
+  for (let index = 0; index < prereleaseLength; index += 1) {
+    const a = leftParts.prerelease[index];
+    const b = rightParts.prerelease[index];
+    if (a == null && b == null) return 0;
+    if (a == null) return -1;
+    if (b == null) return 1;
+    const comparison = comparePrereleaseIdentifier(a, b);
+    if (comparison > 0) return 1;
+    if (comparison < 0) return -1;
+  }
+  return 0;
+}
+
+type LocalRuntimeVersionSkewState = LocalRuntimeStatus["versionSkew"]["state"];
+
 class LocalRuntimeCompatibilityError extends Error {
   readonly pid: number | null;
   readonly runtimeVersion: string | null;
   readonly runtimeBuildHash: string | null;
   readonly runtimeDefaultRole: string | null;
+  readonly skewState: LocalRuntimeVersionSkewState;
   constructor(
     message: string,
     runtimeInfo: {
@@ -441,6 +488,7 @@ class LocalRuntimeCompatibilityError extends Error {
       buildHash?: string | null;
       defaultRole?: string | null;
     } = {},
+    skewState: LocalRuntimeVersionSkewState = "unknown",
   ) {
     super(message);
     this.name = "LocalRuntimeCompatibilityError";
@@ -448,6 +496,7 @@ class LocalRuntimeCompatibilityError extends Error {
     this.runtimeVersion = runtimeInfo.version ?? null;
     this.runtimeBuildHash = runtimeInfo.buildHash ?? null;
     this.runtimeDefaultRole = runtimeInfo.defaultRole ?? null;
+    this.skewState = skewState;
   }
 }
 
@@ -636,6 +685,13 @@ export class LocalRuntimeConnectionPool {
     message: "Background service status has not been checked in this session.",
     checkedAt: null,
   };
+  private versionSkewStatus: LocalRuntimeStatus["versionSkew"] = {
+    state: "none",
+    appVersion: null,
+    runtimeVersion: null,
+    message: null,
+    updatedAt: null,
+  };
   private serviceHealthCheckedAtMs = 0;
   private serviceInstallPromise: Promise<void> | null = null;
 
@@ -658,6 +714,7 @@ export class LocalRuntimeConnectionPool {
           ? "connecting"
           : "idle",
       runtimeMode: this.isolatedModeActive ? "isolated" : "primary",
+      versionSkew: { ...this.versionSkewStatus },
       serviceInstall: { ...this.serviceInstallStatus },
       serviceHealth: { ...this.serviceHealthStatus },
     };
@@ -1235,6 +1292,26 @@ export class LocalRuntimeConnectionPool {
     return true;
   }
 
+  private noteCompatibilityError(error: LocalRuntimeCompatibilityError): void {
+    this.versionSkewStatus = {
+      state: error.skewState,
+      appVersion: this.appVersion,
+      runtimeVersion: error.runtimeVersion,
+      message: error.message,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
+  private clearVersionSkewStatus(): void {
+    this.versionSkewStatus = {
+      state: "none",
+      appVersion: this.appVersion,
+      runtimeVersion: null,
+      message: null,
+      updatedAt: new Date().toISOString(),
+    };
+  }
+
   private resetConnectionAfterActionTimeout(entry: LocalRuntimeConnection): void {
     this.clearConnectionIfCurrent(entry);
     this.preserveOwnedRuntimeChildOnNextConnect = entry.child != null && this.ownedRuntimeChild === entry.child;
@@ -1315,6 +1392,17 @@ export class LocalRuntimeConnectionPool {
       return { client, child, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
+        this.noteCompatibilityError(error);
+        if (error.skewState === "runtime_newer") {
+          this.logger.warn("local_runtime.newer_brain_preserved", {
+            socketPath,
+            appVersion: this.appVersion,
+            runtimeVersion: error.runtimeVersion,
+            runtimePid: error.pid,
+            message: error.message,
+          });
+          return await this.startIsolatedRuntime(socketPath, error);
+        }
         const repaired = await this.tryRepairServiceConnection(socketPath, "incompatible", error);
         if (repaired) return repaired;
         const releaseBuildBlock = this.releaseBuildOutputRuntimeBlock();
@@ -1431,7 +1519,7 @@ export class LocalRuntimeConnectionPool {
       reason: reason.message,
     });
     try {
-      const client = await this.connectClient(socketPath);
+      const client = await this.connectClient(socketPath, { preserveVersionSkew: true });
       this.ownedRuntimeChild = null;
       this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child: null, socketPath };
@@ -1448,7 +1536,7 @@ export class LocalRuntimeConnectionPool {
     const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
     try {
       await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath);
+      const client = await this.connectClient(socketPath, { preserveVersionSkew: true });
       this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child, socketPath };
     } catch (error) {
@@ -1503,6 +1591,14 @@ export class LocalRuntimeConnectionPool {
       return;
     }
     if (!(await this.probeCompatibleRuntime(primarySocketPath))) {
+      if (this.versionSkewStatus.state === "runtime_newer") {
+        this.logger.info("local_runtime.isolated_recovery_waiting_for_desktop_update", {
+          primarySocketPath,
+          appVersion: this.versionSkewStatus.appVersion,
+          runtimeVersion: this.versionSkewStatus.runtimeVersion,
+        });
+        return;
+      }
       // The probe alone can never succeed when the service (re)install failed:
       // nothing is going to bind a compatible brain to the primary socket. Keep
       // re-attempting the install (cooled down) so a transient launchctl
@@ -1521,6 +1617,7 @@ export class LocalRuntimeConnectionPool {
     if (!this.clearConnectionIfCurrent(entry)) return;
     this.clearIsolatedRecoveryTimer();
     this.markIsolatedMode(false);
+    this.clearVersionSkewStatus();
     closeRuntimeClient(entry.client);
     if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
@@ -1568,7 +1665,10 @@ export class LocalRuntimeConnectionPool {
     return localReleaseBuildOutputRuntimeBlock(resolveCliScriptPath());
   }
 
-  private async connectClient(socketPath: string): Promise<RuntimeRpcClient> {
+  private async connectClient(
+    socketPath: string,
+    options: { preserveVersionSkew?: boolean } = {},
+  ): Promise<RuntimeRpcClient> {
     const transport = await openSocketTransport(socketPath);
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
@@ -1595,9 +1695,15 @@ export class LocalRuntimeConnectionPool {
         runtimePid: runtimeInfo.pid,
       });
       closeRuntimeClient(client);
+      const comparison = compareRuntimeVersionStrings(runtimeInfo.version, this.appVersion);
       throw new LocalRuntimeCompatibilityError(
         `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
         runtimeInfo,
+        comparison == null
+          ? "unknown"
+          : comparison > 0
+            ? "runtime_newer"
+            : "runtime_older",
       );
     }
     if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
@@ -1611,6 +1717,7 @@ export class LocalRuntimeConnectionPool {
       throw new LocalRuntimeCompatibilityError(
         "ADE service build does not match the packaged desktop runtime.",
         runtimeInfo,
+        "build_mismatch",
       );
     }
     if (runtimeInfo.defaultRole !== "cto") {
@@ -1624,7 +1731,11 @@ export class LocalRuntimeConnectionPool {
       throw new LocalRuntimeCompatibilityError(
         `ADE service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
         runtimeInfo,
+        "role_mismatch",
       );
+    }
+    if (!options.preserveVersionSkew) {
+      this.clearVersionSkewStatus();
     }
     this.activeClient = client;
     this.activeRuntimePid = runtimeInfo.pid;

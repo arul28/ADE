@@ -3515,6 +3515,61 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServiceKeepsLegacyHelloConnectedInLimitedCompatibilityMode() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
+  }
+
+  @MainActor
+  func testSyncServiceReadsExplicitFullMobileCompatibilityFromHello() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.send",
+            "policy": [
+              "viewerAllowed": true,
+              "queueable": true,
+            ],
+          ]],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": ["chat.send"],
+          "missingActions": [],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertEqual(service.hostCompatibilityMissingActions, [])
+    XCTAssertTrue(service.supportsRemoteAction("chat.send"))
+  }
+
+  @MainActor
   func testSyncServiceRejectsMismatchedHelloBeforeApplyingProjectCatalog() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     service.seedRemoteProjectCatalogForTesting([
@@ -6281,6 +6336,27 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testFireAndForgetRemoteCommandDropsLocallyWhenHostDoesNotAdvertiseAction() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    }
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let delivery = await service.sendRemoteCommand(.approveSession, payload: [
+      "sessionId": "session-1",
+      "itemId": "approval-1",
+    ])
+
+    XCTAssertEqual(
+      delivery,
+      .dropped("This action is not available on this machine version. Update ADE on the machine and reconnect.")
+    )
+    XCTAssertEqual(service.pendingOperationCount, 0)
+  }
+
+  @MainActor
   func testIntentCommandRegistryQueuesCommandsUntilBridgeRegisters() async {
     ADEIntentCommandRegistry.resetForTesting()
     defer { ADEIntentCommandRegistry.resetForTesting() }
@@ -8822,6 +8898,9 @@ final class ADETests: XCTestCase {
         parentToolUseId: "call-old",
         description: "Old helper",
         background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
         status: .stopped,
         lastToolName: nil,
         latestSummary: "Finished earlier",
@@ -8836,6 +8915,9 @@ final class ADETests: XCTestCase {
         parentToolUseId: "call-new",
         description: "Throwaway ADE mobile subagent UI test",
         background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
         status: .running,
         lastToolName: nil,
         latestSummary: nil,
@@ -8852,6 +8934,9 @@ final class ADETests: XCTestCase {
         parentToolUseId: "call-new",
         description: "Local detail",
         background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
         status: .stopped,
         lastToolName: "Read",
         latestSummary: "Parent turn completed before ADE received a final subagent status",

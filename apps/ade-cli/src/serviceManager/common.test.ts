@@ -38,6 +38,8 @@ import {
 
 const originalArgv = [...process.argv];
 const originalNodePath = process.env.NODE_PATH;
+const originalAdeRuntimeRoot = process.env.ADE_RUNTIME_ROOT;
+const originalAdeRuntimeNodeModules = process.env.ADE_RUNTIME_NODE_MODULES;
 const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
 const originalAllowSelfMutation = process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION;
 const tempDirs: string[] = [];
@@ -46,6 +48,10 @@ afterEach(() => {
   process.argv.splice(0, process.argv.length, ...originalArgv);
   if (originalNodePath === undefined) delete process.env.NODE_PATH;
   else process.env.NODE_PATH = originalNodePath;
+  if (originalAdeRuntimeRoot === undefined) delete process.env.ADE_RUNTIME_ROOT;
+  else process.env.ADE_RUNTIME_ROOT = originalAdeRuntimeRoot;
+  if (originalAdeRuntimeNodeModules === undefined) delete process.env.ADE_RUNTIME_NODE_MODULES;
+  else process.env.ADE_RUNTIME_NODE_MODULES = originalAdeRuntimeNodeModules;
   if (originalAdeDefaultRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
   else process.env.ADE_DEFAULT_ROLE = originalAdeDefaultRole;
   if (originalAllowSelfMutation === undefined) {
@@ -133,12 +139,16 @@ describe("resolveAdeServeCommand", () => {
   it("preserves NODE_PATH for standalone runtime sidecar dependencies", () => {
     process.argv[1] = path.resolve("definitely-not-real-cli.cjs");
     process.env.NODE_PATH = "/opt/ade/runtime/node_modules";
+    process.env.ADE_RUNTIME_ROOT = "/opt/ade/runtime";
+    process.env.ADE_RUNTIME_NODE_MODULES = "/opt/ade/runtime/node_modules";
 
     expect(resolveAdeServeCommand()).toMatchObject({
       command: process.execPath,
       args: ["serve"],
       env: {
         NODE_PATH: "/opt/ade/runtime/node_modules",
+        ADE_RUNTIME_ROOT: "/opt/ade/runtime",
+        ADE_RUNTIME_NODE_MODULES: "/opt/ade/runtime/node_modules",
       },
     });
   });

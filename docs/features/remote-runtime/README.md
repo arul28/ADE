@@ -26,10 +26,14 @@ The wire transport is the same JSON-RPC the local machine runtime answers. The r
   open cannot overwrite the latest window binding.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local runtime connection used by desktop IPC, event streaming, sync
-  Settings, and local-work checks. Spawns `ade serve` if the machine endpoint is
-  not listening; tracks the per-user login service install/health state; applies
-  short per-call timeouts for project registration, file actions, and event
-  polling so renderer IPC calls do not wait for the desktop handler timeout.
+  Settings, and local-work checks. It preserves a newer already-running machine
+  brain instead of replacing it with an older desktop-bundled runtime, falls
+  back to an isolated no-sync runtime for the old desktop window, and reports
+  `versionSkew` so the renderer can require a desktop update. It also spawns
+  `ade serve` for non-primary sockets, tracks the per-user login service
+  install/health state, and applies short per-call timeouts for project
+  registration, file actions, and event polling so renderer IPC calls do not
+  wait for the desktop handler timeout.
 - `apps/desktop/src/renderer/components/remoteTargets/` — remote machine form
   (carries `routes` through saves), target list (Tailscale-preferred primary
   route, "+ N routes" fallback hint, Tailscale/Bonjour discovery diagnostics
@@ -132,7 +136,7 @@ npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../des
 
 ## Standalone runtime install
 
-For headless macOS / Linux machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. **Currently unavailable:** releases publish macOS desktop assets only — the runtime binaries and `install.sh` publish block in `release-core.yml` is commented out, so the command below 404s until it is re-enabled. SSH-reachable machines don't need it: the desktop bootstrap uploads bundled runtime artifacts on first connect.
+For headless macOS / Linux machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Release publishing includes `install.sh`, `SHA256SUMS`, the `ade-<platform-arch>` binaries, and the matching native dependency archives for darwin/linux arm64/x64. SSH-reachable machines can still skip the standalone installer because desktop bootstrap uploads bundled runtime artifacts on first connect.
 
 ```bash
 curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
@@ -141,20 +145,30 @@ curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | s
 `install.sh` (lives at `apps/ade-cli/scripts/install-runtime.sh`):
 
 - detects platform / arch with `uname -sm`,
-- downloads `ade-<platform-arch>` and `ade-<platform-arch>.native.tar.gz` from the release,
-- installs the binary to `$ADE_INSTALL_DIR` (default `/usr/local/bin` if writable, else `~/.local/bin`),
-- extracts the native modules to `~/.ade/runtime/<platform-arch>/`,
+- downloads `ade-<platform-arch>`, `ade-<platform-arch>.native.tar.gz`, and `SHA256SUMS` from the release,
+- verifies downloaded runtime assets against `SHA256SUMS`,
+- installs the binary to `$ADE_INSTALL_DIR` (default `$ADE_HOME/bin`),
+- extracts the native modules to `$ADE_HOME/runtime/<platform-arch>/`,
 - verifies with `ade --version`,
 - best-effort registers the per-user login service via `ade serve --install-service` on macOS and systemd Linux.
 
 Environment overrides:
 
 - `ADE_VERSION=vX.Y.Z` — pin a specific release; default `latest`.
-- `ADE_INSTALL_DIR=/usr/local/bin` — destination directory.
+- `ADE_INSTALL_DIR=/custom/bin` — destination directory.
 - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
 - `ADE_HOME=/path/to/.ade` — alternate per-machine state root.
 
 After install, the headless machine can already serve clients. Desktop ADE on a developer laptop adds it as a remote target; `ade code` works on the headless machine itself.
+
+Headless hosts update through the same binary, without requiring the desktop app:
+
+```bash
+ade brain update --text
+ade brain update status --text
+```
+
+The update command stages the next release under `$ADE_HOME/runtime/updates/`, verifies the staged binary with the staged native deps, promotes the binary/native deps into place, and restarts the per-user brain service. A connected mobile or desktop controller should expect the sync/RPC connection to drop briefly while the brain restarts.
 
 ## What works remotely
 

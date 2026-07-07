@@ -46,6 +46,46 @@ download() {
   fi
 }
 
+sha256_file() {
+  file="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{ print tolower($1) }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{ print tolower($1) }'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 -r "$file" | awk '{ print tolower($1) }'
+  else
+    die "missing sha256sum, shasum, or openssl"
+  fi
+}
+
+checksum_for_asset() {
+  asset="$1"
+  awk -v asset="$asset" '
+    $1 ~ /^[[:xdigit:]]{64}$/ {
+      name = $2
+      sub(/^\*/, "", name)
+      count = split(name, parts, "/")
+      if (parts[count] == asset) {
+        print tolower($1)
+        found = 1
+        exit
+      }
+    }
+    END { if (!found) exit 1 }
+  ' "$tmp_dir/SHA256SUMS"
+}
+
+verify_asset_checksum() {
+  asset="$1"
+  file="$2"
+  expected="$(checksum_for_asset "$asset")" || die "checksum file is missing $asset"
+  actual="$(sha256_file "$file")"
+  if [ "$actual" != "$expected" ]; then
+    die "checksum mismatch for $asset"
+  fi
+}
+
 try_install_service() {
   service_log="$tmp_dir/install-service.log"
   if "$dest_dir/ade" serve --install-service >"$service_log" 2>&1; then
@@ -77,17 +117,13 @@ choose_install_dir() {
     return
   fi
 
-  if [ -w /usr/local/bin ]; then
-    printf '%s\n' "/usr/local/bin"
-    return
-  fi
-
-  printf '%s\n' "$HOME/.local/bin"
+  printf '%s\n' "$ade_home/bin"
 }
 
 need uname
 need tar
 need chmod
+need awk
 target="$(detect_target)"
 binary_name="ade-$target"
 archive_name="$binary_name.native.tar.gz"
@@ -100,6 +136,9 @@ mkdir -p "$dest_dir" "$runtime_dir" "$ade_home/bin"
 
 download "$(asset_url "$binary_name")" "$tmp_dir/ade"
 download "$(asset_url "$archive_name")" "$tmp_dir/native.tar.gz"
+download "$(asset_url "SHA256SUMS")" "$tmp_dir/SHA256SUMS"
+verify_asset_checksum "$binary_name" "$tmp_dir/ade"
+verify_asset_checksum "$archive_name" "$tmp_dir/native.tar.gz"
 
 chmod 755 "$tmp_dir/ade"
 cp "$tmp_dir/ade" "$dest_dir/ade"
@@ -107,6 +146,8 @@ chmod 755 "$dest_dir/ade"
 
 rm -rf "$runtime_dir/node_modules"
 tar -xzf "$tmp_dir/native.tar.gz" -C "$runtime_dir"
+export ADE_RUNTIME_ROOT="$runtime_dir"
+export ADE_RUNTIME_NODE_MODULES="$runtime_dir/node_modules"
 export NODE_PATH="$runtime_dir/node_modules${NODE_PATH:+:$NODE_PATH}"
 
 "$dest_dir/ade" --version >/dev/null || die "installed ade binary failed to run"
