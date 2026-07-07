@@ -10028,9 +10028,10 @@ export function createAgentChatService(args: {
     const args = asRecord(input) ?? {};
     if (tool === "ScheduleWakeup") {
       const stop = args.stop === true;
+      const wakeupId = `wakeup:${managed.session.id}`;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
-        id: stop ? `wakeup:${managed.session.id}` : itemId,
+        id: wakeupId,
         kind: "wakeup",
         status: stop ? "stopped" : "scheduled",
         origin: "schedule_wakeup",
@@ -12931,6 +12932,20 @@ export function createAgentChatService(args: {
       sdkSessionId: runtime.sdkSessionId,
     });
 
+    const handoffToForegroundIfActive = (
+      nextMessage: Promise<IteratorResult<SDKMessage, void>>,
+      next: IteratorResult<SDKMessage, void>,
+    ): boolean => {
+      if (!((runtime.busy || runtime.activeTurnId) && runtime.activeTurnId !== state.turnId)) {
+        return false;
+      }
+      if (runtime.pendingPostResultNext === nextMessage) {
+        runtime.pendingPostResultNext = Promise.resolve(next);
+        runtime.pendingPostResultNextSettledAt = Date.now();
+      }
+      return true;
+    };
+
     runtime.idleReaderPromise = (async () => {
       try {
         while (
@@ -12981,7 +12996,7 @@ export function createAgentChatService(args: {
           ) {
             return;
           }
-          if ((runtime.busy || runtime.activeTurnId) && runtime.activeTurnId !== state.turnId) {
+          if (handoffToForegroundIfActive(nextMessage, next)) {
             return;
           }
           if (runtime.pendingPostResultNext === nextMessage) {
@@ -20510,6 +20525,7 @@ export function createAgentChatService(args: {
     runtime.pendingPostResultNext = null;
     runtime.pendingPostResultNextSettledAt = null;
     runtime.scheduledWorkKindById.clear();
+    runtime.scheduledWorkSignatures.clear();
     runtime.scheduledWorkIdByTaskId.clear();
     runtime.scheduledWorkIdByToolUseId.clear();
     runtime.warmupDone = null;

@@ -408,7 +408,7 @@ private func combineCompletionArtifacts(_ artifacts: [WorkCompletionArtifactMode
 
 private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> String? {
   var latest: String?
-  for envelope in transcript {
+  for envelope in sortedWorkChatEnvelopes(transcript) {
     guard !envelope.timestamp.isEmpty else { continue }
     if latest.map({ envelope.timestamp > $0 }) ?? true {
       latest = envelope.timestamp

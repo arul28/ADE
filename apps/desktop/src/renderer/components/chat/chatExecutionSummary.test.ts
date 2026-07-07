@@ -104,6 +104,30 @@ describe("deriveChatSubagentSnapshots", () => {
     ]);
   });
 
+  it("uses parentAgentId as a parent key when the SDK omits parentToolUseId", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "child-task-1",
+          agentId: "child-agent-1",
+          parentAgentId: "parent-agent-1",
+          description: "Inspect nested Claude task",
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "child-task-1",
+        agentId: "child-agent-1",
+        parentToolUseId: "parent-agent-1",
+      }),
+    ]);
+  });
+
   it("keeps Codex sibling subagents separate when they share a parent tool use id", () => {
     const events: AgentChatEventEnvelope[] = [
       {

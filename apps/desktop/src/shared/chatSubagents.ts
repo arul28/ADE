@@ -89,7 +89,8 @@ function eventSubagentIds(event: AgentChatEvent): string[] {
 }
 
 function eventParentToolUseId(event: AgentChatEvent): string | null {
-  return textField((event as { parentToolUseId?: unknown }).parentToolUseId);
+  return textField((event as { parentToolUseId?: unknown }).parentToolUseId)
+    ?? textField((event as { parentAgentId?: unknown }).parentAgentId);
 }
 
 export function workEventItemId(event: AgentChatEvent): string | null {
@@ -132,9 +133,7 @@ function buildResolvedSubagentIdsByParent(events: AgentChatEventEnvelope[]): Map
     const event = envelope.event as Record<string, unknown>;
     const type = typeof event.type === "string" ? event.type : "";
     if (!type.startsWith("subagent")) continue;
-    const parent = typeof event.parentToolUseId === "string" && event.parentToolUseId.trim()
-      ? event.parentToolUseId.trim()
-      : null;
+    const parent = textField(event.parentToolUseId) ?? textField(event.parentAgentId);
     if (!parent) continue;
     const taskId = typeof event.taskId === "string" && event.taskId.trim() ? event.taskId.trim() : null;
     const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
@@ -228,9 +227,7 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const agentId = typeof event.agentId === "string" && event.agentId.trim() ? event.agentId.trim() : null;
     const id = agentId ?? taskId;
     if (!id) continue;
-    const incomingParentToolUseId = typeof event.parentToolUseId === "string" && event.parentToolUseId.trim()
-      ? event.parentToolUseId.trim()
-      : null;
+    const incomingParentToolUseId = textField(event.parentToolUseId) ?? textField(event.parentAgentId);
     const parentPlaceholder = incomingParentToolUseId ? snapshots.get(incomingParentToolUseId) : undefined;
     const parentResolvedIds = incomingParentToolUseId ? resolvedIdsByParent.get(incomingParentToolUseId) : undefined;
     const parentIsPlaceholder = Boolean(

@@ -2808,6 +2808,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [rightChatsClosedExpanded, setRightChatsClosedExpanded] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const rightOpenRef = useRef(false);
+  rightOpenRef.current = rightOpen;
   const [activePane, setActivePane] = useState<PaneFocus>("chat");
   const [prompt, setPrompt] = useState("");
   const [promptCursor, setPromptCursor] = useState(0);
@@ -7402,11 +7404,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // Drawer navigation keeps lane details in the right pane.
         setRightPane((prev) => {
           if (prev.kind === "chat-info") {
+            if (!rightOpenRef.current) {
+              rightOpenRef.current = true;
+              setRightOpen(true);
+            }
             subagentAutoOpenedSessionsRef.current.add(envelope.sessionId);
             return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
           }
           if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
           setRightOpen(true);
+          rightOpenRef.current = true;
           subagentAutoOpenedSessionsRef.current.add(envelope.sessionId);
           return {
             kind: "chat-info",

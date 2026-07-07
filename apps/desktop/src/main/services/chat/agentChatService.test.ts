@@ -8945,6 +8945,7 @@ describe("createAgentChatService", () => {
         text: "Run CI and wake up when it finishes.",
       });
       expect(service.hasActiveWorkloads()).toBe(false);
+      const wakeupId = `wakeup:${session.id}`;
 
       startBackground();
       const wakeupEvent = await waitForEvent(
@@ -8954,7 +8955,7 @@ describe("createAgentChatService", () => {
         } =>
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
-          && event.event.id === "tool-wakeup-1",
+          && event.event.id === wakeupId,
       );
       expect(wakeupEvent.event).toMatchObject({
         kind: "wakeup",
@@ -8973,7 +8974,7 @@ describe("createAgentChatService", () => {
         } =>
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
-          && event.event.id === "tool-wakeup-1"
+          && event.event.id === wakeupId
           && event.event.status === "running",
       );
       expect(cronRunningEvent.event).toMatchObject({
@@ -8992,7 +8993,7 @@ describe("createAgentChatService", () => {
         } =>
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
-          && event.event.id === "tool-wakeup-1"
+          && event.event.id === wakeupId
           && event.event.status === "completed",
       );
       await waitForEvent(

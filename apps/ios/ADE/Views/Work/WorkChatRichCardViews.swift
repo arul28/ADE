@@ -2331,33 +2331,69 @@ struct WorkSubagentStrip: View {
   }
 }
 
-struct WorkSubagentActivePopup: View {
-  let count: Int
+struct WorkComposerBadgeCapsule<Content: View>: View {
+  let tint: Color
+  let spacing: CGFloat
+  let strokeOpacity: Double
+  let accessibilityLabel: String
   let onOpen: () -> Void
+  @ViewBuilder let content: () -> Content
+
+  init(
+    tint: Color,
+    spacing: CGFloat = 7,
+    strokeOpacity: Double = 0.22,
+    accessibilityLabel: String,
+    onOpen: @escaping () -> Void,
+    @ViewBuilder content: @escaping () -> Content
+  ) {
+    self.tint = tint
+    self.spacing = spacing
+    self.strokeOpacity = strokeOpacity
+    self.accessibilityLabel = accessibilityLabel
+    self.onOpen = onOpen
+    self.content = content
+  }
 
   var body: some View {
     Button(action: onOpen) {
-      HStack(spacing: 8) {
-        Image(systemName: "person.2.fill")
-          .font(.system(size: 12, weight: .semibold))
-        Text("\(count) active")
-          .font(.caption.weight(.semibold))
+      HStack(spacing: spacing) {
+        content()
         Image(systemName: "chevron.up")
           .font(.system(size: 10, weight: .bold))
       }
-      .foregroundStyle(ADEColor.accent)
+      .foregroundStyle(tint)
       .padding(.horizontal, 12)
       .padding(.vertical, 8)
       .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.22), lineWidth: 1)
+          .stroke(tint.opacity(strokeOpacity), lineWidth: 1)
       )
       .frame(minHeight: 44)
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(count) active subagent\(count == 1 ? "" : "s")")
+    .accessibilityLabel(accessibilityLabel)
+  }
+}
+
+struct WorkSubagentActivePopup: View {
+  let count: Int
+  let onOpen: () -> Void
+
+  var body: some View {
+    WorkComposerBadgeCapsule(
+      tint: ADEColor.accent,
+      spacing: 8,
+      accessibilityLabel: "\(count) active subagent\(count == 1 ? "" : "s")",
+      onOpen: onOpen
+    ) {
+      Image(systemName: "person.2.fill")
+        .font(.system(size: 12, weight: .semibold))
+      Text("\(count) active")
+        .font(.caption.weight(.semibold))
+    }
   }
 }
 
@@ -2366,34 +2402,22 @@ struct WorkChatInfoActivePopup: View {
   let onOpen: () -> Void
 
   var body: some View {
-    Button(action: onOpen) {
-      HStack(spacing: 7) {
-        Image(systemName: "info.circle.fill")
-          .font(.system(size: 12, weight: .semibold))
-        Text("Chat Info")
-          .font(.caption.weight(.semibold))
-          .lineLimit(1)
-        Text("\(count)")
-          .font(.caption2.weight(.bold))
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
-        Image(systemName: "chevron.up")
-          .font(.system(size: 10, weight: .bold))
-      }
-      .foregroundStyle(ADEColor.accent)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.22), lineWidth: 1)
-      )
-      .frame(minHeight: 44)
-      .contentShape(Capsule(style: .continuous))
+    WorkComposerBadgeCapsule(
+      tint: ADEColor.accent,
+      accessibilityLabel: "Chat Info, \(count) scheduled item\(count == 1 ? "" : "s")",
+      onOpen: onOpen
+    ) {
+      Image(systemName: "info.circle.fill")
+        .font(.system(size: 12, weight: .semibold))
+      Text("Chat Info")
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+      Text("\(count)")
+        .font(.caption2.weight(.bold))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Chat Info, \(count) scheduled item\(count == 1 ? "" : "s")")
   }
 }
 
@@ -2502,7 +2526,10 @@ private struct WorkScheduledWorkRow: View {
   }
 
   private var detail: String? {
-    workScheduledWorkText(item.error)
+    let statusError = status == "failed" || status == "missed"
+      ? workScheduledWorkText(item.error)
+      : nil
+    return statusError
       ?? workScheduledWorkText(item.summary)
       ?? workScheduledWorkText(item.reason)
       ?? workScheduledWorkText(item.prompt)
