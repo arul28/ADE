@@ -4910,6 +4910,7 @@ export function createLaneService({
       if (row.lane_type === "primary") {
         throw new Error("Primary lane cannot be archived");
       }
+      if (row.status === "archived") return;
 
       // Guard: prevent archiving if lane is a member of an active PR group
       const activeGroupMember = db.get<{ group_id: string }>(
@@ -4937,6 +4938,7 @@ export function createLaneService({
     unarchive({ laneId }: { laneId: string }): void {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
+      if (row.status !== "archived") return;
       db.run("update lanes set status = 'active', archived_at = null where id = ? and project_id = ?", [laneId, projectId]);
       invalidateLaneListCache();
       broadcastLifecycleEvent({

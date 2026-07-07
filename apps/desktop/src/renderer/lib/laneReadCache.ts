@@ -90,10 +90,8 @@ export function getKeybindingsCoalesced(
 }
 
 export function clearLaneReadInFlightForTest(): void {
-  laneListInFlight.clear();
-  laneSnapshotInFlight.clear();
   keybindingsInFlight.clear();
-  laneReadGeneration += 1;
+  invalidateLaneReadCache();
 }
 
 export function invalidateLaneReadCache(): void {

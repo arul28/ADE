@@ -36,6 +36,7 @@ import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
+import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -892,36 +893,14 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     });
   }, [active, refreshCore]);
 
-  useEffect(() => {
-    if (!active) return;
-    let refreshTimer: number | null = null;
-    let pendingHiddenRefresh = false;
-    const scheduleRefresh = () => {
-      if (document.visibilityState !== "visible") {
-        pendingHiddenRefresh = true;
-        return;
-      }
-      if (refreshTimer != null) return;
-      pendingHiddenRefresh = false;
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshCore();
-      }, PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS);
-    };
-    const refreshPendingIfVisible = () => {
-      if (!pendingHiddenRefresh) return;
-      scheduleRefresh();
-    };
-    const unsubscribe = window.ade.lanes.onLifecycleEvent(scheduleRefresh);
-    window.addEventListener("focus", refreshPendingIfVisible);
-    document.addEventListener("visibilitychange", refreshPendingIfVisible);
-    return () => {
-      unsubscribe();
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      window.removeEventListener("focus", refreshPendingIfVisible);
-      document.removeEventListener("visibilitychange", refreshPendingIfVisible);
-    };
-  }, [active, refreshCore]);
+  const refreshForLaneLifecycle = useCallback(() => {
+    void refreshCore();
+  }, [refreshCore]);
+  useDebouncedLaneLifecycleRefresh({
+    active,
+    debounceMs: PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS,
+    onRefresh: refreshForLaneLifecycle,
+  });
 
   useEffect(() => {
     if (!active || !error) return;

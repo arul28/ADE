@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { AppState } from "../state/appStore";
 import type { LaneLifecycleEvent } from "../../shared/types";
 import { invalidateLaneReadCache } from "../lib/laneReadCache";
@@ -30,6 +30,80 @@ function selectPendingLifecycleEvent(
   return next;
 }
 
+function selectLatestLifecycleEvent(
+  _current: LaneLifecycleEvent | null,
+  next: LaneLifecycleEvent,
+): LaneLifecycleEvent {
+  return next;
+}
+
+export function useDebouncedLaneLifecycleRefresh({
+  active,
+  debounceMs,
+  onEvent,
+  onRefresh,
+  selectPendingEvent = selectLatestLifecycleEvent,
+}: {
+  active: boolean;
+  debounceMs: number;
+  onEvent?: (event: LaneLifecycleEvent) => void;
+  onRefresh: (event: LaneLifecycleEvent) => void;
+  selectPendingEvent?: (
+    current: LaneLifecycleEvent | null,
+    next: LaneLifecycleEvent,
+  ) => LaneLifecycleEvent;
+}): void {
+  const refreshTimerRef = useRef<number | null>(null);
+  const pendingHiddenEventRef = useRef<LaneLifecycleEvent | null>(null);
+
+  useEffect(() => {
+    if (!active) {
+      pendingHiddenEventRef.current = null;
+      return;
+    }
+
+    const clearRefreshTimer = () => {
+      if (refreshTimerRef.current == null) return;
+      window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = null;
+    };
+    const scheduleRefresh = (event: LaneLifecycleEvent, notifyEvent: boolean) => {
+      if (notifyEvent) onEvent?.(event);
+      pendingHiddenEventRef.current = selectPendingEvent(
+        pendingHiddenEventRef.current,
+        event,
+      );
+      if (document.visibilityState !== "visible") return;
+      if (refreshTimerRef.current != null) return;
+      refreshTimerRef.current = window.setTimeout(() => {
+        refreshTimerRef.current = null;
+        const pendingEvent = pendingHiddenEventRef.current;
+        pendingHiddenEventRef.current = null;
+        onRefresh(pendingEvent ?? event);
+      }, debounceMs);
+    };
+    const refreshPendingIfVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const pendingEvent = pendingHiddenEventRef.current;
+      if (!pendingEvent) return;
+      scheduleRefresh(pendingEvent, false);
+    };
+
+    const unsubscribe = window.ade.lanes.onLifecycleEvent((event) => {
+      scheduleRefresh(event, true);
+    });
+    window.addEventListener("focus", refreshPendingIfVisible);
+    document.addEventListener("visibilitychange", refreshPendingIfVisible);
+
+    return () => {
+      unsubscribe();
+      clearRefreshTimer();
+      window.removeEventListener("focus", refreshPendingIfVisible);
+      document.removeEventListener("visibilitychange", refreshPendingIfVisible);
+    };
+  }, [active, debounceMs, onEvent, onRefresh, selectPendingEvent]);
+}
+
 export function useLaneListInvalidation({
   active,
   refreshLanes,
@@ -41,70 +115,64 @@ export function useLaneListInvalidation({
   freshnessKey?: unknown;
   staleMs?: number;
 }): void {
-  const lifecycleTimerRef = useRef<number | null>(null);
   const lifecycleFollowupTimerRef = useRef<number | null>(null);
   const focusTimerRef = useRef<number | null>(null);
   const lastRefreshAtRef = useRef(0);
-  const pendingHiddenLifecycleEventRef = useRef<LaneLifecycleEvent | null>(null);
 
   useEffect(() => {
     if (!active) {
       lastRefreshAtRef.current = 0;
-      pendingHiddenLifecycleEventRef.current = null;
       return;
     }
     lastRefreshAtRef.current = Date.now();
   }, [active, freshnessKey]);
 
-  useEffect(() => {
-    if (!active) return;
+  const clearLifecycleFollowupTimer = useCallback(() => {
+    if (lifecycleFollowupTimerRef.current == null) return;
+    window.clearTimeout(lifecycleFollowupTimerRef.current);
+    lifecycleFollowupTimerRef.current = null;
+  }, []);
 
-    const clearLifecycleTimer = () => {
-      if (lifecycleTimerRef.current == null) return;
-      window.clearTimeout(lifecycleTimerRef.current);
-      lifecycleTimerRef.current = null;
-    };
+  const runRefresh = useCallback((options: Parameters<RefreshLanes>[0]) => {
+    invalidateLaneReadCache();
+    lastRefreshAtRef.current = Date.now();
+    void refreshLanes(options).catch((error) => {
+      console.warn("[Lanes] Failed to refresh lane list after invalidation:", error);
+    });
+  }, [refreshLanes]);
+
+  const handleLifecycleEvent = useCallback(() => {
+    invalidateLaneReadCache();
+    clearLifecycleFollowupTimer();
+  }, [clearLifecycleFollowupTimer]);
+
+  const handleLifecycleRefresh = useCallback((event: LaneLifecycleEvent) => {
+    runRefresh(laneLifecycleRefreshOptions(event));
+    clearLifecycleFollowupTimer();
+    lifecycleFollowupTimerRef.current = window.setTimeout(() => {
+      lifecycleFollowupTimerRef.current = null;
+      runRefresh(laneLifecycleRefreshOptions(event));
+    }, LANE_LIST_LIFECYCLE_FOLLOWUP_REFRESH_DELAY_MS);
+  }, [clearLifecycleFollowupTimer, runRefresh]);
+
+  useDebouncedLaneLifecycleRefresh({
+    active,
+    debounceMs: LANE_LIST_LIFECYCLE_REFRESH_DEBOUNCE_MS,
+    onEvent: handleLifecycleEvent,
+    onRefresh: handleLifecycleRefresh,
+    selectPendingEvent: selectPendingLifecycleEvent,
+  });
+
+  useEffect(() => {
+    if (!active) {
+      clearLifecycleFollowupTimer();
+      return;
+    }
+
     const clearFocusTimer = () => {
       if (focusTimerRef.current == null) return;
       window.clearTimeout(focusTimerRef.current);
       focusTimerRef.current = null;
-    };
-    const clearLifecycleFollowupTimer = () => {
-      if (lifecycleFollowupTimerRef.current == null) return;
-      window.clearTimeout(lifecycleFollowupTimerRef.current);
-      lifecycleFollowupTimerRef.current = null;
-    };
-    const runRefresh = (options: Parameters<RefreshLanes>[0]) => {
-      invalidateLaneReadCache();
-      lastRefreshAtRef.current = Date.now();
-      void refreshLanes(options).catch((error) => {
-        console.warn("[Lanes] Failed to refresh lane list after invalidation:", error);
-      });
-    };
-    const scheduleLifecycleFollowupRefresh = (event: LaneLifecycleEvent) => {
-      clearLifecycleFollowupTimer();
-      lifecycleFollowupTimerRef.current = window.setTimeout(() => {
-        lifecycleFollowupTimerRef.current = null;
-        runRefresh(laneLifecycleRefreshOptions(event));
-      }, LANE_LIST_LIFECYCLE_FOLLOWUP_REFRESH_DELAY_MS);
-    };
-    const scheduleLifecycleRefresh = (event: LaneLifecycleEvent) => {
-      invalidateLaneReadCache();
-      clearLifecycleFollowupTimer();
-      pendingHiddenLifecycleEventRef.current = selectPendingLifecycleEvent(
-        pendingHiddenLifecycleEventRef.current,
-        event,
-      );
-      if (document.visibilityState !== "visible") return;
-      if (lifecycleTimerRef.current != null) return;
-      lifecycleTimerRef.current = window.setTimeout(() => {
-        lifecycleTimerRef.current = null;
-        const pendingEvent = pendingHiddenLifecycleEventRef.current;
-        pendingHiddenLifecycleEventRef.current = null;
-        const refreshEvent = pendingEvent ?? event;
-        runRefresh(laneLifecycleRefreshOptions(refreshEvent));
-        scheduleLifecycleFollowupRefresh(refreshEvent);
-      }, LANE_LIST_LIFECYCLE_REFRESH_DEBOUNCE_MS);
     };
     const scheduleStaleFocusRefresh = (delayMs: number) => {
       if (focusTimerRef.current != null) return;
@@ -121,27 +189,18 @@ export function useLaneListInvalidation({
     };
     const refreshIfVisibleAndStale = () => {
       if (document.visibilityState !== "visible") return;
-      const pendingLifecycle = pendingHiddenLifecycleEventRef.current;
-      if (pendingLifecycle) {
-        scheduleLifecycleRefresh(pendingLifecycle);
-        return;
-      }
       if (Date.now() - lastRefreshAtRef.current < staleMs) return;
       invalidateLaneReadCache();
       scheduleStaleFocusRefresh(LANE_LIST_FOCUS_REFRESH_DEBOUNCE_MS);
     };
 
-    const unsubscribe = window.ade.lanes.onLifecycleEvent(scheduleLifecycleRefresh);
     window.addEventListener("focus", refreshIfVisibleAndStale);
     document.addEventListener("visibilitychange", refreshIfVisibleAndStale);
 
     return () => {
-      unsubscribe();
-      clearLifecycleTimer();
-      clearLifecycleFollowupTimer();
       clearFocusTimer();
       window.removeEventListener("focus", refreshIfVisibleAndStale);
       document.removeEventListener("visibilitychange", refreshIfVisibleAndStale);
     };
-  }, [active, refreshLanes, staleMs]);
+  }, [active, clearLifecycleFollowupTimer, runRefresh, staleMs]);
 }
