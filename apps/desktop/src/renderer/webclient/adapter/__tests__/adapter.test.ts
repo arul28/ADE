@@ -106,6 +106,36 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("unwraps refreshed lane and PR envelopes to preserve renderer array contracts", async () => {
+    fake.descriptors = descriptors(["lanes.refreshSnapshots", "prs.refresh"]);
+    const laneSnapshot = { lane: { id: "lane-1" }, runtime: {}, rebaseSuggestion: null };
+    const pr = { id: "pr-1", title: "Ship web client" };
+    fake.commandResults.set("lanes.refreshSnapshots", {
+      refreshedCount: 1,
+      lanes: [{ id: "lane-1" }],
+      snapshots: [laneSnapshot],
+      signature: "sig",
+    });
+    fake.commandResults.set("prs.refresh", {
+      refreshedCount: 1,
+      prs: [pr],
+      snapshots: [{ prId: "pr-1" }],
+    });
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project);
+
+    await expect(adapter.ade.lanes.listSnapshots({ includeStatus: true })).resolves.toEqual([laneSnapshot]);
+    await expect(adapter.ade.prs.refresh({ prIds: ["pr-1"] })).resolves.toEqual([pr]);
+
+    expect(fake.commandCalls.map((call) => [call.action, call.args])).toEqual([
+      ["lanes.refreshSnapshots", { includeStatus: true }],
+      ["prs.refresh", { prIds: ["pr-1"] }],
+    ]);
+
+    adapter.dispose();
+  });
+
   it("returns the host's structured file results (not a blob-wrapped JSON string)", async () => {
     // Regression: the host answers file_request with a structured `result`
     // (workspaces array, tree array), and requestFile() resolves with it

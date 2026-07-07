@@ -1,4 +1,4 @@
-import type { LaneLifecycleEvent } from "../../../shared/types";
+import type { LaneLifecycleEvent, LaneListSnapshot } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
@@ -25,7 +25,10 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
 
   const lanes: Record<string, unknown> = {
     list: (args?: unknown) => call("lanes.list", args, []),
-    listSnapshots: (args?: unknown) => call("lanes.refreshSnapshots", args, []),
+    listSnapshots: async (args?: unknown) => {
+      const result = await call<unknown>("lanes.refreshSnapshots", args, []);
+      return arrayField<LaneListSnapshot>(result, "snapshots");
+    },
     create: async (args: unknown) => {
       const result = await call("lanes.create", args, null, false);
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
@@ -192,6 +195,13 @@ function asRecord(args: unknown): Record<string, unknown> {
 function stringField(record: Record<string, unknown>, key: string): string {
   const value = record[key];
   return typeof value === "string" ? value : "";
+}
+
+function arrayField<T>(result: unknown, key: string): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (!result || typeof result !== "object") return [];
+  const value = (result as Record<string, unknown>)[key];
+  return Array.isArray(value) ? (value as T[]) : [];
 }
 
 function lifecycleFromLane(type: LaneLifecycleEvent["type"], lane: object): LaneLifecycleEvent {

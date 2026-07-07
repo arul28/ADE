@@ -1,3 +1,4 @@
+import type { PrSummary } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
@@ -25,7 +26,10 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     getForLane: (laneId: string) => call("prs.getForLane", { laneId }, null),
     listAll: () => call("prs.list", {}, []),
     listOpenForRepo: () => call("prs.listOpenForRepo", {}, []),
-    refresh: (args?: unknown) => call("prs.refresh", args, [], false),
+    refresh: async (args?: unknown) => {
+      const result = await call<unknown>("prs.refresh", args, [], false);
+      return arrayField<PrSummary>(result, "prs");
+    },
     getStatus: (prId: string) => call("prs.getStatus", { prId }, null),
     getChecks: (prId: string) => call("prs.getChecks", { prId }, []),
     getComments: (prId: string) => call("prs.getComments", { prId }, []),
@@ -149,4 +153,11 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
 
 function asRecord(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+}
+
+function arrayField<T>(result: unknown, key: string): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (!result || typeof result !== "object") return [];
+  const value = (result as Record<string, unknown>)[key];
+  return Array.isArray(value) ? (value as T[]) : [];
 }
