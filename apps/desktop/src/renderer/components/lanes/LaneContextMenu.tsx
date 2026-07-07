@@ -188,11 +188,30 @@ export function LaneContextMenu({
             style={menuItemStyle}
             onClick={() => {
               onClose();
-              const url = buildDeeplink(
-                { kind: "lane", laneId: laneContextMenu.laneId },
-                { form: "ade" },
-              );
-              window.ade.app.writeClipboardText(url).catch(() => {});
+              void (async () => {
+                const repo = await fetchRepoForCopy();
+                const pr = await window.ade.prs.getForLane(ctxLane.id).catch(() => null);
+                const branch = branchNameFromRef(ctxLane.branchRef);
+                const url = buildDeeplink(
+                  {
+                    kind: "lane",
+                    laneId: laneContextMenu.laneId,
+                    ...(repo
+                      ? {
+                          envelope: {
+                            repoOwner: repo.owner,
+                            repoName: repo.name,
+                            ...(branch ? { branch } : {}),
+                            ...(pr?.githubPrNumber ? { prNumber: pr.githubPrNumber } : {}),
+                            ...(ctxLane.linearIssue?.identifier ? { linearIssue: ctxLane.linearIssue.identifier } : {}),
+                          },
+                        }
+                      : {}),
+                  },
+                  { form: "ade" },
+                );
+                await window.ade.app.writeClipboardText(url).catch(() => {});
+              })();
             }}
           >
             Copy ADE Lane Link

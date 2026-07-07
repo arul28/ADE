@@ -20,7 +20,7 @@ _    ____  _____
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
@@ -126,7 +126,7 @@ _    ____  _____
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
@@ -232,7 +232,7 @@ _    ____  _____
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
@@ -1158,7 +1158,7 @@ _    ____  _____
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)

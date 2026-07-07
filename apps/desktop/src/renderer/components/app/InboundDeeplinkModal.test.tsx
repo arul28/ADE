@@ -118,4 +118,28 @@ describe("InboundDeeplinkModal", () => {
     expect(createButton.disabled).toBe(true);
     expect(importBranch).not.toHaveBeenCalled();
   });
+
+  it("offers to open foreign commit links on GitHub when repo envelope is present", () => {
+    const openExternal = vi.fn(async () => undefined);
+    globalThis.window.ade = {
+      app: { openExternal },
+    } as any;
+
+    render(
+      <InboundDeeplinkModal
+        target={{
+          kind: "foreign",
+          entity: "commit",
+          envelope: { repoOwner: "acme", repoName: "ade" },
+          original: { kind: "commit", sha: "abc1234", envelope: { repoOwner: "acme", repoName: "ade" } },
+        }}
+        lanes={[]}
+        onClose={vi.fn()}
+        onLaneOpened={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /open commit on github/i }));
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/acme/ade/commit/abc1234");
+  });
 });

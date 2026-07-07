@@ -10,6 +10,7 @@ import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover"
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
+import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { canBulkDeleteSession, canBulkStopSession, formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
@@ -1128,11 +1129,32 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
         onCopySessionDeepLink={(session) => {
-          const href = buildDeeplink(
-            { kind: "session", sessionId: session.id, laneId: session.laneId },
-            { form: "ade" },
-          );
-          navigator.clipboard.writeText(href).catch(() => {});
+          void (async () => {
+            const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;
+            const remote = session.laneId
+              ? await window.ade.git.getOriginRemote({ laneId: session.laneId }).catch(() => null)
+              : null;
+            const repo = parseGithubRemoteUrl(remote?.remoteUrl ?? null);
+            const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") || remote?.branch || null;
+            const href = buildDeeplink(
+              {
+                kind: "session",
+                sessionId: session.id,
+                laneId: session.laneId || undefined,
+                ...(repo
+                  ? {
+                      envelope: {
+                        repoOwner: repo.owner,
+                        repoName: repo.repo,
+                        ...(branch ? { branch } : {}),
+                      },
+                    }
+                  : {}),
+              },
+              { form: "ade" },
+            );
+            await navigator.clipboard.writeText(href).catch(() => {});
+          })();
         }}
         onTogglePinned={(session) => work.togglePinnedSession(session.id)}
         pinnedSessionIds={work.pinnedSessionIds}

@@ -56,6 +56,10 @@ struct ADEApp: App {
         .onOpenURL { url in
           DeepLinkRouter.shared.handle(url)
         }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+          guard let url = activity.webpageURL else { return }
+          DeepLinkRouter.shared.handle(url)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .adeSendToMacRequested)) { note in
           // Parse the URL out of the payload posted by `DeepLinkRouter`. We
           // accept either a `URL` or a `String` so callers don't have to

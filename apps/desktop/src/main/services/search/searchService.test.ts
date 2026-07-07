@@ -49,12 +49,12 @@ describe("searchService", () => {
   let service: SearchService;
   let sessions: TerminalSessionSummary[];
 
-  const writeChatLine = (sessionId: string, event: Record<string, unknown>, timestamp: string) => {
+  const writeChatLine = (sessionId: string, event: Record<string, unknown>, timestamp: string, sequence?: number) => {
     const dir = path.join(root, "transcripts", "chat");
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(
       path.join(dir, `${sessionId}.jsonl`),
-      `${JSON.stringify({ sessionId, timestamp, event })}\n`
+      `${JSON.stringify({ sessionId, timestamp, event, ...(sequence != null ? { sequence } : {}) })}\n`
     );
   };
 
@@ -129,6 +129,67 @@ describe("searchService", () => {
     expect(hit!.snippet.toLowerCase()).toContain("flaky");
     expect(hit!.matchRanges.length).toBeGreaterThan(0);
     expect(hit!.deepLink).toContain("event=0");
+  });
+
+  it("uses persisted chat envelope sequence for deep link anchors", async () => {
+    const session = makeSession({ id: "chat-sequence", title: "Sequence links" });
+    sessions.push(session);
+    writeChatLine(
+      "chat-sequence",
+      { type: "user_message", text: "please inspect the anchored sequence" },
+      "2026-07-05T10:00:00.000Z",
+      41
+    );
+    service.notifyChatEvent("chat-sequence");
+    await service.processPendingNow();
+
+    const result = await service.query({ query: "anchored sequence" });
+    const hit = result.results.find((item) => item.kind === "chat" && item.sessionId === "chat-sequence");
+    expect(hit).toBeTruthy();
+    expect(hit!.id).toBe("chat:chat-sequence:0");
+    expect(hit!.deepLink).toContain("event=41");
+  });
+
+  it("adds repo envelope params to session deep links when repoSlug is available", async () => {
+    service.dispose();
+    service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      repoSlug: async () => ({ owner: "owner", name: "repo" }),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      lanes: {
+        list: async () => [
+          {
+            id: "lane-1",
+            name: "universal-search",
+            laneType: "workspace",
+            branchRef: "refs/heads/ade/universal-search"
+          } as never
+        ]
+      },
+      now: () => NOW
+    });
+    sessions.push(makeSession({ id: "chat-repo", title: "Repo chat" }));
+    writeChatLine("chat-repo", { type: "user_message", text: "portable envelope message" }, "2026-07-05T10:00:00.000Z");
+    service.notifyChatEvent("chat-repo");
+    await service.processPendingNow();
+
+    const hit = (await service.query({ query: "portable envelope" })).results.find((item) => item.kind === "chat");
+    expect(hit?.deepLink).toContain("repo=owner%2Frepo");
+    expect(hit?.deepLink).toContain("branch=ade%2Funiversal-search");
+
+    // Delegated lane results carry the same portable envelope.
+    const laneHit = (await service.query({ query: "universal-search kind:lane" })).results.find(
+      (item) => item.kind === "lane"
+    );
+    expect(laneHit).toBeTruthy();
+    expect(laneHit!.deepLink).toContain("ade://lane/lane-1");
+    expect(laneHit!.deepLink).toContain("repo=owner%2Frepo");
+    expect(laneHit!.deepLink).toContain("branch=ade%2Funiversal-search");
   });
 
   it("indexes only new lines on subsequent appends (incremental cursor)", async () => {
@@ -413,6 +474,79 @@ describe("searchService classification and lane-git dedup", () => {
     const result = await service.query({ query: "kind:branch feature" });
     const branchIds = result.results.map((item) => item.id);
     expect(branchIds).toEqual(["branch:lane-primary:ade/feature"]);
+    service.dispose();
+  });
+
+  it("emits canonical commit deep links", async () => {
+    const lanes = [
+      {
+        id: "lane-work",
+        name: "feature",
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "ade/feature",
+        worktreePath: "/tmp/b",
+        parentLaneId: null,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: null,
+        isEditProtected: false,
+        status: { dirty: false, ahead: 0, behind: 0 },
+        color: null,
+        icon: null,
+        tags: [],
+        createdAt: "2026-07-01T00:00:00.000Z"
+      }
+    ] as never[];
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      repoSlug: async () => ({ owner: "owner", name: "repo" }),
+      sessions: { list: async () => [] },
+      lanes: { list: async () => lanes as never },
+      git: {
+        listRecentCommits: async () => [
+          {
+            sha: "abc123456789",
+            shortSha: "abc1234",
+            subject: "Wire canonical commits",
+            authorName: "Ada",
+            authoredAt: "2026-07-05T00:00:00.000Z"
+          } as never
+        ],
+        listBranches: async () => []
+      },
+      now: () => NOW
+    });
+
+    service.notifyLaneActivity("lane-work");
+    await service.processPendingNow();
+    const commit = (await service.query({ query: "canonical commits kind:commit" })).results[0];
+    expect(commit?.deepLink).toMatch(/^ade:\/\/commit\//);
+    expect(commit?.deepLink).toContain("repo=owner%2Frepo");
+    service.dispose();
+  });
+
+  it("emits canonical artifact deep links", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      artifacts: {
+        list: () => [{
+          id: "artifact-123",
+          title: "Proof artifact",
+          description: "screenshot evidence",
+          createdAt: "2026-07-05T00:00:00.000Z"
+        }]
+      },
+      now: () => NOW
+    });
+
+    const artifact = (await service.query({ query: "screenshot kind:artifact" })).results[0];
+    expect(artifact?.deepLink).toMatch(/^ade:\/\/artifact\//);
     service.dispose();
   });
 });
@@ -776,6 +910,42 @@ describe("searchService review fixes (PR #709)", () => {
     expect((await service.query({ query: "kind:bogus findable" })).results).toEqual([]);
     expect((await service.query({ query: "since:whenever findable" })).results).toEqual([]);
     // Valid queries still work.
+    expect((await service.query({ query: "findable" })).results.length).toBeGreaterThan(0);
+    service.dispose();
+  });
+
+  it("returns nothing when a supplied kinds array is entirely invalid", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [makeSession({ id: "c2", title: "Something" })] },
+      now: () => NOW
+    });
+    const chatDir = path.join(root, "transcripts", "chat");
+    fs.mkdirSync(chatDir, { recursive: true });
+    fs.appendFileSync(
+      path.join(chatDir, "c2.jsonl"),
+      `${JSON.stringify({ sessionId: "c2", timestamp: "2026-07-05T10:00:00.000Z", event: { type: "user_message", text: "findable text" } })}\n`
+    );
+    service.notifyChatEvent("c2");
+    await service.processPendingNow();
+
+    // All-invalid kinds must not silently broaden to the default kind set.
+    const allInvalid = await service.query({
+      query: "findable",
+      kinds: ["termnal" as never]
+    });
+    expect(allInvalid.results).toEqual([]);
+    expect(allInvalid.totalByKind).toEqual({});
+    expect(allInvalid.nextCursor).toBeNull();
+    // A mixed array keeps the valid entries.
+    const mixed = await service.query({
+      query: "findable",
+      kinds: ["termnal" as never, "chat"]
+    });
+    expect(mixed.results.length).toBeGreaterThan(0);
+    // Omitted kinds still hits the default set.
     expect((await service.query({ query: "findable" })).results.length).toBeGreaterThan(0);
     service.dispose();
   });

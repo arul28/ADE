@@ -1,4 +1,22 @@
 {
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["VQ372F39G6.com.ade.ios"],
+        "components": [
+          {
+            "/": "/open*",
+            "comment": "ADE deeplink handoff"
+          },
+          {
+            "/": "/pair*",
+            "comment": "ADE mobile pairing"
+          }
+        ]
+      }
+    ]
+  },
   "appclips": {
     "apps": ["VQ372F39G6.com.ade.ios.Clip"]
   }

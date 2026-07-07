@@ -7,17 +7,31 @@ issue. Two forms carry identical semantics:
 
 ```
 ade://lane/<uuid>
-ade://session/<id>[?lane=<lane-uuid>]
+ade://session/<id>[?lane=<lane-uuid>&event=<seq>&offset=<bytes>]
+ade://file/<repo-relative-path>[?line=<n>&lane=<lane-uuid>]
+ade://commit/<sha>[?lane=<lane-uuid>]
+ade://artifact/<artifact-id>
 ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 ade://pr/<owner>/<repo>/<number>
 ade://linear-issue/<ADE-123>[?branch=<branch>]
 
 https://ade-app.dev/open?type=lane&id=<uuid>
-https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>]
+https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>&event=<seq>&offset=<bytes>]
+https://ade-app.dev/open?type=file&path=<repo-relative-path>[&line=<n>&lane=<lane-uuid>]
+https://ade-app.dev/open?type=commit&sha=<sha>[&lane=<lane-uuid>]
+https://ade-app.dev/open?type=artifact&id=<artifact-id>
 https://ade-app.dev/open?type=branch&repo=<owner>/<repo>&branch=<branch>[&pr=<n>]
 https://ade-app.dev/open?type=pr&repo=<owner>/<repo>&number=<n>
 https://ade-app.dev/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
 ```
+
+Machine-local targets (lane / session / commit / artifact) additionally carry a
+**portable envelope** as query params — `repo=<owner>/<repo>`,
+`branch=<ref>`, `pr=<n>`, `linear=<ADE-123>` — populated by builders with
+whatever they know at mint time and parsed leniently (a malformed component is
+dropped, never failing the link). A receiver that cannot resolve the primary id
+uses the envelope for real fallbacks; see "Portable envelopes and the
+resolution ladder" below.
 
 The HTTPS form lives on `apps/web` (Vercel) and acts as a marketing landing
 page plus an OS-level upgrade into the `ade://` form when an ADE client is
@@ -31,10 +45,15 @@ Shared contract:
 
 - `apps/desktop/src/shared/deeplinks.ts` — builder + parser shared across
   main, renderer, ADE CLI, and the web `/open` API route. Validates UUIDs,
-  GitHub owner/repo, Linear issue identifiers, and branch refs (rejects
-  traversal, control chars, trailing `.lock`). Exports `buildDeeplink`,
-  `parseDeeplink`, `looksLikeAdeDeeplink`, and `describeTarget` plus the
-  `DeeplinkTarget` union (`lane | session | branch | pr | linear-issue`).
+  GitHub owner/repo, Linear issue identifiers, branch refs (rejects
+  traversal, control chars, trailing `.lock`), repo-relative file paths,
+  commit shas, and session anchors. Exports `buildDeeplink`, `parseDeeplink`,
+  `looksLikeAdeDeeplink`, and `describeTarget` plus the `DeeplinkTarget`
+  union (`lane | session | file | commit | artifact | branch | pr |
+  linear-issue`) and the `DeeplinkEnvelope` shape.
+- `apps/desktop/src/shared/githubRemote.ts` — one GitHub remote-URL parser
+  (`git@` and https forms) shared by the main-process repo resolver and the
+  renderer's active-project repo check.
 - `apps/desktop/src/shared/adeDeeplinkFooter.ts` — renders the branded
   "Open in ADE" footer block (markdown + small HTML subset) appended to
   GitHub PR descriptions and reused as Linear attachment subtitle.
@@ -44,9 +63,28 @@ Shared contract:
   or updating PRs.
 - `apps/desktop/src/shared/types/core.ts` — `AppNavigationTarget` /
   `AppNavigationRequest` / `AppNavigationResult` carry the parsed deeplink
-  payload across IPC. Targets cover `lane`, `chat`/`work`, `pr` (with
-  optional repoOwner/repoName for not-yet-local PRs), `branch` (cross-machine
-  send-to-mac payload), `linear-issue`, and the generic `route` shape.
+  payload across IPC. Targets cover `lane`, `chat`/`work` (with `event` /
+  `offset` anchors and the envelope), `file`, `commit`, `artifact`, `pr`
+  (with optional repoOwner/repoName for not-yet-local PRs), `branch`
+  (cross-machine send-to-mac payload), `linear-issue`, and the generic
+  `route` shape; plus `ProjectFindForRepoArgs`/`Result` for the catalog
+  lookup.
+
+Desktop renderer — resolution ladder + anchors:
+
+- `apps/desktop/src/renderer/components/app/App.tsx` —
+  `AppNavigationBridge.dispatchTarget` owns the resolution ladder (local →
+  switch-project → foreign card) and the file-path → lane-worktree
+  resolution; `InboundDeeplinkModal.tsx` renders the branch / foreign /
+  switch-project cards.
+- `apps/desktop/src/main/services/projects/repoProjectResolver.ts` — backs
+  the `project.findForRepo` IPC: parses recent projects' git origin from
+  `.git/config` (no git subprocess), cached by config mtime.
+- `apps/desktop/src/renderer/components/terminals/pendingSessionAnchors.ts`
+  — one-shot per-session anchor queue between navigation (URL effect in
+  `useWorkSessions`, ⌘K palette) and the content surfaces
+  (`AgentChatMessageList` scroll-to-sequence + highlight, `TerminalView`
+  replay byte-fraction scroll).
 
 Desktop main process — protocol handler:
 
@@ -130,26 +168,35 @@ Apps/web — landing page + OG unfurl:
 - `apps/web/vercel.json` — adds `/open → /api/open` rewrite ahead of the
   catch-all SPA rewrite.
 
-iOS — inbound deeplinks, outbound link minting, and Send-to-Mac:
+iOS — inbound deeplinks, Universal Links, outbound link minting, and
+Send-to-Mac:
 
 - `apps/ios/ADE/Views/Lanes/LaneDeeplinkHelpers.swift` — outbound link
-  minting on the phone: builds `ade://lane/<id>` and percent-encoded
-  `ade://repo/<owner>/<repo>/branch/<branch>` strings for the lane
-  detail's "Copy ADE lane link" / "Copy branch link" menu actions
-  (branch links resolve owner/repo from a linked PR; with no GitHub
-  remote the lane link is copied instead, with a notice).
-- `apps/ios/ADE/App/DeepLinkRouter.swift` — parses inbound `ade://` URLs.
-  `ade://session/<id>` and `ade://pr/<n>` (and the longer
-  `ade://pr/<owner>/<repo>/<number>` form) flip the active tab via
-  `.adeDeepLinkRequested`. `ade://lane/<uuid>` and
-  `ade://repo/<owner>/<repo>/branch/<branch>` are local-only desktop
-  concepts and instead post `.adeSendToMacRequested` so the parent view
-  shows the "Send to your Mac" confirmation card.
+  minting on the phone: an envelope-aware builder mirroring the TS
+  `buildDeeplink` for the shapes iOS mints (lane / session / branch / PR).
+  Lane detail's "Copy ADE lane link" / "Copy branch link", the Work session
+  copy-link, and PR detail's "Copy ADE link" all mint https-form links with
+  envelope params (branch links resolve owner/repo from a linked PR; with no
+  GitHub remote the lane link is copied instead, with a notice).
+- `apps/ios/ADE/App/DeepLinkRouter.swift` — parses inbound `ade://` URLs and
+  the https `/open` mirror. Session links (both forms) and compact
+  `ade://pr/<n>` navigate locally via `.adeDeepLinkRequested`; session
+  `event`/`offset` anchors ride `WorkSessionNavigationRequest` (carried, not
+  yet scrolled to — no route-level scroll hook exists on iOS).
+  Lane / repo-branch / full-PR / linear-issue / file / commit / artifact
+  shapes validate then post `.adeSendToMacRequested`.
+- Universal Links: `apps/ios/ADE/ADE.entitlements` carries
+  `applinks:ade-app.dev`; `ADEApp.swift` routes
+  `NSUserActivityTypeBrowsingWeb` activities into the router; the AASA file is
+  served from `apps/web/public/.well-known/apple-app-site-association`
+  (appID `VQ372F39G6.com.ade.ios`, claiming only `/open*` and `/pair*`) with
+  an `application/json` header set in `apps/web/vercel.json`.
 - `apps/ios/ADE/Views/Deeplinks/SendToMacCard.swift` — SwiftUI sheet
-  bound to `.adeSendToMacRequested`. Parses the URL into a
-  `SendToMacTarget` (`lane`, `repoBranch`, `other`) for a human-readable
-  headline / detail and forwards the URL to a paired desktop through the
-  sync command surface.
+  bound to `.adeSendToMacRequested`. Parses the URL (including the portable
+  envelope) into a `SendToMacTarget` for a human-readable headline / detail,
+  forwards the URL to a paired desktop through the sync command surface, and
+  offers envelope fallbacks the phone can act on directly (open the PR on
+  GitHub, open the Linear issue).
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` — receives
   the iOS "Send to your Mac" payload as the `deeplinks.open` sync
   command and feeds the URL through `handleDeeplinkUrl` so the desktop
@@ -163,8 +210,11 @@ iOS — inbound deeplinks, outbound link minting, and Send-to-Mac:
 
 | Form | Target | Notes |
 |------|--------|-------|
-| `ade://lane/<uuid>` | `{ kind: "lane", laneId }` | UUID v4 required. |
-| `ade://session/<id>[?lane=<uuid>]` | `{ kind: "session", sessionId, laneId? }` | Local Work tab session link. Routes to `/work` with the selected session. |
+| `ade://lane/<uuid>` | `{ kind: "lane", laneId, envelope? }` | UUID v4 required. |
+| `ade://session/<id>[?lane=<uuid>&event=<seq>&offset=<bytes>]` | `{ kind: "session", sessionId, laneId?, event?, offset?, envelope? }` | Local Work tab session link. Routes to `/work` with the selected session. `event` anchors the chat list to the message with that persisted envelope sequence (ordinal fallback when the full transcript is loaded); `offset` best-effort-positions a replayed terminal scrollback by byte fraction. |
+| `ade://file/<repo-relative-path>[?line=<n>&lane=<uuid>]` | `{ kind: "file", path, line?, laneId? }` | Opens the Files editor at the path — inside the lane worktree when `lane` is present, else the project root — and reveals `line`. Traversal-safe: WHATWG URL normalization collapses `..` in the ade:// path form and the validator rejects traversal/absolute paths in the https `path=` param. |
+| `ade://commit/<sha>[?lane=<uuid>]` | `{ kind: "commit", sha, laneId?, envelope? }` | Opens the owning lane's detail (`commitSha` param). Foreign fallback: the envelope's repo yields a GitHub commit URL. 7–40 hex chars. |
+| `ade://artifact/<id>` | `{ kind: "artifact", artifactId, envelope? }` | Local-only proof artifact; opens the history surface. |
 | `ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]` | `{ kind: "branch", repoOwner, repoName, branch, prNumber? }` | Cross-machine. Renderer routes to the lane that already owns the branch; otherwise it opens a create/import modal. PR-backed links use PR preflight, branch-only links fetch the remote branch and import it as a local lane. If no ADE project is open, the modal asks the user to open the matching project first. |
 | `ade://pr/<owner>/<repo>/<number>` | `{ kind: "pr", repoOwner, repoName, prNumber }` | If the PR isn't yet local, the renderer jumps to the PRs tab pre-filtered or falls back to the create-lane-from-branch flow. |
 | `ade://linear-issue/<ADE-123>[?branch=<branch>]` | `{ kind: "linear-issue", issueIdentifier, branch? }` | Linear hand-off. Opens ADE's Linear pane focused to the issue. If no project is open or this project is not connected to Linear, ADE shows a setup modal with the next action. |
@@ -172,6 +222,44 @@ iOS — inbound deeplinks, outbound link minting, and Send-to-Mac:
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the
 TUI builders, and the web `/open` handler agree on what counts as
 malformed.
+
+## Portable envelopes and the resolution ladder
+
+Lane, session, commit, and artifact ids are machine-local, so those links
+carry a portable envelope (`repo` / `branch` / `pr` / `linear` query params)
+populated at mint time. On open, the desktop resolves in a strict ladder
+(`AppNavigationBridge.dispatchTarget` in `App.tsx`):
+
+1. **Local** — the id resolves in the active project → open it exactly,
+   anchors included.
+2. **Another known project** — the envelope repo matches a different project
+   in the machine catalog (`project.findForRepo` IPC →
+   `main/services/projects/repoProjectResolver.ts`, which parses each recent
+   project's git origin from `.git/config` without spawning git, cached by
+   config mtime) → a card offers "Switch project and open", then re-dispatches
+   the original target after the switch.
+3. **Foreign machine** — the id resolves nowhere → a fallback-only card
+   ("This chat/lane lives in `<owner>/<repo>` on another machine") offering
+   only the actions the envelope carries: create a lane from the branch
+   (the existing branch-import flow), open the PR or commit on GitHub, open
+   the Linear issue. There is deliberately no request-access or
+   shared-transcript path.
+
+All three cards are the one `InboundDeeplinkModal` (generalized to
+`branch | foreign | switch-project` targets). Envelope parsing is lenient —
+a malformed component is dropped so it can never break the primary target.
+
+### Session anchors
+
+Search results and shared links can point inside a session. The anchor rides
+the URL (`event` / `offset`), crosses IPC on the work/chat
+`AppNavigationTarget`, and is handed one-shot to the session's content surface
+via `renderer/components/terminals/pendingSessionAnchors.ts` (set by
+`useWorkSessions`' URL effect and the ⌘K palette; consumed by
+`AgentChatMessageList` — scroll + brief highlight — and `TerminalView` —
+byte-fraction scroll in replay mode). The search index emits chat anchors as
+the persisted `envelope.sequence` so a tail-paged transcript can resolve them
+without loading full history.
 
 ## End-to-end flow
 

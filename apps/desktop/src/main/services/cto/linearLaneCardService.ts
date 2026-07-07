@@ -60,17 +60,21 @@ function buildCardUrl(args: {
   branch: string;
   repoOwner?: string | null;
   repoName?: string | null;
+  prNumber?: number | null;
 }): string {
-  // Prefer the cross-machine ADE deeplink (so the attachment is actually
-  // clickable from Linear and lands in another teammate's ADE). Fall back to
+  // Prefer the machine-local lane link with a portable envelope. Fall back to
   // the historical Linear-issue-hash URL when we don't know the repo.
   if (args.repoOwner && args.repoName) {
     return buildDeeplink(
       {
-        kind: "branch",
-        repoOwner: args.repoOwner,
-        repoName: args.repoName,
-        branch: args.branch,
+        kind: "lane",
+        laneId: args.laneId,
+        envelope: {
+          repoOwner: args.repoOwner,
+          repoName: args.repoName,
+          branch: args.branch,
+          ...(args.prNumber ? { prNumber: args.prNumber } : {}),
+        },
       },
       { form: "https" },
     );
@@ -85,6 +89,7 @@ export function buildLinearLaneCardAttachment(args: {
   linkedAt?: string | null;
   repoOwner?: string | null;
   repoName?: string | null;
+  prNumber?: number | null;
 }): IssueTrackerIssueAttachmentInput {
   const linkedAt = args.linkedAt?.trim() || args.lane.createdAt || new Date().toISOString();
   const branch = args.issue.branchName?.trim() || args.lane.branchRef;
@@ -98,6 +103,7 @@ export function buildLinearLaneCardAttachment(args: {
     branch,
     repoOwner: args.repoOwner ?? null,
     repoName: args.repoName ?? null,
+    prNumber: args.prNumber ?? null,
   });
   const hasDeeplink = Boolean(args.repoOwner && args.repoName);
 
@@ -144,15 +150,20 @@ export function buildLinearLaneInitialComment(args: {
   issue: LaneLinearIssue;
   repoOwner?: string | null;
   repoName?: string | null;
+  prNumber?: number | null;
 }): string | null {
   if (!args.repoOwner || !args.repoName) return null;
   const branch = args.issue.branchName?.trim() || args.lane.branchRef;
   const url = buildDeeplink(
     {
-      kind: "branch",
-      repoOwner: args.repoOwner,
-      repoName: args.repoName,
-      branch,
+      kind: "lane",
+      laneId: args.lane.id,
+      envelope: {
+        repoOwner: args.repoOwner,
+        repoName: args.repoName,
+        branch,
+        ...(args.prNumber ? { prNumber: args.prNumber } : {}),
+      },
     },
     { form: "https" },
   );
@@ -208,6 +219,10 @@ export function buildLinearChatSessionAttachment(args: {
   sessionId: string;
   sessionTitle?: string | null;
   linkedAt?: string | null;
+  repoOwner?: string | null;
+  repoName?: string | null;
+  branch?: string | null;
+  prNumber?: number | null;
 }): IssueTrackerIssueAttachmentInput {
   const linkedAt = args.linkedAt?.trim() || new Date().toISOString();
   const url = buildDeeplink(
@@ -215,6 +230,16 @@ export function buildLinearChatSessionAttachment(args: {
       kind: "session",
       sessionId: args.sessionId,
       laneId: args.laneId,
+      ...(args.repoOwner && args.repoName
+        ? {
+            envelope: {
+              repoOwner: args.repoOwner,
+              repoName: args.repoName,
+              ...(args.branch ? { branch: args.branch } : {}),
+              ...(args.prNumber ? { prNumber: args.prNumber } : {}),
+            },
+          }
+        : {}),
     },
     { form: "ade" },
   );
@@ -328,6 +353,7 @@ export async function publishLinearLaneCard(args: {
   /** Optional: when known, used to render the cross-machine ADE deeplink. */
   repoOwner?: string | null;
   repoName?: string | null;
+  prNumber?: number | null;
   /** When true, also post a one-time comment so timeline-watchers see the link. */
   postInitialComment?: boolean;
   /** Optional log hook used for the (best-effort) comment-create step. */
@@ -341,6 +367,7 @@ export async function publishLinearLaneCard(args: {
       linkedAt: args.linkedAt,
       repoOwner: args.repoOwner ?? null,
       repoName: args.repoName ?? null,
+      prNumber: args.prNumber ?? null,
     }),
   );
 
@@ -350,6 +377,7 @@ export async function publishLinearLaneCard(args: {
       issue: args.issue,
       repoOwner: args.repoOwner ?? null,
       repoName: args.repoName ?? null,
+      prNumber: args.prNumber ?? null,
     });
     if (body) {
       try {
@@ -411,6 +439,10 @@ export async function publishLinearChatSessionCard(args: {
   sessionId: string;
   sessionTitle?: string | null;
   linkedAt?: string | null;
+  repoOwner?: string | null;
+  repoName?: string | null;
+  branch?: string | null;
+  prNumber?: number | null;
 }): Promise<{ url: string; id?: string }> {
   return await args.issueTracker.createIssueAttachment(
     buildLinearChatSessionAttachment({
@@ -419,12 +451,20 @@ export async function publishLinearChatSessionCard(args: {
       sessionId: args.sessionId,
       sessionTitle: args.sessionTitle,
       linkedAt: args.linkedAt,
+      repoOwner: args.repoOwner ?? null,
+      repoName: args.repoName ?? null,
+      branch: args.branch ?? null,
+      prNumber: args.prNumber ?? null,
     }),
   );
 }
 
 export function createLinearChatLinkPublisher(args: {
   getIssueTracker: () => IssueTracker | null | undefined;
+  resolveEnvelope?: (args: {
+    laneId: string;
+    issue: LinearIssueCardIssue;
+  }) => Promise<{ repoOwner: string; repoName: string; branch?: string | null; prNumber?: number | null } | null>;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }) {
   const publishKeys = new Set<string>();
@@ -446,14 +486,21 @@ export function createLinearChatLinkPublisher(args: {
     const key = `${issue.id}:${sessionId}`;
     if (publishKeys.has(key)) return;
     publishKeys.add(key);
-    void publishLinearChatSessionCard({
-      issueTracker,
-      issue,
-      laneId,
-      sessionId,
-      sessionTitle,
-      linkedAt,
-    }).catch((error) => {
+    void (async () => {
+      const envelope = await args.resolveEnvelope?.({ laneId, issue }).catch(() => null) ?? null;
+      await publishLinearChatSessionCard({
+        issueTracker,
+        issue,
+        laneId,
+        sessionId,
+        sessionTitle,
+        linkedAt,
+        repoOwner: envelope?.repoOwner ?? null,
+        repoName: envelope?.repoName ?? null,
+        branch: envelope?.branch ?? null,
+        prNumber: envelope?.prNumber ?? null,
+      });
+    })().catch((error) => {
       publishKeys.delete(key);
       args.log?.("linear.chat_session_card_publish_failed", {
         laneId,

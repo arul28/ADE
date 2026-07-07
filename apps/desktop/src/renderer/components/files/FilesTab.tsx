@@ -16,6 +16,7 @@ export function FilesTab(props: FilesTabProps) {
       {...props}
       externalOpenPath={params.get("externalPath")}
       externalOpenNonce={params.get("externalOpen")}
+      externalOpenLine={params.get("line")}
     />
   );
 }

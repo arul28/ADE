@@ -11,7 +11,11 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
-import { InboundDeeplinkModal } from "./InboundDeeplinkModal";
+import {
+  InboundDeeplinkModal,
+  type InboundDeeplinkDispatchOptions,
+  type InboundDeeplinkTarget,
+} from "./InboundDeeplinkModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { RunPage } from "../run/RunPage";
@@ -99,7 +103,18 @@ import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
-import type { AppNavigationRequest, OpenProjectBinding, ProjectInfo } from "../../../shared/types";
+import {
+  githubRepoSlugsEqual,
+  parseGithubRemoteUrl,
+  type GithubRepoSlug,
+} from "../../../shared/githubRemote";
+import { isValidRepoRelativePath } from "../../../shared/deeplinks";
+import type {
+  AppNavigationRequest,
+  AppNavigationTarget,
+  OpenProjectBinding,
+  ProjectInfo,
+} from "../../../shared/types";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
 // Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
@@ -907,81 +922,251 @@ function AppNavigationBridge() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
-  const [inboundBranch, setInboundBranch] = React.useState<{
-    repoOwner: string;
-    repoName: string;
-    branch: string;
-    prNumber?: number | null;
-  } | null>(null);
+  const [inboundTarget, setInboundTarget] = React.useState<InboundDeeplinkTarget | null>(null);
+  // Refs keep async dispatch paths reading FRESH state: the switch-project
+  // modal re-dispatches after `switchToPath`, and a callback captured before
+  // the switch would otherwise close over the previous project's lanes/root.
+  const lanesRef = React.useRef(lanes);
+  lanesRef.current = lanes;
+  const projectRootRef = React.useRef<string | null>(project?.rootPath ?? null);
+  projectRootRef.current = project?.rootPath ?? null;
+
+  const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
+    const lane = lanesRef.current[0];
+    if (!lane) return null;
+    try {
+      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id });
+      return parseGithubRemoteUrl(remote?.remoteUrl ?? null);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const resolvePortableFallback = React.useCallback(async (
+    entity: "chat" | "lane" | "commit",
+    original: AppNavigationTarget,
+    options: InboundDeeplinkDispatchOptions,
+  ): Promise<boolean> => {
+    if (options.forceLocal || options.suppressUnresolved) return false;
+    const envelope = original.kind === "work"
+      || original.kind === "chat"
+      || original.kind === "lane"
+      || original.kind === "commit"
+      || original.kind === "artifact"
+      ? original.envelope ?? null
+      : null;
+    if (!envelope?.repoOwner || !envelope.repoName) {
+      setInboundTarget({ kind: "foreign", entity, envelope, original });
+      return true;
+    }
+    const targetRepo: GithubRepoSlug = { owner: envelope.repoOwner, repo: envelope.repoName };
+    const activeRepo = await resolveActiveProjectRepo();
+    if (githubRepoSlugsEqual(activeRepo, targetRepo)) {
+      setInboundTarget({ kind: "foreign", entity, envelope, original });
+      return true;
+    }
+
+    const projectApi = window.ade?.project as typeof window.ade.project & {
+      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<{
+        rootPath: string;
+        displayName: string;
+      } | null>;
+    };
+    const match = await projectApi?.findForRepo?.({
+      repoOwner: envelope.repoOwner,
+      repoName: envelope.repoName,
+    }).catch(() => null);
+    if (match?.rootPath && match.rootPath !== projectRootRef.current) {
+      setInboundTarget({ kind: "switch-project", entity, project: match, original });
+      return true;
+    }
+    setInboundTarget({ kind: "foreign", entity, envelope, original });
+    return true;
+  }, [resolveActiveProjectRepo]);
+
+  const dispatchTarget = React.useCallback(async (
+    target: AppNavigationTarget,
+    options: InboundDeeplinkDispatchOptions = {},
+  ): Promise<boolean> => {
+    const laneById = (laneId: string | null | undefined) =>
+      laneId ? lanesRef.current.find((lane) => lane.id === laneId) ?? null : null;
+
+    if (target.kind === "chat" || target.kind === "work") {
+      if (target.sessionId && !options.forceLocal) {
+        const localSession = await window.ade?.sessions?.get?.(target.sessionId).catch(() => null);
+        if (!localSession) {
+          const handled = await resolvePortableFallback("chat", target, options);
+          if (handled) return true;
+        }
+      }
+      const params = new URLSearchParams();
+      if (target.sessionId) params.set("sessionId", target.sessionId);
+      if (target.laneId) params.set("laneId", target.laneId);
+      if (target.event != null) params.set("event", String(target.event));
+      if (target.offset != null) params.set("offset", String(target.offset));
+      navigate(`/work${params.toString() ? `?${params.toString()}` : ""}`);
+      return true;
+    }
+
+    if (target.kind === "file") {
+      // Defense in depth: targets normally arrive parser-validated, but the
+      // app/navigate RPC path bypasses URL parsing — never compose a path
+      // that could escape the resolved root.
+      if (!isValidRepoRelativePath(target.path)) return true;
+      let lane = laneById(target.laneId);
+      if (target.laneId && !lane) {
+        // An explicit lane must never silently degrade to the project root —
+        // the same relative path exists in every worktree. Lanes may still be
+        // loading (cold start, just-switched project): refresh and wait
+        // briefly before giving up.
+        void refreshLanes({ includeStatus: false }).catch(() => undefined);
+        for (let attempt = 0; attempt < 6 && !lane; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          lane = laneById(target.laneId);
+        }
+        if (!lane) {
+          if (options.suppressUnresolved) return false;
+          navigate("/files");
+          return true;
+        }
+      }
+      const root = lane?.worktreePath || projectRootRef.current || "";
+      const localPath = root
+        ? `${root.replace(/\/+$/, "")}/${target.path.replace(/^\/+/, "")}`
+        : target.path;
+      const params = new URLSearchParams();
+      params.set("externalPath", localPath);
+      params.set("externalOpen", String(Date.now()));
+      if (target.line != null) params.set("line", String(target.line));
+      navigate(`/files?${params.toString()}`);
+      return true;
+    }
+
+    if (target.kind === "commit") {
+      const lane = laneById(target.laneId);
+      if (lane) {
+        const params = new URLSearchParams();
+        params.set("laneId", lane.id);
+        params.set("focus", "single");
+        // LanesPage consumes commitSha and opens the Git detail for that commit.
+        params.set("commitSha", target.sha);
+        navigate(`/lanes?${params.toString()}`);
+        return true;
+      }
+      if (!options.forceLocal) {
+        const handled = await resolvePortableFallback("commit", target, options);
+        if (handled) return true;
+        // During switch-project retries the lane list may still be loading —
+        // report unhandled so the caller retries instead of dropping the sha.
+        if (options.suppressUnresolved) return false;
+      }
+      // Last resort: keep the lane hint + sha in the route so LanesPage can
+      // apply them once lanes load, instead of landing on a bare list.
+      const params = new URLSearchParams();
+      if (target.laneId) {
+        params.set("laneId", target.laneId);
+        params.set("focus", "single");
+        params.set("commitSha", target.sha);
+      }
+      navigate(params.toString() ? `/lanes?${params.toString()}` : "/lanes");
+      return true;
+    }
+
+    if (target.kind === "artifact") {
+      // History does not expose a stable focused-artifact URL yet; route to the
+      // local proof/history surface optimistically.
+      navigate("/history");
+      return true;
+    }
+
+    if (target.kind === "lane") {
+      const lane = laneById(target.laneId);
+      if (!lane && !options.forceLocal) {
+        const handled = await resolvePortableFallback("lane", target, options);
+        if (handled) return true;
+      }
+      const params = new URLSearchParams();
+      params.set("laneId", target.laneId);
+      if (target.sessionId) params.set("sessionId", target.sessionId);
+      navigate(`/lanes?${params.toString()}`);
+      return true;
+    }
+
+    if (target.kind === "pr") {
+      const params = new URLSearchParams();
+      if (target.prId) params.set("prId", target.prId);
+      if (target.prNumber != null) params.set("pr", String(target.prNumber));
+      if (target.laneId) params.set("laneId", target.laneId);
+      // Forward repo identity so the PRs tab can detect cross-project
+      // deeplinks (and offer to switch projects) instead of silently
+      // showing an empty filter.
+      if (target.repoOwner) params.set("repoOwner", target.repoOwner);
+      if (target.repoName) params.set("repoName", target.repoName);
+      navigate(`/prs${params.toString() ? `?${params.toString()}` : ""}`);
+      return true;
+    }
+
+    if (target.kind === "branch") {
+      setInboundTarget({
+        kind: "branch",
+        repoOwner: target.repoOwner,
+        repoName: target.repoName,
+        branch: target.branch,
+        prNumber: target.prNumber ?? null,
+      });
+      return true;
+    }
+
+    if (target.kind === "linear-issue") {
+      requestLinearIssueQuickView({
+        issueIdentifier: target.issueIdentifier,
+        branch: target.branch ?? null,
+        source: "deeplink",
+      });
+      return true;
+    }
+
+    if (target.kind === "files-external") {
+      const params = new URLSearchParams();
+      params.set("externalPath", target.path);
+      params.set("externalOpen", String(Date.now()));
+      navigate(`/files?${params.toString()}`);
+      return true;
+    }
+
+    if (target.kind === "route") {
+      navigate(target.route.startsWith("/") ? target.route : `/${target.route}`);
+      return true;
+    }
+
+    return false;
+  }, [navigate, refreshLanes, resolvePortableFallback]);
+
+  // The modal's post-switch retry loop must always call the LATEST dispatcher
+  // (fresh lanes/project), not the instance captured when the card rendered.
+  const dispatchTargetRef = React.useRef(dispatchTarget);
+  dispatchTargetRef.current = dispatchTarget;
+  const dispatchLatest = React.useCallback(
+    (target: AppNavigationTarget, options?: InboundDeeplinkDispatchOptions) =>
+      dispatchTargetRef.current(target, options),
+    [],
+  );
 
   React.useEffect(() => {
     const onNavigate = window.ade?.app?.onNavigate;
     if (!onNavigate) return;
     return onNavigate((request: AppNavigationRequest) => {
-      const target = request.target;
-      if (target.kind === "chat" || target.kind === "work") {
-        const params = new URLSearchParams();
-        if (target.sessionId) params.set("sessionId", target.sessionId);
-        if (target.laneId) params.set("laneId", target.laneId);
-        navigate(`/work${params.toString() ? `?${params.toString()}` : ""}`);
-        return;
-      }
-      if (target.kind === "lane") {
-        const params = new URLSearchParams();
-        params.set("laneId", target.laneId);
-        if (target.sessionId) params.set("sessionId", target.sessionId);
-        navigate(`/lanes?${params.toString()}`);
-        return;
-      }
-      if (target.kind === "pr") {
-        const params = new URLSearchParams();
-        if (target.prId) params.set("prId", target.prId);
-        if (target.prNumber != null) params.set("pr", String(target.prNumber));
-        if (target.laneId) params.set("laneId", target.laneId);
-        // Forward repo identity so the PRs tab can detect cross-project
-        // deeplinks (and offer to switch projects) instead of silently
-        // showing an empty filter.
-        if (target.repoOwner) params.set("repoOwner", target.repoOwner);
-        if (target.repoName) params.set("repoName", target.repoName);
-        navigate(`/prs${params.toString() ? `?${params.toString()}` : ""}`);
-        return;
-      }
-      if (target.kind === "branch") {
-        setInboundBranch({
-          repoOwner: target.repoOwner,
-          repoName: target.repoName,
-          branch: target.branch,
-          prNumber: target.prNumber ?? null,
-        });
-        return;
-      }
-      if (target.kind === "linear-issue") {
-        requestLinearIssueQuickView({
-          issueIdentifier: target.issueIdentifier,
-          branch: target.branch ?? null,
-          source: "deeplink",
-        });
-        return;
-      }
-      if (target.kind === "files-external") {
-        const params = new URLSearchParams();
-        params.set("externalPath", target.path);
-        params.set("externalOpen", String(Date.now()));
-        navigate(`/files?${params.toString()}`);
-        return;
-      }
-      if (target.kind === "route") {
-        navigate(target.route.startsWith("/") ? target.route : `/${target.route}`);
-      }
+      void dispatchLatest(request.target);
     });
-  }, [navigate]);
+  }, [dispatchLatest]);
 
-  if (!inboundBranch) return null;
+  if (!inboundTarget) return null;
   return (
     <InboundDeeplinkModal
-      target={inboundBranch}
+      target={inboundTarget}
       lanes={lanes}
-      onClose={() => setInboundBranch(null)}
+      onClose={() => setInboundTarget(null)}
+      onDispatchTarget={dispatchLatest}
       projectOpen={Boolean(project?.rootPath)}
       onLaneOpened={(laneId) => {
         const params = new URLSearchParams({ laneId });

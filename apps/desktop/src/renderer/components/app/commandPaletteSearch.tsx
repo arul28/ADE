@@ -26,6 +26,7 @@ import type {
   SearchMatchRange,
   SearchResultItem,
 } from "../../../shared/types/search";
+import { parseDeeplink } from "../../../shared/deeplinks";
 import { relativeTimeCompact } from "../../lib/format";
 import { cn } from "../ui/cn";
 
@@ -137,21 +138,22 @@ export function highlightRanges(
   return nodes;
 }
 
-// Recover the repo-relative file path from a `file` result's deepLink (falling
-// back to its doc id, which is `file:<path>` or `file:<path>:<line>`).
+// Recover the repo-relative file path (+ optional line anchor) from a `file`
+// result's deepLink (falling back to its doc id, which is `file:<path>` or
+// `file:<path>:<line>`).
 export function relativeFilePathForResult(
   item: SearchResultItem,
-): string | null {
-  try {
-    const parsed = new URL(item.deepLink);
-    const path = parsed.searchParams.get("path");
-    if (path) return path;
-  } catch {
-    // Non-URL deepLink; fall through to id parsing.
+): { path: string; line: number | null } | null {
+  const parsed = parseDeeplink(item.deepLink);
+  if (parsed.ok && parsed.target.kind === "file") {
+    return { path: parsed.target.path, line: parsed.target.line ?? null };
   }
   let rest = item.id.startsWith("file:") ? item.id.slice(5) : item.id;
+  const lineMatch = rest.match(/:(\d+)$/);
   rest = rest.replace(/:\d+$/, "");
-  return rest.length > 0 ? rest : null;
+  return rest.length > 0
+    ? { path: rest, line: lineMatch ? Number(lineMatch[1]) : null }
+    : null;
 }
 
 export type EntitySection = {

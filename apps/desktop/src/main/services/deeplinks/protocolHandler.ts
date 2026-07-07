@@ -209,12 +209,35 @@ export function handleDeeplinkUrl(
 export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigationTarget {
   switch (target.kind) {
     case "lane":
-      return { kind: "lane", laneId: target.laneId };
+      return { kind: "lane", laneId: target.laneId, envelope: target.envelope ?? null };
     case "session":
       return {
         kind: "work",
         sessionId: target.sessionId,
         laneId: target.laneId ?? null,
+        envelope: target.envelope ?? null,
+        event: target.event ?? null,
+        offset: target.offset ?? null,
+      };
+    case "file":
+      return {
+        kind: "file",
+        path: target.path,
+        line: target.line ?? null,
+        laneId: target.laneId ?? null,
+      };
+    case "commit":
+      return {
+        kind: "commit",
+        sha: target.sha,
+        laneId: target.laneId ?? null,
+        envelope: target.envelope ?? null,
+      };
+    case "artifact":
+      return {
+        kind: "artifact",
+        artifactId: target.artifactId,
+        envelope: target.envelope ?? null,
       };
     case "pr":
       return {

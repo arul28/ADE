@@ -33,6 +33,26 @@ describe("parseDeeplink — ade:// scheme", () => {
     expect(target).toEqual({ kind: "session", sessionId: "session-123", laneId: UUID });
   });
 
+  it("parses session anchors and envelope params", () => {
+    const target = expectOk(parseDeeplink(
+      `ade://session/session-123?lane=${UUID}&event=4&offset=12&repo=owner%2Frepo&branch=feat&pr=42&linear=ADE-123`,
+    ));
+    expect(target).toEqual({
+      kind: "session",
+      sessionId: "session-123",
+      laneId: UUID,
+      event: 4,
+      offset: 12,
+      envelope: {
+        repoOwner: "owner",
+        repoName: "repo",
+        branch: "feat",
+        prNumber: 42,
+        linearIssue: "ADE-123",
+      },
+    });
+  });
+
   it("rejects work session links with control characters", () => {
     const result = parseDeeplink("ade://session/session%0A123");
     expect(result.ok).toBe(false);
@@ -89,6 +109,66 @@ describe("parseDeeplink — ade:// scheme", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("parses file, commit, and artifact links", () => {
+    expect(expectOk(parseDeeplink(`ade://file/src/index.ts?line=10&lane=${UUID}`))).toEqual({
+      kind: "file",
+      path: "src/index.ts",
+      line: 10,
+      laneId: UUID,
+    });
+    expect(expectOk(parseDeeplink(`ade://commit/ABC1234?lane=${UUID}&repo=a%2Fb`))).toEqual({
+      kind: "commit",
+      sha: "abc1234",
+      laneId: UUID,
+      envelope: { repoOwner: "a", repoName: "b" },
+    });
+    expect(expectOk(parseDeeplink("ade://artifact/proof-123"))).toEqual({
+      kind: "artifact",
+      artifactId: "proof-123",
+    });
+  });
+
+  it("rejects malformed session anchors", () => {
+    expect(parseDeeplink("ade://session/session-123?event=abc").ok).toBe(false);
+    expect(parseDeeplink("ade://session/session-123?offset=-5").ok).toBe(false);
+  });
+
+  it("rejects file links with traversal, absolute paths, or bad lines", () => {
+    // Raw AND percent-encoded `..` segments are collapsed by WHATWG URL
+    // normalization before the parser sees them — the ade:// path form can
+    // never escape the root. (The validator still guards the https form.)
+    const normalized = expectOk(parseDeeplink("ade://file/src/../../etc/passwd"));
+    expect(normalized).toEqual({ kind: "file", path: "etc/passwd" });
+    const encoded = expectOk(parseDeeplink("ade://file/src/%2E%2E/secret"));
+    expect(encoded).toEqual({ kind: "file", path: "secret" });
+    expect(parseDeeplink("ade://file/src/app.ts?line=0").ok).toBe(false);
+    expect(parseDeeplink("ade://file/src/app.ts?line=abc").ok).toBe(false);
+    // The https form carries the path as a query param (no URL normalization).
+    expect(parseDeeplink("https://ade-app.dev/open?type=file&path=../etc/passwd").ok).toBe(false);
+    expect(parseDeeplink("https://ade-app.dev/open?type=file&path=/etc/passwd").ok).toBe(false);
+    expect(parseDeeplink("https://ade-app.dev/open?type=file&path=C:/windows").ok).toBe(false);
+  });
+
+  it("rejects malformed commit shas", () => {
+    expect(parseDeeplink("ade://commit/xyz").ok).toBe(false);
+    expect(parseDeeplink("ade://commit/abc12").ok).toBe(false);
+  });
+
+  it("drops malformed envelope components without failing the link", () => {
+    const target = expectOk(
+      parseDeeplink(`ade://lane/${UUID}?repo=notaslash&branch=..%2Fbad&pr=0&linear=nope!`),
+    );
+    expect(target).toEqual({ kind: "lane", laneId: UUID });
+    const partial = expectOk(
+      parseDeeplink(`ade://session/s-1?repo=anthropics/claude-code&pr=abc`),
+    );
+    expect(partial).toEqual({
+      kind: "session",
+      sessionId: "s-1",
+      envelope: { repoOwner: "anthropics", repoName: "claude-code" },
+    });
+  });
+
   it("rejects unknown ade:// hosts", () => {
     const result = parseDeeplink("ade://surprise/anything");
     expect(result.ok).toBe(false);
@@ -139,6 +219,25 @@ describe("parseDeeplink — https://ade-app.dev/open", () => {
     expect(target).toEqual({ kind: "pr", repoOwner: "a", repoName: "b", prNumber: 99 });
   });
 
+  it("parses file, commit, artifact mirror links", () => {
+    expect(expectOk(parseDeeplink(`https://ade-app.dev/open?type=file&path=src%2Findex.ts&line=2&lane=${UUID}`))).toEqual({
+      kind: "file",
+      path: "src/index.ts",
+      line: 2,
+      laneId: UUID,
+    });
+    expect(expectOk(parseDeeplink(`https://ade-app.dev/open?type=commit&sha=abc1234&lane=${UUID}&repo=a%2Fb`))).toEqual({
+      kind: "commit",
+      sha: "abc1234",
+      laneId: UUID,
+      envelope: { repoOwner: "a", repoName: "b" },
+    });
+    expect(expectOk(parseDeeplink("https://ade-app.dev/open?type=artifact&id=proof-123"))).toEqual({
+      kind: "artifact",
+      artifactId: "proof-123",
+    });
+  });
+
   it("parses legacy ade.app links for old PR bodies and Linear cards", () => {
     const target = expectOk(parseDeeplink("https://ade.app/open?type=pr&repo=a/b&number=99"));
     expect(target).toEqual({ kind: "pr", repoOwner: "a", repoName: "b", prNumber: 99 });
@@ -180,14 +279,38 @@ describe("buildDeeplink", () => {
   });
 
   it("round-trips session links", () => {
-    const target = { kind: "session", sessionId: "session-123", laneId: UUID } as const;
+    const target = {
+      kind: "session",
+      sessionId: "session-123",
+      laneId: UUID,
+      event: 7,
+      offset: 20,
+      envelope: { repoOwner: "a", repoName: "b", branch: "feat" },
+    } as const;
     const ade = buildDeeplink(target, { form: "ade" });
-    expect(ade).toBe(`ade://session/session-123?lane=${UUID}`);
     expect(expectOk(parseDeeplink(ade))).toEqual(target);
 
     const https = buildDeeplink(target);
-    expect(https).toBe(`https://ade-app.dev/open?type=session&id=session-123&lane=${UUID}`);
     expect(expectOk(parseDeeplink(https))).toEqual(target);
+  });
+
+  it("round-trips file, commit, and artifact links", () => {
+    const file = { kind: "file", path: "src/app.ts", line: 3, laneId: UUID } as const;
+    expect(expectOk(parseDeeplink(buildDeeplink(file, { form: "ade" })))).toEqual(file);
+    expect(expectOk(parseDeeplink(buildDeeplink(file)))).toEqual(file);
+
+    const commit = {
+      kind: "commit",
+      sha: "abc1234",
+      laneId: UUID,
+      envelope: { repoOwner: "a", repoName: "b", branch: "feat", prNumber: 7 },
+    } as const;
+    expect(expectOk(parseDeeplink(buildDeeplink(commit, { form: "ade" })))).toEqual(commit);
+    expect(expectOk(parseDeeplink(buildDeeplink(commit)))).toEqual(commit);
+
+    const artifact = { kind: "artifact", artifactId: "proof-123" } as const;
+    expect(expectOk(parseDeeplink(buildDeeplink(artifact, { form: "ade" })))).toEqual(artifact);
+    expect(expectOk(parseDeeplink(buildDeeplink(artifact)))).toEqual(artifact);
   });
 
   it("round-trips branch (ade) with slash branches", () => {

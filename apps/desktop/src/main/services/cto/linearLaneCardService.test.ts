@@ -133,7 +133,7 @@ describe("linearLaneCardService", () => {
     }));
   });
 
-  it("uses the cross-machine ADE deeplink when repo is known", () => {
+  it("uses a lane deeplink with a portable envelope when repo is known", () => {
     const attachment = buildLinearLaneCardAttachment({
       lane: makeLane(),
       issue: makeIssue(),
@@ -141,10 +141,13 @@ describe("linearLaneCardService", () => {
       linkedAt: "2026-05-12T20:05:00.000Z",
       repoOwner: "anthropics",
       repoName: "claude-code",
+      prNumber: 42,
     });
-    expect(attachment.url).toContain("https://ade-app.dev/open?type=branch");
+    expect(attachment.url).toContain("https://ade-app.dev/open?type=lane");
+    expect(attachment.url).toContain("id=lane-1");
     expect(attachment.url).toContain("repo=anthropics%2Fclaude-code");
     expect(attachment.url).toContain("branch=abc-42-fix-flaky-sync-run");
+    expect(attachment.url).toContain("pr=42");
     expect(attachment.title).toBe("Open in ADE: ABC-42 Fix flaky sync run");
   });
 
@@ -156,7 +159,8 @@ describe("linearLaneCardService", () => {
       repoName: "claude-code",
     });
     expect(body).toContain("Open in ADE");
-    expect(body).toContain("https://ade-app.dev/open?type=branch");
+    expect(body).toContain("https://ade-app.dev/open?type=lane");
+    expect(body).toContain("repo=anthropics%2Fclaude-code");
   });
 
   it("builds and publishes an ADE Linear-pane attachment", async () => {
@@ -217,6 +221,25 @@ describe("linearLaneCardService", () => {
       title: "Open ADE chat: ABC-42",
       url: "ade://session/session-1?lane=lane-1",
     }));
+  });
+
+  it("attaches repo, branch, and PR envelope to chat session links when provided", () => {
+    const attachment = buildLinearChatSessionAttachment({
+      issue: makeIssue(),
+      laneId: "lane-1",
+      sessionId: "session-1",
+      sessionTitle: "Investigate sync flakes",
+      repoOwner: "anthropics",
+      repoName: "claude-code",
+      branch: "abc-42-fix-flaky-sync-run",
+      prNumber: 42,
+    });
+
+    expect(attachment.url).toContain("ade://session/session-1?");
+    expect(attachment.url).toContain("repo=anthropics%2Fclaude-code");
+    expect(attachment.url).toContain("branch=abc-42-fix-flaky-sync-run");
+    expect(attachment.url).toContain("pr=42");
+    expect(attachment.url).not.toContain("linear=");
   });
 
   it("dedupes chat session card publishing per issue and session", async () => {

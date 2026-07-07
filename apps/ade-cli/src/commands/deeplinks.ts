@@ -15,7 +15,9 @@ import {
   ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
   isAdeDeeplinkHttpsHost,
+  isValidRepoRelativePath,
   parseDeeplink,
+  type DeeplinkEnvelope,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
 import { copyToClipboard } from "../lib/clipboard";
@@ -25,6 +27,17 @@ export class CliDeeplinkUsageError extends Error {}
 export type DeeplinkCliResult = {
   output: string;
   exitCode: number;
+};
+
+export type LinkEnvelopeContext = {
+  targetKind: "lane" | "session" | "commit";
+  laneId: string;
+};
+
+export type DeeplinkCommandOptions = {
+  resolveEnvelope?: (
+    context: LinkEnvelopeContext,
+  ) => DeeplinkEnvelope | null | Promise<DeeplinkEnvelope | null>;
 };
 
 const HELP_OPEN = [
@@ -44,6 +57,9 @@ const HELP_LINK = [
   "Usage:",
   "  ade link lane <lane-uuid>",
   "  ade link session <session-id> [--lane <lane-uuid>]",
+  "  ade link file <path> [--line <number>] [--lane <lane-uuid>]",
+  "  ade link commit <sha> [--lane <lane-uuid>]",
+  "  ade link artifact <id>",
   "  ade link branch <owner/repo> <branch> [--pr <number>]",
   "  ade link pr <owner/repo> <number>",
   "  ade link linear-issue <ADE-123> [--branch <branch>]",
@@ -51,6 +67,7 @@ const HELP_LINK = [
   "",
   "Options:",
   "  --ade           Emit the custom `ade://` form (default: https)",
+  "  --no-envelope   Skip best-effort repo/branch/PR envelope lookup",
   "  --no-clipboard  Print the URL but don't copy to clipboard",
 ].join("\n");
 
@@ -71,6 +88,28 @@ export function runDeeplinkCommand(rest: string[]): DeeplinkCliResult {
       return runOpenCommand(verbArgs);
     case "link":
       return runLinkCommand(verbArgs);
+    case "linear":
+      return runLinearCommand(verbArgs);
+    default:
+      throw new CliDeeplinkUsageError(
+        `Unknown deeplink subcommand: ${verb}. Try 'ade open <url>', 'ade link ...', or 'ade linear install'.`,
+      );
+  }
+}
+
+export async function runDeeplinkCommandAsync(
+  rest: string[],
+  options: DeeplinkCommandOptions = {},
+): Promise<DeeplinkCliResult> {
+  if (rest.length === 0) {
+    return { output: `${HELP_OPEN}\n${HELP_LINK}\n${HELP_LINEAR}\n`, exitCode: 0 };
+  }
+  const [verb, ...verbArgs] = rest;
+  switch (verb) {
+    case "open":
+      return runOpenCommand(verbArgs);
+    case "link":
+      return runLinkCommandAsync(verbArgs, options);
     case "linear":
       return runLinearCommand(verbArgs);
     default:
@@ -185,23 +224,63 @@ function looksLikeAdeOpenUrl(rawUrl: string): boolean {
 // ---------------------------------------------------------------------------
 
 export function runLinkCommand(args: string[]): DeeplinkCliResult {
+  const plan = buildLinkPlan(args);
+  if ("result" in plan) return plan.result;
+  return finishLink(buildDeeplink(plan.target, { form: plan.form }), plan.skipClipboard);
+}
+
+export async function runLinkCommandAsync(
+  args: string[],
+  options: DeeplinkCommandOptions = {},
+): Promise<DeeplinkCliResult> {
+  const plan = buildLinkPlan(args);
+  if ("result" in plan) return plan.result;
+  let target = plan.target;
+  if (!plan.noEnvelope && plan.envelopeContext && options.resolveEnvelope) {
+    const envelope = await Promise.resolve(options.resolveEnvelope(plan.envelopeContext)).catch(() => null);
+    if (envelope) {
+      if (target.kind === "lane") target = { ...target, envelope };
+      if (target.kind === "session") target = { ...target, envelope };
+      if (target.kind === "commit") target = { ...target, envelope };
+    }
+  }
+  return finishLink(buildDeeplink(target, { form: plan.form }), plan.skipClipboard);
+}
+
+type LinkPlan =
+  | { result: DeeplinkCliResult }
+  | {
+      target: DeeplinkTarget;
+      form: "ade" | "https";
+      skipClipboard: boolean;
+      noEnvelope: boolean;
+      envelopeContext?: LinkEnvelopeContext;
+    };
+
+function buildLinkPlan(args: string[]): LinkPlan {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
-    return { output: `${HELP_LINK}\n`, exitCode: 0 };
+    return { result: { output: `${HELP_LINK}\n`, exitCode: 0 } };
   }
   const flags = extractFlags(args, {
-    booleans: ["ade", "no-clipboard"],
-    valued: ["pr", "branch", "lane"],
+    booleans: ["ade", "no-envelope", "no-clipboard"],
+    valued: ["pr", "branch", "lane", "line"],
   });
   const positional = flags.positional;
   const form = flags.booleans.has("ade") ? "ade" : "https";
   const skipClipboard = flags.booleans.has("no-clipboard");
-  const emit = (target: DeeplinkTarget): DeeplinkCliResult =>
-    finishLink(buildDeeplink(target, { form }), skipClipboard);
+  const noEnvelope = flags.booleans.has("no-envelope");
+  const plan = (target: DeeplinkTarget, envelopeContext?: LinkEnvelopeContext): LinkPlan => ({
+    target,
+    form,
+    skipClipboard,
+    noEnvelope,
+    ...(envelopeContext ? { envelopeContext } : {}),
+  });
 
   // `ade link <url>` — accept a deeplink and re-emit it in the chosen form.
   if (positional.length === 1) {
     const parsed = parseDeeplink(positional[0]);
-    if (parsed.ok) return emit(parsed.target);
+    if (parsed.ok) return plan(parsed.target);
   }
 
   const verb = positional[0];
@@ -210,7 +289,7 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
     if (!laneId) {
       throw new CliDeeplinkUsageError("ade link lane <lane-uuid>");
     }
-    return emit({ kind: "lane", laneId });
+    return plan({ kind: "lane", laneId }, { targetKind: "lane", laneId });
   }
   if (verb === "session") {
     const sessionId = positional[1];
@@ -218,9 +297,49 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
       throw new CliDeeplinkUsageError("ade link session <session-id> [--lane <lane-uuid>]");
     }
     const laneId = flags.valued.get("lane");
-    return emit(laneId
-      ? { kind: "session", sessionId, laneId }
-      : { kind: "session", sessionId });
+    return plan(
+      laneId ? { kind: "session", sessionId, laneId } : { kind: "session", sessionId },
+      laneId ? { targetKind: "session", laneId } : undefined,
+    );
+  }
+  if (verb === "file") {
+    const filePath = positional[1];
+    if (!filePath) {
+      throw new CliDeeplinkUsageError("ade link file <path> [--line <number>] [--lane <lane-uuid>]");
+    }
+    // Validate BEFORE building: the ade:// path form URL-normalizes dot
+    // segments, so a post-build round-trip would silently accept ../secret
+    // as a link to a different in-repo path.
+    if (!isValidRepoRelativePath(filePath)) {
+      throw new CliDeeplinkUsageError("ade link file requires a repo-relative path (no leading /, no .. segments)");
+    }
+    const lineRaw = flags.valued.get("line");
+    const line = lineRaw != null ? parsePositiveInteger(lineRaw, "--line") : undefined;
+    const laneId = flags.valued.get("lane");
+    return plan({
+      kind: "file",
+      path: filePath,
+      ...(line != null ? { line } : {}),
+      ...(laneId ? { laneId } : {}),
+    });
+  }
+  if (verb === "commit") {
+    const sha = positional[1];
+    if (!sha) {
+      throw new CliDeeplinkUsageError("ade link commit <sha> [--lane <lane-uuid>]");
+    }
+    const laneId = flags.valued.get("lane");
+    return plan(
+      { kind: "commit", sha, ...(laneId ? { laneId } : {}) },
+      laneId ? { targetKind: "commit", laneId } : undefined,
+    );
+  }
+  if (verb === "artifact") {
+    const artifactId = positional[1];
+    if (!artifactId) {
+      throw new CliDeeplinkUsageError("ade link artifact <id>");
+    }
+    return plan({ kind: "artifact", artifactId });
   }
   if (verb === "branch") {
     const repo = positional[1];
@@ -233,7 +352,7 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
     const { repoOwner, repoName } = parseRepoSlug(repo);
     const prNumberRaw = flags.valued.get("pr");
     const prNumber = prNumberRaw != null ? parsePositiveInteger(prNumberRaw, "--pr") : undefined;
-    return emit(prNumber != null
+    return plan(prNumber != null
       ? { kind: "branch", repoOwner, repoName, branch, prNumber }
       : { kind: "branch", repoOwner, repoName, branch });
   }
@@ -245,7 +364,7 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
     }
     const { repoOwner, repoName } = parseRepoSlug(repo);
     const prNumber = parsePositiveInteger(numberRaw, "PR number");
-    return emit({ kind: "pr", repoOwner, repoName, prNumber });
+    return plan({ kind: "pr", repoOwner, repoName, prNumber });
   }
   if (verb === "linear-issue") {
     const issueIdentifier = positional[1];
@@ -253,7 +372,7 @@ export function runLinkCommand(args: string[]): DeeplinkCliResult {
       throw new CliDeeplinkUsageError("ade link linear-issue <ADE-123> [--branch <branch>]");
     }
     const branchHint = flags.valued.get("branch");
-    return emit(branchHint
+    return plan(branchHint
       ? { kind: "linear-issue", issueIdentifier, branch: branchHint }
       : { kind: "linear-issue", issueIdentifier });
   }
@@ -282,6 +401,13 @@ function parsePositiveInteger(value: string, label: string): number {
 }
 
 function finishLink(url: string, skipClipboard: boolean): DeeplinkCliResult {
+  // Round-trip gate: never print/copy a link the shared parser would reject
+  // (e.g. `ade link file ../secret` or a malformed commit sha).
+  const roundTrip = parseDeeplink(url);
+  if (!roundTrip.ok) {
+    const reason = "reason" in roundTrip.error ? roundTrip.error.reason : roundTrip.error.kind;
+    throw new CliDeeplinkUsageError(`refusing to mint an invalid link (${reason}): ${url}`);
+  }
   let clipboardNote = "";
   if (!skipClipboard) {
     if (copyToClipboard(url)) {

@@ -111,12 +111,14 @@ export function FilesWorkbench({
   active = true,
   externalOpenPath,
   externalOpenNonce,
+  externalOpenLine,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
   active?: boolean;
   externalOpenPath?: string | null;
   externalOpenNonce?: string | null;
+  externalOpenLine?: string | null;
 }) {
   const project = useAppStore((s) => s.project);
   const projectRootPath = project?.rootPath ?? "";
@@ -787,18 +789,21 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (!active || !externalOpenPath) return;
-    const key = `${externalOpenNonce ?? ""}:${externalOpenPath}`;
+    const key = `${externalOpenNonce ?? ""}:${externalOpenPath}:${externalOpenLine ?? ""}`;
     if (handledExternalOpenRef.current === key) return;
     handledExternalOpenRef.current = key;
     void openExternalPathRequest(externalOpenPath, key);
-  }, [active, externalOpenPath, externalOpenNonce, openExternalPathRequest]);
+  }, [active, externalOpenPath, externalOpenLine, externalOpenNonce, openExternalPathRequest]);
 
   useEffect(() => {
     if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
     const pending = pendingWorkspaceOpen;
     setPendingWorkspaceOpen(null);
     if (pending.pathType === "file" && pending.path) {
-      void openFile(pending.path, { preview: false });
+      const line = externalOpenLine && /^\d+$/.test(externalOpenLine)
+        ? Number(externalOpenLine)
+        : undefined;
+      void openFile(pending.path, { preview: false, line });
       return;
     }
     setSelectedNodePath(pending.path);
@@ -815,7 +820,7 @@ export function FilesWorkbench({
     } else {
       void refreshRoot({ preserveLoadedChildren: false });
     }
-  }, [active, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
+  }, [active, externalOpenLine, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(

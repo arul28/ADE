@@ -1037,6 +1037,71 @@ describe("adeRpcServer", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("rejects app/navigate file targets that are not repo-relative", async () => {
+    const { runtime } = createRuntime();
+    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    runtime.appNavigationService = { navigate };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    // Traversal, absolute paths, and drive letters must never reach the
+    // renderer's path composition — the RPC path bypasses parseDeeplink.
+    for (const path of ["../../.ssh/config", "/etc/passwd", "C:/windows/system32", "src/../../secret"]) {
+      await expect(handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "app/navigate",
+        params: { source: "ade-code", target: { kind: "file", path } },
+      })).rejects.toMatchObject({
+        code: JsonRpcErrorCode.invalidParams,
+        message: "app/navigate target 'file' requires a repo-relative path.",
+      });
+    }
+    expect(navigate).not.toHaveBeenCalled();
+
+    // A valid repo-relative path still routes through.
+    const ok = await handler({
+      jsonrpc: "2.0",
+      id: 4,
+      method: "app/navigate",
+      params: { source: "ade-code", target: { kind: "file", path: "src/app.ts", line: 3 } },
+    });
+    expect(ok).toBeTruthy();
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith({
+      source: "ade-code",
+      target: { kind: "file", path: "src/app.ts", line: 3 },
+    });
+  });
+
+  it("rejects app/navigate commit targets with malformed shas", async () => {
+    const { runtime } = createRuntime();
+    const navigate = vi.fn(async () => ({ ok: true, mode: "desktop", windowId: 7 }));
+    runtime.appNavigationService = { navigate };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 5,
+      method: "app/navigate",
+      params: { source: "ade-code", target: { kind: "commit", sha: "not-a-sha" } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
+    expect(navigate).not.toHaveBeenCalled();
+
+    const ok = await handler({
+      jsonrpc: "2.0",
+      id: 6,
+      method: "app/navigate",
+      params: { source: "ade-code", target: { kind: "commit", sha: "ABC1234" } },
+    });
+    expect(ok).toBeTruthy();
+    expect(navigate).toHaveBeenCalledWith({
+      source: "ade-code",
+      target: { kind: "commit", sha: "abc1234" },
+    });
+  });
+
   it("treats requested privileged roles as external without trusted env identity", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });

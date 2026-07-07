@@ -50,6 +50,7 @@ export type ProjectSearchServiceArgs = {
     listRecentCommits: (args: { laneId: string; limit?: number }) => Promise<GitCommitSummary[]>;
     listBranches: (args: { laneId: string }) => Promise<GitBranchSummary[]>;
   } | null;
+  repoSlug?: () => Promise<{ owner: string; name: string } | null>;
   fileService?: {
     quickOpen: (args: FilesQuickOpenArgs) => Promise<FilesQuickOpenItem[]>;
     searchText: (args: FilesSearchTextArgs) => Promise<FilesSearchTextMatch[]>;
@@ -93,6 +94,7 @@ export function createProjectSearchService(args: ProjectSearchServiceArgs): Sear
     transcriptsDir: args.transcriptsDir,
     chatTranscriptsDir: args.chatTranscriptsDir,
     logger: args.logger,
+    repoSlug: args.repoSlug,
     sessions: {
       list: async () => sessionService.list({ limit: null }),
       get: async (sessionId) => sessionService.get(sessionId)

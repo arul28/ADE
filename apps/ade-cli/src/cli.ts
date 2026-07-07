@@ -15,13 +15,14 @@ import {
 } from "./cursorCloud";
 import {
   CliDeeplinkUsageError,
-  runDeeplinkCommand,
+  runDeeplinkCommandAsync,
+  type LinkEnvelopeContext,
 } from "./commands/deeplinks";
 import {
   CliSkillUsageError,
   runSkillCommand,
 } from "./commands/skill";
-import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
@@ -467,7 +468,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
@@ -1068,11 +1069,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
   link: `${ADE_BANNER}
   ADE Link
 
-  Build a shareable deeplink URL for a lane, Work session, branch, PR, or Linear issue.
+  Build a shareable deeplink URL for a lane, Work session, file, commit, artifact, branch, PR, or Linear issue.
   The URL is printed and (unless --no-clipboard) copied to the clipboard.
 
     $ ade link lane <lane-uuid>
     $ ade link session <session-id> [--lane <lane-uuid>]
+    $ ade link file <path> [--line <number>] [--lane <lane-uuid>]
+    $ ade link commit <sha> [--lane <lane-uuid>]
+    $ ade link artifact <id>
     $ ade link branch <owner/repo> <branch> [--pr <number>]
     $ ade link pr <owner/repo> <number>
     $ ade link linear-issue <ADE-123> [--branch <branch>]
@@ -1080,6 +1084,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Flags:
     --ade           Emit the custom "ade://" form. Defaults to the https mirror.
+    --no-envelope   Skip best-effort repo/branch/PR envelope lookup.
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
 `,
   skill: `${ADE_BANNER}
@@ -16157,6 +16162,81 @@ async function runGithubAppLogin(
   }
 }
 
+function createLinkEnvelopeResolver(
+  options: GlobalOptions,
+): (context: LinkEnvelopeContext) => Promise<DeeplinkEnvelope | null> {
+  const action = async (
+    connection: CliConnection,
+    domain: string,
+    name: string,
+    args: JsonObject = {},
+  ): Promise<unknown> => {
+    const raw = await connection.request("ade/actions/call", {
+      name: "run_ade_action",
+      arguments: { domain, action: name, args },
+    });
+    return unwrapActionEnvelope(unwrapToolResult(raw));
+  };
+
+  const directAction = async (
+    connection: CliConnection,
+    name: string,
+    args: JsonObject = {},
+  ): Promise<unknown> => {
+    const raw = await connection.request("ade/actions/call", { name, arguments: args });
+    return unwrapToolResult(raw);
+  };
+
+  const records = (value: unknown, keys: string[]): Record<string, unknown>[] => {
+    const unwrapped = unwrapActionEnvelope(value);
+    if (Array.isArray(unwrapped)) return unwrapped.filter(isRecord);
+    if (!isRecord(unwrapped)) return [];
+    for (const key of keys) {
+      const nested = unwrapped[key];
+      if (Array.isArray(nested)) return nested.filter(isRecord);
+    }
+    return [];
+  };
+
+  return async (context) => {
+    let connection: CliConnection | null = null;
+    try {
+      connection = await createConnection(
+        { ...options, headless: false, requireSocket: true },
+        { autoRegisterProject: false },
+      );
+      const lanesValue = await directAction(connection, "list_lanes", { includeArchived: false }).catch(() => null);
+      const lane = records(lanesValue, ["lanes", "items", "result"])
+        .find((candidate) => asString(candidate.id) === context.laneId) ?? null;
+      const githubValue = await action(connection, "github", "getRemoteStatus").catch(() => null);
+      const repo = isRecord(githubValue) && isRecord(githubValue.repo) ? githubValue.repo : null;
+      const prsValue = await action(connection, "pr", "listAll", { laneId: context.laneId }).catch(() => null);
+      const pr = records(prsValue, ["prs", "items", "result"])
+        .find((candidate) => asString(candidate.laneId) === context.laneId) ?? null;
+
+      const branch = asString(lane?.branchRef)?.replace(/^refs\/heads\//, "") ?? null;
+      const laneIssue = isRecord(lane?.linearIssue) ? lane.linearIssue : null;
+      const linearIssue = asString(laneIssue?.identifier);
+      const prNumber = typeof pr?.githubPrNumber === "number" && Number.isSafeInteger(pr.githubPrNumber)
+        ? pr.githubPrNumber
+        : null;
+      const envelope: DeeplinkEnvelope = {};
+      const owner = asString(repo?.owner);
+      const name = asString(repo?.name);
+      if (owner) envelope.repoOwner = owner;
+      if (name) envelope.repoName = name;
+      if (branch) envelope.branch = branch;
+      if (prNumber && prNumber > 0) envelope.prNumber = prNumber;
+      if (linearIssue) envelope.linearIssue = linearIssue;
+      return Object.keys(envelope).length > 0 ? envelope : null;
+    } catch {
+      return null;
+    } finally {
+      if (connection) await Promise.resolve(connection.close()).catch(() => undefined);
+    }
+  };
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -16338,7 +16418,9 @@ async function runCli(
     }
     if (plan.kind === "deeplink") {
       try {
-        const result = runDeeplinkCommand(plan.rest);
+        const result = await runDeeplinkCommandAsync(plan.rest, {
+          resolveEnvelope: createLinkEnvelopeResolver(parsed.options),
+        });
         return { output: result.output, exitCode: result.exitCode };
       } catch (error) {
         if (error instanceof CliDeeplinkUsageError) {

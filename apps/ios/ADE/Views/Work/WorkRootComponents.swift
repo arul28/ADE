@@ -629,7 +629,7 @@ struct WorkSessionListRow: View {
       Button {
         onCopyDeepLink(session)
       } label: {
-        Label("Copy session deep link", systemImage: "link")
+        Label("Copy session link", systemImage: "link")
       }
       Button {
         onPin(session)

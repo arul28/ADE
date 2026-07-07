@@ -462,8 +462,24 @@ export async function createAdeRuntime(args: {
   const searchServiceHolder: { current: SearchService | null } = { current: null };
   let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
   let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
+  let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
+  let prServiceRef: ReturnType<typeof createPrService> | null = null;
   const publishLinearChatLink = createLinearChatLinkPublisher({
     getIssueTracker: () => linearIssueTrackerRef,
+    resolveEnvelope: async ({ laneId }) => {
+      const repo = await githubServiceRef?.getRepoOrThrow().catch(() => null);
+      if (!repo) return null;
+      const lanes = await laneServiceRef?.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+      const lane = lanes?.find((candidate) => candidate.id === laneId) ?? null;
+      const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
+      const pr = prServiceRef?.getForLane(laneId) ?? null;
+      return {
+        repoOwner: repo.owner,
+        repoName: repo.name,
+        branch,
+        prNumber: pr?.githubPrNumber ?? null,
+      };
+    },
     log: (event, fields) => logger.warn(event, fields),
   });
   const laneTeardownDeps: LaneDeleteTeardownDeps = {};
@@ -505,6 +521,7 @@ export async function createAdeRuntime(args: {
           linkedAt,
           repoOwner: repo?.owner ?? null,
           repoName: repo?.name ?? null,
+          prNumber: prServiceRef?.getForLane(lane.id)?.githubPrNumber ?? null,
           postInitialComment: true,
           log: (event, fields) => logger.warn(event, fields),
         }))
@@ -521,6 +538,7 @@ export async function createAdeRuntime(args: {
     teardownDeps: laneTeardownDeps,
     logger,
   });
+  laneServiceRef = laneService;
   await laneService.ensurePrimaryLane();
 
   const sessionService = createSessionService({ db });
@@ -927,6 +945,7 @@ export async function createAdeRuntime(args: {
   });
   linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
   githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+  prServiceRef = headlessLinearServices.prService;
   laneTeardownDeps.fileWatcherService = {
     countActiveForWorkspace: (id) => headlessLinearServices.fileService.countActiveWatchersForWorkspace(id),
     stopAllForWorkspace: (id) => headlessLinearServices.fileService.stopAllWatchersForWorkspace(id),
@@ -1385,6 +1404,10 @@ export async function createAdeRuntime(args: {
     agentChatService,
     prService: headlessLinearServices.prService ?? null,
     gitService,
+    repoSlug: async () => {
+      const status = await headlessLinearServices.githubService.getRemoteStatus().catch(() => ({ repo: null }));
+      return status.repo ?? null;
+    },
     fileService: headlessLinearServices.fileService ?? null,
     artifactBroker: computerUseArtifactBrokerService,
     linearIssueTracker: headlessLinearServices.linearIssueTracker ?? null,

@@ -19,12 +19,15 @@ final class DeepLinkRouter {
   /// `ade://pr/<n>` forms plus the four new desktop-originated shapes:
   ///
   ///   * `ade://lane/<uuid>`
+  ///   * `ade://file/<repo-relative-path>[?line=<n>&lane=<uuid>]`
+  ///   * `ade://commit/<sha>[?lane=<uuid>]`
+  ///   * `ade://artifact/<id>`
   ///   * `ade://repo/<owner>/<repo>/branch/<branch>`
   ///   * `ade://pr/<owner>/<repo>/<number>`
   ///   * `ade://linear-issue/<ADE-123>[?branch=<branch>]`
   ///
   /// Also accepts the web mirror used by CLI / agent handoff output:
-  /// `https://ade-app.dev/open?type=<lane|session|branch|pr|linear-issue>&...`.
+  /// `https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...`.
   ///
   /// Unknown hosts are ignored rather than crashing on malformed input.
   func handle(_ url: URL) {
@@ -37,8 +40,10 @@ final class DeepLinkRouter {
       .map { $0.removingPercentEncoding ?? $0 }
     switch host {
     case "session":
-      guard let sessionId = pathComponents.first, !sessionId.isEmpty else { return }
-      post(kind: "session", identifier: sessionId)
+      guard let sessionId = pathComponents.first,
+            ADEDeepLinkURLParsing.isValidOpaqueId(sessionId),
+            let anchors = sessionAnchors(from: url) else { return }
+      post(kind: "session", identifier: sessionId, event: anchors.event, offset: anchors.offset)
     case "pr":
       // Two accepted shapes today:
       //   `ade://pr/<n>`                       (compact local link)
@@ -57,7 +62,20 @@ final class DeepLinkRouter {
       // Lanes are a local-only desktop concept — the iOS client has no
       // counterpart UI, so we surface a "Send to your Mac" card instead of
       // trying to navigate.
-      guard let laneId = pathComponents.first, !laneId.isEmpty else { return }
+      guard let laneId = pathComponents.first,
+            ADEDeepLinkURLParsing.isValidUUID(laneId) else { return }
+      postSendToMac(url: url)
+    case "file":
+      let path = pathComponents.joined(separator: "/")
+      guard isValidFileTarget(path: path, url: url) else { return }
+      postSendToMac(url: url)
+    case "commit":
+      guard let sha = pathComponents.first,
+            isValidCommitTarget(sha: sha, url: url) else { return }
+      postSendToMac(url: url)
+    case "artifact":
+      guard let artifactId = pathComponents.first,
+            ADEDeepLinkURLParsing.isValidOpaqueId(artifactId) else { return }
       postSendToMac(url: url)
     case "repo":
       // `ade://repo/<owner>/<repo>/branch/<branch>` — also cross-machine.
@@ -65,9 +83,8 @@ final class DeepLinkRouter {
       // an empty send-to-mac sheet.
       guard pathComponents.count >= 4,
             pathComponents[2].lowercased() == "branch",
-            !pathComponents[0].isEmpty,
-            !pathComponents[1].isEmpty,
-            !pathComponents[3].isEmpty
+            ADEDeepLinkURLParsing.splitRepo("\(pathComponents[0])/\(pathComponents[1])") != nil,
+            ADEDeepLinkURLParsing.isValidBranch(pathComponents.dropFirst(3).joined(separator: "/"))
       else { return }
       postSendToMac(url: url)
     case "linear-issue":
@@ -77,7 +94,8 @@ final class DeepLinkRouter {
       // so we bounce the link to the paired Mac. We validate the identifier
       // shape so a stray `ade://linear-issue/` doesn't pop an empty sheet.
       guard let identifier = pathComponents.first,
-            !identifier.isEmpty
+            ADEDeepLinkURLParsing.isValidLinearIdentifier(identifier),
+            isValidLinearIssueBranch(url: url)
       else { return }
       postSendToMac(url: url)
     default:
@@ -120,21 +138,43 @@ final class DeepLinkRouter {
     let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
     switch query["type"]?.lowercased() {
     case "lane":
-      guard query["id"]?.isEmpty == false else { return true }
+      guard ADEDeepLinkURLParsing.isValidUUID(query["id"]) else { return true }
       postSendToMac(url: url)
     case "session":
-      guard let sessionId = query["id"], !sessionId.isEmpty else { return true }
+      guard let sessionId = query["id"],
+            ADEDeepLinkURLParsing.isValidOpaqueId(sessionId),
+            let anchors = sessionAnchors(from: query) else { return true }
+      post(kind: "session", identifier: sessionId, event: anchors.event, offset: anchors.offset)
+    case "file":
+      guard isValidFileTarget(path: query["path"] ?? "", query: query) else { return true }
+      postSendToMac(url: url)
+    case "commit":
+      guard isValidCommitTarget(sha: query["sha"] ?? "", query: query) else { return true }
+      postSendToMac(url: url)
+    case "artifact":
+      guard ADEDeepLinkURLParsing.isValidOpaqueId(query["id"]) else { return true }
       postSendToMac(url: url)
     case "branch":
       guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,
-            query["branch"]?.isEmpty == false else { return true }
+            ADEDeepLinkURLParsing.isValidBranch(query["branch"]),
+            query["pr"] == nil || ADEDeepLinkURLParsing.positiveInteger(query["pr"]) != nil else { return true }
       postSendToMac(url: url)
     case "pr":
-      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil,
-            ADEDeepLinkURLParsing.positiveInteger(query["number"]) != nil else { return true }
+      guard let number = ADEDeepLinkURLParsing.positiveInteger(query["number"]) else { return true }
+      // PR numbers are only unique within a repository, and the local
+      // workspace snapshot carries no repo identity — when the link names a
+      // repo, hand off to the paired Mac (whose resolution ladder verifies
+      // the repo) instead of guessing a local PR by bare number.
+      if query["repo"]?.isEmpty ?? true {
+        post(kind: "pr", identifier: "\(number)", prNumber: number)
+        return true
+      }
+      guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil else { return true }
       postSendToMac(url: url)
     case "linear-issue":
-      guard query["issue"]?.isEmpty == false else { return true }
+      guard ADEDeepLinkURLParsing.isValidLinearIdentifier(query["issue"]),
+            ADEDeepLinkURLParsing.isValidBranch(query["branch"] ?? "main")
+              || query["branch"] == nil else { return true }
       postSendToMac(url: url)
     default:
       break
@@ -169,14 +209,21 @@ final class DeepLinkRouter {
     }
   }
 
-  private func post(kind: String, identifier: String, prNumber: Int? = nil) {
+  private func post(kind: String, identifier: String, prNumber: Int? = nil, event: Int? = nil, offset: Int? = nil) {
+    var userInfo: [String: Any] = ["kind": kind, "identifier": identifier]
+    if let event { userInfo["event"] = event }
+    if let offset { userInfo["offset"] = offset }
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
       object: nil,
-      userInfo: ["kind": kind, "identifier": identifier]
+      userInfo: userInfo
     )
     if kind == "session" {
-      SyncService.shared?.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: identifier)
+      SyncService.shared?.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
+        sessionId: identifier,
+        event: event,
+        offset: offset
+      )
     }
     if kind == "pr" {
       let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -189,6 +236,60 @@ final class DeepLinkRouter {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prNumber: prNumber)
       }
     }
+  }
+
+  private func sessionAnchors(from url: URL) -> (event: Int?, offset: Int?)? {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+      return (nil, nil)
+    }
+    return sessionAnchors(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
+  private func sessionAnchors(from query: [String: String]) -> (event: Int?, offset: Int?)? {
+    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return nil
+    }
+    let event = ADEDeepLinkURLParsing.nonNegativeInteger(query["event"])
+    if query["event"] != nil && event == nil { return nil }
+    let offset = ADEDeepLinkURLParsing.nonNegativeInteger(query["offset"])
+    if query["offset"] != nil && offset == nil { return nil }
+    return (event, offset)
+  }
+
+  private func isValidFileTarget(path: String, url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    return isValidFileTarget(path: path, query: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
+  private func isValidFileTarget(path: String, query: [String: String]) -> Bool {
+    guard ADEDeepLinkURLParsing.isValidRepoRelativePath(path) else { return false }
+    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return false
+    }
+    if let line = query["line"], ADEDeepLinkURLParsing.positiveInteger(line) == nil {
+      return false
+    }
+    return true
+  }
+
+  private func isValidCommitTarget(sha: String, url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+    return isValidCommitTarget(sha: sha, query: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+  }
+
+  private func isValidCommitTarget(sha: String, query: [String: String]) -> Bool {
+    guard ADEDeepLinkURLParsing.isValidCommitSha(sha) else { return false }
+    if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return false
+    }
+    return true
+  }
+
+  private func isValidLinearIssueBranch(url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
+    let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
+    guard let branch = query["branch"] else { return true }
+    return ADEDeepLinkURLParsing.isValidBranch(branch)
   }
 
   /// Cross-machine deep links (lane / repo-branch / linear-issue) post on the

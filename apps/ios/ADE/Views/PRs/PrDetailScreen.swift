@@ -736,6 +736,9 @@ struct PrDetailView: View {
       canReopen: canReopenCurrentPr,
       canOpenGitHub: canOpenCurrentPrInGitHub,
       hasGitHubUrl: !currentPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      hasADELink: !currentPr.repoOwner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && !currentPr.repoName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        && currentPr.githubPrNumber > 0,
       onDismiss: { actionsSheetPresented = false },
       onEditTitle: {
         actionsSheetPresented = false
@@ -771,6 +774,16 @@ struct PrDetailView: View {
         UIPasteboard.general.string = currentPr.githubUrl
         ADEHaptics.success()
         actionMessage = "URL copied."
+      },
+      onCopyAdeLink: {
+        actionsSheetPresented = false
+        UIPasteboard.general.string = LaneDeeplinkHelpers.prLink(
+          repoOwner: currentPr.repoOwner,
+          repoName: currentPr.repoName,
+          number: currentPr.githubPrNumber
+        )
+        ADEHaptics.success()
+        actionMessage = "ADE link copied."
       },
       onRefresh: {
         actionsSheetPresented = false
@@ -1642,6 +1655,7 @@ private struct PrDetailActionsSheet: View {
   let canReopen: Bool
   let canOpenGitHub: Bool
   let hasGitHubUrl: Bool
+  let hasADELink: Bool
   let onDismiss: () -> Void
   let onEditTitle: () -> Void
   let onEditDescription: () -> Void
@@ -1651,6 +1665,7 @@ private struct PrDetailActionsSheet: View {
   let onReopen: () -> Void
   let onOpenGitHub: () -> Void
   let onCopyUrl: () -> Void
+  let onCopyAdeLink: () -> Void
   let onRefresh: () -> Void
 
   var body: some View {
@@ -1722,6 +1737,12 @@ private struct PrDetailActionsSheet: View {
               symbol: "doc.on.doc",
               disabled: !hasGitHubUrl,
               action: onCopyUrl
+            )
+            PrDetailActionRow(
+              title: "Copy ADE link",
+              symbol: "link",
+              disabled: !hasADELink,
+              action: onCopyAdeLink
             )
             PrDetailActionRow(title: "Refresh", symbol: "arrow.clockwise", action: onRefresh)
           }

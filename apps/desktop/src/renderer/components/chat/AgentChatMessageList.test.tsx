@@ -49,12 +49,18 @@ import {
   calculateVirtualWindow,
   calculateVirtualWindowAnchoredToEnd,
   deriveTurnModelState,
+  findAnchoredChatEventIndex,
   formatElapsedSeconds,
   reconcileMeasuredScrollTop,
+  resolveAnchoredChatRowIndex,
   shouldAbsorbProgrammaticScrollEvent,
   shouldStickToBottomAfterScroll,
   looksLikeWireframe,
 } from "./AgentChatMessageList";
+import {
+  collapseChatTranscriptEvents,
+  groupConsecutiveWorkLogRows,
+} from "./chatTranscriptRows";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
   // Option buttons carry role="radio"/"checkbox" for accessibility, so search
@@ -1400,6 +1406,49 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(win.startIndex).toBe(0);
     expect(win.endIndex).toBe(3);
     expect(win.offsetTop).toBe(0);
+  });
+
+  it("resolves chat deeplink anchors by envelope sequence before ordinal fallback", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "first", messageId: "user-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        sequence: 41,
+        event: { type: "user_message", text: "target", messageId: "user-2" },
+      },
+    ];
+    const groupedRows = groupConsecutiveWorkLogRows(collapseChatTranscriptEvents(events));
+
+    expect(findAnchoredChatEventIndex({ events, anchorEvent: 41, hasFullHistory: false })).toBe(1);
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 41, hasFullHistory: false })).toBe(1);
+    expect(findAnchoredChatEventIndex({ events, anchorEvent: 1, hasFullHistory: false })).toBe(-1);
+    expect(findAnchoredChatEventIndex({ events, anchorEvent: 1, hasFullHistory: true })).toBe(1);
+  });
+
+  it("maps anchors inside merged text events to the containing rendered row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        sequence: 40,
+        event: { type: "text", text: "hello", messageId: "assistant-1", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        sequence: 41,
+        event: { type: "text", text: " world", messageId: "assistant-1", turnId: "turn-1" },
+      },
+    ];
+    const groupedRows = groupConsecutiveWorkLogRows(collapseChatTranscriptEvents(events));
+
+    expect(groupedRows).toHaveLength(1);
+    expect(resolveAnchoredChatRowIndex({ events, groupedRows, anchorEvent: 41, hasFullHistory: false })).toBe(0);
   });
 
   it("formats turn elapsed time as working-for seconds then minutes", () => {

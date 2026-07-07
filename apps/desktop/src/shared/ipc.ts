@@ -37,6 +37,7 @@ export const IPC = {
   projectOpenAdeFolder: "ade.project.openAdeFolder",
   projectClearLocalData: "ade.project.clearLocalData",
   projectListRecent: "ade.project.listRecent",
+  projectFindForRepo: "ade.project.findForRepo",
   projectCreateLocal: "ade.project.createLocal",
   projectClone: "ade.project.clone",
   projectGetDefaultParentDir: "ade.project.getDefaultParentDir",

@@ -71,12 +71,14 @@ apps/ios/
 │   │   ├── RemoteProjectAddSheet.swift # Open/create/clone project flow
 │   │   │                               # backed by runtime-scoped
 │   │   │                               # project action envelopes
-│   │   ├── DeepLinkRouter.swift     # ade:// URL handler. ade://session/<id>,
-│   │   │                            # ade://pr/<n>, and ade://pr/<owner>/<repo>/<num>
-│   │   │                            # flip tabs via .adeDeepLinkRequested.
-│   │   │                            # ade://lane/<uuid> and
-│   │   │                            # ade://repo/<owner>/<repo>/branch/<branch>
-│   │   │                            # are local-only desktop concepts — they
+│   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
+│   │   │                            # handler. Session and compact PR links
+│   │   │                            # flip tabs via .adeDeepLinkRequested;
+│   │   │                            # session event/offset anchors ride
+│   │   │                            # WorkSessionNavigationRequest.
+│   │   │                            # Lane/file/commit/artifact/repo-branch,
+│   │   │                            # full PR, and Linear issue links are
+│   │   │                            # local-only desktop concepts — they
 │   │   │                            # post .adeSendToMacRequested instead so the
 │   │   │                            # SendToMacCard sheet can bounce the URL to
 │   │   │                            # a paired host via the deeplinks.open sync
@@ -141,7 +143,8 @@ apps/ios/
 │   │   │                            # LaneBatchManageSheet, LaneManageSheet
 │   │   │                            #   (tabbed manage dialog + adopt-attached),
 │   │   │                            # LaneMultiAttachSheet, LaneStackGraphSheet,
-│   │   │                            # LaneDeeplinkHelpers (ade:// lane/branch
+│   │   │                            # LaneDeeplinkHelpers (envelope-aware
+│   │   │                            #   https/ade lane/session/branch/PR
 │   │   │                            #   link minting),
 │   │   │                            # LaneEnvInitProgressView, etc.
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,

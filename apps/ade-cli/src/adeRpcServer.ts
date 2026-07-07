@@ -23,7 +23,7 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
-import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -4691,6 +4691,9 @@ async function readResource(runtime: AdeRuntime, uri: string): Promise<Record<st
 const APP_NAVIGATE_SUPPORTED_KINDS = new Set([
   "work",
   "chat",
+  "file",
+  "commit",
+  "artifact",
   "lane",
   "pr",
   "route",
@@ -4999,6 +5002,15 @@ export function createAdeRpcRequestHandler(args: {
       if (kind === "lane" && !asOptionalTrimmedString(target.laneId)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'lane' requires laneId.");
       }
+      if (kind === "file" && !asOptionalTrimmedString(target.path)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'file' requires path.");
+      }
+      if (kind === "commit" && !asOptionalTrimmedString(target.sha)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'commit' requires sha.");
+      }
+      if (kind === "artifact" && !asOptionalTrimmedString(target.artifactId)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'artifact' requires artifactId.");
+      }
       if (kind === "route" && !asOptionalTrimmedString(target.route)) {
         throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'route' requires route.");
       }
@@ -5023,7 +5035,47 @@ export function createAdeRpcRequestHandler(args: {
       const sessionId = asOptionalTrimmedString(target.sessionId);
       const laneId = asOptionalTrimmedString(target.laneId);
       if ((kind === "work" || kind === "chat" || kind === "lane") && sessionId) normalizedTarget.sessionId = sessionId;
-      if ((kind === "work" || kind === "chat" || kind === "lane" || kind === "pr") && laneId) normalizedTarget.laneId = laneId;
+      if ((kind === "work" || kind === "chat" || kind === "lane" || kind === "pr" || kind === "file" || kind === "commit") && laneId) normalizedTarget.laneId = laneId;
+      if (kind === "work" || kind === "chat") {
+        if (typeof target.event === "number" && Number.isSafeInteger(target.event) && target.event >= 0) normalizedTarget.event = target.event;
+        if (typeof target.offset === "number" && Number.isSafeInteger(target.offset) && target.offset >= 0) normalizedTarget.offset = target.offset;
+      }
+      if (kind === "file") {
+        // Same repo-relative rules as parseDeeplink: RPC callers must not be
+        // able to smuggle traversal/absolute paths past the URL parser.
+        const filePath = asOptionalTrimmedString(target.path) ?? "";
+        if (!isValidRepoRelativePath(filePath)) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'file' requires a repo-relative path.");
+        }
+        normalizedTarget.path = filePath;
+        if (typeof target.line === "number" && Number.isSafeInteger(target.line) && target.line > 0) normalizedTarget.line = target.line;
+      }
+      if (kind === "commit") {
+        const sha = asOptionalTrimmedString(target.sha) ?? "";
+        if (!isValidCommitSha(sha)) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'commit' requires a 7-40 hex sha.");
+        }
+        normalizedTarget.sha = sha.toLowerCase();
+      }
+      if (kind === "artifact") {
+        normalizedTarget.artifactId = asOptionalTrimmedString(target.artifactId);
+      }
+      if (kind === "work" || kind === "chat" || kind === "lane" || kind === "commit" || kind === "artifact") {
+        const envelope = safeObject(target.envelope);
+        const repoOwner = asOptionalTrimmedString(envelope.repoOwner);
+        const repoName = asOptionalTrimmedString(envelope.repoName);
+        const branch = asOptionalTrimmedString(envelope.branch);
+        const linearIssue = asOptionalTrimmedString(envelope.linearIssue);
+        const normalizedEnvelope: Record<string, unknown> = {};
+        if (repoOwner) normalizedEnvelope.repoOwner = repoOwner;
+        if (repoName) normalizedEnvelope.repoName = repoName;
+        if (branch) normalizedEnvelope.branch = branch;
+        if (typeof envelope.prNumber === "number" && Number.isSafeInteger(envelope.prNumber) && envelope.prNumber > 0) {
+          normalizedEnvelope.prNumber = envelope.prNumber;
+        }
+        if (linearIssue) normalizedEnvelope.linearIssue = linearIssue;
+        if (Object.keys(normalizedEnvelope).length > 0) normalizedTarget.envelope = normalizedEnvelope;
+      }
       if (kind === "pr") {
         const prId = asOptionalTrimmedString(target.prId);
         if (prId) normalizedTarget.prId = prId;

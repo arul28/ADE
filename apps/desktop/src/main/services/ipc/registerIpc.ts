@@ -8,6 +8,7 @@ import type { Server as NetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
@@ -3778,6 +3779,18 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectListRecent, async (): Promise<RecentProjectSummary[]> =>
     listRecentProjectSummaries()
+  );
+
+  ipcMain.handle(
+    IPC.projectFindForRepo,
+    async (_event, arg: { repoOwner?: string; repoName?: string } = {}): Promise<{ rootPath: string; displayName: string } | null> => {
+      const repoOwner = typeof arg?.repoOwner === "string" ? arg.repoOwner.trim() : "";
+      const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
+      if (!repoOwner || !repoName) return null;
+      // One tested implementation: parses each recent project's git origin
+      // from .git/config (no git subprocess), cached by config mtime.
+      return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
+    },
   );
 
   registerRuntimeBridge({

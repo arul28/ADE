@@ -2149,6 +2149,7 @@ app.whenReady().then(async () => {
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null =
       null;
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
+    let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
     let gitServiceRef: ReturnType<typeof createGitOperationsService> | null =
       null;
     let linearIssueTrackerRef: LinearIssueTracker | null = null;
@@ -2156,6 +2157,20 @@ app.whenReady().then(async () => {
     const linearLiveStatusLaunchKeys = new Set<string>();
     const publishLinearChatCard = createLinearChatLinkPublisher({
       getIssueTracker: () => linearIssueTrackerRef,
+      resolveEnvelope: async ({ laneId }) => {
+        const repo = await githubService.getRepoOrThrow().catch(() => null);
+        if (!repo) return null;
+        const lanes = await laneServiceRef?.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+        const lane = lanes?.find((candidate) => candidate.id === laneId) ?? null;
+        const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") ?? null;
+        const pr = prServiceRef?.getForLane(laneId) ?? null;
+        return {
+          repoOwner: repo.owner,
+          repoName: repo.name,
+          branch,
+          prNumber: pr?.githubPrNumber ?? null,
+        };
+      },
       log: (event, fields) => logger.warn(event, fields),
     });
     const publishLinearChatLink = ({ laneId, sessionId, sessionTitle, issue, linkedAt }: {
@@ -2283,6 +2298,7 @@ app.whenReady().then(async () => {
             linkedAt,
             repoOwner: repo?.owner ?? null,
             repoName: repo?.name ?? null,
+            prNumber: prServiceRef?.getForLane(lane.id)?.githubPrNumber ?? null,
             postInitialComment: true,
             log: (event, fields) => logger.warn(event, fields),
           }))
@@ -2299,6 +2315,7 @@ app.whenReady().then(async () => {
       teardownDeps: laneTeardownDeps,
       logger,
     });
+    laneServiceRef = laneService;
     await measureProjectInitStep("lane.ensure_primary", () =>
       laneService.ensurePrimaryLane(),
     );
@@ -3256,6 +3273,10 @@ app.whenReady().then(async () => {
       agentChatService,
       prService,
       gitService,
+      repoSlug: async () => {
+        const status = await githubService.getRemoteStatus().catch(() => ({ repo: null }));
+        return status.repo ?? null;
+      },
       fileService,
       artifactBroker: computerUseArtifactBrokerService,
       linearIssueTracker,

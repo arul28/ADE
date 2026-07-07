@@ -322,9 +322,13 @@ extension WorkRootScreen {
   }
 
   func copySessionDeepLink(_ session: TerminalSessionSummary) {
+    let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+    let lane = lanes.first(where: { $0.id == laneId })
+    let pullRequest = pullRequests.first(where: { $0.laneId == laneId })
     UIPasteboard.general.string = workSessionDeepLink(
       sessionId: session.id,
-      laneId: resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+      laneId: laneId,
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest)
     )
   }
 
