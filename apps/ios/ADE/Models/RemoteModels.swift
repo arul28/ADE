@@ -1934,7 +1934,6 @@ extension AgentChatEvent {
     case origin
     case title
     case prompt
-    case reason
     case cron
     case nextRunAt
     case lastRunAt
