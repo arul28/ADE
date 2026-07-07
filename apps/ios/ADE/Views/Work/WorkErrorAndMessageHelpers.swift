@@ -1636,12 +1636,12 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
   case .plan(let steps, let explanation, let turnId):
     let stepDigest = steps.map { "\($0.status):\($0.text)" }.joined(separator: "\n")
     return ["plan", turnId ?? "", explanation ?? "", stepDigest].joined(separator: "|")
-  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
-    return ["subagent_started", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description, background ? "1" : "0"].joined(separator: "|")
-  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let turnId):
-    return ["subagent_progress", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description ?? "", summary, toolName ?? ""].joined(separator: "|")
-  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let turnId):
-    return ["subagent_result", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", status, summary].joined(separator: "|")
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
+    return ["subagent_started", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description, background ? "1" : "0", label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
+    return ["subagent_progress", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description ?? "", summary, toolName ?? "", label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
+  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
+    return ["subagent_result", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", status, summary, label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     let digest = options.map { "\($0.label)\t\($0.value)\t\($0.description ?? "")\t\($0.recommended ? "1" : "0")" }.joined(separator: "\n")
     return ["structured_question", turnId ?? "", itemId, question, digest].joined(separator: "|")
@@ -1665,8 +1665,13 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["context_compact", turnId ?? "", isInProgress ? "started" : "completed", summary].joined(separator: "|")
   case .autoApprovalReview(let summary, let turnId):
     return ["auto_approval_review", turnId ?? "", summary].joined(separator: "|")
-  case .webSearch(let query, let action, let status, let itemId, let turnId):
-    return ["web_search", turnId ?? "", itemId, query, action ?? "", status.rawValue].joined(separator: "|")
+  case .webSearch(let query, let action, let actions, let status, let itemId, let turnId):
+    let actionKey = actions?.compactMap { $0.url ?? $0.title ?? $0.query ?? $0.queries?.first }.joined(separator: ",") ?? action ?? ""
+    return ["web_search", turnId ?? "", itemId, query, actionKey, status.rawValue].joined(separator: "|")
+  case .codexState(let title, let message, _, let turnId):
+    return ["codex_state", turnId ?? "", title, message].joined(separator: "|")
+  case .codexTurnStalled(let message, _, let turnId):
+    return ["codex_turn_stalled", turnId ?? "", message].joined(separator: "|")
   case .planText(let text, let turnId):
     return ["plan_text", turnId ?? "", text].joined(separator: "|")
   case .toolUseSummary(let text, let turnId):

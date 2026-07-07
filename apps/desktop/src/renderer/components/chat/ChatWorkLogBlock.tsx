@@ -371,6 +371,11 @@ function DiffBody({ diff }: { diff: string }) {
   );
 }
 
+function webSearchUrlActions(entry: ChatWorkLogEntry): NonNullable<ChatWorkLogEntry["actions"]> {
+  if (entry.entryKind !== "web_search" || !entry.actions?.length) return [];
+  return entry.actions.filter((action) => typeof action.url === "string" && action.url.trim().length > 0);
+}
+
 function ToolCallRow({
   entry,
   onNavigateSuggestion,
@@ -392,6 +397,7 @@ function ToolCallRow({
   const kindSlug = workLogEntryKindSlug(entry);
   const argText = replaceInternalToolNames(entryArgText(entry));
   const kindTone = workLogEntryKindToneClass(entry);
+  const searchUrlActions = webSearchUrlActions(entry);
 
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
   const detailIsTruncated = Boolean(detailBody && detailBody.length > WORK_LOG_DETAIL_TRUNCATE_LIMIT);
@@ -427,6 +433,26 @@ function ToolCallRow({
               {suggestion.label}
             </button>
           ))}
+        </div>
+      ) : null}
+      {open && searchUrlActions.length > 0 ? (
+        <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
+          {searchUrlActions.slice(0, 6).map((action, index) => {
+            const label = action.title ?? action.url ?? `Result ${index + 1}`;
+            return (
+              <button
+                key={`${action.url}:${index}`}
+                type="button"
+                onClick={() => openUrlInAdeBrowser(action.url)}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-cyan-300/15 bg-cyan-400/[0.06] px-2 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-cyan-100/78 transition-colors hover:border-cyan-300/30 hover:bg-cyan-400/[0.11] hover:text-cyan-50"
+                title={action.url}
+              >
+                <Globe size={10} weight="bold" className="shrink-0" aria-hidden />
+                <span className="min-w-0 truncate">{label}</span>
+                <ArrowSquareOut size={10} weight="bold" className="shrink-0 text-cyan-100/45" aria-hidden />
+              </button>
+            );
+          })}
         </div>
       ) : null}
       {open && visibleDetailBody ? (

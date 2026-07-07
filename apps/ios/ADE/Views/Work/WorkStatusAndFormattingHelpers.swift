@@ -147,6 +147,10 @@ func workSubagentRunningCount(_ snapshots: [WorkSubagentSnapshot]) -> Int {
 }
 
 func workSubagentMeaningfulName(_ snapshot: WorkSubagentSnapshot) -> String {
+  if let label = snapshot.label?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !label.isEmpty {
+    return label
+  }
   let genericAgentTypes: Set<String> = ["opencode-subagent", "subagent"]
   let agentType = snapshot.agentType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   if !agentType.isEmpty, !genericAgentTypes.contains(agentType.lowercased()) {

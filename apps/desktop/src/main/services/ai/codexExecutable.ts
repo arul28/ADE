@@ -64,8 +64,12 @@ function listDirectories(rootPath: string): string[] {
 function findVendorCodexBinary(packageRoot: string, platform: NodeJS.Platform): string | null {
   const binaryName = platform === "win32" ? "codex.exe" : "codex";
   for (const vendorRoot of listDirectories(path.join(packageRoot, "vendor"))) {
-    const candidate = path.join(vendorRoot, "codex", binaryName);
-    if (pathExists(candidate)) return candidate;
+    for (const candidate of [
+      path.join(vendorRoot, "bin", binaryName),
+      path.join(vendorRoot, "codex", binaryName),
+    ]) {
+      if (pathExists(candidate)) return candidate;
+    }
   }
   return null;
 }

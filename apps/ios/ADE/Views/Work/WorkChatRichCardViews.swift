@@ -66,6 +66,13 @@ struct WorkReferenceChip: View {
   }
 }
 
+private struct WorkWebSearchSource: Identifiable {
+  let id: String
+  let label: String
+  let title: String?
+  let url: URL
+}
+
 struct WorkToolCardView: View {
   let toolCard: WorkToolCardModel
   let references: WorkNavigationTargets
@@ -74,6 +81,7 @@ struct WorkToolCardView: View {
   let onOpenFile: (String) -> Void
   let onOpenPr: (Int) -> Void
 
+  @Environment(\.openURL) private var openURL
   @State private var resultExpanded = false
 
   var body: some View {
@@ -114,6 +122,38 @@ struct WorkToolCardView: View {
                       action: { onOpenPr(number) }
                     )
                     .accessibilityLabel("Open PR number \(number)")
+                  }
+                }
+              }
+            }
+          }
+
+          let webSources = workWebSearchSources(from: toolCard.webSearchActions)
+          if !webSources.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+              Text("Sources")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(ADEColor.textMuted)
+              ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                  ForEach(webSources) { source in
+                    Button {
+                      openURL(source.url)
+                    } label: {
+                      Label(source.label, systemImage: "safari")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(ADEColor.info)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(ADEColor.info.opacity(0.10), in: Capsule(style: .continuous))
+                        .overlay(
+                          Capsule(style: .continuous)
+                            .stroke(ADEColor.info.opacity(0.28), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(source.title ?? source.label)")
                   }
                 }
               }
@@ -234,6 +274,41 @@ struct WorkToolCardView: View {
     case .failed: return "xmark.circle.fill"
     }
   }
+}
+
+private func workWebSearchSources(from actions: [CodexWebSearchAction]?) -> [WorkWebSearchSource] {
+  var seen = Set<String>()
+  return (actions ?? []).compactMap { action -> WorkWebSearchSource? in
+    guard let rawURL = action.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !rawURL.isEmpty,
+          let url = URL(string: rawURL),
+          let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          seen.insert(rawURL).inserted
+    else {
+      return nil
+    }
+    return WorkWebSearchSource(
+      id: rawURL,
+      label: workWebSearchSourceLabel(for: url, action: action),
+      title: action.title,
+      url: url
+    )
+  }
+  .prefix(4)
+  .map { $0 }
+}
+
+private func workWebSearchSourceLabel(for url: URL, action: CodexWebSearchAction) -> String {
+  if let host = url.host?.replacingOccurrences(of: #"^www\."#, with: "", options: .regularExpression),
+     !host.isEmpty {
+    return host
+  }
+  let title = action.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !title.isEmpty {
+    return title
+  }
+  return "Open"
 }
 
 /// Minimal "Tool calls (N)" panel — flat desktop parity. No card chrome: just a
@@ -2134,7 +2209,7 @@ struct WorkSubagentStrip: View {
     let tint = tint(for: snapshot.status)
     HStack(spacing: 6) {
       statusDot(for: snapshot.status, tint: tint)
-      Text(truncated(snapshot.description, limit: 28))
+      Text(truncated(workSubagentMeaningfulName(snapshot), limit: 28))
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
@@ -2179,10 +2254,11 @@ struct WorkSubagentStrip: View {
   @ViewBuilder
   private func expandedCard(for snapshot: WorkSubagentSnapshot) -> some View {
     let tint = tint(for: snapshot.status)
+    let runtime = workSubagentRuntimeLabel(snapshot)
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 8) {
         statusDot(for: snapshot.status, tint: tint)
-        Text(snapshot.description)
+        Text(workSubagentMeaningfulName(snapshot))
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
         Spacer(minLength: 6)
@@ -2195,6 +2271,15 @@ struct WorkSubagentStrip: View {
           Image(systemName: "wrench.and.screwdriver")
             .font(.system(size: 9, weight: .semibold))
           Text(tool)
+            .font(.caption2)
+        }
+        .foregroundStyle(ADEColor.textMuted)
+      }
+      if let runtime {
+        HStack(spacing: 4) {
+          Image(systemName: "cpu")
+            .font(.system(size: 9, weight: .semibold))
+          Text(runtime)
             .font(.caption2)
         }
         .foregroundStyle(ADEColor.textMuted)
@@ -2236,7 +2321,7 @@ struct WorkSubagentStrip: View {
 
   private func accessibilityLabel(for snapshot: WorkSubagentSnapshot) -> String {
     let status = statusLabel(for: snapshot.status)
-    return "Subagent \(snapshot.description), \(status). Tap for details."
+    return "Subagent \(workSubagentMeaningfulName(snapshot)), \(status). Tap for details."
   }
 
   private func truncated(_ value: String, limit: Int) -> String {
@@ -2428,6 +2513,9 @@ struct WorkSubagentDrawerSheet: View {
     if snapshot.background {
       parts.append("background")
     }
+    if let runtime = workSubagentRuntimeLabel(snapshot) {
+      parts.append(runtime)
+    }
     if let detailText {
       parts.append(truncatedDrawerText(detailText, limit: 58))
     }
@@ -2558,6 +2646,19 @@ private func workSubagentStatusTint(_ status: WorkSubagentSnapshot.Status) -> Co
   case .failed: return ADEColor.danger
   case .stopped: return ADEColor.warning
   }
+}
+
+private func workSubagentRuntimeLabel(_ snapshot: WorkSubagentSnapshot) -> String? {
+  var parts: [String] = []
+  if let model = snapshot.model?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !model.isEmpty {
+    parts.append(model)
+  }
+  if let effort = snapshot.reasoningEffort?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !effort.isEmpty {
+    parts.append(effort)
+  }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
 private func workSubagentElapsedLabel(_ snapshot: WorkSubagentSnapshot) -> String? {

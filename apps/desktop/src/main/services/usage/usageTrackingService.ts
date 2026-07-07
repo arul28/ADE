@@ -26,6 +26,7 @@ import type {
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
+  UsageProviderMessage,
   UsageSnapshot,
 } from "../../../shared/types";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
@@ -370,6 +371,28 @@ function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[
   const windows: UsageWindow[] = [];
   const snakeRateLimit = isRecord(data.rate_limit) ? data.rate_limit : null;
   const camelRateLimits = isRecord(data.rateLimits) ? data.rateLimits : null;
+  const seen = new Set<string>();
+
+  const addWindow = (
+    bucket: Record<string, unknown> | null,
+    windowType: UsageWindow["windowType"],
+    limitId?: string | null,
+  ): void => {
+    if (!bucket) return;
+    const resetsAt = codexResetAt(bucket.reset_at ?? bucket.resets_at ?? bucket.resetsAt);
+    const windowDurationMs = codexWindowDurationMs(bucket.windowDurationMins ?? bucket.window_duration_mins);
+    const key = `${windowType}:${resetsAt}:${limitId ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    windows.push({
+      provider: "codex",
+      windowType,
+      percentUsed: usagePercent(bucket),
+      resetsAt,
+      resetsInMs: computeResetsInMs(resetsAt),
+      ...(windowDurationMs ? { windowDurationMs } : {}),
+    });
+  };
 
   for (const [key, windowType] of [["primary", "five_hour"], ["secondary", "weekly"]] as const) {
     const snakeKey = key === "primary" ? "primary_window" : "secondary_window";
@@ -377,18 +400,111 @@ function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[
     const camelBucket = camelRateLimits && isRecord(camelRateLimits[key]) ? camelRateLimits[key] : null;
     const directBucket = isRecord(data[snakeKey]) ? data[snakeKey] : isRecord(data[key]) ? data[key] : null;
     const bucket = snakeBucket ?? camelBucket ?? directBucket;
-    if (!bucket) continue;
-    const resetsAt = codexResetAt(bucket.reset_at ?? bucket.resets_at ?? bucket.resetsAt);
-    windows.push({
-      provider: "codex",
-      windowType,
-      percentUsed: usagePercent(bucket),
-      resetsAt,
-      resetsInMs: computeResetsInMs(resetsAt),
-    });
+    addWindow(bucket, windowType);
+  }
+
+  const limitSnapshots = [
+    isRecord(data.rateLimits) ? data.rateLimits : null,
+    isRecord(data.rate_limits) ? data.rate_limits : null,
+    isRecord(data.rateLimitsByLimitId) ? data.rateLimitsByLimitId : null,
+    isRecord(data.rate_limits_by_limit_id) ? data.rate_limits_by_limit_id : null,
+  ].filter((entry): entry is Record<string, unknown> => entry != null);
+
+  for (const snapshots of limitSnapshots) {
+    for (const [limitId, rawSnapshot] of Object.entries(snapshots)) {
+      const snapshot = isRecord(rawSnapshot) ? rawSnapshot : null;
+      if (!snapshot) continue;
+      for (const [field, fallbackType] of [["primary", "five_hour"], ["secondary", "weekly"]] as const) {
+        const bucket = isRecord(snapshot[field]) ? snapshot[field] : null;
+        if (!bucket) continue;
+        addWindow(bucket, codexWindowTypeFromDuration(bucket.windowDurationMins ?? bucket.window_duration_mins) ?? fallbackType, limitId);
+      }
+    }
   }
 
   return windows;
+}
+
+function codexWindowTypeFromDuration(value: unknown): UsageWindow["windowType"] | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value <= 360) return "five_hour";
+  if (value <= 10_080) return "weekly";
+  return "monthly";
+}
+
+function codexWindowDurationMs(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value * 60_000);
+}
+
+function parseCodexDailyUsage7d(data: Record<string, unknown>, nowMs = Date.now()): number[] | null {
+  const bucketsValue = Array.isArray(data.dailyUsageBuckets)
+    ? data.dailyUsageBuckets
+    : Array.isArray(data.daily_usage_buckets)
+      ? data.daily_usage_buckets
+      : null;
+  if (!bucketsValue?.length) return null;
+  const buckets = new Array<number>(7).fill(0);
+  const todayStart = new Date(nowMs);
+  todayStart.setHours(0, 0, 0, 0);
+  const oldestStart = todayStart.getTime() - 6 * 86_400_000;
+  for (const rawBucket of bucketsValue) {
+    const bucket = isRecord(rawBucket) ? rawBucket : null;
+    if (!bucket) continue;
+    const dateText = typeof bucket.startDate === "string"
+      ? bucket.startDate
+      : typeof bucket.start_date === "string"
+        ? bucket.start_date
+        : "";
+    const tokens = typeof bucket.tokens === "number"
+      ? bucket.tokens
+      : typeof bucket.tokens === "string"
+        ? Number(bucket.tokens)
+        : 0;
+    if (!dateText || !Number.isFinite(tokens) || tokens <= 0) continue;
+    const date = new Date(dateText);
+    if (!Number.isFinite(date.getTime())) continue;
+    date.setHours(0, 0, 0, 0);
+    const offset = Math.floor((date.getTime() - oldestStart) / 86_400_000);
+    if (offset < 0 || offset > 6) continue;
+    buckets[offset] += tokens;
+  }
+  return buckets.some((value) => value > 0) ? buckets : null;
+}
+
+function parseCodexWorkspaceMessages(data: Record<string, unknown>): UsageProviderMessage[] {
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  return messages.flatMap((rawMessage) => {
+    const message = isRecord(rawMessage) ? rawMessage : null;
+    if (!message) return [];
+    const body = typeof message.messageBody === "string"
+      ? message.messageBody.trim()
+      : typeof message.message_body === "string"
+        ? message.message_body.trim()
+        : "";
+    if (!body) return [];
+    const archivedAt = message.archivedAt ?? message.archived_at;
+    if (archivedAt != null) return [];
+    const kindRaw = typeof message.messageType === "string"
+      ? message.messageType
+      : typeof message.message_type === "string"
+        ? message.message_type
+        : "unknown";
+    const kind: UsageProviderMessage["kind"] =
+      kindRaw === "headline" || kindRaw === "announcement" ? kindRaw : "unknown";
+    const createdAtValue = typeof message.createdAt === "number"
+      ? message.createdAt
+      : typeof message.created_at === "number"
+        ? message.created_at
+        : null;
+    return [{
+      provider: "codex" as const,
+      id: String(message.messageId ?? message.message_id ?? body),
+      kind,
+      message: body,
+      ...(createdAtValue != null ? { createdAt: new Date(createdAtValue * 1000).toISOString() } : {}),
+    }];
+  });
 }
 
 // Cursor usage polling was removed in 2026-05 — Cursor only exposes
@@ -451,7 +567,7 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
 
 // ── Codex Usage Polling ──────────────────────────────────────────
 
-async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[] }> {
+async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[]; dailyUsage7d?: number[]; providerMessages?: UsageProviderMessage[] }> {
   const windows: UsageWindow[] = [];
   const errors: string[] = [];
 
@@ -476,17 +592,26 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
       }
     } else if (result.data && typeof result.data === "object") {
       windows.push(...parseCodexRateLimitWindows(result.data as Record<string, unknown>));
-      if (windows.length > 0) return { windows, errors };
     }
   } catch {
     // Fall through to CLI RPC
   }
 
-  // Fallback: Codex CLI JSON-RPC
+  // Codex CLI JSON-RPC supplies native app-server usage/messages. It also
+  // remains the fallback source for rate-limit windows when the legacy HTTP
+  // endpoint is unavailable.
   try {
     const rpcResult = await pollCodexViaCliRpc(logger);
-    windows.push(...rpcResult.windows);
+    if (windows.length === 0) {
+      windows.push(...rpcResult.windows);
+    }
+    const dailyUsage7d = rpcResult.dailyUsage7d;
+    const providerMessages = rpcResult.providerMessages;
     if (rpcResult.errors.length > 0) errors.push(...rpcResult.errors);
+    if (windows.length === 0 && errors.length === 0) {
+      errors.push("codex: usage response contained no recognized windows");
+    }
+    return { windows, errors, ...(dailyUsage7d ? { dailyUsage7d } : {}), ...(providerMessages?.length ? { providerMessages } : {}) };
   } catch (err) {
     errors.push(`codex: CLI RPC failed: ${getErrorMessage(err)}`);
   }
@@ -498,9 +623,11 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
   return { windows, errors };
 }
 
-async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[] }> {
+async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindow[]; errors: string[]; dailyUsage7d?: number[]; providerMessages?: UsageProviderMessage[] }> {
   const windows: UsageWindow[] = [];
   const errors: string[] = [];
+  let dailyUsage7d: number[] | undefined;
+  let providerMessages: UsageProviderMessage[] | undefined;
 
   try {
     const initPayload = JSON.stringify({
@@ -531,7 +658,21 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
       params: {},
     });
 
-    const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n`;
+    const usagePayload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "account/usage/read",
+      params: {},
+    });
+
+    const workspaceMessagesPayload = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "account/workspaceMessages/read",
+      params: {},
+    });
+
+    const combined = `${initPayload}\n${initializedPayload}\n${rateLimitsPayload}\n${usagePayload}\n${workspaceMessagesPayload}\n`;
 
     const codexPath = resolveCodexExecutable().path;
     const env = { ...process.env };
@@ -633,17 +774,30 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<{ windows: UsageWindo
       const parsed = safeJsonParse<Record<string, unknown>>(line, {});
       if (!parsed.result || typeof parsed.result !== "object") continue;
       const res = parsed.result as Record<string, unknown>;
+      const id = typeof parsed.id === "number" ? parsed.id : null;
 
-      const parsedWindows = parseCodexRateLimitWindows(res);
-      if (parsedWindows.length > 0) {
-        windows.push(...parsedWindows);
+      if (id === 1) {
+        const parsedWindows = parseCodexRateLimitWindows(res);
+        if (parsedWindows.length > 0) {
+          windows.push(...parsedWindows);
+        }
+      } else if (id === 2) {
+        const parsedDailyUsage = parseCodexDailyUsage7d(res);
+        if (parsedDailyUsage) {
+          dailyUsage7d = parsedDailyUsage;
+        }
+      } else if (id === 3) {
+        const parsedMessages = parseCodexWorkspaceMessages(res);
+        if (parsedMessages.length > 0) {
+          providerMessages = parsedMessages;
+        }
       }
     }
   } catch (err) {
     errors.push(`codex: CLI RPC error: ${getErrorMessage(err)}`);
   }
 
-  return { windows, errors };
+  return { windows, errors, ...(dailyUsage7d ? { dailyUsage7d } : {}), ...(providerMessages ? { providerMessages } : {}) };
 }
 
 // ── Local Cost Scanning ──────────────────────────────────────────
@@ -1790,7 +1944,7 @@ export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>
 
 type UsageTrackingDependencies = {
   pollClaudeUsage?: () => Promise<{ windows: UsageWindow[]; extraUsage: ExtraUsage | null; errors: string[] }>;
-  pollCodexUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[] }>;
+  pollCodexUsage?: () => Promise<{ windows: UsageWindow[]; errors: string[]; dailyUsage7d?: number[]; providerMessages?: UsageProviderMessage[] }>;
   scanClaudeLogs?: () => Promise<TokenEntry[]>;
   scanCodexLogs?: () => Promise<TokenEntry[]>;
   scanCursorLogs?: () => Promise<TokenEntry[]>;
@@ -2003,7 +2157,12 @@ export function createUsageTrackingService({
           runCodexUsagePoll().catch((err) => {
             const msg = `codex: poll failed: ${getErrorMessage(err)}`;
             logger.warn("usage.poll.codex_failed", { error: msg });
-            return { windows: [] as UsageWindow[], errors: [msg] };
+            return {
+              windows: [] as UsageWindow[],
+              errors: [msg],
+              dailyUsage7d: undefined as number[] | undefined,
+              providerMessages: undefined as UsageProviderMessage[] | undefined,
+            };
           }),
           includeCosts ? pollCosts() : Promise.resolve(cachedCostResult()),
         ]);
@@ -2049,16 +2208,26 @@ export function createUsageTrackingService({
           if (previousClaudeExtra) extraUsage.push(previousClaudeExtra);
         }
         const costsLastPolledAt = includeCosts ? polledAt : lastSnapshot?.costsLastPolledAt;
+        const dailyUsage7d: Partial<Record<UsageProvider, number[]>> = { ...cachedDaily7d };
+        if (codexResult.dailyUsage7d?.some((value) => value > 0)) {
+          dailyUsage7d.codex = codexResult.dailyUsage7d;
+          cachedDaily7d = dailyUsage7d;
+        }
+        const providerMessages = [
+          ...(lastSnapshot?.providerMessages ?? []).filter((message) => message.provider !== "codex"),
+          ...(codexResult.providerMessages ?? []),
+        ];
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
           pacing,
           pacingByProvider,
           providerStatus,
+          ...(providerMessages.length ? { providerMessages } : {}),
           costs: costResult.costs,
           adeCosts: costResult.adeCosts,
           extraUsage,
-          dailyUsage7d: { ...cachedDaily7d },
+          dailyUsage7d,
           ...(costsLastPolledAt ? { costsLastPolledAt } : {}),
           lastPolledAt: polledAt,
           errors,

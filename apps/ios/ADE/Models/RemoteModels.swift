@@ -1565,6 +1565,11 @@ enum AgentChatActivityKind: String, Codable, Equatable {
   case toolCalling = "tool_calling"
   case webSearching = "web_searching"
   case spawningAgent = "spawning_agent"
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = AgentChatActivityKind(rawValue: raw) ?? .working
+  }
 }
 
 enum AgentChatNoticeKind: String, Codable, Equatable {
@@ -1686,6 +1691,7 @@ struct AgentChatSubagentUsage: Codable, Equatable {
   var totalTokens: Int?
   var toolUses: Int?
   var durationMs: Int?
+  var costUsd: Double?
 }
 
 struct AgentChatTurnUsage: Codable, Equatable {
@@ -1712,6 +1718,32 @@ struct AgentChatCodexThreadTokenUsage: Codable, Equatable {
   var total: AgentChatCodexTokenUsageBreakdown?
   var last: AgentChatCodexTokenUsageBreakdown?
   var modelContextWindow: Int?
+}
+
+struct CodexWebSearchAction: Codable, Equatable {
+  var type: String
+  var status: String?
+  var query: String?
+  var queries: [String]?
+  var url: String?
+  var title: String?
+  var snippet: String?
+}
+
+struct CodexSafetyBufferingState: Codable, Equatable {
+  var threadId: String?
+  var turnId: String?
+  var model: String?
+  var useCases: [String]?
+  var reasons: [String]?
+  var showBufferingUi: Bool
+  var fasterModel: String?
+}
+
+struct CodexModerationMetadata: Codable, Equatable {
+  var threadId: String?
+  var turnId: String?
+  var metadata: RemoteJSONValue?
 }
 
 struct AgentChatEventProvenance: Decodable, Equatable {
@@ -1815,16 +1847,21 @@ enum AgentChatEvent: Decodable, Equatable {
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
-  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool?, turnId: String?)
-  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, turnId: String?)
-  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
   case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, state: AgentChatContextCompactState?, turnId: String?)
   case codexContextCompaction(state: AgentChatContextCompactState, trigger: AgentChatContextCompactTrigger, turnId: String)
+  case codexSafetyBuffering(state: CodexSafetyBufferingState, turnId: String?)
+  case codexModerationMetadata(metadata: CodexModerationMetadata, turnId: String?)
+  case codexSleep(itemId: String, turnId: String?, durationMs: Int?, status: String)
+  case codexTurnStalled(turnId: String, threadId: String?, reason: String, message: String, recoveryOptions: [String]?)
+  case codexThreadDeleted(threadId: String, turnId: String?)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
-  case webSearch(query: String, action: String?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
+  case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
   case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
   case promptSuggestion(suggestion: String, turnId: String?)
   case planText(text: String, turnId: String?, itemId: String?)
@@ -1865,10 +1902,13 @@ extension AgentChatEvent {
     case turnStatus
     case contract
     case message
+    case reason
     case errorInfo
     case status
     case model
     case modelId
+    case label
+    case reasoningEffort
     case usage
     case costUsd
     case inputTokens
@@ -1891,10 +1931,15 @@ extension AgentChatEvent {
     case trigger
     case preTokens
     case state
+    case reasons
+    case recoveryOptions
+    case threadId
+    case metadata
     case noticeKind
     case report
     case query
     case action
+    case actions
     case reviewStatus
     case review
     case suggestion
@@ -2062,6 +2107,9 @@ extension AgentChatEvent {
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decode(String.self, forKey: .description),
         background: try container.decodeIfPresent(Bool.self, forKey: .background),
+        label: try container.decodeIfPresent(String.self, forKey: .label),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "subagent_progress":
@@ -2074,6 +2122,9 @@ extension AgentChatEvent {
         summary: try container.decode(String.self, forKey: .summary),
         usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
         lastToolName: try container.decodeIfPresent(String.self, forKey: .lastToolName),
+        label: try container.decodeIfPresent(String.self, forKey: .label),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "subagent_result":
@@ -2085,6 +2136,9 @@ extension AgentChatEvent {
         status: try container.decode(AgentChatSubagentStatus.self, forKey: .status),
         summary: try container.decode(String.self, forKey: .summary),
         usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
+        label: try container.decodeIfPresent(String.self, forKey: .label),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "structured_question":
@@ -2113,6 +2167,41 @@ extension AgentChatEvent {
         trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
         turnId: try container.decode(String.self, forKey: .turnId)
       )
+    case "codex_safety_buffering":
+      self = .codexSafetyBuffering(
+        state: try container.decode(CodexSafetyBufferingState.self, forKey: .state),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "codex_moderation_metadata":
+      self = .codexModerationMetadata(
+        metadata: try container.decode(CodexModerationMetadata.self, forKey: .metadata),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "codex_sleep":
+      self = .codexSleep(
+        itemId: try container.decode(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        durationMs: try container.decodeIfPresent(Int.self, forKey: .durationMs),
+        status: try container.decode(String.self, forKey: .status)
+      )
+    case "codex_turn_stalled":
+      let turnId = try container.decode(String.self, forKey: .turnId)
+      let threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+      let reason = try container.decode(String.self, forKey: .reason)
+      let message = try container.decode(String.self, forKey: .message)
+      let recoveryOptions = try container.decodeIfPresent([String].self, forKey: .recoveryOptions)
+      self = .codexTurnStalled(
+        turnId: turnId,
+        threadId: threadId,
+        reason: reason,
+        message: message,
+        recoveryOptions: recoveryOptions
+      )
+    case "codex_thread_deleted":
+      self = .codexThreadDeleted(
+        threadId: try container.decode(String.self, forKey: .threadId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
     case "system_notice":
       self = .systemNotice(
         noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
@@ -2130,6 +2219,7 @@ extension AgentChatEvent {
       self = .webSearch(
         query: try container.decode(String.self, forKey: .query),
         action: try container.decodeIfPresent(String.self, forKey: .action),
+        actions: try container.decodeIfPresent([CodexWebSearchAction].self, forKey: .actions),
         itemId: try container.decode(String.self, forKey: .itemId),
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
@@ -2187,6 +2277,11 @@ extension AgentChatEvent {
     case .toolUseSummary: return "tool_use_summary"
     case .contextCompact: return "context_compact"
     case .codexContextCompaction: return "codex_context_compaction"
+    case .codexSafetyBuffering: return "codex_safety_buffering"
+    case .codexModerationMetadata: return "codex_moderation_metadata"
+    case .codexSleep: return "codex_sleep"
+    case .codexTurnStalled: return "codex_turn_stalled"
+    case .codexThreadDeleted: return "codex_thread_deleted"
     case .systemNotice: return "system_notice"
     case .completionReport: return "completion_report"
     case .webSearch: return "web_search"

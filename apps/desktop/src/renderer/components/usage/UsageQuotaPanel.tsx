@@ -89,6 +89,12 @@ function formatClock(targetMs: number, nowMs: number): string {
 }
 
 function windowLabel(window: UsageWindow): string {
+  if (window.windowType === "five_hour" && window.windowDurationMs && window.windowDurationMs > 0) {
+    const minutes = Math.round(window.windowDurationMs / 60_000);
+    if (minutes < 60) return `${minutes}-min`;
+    const hours = minutes / 60;
+    return Number.isInteger(hours) ? `${hours}-hour` : `${hours.toFixed(1)}-hour`;
+  }
   switch (window.windowType) {
     case "five_hour":
       return "5-hour";
@@ -313,6 +319,7 @@ export function UsageQuotaPanel({
               windows={windowsByProvider[provider] ?? []}
               connection={providerConnection(providerConnections, provider)}
               status={snapshot?.providerStatus?.[provider] ?? null}
+              messages={(snapshot?.providerMessages ?? []).filter((message) => message.provider === provider)}
               dailyUsage7d={snapshot?.dailyUsage7d?.[provider] ?? null}
               nowMs={nowMs}
               reducedMotion={reducedMotion}
@@ -483,6 +490,7 @@ function ProviderUsageCard({
   windows,
   connection,
   status,
+  messages,
   dailyUsage7d,
   nowMs,
   reducedMotion,
@@ -491,6 +499,7 @@ function ProviderUsageCard({
   windows: UsageWindow[];
   connection: AiProviderConnectionStatus | null;
   status: UsageProviderStatus | null;
+  messages: NonNullable<UsageSnapshot["providerMessages"]>;
   dailyUsage7d: number[] | null;
   nowMs: number;
   reducedMotion: boolean;
@@ -534,6 +543,19 @@ function ProviderUsageCard({
 
       {windows.length > 0 ? (
         <div className="space-y-3">
+          {messages.slice(0, 1).map((message) => (
+            <div
+              key={message.id}
+              className="rounded-lg border border-white/[0.06] bg-white/[0.035] px-2.5 py-1.5 text-[10.5px] leading-relaxed text-fg/58"
+              title={message.message}
+            >
+              <span className="mr-1.5 font-semibold text-fg/68">
+                {message.kind === "headline" ? "Notice" : "Update"}
+              </span>
+              {message.message}
+            </div>
+          ))}
+
           {fiveHourWindow ? (
             <PaceBar window={fiveHourWindow} toneColor={meta.color} nowMs={nowMs} reducedMotion={reducedMotion} />
           ) : null}

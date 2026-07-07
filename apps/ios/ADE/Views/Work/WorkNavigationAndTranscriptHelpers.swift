@@ -840,7 +840,7 @@ func buildWorkToolCards(
         argsText: existing?.argsText,
         resultText: nonEmpty(resultText)
       )
-    case .webSearch(let query, let action, let status, let itemId, _):
+    case .webSearch(let query, let action, let actions, let status, let itemId, _):
       // Web searches are tool calls — render them as tool cards so they're
       // absorbed into the same `Tool calls` cluster as Read/Bash/etc. on the
       // timeline, mirroring the desktop `work_log_group` behavior. Without
@@ -850,6 +850,14 @@ func buildWorkToolCards(
       if existing == nil {
         orderedIds.append(itemId)
       }
+      let actionSummary = actions?
+        .prefix(4)
+        .map { action in
+          [action.title, action.url, action.query, action.queries?.first]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? action.type
+        }
+        .joined(separator: "\n")
       cards[itemId] = WorkToolCardModel(
         id: itemId,
         toolName: "web_search",
@@ -857,7 +865,8 @@ func buildWorkToolCards(
         startedAt: existing?.startedAt ?? envelope.timestamp,
         completedAt: status == .running ? nil : envelope.timestamp,
         argsText: nonEmpty(query),
-        resultText: action.flatMap(nonEmpty) ?? existing?.resultText
+        resultText: actionSummary.flatMap(nonEmpty) ?? action.flatMap(nonEmpty) ?? existing?.resultText,
+        webSearchActions: actions
       )
     default:
       continue

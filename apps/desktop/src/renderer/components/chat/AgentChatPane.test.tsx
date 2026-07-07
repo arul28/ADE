@@ -3311,9 +3311,11 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    const createBtn = await screen.findByRole("button", { name: "Create handoff chat" });
+    const forkBtn = await screen.findByRole("button", { name: "Fork thread" });
+    const briefBtn = await screen.findByRole("button", { name: "Brief handoff" });
     await waitFor(() => {
-      expect((createBtn as HTMLButtonElement).disabled).toBe(true);
+      expect((forkBtn as HTMLButtonElement).disabled).toBe(true);
+      expect((briefBtn as HTMLButtonElement).disabled).toBe(true);
     });
   });
 
@@ -3341,8 +3343,8 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    expect(await screen.findByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+    expect(await screen.findByText("Fork keeps the Codex provider thread history. Brief sends a summary as the first message.")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -3378,7 +3380,7 @@ describe("AgentChatPane submit recovery", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
 
     await waitFor(() => {
       const jobs = Object.values(useAppStore.getState().handoffLaunchJobsByScope).flat();
@@ -3409,6 +3411,7 @@ describe("AgentChatPane submit recovery", () => {
     const session = buildSession("session-1", { status: "idle" });
     const { handoff } = installAdeMocks({
       includeClaudeModel: true,
+      sessions: [session],
       handoffResult: {
         session: buildCreatedSession("session-2", {
           provider: "claude",
@@ -3433,12 +3436,12 @@ describe("AgentChatPane submit recovery", () => {
     const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
-    expect(screen.getByText("Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message.")).toBeTruthy();
+    expect(screen.getByText("Create opens the new work chat and sends the handoff summary as its first message.")).toBeTruthy();
 
     const permissionSelect = await screen.findByLabelText("Claude permission mode for handoff") as HTMLSelectElement;
     expect(within(permissionSelect).getByRole("option", { name: "Auto" })).toBeTruthy();
     fireEvent.change(permissionSelect, { target: { value: "plan" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create handoff chat" }));
 
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
@@ -3452,9 +3455,15 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("can fork a Claude handoff with full SDK history", async () => {
-    const session = buildSession("session-1", { status: "idle" });
+    const session = buildSession("session-1", {
+      provider: "claude",
+      model: "sonnet",
+      modelId: "anthropic/claude-sonnet-4-6",
+      status: "idle",
+    });
     const { handoff } = installAdeMocks({
       includeClaudeModel: true,
+      sessions: [session],
       handoffResult: {
         session: buildCreatedSession("session-2", {
           provider: "claude",

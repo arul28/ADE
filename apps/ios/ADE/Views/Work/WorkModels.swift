@@ -78,6 +78,27 @@ struct WorkToolCardModel: Identifiable, Equatable {
   let completedAt: String?
   let argsText: String?
   let resultText: String?
+  let webSearchActions: [CodexWebSearchAction]?
+
+  init(
+    id: String,
+    toolName: String,
+    status: WorkToolCardStatus,
+    startedAt: String,
+    completedAt: String?,
+    argsText: String?,
+    resultText: String?,
+    webSearchActions: [CodexWebSearchAction]? = nil
+  ) {
+    self.id = id
+    self.toolName = toolName
+    self.status = status
+    self.startedAt = startedAt
+    self.completedAt = completedAt
+    self.argsText = argsText
+    self.resultText = resultText
+    self.webSearchActions = webSearchActions
+  }
 }
 
 struct WorkNavigationTargets: Equatable {
@@ -551,6 +572,9 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   let parentToolUseId: String?
   let description: String
   let background: Bool
+  let label: String?
+  let model: String?
+  let reasoningEffort: String?
   let status: Status
   let lastToolName: String?
   let latestSummary: String?
@@ -769,9 +793,9 @@ enum WorkChatEvent: Equatable {
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus)
   case activity(kind: String, detail: String?, turnId: String?)
   case plan(steps: [WorkPlanStep], explanation: String?, turnId: String?)
-  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool, turnId: String?)
-  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, toolName: String?, turnId: String?)
-  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: String, summary: String, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, toolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: String, summary: String, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case structuredQuestion(question: String, options: [WorkPendingQuestionOption], itemId: String, turnId: String?)
   case approvalRequest(description: String, detail: String?, itemId: String, turnId: String?)
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
@@ -783,7 +807,9 @@ enum WorkChatEvent: Equatable {
   case promptSuggestion(text: String, turnId: String?)
   case contextCompact(summary: String, isInProgress: Bool, turnId: String?)
   case autoApprovalReview(summary: String, turnId: String?)
-  case webSearch(query: String, action: String?, status: WorkToolCardStatus, itemId: String, turnId: String?)
+  case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
+  case codexState(title: String, message: String, icon: String, turnId: String?)
+  case codexTurnStalled(message: String, recoveryOptions: [String], turnId: String?)
   case planText(text: String, turnId: String?)
   case toolUseSummary(text: String, turnId: String?)
   case status(turnStatus: String, message: String?, turnId: String?)
@@ -816,6 +842,8 @@ enum WorkChatEvent: Equatable {
     case .contextCompact: return "context_compact"
     case .autoApprovalReview: return "auto_approval_review"
     case .webSearch: return "web_search"
+    case .codexState: return "codex_state"
+    case .codexTurnStalled: return "codex_turn_stalled"
     case .planText: return "plan_text"
     case .toolUseSummary: return "tool_use_summary"
     case .status: return "status"

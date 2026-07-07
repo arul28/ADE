@@ -75,7 +75,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .plan(steps: let steps, turnId: let turnId, explanation: let explanation):
     let mapped = steps.map { WorkPlanStep(text: $0.text, status: $0.status) }
     return .plan(steps: mapped, explanation: explanation, turnId: turnId)
-  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     return .subagentStarted(
       taskId: taskId,
       agentId: agentId,
@@ -83,9 +83,12 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       parentToolUseId: parentToolUseId,
       description: description,
       background: background ?? false,
+      label: label,
+      model: model,
+      reasoningEffort: reasoningEffort,
       turnId: turnId
     )
-  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, _, let lastToolName, let turnId):
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, _, let lastToolName, let label, let model, let reasoningEffort, let turnId):
     return .subagentProgress(
       taskId: taskId,
       agentId: agentId,
@@ -94,9 +97,12 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       description: description,
       summary: summary,
       toolName: lastToolName,
+      label: label,
+      model: model,
+      reasoningEffort: reasoningEffort,
       turnId: turnId
     )
-  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, _, let turnId):
+  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, _, let label, let model, let reasoningEffort, let turnId):
     return .subagentResult(
       taskId: taskId,
       agentId: agentId,
@@ -104,6 +110,9 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       parentToolUseId: parentToolUseId,
       status: status.rawValue,
       summary: summary,
+      label: label,
+      model: model,
+      reasoningEffort: reasoningEffort,
       turnId: turnId
     )
   case .structuredQuestion(let question, let options, let itemId, let turnId):
@@ -246,8 +255,20 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .autoApprovalReview(_, let reviewStatus, let action, let review, let turnId):
     let summary = [reviewStatus.rawValue.capitalized, action, review].compactMap { $0 }.joined(separator: "\n")
     return .autoApprovalReview(summary: summary, turnId: turnId)
-  case .webSearch(let query, let action, let itemId, let logicalItemId, let turnId, let status):
-    return .webSearch(query: query, action: action, status: toolStatus(from: status), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
+  case .webSearch(let query, let action, let actions, let itemId, let logicalItemId, let turnId, let status):
+    return .webSearch(query: query, action: action, actions: actions, status: toolStatus(from: status), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
+  case .codexSafetyBuffering(let state, let turnId):
+    let detail = state.fasterModel.map { "Buffering, \($0) ready" } ?? "Buffering"
+    return .codexState(title: "Safety", message: detail, icon: "shield.checkered", turnId: turnId ?? state.turnId)
+  case .codexModerationMetadata(_, let turnId):
+    return .codexState(title: "Moderation", message: "Checked", icon: "checkmark.shield", turnId: turnId)
+  case .codexSleep(_, let turnId, let durationMs, _):
+    let duration = durationMs.map { $0 < 1000 ? "\($0)ms" : "\(($0 + 500) / 1000)s" }
+    return .codexState(title: "Wait", message: duration.map { "Sleeping \($0)" } ?? "Sleeping", icon: "hourglass", turnId: turnId)
+  case .codexThreadDeleted(_, let turnId):
+    return .codexState(title: "Thread", message: "Deleted upstream. Next message starts fresh.", icon: "exclamationmark.triangle", turnId: turnId)
+  case .codexTurnStalled(let turnId, _, _, let message, let recoveryOptions):
+    return .codexTurnStalled(message: message, recoveryOptions: recoveryOptions ?? [], turnId: turnId)
   case .planText(let text, let turnId, _):
     return .planText(text: text, turnId: turnId)
   case .toolUseSummary(let summary, _, let turnId):

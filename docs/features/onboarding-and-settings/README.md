@@ -244,9 +244,14 @@ Renderer — settings:
   panel as "Not signed in". The panel auto-refreshes on open, subscribes
   to usage `onUpdate`, and drills down into 5-hour, weekly, monthly,
   and other reset windows, last-poll status, daily 7-day usage, and
-  per-provider error chips. Cursor usage polling was removed (it
-  required a team-admin API key that desktop users almost never have);
-  only `claude` and `codex` are tracked in `TRACKED_PROVIDERS`. Budget
+  per-provider messages/error chips. Codex polling keeps the legacy HTTP
+  rate-limit endpoint as the first source for windows, then also asks the
+  Codex app-server via CLI JSON-RPC for `account/usage/read` and
+  `account/workspaceMessages/read` so the panel can show native daily
+  usage and provider workspace messages even when HTTP windows succeed.
+  Cursor usage polling was removed (it required a team-admin API key that
+  desktop users almost never have); only `claude` and `codex` are tracked
+  in `TRACKED_PROVIDERS`. Budget
   caps round-trip through `ade.usage.getBudgetConfig` /
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s for local usage handling.

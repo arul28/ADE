@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { PencilSimple, Target, X } from "@phosphor-icons/react";
+import { CheckCircle, Pause, PencilSimple, Play, Target, WarningCircle, X } from "@phosphor-icons/react";
 import type { CodexThreadGoal } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 
@@ -10,6 +10,7 @@ type CodexGoalCardProps = {
   goal: CodexThreadGoal;
   onEdit?: (nextObjective: string) => void;
   onClear?: () => void;
+  onSetStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
   pending?: boolean;
 };
 
@@ -82,7 +83,7 @@ function statusTone(
   }
 }
 
-export function CodexGoalCard({ goal, onEdit, onClear, pending = false }: CodexGoalCardProps) {
+export function CodexGoalCard({ goal, onEdit, onClear, onSetStatus, pending = false }: CodexGoalCardProps) {
   const objective = (goal.objective ?? "").trim();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(objective);
@@ -103,7 +104,8 @@ export function CodexGoalCard({ goal, onEdit, onClear, pending = false }: CodexG
 
   const tokensUsed = Math.max(0, goal.tokensUsed ?? 0);
   const elapsed = formatElapsed(goal.timeUsedSeconds);
-  const tone = statusTone(goal.status ?? "active");
+  const currentStatus = goal.status ?? "active";
+  const tone = statusTone(currentStatus);
 
   const submitEdit = () => {
     const next = draft.replace(/\s*[\r\n]+\s*/g, " ").trim();
@@ -208,6 +210,69 @@ export function CodexGoalCard({ goal, onEdit, onClear, pending = false }: CodexG
             </>
           ) : null}
           <div className="ml-1 flex shrink-0 items-center gap-0.5">
+            {onSetStatus ? (
+              <>
+                {currentStatus !== "active" ? (
+                  <button
+                    type="button"
+                    onClick={() => onSetStatus("active")}
+                    disabled={pending}
+                    className={cn(
+                      "rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100",
+                      pending && "cursor-default opacity-45 hover:bg-transparent hover:text-amber-200/55",
+                    )}
+                    aria-label="Resume goal"
+                    title="Resume goal"
+                  >
+                    <Play size={11} weight="fill" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onSetStatus("paused")}
+                    disabled={pending}
+                    className={cn(
+                      "rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100",
+                      pending && "cursor-default opacity-45 hover:bg-transparent hover:text-amber-200/55",
+                    )}
+                    aria-label="Pause goal"
+                    title="Pause goal"
+                  >
+                    <Pause size={11} weight="fill" />
+                  </button>
+                )}
+                {currentStatus !== "blocked" ? (
+                  <button
+                    type="button"
+                    onClick={() => onSetStatus("blocked")}
+                    disabled={pending}
+                    className={cn(
+                      "rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100",
+                      pending && "cursor-default opacity-45 hover:bg-transparent hover:text-amber-200/55",
+                    )}
+                    aria-label="Mark goal blocked"
+                    title="Mark blocked"
+                  >
+                    <WarningCircle size={11} weight="regular" />
+                  </button>
+                ) : null}
+                {currentStatus !== "complete" ? (
+                  <button
+                    type="button"
+                    onClick={() => onSetStatus("complete")}
+                    disabled={pending}
+                    className={cn(
+                      "rounded p-1 text-amber-200/55 transition-colors hover:bg-amber-500/10 hover:text-amber-100",
+                      pending && "cursor-default opacity-45 hover:bg-transparent hover:text-amber-200/55",
+                    )}
+                    aria-label="Mark goal complete"
+                    title="Mark complete"
+                  >
+                    <CheckCircle size={11} weight="regular" />
+                  </button>
+                ) : null}
+              </>
+            ) : null}
             {onEdit && !editing ? (
               <button
                 type="button"

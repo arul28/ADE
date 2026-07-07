@@ -13,6 +13,9 @@ export type SubagentSnapshot = {
   summary: string;
   parentToolUseId?: string | null;
   turnId?: string | null;
+  label?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   background?: boolean;
   taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
   workflowName?: string;
@@ -185,9 +188,12 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
         turnId: typeof event.turnId === "string" ? event.turnId : existing?.turnId,
         startedAt: existing?.startedAt ?? envelope.timestamp,
         tokens: existing?.tokens,
-        durationMs: existing?.durationMs,
-        lastToolName: existing?.lastToolName,
-      });
+      durationMs: existing?.durationMs,
+      lastToolName: existing?.lastToolName,
+      label: existing?.label,
+      model: existing?.model,
+      reasoningEffort: existing?.reasoningEffort,
+    });
       continue;
     }
 
@@ -208,9 +214,12 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
         startedAt: existing?.startedAt ?? envelope.timestamp,
         endedAt: envelope.timestamp,
         tokens: existing?.tokens,
-        durationMs: existing?.durationMs,
-        lastToolName: existing?.lastToolName,
-      });
+      durationMs: existing?.durationMs,
+      lastToolName: existing?.lastToolName,
+      label: existing?.label,
+      model: existing?.model,
+      reasoningEffort: existing?.reasoningEffort,
+    });
       continue;
     }
 
@@ -264,6 +273,9 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
       summary,
       parentToolUseId,
       turnId: typeof event.turnId === "string" ? event.turnId : existing?.turnId ?? null,
+      label: typeof event.label === "string" ? event.label : existing?.label ?? null,
+      model: typeof event.model === "string" ? event.model : existing?.model ?? null,
+      reasoningEffort: typeof event.reasoningEffort === "string" ? event.reasoningEffort : existing?.reasoningEffort ?? null,
       background: event.background === true || existing?.background === true,
       ...(incomingTaskType || existingTaskType
         ? { taskType: incomingTaskType ?? existingTaskType }

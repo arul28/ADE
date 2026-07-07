@@ -1497,6 +1497,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
+    $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
+    $ ade chat goal <session> --status paused       Update a Codex goal status
+    $ ade chat fork <session> --model openai/gpt-5.5
+                                                    Fork full provider history into a new chat
+    $ ade chat rewind-files <session> --message <user-message-id> --dry-run
+                                                    Preview or apply file/context rewind
+    $ ade chat subagents <session> --text           List child agents for a chat
     $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -2356,6 +2363,12 @@ type ToolClaimArgs = {
   laneId?: string;
   chatSessionId?: string;
 };
+
+type CodexGoalCliStatus = "active" | "paused" | "blocked" | "complete";
+
+function isCodexGoalCliStatus(value: string | null): value is CodexGoalCliStatus {
+  return value === "active" || value === "paused" || value === "blocked" || value === "complete";
+}
 
 function readToolClaimArgs(args: string[]): ToolClaimArgs {
   const laneId = asString(
@@ -6244,6 +6257,7 @@ function buildChatPlan(args: string[]): CliPlan {
       ...base,
       ...(sessionId ? { sessionId } : {}),
     });
+  const requireSession = () => requireValue(sessionId, "sessionId");
   if (sub === "list" || sub === "ls") {
     const includeArchived = readFlag(args, ["--archived", "--include-archived"]);
     const excludeArchived = readFlag(args, [
@@ -6602,6 +6616,173 @@ function buildChatPlan(args: string[]): CliPlan {
         ),
       ],
     };
+  if (sub === "goal" || sub === "codex-goal") {
+    const clear = readFlag(args, ["--clear", "--delete", "--rm"]);
+    const statusFlag = readValue(args, ["--status"]);
+    const objectiveFlag = readValue(args, ["--objective", "--goal", "--text", "--set"]);
+    const positional = firstStandalonePositional(args);
+    const positionalStatus = isCodexGoalCliStatus(positional) ? positional : null;
+    const status = statusFlag ?? positionalStatus;
+    const objective = objectiveFlag ?? (positional && !positionalStatus ? positional : null);
+    if (clear && (status || objective)) {
+      throw new CliUsageError("Use either --clear, --status, or --objective for chat goal.");
+    }
+    if (status && objective) {
+      throw new CliUsageError("Use either --status or --objective for chat goal.");
+    }
+    if (status && !isCodexGoalCliStatus(status)) {
+      throw new CliUsageError("chat goal --status must be active, paused, blocked, or complete.");
+    }
+    if (clear) {
+      return {
+        kind: "execute",
+        label: "chat clear Codex goal",
+        steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
+      };
+    }
+    if (status) {
+      return {
+        kind: "execute",
+        label: "chat Codex goal status",
+        steps: [actionStep("result", "chat", "setCodexGoalStatus", withSession({ sessionId: requireSession(), status }))],
+      };
+    }
+    if (objective) {
+      return {
+        kind: "execute",
+        label: "chat Codex goal",
+        steps: [actionStep("result", "chat", "setCodexGoal", withSession({ sessionId: requireSession(), objective }))],
+      };
+    }
+    return {
+      kind: "execute",
+      label: "chat Codex goal",
+      steps: [actionStep("result", "chat", "getCodexGoal", withSession({ sessionId: requireSession() }))],
+    };
+  }
+  if (sub === "goal-status" || sub === "codex-goal-status") {
+    const status = readValue(args, ["--status"]) ?? firstStandalonePositional(args);
+    if (!isCodexGoalCliStatus(status)) {
+      throw new CliUsageError("chat goal-status requires status active, paused, blocked, or complete.");
+    }
+    return {
+      kind: "execute",
+      label: "chat Codex goal status",
+      steps: [actionStep("result", "chat", "setCodexGoalStatus", withSession({ sessionId: requireSession(), status }))],
+    };
+  }
+  if (sub === "clear-goal" || sub === "goal-clear" || sub === "delete-goal") {
+    return {
+      kind: "execute",
+      label: "chat clear Codex goal",
+      steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
+    };
+  }
+  if (sub === "handoff" || sub === "fork") {
+    const modeArg = readValue(args, ["--mode"]);
+    const forkFlag = readFlag(args, ["--fork"]);
+    const briefFlag = readFlag(args, ["--brief"]);
+    if ((forkFlag && briefFlag) || (modeArg && (forkFlag || briefFlag))) {
+      throw new CliUsageError("Use either --mode, --fork, or --brief for chat handoff.");
+    }
+    const mode = sub === "fork" || forkFlag ? "fork" : briefFlag ? "brief" : modeArg ?? "brief";
+    if (mode !== "brief" && mode !== "fork") {
+      throw new CliUsageError("chat handoff --mode must be brief or fork.");
+    }
+    const targetModelId = requireValue(
+      readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
+        firstStandalonePositional(args),
+      "targetModelId",
+    );
+    const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
+    const fastMode = readFastModeFlag(args);
+    const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
+    const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
+    const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
+    const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
+    return {
+      kind: "execute",
+      label: mode === "fork" ? "chat fork" : "chat handoff",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "handoffSession",
+          collectGenericObjectArgs(args, {
+            sourceSessionId: requireSession(),
+            targetModelId,
+            mode,
+            ...(reasoningEffort !== null ? { reasoningEffort } : {}),
+            ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+            ...(permissionMode !== null ? { permissionMode } : {}),
+            ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
+            ...(codexSandbox !== null ? { codexSandbox } : {}),
+            ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "rewind" || sub === "rewind-files" || sub === "file-rewind") {
+    const userMessageId = requireValue(
+      readValue(args, ["--user-message-id", "--message-id", "--message", "--item-id"]) ??
+        firstStandalonePositional(args),
+      "userMessageId",
+    );
+    const dryRun = readFlag(args, ["--dry-run", "--preview"]);
+    return {
+      kind: "execute",
+      label: "chat rewind files",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "rewindFiles",
+          collectGenericObjectArgs(args, {
+            sessionId: requireSession(),
+            userMessageId,
+            ...(dryRun ? { dryRun: true } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "subagents" || sub === "list-subagents") {
+    return {
+      kind: "execute",
+      label: "chat subagents",
+      steps: [actionStep("result", "chat", "listSubagents", withSession({ sessionId: requireSession() }))],
+    };
+  }
+  if (sub === "subagent" || sub === "subagent-transcript") {
+    const agentId = requireValue(
+      readValue(args, ["--agent-id", "--agent", "--task-id", "--task"]) ?? firstStandalonePositional(args),
+      "agentId",
+    );
+    const taskId = readValue(args, ["--task-id", "--task"]);
+    const laneId = readLaneId(args);
+    const limit = readValue(args, ["--limit"]);
+    const offset = readValue(args, ["--offset"]);
+    return {
+      kind: "execute",
+      label: "chat subagent transcript",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "getSubagentTranscript",
+          collectGenericObjectArgs(args, {
+            sessionId: requireSession(),
+            agentId,
+            ...(taskId ? { taskId } : {}),
+            ...(laneId ? { laneId } : {}),
+            ...(limit ? { limit: Number(limit) } : {}),
+            ...(offset ? { offset: Number(offset) } : {}),
+          }),
+        ),
+      ],
+    };
+  }
   if (sub === "delete" || sub === "rm")
     return {
       kind: "execute",

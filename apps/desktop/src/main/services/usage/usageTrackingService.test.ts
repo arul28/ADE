@@ -733,6 +733,28 @@ describe("parseCodexRateLimitWindows", () => {
     expect(result.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
     expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(64);
   });
+
+  it("preserves native Codex bucket durations", () => {
+    const result = parseCodexRateLimitWindows({
+      rateLimitsByLimitId: {
+        primary_tokens: {
+          primary: {
+            usedPercent: 12,
+            resetsAt: 1773446952,
+            windowDurationMins: 60,
+          },
+        },
+      },
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      provider: "codex",
+      windowType: "five_hour",
+      percentUsed: 12,
+      windowDurationMs: 60 * 60_000,
+    });
+  });
 });
 
 describe("pollCodexViaCliRpc", () => {
@@ -930,6 +952,84 @@ describe("pollCodexViaCliRpc", () => {
       expect(result.windows).toEqual([]);
       expect(result.errors).toEqual(["codex: API returned 429"]);
       expect(mockState.spawn).not.toHaveBeenCalled();
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("merges app-server daily usage and workspace messages when HTTP rate-limit windows succeed", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "ok-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        rate_limit: {
+          primary_window: { used_percent: 15, reset_at: 1773446952 },
+          secondary_window: { used_percent: 63, reset_at: 1773853354 },
+        },
+      }),
+    }));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const fake = createFakeCodexChild({
+      stdout: [
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          result: {
+            dailyUsageBuckets: [
+              { startDate: today.toISOString(), tokens: 123 },
+            ],
+          },
+        }),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 3,
+          result: {
+            messages: [
+              {
+                messageId: "msg-1",
+                messageType: "headline",
+                messageBody: "Native usage ready",
+                createdAt: 1773446952,
+              },
+            ],
+          },
+        }),
+      ].join("\n") + "\n",
+    });
+    mockState.resolveCodexExecutable.mockReturnValue({
+      path: "codex.exe",
+      source: "path",
+    });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    try {
+      const logger = createLogger();
+      const result = await pollCodexUsage(logger as any);
+
+      expect(result.errors).toEqual([]);
+      expect(result.windows).toHaveLength(2);
+      expect(result.dailyUsage7d?.some((value) => value === 123)).toBe(true);
+      expect(result.providerMessages).toEqual([
+        expect.objectContaining({
+          provider: "codex",
+          id: "msg-1",
+          kind: "headline",
+          message: "Native usage ready",
+        }),
+      ]);
     } finally {
       if (originalCodexHome === undefined) {
         delete process.env.CODEX_HOME;

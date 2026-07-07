@@ -58,7 +58,7 @@ describe("resolveCodexExecutable", () => {
     expect(mockState.resolveExecutableFromKnownLocations).not.toHaveBeenCalled();
   });
 
-  it("prefers the bundled platform Codex binary before auth or common PATH fallback", () => {
+  it("prefers the bundled platform Codex binary from the current package layout", () => {
     mockState.resolveExecutableFromKnownLocations.mockReset();
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-bundle-"));
@@ -67,7 +67,7 @@ describe("resolveCodexExecutable", () => {
       "codex-darwin-arm64",
       "vendor",
       "aarch64-apple-darwin",
-      "codex",
+      "bin",
       "codex",
     );
     fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
@@ -86,6 +86,42 @@ describe("resolveCodexExecutable", () => {
               verified: true,
             },
           ],
+          env: {
+            PATH: "/usr/bin:/bin",
+          },
+          bundledRoots: [tmpDir],
+          platform: "darwin",
+          arch: "arm64",
+        }),
+      ).toEqual({
+        path: binaryPath,
+        source: "bundled",
+      });
+      expect(mockState.resolveExecutableFromKnownLocations).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still supports the legacy bundled platform Codex binary layout", () => {
+    mockState.resolveExecutableFromKnownLocations.mockReset();
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-codex-bundle-"));
+    const binaryPath = path.join(
+      tmpDir,
+      "codex-darwin-arm64",
+      "vendor",
+      "aarch64-apple-darwin",
+      "codex",
+      "codex",
+    );
+    fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
+    fs.writeFileSync(binaryPath, "#!/bin/sh\n", "utf8");
+    fs.chmodSync(binaryPath, 0o755);
+
+    try {
+      expect(
+        resolveCodexExecutable({
           env: {
             PATH: "/usr/bin:/bin",
           },

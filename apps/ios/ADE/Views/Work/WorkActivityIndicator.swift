@@ -209,7 +209,7 @@ struct WorkActivityIndicator: View {
           tint: ADEColor.accent
         )
 
-      case .webSearch(let query, _, let status, _, let turnId):
+      case .webSearch(let query, _, _, let status, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(
@@ -219,19 +219,19 @@ struct WorkActivityIndicator: View {
           )
         }
 
-      case .subagentStarted(_, _, _, _, let description, _, let turnId):
+      case .subagentStarted(_, _, _, _, let description, _, let label, _, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: "Agent",
-          detail: description,
+          detail: label?.isEmpty == false ? label : description,
           tint: ADEColor.accent
         )
 
-      case .subagentProgress(_, _, _, _, _, let summary, let toolName, let turnId):
+      case .subagentProgress(_, _, _, _, _, let summary, let toolName, let label, _, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: toolName.map { "Agent · \($0)" } ?? "Agent",
-          detail: summary.isEmpty ? nil : summary,
+          detail: summary.isEmpty ? label : summary,
           tint: ADEColor.accent
         )
 
@@ -257,6 +257,7 @@ struct WorkActivityIndicator: View {
            .todoUpdate, .approvalRequest, .structuredQuestion, .toolUseSummary,
            .systemNotice, .error, .promptSuggestion, .contextCompact,
            .autoApprovalReview, .pendingInputResolved, .subagentResult,
+           .codexState, .codexTurnStalled,
            .completionReport, .tokens, .unknown:
         continue
       }

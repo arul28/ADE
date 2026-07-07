@@ -37,6 +37,7 @@ export type ChatWorkLogEntry = {
   cwd?: string;
   query?: string;
   action?: string;
+  actions?: NonNullable<Extract<AgentChatEvent, { type: "web_search" }>["actions"]>;
   itemId?: string;
   turnId?: string;
   parentItemId?: string;
@@ -448,6 +449,7 @@ function buildWebSearchWorkLogEvent(
       detail: event.action,
       query: event.query,
       action: event.action,
+      ...(event.actions?.length ? { actions: event.actions } : {}),
       tone: deriveTone(event.status, "info"),
       status: event.status,
       entryKind: "web_search",
@@ -595,7 +597,7 @@ export function appendCollapsedChatTranscriptEvent(
 ): void {
   const { event } = envelope;
 
-  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved" || event.type === "codex_turn_stalled") {
+  if (event.type === "step_boundary" || event.type === "activity" || event.type === "pending_input_resolved") {
     return;
   }
 
