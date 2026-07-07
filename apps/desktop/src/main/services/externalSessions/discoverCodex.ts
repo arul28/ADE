@@ -4,6 +4,7 @@ import {
   asEpochMs,
   asRecord,
   asString,
+  cleanSessionTitle,
   countJsonlLinesCheap,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
@@ -37,7 +38,10 @@ function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
     if (!id) continue;
     map.set(id, {
       id,
-      title: asString(record.thread_name) ?? asString(record.threadName) ?? asString(record.name) ?? null,
+      title: cleanSessionTitle(asString(record.thread_name))
+        ?? cleanSessionTitle(asString(record.threadName))
+        ?? cleanSessionTitle(asString(record.name))
+        ?? cleanSessionTitle(asString(record.title)),
       updatedAt: asEpochMs(record.updated_at) ?? asEpochMs(record.updatedAt) ?? null,
     });
   }
@@ -92,7 +96,7 @@ export async function discoverCodexSessions(
         id,
         cwd: null,
         title: indexed?.title ?? null,
-        preview: indexed?.title ?? null,
+        preview: null,
         updatedAt: indexed?.updatedAt ?? Math.floor(stat.mtimeMs),
         filePath,
       }));
@@ -107,12 +111,18 @@ export async function discoverCodexSessions(
     const id = asString(payload.id) ?? asString(payload.session_id) ?? asString(payload.sessionId);
     if (!id || recordsById.has(id)) continue;
     const indexed = index.get(id);
+    const firstUserText = firstUserTextFromRecords(jsonl);
+    const title = cleanSessionTitle(asString(payload.thread_name))
+      ?? cleanSessionTitle(asString(payload.threadName))
+      ?? cleanSessionTitle(asString(payload.name))
+      ?? indexed?.title
+      ?? null;
     recordsById.set(id, recordWithFile({
       provider: "codex",
       id,
       cwd: asString(payload.cwd),
-      title: indexed?.title ?? firstUserTextFromRecords(jsonl),
-      preview: firstUserTextFromRecords(jsonl) ?? previewFromRecords(jsonl),
+      title,
+      preview: firstUserText ?? previewFromRecords(jsonl),
       createdAt: asEpochMs(payload.timestamp) ?? asEpochMs(first?.timestamp),
       updatedAt: indexed?.updatedAt ?? Math.floor(stat.mtimeMs),
       messageCount: countJsonlLinesCheap(filePath),

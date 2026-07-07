@@ -5,6 +5,8 @@ import {
   asEpochMs,
   asRecord,
   asString,
+  cleanSessionTitle,
+  clipExternalSessionText,
   normalizeExternalSessionLimit,
   recordWithFile,
   resolveHomeDir,
@@ -49,12 +51,16 @@ export async function discoverOpenCodeSessions(
     const id = asString(record?.id) ?? asString(record?.sessionID) ?? asString(record?.sessionId);
     if (!record || !id) continue;
     const rowCwd = asString(record.directory) ?? asString(record.cwd) ?? cwd;
+    const title = cleanSessionTitle(asString(record.title)) ?? cleanSessionTitle(asString(record.name));
+    const preview = clipExternalSessionText(
+      asString(record.summary) ?? asString(record.preview) ?? asString(record.snippet),
+    );
     records.push(recordWithFile({
       provider: "opencode",
       id,
       cwd: rowCwd,
-      title: asString(record.title) ?? asString(record.name),
-      preview: asString(record.summary) ?? asString(record.title) ?? null,
+      title,
+      preview,
       createdAt: asEpochMs(record.created) ?? asEpochMs(record.createdAt),
       updatedAt: asEpochMs(record.updated) ?? asEpochMs(record.updatedAt),
       messageCount: typeof record.messageCount === "number" ? record.messageCount : null,

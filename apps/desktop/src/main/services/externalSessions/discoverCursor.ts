@@ -2,7 +2,6 @@ import path from "node:path";
 import {
   asEpochMs,
   asRecord,
-  asString,
   countJsonlLinesCheap,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
@@ -39,8 +38,8 @@ export async function discoverCursorSessions(
         provider: "cursor",
         id: agentId,
         cwd,
-        title: firstUserTextFromRecords(jsonl),
-        preview: previewFromRecords(jsonl),
+        title: null,
+        preview: firstUserTextFromRecords(jsonl) ?? previewFromRecords(jsonl),
         createdAt: asEpochMs(first?.timestamp) ?? asEpochMs(asRecord(first?.message)?.timestamp),
         messageCount: countJsonlLinesCheap(filePath),
         filePath,

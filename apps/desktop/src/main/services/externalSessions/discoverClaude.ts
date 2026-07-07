@@ -1,6 +1,7 @@
 import path from "node:path";
 import {
   claudeProjectSlugForCwd,
+  cleanSessionTitle,
   countJsonlLinesCheap,
   firstUserTextFromRecords,
   isUuidLike,
@@ -37,6 +38,16 @@ export function claudeSessionPath(args: {
   return path.join(configDir, "projects", claudeProjectSlugForCwd(args.cwd), `${args.sessionId}.jsonl`);
 }
 
+function explicitClaudeTitleFromRecords(records: unknown[]): string | null {
+  for (const item of records) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const title = cleanSessionTitle(asString(record.summary)) ?? cleanSessionTitle(asString(record.title));
+    if (title) return title;
+  }
+  return null;
+}
+
 export async function discoverClaudeSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
@@ -62,13 +73,13 @@ export async function discoverClaudeSessions(
         createdAt = createdAt ?? asEpochMs(record.timestamp);
         if (cwd && createdAt) break;
       }
-      const title = firstUserTextFromRecords(jsonl);
+      const firstUserText = firstUserTextFromRecords(jsonl);
       records.push(recordWithFile({
         provider: "claude",
         id,
         cwd,
-        title,
-        preview: previewFromRecords(jsonl),
+        title: explicitClaudeTitleFromRecords(jsonl),
+        preview: firstUserText ?? previewFromRecords(jsonl),
         createdAt,
         messageCount: countJsonlLinesCheap(filePath),
         filePath,

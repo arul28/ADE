@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
+  CaretRight,
   CircleNotch,
   DownloadSimple,
   MagnifyingGlass,
@@ -13,6 +14,24 @@ import { cn } from "../../ui/cn";
 function formatUpdatedAt(ms: number | null | undefined): string {
   if (ms == null || !Number.isFinite(ms)) return "";
   return relativeWhen(new Date(ms).toISOString());
+}
+
+/** Last path segment of a cwd (e.g. the repo/folder name), null when missing. */
+function lastPathSegment(cwd: string | null | undefined): string | null {
+  if (!cwd) return null;
+  const segments = cwd.split("/").filter(Boolean);
+  return segments.length ? (segments[segments.length - 1] ?? null) : null;
+}
+
+/**
+ * Heading fallback for sessions the provider couldn't title: the folder name
+ * (or a shortened path) plus the relative time, so the row is still
+ * identifiable and never collapses onto the preview snippet.
+ */
+function fallbackHeading(summary: ExternalSessionSummary): string {
+  const where = lastPathSegment(summary.cwd) ?? shortenCwd(summary.cwd);
+  const when = formatUpdatedAt(summary.updatedAt);
+  return when ? `${where} · ${when}` : where;
 }
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import { SmartTooltip } from "../../ui/SmartTooltip";
@@ -55,7 +74,6 @@ export function ImportSessionBrowser({
   open,
   onOpenChange,
   laneId,
-  laneName,
   onImported,
 }: ImportSessionBrowserProps) {
   const [sessions, setSessions] = useState<ExternalSessionSummary[]>([]);
@@ -183,11 +201,10 @@ export function ImportSessionBrowser({
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
-      title="Import a CLI session"
-      description={`Continue a Claude, Codex, Cursor, Droid, or OpenCode session you started in a terminal — into ${laneName}.`}
+      title="Import session"
       icon={DownloadSimple}
-      widthClassName="w-[min(680px,calc(100vw-1rem))]"
-      heightClassName="h-[min(680px,calc(100dvh-2rem))]"
+      widthClassName="w-[min(980px,calc(100vw-4rem))]"
+      heightClassName="h-[min(860px,calc(100dvh-4rem))]"
       busy={Boolean(importing)}
     >
       <div className="flex h-full min-h-0 flex-col gap-3" onKeyDown={onListKeyDown}>
@@ -266,12 +283,6 @@ export function ImportSessionBrowser({
               Show sessions from other folders
             </label>
           </div>
-          <p className="text-[10.5px] leading-snug text-muted-fg/55">
-            <span className="text-muted-fg/75">Open</span> continues the original session ·{" "}
-            <span className="text-muted-fg/75">Fork</span> starts a copy and leaves the original untouched.{" "}
-            <span className="text-muted-fg/75">ADE chat</span> opens the history in a chat pane;{" "}
-            <span className="text-muted-fg/75">CLI session</span> opens the raw terminal.
-          </p>
         </div>
 
         {importError ? (
@@ -311,14 +322,7 @@ export function ImportSessionBrowser({
               }
             />
           ) : (
-            <ul className="flex flex-col gap-1.5">
-              <li className="mb-0.5 flex items-center gap-1.5 px-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-fg/45">
-                <span>CLI sessions</span>
-                <span className="text-muted-fg/30">·</span>
-                <span className="font-medium normal-case tracking-normal text-muted-fg/40">
-                  started in a terminal
-                </span>
-              </li>
+            <ul className="flex flex-col gap-2">
               {visible.map((summary, index) => (
                 <ImportSessionRow
                   key={`${summary.provider}:${summary.id}`}
@@ -371,8 +375,8 @@ function ImportSessionRow({
   onActivate: () => void;
   onImport: (affordance: ImportAffordance) => void;
 }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
   const affordances = useMemo(() => importAffordancesFor(summary), [summary]);
-  const hint = affordances.find((a) => a.hint)?.hint;
   // One obvious default per row: the hero chat action if present, otherwise the
   // first runnable action (the most-likely CLI path for chat-less providers).
   const primaryKind = useMemo(
@@ -381,12 +385,16 @@ function ImportSessionRow({
   );
   const chatActions = affordances.filter((a) => a.target === "chat");
   const cliActions = affordances.filter((a) => a.target === "cli");
-  const inPlace = affordances.find((a) => a.kind === "resume-in-place" && a.foreignCwd);
-  const blockedReason = affordances.find((a) => !a.enabled)?.disabledReason;
 
-  // Labels are self-evident (the 2×2 {ADE chat | CLI session} × {Open | Fork})
-  // and the shared inline helper in the header explains both axes, so buttons
-  // carry no hover-only tooltip — meaning stays visible.
+  // Real provider title when there is one; otherwise a path+time fallback so the
+  // heading is always distinct from the preview snippet.
+  const title = summary.title?.trim();
+  const hasTitle = Boolean(title);
+  const heading = hasTitle ? (title as string) : fallbackHeading(summary);
+  const preview = summary.preview?.trim();
+
+  // Labels are self-evident (the 2×2 {ADE chat | CLI session} × {Open | Fork}),
+  // so buttons carry no hover-only tooltip — meaning stays visible.
   const renderAction = (aff: ImportAffordance) => {
     const busy = importingKey === `${summary.id}:${aff.kind}`;
     const isPrimary = aff.enabled && aff.kind === primaryKind;
@@ -397,7 +405,7 @@ function ImportSessionRow({
         disabled={!aff.enabled || Boolean(importingKey)}
         onClick={() => onImport(aff)}
         className={cn(
-          "inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-all disabled:cursor-not-allowed",
+          "inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[11.5px] font-medium transition-all disabled:cursor-not-allowed",
           isPrimary
             ? "text-[#0F0D14] hover:brightness-110 disabled:opacity-50"
             : aff.enabled
@@ -416,23 +424,21 @@ function ImportSessionRow({
     <li
       onMouseEnter={onActivate}
       className={cn(
-        "rounded-xl border px-3 py-2.5 transition-colors",
+        "rounded-xl border px-4 py-3.5 transition-colors",
         active
           ? "border-white/[0.14] bg-white/[0.05]"
           : "border-white/[0.05] bg-white/[0.02] hover:bg-white/[0.035]",
       )}
     >
-      <div className="flex items-start gap-2.5">
+      <div className="flex items-start gap-3">
         <ToolLogo
           toolType={PROVIDER_TOOL_TYPE[summary.provider]}
-          size={20}
+          size={22}
           className="mt-0.5"
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[12.5px] font-medium text-fg">
-              {summary.title || "Untitled session"}
-            </span>
+            <span className="truncate text-[13px] font-medium text-fg">{heading}</span>
             {summary.alreadyImported ? (
               <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-muted-fg/80">
                 Imported
@@ -444,7 +450,7 @@ function ImportSessionRow({
               </span>
             ) : null}
           </div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-fg/70">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-fg/70">
             <span>{providerDisplayName(summary.provider)}</span>
             {formatUpdatedAt(summary.updatedAt) ? (
               <>
@@ -460,7 +466,9 @@ function ImportSessionRow({
                 </span>
               </>
             ) : null}
-            {summary.cwd ? (
+            {/* The path-fallback heading already carries the folder, so only add
+                the cwd chip when a real title occupies the heading. */}
+            {hasTitle && summary.cwd ? (
               <span
                 className="ml-0.5 max-w-[240px] truncate rounded border border-white/[0.05] bg-white/[0.03] px-1.5 py-px font-mono text-[9.5px] text-muted-fg/60"
                 title={summary.cwd}
@@ -469,15 +477,33 @@ function ImportSessionRow({
               </span>
             ) : null}
           </div>
-          {summary.preview ? (
-            <div className="mt-1 line-clamp-1 text-[11px] leading-snug text-muted-fg/60">
-              {summary.preview}
+
+          {preview ? (
+            <div className="mt-2">
+              <button
+                type="button"
+                aria-expanded={previewOpen}
+                onClick={() => setPreviewOpen((v) => !v)}
+                className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[10.5px] font-medium text-muted-fg/60 transition-colors hover:text-fg"
+              >
+                <CaretRight
+                  size={10}
+                  weight="bold"
+                  className={cn("transition-transform", previewOpen && "rotate-90")}
+                />
+                Preview
+              </button>
+              {previewOpen ? (
+                <div className="mt-1 rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-muted-fg/70">
+                  {preview}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
           {/* Actions — grouped "open as chat" vs "continue as terminal" so the
               chat/terminal and continue/fork distinctions read at a glance. */}
-          <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
             {chatActions.length ? (
               <div className="flex items-center gap-1.5">{chatActions.map(renderAction)}</div>
             ) : null}
@@ -488,20 +514,6 @@ function ImportSessionRow({
               <div className="flex items-center gap-1.5">{cliActions.map(renderAction)}</div>
             ) : null}
           </div>
-          {inPlace ? (
-            <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/55">
-              “Open as CLI session” runs in its original folder ({shortenCwd(inPlace.foreignCwd)}) — {providerDisplayName(summary.provider)} can only continue a session where it was created.
-            </div>
-          ) : blockedReason ? (
-            <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/55">{blockedReason}</div>
-          ) : hint ? (
-            <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/60">{hint}</div>
-          ) : null}
-          {summary.possiblyActive ? (
-            <div className="mt-1 text-[10.5px] leading-snug text-amber-300/70">
-              Recently active — may still be running in a terminal. Fork to avoid conflicting with it.
-            </div>
-          ) : null}
         </div>
       </div>
     </li>

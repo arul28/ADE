@@ -3,6 +3,7 @@ import {
   asEpochMs,
   asRecord,
   asString,
+  cleanSessionTitle,
   countJsonlLinesCheap,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
@@ -34,12 +35,13 @@ export async function discoverDroidSessions(
       if (!first || asString(first.type) !== "session_start") continue;
       const id = asString(first.id) ?? entry.name.slice(0, -".jsonl".length);
       if (!id) continue;
+      const firstUserText = firstUserTextFromRecords(jsonl);
       records.push(recordWithFile({
         provider: "droid",
         id,
         cwd: asString(first.cwd),
-        title: firstUserTextFromRecords(jsonl) ?? asString(first.title) ?? asString(first.sessionTitle),
-        preview: firstUserTextFromRecords(jsonl) ?? previewFromRecords(jsonl),
+        title: cleanSessionTitle(asString(first.title)) ?? cleanSessionTitle(asString(first.sessionTitle)),
+        preview: firstUserText ?? previewFromRecords(jsonl),
         createdAt: asEpochMs(first.timestamp),
         messageCount: countJsonlLinesCheap(filePath),
         filePath,

@@ -48,7 +48,7 @@ afterEach(() => {
 });
 
 describe("external session provider discovery", () => {
-  it("discovers Claude sessions, recovers cwd, and strips ADE guidance from titles", async () => {
+  it("discovers Claude sessions, recovers cwd, and uses the first user message as preview", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");
     fs.mkdirSync(cwd, { recursive: true });
@@ -71,7 +71,8 @@ describe("external session provider discovery", () => {
       provider: "claude",
       id,
       cwd,
-      title: "Fix login redirect",
+      title: null,
+      preview: "Fix login redirect",
       createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
     });
     expect(sessions[0]?.messageCount).toBe(2);
@@ -102,7 +103,33 @@ describe("external session provider discovery", () => {
       id,
       cwd,
       title: "Investigate flaky test",
+      preview: "please fix flakes",
       updatedAt: Date.parse("2026-07-06T11:00:00.000Z"),
+    });
+  });
+
+  it("does not derive Codex titles from the first user message", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "55555555-5555-4555-8555-555555555555";
+    fs.mkdirSync(cwd, { recursive: true });
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T12-00-00-${id}.jsonl`), [
+      {
+        timestamp: "2026-07-06T12:00:00.000Z",
+        type: "session_meta",
+        payload: { id, session_id: id, cwd, timestamp: "2026-07-06T12:00:00.000Z" },
+      },
+      { timestamp: "2026-07-06T12:01:00.000Z", type: "event_msg", payload: { type: "message", role: "user", message: { content: "do not use this as a title" } } },
+    ]);
+
+    const sessions = await discoverCodexSessions({ homeDir, limit: 10 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      provider: "codex",
+      id,
+      title: null,
+      preview: "do not use this as a title",
     });
   });
 
@@ -126,7 +153,8 @@ describe("external session provider discovery", () => {
       provider: "cursor",
       id: agentId,
       cwd,
-      title: "Port this session into ADE",
+      title: null,
+      preview: "Port this session into ADE",
     });
     fs.rmSync(cwd, { recursive: true, force: true });
   });
@@ -147,7 +175,8 @@ describe("external session provider discovery", () => {
       provider: "droid",
       id,
       cwd,
-      title: "Factory task title",
+      title: null,
+      preview: "Factory task title",
     });
   });
 
@@ -166,7 +195,7 @@ describe("external session provider discovery", () => {
     const scriptPath = path.join(binDir, "opencode");
     fs.writeFileSync(
       scriptPath,
-      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","created":1783332000000,"updated":1783332060000,"messageCount":3}]'\n`,
+      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","summary":"Use OpenCode to map the issue","created":1783332000000,"updated":1783332060000,"messageCount":3},{"id":"open-2","directory":"${cwd}","title":"New session - 2026-05-01T17:02:11.923Z","preview":"Placeholder title should not win","created":1783331000000,"updated":1783331060000,"messageCount":1}]'\n`,
       "utf8",
     );
     fs.chmodSync(scriptPath, 0o755);
@@ -175,13 +204,22 @@ describe("external session provider discovery", () => {
 
     const sessions = await discoverOpenCodeSessions({ homeDir, cwd, limit: 10 });
 
-    expect(sessions).toHaveLength(1);
+    expect(sessions).toHaveLength(2);
     expect(sessions[0]).toMatchObject({
       provider: "opencode",
       id: "open-1",
       cwd,
       title: "OpenCode task",
+      preview: "Use OpenCode to map the issue",
       messageCount: 3,
+    });
+    expect(sessions[1]).toMatchObject({
+      provider: "opencode",
+      id: "open-2",
+      cwd,
+      title: null,
+      preview: "Placeholder title should not win",
+      messageCount: 1,
     });
   });
 });

@@ -27,6 +27,13 @@ export const MAX_EXTERNAL_SESSION_LIMIT = 500;
 export const JSONL_SCAN_LINE_LIMIT = 80;
 export const JSONL_SCAN_BYTE_LIMIT = 512 * 1024;
 export const MESSAGE_COUNT_MAX_BYTES = 768 * 1024;
+export const EXTERNAL_SESSION_PREVIEW_MAX_LENGTH = 240;
+
+const PLACEHOLDER_SESSION_TITLES = new Set([
+  "new session",
+  "untitled",
+  "new chat",
+]);
 
 export function normalizeExternalSessionLimit(limit: unknown): number {
   if (typeof limit !== "number" || !Number.isFinite(limit) || limit <= 0) {
@@ -138,6 +145,15 @@ export function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
+export function cleanSessionTitle(raw: string | null | undefined): string | null {
+  const title = raw?.replace(/\s+/gu, " ").trim() ?? "";
+  if (!title) return null;
+  const normalized = title.toLowerCase();
+  if (PLACEHOLDER_SESSION_TITLES.has(normalized)) return null;
+  if (/^new (?:session|chat)\s*[-:]\s*\d{4}-\d{2}-\d{2}/u.test(normalized)) return null;
+  return title;
+}
+
 export function asEpochMs(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value > 10_000_000_000 ? Math.floor(value) : Math.floor(value * 1000);
@@ -187,14 +203,20 @@ export function stripAdeGuidance(raw: string): string {
     .trim();
 }
 
-export function clipExternalSessionText(raw: string | null | undefined, max = 72): string | null {
+export function clipExternalSessionText(
+  raw: string | null | undefined,
+  max = EXTERNAL_SESSION_PREVIEW_MAX_LENGTH,
+): string | null {
   const stripped = stripAdeGuidance(raw ?? "");
   if (!stripped) return null;
   if (stripped.length <= max) return stripped;
   return `${stripped.slice(0, Math.max(0, max - 1)).trimEnd()}...`;
 }
 
-export function firstUserTextFromRecords(records: unknown[]): string | null {
+export function firstUserTextFromRecords(
+  records: unknown[],
+  max = EXTERNAL_SESSION_PREVIEW_MAX_LENGTH,
+): string | null {
   for (const record of records) {
     const obj = asRecord(record);
     if (!obj) continue;
@@ -219,15 +241,18 @@ export function firstUserTextFromRecords(records: unknown[]): string | null {
       ?? extractText(payload.content)
       ?? extractText(payload.text)
       ?? extractText(payload);
-    const clipped = clipExternalSessionText(text, 72);
+    const clipped = clipExternalSessionText(text, max);
     if (clipped) return clipped;
   }
   return null;
 }
 
-export function previewFromRecords(records: unknown[]): string | null {
+export function previewFromRecords(
+  records: unknown[],
+  max = EXTERNAL_SESSION_PREVIEW_MAX_LENGTH,
+): string | null {
   for (const record of records) {
-    const text = clipExternalSessionText(extractText(record), 140);
+    const text = clipExternalSessionText(extractText(record), max);
     if (text) return text;
   }
   return null;

@@ -25,10 +25,10 @@ export type ImportAffordance = {
   kind: ImportAffordanceKind;
   label: string;
   /**
-   * Plain-English explanation of exactly what this action does, shown as the
-   * button's tooltip. Spells out the two axes a first-time user can't infer
-   * from the label: resume (continue the same session) vs fork (branch a copy),
-   * and chat (rendered ADE conversation) vs CLI terminal (raw session).
+   * Plain-English meaning of this action. Kept as structured data (asserted in
+   * tests); the two axes it spells out — Open (continue the original) vs Fork
+   * (start a copy), and ADE chat vs CLI session — are surfaced to the user by
+   * the shared inline helper in the browser header, not a per-button tooltip.
    */
   description: string;
   target: ImportTarget;
