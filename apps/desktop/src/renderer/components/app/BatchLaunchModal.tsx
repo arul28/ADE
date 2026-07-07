@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretRight, GitBranch, Rocket, WarningCircle } from "@phosphor-icons/react";
 import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
@@ -35,6 +35,14 @@ type PerIssueState = BatchLaunchIssueConfig & {
 };
 
 const DEFAULT_PROMPT_STORAGE_PREFIX = "ade.linear.batchLaunch.defaultPrompt.v1:";
+
+function batchLaunchNativeDefaults(): NativeControlState {
+  const controls = defaultNativeControls("persistent_identity");
+  return {
+    ...controls,
+    cursorConfigValues: { ...controls.cursorConfigValues },
+  };
+}
 
 function defaultPromptStorageKey(projectRoot: string | null | undefined): string | null {
   const root = projectRoot?.trim();
@@ -115,7 +123,7 @@ function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIs
     existingLaneId: null,
     include: true,
     laneTarget: "new",
-    nativeControls: defaultNativeControls(),
+    nativeControls: batchLaunchNativeDefaults(),
   };
 }
 
@@ -178,17 +186,19 @@ export function BatchLaunchModal({
   );
 
   const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({
-  modelId: "",
-  reasoningEffort: null,
-  fastMode: false,
-  sessionType: "chat",
-  nativeControls: defaultNativeControls(),
+    modelId: "",
+    reasoningEffort: null,
+    fastMode: false,
+    sessionType: "chat",
+    nativeControls: batchLaunchNativeDefaults(),
   }));
   const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
   const [perIssue, setPerIssue] = useState<Record<string, PerIssueState>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const seedKeyRef = useRef<string | null>(null);
 
   const multiIssue = issues.length > 1;
+  const issueSeedKey = useMemo(() => issues.map((issue) => issue.id).join("\0"), [issues]);
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
   const selectableLanes = useMemo(
     () => lanes.filter((lane) => lane.laneType !== "primary"),
@@ -197,11 +207,16 @@ export function BatchLaunchModal({
 
   useEffect(() => {
     if (!open) return;
+    const seedKey = `${projectRoot ?? ""}\0${issueSeedKey}`;
+    if (seedKeyRef.current === seedKey) return;
+    const initialSeed = seedKeyRef.current == null;
+    seedKeyRef.current = seedKey;
+
     const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
     const kickoffPrompt = fallbackPrompt ?? defaultKickoffPrompt();
     const seedModel = defaultModelId;
     setProjectDefaultPrompt(fallbackPrompt);
-    const seededDefaults = defaultNativeControls();
+    const seededDefaults = batchLaunchNativeDefaults();
     const seededConfig: SessionLaunchModelConfig = {
       modelId: seedModel,
       reasoningEffort: null,
@@ -209,21 +224,30 @@ export function BatchLaunchModal({
       sessionType: "chat",
       nativeControls: seededDefaults,
     };
-    setDefaultConfig(seededConfig);
-    setPerIssue(() => {
+    if (initialSeed) {
+      setDefaultConfig(seededConfig);
+    }
+    const rowConfig = initialSeed ? seededConfig : defaultConfig;
+    setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
       for (const issue of issues) {
-        next[issue.id] = {
-          ...makeInitialConfig(seedModel, kickoffPrompt),
-          nativeControls: { ...seededDefaults },
+        next[issue.id] = current[issue.id] ?? {
+          ...makeInitialConfig(rowConfig.modelId || seedModel, kickoffPrompt),
+          sessionType: rowConfig.sessionType,
+          reasoningEffort: rowConfig.reasoningEffort,
+          fastMode: rowConfig.fastMode,
+          nativeControls: {
+            ...rowConfig.nativeControls,
+            cursorConfigValues: { ...rowConfig.nativeControls.cursorConfigValues },
+          },
         };
       }
       return next;
     });
-    if (issues.length === 1) {
+    if (initialSeed && issues.length === 1) {
       setExpanded({ [issues[0]!.id]: true });
     }
-  }, [open, projectRoot, issues, defaultModelId]);
+  }, [open, projectRoot, issueSeedKey, issues, defaultModelId, defaultConfig]);
 
   useEffect(() => {
     if (!open) return;
@@ -259,6 +283,7 @@ export function BatchLaunchModal({
     if (open) return;
     setPerIssue({});
     setExpanded({});
+    seedKeyRef.current = null;
   }, [open]);
 
   const patchIssue = useCallback((issueId: string, patch: Partial<PerIssueState>) => {

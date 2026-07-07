@@ -137,27 +137,6 @@ export function batchLaunchSupportsFastMode(modelId: string): boolean {
   return modelSupportsFastMode(resolveDescriptor(modelId));
 }
 
-function isDefaultNativeControls(controls: NativeControlState): boolean {
-  const defaults = defaultNativeControls();
-  const cursorKeys = new Set([
-    ...Object.keys(controls.cursorConfigValues ?? {}),
-    ...Object.keys(defaults.cursorConfigValues ?? {}),
-  ]);
-  return (
-    controls.interactionMode === defaults.interactionMode
-    && controls.claudePermissionMode === defaults.claudePermissionMode
-    && controls.codexApprovalPolicy === defaults.codexApprovalPolicy
-    && controls.codexSandbox === defaults.codexSandbox
-    && controls.codexConfigSource === defaults.codexConfigSource
-    && controls.opencodePermissionMode === defaults.opencodePermissionMode
-    && controls.droidPermissionMode === defaults.droidPermissionMode
-    && controls.cursorModeId === defaults.cursorModeId
-    && Array.from(cursorKeys).every(
-      (key) => controls.cursorConfigValues?.[key] === defaults.cursorConfigValues?.[key],
-    )
-  );
-}
-
 /**
  * Maps a registry model id to the CLI launch provider + runtime model ref for a
  * tracked-terminal launch. The provider-group set
@@ -361,7 +340,6 @@ export async function runBatchLaunch(
 
       const kickoffText = config.kickoffPrompt.trim() || defaultKickoffPrompt();
       const nativeControls = config.nativeControls ?? defaultNativeControls();
-      const customNativeControls = config.nativeControls ? !isDefaultNativeControls(config.nativeControls) : false;
 
       if (config.sessionType === "cli") {
         // Tracked CLI agent: spawns a terminal process with the issue attached
@@ -391,7 +369,7 @@ export async function runBatchLaunch(
       }
 
       const { provider, model } = resolveLaunchProviderAndModel(config.modelId);
-      const nativePayload = customNativeControls
+      const nativePayload = config.nativeControls
         ? buildChatLaunchNativePayload(config.modelId, nativeControls)
         : undefined;
       // Single headless launch: creates the session AND runs the kickoff turn

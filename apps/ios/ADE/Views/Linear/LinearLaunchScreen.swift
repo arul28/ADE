@@ -351,10 +351,16 @@ struct LinearLaunchScreen: View {
       }
       syncService.linearPanePresented = false
     } catch is LinearQueuedAgentLaunchError {
-      // Offline after lane creation: the queued agent launch has a concrete lane
-      // id to drain into, so this handoff is complete from the sheet's view.
-      ADEHaptics.medium()
-      syncService.linearPanePresented = false
+      if config.sessionType == .chat {
+        ADEHaptics.error()
+        errorMessage = "Chat creation was queued, but the kickoff prompt was not sent. Reconnect your machine, wait for the chat to appear, then send the prompt again."
+        busy = false
+      } else {
+        // Offline after lane creation: CLI launch queues with its initial input,
+        // so this handoff is complete from the sheet's view.
+        ADEHaptics.medium()
+        syncService.linearPanePresented = false
+      }
     } catch is QueuedRemoteCommandError {
       if config.sessionType.needsAgentConfig {
         ADEHaptics.error()
