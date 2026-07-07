@@ -160,6 +160,10 @@ describe("discoverDroidCliModelDescriptors", () => {
       "Opus 4.8 1M",
       "Sonnet 5 (1.2x)",
     ]);
+    expect(descriptors.map((descriptor) => descriptor.providerModelId)).toEqual([
+      "claude-opus-4-8",
+      "claude-sonnet-5",
+    ]);
   });
 
   it("preserves Droid SDK reasoning and media metadata without exposing tier as a toggle", async () => {

@@ -226,6 +226,30 @@ describe("openCodeInventory", () => {
                   fast: {},
                 },
               },
+              "claude-opus-4-7": {
+                id: "claude-opus-4-7",
+                name: "Claude Opus 4.7",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-opus-4-8": {
+                id: "claude-opus-4-8",
+                name: "Claude Opus 4.8 1M",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  max: {},
+                  fast: {},
+                },
+              },
             },
           },
         ],
@@ -240,7 +264,9 @@ describe("openCodeInventory", () => {
     });
 
     const descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5");
+    const opusDescriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8");
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
     expect(descriptor?.capabilities).toMatchObject({
       tools: true,
       vision: true,
@@ -248,6 +274,13 @@ describe("openCodeInventory", () => {
     });
     expect(descriptor?.reasoningTiers).toEqual(["high"]);
     expect(descriptor?.serviceTiers).toEqual(["fast"]);
+    expect(opusDescriptor?.capabilities).toMatchObject({
+      tools: true,
+      vision: true,
+      reasoning: true,
+    });
+    expect(opusDescriptor?.reasoningTiers).toEqual(["max"]);
+    expect(opusDescriptor?.serviceTiers).toEqual(["fast"]);
   });
 
   it("classifies OpenCode SDK model variants and v2 capabilities", async () => {

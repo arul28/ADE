@@ -302,8 +302,12 @@ describe("modelRegistry", () => {
       });
       expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-8");
+      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
       expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+      expect(getModelById("claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
+      expect(getModelById("claude-opus-4-6[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
     });
 
     it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {
