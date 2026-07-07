@@ -253,7 +253,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     listRepoLabels: async () => [],
     listRepoCollaborators: async () => [],
     listMyRepos: async () => ({ repositories: [], nextCursor: null }),
-    publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }),
+    // Not idempotent: publishing creates a repo + pushes, so never auto-retry it
+    // on a recoverable transport error (a retry could double-create/double-push).
+    publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }, false),
     onStatusChanged: (listener: (status: unknown) => void) => events.on("githubStatusChanged", listener as never),
   };
 
