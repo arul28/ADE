@@ -651,6 +651,8 @@ struct WorkNewChatScreen: View {
           .padding(.bottom, 6)
       }
 
+      importSessionChip
+
       composerBar
     }
     .adeScreenBackground()
@@ -741,39 +743,35 @@ struct WorkNewChatScreen: View {
 
   @ViewBuilder
   private var brandMark: some View {
-    ZStack {
-      Text("ADE")
-        .font(.system(size: 84, weight: .heavy, design: .default))
-        .foregroundStyle(ADEColor.accent.opacity(0.18))
-        .offset(x: 4, y: 4)
-      Text("ADE")
-        .font(.system(size: 84, weight: .heavy, design: .default))
-        .foregroundStyle(
-          LinearGradient(
-            colors: [ADEColor.textPrimary, ADEColor.accent.opacity(0.9)],
-            startPoint: .top,
-            endPoint: .bottom
-          )
-        )
-    }
+    Image("BrandMark")
+      .resizable()
+      .renderingMode(.original)
+      .interpolation(.high)
+      .aspectRatio(contentMode: .fit)
+      .frame(maxWidth: 260)
+      .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 22)
     .padding(.top, 8)
     .accessibilityLabel("ADE")
   }
 
   @ViewBuilder
   private var laneSelector: some View {
-    VStack(spacing: 10) {
+    HStack {
+      Spacer(minLength: 0)
+      WorkLanePickerDropdown(
+        lanes: lanes,
+        selectedLaneId: $selectedLaneId
+      )
+      Spacer(minLength: 0)
+    }
+  }
+
+  // Sits just above the composer, like the context chips in a chat.
+  @ViewBuilder
+  private var importSessionChip: some View {
+    if let lane = selectedConcreteLane {
       HStack {
         Spacer(minLength: 0)
-        WorkLanePickerDropdown(
-          lanes: lanes,
-          selectedLaneId: $selectedLaneId,
-          onRefresh: onRefreshLanes
-        )
-        Spacer(minLength: 0)
-      }
-
-      if let lane = selectedConcreteLane {
         NavigationLink {
           WorkImportSessionScreen(
             lane: lane,
@@ -782,43 +780,30 @@ struct WorkNewChatScreen: View {
           )
           .environmentObject(syncService)
         } label: {
-          importSessionAffordance(subtitle: "Into \(lane.name)", disabled: false)
+          importSessionAffordance(disabled: false)
         }
         .buttonStyle(.plain)
-      } else {
-        importSessionAffordance(subtitle: "Select a lane first", disabled: true)
-          .opacity(0.48)
+        Spacer(minLength: 0)
       }
+      .padding(.horizontal, 20)
+      .padding(.bottom, 8)
     }
   }
 
-  private func importSessionAffordance(subtitle: String, disabled: Bool) -> some View {
-    HStack(spacing: 10) {
+  private func importSessionAffordance(disabled: Bool) -> some View {
+    HStack(spacing: 6) {
       Image(systemName: "square.and.arrow.down")
-        .font(.system(size: 14, weight: .semibold))
+        .font(.system(size: 13, weight: .semibold))
         .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
-      VStack(alignment: .leading, spacing: 1) {
-        Text("Import session")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
-        Text(subtitle)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 0)
-      Image(systemName: "chevron.right")
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted.opacity(disabled ? 0.45 : 0.9))
+      Text("Import session")
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .frame(maxWidth: 320)
-    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay {
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6)
-    }
+    .frame(height: 34)
+    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
+    .overlay { Capsule(style: .continuous).stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6) }
+    .opacity(disabled ? 0.5 : 1)
   }
 
   @ViewBuilder

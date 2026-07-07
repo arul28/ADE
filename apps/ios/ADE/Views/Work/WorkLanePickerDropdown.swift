@@ -117,9 +117,9 @@ struct WorkLanePickerDropdown: View {
           .padding(.trailing, 10)
       }
     }
-    .padding(.leading, 12)
+    .padding(.leading, 14)
     .padding(.trailing, 4)
-    .padding(.vertical, triggerBranchLabel == nil ? 6 : 5)
+    .padding(.vertical, triggerBranchLabel == nil ? 10 : 9)
     .background(surface.background, in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
@@ -135,10 +135,10 @@ struct WorkLanePickerDropdown: View {
         triggerTitleRow
         HStack(spacing: 4) {
           Image(systemName: "arrow.branch")
-            .font(.system(size: 9, weight: .regular))
+            .font(.system(size: 10, weight: .regular))
             .foregroundStyle(ADEColor.textMuted.opacity(0.55))
           Text(branch)
-            .font(.system(size: 10))
+            .font(.system(size: 11))
             .foregroundStyle(ADEColor.textMuted.opacity(0.92))
             .lineLimit(1)
         }
@@ -153,17 +153,17 @@ struct WorkLanePickerDropdown: View {
 
   @ViewBuilder
   private var triggerTitleRow: some View {
-    HStack(spacing: 5) {
+    HStack(spacing: 6) {
       if let triggerLaneColor, !isAutoCreateSelected {
-        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 11)
+        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 13)
       } else if isAutoCreateSelected {
         Image(systemName: "sparkles")
-          .font(.system(size: 11, weight: .bold))
+          .font(.system(size: 13, weight: .bold))
           .foregroundStyle(ADEColor.accent)
       }
       Text(triggerTitle)
-        .font(.system(size: 11, weight: .medium))
-        .foregroundStyle(Color.white.opacity(isAutoCreateSelected ? 0.85 : 0.85))
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(Color.white.opacity(0.9))
         .lineLimit(1)
     }
   }
