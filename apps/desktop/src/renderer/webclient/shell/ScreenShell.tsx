@@ -69,30 +69,13 @@ export function ScreenShell({
 }
 
 function Wordmark() {
+  // The real ADE logo (served from the renderer public dir at /logo.png).
   return (
-    <div
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 8,
-        color: COLORS.textPrimary,
-        fontFamily: SANS_FONT,
-        fontSize: 13,
-        fontWeight: 700,
-        letterSpacing: "0.14em",
-      }}
-    >
-      <span
-        aria-hidden
-        style={{
-          width: 10,
-          height: 10,
-          borderRadius: 3,
-          background: "var(--color-accent)",
-          boxShadow: "0 0 12px color-mix(in srgb, var(--color-accent) 60%, transparent)",
-        }}
-      />
-      ADE
-    </div>
+    <img
+      src="/logo.png"
+      alt="ADE"
+      draggable={false}
+      style={{ height: 30, width: "auto", display: "block", objectFit: "contain", marginBottom: 4 }}
+    />
   );
 }
