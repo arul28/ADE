@@ -113,16 +113,12 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
   // Bring the connected machine's catalog + selected project online, then mount
   // the shared App with the sync-backed adapter installed on window.ade.
   const enterProject = useCallback(async (project: SyncMobileProjectSummary) => {
-    // Always switch onto the project's per-project sync host, even when the
-    // catalog already reports this project active. The brain-level fallback
-    // handler that serves the catalog does NOT serve file_request or most
-    // commands — only the per-project host does — so binding the peer via
-    // project_switch is what makes Files/Lanes/PRs actually resolve. This
-    // mirrors the iOS flow, which switches on every project selection.
-    try {
-      await client.switchProject(project.id);
-    } catch {
-      // Best effort: fall back to whatever binding the connection already has.
+    // Switch onto the target project's host only when it isn't already the
+    // active one. The host serves file_request/commands for the peer's bound
+    // project without a redundant switch, so avoid the extra disconnect +
+    // reconnect (and its startup latency) when we're already on this project.
+    if (project.id !== client.getStatus().activeProjectId) {
+      await client.switchProject(project.id).catch(() => {});
     }
     if (!adapterRef.current) {
       adapterRef.current = await loadAdapter(client);
