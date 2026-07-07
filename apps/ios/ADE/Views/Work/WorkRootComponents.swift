@@ -316,37 +316,56 @@ struct WorkSidebarSectionHeader: View {
   let group: WorkSessionGroup
   let collapsed: Bool
   let onToggle: () -> Void
+  /// Primary open PR for this lane section (by-lane grouping only). Rendered
+  /// once on the header, left of the session count, replacing the former
+  /// per-row indicator. Nil for status/time sections.
+  var pullRequest: LanePrTag? = nil
+  /// Navigates to the header PR in the PRs tab. Defaults to a no-op so preview
+  /// harnesses don't have to wire it.
+  var onOpenPullRequest: (LanePrTag) -> Void = { _ in }
 
   var body: some View {
-    Button(action: onToggle) {
-      HStack(spacing: 8) {
-        Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(width: 10, alignment: .center)
+    HStack(spacing: 8) {
+      Button(action: onToggle) {
+        HStack(spacing: 8) {
+          Image(systemName: collapsed ? "chevron.right" : "chevron.down")
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 10, alignment: .center)
 
-        sectionIcon
+          sectionIcon
 
-        Text(group.label)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(group.laneColor != nil ? group.tint : ADEColor.textPrimary)
-          .lineLimit(1)
+          Text(group.label)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(group.laneColor != nil ? group.tint : ADEColor.textPrimary)
+            .lineLimit(1)
 
-        Spacer(minLength: 0)
-
-        Text("\(group.sessions.count)")
-          .font(.caption2.monospacedDigit().weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 2)
-          .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
+          Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
       }
-      .padding(.horizontal, 4)
-      .padding(.vertical, 8)
-      .contentShape(Rectangle())
+      .buttonStyle(.plain)
+      .accessibilityLabel("\(group.label), \(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s"). Tap to \(collapsed ? "expand" : "collapse").")
+
+      if let pullRequest {
+        Button {
+          onOpenPullRequest(pullRequest)
+        } label: {
+          WorkLanePrIndicator(tag: pullRequest)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens in the PRs tab")
+      }
+
+      Text("\(group.sessions.count)")
+        .font(.caption2.monospacedDigit().weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(ADEColor.surfaceBackground.opacity(0.65), in: Capsule())
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(group.label), \(group.sessions.count) session\(group.sessions.count == 1 ? "" : "s"). Tap to \(collapsed ? "expand" : "collapse").")
+    .padding(.horizontal, 4)
+    .padding(.vertical, 8)
   }
 
   @ViewBuilder
@@ -808,6 +827,11 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let pullRequestNumber: Int?
   let pullRequestState: String?
   let status: String
+  // Deterministic inputs to the attention capsule, so a badge transition
+  // (needs_you / failed) re-renders even when the display status is unchanged.
+  let runtimeState: String
+  let pendingInputItemId: String?
+  let exitCode: Int?
   let isArchived: Bool
   let isMuted: Bool
   let isSelectedTransitionSource: Bool
@@ -839,6 +863,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.pullRequestNumber = pullRequest?.githubPrNumber
     self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
     self.status = status
+    self.runtimeState = session.runtimeState
+    self.pendingInputItemId = session.pendingInputItemId
+    self.exitCode = session.exitCode
     self.isArchived = isArchived
     self.isMuted = isMuted
     self.isSelectedTransitionSource = isSelectedTransitionSource
@@ -921,6 +948,10 @@ struct WorkSessionRow: View, Equatable {
         .lineLimit(1)
         .truncationMode(.tail)
 
+      if let badge = capsuleBadge {
+        WorkSessionStatusCapsule(badge: badge)
+      }
+
       Spacer(minLength: 6)
 
       if isPendingSyncCreation {
@@ -979,6 +1010,9 @@ struct WorkSessionRow: View, Equatable {
               .foregroundStyle(ADEColor.textMuted)
               .accessibilityLabel("Notifications muted")
           }
+          if let badge = capsuleBadge {
+            WorkSessionStatusCapsule(badge: badge)
+          }
           Spacer(minLength: 6)
           Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
             .font(.caption2.monospacedDigit())
@@ -1019,10 +1053,6 @@ struct WorkSessionRow: View, Equatable {
             .lineLimit(1)
             .truncationMode(.middle)
             .layoutPriority(-1)
-
-          if let pullRequest {
-            WorkLanePrIndicator(tag: pullRequest)
-          }
 
           if lane?.status.dirty == true {
             Circle()
@@ -1093,6 +1123,12 @@ struct WorkSessionRow: View, Equatable {
 
   var providerTintColor: Color {
     providerTint(chatSummary?.provider ?? session.toolType)
+  }
+
+  /// Canonical attention capsule (needs_you / failed / stale); nil for calm
+  /// states so the row never shifts layout when no capsule renders.
+  var capsuleBadge: SessionBadge? {
+    workSessionCapsuleBadge(session: session, summary: chatSummary)
   }
 
   var isPendingSyncCreation: Bool {

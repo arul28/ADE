@@ -42,6 +42,11 @@ type AutomationIngressServiceArgs = {
   // require the automation service.
   automationService: ReturnType<typeof createAutomationService> | null;
   prService?: ReturnType<typeof createPrService> | null;
+  /**
+   * Fired when a polled webhook event changed PR state — wired to the PR
+   * poller's poke() so freshness rides the webhook, not the next poll tick.
+   */
+  onPrStateIngested?: () => void;
   secretService: AutomationSecretService;
   githubService?: {
     detectRepo: () => Promise<GitHubRepoRef | null> | GitHubRepoRef | null;
@@ -337,7 +342,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     deliveryId: string,
     payload: Record<string, unknown>,
   ): Promise<AutomationIngressEventRecord | null> => {
-    await args.prService?.ingestGithubWebhook({
+    const ingested = await args.prService?.ingestGithubWebhook({
       eventName: githubEvent,
       deliveryId,
       payload,
@@ -347,7 +352,14 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         deliveryId,
         error: error instanceof Error ? error.message : String(error),
       });
+      return null;
     });
+    // Webhook-driven PR changes used to sit silently in the DB until the PR
+    // poller's next scheduled tick — throwing away the webhook's speed
+    // advantage. Notify the poller so it re-reads and emits `prs-updated` now.
+    if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
+      args.onPrStateIngested?.();
+    }
 
     if (!args.automationService) return null;
     const mapped = mapGithubWebhookToTrigger(githubEvent, payload);
@@ -593,7 +605,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         const summary = typeof event.summary === "string" ? event.summary : `GitHub ${githubEvent} event`;
         const rawPayload = isRecord(event.payload) ? event.payload : event;
         lastDeliveryAt = String(event.createdAt ?? new Date().toISOString());
-        await args.prService?.ingestGithubWebhook({
+        const ingested = await args.prService?.ingestGithubWebhook({
           eventName: githubEvent,
           deliveryId: eventId,
           payload: rawPayload,
@@ -603,7 +615,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             eventId,
             error: error instanceof Error ? error.message : String(error),
           });
+          return null;
         });
+        // Same as the local-webhook path: a relay-delivered PR change should
+        // refresh the poller immediately instead of waiting for its next tick.
+        if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
+          args.onPrStateIngested?.();
+        }
         await args.automationService?.dispatchIngressTrigger({
           source: "github-relay",
           eventKey: eventId,

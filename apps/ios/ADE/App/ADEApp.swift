@@ -30,6 +30,10 @@ struct ADEApp: App {
           didBootstrapSync = true
           lastActivationSyncAt = Date()
           await PushNotificationService.shared.clearAppBadge()
+          // App Clip → full app handoff: adopt clip-scanned pairing
+          // credentials before the first connect so a fresh install lands
+          // already paired.
+          await syncService.adoptClipPairingHandoffIfPresent()
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in

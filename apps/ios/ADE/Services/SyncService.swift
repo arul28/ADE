@@ -3522,6 +3522,66 @@ final class SyncService: ObservableObject {
     return true
   }
 
+  /// Adopts pairing credentials handed off by the ADE App Clip (scan QR →
+  /// pair before the full app is installed). The clip writes a one-shot blob
+  /// into the shared App Group container; this reads it, persists the machine
+  /// exactly like a successful in-app pairing (saved profile + keychain
+  /// tokens), and connects. Returns true when a handoff was adopted.
+  @discardableResult
+  func adoptClipPairingHandoffIfPresent() async -> Bool {
+    guard let handoff = ClipPairingHandoff.consume() else { return false }
+    // Already credentialed for this machine (e.g. the user paired in-app
+    // before first launching after a clip scan) — keep the newer in-app
+    // pairing and drop the handoff.
+    if savedProfileForPairingQr(hostIdentity: handoff.hostIdentity) != nil {
+      return false
+    }
+    // The host binds the pairing secret to the CLIP's deviceId, and paired
+    // hellos are rejected when auth.deviceId != peer.deviceId. Adopt the
+    // clip's id as this install's device id — but only on a fresh install
+    // (no other saved machines); rewriting the id under existing pairings
+    // would break their credentials, so in that rare case drop the handoff
+    // and let the user pair in-app.
+    if handoff.deviceId != deviceId {
+      guard loadSavedProfilesRaw().isEmpty else { return false }
+      deviceId = handoff.deviceId
+      UserDefaults.standard.set(handoff.deviceId, forKey: legacyDeviceIdKey)
+      keychain.saveDeviceId(handoff.deviceId)
+    }
+    let directHosts = deduplicatedAddresses(
+      ([handoff.host] + handoff.addressCandidates).compactMap { syncEndpointHost($0) }
+    )
+    let relayHosts = deduplicatedAddresses(handoff.relayCandidates.filter(syncIsFullWebSocketRoute))
+    var profile = HostConnectionProfile(
+      hostIdentity: handoff.hostIdentity,
+      hostName: handoff.hostName,
+      siteId: syncNonEmpty(handoff.siteId),
+      port: handoff.port,
+      authKind: "paired",
+      pairedDeviceId: handoff.deviceId,
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: nil,
+      lastSuccessfulAddress: handoff.host,
+      savedAddressCandidates: directHosts,
+      discoveredLanAddresses: directHosts.filter {
+        !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0)
+      },
+      tailscaleAddress: directHosts.first(where: syncIsTailscaleRoute),
+      savedRelayCandidates: relayHosts.isEmpty ? nil : relayHosts
+    )
+    profile.updatedAt = ISO8601DateFormatter().string(from: Date())
+    keychain.saveToken(handoff.secret)
+    if let key = profileStorageKey(profile) {
+      keychain.saveToken(handoff.secret, hostKey: key)
+      var profiles = loadSavedProfilesRaw()
+      profiles[key] = profile
+      saveSavedProfiles(profiles)
+    }
+    saveProfile(profile)
+    await reconnectIfPossible(userInitiated: true)
+    return true
+  }
+
   func reconnectIfPossible(userInitiated: Bool = false, preferTailnet: Bool = false) async {
     do {
       try ensureDatabaseReady()

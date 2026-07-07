@@ -77,6 +77,7 @@ import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
+import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
 import type {
   DeleteLaneArgs,
   GitCommitSummary,
@@ -532,6 +533,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     requestedAt: number;
   } | null>(null);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
+  const laneListFreshnessKey = useMemo(() => ({ lanes, laneSnapshots }), [lanes, laneSnapshots]);
+  useLaneListInvalidation({ active: active && Boolean(activeProjectRoot), refreshLanes, freshnessKey: laneListFreshnessKey });
   const consumedLaneIdsDeepLinkSignatureRef = useRef<string | null>(null);
   const consumedCommitDeepLinkSignatureRef = useRef<string | null>(null);
 

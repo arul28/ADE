@@ -51,15 +51,9 @@ func workPendingChatCreationOptimisticSession(
 }
 
 func isChatSession(_ session: TerminalSessionSummary) -> Bool {
-  let raw = session.toolType?
-    .trimmingCharacters(in: .whitespacesAndNewlines)
-    .lowercased() ?? ""
-  guard !raw.isEmpty else { return false }
-  // Must match desktop `isChatToolType` (`apps/desktop/src/renderer/lib/sessions.ts`) — explicit chat tools plus `*-chat` providers.
-  if raw == "codex-chat" || raw == "claude-chat" || raw == "opencode-chat" || raw == "cursor" {
-    return true
-  }
-  return raw.hasSuffix("-chat")
+  // Single source of truth for the chat-tool predicate (mirrors desktop
+  // `isChatToolType`); `isWorkChatToolType` lives in WorkSessionCanonicalState.
+  isWorkChatToolType(session.toolType)
 }
 
 func isRunOwnedSession(_ session: TerminalSessionSummary) -> Bool {

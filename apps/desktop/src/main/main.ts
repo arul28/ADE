@@ -3134,6 +3134,9 @@ app.whenReady().then(async () => {
       logger,
       automationService: automationService ?? null,
       prService,
+      // Webhook-driven PR changes poke the poller so `prs-updated` reaches the
+      // renderer now instead of on the next scheduled tick.
+      onPrStateIngested: () => prPollingServiceRef?.poke(),
       secretService: automationSecretService,
       githubService,
       listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),

@@ -371,6 +371,10 @@ struct WorkRootScreen: View {
                   withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
                     toggleCollapsed(group.id)
                   }
+                },
+                pullRequest: group.laneId.flatMap { rowPrTagsByLaneId[$0] },
+                onOpenPullRequest: { tag in
+                  openLanePullRequest(tag: tag, laneId: group.laneId)
                 }
               )
               .id(group.id)

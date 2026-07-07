@@ -16,6 +16,8 @@
         <string>ADE App Store</string>
         <key>com.ade.ios.widgets</key>
         <string>ADE Widgets App Store</string>
+        <key>com.ade.ios.Clip</key>
+        <string>ADE App Clip App Store</string>
     </dict>
     <key>destination</key>
     <string>export</string>

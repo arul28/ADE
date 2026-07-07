@@ -360,6 +360,24 @@ extension WorkRootScreen {
     }
   }
 
+  /// Header-tag variant of `openPullRequest` — navigates straight to a lane
+  /// section's primary PR in the PRs tab (no owning session row). Reuses the
+  /// same `requestedPrNavigation` cross-tab handoff.
+  func openLanePullRequest(tag: LanePrTag, laneId: String?) {
+    let trimmedLaneId = laneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    Task { @MainActor in
+      if let prId = tag.prId, !prId.isEmpty {
+        syncService.requestedPrNavigation = PrNavigationRequest(
+          prId: prId,
+          prNumber: tag.githubPrNumber,
+          laneId: trimmedLaneId.isEmpty ? nil : trimmedLaneId
+        )
+      } else {
+        syncService.requestedPrNavigation = PrNavigationRequest(prNumber: tag.githubPrNumber)
+      }
+    }
+  }
+
   func openSession(_ session: TerminalSessionSummary) {
     // A pending-sync row has no synced session to open yet.
     guard !workIsPendingChatCreationSession(session) else { return }

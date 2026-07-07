@@ -13,6 +13,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
 import {
   COLORS,
   LABEL_STYLE,
@@ -1312,9 +1313,10 @@ function WelcomeScreen() {
 
 export function RunPage() {
   const lanes = useAppStore((s) => s.lanes);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const showWelcome = useAppStore((s) => s.showWelcome);
-
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  useLaneListInvalidation({ active: Boolean(projectRoot), refreshLanes, freshnessKey: lanes });
   const [persistedLaneState, setPersistedLaneState] =
     useState<PersistedRunPageLaneState>(() =>
       readRunPageLaneState(projectRoot),

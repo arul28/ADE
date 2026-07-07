@@ -745,6 +745,10 @@ export async function createAdeRuntime(args: {
   // pattern as desktop main. Without this bridge, paired phones only ever
   // receive terminal snapshots, never live terminal_data push.
   let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
+  // Same late-binding for the push publisher: it feeds tracked CLI runtime
+  // states (running / waiting-input from OSC 133 markers) into the phone's
+  // Live Activity, and it's constructed after ptyService.
+  let pushPublisherForPtySignals: PushPublisherService | null = null;
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -764,6 +768,13 @@ export async function createAdeRuntime(args: {
       pushEvent("pty", { type: "pty_exit", event });
       const { projectRoot: _projectRoot, ...syncEvent } = event;
       syncServiceForPtyEvents?.handlePtyExit(syncEvent);
+    },
+    onSessionRuntimeSignal: (signal) => {
+      pushPublisherForPtySignals?.handleCliRuntimeSignal(projectId, {
+        laneId: signal.laneId,
+        sessionId: signal.sessionId,
+        runtimeState: signal.runtimeState,
+      });
     },
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
@@ -1069,10 +1080,14 @@ export async function createAdeRuntime(args: {
   // GitHub relay poll feeds prService.ingestGithubWebhook, which is how
   // webhook-driven PR state updates reach installed (non-source) runtimes.
   // Automation rule dispatch stays gated on automationService being present.
+  // The PR poller is constructed below; late-bind so webhook ingest can poke
+  // an immediate re-read instead of waiting out the next scheduled tick.
+  let prPollingServiceForIngress: { poke: () => void } | null = null;
   const automationIngressService = createAutomationIngressService({
     logger,
     automationService,
     prService: headlessLinearServices.prService,
+    onPrStateIngested: () => prPollingServiceForIngress?.poke(),
     secretService: automationSecretService,
     githubService: headlessLinearServices.githubService,
     listRules: () => (automationService ? projectConfigService.get().effective.automations ?? [] : []),
@@ -1197,6 +1212,7 @@ export async function createAdeRuntime(args: {
     },
   });
   prPollingService.start();
+  prPollingServiceForIngress = prPollingService;
 
   // Brain → Cloudflare push relay publisher. Owns push registration (from the
   // paired phone via `push.*` sync commands) and fans agent/PR state transitions
@@ -1234,7 +1250,21 @@ export async function createAdeRuntime(args: {
         return null;
       }
     },
+    resolveCliSession: (sessionId) => {
+      try {
+        const session = sessionService.get(sessionId);
+        if (!session) return null;
+        return {
+          title: session.title ?? null,
+          toolType: session.toolType ?? null,
+          chatSessionId: session.chatSessionId ?? null,
+        };
+      } catch {
+        return null;
+      }
+    },
   });
+  pushPublisherForPtySignals = pushPublisherService;
   void pushPublisherService.start().catch((error) => {
     logger.warn("push.start_failed", { error: error instanceof Error ? error.message : String(error) });
   });

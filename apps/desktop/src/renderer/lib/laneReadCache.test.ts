@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearLaneReadInFlightForTest,
   getKeybindingsCoalesced,
+  invalidateLaneReadCache,
   listLaneSnapshotsCoalesced,
   listLanesCoalesced,
 } from "./laneReadCache";
@@ -95,5 +96,31 @@ describe("laneReadCache", () => {
 
     await expect(first).resolves.toEqual({ definitions: [], overrides: [] });
     await expect(second).resolves.toEqual({ definitions: [], overrides: [] });
+  });
+
+  it("does not reuse an older in-flight lane snapshot request after invalidation", async () => {
+    let resolveFirst: (value: unknown[]) => void = () => {};
+    const first = new Promise<unknown[]>((resolve) => {
+      resolveFirst = resolve;
+    });
+    listSnapshots
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce([{ lane: { id: "lane-new" } }]);
+
+    const firstRead = listLaneSnapshotsCoalesced(
+      { includeArchived: false, includeStatus: true },
+      { projectRoot: "/repo" },
+    );
+    invalidateLaneReadCache();
+    const secondRead = listLaneSnapshotsCoalesced(
+      { includeArchived: false, includeStatus: true },
+      { projectRoot: "/repo" },
+    );
+
+    expect(listSnapshots).toHaveBeenCalledTimes(2);
+    await expect(secondRead).resolves.toEqual([{ lane: { id: "lane-new" } }]);
+
+    resolveFirst([{ lane: { id: "lane-stale" } }]);
+    await expect(firstRead).resolves.toEqual([{ lane: { id: "lane-stale" } }]);
   });
 });

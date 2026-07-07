@@ -1,9 +1,12 @@
-import React, { useCallback, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CaretDown, CaretRight, CircleNotch, Funnel, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
-import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
+import { listPrsCoalesced } from "../../lib/prReadCache";
+import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneCombobox } from "./LaneCombobox";
@@ -139,6 +142,7 @@ function StickyGroupHeader({
   accentColor,
   children,
   subLabel,
+  prBadge = null,
   variant = "default",
 }: {
   sectionId: string;
@@ -152,6 +156,8 @@ function StickyGroupHeader({
   children: React.ReactNode;
   /** Branch label shown on the right for `variant="lane"` (e.g. from `branchNameFromRef`). */
   subLabel?: string | null;
+  /** Compact PR badge shown left of the count for `variant="lane"`. */
+  prBadge?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
   variant?: "default" | "lane";
 }) {
@@ -163,29 +169,29 @@ function StickyGroupHeader({
   const laneLabelColor = isLane && laneTint.text ? laneTint.text : accentColor ?? undefined;
   return (
     <div className={cn(isLane ? "mb-1.5" : "mt-0.5 first:mt-0")}>
-      <button
-        type="button"
-        className={cn(
-          "ade-lane-group-header sticky top-0 z-10 flex w-full items-center text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
-          isLane ? "gap-1.5 rounded-lg px-3 py-2" : "gap-1.5 rounded-md px-2 py-1.5",
-          laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
-        )}
-        style={{
-          background: laneTint.background,
-          border: isLane
-            ? laneTint.border ?? "1px solid rgba(255, 255, 255, 0.08)"
-            : undefined,
-          borderBottom: isLane ? undefined : "1px solid rgba(255, 255, 255, 0.04)",
-          boxShadow: isLane
-            ? "0 1px 6px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)"
-            : undefined,
-        }}
-        onClick={onToggleCollapsed}
-        onContextMenu={onContextMenu}
-        data-section-id={sectionId}
-      >
-        {isLane ? (
-          <div className="flex w-full min-w-0 items-center gap-1.5">
+      {isLane ? (
+        // The lane header is a flex row, NOT one big <button>: the PR badge is
+        // itself interactive, and nesting interactive elements inside a native
+        // button is invalid HTML (breaks focus order / assistive tech). The
+        // collapse toggle button spans everything left of the badge cluster.
+        <div
+          className={cn(
+            "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-lg px-3 py-2 transition-colors backdrop-blur-xl select-none",
+            laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+          )}
+          style={{
+            background: laneTint.background,
+            border: laneTint.border ?? "1px solid rgba(255, 255, 255, 0.08)",
+            boxShadow: "0 1px 6px -2px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.04)",
+          }}
+          data-section-id={sectionId}
+        >
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+            onClick={onToggleCollapsed}
+            onContextMenu={onContextMenu}
+          >
             {collapsed ? (
               <CaretRight size={12} className="shrink-0 text-muted-fg/35" />
             ) : (
@@ -212,11 +218,30 @@ function StickyGroupHeader({
                 </span>
               </div>
             ) : null}
-            <span className="ml-auto shrink-0 rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
+          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            {prBadge}
+            <span className="rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
               {count}
             </span>
           </div>
-        ) : (
+        </div>
+      ) : (
+      <button
+        type="button"
+        className={cn(
+          "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
+          laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+        )}
+        style={{
+          background: laneTint.background,
+          borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
+        }}
+        onClick={onToggleCollapsed}
+        onContextMenu={onContextMenu}
+        data-section-id={sectionId}
+      >
+        {(
           <>
             {collapsed ? (
               <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
@@ -236,6 +261,7 @@ function StickyGroupHeader({
           </>
         )}
       </button>
+      )}
       {/* Children slide out/retract smoothly; the header stays put (no reflow jump). */}
       <AnimatePresence initial={false}>
         {!collapsed && count > 0 ? (
@@ -254,6 +280,79 @@ function StickyGroupHeader({
         ) : null}
       </AnimatePresence>
     </div>
+  );
+}
+
+/**
+ * ADE-mapped PRs grouped by lane id for the Work tab's lane dividers. One lazy
+ * read plus the `prs-updated` push keeps it fresh without polling.
+ *
+ * TODO: iOS merges GitHub-by-branch (unmapped) PRs into the same badge; the
+ * desktop Work tab has no external-PR cache here, so this is ADE-mapped only.
+ */
+function useLanePrsByLaneId(): Map<string, PrSummary[]> {
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const [prs, setPrs] = useState<PrSummary[]>([]);
+  useEffect(() => {
+    // `window.ade.prs` is absent in some renders (e.g. tests with a partial
+    // `window.ade` mock); no-op gracefully so the badge just doesn't render.
+    if (!window.ade?.prs) return;
+    let cancelled = false;
+    void listPrsCoalesced({ projectRoot })
+      .then((list) => {
+        if (!cancelled) setPrs(list);
+      })
+      .catch(() => {});
+    const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type === "prs-updated") setPrs(event.prs);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [projectRoot]);
+  return useMemo(() => {
+    const byLane = new Map<string, PrSummary[]>();
+    for (const pr of prs) {
+      const list = byLane.get(pr.laneId);
+      if (list) list.push(pr);
+      else byLane.set(pr.laneId, [pr]);
+    }
+    return byLane;
+  }, [prs]);
+}
+
+/**
+ * Compact PR status badge on a lane divider: state-colored dot + `#<number>` +
+ * one-word state. Clicking deep-links into the PRs tab. Rendered inside the
+ * header button, so it stops propagation to avoid also toggling the section.
+ */
+function LanePrHeaderBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void }) {
+  const color = lanePrStateColor(pr.state);
+  const label = lanePrStateLabel(pr.state);
+  const open = (event: React.SyntheticEvent) => {
+    event.stopPropagation();
+    onOpen();
+  };
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          open(event);
+        }
+      }}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/[0.04] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70 transition-colors hover:bg-white/[0.09]"
+      title={`Pull request #${pr.githubPrNumber} · ${label}`}
+      aria-label={`Pull request #${pr.githubPrNumber}, ${label}`}
+    >
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: color }} />
+      <span className="tabular-nums">#{pr.githubPrNumber}</span>
+      <span style={{ color }}>{label}</span>
+    </span>
   );
 }
 
@@ -321,6 +420,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   handoffJobs?: HandoffLaunchJob[];
 }) {
   const navigate = useNavigate();
+  const prsByLaneId = useLanePrsByLaneId();
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
@@ -647,6 +747,13 @@ export const SessionListPane = React.memo(function SessionListPane({
             {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
           </span>
         );
+        const primaryPr = selectPrimaryLanePr(lane, prsByLaneId.get(lane.id) ?? []);
+        const prBadge = primaryPr ? (
+          <LanePrHeaderBadge
+            pr={primaryPr}
+            onOpen={() => navigate(`/prs?tab=normal&prId=${encodeURIComponent(primaryPr.id)}`)}
+          />
+        ) : null;
         return (
           <StickyGroupHeader
             key={lane.id}
@@ -658,6 +765,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             count={total}
             collapsed={collapsed}
             accentColor={laneAccent}
+            prBadge={prBadge}
             onToggleCollapsed={() => toggleWorkLaneCollapsed(lane.id)}
             onContextMenu={(e) => triggerLaneContextMenu(lane.id, e)}
           >

@@ -36,6 +36,7 @@ import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
+import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
 
@@ -48,6 +49,7 @@ type RefreshCoreOptions = {
 };
 
 const REFRESH_ERROR_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
+const PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS = 180;
 
 function normalizePrRefreshArgs(args?: PrRefreshArgs): PrRefreshArgs | undefined {
   const prIds = [
@@ -890,6 +892,15 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       githubRefreshMode: "background",
     });
   }, [active, refreshCore]);
+
+  const refreshForLaneLifecycle = useCallback(() => {
+    void refreshCore();
+  }, [refreshCore]);
+  useDebouncedLaneLifecycleRefresh({
+    active,
+    debounceMs: PRS_LANE_LIFECYCLE_REFRESH_DEBOUNCE_MS,
+    onRefresh: refreshForLaneLifecycle,
+  });
 
   useEffect(() => {
     if (!active || !error) return;
