@@ -115,14 +115,16 @@ describe("importAffordancesFor", () => {
     );
     expect(affs.map((a) => a.kind)).toEqual(["fork-into-lane", "resume-in-place"]);
     expect(affs[0]).toMatchObject({ mode: "fork", hint: expect.stringMatching(/another folder/i) });
+    // The foreign folder is carried on `foreignCwd` (rendered as an inline
+    // caption), not baked into the now-consistent "Open as CLI session" label.
     expect(affs[1]).toMatchObject({
       mode: "resume",
-      label: expect.stringContaining("other-project"),
+      label: "Open as CLI session",
       foreignCwd: "/Users/dev/other-project",
     });
   });
 
-  it("foreign cwd, only resumeInPlace: offers resume-in-place labeled with the foreign path", () => {
+  it("foreign cwd, only resumeInPlace: offers resume-in-place carrying the foreign path", () => {
     const affs = importAffordancesFor(
       session({
         cwdMatchesRequestedLane: false,
@@ -132,7 +134,7 @@ describe("importAffordancesFor", () => {
     );
     expect(affs.map((a) => a.kind)).toEqual(["resume-in-place"]);
     expect(affs[0]?.foreignCwd).toBe("/Users/dev/other-project");
-    expect(affs[0]?.label).toContain("other-project");
+    expect(affs[0]?.label).toBe("Open as CLI session");
     expect(affs[0]?.mode).toBe("resume");
   });
 
@@ -165,6 +167,48 @@ describe("importAffordancesFor", () => {
 
   it("no capabilities at all, cwd matches: yields nothing", () => {
     expect(importAffordancesFor(session({ cwdMatchesRequestedLane: true, capabilities: {} }))).toEqual([]);
+  });
+
+  it("labels are drawn only from the consistent {ADE chat | CLI session} × {Open | Fork} set", () => {
+    const summaries = [
+      session({ cwdMatchesRequestedLane: true, capabilities: { importToChat: true, resumeInPlace: true, fork: true } }),
+      session({ cwdMatchesRequestedLane: false, cwd: "/Users/dev/other", capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true } }),
+      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
+    ];
+    const allowed = new Set([
+      "Open as ADE chat",
+      "Fork as ADE chat",
+      "Open as CLI session",
+      "Fork as CLI session",
+    ]);
+    for (const summary of summaries) {
+      for (const aff of importAffordancesFor(summary)) {
+        expect(allowed.has(aff.label)).toBe(true);
+      }
+    }
+  });
+
+  it("every emitted affordance carries a non-empty meaning description", () => {
+    const summaries = [
+      session({ cwdMatchesRequestedLane: true, capabilities: { importToChat: true, resumeInPlace: true, fork: true } }),
+      session({ cwdMatchesRequestedLane: false, capabilities: { resumeInDifferentCwd: true, forkIntoDifferentCwd: true } }),
+      session({ cwdMatchesRequestedLane: false, cwd: "/Users/dev/other", capabilities: { resumeInPlace: true, forkIntoDifferentCwd: true } }),
+      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
+    ];
+    for (const summary of summaries) {
+      for (const aff of importAffordancesFor(summary)) {
+        expect(aff.description.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("the disabled resume-here description explains the cross-folder block", () => {
+    const [aff] = importAffordancesFor(
+      session({ provider: "cursor", cwdMatchesRequestedLane: false, capabilities: {} }),
+    );
+    expect(aff?.enabled).toBe(false);
+    expect(aff?.description).toBe(aff?.disabledReason);
+    expect(aff?.description).toContain("Cursor");
   });
 });
 

@@ -24,6 +24,13 @@ export type ImportAffordanceKind =
 export type ImportAffordance = {
   kind: ImportAffordanceKind;
   label: string;
+  /**
+   * Plain-English explanation of exactly what this action does, shown as the
+   * button's tooltip. Spells out the two axes a first-time user can't infer
+   * from the label: resume (continue the same session) vs fork (branch a copy),
+   * and chat (rendered ADE conversation) vs CLI terminal (raw session).
+   */
+  description: string;
   target: ImportTarget;
   mode: ImportMode;
   /** True only for the hero "Open as ADE chat" action. */
@@ -36,6 +43,12 @@ export type ImportAffordance = {
   /** The session's own cwd, set on resume-in-place so callers can label it. */
   foreignCwd?: string | null;
 };
+
+/** Copy shared across the branches that can emit the same action. */
+const OPEN_AS_CLI_DESCRIPTION =
+  "Continues the same session as a CLI terminal in this lane. Takes over the session — don't run it elsewhere at the same time.";
+const FORK_AS_CLI_DESCRIPTION =
+  "Starts a copy of this session as a CLI terminal in this lane. The original session is left untouched.";
 
 /** Collapses `$HOME` to `~` and keeps a recognizable tail of the path. */
 export function shortenCwd(cwd: string | null | undefined, maxSegments = 3): string {
@@ -73,6 +86,8 @@ export function importAffordancesFor(
     out.push({
       kind: "open-as-chat",
       label: "Open as ADE chat",
+      description:
+        "Continues this session as a native ADE chat — the full conversation history opens in a chat pane and you keep going here. (Claude/Codex)",
       target: "chat",
       mode: "resume",
       hero: true,
@@ -81,6 +96,8 @@ export function importAffordancesFor(
     out.push({
       kind: "fork-as-chat",
       label: "Fork as ADE chat",
+      description:
+        "Opens a COPY of this session as an ADE chat. The original session stays untouched; you continue on a branch.",
       target: "chat",
       mode: "fork",
       hero: false,
@@ -94,7 +111,8 @@ export function importAffordancesFor(
     if (cap.resumeInPlace) {
       out.push({
         kind: "resume-here",
-        label: "Resume here",
+        label: "Open as CLI session",
+        description: OPEN_AS_CLI_DESCRIPTION,
         target: "cli",
         mode: "resume",
         hero: false,
@@ -104,7 +122,8 @@ export function importAffordancesFor(
     if (cap.fork) {
       out.push({
         kind: "fork-into-lane",
-        label: "Fork into this lane",
+        label: "Fork as CLI session",
+        description: FORK_AS_CLI_DESCRIPTION,
         target: "cli",
         mode: "fork",
         hero: false,
@@ -118,7 +137,8 @@ export function importAffordancesFor(
       // Provider can point the resumed session at this lane's folder.
       out.push({
         kind: "resume-here",
-        label: "Resume here",
+        label: "Open as CLI session",
+        description: OPEN_AS_CLI_DESCRIPTION,
         target: "cli",
         mode: "resume",
         hero: false,
@@ -127,7 +147,8 @@ export function importAffordancesFor(
       if (forkAcross) {
         out.push({
           kind: "fork-into-lane",
-          label: "Fork into this lane",
+          label: "Fork as CLI session",
+          description: FORK_AS_CLI_DESCRIPTION,
           target: "cli",
           mode: "fork",
           hero: false,
@@ -141,7 +162,8 @@ export function importAffordancesFor(
       if (forkAcross) {
         out.push({
           kind: "fork-into-lane",
-          label: "Fork into this lane",
+          label: "Fork as CLI session",
+          description: FORK_AS_CLI_DESCRIPTION,
           target: "cli",
           mode: "fork",
           hero: false,
@@ -152,7 +174,9 @@ export function importAffordancesFor(
       if (cap.resumeInPlace) {
         out.push({
           kind: "resume-in-place",
-          label: `Resume (runs in ${shortenCwd(summary.cwd)})`,
+          label: "Open as CLI session",
+          description:
+            "Continues the same session in its original folder (not this lane) — this provider can only continue a session where it was created.",
           target: "cli",
           mode: "resume",
           hero: false,
@@ -162,14 +186,16 @@ export function importAffordancesFor(
       }
       if (!forkAcross && !cap.resumeInPlace) {
         // No CLI path into or at this lane — surface why resume is blocked.
+        const blockedReason = `This session lives in another folder and ${provider} can't resume across folders.`;
         out.push({
           kind: "resume-here",
-          label: "Resume here",
+          label: "Open as CLI session",
+          description: blockedReason,
           target: "cli",
           mode: "resume",
           hero: false,
           enabled: false,
-          disabledReason: `This session lives in another folder and ${provider} can't resume across folders.`,
+          disabledReason: blockedReason,
         });
       }
     }

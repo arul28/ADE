@@ -16,7 +16,7 @@ function formatUpdatedAt(ms: number | null | undefined): string {
 }
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import { SmartTooltip } from "../../ui/SmartTooltip";
-import { ProviderChip } from "../ProviderChip";
+import { ToolLogo } from "../ToolLogos";
 import {
   getExternalSessionsApi,
   normalizeListResult,
@@ -28,6 +28,7 @@ import {
 } from "./contract";
 import {
   importAffordancesFor,
+  shortenCwd,
   type ImportAffordance,
 } from "./affordances";
 
@@ -182,8 +183,8 @@ export function ImportSessionBrowser({
     <LaneDialogShell
       open={open}
       onOpenChange={onOpenChange}
-      title="Import session"
-      description={`Continue an external CLI session in ${laneName}.`}
+      title="Import a CLI session"
+      description={`Continue a Claude, Codex, Cursor, Droid, or OpenCode session you started in a terminal — into ${laneName}.`}
       icon={DownloadSimple}
       widthClassName="w-[min(680px,calc(100vw-1rem))]"
       heightClassName="h-[min(680px,calc(100dvh-2rem))]"
@@ -204,20 +205,19 @@ export function ImportSessionBrowser({
                   onClick={() => setProviderFilter(filter.id)}
                   className={cn(
                     "inline-flex h-7 items-center gap-1.5 rounded-full border text-[11px] font-medium transition-colors",
-                    isAll ? "px-3" : "pl-1.5 pr-3",
+                    isAll ? "px-3" : "pl-2 pr-3",
                     selected
                       ? "border-white/[0.14] bg-white/[0.08] text-fg"
                       : "border-white/[0.06] bg-white/[0.02] text-muted-fg/80 hover:text-fg",
                   )}
                 >
                   {filter.id !== "all" ? (
-                    <ProviderChip
-                      provider={filter.id}
+                    <ToolLogo
                       toolType={PROVIDER_TOOL_TYPE[filter.id]}
-                      size="sm"
+                      size={18}
                       className={cn(
                         "transition-opacity",
-                        selected ? "opacity-100" : "opacity-80",
+                        selected ? "opacity-100" : "opacity-75",
                       )}
                     />
                   ) : null}
@@ -266,6 +266,12 @@ export function ImportSessionBrowser({
               Show sessions from other folders
             </label>
           </div>
+          <p className="text-[10.5px] leading-snug text-muted-fg/55">
+            <span className="text-muted-fg/75">Open</span> continues the original session ·{" "}
+            <span className="text-muted-fg/75">Fork</span> starts a copy and leaves the original untouched.{" "}
+            <span className="text-muted-fg/75">ADE chat</span> opens the history in a chat pane;{" "}
+            <span className="text-muted-fg/75">CLI session</span> opens the raw terminal.
+          </p>
         </div>
 
         {importError ? (
@@ -306,6 +312,13 @@ export function ImportSessionBrowser({
             />
           ) : (
             <ul className="flex flex-col gap-1.5">
+              <li className="mb-0.5 flex items-center gap-1.5 px-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-fg/45">
+                <span>CLI sessions</span>
+                <span className="text-muted-fg/30">·</span>
+                <span className="font-medium normal-case tracking-normal text-muted-fg/40">
+                  started in a terminal
+                </span>
+              </li>
               {visible.map((summary, index) => (
                 <ImportSessionRow
                   key={`${summary.provider}:${summary.id}`}
@@ -360,6 +373,44 @@ function ImportSessionRow({
 }) {
   const affordances = useMemo(() => importAffordancesFor(summary), [summary]);
   const hint = affordances.find((a) => a.hint)?.hint;
+  // One obvious default per row: the hero chat action if present, otherwise the
+  // first runnable action (the most-likely CLI path for chat-less providers).
+  const primaryKind = useMemo(
+    () => (affordances.find((a) => a.hero) ?? affordances.find((a) => a.enabled))?.kind ?? null,
+    [affordances],
+  );
+  const chatActions = affordances.filter((a) => a.target === "chat");
+  const cliActions = affordances.filter((a) => a.target === "cli");
+  const inPlace = affordances.find((a) => a.kind === "resume-in-place" && a.foreignCwd);
+  const blockedReason = affordances.find((a) => !a.enabled)?.disabledReason;
+
+  // Labels are self-evident (the 2×2 {ADE chat | CLI session} × {Open | Fork})
+  // and the shared inline helper in the header explains both axes, so buttons
+  // carry no hover-only tooltip — meaning stays visible.
+  const renderAction = (aff: ImportAffordance) => {
+    const busy = importingKey === `${summary.id}:${aff.kind}`;
+    const isPrimary = aff.enabled && aff.kind === primaryKind;
+    return (
+      <button
+        key={aff.kind}
+        type="button"
+        disabled={!aff.enabled || Boolean(importingKey)}
+        onClick={() => onImport(aff)}
+        className={cn(
+          "inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-all disabled:cursor-not-allowed",
+          isPrimary
+            ? "text-[#0F0D14] hover:brightness-110 disabled:opacity-50"
+            : aff.enabled
+              ? "border border-white/[0.1] bg-white/[0.03] text-fg hover:bg-white/[0.07]"
+              : "border border-white/[0.05] bg-transparent text-muted-fg/40",
+        )}
+        style={isPrimary ? { background: "#A78BFA" } : undefined}
+      >
+        {busy ? <CircleNotch size={11} className="animate-spin" /> : null}
+        {aff.label}
+      </button>
+    );
+  };
 
   return (
     <li
@@ -372,10 +423,9 @@ function ImportSessionRow({
       )}
     >
       <div className="flex items-start gap-2.5">
-        <ProviderChip
-          provider={summary.provider}
+        <ToolLogo
           toolType={PROVIDER_TOOL_TYPE[summary.provider]}
-          size="md"
+          size={20}
           className="mt-0.5"
         />
         <div className="min-w-0 flex-1">
@@ -389,17 +439,9 @@ function ImportSessionRow({
               </span>
             ) : null}
             {summary.possiblyActive ? (
-              <SmartTooltip
-                content={{
-                  label: "May be open elsewhere",
-                  description:
-                    "Continuing here takes over the session — close the other tool, or fork instead.",
-                }}
-              >
-                <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/25 bg-amber-500/[0.08] px-1.5 py-px text-[9px] font-semibold uppercase tracking-wide text-amber-300">
-                  <Warning size={9} weight="fill" /> May be open elsewhere
-                </span>
-              </SmartTooltip>
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-500/[0.06] px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-amber-300/90">
+                <Warning size={9} weight="fill" className="opacity-80" /> May be open elsewhere
+              </span>
             ) : null}
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10.5px] text-muted-fg/70">
@@ -433,42 +475,33 @@ function ImportSessionRow({
             </div>
           ) : null}
 
-          {/* Actions */}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {affordances.map((aff) => {
-              const key = `${summary.id}:${aff.kind}`;
-              const busy = importingKey === key;
-              const button = (
-                <button
-                  key={aff.kind}
-                  type="button"
-                  disabled={!aff.enabled || Boolean(importingKey)}
-                  onClick={() => onImport(aff)}
-                  className={cn(
-                    "inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition-all disabled:cursor-not-allowed",
-                    aff.hero
-                      ? "text-[#0F0D14] hover:brightness-110 disabled:opacity-50"
-                      : aff.enabled
-                        ? "border border-white/[0.1] bg-white/[0.03] text-fg hover:bg-white/[0.07]"
-                        : "border border-white/[0.05] bg-transparent text-muted-fg/40",
-                  )}
-                  style={aff.hero ? { background: "#A78BFA" } : undefined}
-                >
-                  {busy ? <CircleNotch size={11} className="animate-spin" /> : null}
-                  {aff.label}
-                </button>
-              );
-              if (!aff.enabled && aff.disabledReason) {
-                return (
-                  <SmartTooltip key={aff.kind} content={{ label: aff.label, description: aff.disabledReason }}>
-                    {button}
-                  </SmartTooltip>
-                );
-              }
-              return button;
-            })}
+          {/* Actions — grouped "open as chat" vs "continue as terminal" so the
+              chat/terminal and continue/fork distinctions read at a glance. */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+            {chatActions.length ? (
+              <div className="flex items-center gap-1.5">{chatActions.map(renderAction)}</div>
+            ) : null}
+            {chatActions.length && cliActions.length ? (
+              <span aria-hidden className="hidden h-4 w-px bg-white/[0.08] sm:block" />
+            ) : null}
+            {cliActions.length ? (
+              <div className="flex items-center gap-1.5">{cliActions.map(renderAction)}</div>
+            ) : null}
           </div>
-          {hint ? <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/60">{hint}</div> : null}
+          {inPlace ? (
+            <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/55">
+              “Open as CLI session” runs in its original folder ({shortenCwd(inPlace.foreignCwd)}) — {providerDisplayName(summary.provider)} can only continue a session where it was created.
+            </div>
+          ) : blockedReason ? (
+            <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/55">{blockedReason}</div>
+          ) : hint ? (
+            <div className="mt-1.5 text-[10.5px] leading-snug text-muted-fg/60">{hint}</div>
+          ) : null}
+          {summary.possiblyActive ? (
+            <div className="mt-1 text-[10.5px] leading-snug text-amber-300/70">
+              Recently active — may still be running in a terminal. Fork to avoid conflicting with it.
+            </div>
+          ) : null}
         </div>
       </div>
     </li>
