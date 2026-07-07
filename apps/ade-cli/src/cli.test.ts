@@ -624,6 +624,24 @@ describe("ADE CLI", () => {
       },
     ]);
 
+    const web = buildCliPlan(["sync", "web"]);
+    expect(web.kind).toBe("execute");
+    if (web.kind !== "execute") return;
+    expect(web.label).toBe("sync web");
+    expect(web.formatter).toBe("sync-web");
+    expect(web.steps).toEqual([
+      {
+        key: "result",
+        method: "sync.getStatus",
+      },
+    ]);
+
+    for (const alias of ["web-pair", "webclient"]) {
+      const aliasPlan = expectExecutePlan(buildCliPlan(["sync", alias]));
+      expect(aliasPlan.label).toBe("sync web");
+      expect(aliasPlan.steps[0]?.method).toBe("sync.getStatus");
+    }
+
     const setPin = buildCliPlan(["sync", "pin", "set", "123456"]);
     expect(setPin.kind).toBe("execute");
     if (setPin.kind !== "execute") return;
@@ -644,6 +662,76 @@ describe("ADE CLI", () => {
         method: "sync.generatePin",
       },
     ]);
+  });
+
+  it("formats sync web pairing info from sync status", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "web"]));
+    const connection = {
+      mode: "runtime-socket" as const,
+      projectRoot: "/tmp/project",
+      workspaceRoot: "/tmp/project",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const result = summarizeExecution({
+      plan,
+      connection,
+      values: {
+        result: {
+          pairingPin: "123456",
+          pairingPinConfigured: true,
+          localDevice: { name: "Fallback Machine" },
+          pairingConnectInfo: {
+            hostIdentity: {
+              deviceId: "device-1",
+              siteId: "site-1",
+              name: "Arul's Mac Studio",
+              platform: "macOS",
+              deviceType: "desktop",
+            },
+            port: 8787,
+            addressCandidates: [{ host: "10.0.0.2", kind: "lan" }],
+          },
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      pairingUrl: expect.stringContaining("https://app.ade-app.dev/pair#"),
+      code: "123456",
+      pinConfigured: true,
+      machineName: "Arul's Mac Studio",
+      relayEnabled: false,
+    });
+    expect(formatOutput(result, { text: true } as any, inferFormatter(plan)))
+      .toContain("  Code   123456");
+  });
+
+  it("prints a sync web no-address message cleanly", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "web"]));
+    const result = summarizeExecution({
+      plan,
+      connection: {
+        mode: "runtime-socket" as const,
+        projectRoot: "/tmp/project",
+        workspaceRoot: "/tmp/project",
+        socketPath: "/tmp/ade.sock",
+        request: async () => null,
+        close: () => {},
+      },
+      values: {
+        result: {
+          pairingPin: null,
+          pairingPinConfigured: false,
+          localDevice: { name: "Fallback Machine" },
+          pairingConnectInfo: null,
+        },
+      },
+    });
+
+    expect(formatOutput(result, { text: true } as any, inferFormatter(plan)))
+      .toBe("No machine addresses are published yet — is the sync host running? (ade sync status)\n");
   });
 
   it("builds sync cloud relay and security commands", () => {
