@@ -19,6 +19,7 @@ import type {
   CursorSdkWorkerRequest,
   CursorSdkWorkerResponse,
 } from "./cursorSdkProtocol";
+import { isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
 import {
   allowCursorHook,
   denyCursorHook,
@@ -157,11 +158,48 @@ function classifyWorkerError(error: unknown): { error: string; errorCode?: strin
       errorCode: "rate_limited",
     };
   }
+  const detail = errorMessage(error);
+  if (isCursorSdkTransportErrorText(detail) || isCursorSdkTransportErrorText(errorCode(error))) {
+    return { error: detail, errorCode: "network" };
+  }
   const code = errorCode(error);
   return {
-    error: errorMessage(error),
+    error: detail,
     ...(code ? { errorCode: code } : {}),
   };
+}
+
+function isTerminalErrorStatusEvent(event: unknown): boolean {
+  const record = event && typeof event === "object" && !Array.isArray(event)
+    ? event as Record<string, unknown>
+    : null;
+  return record?.type === "status" && record?.status === "ERROR";
+}
+
+/**
+ * Read the terminal `errorCode` for a finished local run from the SDK run
+ * store. The public `Run`/`RunResult` surface drops the store's
+ * `error_code` column (`RunRecord.errorCode`), so the only way to recover the
+ * real failure reason (e.g. an NGHTTP2 stream reset) is the run store the live
+ * `StoreBackedRun` was constructed with. This reaches an internal field, so it
+ * is fully guarded — any shape change just yields `undefined` and the caller
+ * falls back to the generic message.
+ */
+async function readRunErrorCode(run: SdkRun | null): Promise<string | undefined> {
+  if (!run) return undefined;
+  try {
+    const store = (run as unknown as {
+      store?: { getRun?: (agentId: string, runId: string) => Promise<unknown> };
+    }).store;
+    if (!store || typeof store.getRun !== "function") return undefined;
+    const record = await store.getRun(run.agentId, run.id);
+    const code = record && typeof record === "object"
+      ? (record as Record<string, unknown>).errorCode
+      : undefined;
+    return typeof code === "string" && code.trim() ? code.trim() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function getSdk(): Promise<CursorSdkModule> {
@@ -417,11 +455,33 @@ async function sendPrompt(payload: {
     ...(runModelParams ? { modelParams: runModelParams } : {}),
     runtime: "local",
   });
-  for await (const event of currentRun.stream()) {
-    post({ type: "sdk_event", event, runtime: "local", runId: currentRun.id, agentId: currentRun.agentId });
+  const run = currentRun;
+  // Hold a terminal ERROR status until after `wait()` so we can enrich it with
+  // the run store's real errorCode (the streamed status carries no detail).
+  let heldErrorEvent: Record<string, unknown> | null = null;
+  for await (const event of run.stream()) {
+    if (!heldErrorEvent && isTerminalErrorStatusEvent(event)) {
+      heldErrorEvent = { ...(event as unknown as Record<string, unknown>) };
+      continue;
+    }
+    post({ type: "sdk_event", event, runtime: "local", runId: run.id, agentId: run.agentId });
   }
-  const result = await currentRun.wait();
-  post({ type: "run_result", result, runtime: "local", runId: currentRun.id, agentId: currentRun.agentId });
+  const result = await run.wait();
+  const errored = heldErrorEvent != null
+    || (result && typeof result === "object" && (result as { status?: unknown }).status === "error");
+  const runErrorCode = errored ? await readRunErrorCode(run) : undefined;
+  if (heldErrorEvent) {
+    if (runErrorCode) heldErrorEvent.adeErrorCode = runErrorCode;
+    post({ type: "sdk_event", event: heldErrorEvent, runtime: "local", runId: run.id, agentId: run.agentId });
+  }
+  post({
+    type: "run_result",
+    result,
+    runtime: "local",
+    runId: run.id,
+    agentId: run.agentId,
+    ...(runErrorCode ? { errorCode: runErrorCode } : {}),
+  });
   currentRun = null;
   return result;
 }

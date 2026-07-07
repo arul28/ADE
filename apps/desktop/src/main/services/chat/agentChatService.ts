@@ -8450,8 +8450,8 @@ export function createAgentChatService(args: {
       if (!availableModels.length) return fallback();
       const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
       const candidateModelIds = [
-        requestedModelId,
         config.titleModelId,
+        requestedModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
         "anthropic/claude-haiku-4-5",
         "openai/gpt-5.4-mini",
@@ -21723,6 +21723,14 @@ export function createAgentChatService(args: {
       persistChatState(managed);
     };
     runtime.sdk.bridge.onRunResult = (_result, meta) => {
+      if (meta?.errorCode) {
+        logger.warn("agent_chat.cursor_sdk_run_error", {
+          sessionId: managed.session.id,
+          runId: meta.runId ?? null,
+          agentId: meta.agentId ?? null,
+          errorCode: meta.errorCode,
+        });
+      }
       if (meta?.runtime === "cloud" && meta.runId) {
         runtime.cloudRuns.delete(meta.runId);
         if (runtime.activeCloudRunId === meta.runId) runtime.activeCloudRunId = null;
@@ -26830,7 +26838,7 @@ export function createAgentChatService(args: {
       }
     }
 
-    if (
+    const modeFieldsTouched =
       permissionMode !== undefined
       || interactionMode !== undefined
       || claudePermissionMode !== undefined
@@ -26840,8 +26848,8 @@ export function createAgentChatService(args: {
       || opencodePermissionMode !== undefined
       || droidPermissionMode !== undefined
       || cursorModeId !== undefined
-      || cursorConfigValues !== undefined
-    ) {
+      || cursorConfigValues !== undefined;
+    if (modeFieldsTouched) {
       enforceManagedLocalHarnessPermissionMode(managed);
       normalizeSessionNativePermissionControls(managed.session, chatConfig);
       enforceOrchestrationLockedPermissionMode(managed.session);
@@ -26908,6 +26916,31 @@ export function createAgentChatService(args: {
       ) {
         await syncLiveCursorSdkPolicy(managed, managed.runtime, "session_update");
       }
+    }
+    // Broadcast a transient meta patch so other clients (desktop refreshing a
+    // session an iOS device just re-moded, or vice versa) update their composer
+    // controls immediately. Emitted after the cursor policy sync above so
+    // cursorModeSnapshot reflects the recomputed mode. Kept out of the
+    // session-list refresh path — this is a direct state patch, not a refetch.
+    if (modeFieldsTouched) {
+      emitTransientChatEnvelope(sessionId, {
+        type: "session_meta_updated",
+        ...(managed.session.permissionMode !== undefined ? { permissionMode: managed.session.permissionMode } : {}),
+        ...(managed.session.interactionMode !== undefined ? { interactionMode: managed.session.interactionMode } : {}),
+        ...(managed.session.claudePermissionMode !== undefined ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
+        ...(managed.session.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: managed.session.codexApprovalPolicy } : {}),
+        ...(managed.session.codexSandbox !== undefined ? { codexSandbox: managed.session.codexSandbox } : {}),
+        ...(managed.session.codexConfigSource !== undefined ? { codexConfigSource: managed.session.codexConfigSource } : {}),
+        ...(managed.session.opencodePermissionMode !== undefined ? { opencodePermissionMode: managed.session.opencodePermissionMode } : {}),
+        ...(managed.session.droidPermissionMode !== undefined ? { droidPermissionMode: managed.session.droidPermissionMode } : {}),
+        ...(cursorModeId !== undefined || managed.session.cursorModeId != null
+          ? { cursorModeId: managed.session.cursorModeId ?? null }
+          : {}),
+        ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
+        ...(cursorConfigValues !== undefined || managed.session.cursorConfigValues != null
+          ? { cursorConfigValues: managed.session.cursorConfigValues ?? null }
+          : {}),
+      });
     }
     if (
       fastMode !== undefined

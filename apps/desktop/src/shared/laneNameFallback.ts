@@ -157,7 +157,7 @@ function priorityNamingWords(cleanedPrompt: string): string[] {
     ?? (/\bopen code\b/u.test(normalized) ? "opencode" : null);
   if (!provider) return [];
   const mentionsAuth = /\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b/u.test(normalized);
-  const mentionsLogin = /\b(log\s*in|login|signin|sign\s*in)\b/u.test(normalized);
+  const mentionsLogin = /\b(log\s+in|login(?!\s+history)|signin|sign\s*in)\b/u.test(normalized);
   const mentionsUiControl = /\b(button|cta|call to action|chip|banner)\b/u.test(normalized);
   if (!mentionsAuth && !mentionsLogin) return [];
   if (!mentionsLogin && !mentionsUiControl) return [];

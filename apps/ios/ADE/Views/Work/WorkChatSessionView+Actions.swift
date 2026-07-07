@@ -936,9 +936,106 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func runSessionAction(_ action: @escaping @MainActor () async -> Void) async {
+  @discardableResult
+  func runSessionAction<T>(_ action: @escaping @MainActor () async -> T) async -> T {
     actionInFlight = true
     defer { actionInFlight = false }
-    await action()
+    return await action()
+  }
+
+  // MARK: - Consolidated pending-input answering
+
+  /// Optimistically hide a pending input the moment its decision is dispatched
+  /// (so the consolidated strip advances to the next request without waiting for
+  /// the host), run the action, then reconcile: if the command errored, roll the
+  /// hide back so the card re-shows. Successful resolutions are cleared later by
+  /// `reconcileOptimisticallyAnsweredInputs` once the item leaves the derived
+  /// queue.
+  ///
+  /// Returns whether THIS answer succeeded so callers (the accept-all sweep) can
+  /// gate follow-up work on the real per-action result instead of the shared
+  /// `errorMessage` binding.
+  @MainActor
+  @discardableResult
+  func dispatchPendingInputAnswer(
+    itemId: String,
+    _ op: @escaping @MainActor () async -> Void
+  ) async -> Bool {
+    optimisticallyAnsweredInputIds.insert(itemId)
+    // Capture this action's outcome the instant its handler returns. Every
+    // answer handler (`approveRequest`, `respondToPermission`,
+    // `submitQuestionAnswers`, `respondToQuestion`, `declineQuestion`) writes
+    // `errorMessage` as its final synchronous step — nil on success, a message
+    // on failure — and there is no suspension point between that write and this
+    // read, so the value reflects THIS command rather than an unrelated
+    // concurrent action. Both the rollback below and the sweep gate key off the
+    // captured local result, never a later read of the shared binding.
+    let succeeded = await runSessionAction { () async -> Bool in
+      await op()
+      return errorMessage == nil
+    }
+    if !succeeded {
+      optimisticallyAnsweredInputIds.remove(itemId)
+    }
+    return succeeded
+  }
+
+  /// Drop optimistically-answered ids that are no longer in the canonical queue
+  /// (confirmed resolved by the host). Keeps the set from masking a future
+  /// request that reuses an id and bounds its growth. Invoked whenever the
+  /// canonical pending queue changes.
+  @MainActor
+  func reconcileOptimisticallyAnsweredInputs() {
+    guard !optimisticallyAnsweredInputIds.isEmpty else { return }
+    let canonical = Set(timelineSnapshot.pendingInputs.map(\.itemId))
+    optimisticallyAnsweredInputIds.formIntersection(canonical)
+  }
+
+  /// "Accept all": flip session auto-approve for the current approval/permission
+  /// gate (`acceptForSession`), then accept every remaining approval/permission
+  /// request SEQUENTIALLY (never parallel). Question / plan-approval /
+  /// model-selection kinds are never swept. Stale itemIds no-op on the host, so
+  /// re-sends after `acceptForSession` auto-resolves the rest are safe.
+  @MainActor
+  func acceptAllPendingInputs() async {
+    guard let primary = primaryPendingInput else { return }
+    // Snapshot the sweep set before mutating optimistic-hide state.
+    let sweepable = acceptAllSweepableInputs
+    guard sweepable.contains(where: { $0.itemId == primary.itemId }) else { return }
+
+    // 1. Current item first with acceptForSession. If the session-scoped grant
+    //    fails, stop: do NOT fire `.accept` for the rest. The remaining items
+    //    stay pending and the primary's optimistic mark was already rolled back
+    //    by `dispatchPendingInputAnswer`.
+    guard await sendPendingInputDecision(primary, decision: .acceptForSession) else { return }
+
+    // 2. Remaining approval/permission items, one await at a time.
+    for item in sweepable where item.itemId != primary.itemId {
+      guard !optimisticallyAnsweredInputIds.contains(item.itemId) else { continue }
+      await sendPendingInputDecision(item, decision: .accept)
+    }
+  }
+
+  /// Route a single approval/permission decision through the optimistic path,
+  /// returning whether the decision was dispatched successfully. No-ops (and
+  /// reports failure) for kinds that must not be auto-answered.
+  @MainActor
+  @discardableResult
+  private func sendPendingInputDecision(
+    _ item: WorkPendingInputItem,
+    decision: AgentChatApprovalDecision
+  ) async -> Bool {
+    switch item {
+    case .approval(let model):
+      return await dispatchPendingInputAnswer(itemId: model.id) {
+        await onApproveRequest(model.id, decision, nil)
+      }
+    case .permission(let model):
+      return await dispatchPendingInputAnswer(itemId: model.id) {
+        await onRespondToPermission(model.id, decision)
+      }
+    case .question, .planApproval, .modelSelection:
+      return false
+    }
   }
 }

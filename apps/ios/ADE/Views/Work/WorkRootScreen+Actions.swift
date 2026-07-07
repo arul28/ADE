@@ -223,7 +223,15 @@ extension WorkRootScreen {
       }
     }
 
-    let relevantSessionIds = Set((sessions + Array(optimisticSessions.values)).map(\.id)).union(updated.keys)
+    // Keep the currently-open session(s) in the relevant set even when this
+    // partial refresh (prefix(6) lanes, or a lane whose listChatSessions threw)
+    // didn't return them. `subscribedChatSessionIds` reflects the open
+    // WorkSessionDestinationView(s); without this the open chat's summary is
+    // filtered out of `nextSummaries`, which reseeds a nil `initialChatSummary`
+    // on the next navigation rebuild and blanks the composer controls.
+    let relevantSessionIds = Set((sessions + Array(optimisticSessions.values)).map(\.id))
+      .union(updated.keys)
+      .union(syncService.subscribedChatSessionIds)
     var nextSummaries = chatSummaries.filter { relevantSessionIds.contains($0.key) }
     for (sessionId, summary) in updated {
       nextSummaries[sessionId] = summary

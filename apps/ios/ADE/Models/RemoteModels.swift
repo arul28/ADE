@@ -803,6 +803,171 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   }
 }
 
+/// Composer mode fields carried by a `session_meta_updated` chat event when a
+/// client (e.g. desktop) changes the session's permission / interaction mode.
+/// Every field is optional so the decode never fails and older hosts — which
+/// send only `title` / `manuallyNamed` — degrade to a no-op. Values are plain
+/// strings (the summary stores these as `String?`, not failable enums), so an
+/// unrecognized wire value patches through harmlessly instead of dropping the
+/// whole event.
+struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var droidPermissionMode: String?
+  var cursorModeId: String?
+  /// True when the event carried `cursorModeId: null` (an intentional clear the
+  /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
+  /// still means "no change"; only an explicit null sets this so
+  /// `applyModeUpdate` assigns nil instead of skipping.
+  var cursorModeIdWasCleared: Bool = false
+  var cursorModeSnapshot: RemoteJSONValue?
+  var cursorConfigValues: [String: RemoteJSONValue]?
+  /// True when the event carried `cursorConfigValues: null` (an intentional
+  /// clear the host emits to drop the cursor config) rather than omitting the
+  /// key. Symmetric with `cursorModeIdWasCleared`: absent-key still means "no
+  /// change"; only an explicit null sets this so `applyModeUpdate` assigns nil.
+  var cursorConfigValuesWasCleared: Bool = false
+
+  private enum CodingKeys: String, CodingKey {
+    case permissionMode
+    case interactionMode
+    case claudePermissionMode
+    case codexApprovalPolicy
+    case codexSandbox
+    case codexSandboxMode
+    case codexConfigSource
+    case opencodePermissionMode
+    case droidPermissionMode
+    case cursorModeId
+    case cursorModeSnapshot
+    case cursorConfigValues
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+    interactionMode = try c.decodeIfPresent(String.self, forKey: .interactionMode)
+    claudePermissionMode = try c.decodeIfPresent(String.self, forKey: .claudePermissionMode)
+    codexApprovalPolicy = try c.decodeIfPresent(String.self, forKey: .codexApprovalPolicy)
+    // Canonical key is `codexSandbox` (matches the summary + updateSession args).
+    // Accept `codexSandboxMode` as a defensive fallback in case the host emits
+    // that alternate spelling.
+    if let sandbox = try c.decodeIfPresent(String.self, forKey: .codexSandbox) {
+      codexSandbox = sandbox
+    } else {
+      codexSandbox = try c.decodeIfPresent(String.self, forKey: .codexSandboxMode)
+    }
+    codexConfigSource = try c.decodeIfPresent(String.self, forKey: .codexConfigSource)
+    opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
+    droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    // Distinguish `cursorModeId: null` (an intentional clear) from an absent
+    // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
+    // present-but-null key means the host cleared the cursor mode.
+    if c.contains(.cursorModeId) {
+      cursorModeId = try c.decodeIfPresent(String.self, forKey: .cursorModeId)
+      cursorModeIdWasCleared = cursorModeId == nil
+    } else {
+      cursorModeId = nil
+      cursorModeIdWasCleared = false
+    }
+    cursorModeSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+    // Same null-vs-absent distinction as cursorModeId: decodeIfPresent collapses
+    // `cursorConfigValues: null` (an explicit clear) into absent, so gate on
+    // `contains` to record the clear.
+    if c.contains(.cursorConfigValues) {
+      cursorConfigValues = try c.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
+      cursorConfigValuesWasCleared = cursorConfigValues == nil
+    } else {
+      cursorConfigValues = nil
+      cursorConfigValuesWasCleared = false
+    }
+  }
+
+  /// True when the event carries at least one mode field. A bare
+  /// title/manuallyNamed update decodes to all-nil here and is skipped.
+  var hasAnyField: Bool {
+    permissionMode != nil
+      || interactionMode != nil
+      || claudePermissionMode != nil
+      || codexApprovalPolicy != nil
+      || codexSandbox != nil
+      || codexConfigSource != nil
+      || opencodePermissionMode != nil
+      || droidPermissionMode != nil
+      || cursorModeId != nil
+      || cursorModeIdWasCleared
+      || cursorModeSnapshot != nil
+      || cursorConfigValues != nil
+      || cursorConfigValuesWasCleared
+  }
+}
+
+extension AgentChatSessionSummary {
+  /// Overlay the non-nil mode fields from an incoming `session_meta_updated`
+  /// event. Absent fields leave the current value intact so a partial update
+  /// (a change touched only one mode) never clears the others.
+  mutating func applyModeUpdate(_ update: AgentChatSessionMetaModeUpdate) {
+    if let v = update.permissionMode { permissionMode = v }
+    if let v = update.interactionMode { interactionMode = v }
+    if let v = update.claudePermissionMode { claudePermissionMode = v }
+    if let v = update.codexApprovalPolicy { codexApprovalPolicy = v }
+    if let v = update.codexSandbox { codexSandbox = v }
+    if let v = update.codexConfigSource { codexConfigSource = v }
+    if let v = update.opencodePermissionMode { opencodePermissionMode = v }
+    if let v = update.droidPermissionMode { droidPermissionMode = v }
+    if let v = update.cursorModeId {
+      cursorModeId = v
+    } else if update.cursorModeIdWasCleared {
+      // Explicit `cursorModeId: null` from the host — drop the mode rather than
+      // leaving the stale one in place.
+      cursorModeId = nil
+    }
+    if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
+    if let v = update.cursorConfigValues {
+      cursorConfigValues = v
+    } else if update.cursorConfigValuesWasCleared {
+      // Explicit `cursorConfigValues: null` from the host — drop the config
+      // rather than leaving the stale values in place.
+      cursorConfigValues = nil
+    }
+  }
+
+  /// Overlay the mode fields from another summary (used to fold a cache-side
+  /// mode patch into an open view's live summary on a chat-event revision bump).
+  ///
+  /// The permission/interaction string fields copy only when non-nil: the host
+  /// never null-clears them, and a partial refresh summary that omits one must
+  /// not blank the live value.
+  ///
+  /// Cursor fields (`cursorModeId` / `cursorConfigValues`) copy WHOLESALE,
+  /// including a nil. The cache is authoritative for cursor state — every writer
+  /// (the `session_meta_updated` fold via `applyModeUpdate`, a full host summary
+  /// via `cacheChatSummary`, or a lane-list refresh) stores the host's true
+  /// value, and the host includes the field whenever a mode/config exists (a
+  /// clear arrives as an explicit `null`, an unset session simply has no mode).
+  /// So mirroring the cache's cursor fields — nil included — is exactly how an
+  /// explicit clear reaches the live composer, with no separate clear flag or
+  /// stateful marker to go stale.
+  mutating func mergeModeFields(from other: AgentChatSessionSummary) {
+    if let v = other.permissionMode { permissionMode = v }
+    if let v = other.interactionMode { interactionMode = v }
+    if let v = other.claudePermissionMode { claudePermissionMode = v }
+    if let v = other.codexApprovalPolicy { codexApprovalPolicy = v }
+    if let v = other.codexSandbox { codexSandbox = v }
+    if let v = other.codexConfigSource { codexConfigSource = v }
+    if let v = other.opencodePermissionMode { opencodePermissionMode = v }
+    if let v = other.droidPermissionMode { droidPermissionMode = v }
+    cursorModeId = other.cursorModeId
+    if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
+    cursorConfigValues = other.cursorConfigValues
+  }
+}
+
 // MARK: - CTO Models (sync wire types)
 //
 // Field names mirror the desktop canonical types defined in

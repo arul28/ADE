@@ -207,6 +207,31 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
+  it("surfaces the run store errorCode in the ERROR message", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "insufficient_quota",
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor run failed: insufficient_quota",
+      turnId: "turn-1",
+    }]);
+  });
+
+  it("classifies transport errorCodes as network so the renderer can offer retry", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor run failed: [internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      turnId: "turn-1",
+      errorInfo: { category: "network" },
+    }]);
+  });
+
   it("does not stringify unknown Cursor SDK error objects into chat", () => {
     expect(mapCursorSdkMessageToChatEvents({
       type: "status",

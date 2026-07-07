@@ -888,14 +888,11 @@ struct HubInlineComposer: View {
     }
   }
 
-  /// Desktop-parity background lane naming (`startBackgroundLaneNaming` in
-  /// AgentChatPane): the lane was already created with the deterministic
-  /// fallback name, so this runs fire-and-forget after the session launch and
-  /// any failure/timeout/offline is a no-op. `lanes.suggestName` honors the
-  /// host's own titleGenerationEnabled setting and clamps the name; the rename
-  /// applies only when the suggestion differs from the fallback. Both calls
-  /// carry the picked project's scope since the hub can launch into a project
-  /// other than the active one (same envelope routing as createLane above).
+  /// Desktop-parity background lane naming. The lane is created immediately
+  /// with the deterministic fallback; then the host AI gets two chances to
+  /// replace it, and every failure is logged with the lane id. Both calls carry
+  /// the picked project's scope since the hub can launch into a project other
+  /// than the active one (same envelope routing as createLane above).
   private func startBackgroundLaneNaming(
     laneId: String,
     opener: String,
@@ -906,22 +903,18 @@ struct HubInlineComposer: View {
     let syncService = syncService
     let modelId = modelId
     Task {
-      guard
-        let suggested = try? await syncService.suggestLaneName(
-          laneId: laneId,
-          prompt: opener,
-          modelId: modelId,
-          fallbackName: fallbackName,
-          targetProjectId: targetProjectId,
-          targetProjectRootPath: targetProjectRootPath
-        ),
-        suggested != fallbackName
-      else { return }
-      try? await syncService.renameLane(
-        laneId,
-        name: suggested,
+      await workRunAutoLaneAiRename(
+        laneId: laneId,
+        opener: opener,
+        fallbackName: fallbackName,
+        modelId: modelId,
+        syncService: syncService,
+        surface: .hubComposer,
         targetProjectId: targetProjectId,
-        targetProjectRootPath: targetProjectRootPath
+        targetProjectRootPath: targetProjectRootPath,
+        refreshLanes: {
+          syncService.requestRosterSnapshot()
+        }
       )
     }
   }

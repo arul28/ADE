@@ -4,6 +4,82 @@ import SQLite3
 import UIKit
 @testable import ADE
 
+@MainActor
+private final class WorkAutoLaneNamingClientSpy: WorkAutoLaneNamingClient {
+  enum SuggestResult {
+    case success(String)
+    case failure(Error)
+  }
+
+  struct SuggestCall: Equatable {
+    let laneId: String
+    let prompt: String
+    let modelId: String
+    let fallbackName: String
+    let targetProjectId: String?
+    let targetProjectRootPath: String?
+  }
+
+  struct RenameCall: Equatable {
+    let laneId: String
+    let name: String
+    let targetProjectId: String?
+    let targetProjectRootPath: String?
+  }
+
+  var supportedActions: Set<String> = ["lanes.suggestName"]
+  var suggestResults: [SuggestResult] = []
+  var renameError: Error?
+  private(set) var suggestCalls: [SuggestCall] = []
+  private(set) var renameCalls: [RenameCall] = []
+
+  func supportsRemoteAction(_ action: String) -> Bool {
+    supportedActions.contains(action)
+  }
+
+  func suggestLaneName(
+    laneId: String,
+    prompt: String,
+    modelId: String,
+    fallbackName: String,
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) async throws -> String {
+    suggestCalls.append(SuggestCall(
+      laneId: laneId,
+      prompt: prompt,
+      modelId: modelId,
+      fallbackName: fallbackName,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    ))
+    guard !suggestResults.isEmpty else { return fallbackName }
+    switch suggestResults.removeFirst() {
+    case .success(let value):
+      return value
+    case .failure(let error):
+      throw error
+    }
+  }
+
+  func renameLane(
+    _ laneId: String,
+    name: String,
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) async throws {
+    renameCalls.append(RenameCall(
+      laneId: laneId,
+      name: name,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    ))
+    if let renameError {
+      throw renameError
+    }
+  }
+}
+
 /// Default `lastActivityAt`/`startedAt` for fixture sessions. Returns "now"
 /// in ISO 8601 so the >7-day staleness guard in
 /// `normalizedWorkChatSessionStatus` doesn't reclassify default fixtures as
@@ -7248,6 +7324,78 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkAutoLaneFallbackDoesNotTreatLoginHistoryAsProviderAuthTask() {
+    XCTAssertEqual(
+      workDeterministicAutoLaneName(
+        from: "Debug cursor SDK chat mobile sync issues. Look at the full login history, then follow the Claude MD guidance."
+      ),
+      "debug-cursor-sdk-mobile-sync"
+    )
+  }
+
+  @MainActor
+  func testWorkAutoLaneAiRenameRetriesAndRenamesWithTargetProjectScope() async {
+    let client = WorkAutoLaneNamingClientSpy()
+    client.suggestResults = [
+      .failure(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "temporary"])),
+      .success("debug-mobile-sync"),
+    ]
+    var refreshCount = 0
+
+    let outcome = await workRunAutoLaneAiRename(
+      laneId: "lane-1",
+      opener: "Debug mobile sync issues",
+      fallbackName: "debug-mobile-sync-issue",
+      modelId: " anthropic/claude-fable-5 ",
+      syncService: client,
+      surface: .hubComposer,
+      targetProjectId: "project-1",
+      targetProjectRootPath: "/tmp/project",
+      retryDelayNanoseconds: 0,
+      refreshLanes: { refreshCount += 1 }
+    )
+
+    XCTAssertEqual(outcome, .renamed("debug-mobile-sync"))
+    XCTAssertEqual(client.suggestCalls.count, 2)
+    XCTAssertEqual(client.suggestCalls[0], WorkAutoLaneNamingClientSpy.SuggestCall(
+      laneId: "lane-1",
+      prompt: "Debug mobile sync issues",
+      modelId: "anthropic/claude-fable-5",
+      fallbackName: "debug-mobile-sync-issue",
+      targetProjectId: "project-1",
+      targetProjectRootPath: "/tmp/project"
+    ))
+    XCTAssertEqual(client.renameCalls, [
+      WorkAutoLaneNamingClientSpy.RenameCall(
+        laneId: "lane-1",
+        name: "debug-mobile-sync",
+        targetProjectId: "project-1",
+        targetProjectRootPath: "/tmp/project"
+      ),
+    ])
+    XCTAssertEqual(refreshCount, 1)
+  }
+
+  @MainActor
+  func testWorkAutoLaneAiRenameKeepsFallbackWithoutRename() async {
+    let client = WorkAutoLaneNamingClientSpy()
+    client.suggestResults = [.success("fallback-name")]
+
+    let outcome = await workRunAutoLaneAiRename(
+      laneId: "lane-1",
+      opener: "Debug mobile sync issues",
+      fallbackName: "fallback-name",
+      modelId: "m",
+      syncService: client,
+      surface: .workNewChat,
+      retryDelayNanoseconds: 0
+    )
+
+    XCTAssertEqual(outcome, .keptFallback)
+    XCTAssertEqual(client.suggestCalls.count, 1)
+    XCTAssertTrue(client.renameCalls.isEmpty)
+  }
+
   func testLaneDetailRebaseBannerAccessibilityLabelIncludesVisibleBadges() {
     XCTAssertEqual(
       laneDetailRebaseBannerAccessibilityLabel(behindCount: 1, parentLabel: "main", hasPr: true),
@@ -7458,6 +7606,53 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       workChatLiveObservationKey(sessionId: "chat-1", chatEventRevision: 7),
       "chat-1-7"
+    )
+  }
+
+  /// Regression: a partial Work-list refresh must MERGE into the summary cache,
+  /// never replace it. The composer's model/permission controls gate on the open
+  /// session's cached summary (`isAvailable`), so if a reduced refresh that omits
+  /// the open session evicted it, those controls would blank mid-session. This
+  /// pins that `cacheChatSummaries` keeps the omitted session's summary — with
+  /// its mode fields intact — while still overwriting the entries that ARE
+  /// present. The explicit whole-cache reset path stays covered by disconnect.
+  @MainActor
+  func testCacheChatSummariesMergesAndKeepsOpenSessionOnPartialRefresh() {
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+
+    let openSession = makeAgentChatSessionSummary(
+      sessionId: "open-session",
+      status: "active",
+      permissionMode: "acceptEdits"
+    )
+    let otherSession = makeAgentChatSessionSummary(sessionId: "other-session", status: "idle")
+    service.cacheChatSummaries([
+      openSession.sessionId: openSession,
+      otherSession.sessionId: otherSession,
+    ])
+
+    // Partial refresh: only "other-session" (now active), omitting the currently
+    // open session entirely — the shape a reduced-sync-load prefix or an empty
+    // `listChatSessions` result hands off.
+    let otherRefreshed = makeAgentChatSessionSummary(sessionId: "other-session", status: "active")
+    service.cacheChatSummaries([otherRefreshed.sessionId: otherRefreshed])
+
+    XCTAssertEqual(
+      service.chatSummaryCache["open-session"],
+      openSession,
+      "Partial refresh must not evict the open session's summary; its composer controls gate on it."
+    )
+    XCTAssertEqual(
+      service.chatSummaryCache["open-session"]?.permissionMode,
+      "acceptEdits",
+      "The open session's mode fields must survive a partial refresh."
+    )
+    XCTAssertEqual(
+      service.chatSummaryCache["other-session"]?.status,
+      "active",
+      "Entries present in the refresh must be overwritten with the newer summary."
     )
   }
 
@@ -9468,6 +9663,124 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(summary.awaitingInput ?? false)
     XCTAssertEqual(summary.pendingInputItemId, "pending-item-1")
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
+  }
+
+  func testAgentChatMetaModeUpdateAppliesCursorConfigAndExplicitClear() throws {
+    let summaryPayload: [String: Any] = [
+      "sessionId": "chat-1",
+      "laneId": "lane-1",
+      "provider": "cursor",
+      "model": "cursor-agent",
+      "modelId": "cursor-agent-1",
+      "cursorModeId": "ask",
+      "cursorConfigValues": ["voice": true],
+      "status": "running",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:00.000Z",
+    ]
+    var summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: try JSONSerialization.data(withJSONObject: summaryPayload)
+    )
+    XCTAssertEqual(summary.cursorModeId, "ask")
+
+    // A config-only update carries new cursorConfigValues and, per the host
+    // emit, the current (non-null) cursorModeId. Both should be applied.
+    let configUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "cursorModeId": "ask",
+        "cursorConfigValues": ["voice": false, "temperature": 0.7],
+      ])
+    )
+    XCTAssertTrue(configUpdate.hasAnyField)
+    summary.applyModeUpdate(configUpdate)
+    XCTAssertEqual(summary.cursorModeId, "ask")
+    XCTAssertEqual(summary.cursorConfigValues?["voice"], .bool(false))
+    XCTAssertEqual(summary.cursorConfigValues?["temperature"], .number(0.7))
+
+    // An explicit `cursorModeId: null` is an intentional clear and must drop
+    // the mode rather than being ignored as if the key were absent.
+    let clearUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "cursorModeId": NSNull(),
+      ])
+    )
+    XCTAssertTrue(clearUpdate.cursorModeIdWasCleared)
+    XCTAssertTrue(clearUpdate.hasAnyField)
+    summary.applyModeUpdate(clearUpdate)
+    XCTAssertNil(summary.cursorModeId)
+
+    // A partial update that omits cursorModeId entirely must NOT clear it.
+    summary.cursorModeId = "agent"
+    let unrelatedUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "permissionMode": "edit",
+      ])
+    )
+    XCTAssertFalse(unrelatedUpdate.cursorModeIdWasCleared)
+    summary.applyModeUpdate(unrelatedUpdate)
+    XCTAssertEqual(summary.cursorModeId, "agent")
+
+    // An explicit `cursorConfigValues: null` is likewise an intentional clear —
+    // decodeIfPresent alone collapses it into "absent", so the decoder records
+    // `cursorConfigValuesWasCleared` and applyModeUpdate drops the stale config.
+    summary.cursorConfigValues = ["voice": .bool(true)]
+    let configClearUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "cursorConfigValues": NSNull(),
+      ])
+    )
+    XCTAssertTrue(configClearUpdate.cursorConfigValuesWasCleared)
+    XCTAssertTrue(configClearUpdate.hasAnyField)
+    summary.applyModeUpdate(configClearUpdate)
+    XCTAssertNil(summary.cursorConfigValues)
+
+    // A partial update that omits cursorConfigValues must NOT clear it.
+    summary.cursorConfigValues = ["voice": .bool(true)]
+    XCTAssertFalse(unrelatedUpdate.cursorConfigValuesWasCleared)
+    summary.applyModeUpdate(unrelatedUpdate)
+    XCTAssertEqual(summary.cursorConfigValues?["voice"], .bool(true))
+
+    // The cache fold above is only half the story: the open chat view rebuilds
+    // its LIVE summary from the cache via `mergeModeFields(from:)`. The cache is
+    // authoritative for cursor fields, so the merge mirrors them wholesale —
+    // nil included — which is exactly how an explicit clear reaches the live
+    // composer, with no stateful clear marker.
+    var cachedAfterClear = summary
+    cachedAfterClear.cursorModeId = nil
+    cachedAfterClear.cursorConfigValues = nil
+    var liveSummary = summary
+    liveSummary.cursorModeId = "agent"
+    liveSummary.cursorConfigValues = ["voice": .bool(true)]
+    var mergedCleared = liveSummary
+    mergedCleared.mergeModeFields(from: cachedAfterClear)
+    XCTAssertNil(mergedCleared.cursorModeId, "explicit cache clear must null the live cursor mode")
+    XCTAssertNil(mergedCleared.cursorConfigValues, "explicit cache clear must null the live cursor config")
+
+    // Regression guard (the "stale clear marker wins" bug): after a clear, a
+    // host that RESTORES a non-null mode/config must NOT be re-cleared. With no
+    // persistent clear state, each reconcile mirrors the current authoritative
+    // cache, so a restored value survives.
+    var cachedRestored = summary
+    cachedRestored.cursorModeId = "plan"
+    cachedRestored.cursorConfigValues = ["voice": .bool(false)]
+    var liveAfterClear = liveSummary
+    liveAfterClear.cursorModeId = nil
+    liveAfterClear.cursorConfigValues = nil
+    liveAfterClear.mergeModeFields(from: cachedRestored)
+    XCTAssertEqual(liveAfterClear.cursorModeId, "plan", "a host-restored mode must not be re-cleared")
+    XCTAssertEqual(
+      liveAfterClear.cursorConfigValues?["voice"], .bool(false),
+      "a host-restored config must not be re-cleared"
+    )
   }
 
   func testAgentChatSessionDecodesCodexFastModeFlag() throws {
@@ -14017,7 +14330,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(model.questions[1].questionId, "b")
   }
 
-  func testBuildWorkTimelineEmitsInlinePendingQuestionAndSuppressesGenericApprovalCard() {
+  func testBuildWorkTimelineOmitsInlinePendingQuestionAndSuppressesGenericApprovalCard() {
     let detail = """
     {"request":{"itemId":"ap-1","kind":"structured_question","title":"T","questions":[{"id":"q","question":"Q","options":[{"label":"A","value":"a"}]}]}}
     """
@@ -14050,24 +14363,25 @@ final class ADETests: XCTestCase {
 
     XCTAssertTrue(snapshot.eventCards.allSatisfy { $0.kind != "approval" }, "Generic approval event card must be suppressed when a pending rich question exists for the same itemId.")
 
-    let pendingEntry = snapshot.timeline.first { entry in
-      if case .pendingQuestion(let model) = entry.payload, model.id == "ap-1" { return true }
+    // Pending questions now render only in the consolidated composer strip, so
+    // no inline transcript entry is emitted for them.
+    XCTAssertFalse(snapshot.timeline.contains { entry in
+      if case .pendingQuestion = entry.payload { return true }
       return false
-    }
-    guard let pendingEntry else {
-      return XCTFail("Expected a .pendingQuestion timeline entry for itemId ap-1.")
-    }
-    XCTAssertEqual(pendingEntry.timestamp, "2026-04-20T00:00:02.000Z")
+    }, "Pending questions must not render as inline transcript entries.")
 
-    // Chronological: Before (t=01) → pendingQuestion (t=02) → After (t=03).
-    let indices = snapshot.timeline.compactMap { entry -> (String, String)? in
-      switch entry.payload {
-      case .message(let msg): return (msg.id, entry.timestamp)
-      case .pendingQuestion(let m): return ("pending-\(m.id)", entry.timestamp)
-      default: return nil
-      }
+    // The question still surfaces via the derived pending-input queue that feeds
+    // the strip.
+    guard case .question(let model)? = snapshot.pendingInputs.first(where: { $0.itemId == "ap-1" }) else {
+      return XCTFail("Expected ap-1 to remain in the derived pending-input queue.")
     }
-    let timestamps = indices.map(\.1)
+    XCTAssertEqual(model.id, "ap-1")
+
+    // Remaining transcript entries (the two assistant messages) stay chronological.
+    let timestamps = snapshot.timeline.compactMap { entry -> String? in
+      if case .message = entry.payload { return entry.timestamp }
+      return nil
+    }
     XCTAssertEqual(timestamps, timestamps.sorted(), "Timeline must sort chronologically.")
   }
 
@@ -14139,7 +14453,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(snapshot.eventCards.flatMap { [$0.body ?? ""] + $0.bullets }.contains { $0.contains("{") || $0.contains("\"request\"") })
   }
 
-  func testBuildWorkTimelineEmitsInlinePermissionAndSuppressesGenericEventCard() {
+  func testBuildWorkTimelineOmitsInlinePermissionAndSuppressesGenericEventCard() {
     let detail = """
     {"request":{"itemId":"perm-1","kind":"permissions","tool":"functions.GitHub","description":"Allow GitHub MCP"}}
     """
@@ -14158,11 +14472,20 @@ final class ADETests: XCTestCase {
       localEchoMessages: []
     )
     XCTAssertTrue(snapshot.eventCards.allSatisfy { $0.kind != "approval" })
-    let hasPendingPermission = snapshot.timeline.contains { entry in
-      if case .pendingPermission(let m) = entry.payload, m.id == "perm-1" { return true }
+
+    // Pending permissions now render only in the consolidated composer strip, so
+    // no inline transcript entry is emitted for them.
+    XCTAssertFalse(snapshot.timeline.contains { entry in
+      if case .pendingPermission = entry.payload { return true }
       return false
+    }, "Pending permissions must not render as inline transcript entries.")
+
+    // The permission still surfaces via the derived pending-input queue that
+    // feeds the strip.
+    guard case .permission(let model)? = snapshot.pendingInputs.first(where: { $0.itemId == "perm-1" }) else {
+      return XCTFail("Expected perm-1 to remain in the derived pending-input queue.")
     }
-    XCTAssertTrue(hasPendingPermission, "Expected an inline .pendingPermission timeline entry.")
+    XCTAssertEqual(model.id, "perm-1")
   }
 
   func testBuildWorkTimelineKeepsResolvedPermissionReadable() {
@@ -14279,11 +14602,19 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertTrue(snapshot.toolCards.isEmpty, "Pending permission should suppress duplicate raw tool cards.")
-    let hasPendingPermission = snapshot.timeline.contains { entry in
-      if case .pendingPermission(let model) = entry.payload, model.id == "perm-1" { return true }
+
+    // The pending permission is consumed by the consolidated composer strip, not
+    // emitted as an inline transcript entry.
+    XCTAssertFalse(snapshot.timeline.contains { entry in
+      if case .pendingPermission = entry.payload { return true }
       return false
+    }, "Pending permissions must not render as inline transcript entries.")
+
+    // It still surfaces via the derived pending-input queue that feeds the strip.
+    guard case .permission(let model)? = snapshot.pendingInputs.first(where: { $0.itemId == "perm-1" }) else {
+      return XCTFail("Expected perm-1 to remain in the derived pending-input queue.")
     }
-    XCTAssertTrue(hasPendingPermission)
+    XCTAssertEqual(model.id, "perm-1")
   }
 
   func testBuildWorkTimelineSuppressesGenericApprovalEventWhilePending() {

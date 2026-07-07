@@ -7356,6 +7356,56 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           };
         });
       }
+      // A cross-client mode change (iOS/desktop re-moding the session the TUI is
+      // viewing) arrives as a transient session_meta_updated carrying the new
+      // permission/interaction fields. The composer footer reads modelState, not
+      // the summary, so re-seed it directly for the active chat — mirroring the
+      // desktop AgentChatPane handler. Apply via raw setModelState (NOT
+      // applyModelState) so we don't schedule a commit and echo back to the
+      // server. Skip while a local commit is pending: the user's own pick wins
+      // and the server will echo it back momentarily.
+      if (
+        envelope.event.type === "session_meta_updated"
+        && isActiveSessionEvent
+        && !pendingModelCommitStateRef.current
+      ) {
+        const meta = envelope.event;
+        setModelState((prev) => {
+          const next: AdeCodeModelState = {
+            ...prev,
+            ...(meta.permissionMode !== undefined ? { permissionMode: meta.permissionMode } : {}),
+            ...(meta.interactionMode !== undefined ? { interactionMode: meta.interactionMode ?? prev.interactionMode } : {}),
+            ...(meta.claudePermissionMode !== undefined ? { claudePermissionMode: meta.claudePermissionMode } : {}),
+            ...(meta.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: meta.codexApprovalPolicy } : {}),
+            ...(meta.codexSandbox !== undefined ? { codexSandbox: meta.codexSandbox } : {}),
+            ...(meta.codexConfigSource !== undefined ? { codexConfigSource: meta.codexConfigSource } : {}),
+            ...(meta.opencodePermissionMode !== undefined ? { opencodePermissionMode: meta.opencodePermissionMode } : {}),
+            ...(meta.droidPermissionMode !== undefined ? { droidPermissionMode: meta.droidPermissionMode } : {}),
+            ...("cursorModeId" in meta || meta.cursorModeSnapshot !== undefined
+              ? {
+                  // An explicit cursorModeId (present in the event) is
+                  // authoritative — including a `null` clear, which must reach
+                  // the composer rather than `??`-falling-back to a stale
+                  // mode/snapshot. Only when the key is absent do we derive the
+                  // current mode from a snapshot; a partial event carrying
+                  // neither leaves the mode unchanged.
+                  cursorModeId: "cursorModeId" in meta
+                    ? (meta.cursorModeId ?? null)
+                    : (meta.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId),
+                  cursorAvailableModeIds: meta.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
+                }
+              : {}),
+            // An explicit cursorConfigValues in the event is authoritative (the
+            // host recomputes the snapshot only on mode changes, so config-only
+            // edits arrive here). Absent = no change; an explicit null clears.
+            ...(meta.cursorConfigValues !== undefined
+              ? { cursorConfigValues: meta.cursorConfigValues ?? {} }
+              : {}),
+          };
+          modelStateRef.current = next;
+          return next;
+        });
+      }
     });
     return () => {
       unsubscribe();

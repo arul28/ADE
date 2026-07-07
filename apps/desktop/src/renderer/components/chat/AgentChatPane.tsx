@@ -5871,8 +5871,72 @@ export function AgentChatPane({
       // chat event since it doesn't represent transcript content.
       if (envelope.event.type === "session_meta_updated") {
         const meta = envelope.event;
-        if (typeof meta.title === "string" && meta.title.length > 0) {
-          patchSessionSummary(envelope.sessionId, { title: meta.title });
+        const summaryPatch: Partial<AgentChatSessionSummary> = {};
+        if (typeof meta.title === "string" && meta.title.length > 0) summaryPatch.title = meta.title;
+        if (meta.permissionMode !== undefined) summaryPatch.permissionMode = meta.permissionMode;
+        if (meta.interactionMode !== undefined) summaryPatch.interactionMode = meta.interactionMode;
+        if (meta.claudePermissionMode !== undefined) summaryPatch.claudePermissionMode = meta.claudePermissionMode;
+        if (meta.codexApprovalPolicy !== undefined) summaryPatch.codexApprovalPolicy = meta.codexApprovalPolicy;
+        if (meta.codexSandbox !== undefined) summaryPatch.codexSandbox = meta.codexSandbox;
+        if (meta.codexConfigSource !== undefined) summaryPatch.codexConfigSource = meta.codexConfigSource;
+        if (meta.opencodePermissionMode !== undefined) summaryPatch.opencodePermissionMode = meta.opencodePermissionMode;
+        if (meta.droidPermissionMode !== undefined) summaryPatch.droidPermissionMode = meta.droidPermissionMode;
+        if (meta.cursorModeId !== undefined) summaryPatch.cursorModeId = meta.cursorModeId;
+        if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
+        if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
+        if (Object.keys(summaryPatch).length > 0) {
+          patchSessionSummary(envelope.sessionId, summaryPatch);
+        }
+        // The composer seeds its local mode state from the session scope, not
+        // summary content, so a summary patch alone won't re-seed the selected
+        // chat. Apply the authoritative mode fields directly to composer state
+        // (mirrors the plan-mode transition special-case below). summaryPatch's
+        // keys are exactly `title` plus the mode fields (each gated on the same
+        // `meta.X !== undefined` check), so any non-title key means a mode changed.
+        const modeChanged = Object.keys(summaryPatch).some((key) => key !== "title");
+        if (modeChanged && envelope.sessionId === selectedSessionIdRef.current) {
+          if (meta.interactionMode !== undefined) {
+            setInteractionMode(meta.interactionMode ?? initialNativeControls.interactionMode);
+          }
+          if (meta.claudePermissionMode !== undefined) setClaudePermissionMode(meta.claudePermissionMode);
+          if (meta.codexApprovalPolicy !== undefined) setCodexApprovalPolicy(meta.codexApprovalPolicy);
+          if (meta.codexSandbox !== undefined) setCodexSandbox(meta.codexSandbox);
+          if (meta.codexConfigSource !== undefined) setCodexConfigSource(meta.codexConfigSource);
+          if (meta.opencodePermissionMode !== undefined) setOpenCodePermissionMode(meta.opencodePermissionMode);
+          if (meta.droidPermissionMode !== undefined) setDroidPermissionMode(meta.droidPermissionMode);
+          if (
+            meta.cursorModeId !== undefined
+            || meta.cursorModeSnapshot !== undefined
+            || meta.cursorConfigValues !== undefined
+          ) {
+            const snapshot = meta.cursorModeSnapshot;
+            if ("cursorModeId" in meta) {
+              // The event carries an explicit cursorModeId — including a `null`
+              // clear, which must reach the composer rather than `??`-falling
+              // back to a stale mode/snapshot. summaryPatch above already stored
+              // the same cleared value, so the two stay in agreement.
+              setCursorModeId(meta.cursorModeId ?? null);
+            } else if (snapshot !== undefined) {
+              // Key absent but a snapshot arrived: derive the current mode from
+              // it. A partial event with neither field leaves the mode unchanged.
+              setCursorModeId(snapshot.currentModeId ?? initialNativeControls.cursorModeId);
+            }
+            // An explicit cursorConfigValues in the event is authoritative (it
+            // carries config-only changes the snapshot may not reflect, since
+            // the host only recomputes cursorModeSnapshot on mode changes);
+            // otherwise fall back to deriving values from the snapshot.
+            if (meta.cursorConfigValues !== undefined) {
+              setCursorConfigValues(meta.cursorConfigValues ?? {});
+            } else if (snapshot) {
+              setCursorConfigValues(
+                Object.fromEntries(
+                  (snapshot.configOptions ?? [])
+                    .filter((option) => option.id !== snapshot.modeConfigId)
+                    .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
+                ),
+              );
+            }
+          }
         }
         return;
       }
