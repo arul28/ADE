@@ -3459,6 +3459,7 @@ app.whenReady().then(async () => {
       ctoStateService,
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
+      getExternalSessionsService: () => externalSessionsService,
       processService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,

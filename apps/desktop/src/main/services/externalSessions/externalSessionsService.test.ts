@@ -341,56 +341,116 @@ describe("externalSessionsService", () => {
     })).rejects.toThrow(/chat import unavailable/i);
   });
 
-  it("enforces lane-scoped chat import source cwd before invoking the chat importer", async () => {
+  it("enforces lane-scoped import source cwd before invoking any import branch", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");
     const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
     const outsideCwd = path.join(root, "outside-project");
     fs.mkdirSync(laneCwd, { recursive: true });
     fs.mkdirSync(outsideCwd, { recursive: true });
-    const insideId = "11111111-1111-4111-8111-111111111111";
-    const outsideId = "22222222-2222-4222-8222-222222222222";
-    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(laneCwd), `${insideId}.jsonl`), [
-      { type: "message", sessionId: insideId, cwd: laneCwd, message: { role: "user", content: "inside" } },
+    const insideClaudeId = "11111111-1111-4111-8111-111111111111";
+    const outsideClaudeId = "22222222-2222-4222-8222-222222222222";
+    const insideCodexId = "33333333-3333-4333-8333-333333333333";
+    const outsideCodexId = "44444444-4444-4444-8444-444444444444";
+    const missingCodexId = "55555555-5555-4555-8555-555555555555";
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(laneCwd), `${insideClaudeId}.jsonl`), [
+      { type: "message", sessionId: insideClaudeId, cwd: laneCwd, message: { role: "user", content: "inside" } },
     ]);
-    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(outsideCwd), `${outsideId}.jsonl`), [
-      { type: "message", sessionId: outsideId, cwd: outsideCwd, message: { role: "user", content: "outside" } },
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(outsideCwd), `${outsideClaudeId}.jsonl`), [
+      { type: "message", sessionId: outsideClaudeId, cwd: outsideCwd, message: { role: "user", content: "outside" } },
+    ]);
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T10-00-00-${insideCodexId}.jsonl`), [
+      {
+        timestamp: "2026-07-06T10:00:00.000Z",
+        type: "session_meta",
+        payload: { id: insideCodexId, cwd: laneCwd, timestamp: "2026-07-06T10:00:00.000Z" },
+      },
+    ]);
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-2026-07-06T10-01-00-${outsideCodexId}.jsonl`), [
+      {
+        timestamp: "2026-07-06T10:01:00.000Z",
+        type: "session_meta",
+        payload: { id: outsideCodexId, cwd: outsideCwd, timestamp: "2026-07-06T10:01:00.000Z" },
+      },
     ]);
     const chatImporter = {
       importExternalChatSession: vi.fn(async () => ({ chatSessionId: "chat-import" })),
     };
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-import", ptyId: "pty-import", pid: 456 }));
     const service = createExternalSessionsService({
       droidForkSupported: true,
       projectRoot,
       homeDir,
       laneService: { getLaneWorktreePath: () => laneCwd },
       sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
-      ptyService: { create: vi.fn() },
+      ptyService: { create },
       logger: makeLogger(),
       chatImporter,
     });
 
     await expect(service.importExternalSession({
+      provider: "codex",
+      sessionId: missingCodexId,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      enforceLaneScopeCwd: laneCwd,
+    })).rejects.toThrow(/not permitted/i);
+    await expect(service.importExternalSession({
+      provider: "codex",
+      sessionId: outsideCodexId,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      enforceLaneScopeCwd: laneCwd,
+    })).rejects.toThrow(/not permitted/i);
+    await expect(service.importExternalSession({
       provider: "claude",
-      sessionId: outsideId,
+      sessionId: outsideClaudeId,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+      enforceLaneScopeCwd: laneCwd,
+    })).rejects.toThrow(/not permitted/i);
+    await expect(service.importExternalSession({
+      provider: "claude",
+      sessionId: outsideClaudeId,
       laneId: "lane-1",
       target: "chat",
       mode: "resume",
       enforceLaneScopeCwd: laneCwd,
     })).rejects.toThrow(/not permitted/i);
+    expect(create).not.toHaveBeenCalled();
     expect(chatImporter.importExternalChatSession).not.toHaveBeenCalled();
 
     await expect(service.importExternalSession({
+      provider: "codex",
+      sessionId: insideCodexId,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      enforceLaneScopeCwd: laneCwd,
+    })).resolves.toEqual({ kind: "cli", sessionId: "terminal-import", ptyId: "pty-import", laneId: "lane-1" });
+    await expect(service.importExternalSession({
       provider: "claude",
-      sessionId: insideId,
+      sessionId: insideClaudeId,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+      enforceLaneScopeCwd: laneCwd,
+    })).resolves.toEqual({ kind: "cli", sessionId: "terminal-import", ptyId: "pty-import", laneId: "lane-1" });
+    await expect(service.importExternalSession({
+      provider: "claude",
+      sessionId: insideClaudeId,
       laneId: "lane-1",
       target: "chat",
       mode: "resume",
       enforceLaneScopeCwd: laneCwd,
     })).resolves.toEqual({ kind: "chat", chatSessionId: "chat-import", laneId: "lane-1" });
+    expect(create).toHaveBeenCalledTimes(2);
     expect(chatImporter.importExternalChatSession).toHaveBeenCalledWith(expect.objectContaining({
       provider: "claude",
-      externalSessionId: insideId,
+      externalSessionId: insideClaudeId,
       laneId: "lane-1",
       cwd: laneCwd,
       fork: false,

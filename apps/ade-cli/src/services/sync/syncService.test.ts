@@ -30,7 +30,11 @@ async function getUnusedPort(): Promise<number> {
   return port;
 }
 
-function createService(db: AdeDb, projectRoot: string): SyncService {
+function createService(
+  db: AdeDb,
+  projectRoot: string,
+  overrides: Partial<Parameters<typeof createSyncService>[0]> = {},
+): SyncService {
   return createSyncService({
     db,
     logger: createLogger() as any,
@@ -61,6 +65,7 @@ function createService(db: AdeDb, projectRoot: string): SyncService {
     processService: {
       listRuntime: vi.fn(() => []),
     } as any,
+    ...overrides,
   });
 }
 
@@ -166,5 +171,66 @@ describe("createSyncService", () => {
 
     await service.dispose();
     db.close();
+  });
+
+  it("routes external-session remote commands through the lazy service getter", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-external-sessions-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    const list = vi.fn(async () => [{
+      provider: "codex",
+      id: "thread-1",
+      cwd: projectRoot,
+      title: "Thread one",
+      preview: "Working",
+      createdAt: 10,
+      updatedAt: 20,
+      messageCount: 2,
+      alreadyImported: false,
+      possiblyActive: false,
+      cwdMatchesRequestedLane: true,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: true,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true,
+      },
+    }]);
+    const externalSessionsService = {
+      list,
+      importExternalSession: vi.fn(),
+    };
+    const service = createService(db, projectRoot, {
+      getExternalSessionsService: () => externalSessionsService as any,
+    });
+
+    try {
+      expect(service.getRemoteCommandDescriptor("work.listExternalSessions")).toEqual({
+        action: "work.listExternalSessions",
+        scope: "project",
+        policy: { viewerAllowed: true },
+      });
+
+      const result = await service.executeRemoteCommand({
+        commandId: "cmd-1",
+        action: "work.listExternalSessions",
+        args: {
+          providers: ["codex"],
+          laneId: "lane-1",
+          scope: "project",
+        },
+      });
+
+      expect(list).toHaveBeenCalledWith({
+        providers: ["codex"],
+        laneId: "lane-1",
+        scope: "project",
+      });
+      expect(result).toEqual(await list.mock.results[0]!.value);
+    } finally {
+      await service.dispose();
+      db.close();
+    }
   });
 });

@@ -394,15 +394,15 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const laneCwd = resolveLaneCwd(args.laneService, laneId);
     const summary = await findExternalSummary(provider, sessionId);
     const sourceCwd = summary?.cwd ?? null;
+    const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
+    if (enforceLaneScopeCwd) {
+      const scopeRoot = realish(enforceLaneScopeCwd);
+      if (!sourceCwd || !isPathInside(scopeRoot, realish(sourceCwd))) {
+        throw new Error("External session import is not permitted for this lane.");
+      }
+    }
 
     if (importArgs.target === "chat") {
-      const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
-      if (enforceLaneScopeCwd) {
-        const scopeRoot = realish(enforceLaneScopeCwd);
-        if (!sourceCwd || !isPathInside(scopeRoot, realish(sourceCwd))) {
-          throw new Error("External session import is not permitted for this lane.");
-        }
-      }
       if (provider !== "claude" && provider !== "codex") {
         throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
       }

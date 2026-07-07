@@ -2485,15 +2485,14 @@ async function scopeExternalSessionsImportArgs(
   const mode = asOptionalTrimmedString(scopedArgs.mode);
   const target = asOptionalTrimmedString(scopedArgs.target);
   const sessionId = asOptionalTrimmedString(scopedArgs.sessionId);
-  if (target === "chat") {
-    scopedArgs.enforceLaneScopeCwd = laneCwd;
-  }
+  scopedArgs.enforceLaneScopeCwd = laneCwd;
+  const targetChatUsesSourceCwd = target === "chat" && (provider === "claude" || provider === "codex");
   if (
-    (target === "chat" || target === "cli")
+    (targetChatUsesSourceCwd || target === "cli")
     && isExternalSessionProviderName(provider)
     && mode
     && sessionId
-    && (target === "chat" || externalSessionImportUsesSourceRunCwd(provider, mode))
+    && (targetChatUsesSourceCwd || externalSessionImportUsesSourceRunCwd(provider, mode))
   ) {
     const summary = await findExternalSessionSummaryForAuthorization(
       runtime,

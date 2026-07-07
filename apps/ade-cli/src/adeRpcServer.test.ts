@@ -2831,20 +2831,48 @@ describe("adeRpcServer", () => {
     });
     const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
     const lane2Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-2"));
-    const outsideCwd = path.join(fixture.runtime.projectRoot, "..", "outside-project");
-    const list = vi.fn(async () => [
+    const outsideCwd = path.resolve(fixture.runtime.projectRoot, "..", "outside-project");
+    const isInside = (parent: string, candidate: string): boolean => {
+      const relative = path.relative(parent, candidate);
+      return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+    };
+    const externalRows = [
       { provider: "claude", id: "own-session", cwd: lane1Cwd, title: "Own", preview: "own" },
+      { provider: "codex", id: "own-codex", cwd: lane1Cwd, title: "Own Codex", preview: "own codex" },
       { provider: "claude", id: "other-lane-session", cwd: lane2Cwd, title: "Other lane", preview: "other" },
       { provider: "claude", id: "outside-session", cwd: outsideCwd, title: "Outside", preview: "outside" },
-    ]);
-    const importExternalSession = vi.fn(async (args: { laneId: string; target?: string }) => args.target === "chat"
-      ? { kind: "chat", chatSessionId: "chat-import", laneId: args.laneId }
-      : {
-          kind: "cli",
-          sessionId: "terminal-import",
-          ptyId: "pty-import",
-          laneId: args.laneId,
-        });
+      { provider: "codex", id: "outside-codex", cwd: outsideCwd, title: "Outside Codex", preview: "outside codex" },
+    ];
+    const list = vi.fn(async (args?: { providers?: string[]; scope?: string }) => {
+      let rows = externalRows;
+      if (args?.providers?.length) {
+        rows = rows.filter((row) => args.providers!.includes(row.provider));
+      }
+      if (args?.scope === "project") {
+        rows = rows.filter((row) => isInside(lane1Cwd, row.cwd));
+      }
+      return rows;
+    });
+    const importExternalSession = vi.fn(async (args: {
+      provider: string;
+      sessionId: string;
+      laneId: string;
+      target?: string;
+      enforceLaneScopeCwd?: string;
+    }) => {
+      const source = externalRows.find((row) => row.provider === args.provider && row.id === args.sessionId);
+      if (args.enforceLaneScopeCwd && (!source || !isInside(args.enforceLaneScopeCwd, source.cwd))) {
+        throw new Error("External session import is not permitted for this lane.");
+      }
+      return args.target === "chat"
+        ? { kind: "chat", chatSessionId: "chat-import", laneId: args.laneId }
+        : {
+            kind: "cli",
+            sessionId: "terminal-import",
+            ptyId: "pty-import",
+            laneId: args.laneId,
+          };
+    });
     (fixture.runtime as any).externalSessionsService = { list, importExternalSession };
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
@@ -2863,9 +2891,31 @@ describe("adeRpcServer", () => {
     }));
     expect(listed.structuredContent.result).toEqual([
       { provider: "claude", id: "own-session", cwd: lane1Cwd, title: "Own", preview: "own" },
+      { provider: "codex", id: "own-codex", cwd: lane1Cwd, title: "Own Codex", preview: "own codex" },
     ]);
 
-    const deniedOutsideImport = await callTool(handler, "run_ade_action", {
+    const deniedOutsideCliResume = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "codex",
+        sessionId: "outside-codex",
+        laneId: "lane-1",
+        target: "cli",
+        mode: "resume",
+      },
+    });
+    expect(deniedOutsideCliResume.isError).toBe(true);
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "codex",
+      sessionId: "outside-codex",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      enforceLaneScopeCwd: lane1Cwd,
+    });
+
+    const deniedOutsideCliFork = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
       action: "import",
       args: {
@@ -2873,11 +2923,18 @@ describe("adeRpcServer", () => {
         sessionId: "outside-session",
         laneId: "lane-1",
         target: "cli",
-        mode: "resume",
+        mode: "fork",
       },
     });
-    expect(deniedOutsideImport.isError).toBe(true);
-    expect(importExternalSession).not.toHaveBeenCalled();
+    expect(deniedOutsideCliFork.isError).toBe(true);
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "claude",
+      sessionId: "outside-session",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+      enforceLaneScopeCwd: lane1Cwd,
+    });
 
     const deniedOutsideChatImport = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -2892,7 +2949,49 @@ describe("adeRpcServer", () => {
     });
     expect(deniedOutsideChatImport.isError).toBe(true);
     expect(deniedOutsideChatImport.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
-    expect(importExternalSession).not.toHaveBeenCalled();
+    expect(importExternalSession).toHaveBeenCalledTimes(2);
+
+    const importedOwnCliResume = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "codex",
+        sessionId: "own-codex",
+        laneId: "lane-1",
+        target: "cli",
+        mode: "resume",
+      },
+    });
+    expect(importedOwnCliResume?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "codex",
+      sessionId: "own-codex",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      enforceLaneScopeCwd: lane1Cwd,
+    });
+
+    const importedOwnCliFork = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "claude",
+        sessionId: "own-session",
+        laneId: "lane-1",
+        target: "cli",
+        mode: "fork",
+      },
+    });
+    expect(importedOwnCliFork?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "claude",
+      sessionId: "own-session",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+      enforceLaneScopeCwd: lane1Cwd,
+    });
 
     const importedOwnChat = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -2927,7 +3026,7 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOtherLaneImport.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledTimes(1);
+    expect(importExternalSession).toHaveBeenCalledTimes(5);
   });
 
   it("allows CTO callers to use unscoped external-sessions ADE actions", async () => {
