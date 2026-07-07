@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
+import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } from "../../../../desktop/src/shared/types";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 
@@ -30,6 +30,9 @@ function createService(options?: {
   sessionService?: Record<string, unknown>;
   projectConfigService?: Record<string, unknown>;
   db?: Record<string, unknown>;
+  syncPinStore?: Record<string, unknown>;
+  getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
+  isCloudRelayEnabled?: () => boolean;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -70,12 +73,90 @@ function createService(options?: {
     ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
+    ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
+    ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
+    ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
 }
 
+function makePairingConnectInfo(
+  addressCandidates: SyncPairingConnectInfo["addressCandidates"] = [{ host: "10.0.0.2", kind: "lan" }],
+): SyncPairingConnectInfo {
+  return {
+    hostIdentity: {
+      deviceId: "host-device",
+      siteId: "host-site",
+      name: "Arul's Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+    },
+    port: 8787,
+    addressCandidates,
+  };
+}
+
 describe("createSyncRemoteCommandService", () => {
+  it("registers sync.getWebPairingInfo and returns the configured browser pairing info", async () => {
+    const syncPinStore = {
+      getPin: vi.fn(() => "428193"),
+      hasPin: vi.fn(() => true),
+    };
+    const { service } = createService({
+      syncPinStore,
+      getPairingConnectInfo: () => makePairingConnectInfo([
+        { host: "10.0.0.2", kind: "lan" },
+        { host: "wss://relay.example/connect/machine", kind: "relay" },
+      ]),
+      isCloudRelayEnabled: () => true,
+    });
+
+    expect(service.getSupportedActions()).toContain("sync.getWebPairingInfo");
+    expect(service.getDescriptor("sync.getWebPairingInfo")).toEqual({
+      action: "sync.getWebPairingInfo",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    });
+
+    const result = await service.execute(makePayload("sync.getWebPairingInfo")) as SyncWebPairingInfo;
+
+    expect(result.pairingUrl).toContain("https://app.ade-app.dev/pair#");
+    expect(result).toEqual({
+      pairingUrl: result.pairingUrl,
+      code: "428193",
+      pinConfigured: true,
+      machineName: "Arul's Mac Studio",
+      relayEnabled: true,
+      hasRelayCandidate: true,
+    });
+    expect(syncPinStore.hasPin).toHaveBeenCalled();
+    expect(syncPinStore.getPin).toHaveBeenCalled();
+  });
+
+  it("returns null code and pinConfigured false when sync.getWebPairingInfo has no PIN", async () => {
+    const { service } = createService({
+      syncPinStore: {
+        getPin: vi.fn(() => null),
+        hasPin: vi.fn(() => false),
+      },
+      getPairingConnectInfo: () => makePairingConnectInfo(),
+      isCloudRelayEnabled: () => false,
+    });
+
+    const result = await service.execute(makePayload("sync.getWebPairingInfo")) as SyncWebPairingInfo;
+
+    expect(result.pairingUrl).toContain("https://app.ade-app.dev/pair#");
+    expect(result).toEqual({
+      pairingUrl: result.pairingUrl,
+      code: null,
+      pinConfigured: false,
+      machineName: "Arul's Mac Studio",
+      relayEnabled: false,
+      hasRelayCandidate: false,
+    });
+  });
+
   it("routes work.resumeCliSession through the durable PTY resume path", async () => {
     const { service, ptyService } = createService();
 

@@ -545,6 +545,15 @@ export type SyncPairingConnectInfo = {
   addressCandidates: SyncAddressCandidate[];
 };
 
+export type SyncWebPairingInfo = {
+  pairingUrl: string;
+  code: string | null;
+  pinConfigured: boolean;
+  machineName: string;
+  relayEnabled: boolean;
+  hasRelayCandidate: boolean;
+};
+
 /**
  * Machine-level cloud tunnel relay posture. Enabled by default so paired
  * phones stay reachable off LAN/tailnet with zero configuration: the brain
@@ -1146,6 +1155,7 @@ export type SyncRemoteCommandAction =
   | "prs.cancelQueueAutomation"
   | "prs.reorderQueue"
   | "prs.getMobileSnapshot"
+  | "sync.getWebPairingInfo"
   | "modelPicker.getFavorites"
   | "modelPicker.setFavorites"
   | "modelPicker.toggleFavorite"

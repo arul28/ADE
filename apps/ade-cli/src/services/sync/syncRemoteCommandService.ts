@@ -155,10 +155,12 @@ import type {
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
+  SyncPairingConnectInfo,
   SyncSendToSessionArgs,
   SyncSendToSessionResult,
   SyncStartCliSessionArgs,
   SyncStartCliSessionResult,
+  SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
@@ -182,6 +184,8 @@ import {
   type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
+import { buildPairingQrPayload } from "../../../../desktop/src/shared/pairingQr";
+import { buildWebClientPairUrl } from "../../../../desktop/src/shared/webClientUrl";
 import { buildPrAiResolutionContextKey } from "../../../../desktop/src/shared/types";
 import { getModelById } from "../../../../desktop/src/shared/modelRegistry";
 import {
@@ -237,6 +241,7 @@ import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPicker
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
 import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/terminalSessionSignals";
+import type { SyncPinStore } from "./syncPinStore";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -329,6 +334,18 @@ type SyncRemoteCommandServiceArgs = {
    * error so the phone can surface "push publishing is not running".
    */
   pushPublisherService?: PushPublisherService | null;
+  /**
+   * Machine-level pairing PIN store. Required by `sync.getWebPairingInfo`,
+   * which only runs after the paired command channel is authenticated.
+   */
+  syncPinStore?: SyncPinStore | null;
+  /**
+   * Builds the same connect info advertised by sync status / pairing QR,
+   * including direct address candidates and the optional relay candidate.
+   */
+  getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
+  /** Effective relay kill-switch state for the machine-level cloud tunnel. */
+  isCloudRelayEnabled?: () => boolean;
   logger: Logger;
 };
 
@@ -495,6 +512,10 @@ function requireStringArray(value: unknown, message: string): string[] {
 function requireService<T>(value: T | null | undefined, message: string): T {
   if (value == null) throw new Error(message);
   return value;
+}
+
+function parseGetWebPairingInfoArgs(_value: Record<string, unknown>): Record<string, never> {
+  return {};
 }
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -3861,6 +3882,35 @@ function registerPushRemoteCommands({ args, register }: RemoteCommandRegistratio
   );
 }
 
+function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register(
+    "sync.getWebPairingInfo",
+    { viewerAllowed: true },
+    async (payload): Promise<SyncWebPairingInfo> => {
+      parseGetWebPairingInfoArgs(payload);
+      const syncPinStore = requireService(args.syncPinStore, "Sync PIN store is not available.");
+      const getPairingConnectInfo = requireService(
+        args.getPairingConnectInfo,
+        "Sync pairing connect info is not available.",
+      );
+      const connectInfo = requireService(getPairingConnectInfo(), "Sync pairing connect info is not available.");
+      const pinConfigured = syncPinStore.hasPin();
+      const code = syncPinStore.getPin();
+      const hasRelayCandidate = connectInfo.addressCandidates.some((candidate) =>
+        candidate.kind === "relay" && candidate.host.trim().length > 0);
+      return {
+        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+        code: code ?? null,
+        pinConfigured,
+        machineName: connectInfo.hostIdentity.name,
+        relayEnabled: args.isCloudRelayEnabled?.() ?? hasRelayCandidate,
+        hasRelayCandidate,
+      };
+    },
+    "runtime",
+  );
+}
+
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
@@ -4480,6 +4530,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
+  registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });
   registerGitAndFileRemoteCommands({ args, register });
   registerTerminalRemoteCommands({ args, register });

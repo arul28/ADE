@@ -110,6 +110,7 @@ import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import {
   buildChangesetBatchPayload,
@@ -1271,6 +1272,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // wires the same stamp from the outside.
     getLanePresenceStamp: () => computeLanePresenceStamp(),
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+    syncPinStore: args.pinStore,
+    getPairingConnectInfo: args.deviceRegistryService
+      ? () => {
+        const localDevice = args.deviceRegistryService!.ensureLocalDevice();
+        const activePort = getListeningPort() ?? args.port ?? localDevice.lastPort;
+        const connectDevice = activePort != null && localDevice.lastPort !== activePort
+          ? args.deviceRegistryService!.touchLocalDevice({
+            lastSeenAt: nowIso(),
+            lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+            lastPort: activePort,
+          })
+          : localDevice;
+        return buildPairingConnectInfo({
+          localDevice: connectDevice,
+          relayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+        });
+      }
+      : undefined,
+    isCloudRelayEnabled: () => Boolean(args.getCloudRelayWssUrl?.()),
     logger: args.logger,
   });
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));

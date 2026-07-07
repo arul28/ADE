@@ -3,7 +3,6 @@ import path from "node:path";
 import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
-  SyncAddressCandidate,
   SyncCloudRelayStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
@@ -64,6 +63,11 @@ import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  buildAddressCandidates,
+  buildPairingConnectInfo,
+  tailscaleDnsNameFromDevice,
+} from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
@@ -314,50 +318,6 @@ function normalizeHostKey(host: string | null | undefined): string | null {
   return normalized.replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
 }
 
-function tailscaleDnsNameFromDevice(
-  localDevice: SyncRoleSnapshot["localDevice"],
-): string | null {
-  const value = localDevice.metadata?.tailscaleDnsName;
-  return typeof value === "string" && value.trim().toLowerCase().endsWith(".ts.net")
-    ? value.trim().replace(/\.$/, "").toLowerCase()
-    : null;
-}
-
-function buildAddressCandidates(
-  localDevice: SyncRoleSnapshot["localDevice"],
-): SyncAddressCandidate[] {
-  const candidates: SyncAddressCandidate[] = [];
-  const seen = new Set<string>();
-  const append = (
-    host: string | null | undefined,
-    kind: SyncAddressCandidate["kind"],
-  ) => {
-    const normalized = normalizeHost(host);
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    candidates.push({ host: normalized, kind });
-  };
-  const preferredSavedHost = normalizeHost(localDevice.lastHost);
-  const preferredSavedHostIsCurrent = preferredSavedHost != null && (
-    localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
-    || normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
-    || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
-  );
-  if (preferredSavedHostIsCurrent) {
-    append(localDevice.lastHost, "saved");
-  }
-  for (const lanAddress of localDevice.ipAddresses) {
-    append(lanAddress, "lan");
-  }
-  if (!preferredSavedHostIsCurrent) {
-    append(localDevice.lastHost, "saved");
-  }
-  append(tailscaleDnsNameFromDevice(localDevice), "tailscale");
-  append(localDevice.tailscaleIp, "tailscale");
-  append("127.0.0.1", "loopback");
-  return candidates;
-}
-
 function isDraftTargetLocalDevice(
   draft: SyncDesktopConnectionDraft,
   localDevice: SyncRoleSnapshot["localDevice"],
@@ -387,31 +347,6 @@ function isViewerDraftTransportError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN.test(message);
-}
-
-function buildPairingConnectInfo(argsIn: {
-  localDevice: SyncRoleSnapshot["localDevice"];
-  relayWssUrl?: string | null;
-}): SyncPairingConnectInfo {
-  const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
-  const addressCandidates = buildAddressCandidates(argsIn.localDevice);
-  // The cloud relay is the lowest-priority path: phones try every direct
-  // candidate first and fall back to the tunnel only when nothing answers.
-  if (argsIn.relayWssUrl) {
-    addressCandidates.push({ host: argsIn.relayWssUrl, kind: "relay" });
-  }
-  const hostIdentity = {
-    deviceId: argsIn.localDevice.deviceId,
-    siteId: argsIn.localDevice.siteId,
-    name: argsIn.localDevice.name,
-    platform: argsIn.localDevice.platform,
-    deviceType: argsIn.localDevice.deviceType,
-  };
-  return {
-    hostIdentity,
-    port,
-    addressCandidates,
-  };
 }
 
 function isRetryableHostBindError(error: unknown): boolean {
@@ -463,15 +398,6 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
     add(port);
   }
   return candidates;
-}
-
-function normalizeSyncHostPort(port: number | null | undefined): number {
-  const parsed = Number.isFinite(port)
-    ? Math.max(1, Math.min(65_535, Math.floor(Number(port))))
-    : DEFAULT_SYNC_HOST_PORT;
-  return parsed >= DEFAULT_SYNC_HOST_PORT && parsed <= SYNC_HOST_MAX_PORT
-    ? parsed
-    : DEFAULT_SYNC_HOST_PORT;
 }
 
 export function createSyncService(args: SyncServiceArgs) {
@@ -639,6 +565,22 @@ export function createSyncService(args: SyncServiceArgs) {
     },
   });
 
+  const buildCurrentPairingConnectInfo = (): SyncPairingConnectInfo => {
+    const activeHostPort = hostService?.getPort() ?? args.sharedSyncListener?.getPort() ?? null;
+    let localDevice = deviceRegistryService.ensureLocalDevice();
+    if (activeHostPort != null && localDevice.lastPort !== activeHostPort) {
+      localDevice = deviceRegistryService.touchLocalDevice({
+        lastSeenAt: nowIso(),
+        lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+        lastPort: activeHostPort,
+      });
+    }
+    return buildPairingConnectInfo({
+      localDevice,
+      relayWssUrl: cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+    });
+  };
+
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     projectRoot: args.projectRoot,
@@ -675,6 +617,9 @@ export function createSyncService(args: SyncServiceArgs) {
     getLanePresenceStamp: () => hostService?.getLanePresenceStamp() ?? "",
     getModelPickerStore: args.getModelPickerStore,
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+    syncPinStore: pinStore,
+    getPairingConnectInfo: buildCurrentPairingConnectInfo,
+    isCloudRelayEnabled: () => cloudRelayStore.isEnabled(),
     logger: args.logger,
   });
 

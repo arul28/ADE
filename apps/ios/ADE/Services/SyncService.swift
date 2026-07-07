@@ -1406,6 +1406,15 @@ struct SyncCrossProjectChatScope: Equatable {
   let projectRootPath: String?
 }
 
+struct WebPairingInfo: Decodable, Equatable {
+  let pairingUrl: String
+  let code: String?
+  let pinConfigured: Bool
+  let machineName: String
+  let relayEnabled: Bool
+  let hasRelayCandidate: Bool
+}
+
 /// Delivery events for the full-screen terminal. The active screen attaches a
 /// handler per session id and receives hydration snapshots, ordered live
 /// chunks, and process exit without polling `terminalBuffers`.
@@ -3520,6 +3529,24 @@ final class SyncService: ObservableObject {
     saveProfile(profile)
     await reconnectIfPossible(userInitiated: true)
     return true
+  }
+
+  func getWebPairingInfo() async -> WebPairingInfo? {
+    guard canSendLiveRequests(),
+          supportsRemoteAction("sync.getWebPairingInfo") else {
+      return nil
+    }
+
+    do {
+      return try await sendDecodableCommand(
+        action: "sync.getWebPairingInfo",
+        args: [:],
+        disconnectOnTimeout: false,
+        as: WebPairingInfo.self
+      )
+    } catch {
+      return nil
+    }
   }
 
   /// Adopts pairing credentials handed off by the ADE App Clip (scan QR →
