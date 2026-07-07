@@ -161,7 +161,9 @@ apps/ios/
 │   │   │                            # WorkLanePickerDropdown,
 │   │   │                            # WorkChatRichCardViews (de-glassed
 │   │   │                            #   tool-call / work-log / command /
-│   │   │                            #   file-change transcript cards),
+│   │   │                            #   file-change transcript cards plus
+│   │   │                            #   Chat Info schedule popup/sheet for
+│   │   │                            #   scheduled_work_update snapshots),
 │   │   │                            # WorkPlanComposerViews (plan-approval
 │   │   │                            #   strip + review sheet),
 │   │   │                            # WorkComposerTypedTriggers (UITextView

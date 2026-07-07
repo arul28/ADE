@@ -3,9 +3,9 @@
 The chat UI lives under `apps/desktop/src/renderer/components/chat/`.
 It is composed of a pane (`AgentChatPane`), a message list
 (`AgentChatMessageList`), a composer (`AgentChatComposer`), and a
-constellation of side panels (tasks, file changes, subagents, computer
-use). The pane derives all visible state from the `AgentChatEventEnvelope`
-stream plus session metadata.
+constellation of side panels (tasks, scheduled work, file changes,
+subagents, computer use). The pane derives all visible state from the
+`AgentChatEventEnvelope` stream plus session metadata.
 
 ## Source file map
 
@@ -25,9 +25,10 @@ stream plus session metadata.
 | `ChatCommandMenu.tsx` | Popover for slash commands and `@`-prefixed file search. Consumes a `ComposerTrigger` from `shared/composerTriggers.ts` (so the menu opens for a mid-draft trigger, not just a leading one), debounces file search at 40 ms, and keeps a per-menu-session query cache (`QUERY_CACHE_MAX = 40`) so cached queries render same-frame while a background revalidation still runs; the cache clears when the menu closes. |
 | `apps/desktop/src/shared/composerTriggers.ts` | Cursor-relative typed-trigger detection shared by the desktop chat composer (rich + textarea), the `WorkViewArea` continue composer, and the ade-code TUI (iOS mirrors the same regexes in Swift). `detectComposerTrigger(text, cursorPos)` finds an in-progress `/command` / `@file` token ending at the cursor at any position; `replaceComposerTriggerSpan` splices exactly that span; `findConfirmedComposerTokens` locates confirmed chip tokens for overlay/prompt styling; `composerTriggerSpansWholeDraft` distinguishes a lone leading command from a mid-sentence one. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
+| `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; shared by desktop, ADE Code, and iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex uses `thread/rollback` for the latest user message and restores files through ADE's git plan. |
-| `ChatSubagentsPanel.tsx`, `ChatSubagentStrip.tsx` | Subagent panels. For Codex sessions the panel also hosts the chat goal card above plan/subagent progress so the current objective stays visible without crowding the chat header. |
+| `ChatSubagentsPanel.tsx`, `ChatSubagentStrip.tsx` | Chat Info panels. They render the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters; for Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. Simulator controls are not blocked when another chat session owns the simulator — ownership only affects which session receives context insertions, not whether the user can interact with the device. See [iOS Simulator feature](../ios-simulator/README.md). |
@@ -58,6 +59,7 @@ stream plus session metadata.
    - Message rows via `chatTranscriptRows.ts`.
    - Pending inputs via `pendingInput.ts`.
    - Todo items via `deriveTodoItems()` in `chatExecutionSummary.ts`.
+   - Scheduled/background work via `deriveScheduledWorkSnapshots()`.
    - Subagent snapshots via `deriveChatSubagentSnapshots()`.
    - Turn diff summaries via `deriveTurnDiffSummaries()`.
 3. Resolves a `ChatSurfacePresentation` (standard, resolver, worker
@@ -505,13 +507,23 @@ conversation history untouched and only restores files. Codex rolls back
 the upstream thread by one turn with `thread/rollback` and restores the
 matching files; for now it is limited to the latest user message.
 
-## Subagents panel
+## Chat Info and subagents panel
 
 When the Claude Agent SDK spawns background subagents, the service
 emits `subagent_started`, `subagent_progress`, and `subagent_result`
 events. `ChatSubagentsPanel` renders running/completed/failed/stopped
-subagents with usage metrics. `ChatSubagentStrip` is the compact header
-strip showing running subagent count.
+subagents with usage metrics. The same panel also renders the current
+Codex goal, plan, `todo_update` task list, and the Schedule section
+derived from `scheduled_work_update` events. `ChatSubagentStrip` is the
+compact header strip showing running subagent count, while the Work tab
+actions badge also counts scheduled work when no subagents are present.
+
+Claude wakeups, cron tasks, `/loop`, remote triggers, and background work
+are folded by `deriveScheduledWorkSnapshots()` into rows with kind,
+status, cron/prompt/reason details, and source ids. Desktop renders those
+rows in the Chat Info drawer, ADE Code renders them in the Chat Info
+right pane, and iOS shows a Chat Info popup/sheet for active scheduled
+items above the composer.
 
 Interrupt transitions all running subagents to `stopped` by emitting a
 `subagent_result` with `status: "stopped"` for each, matching the
@@ -726,7 +738,9 @@ These modules are pure and unit-testable:
 - `pendingInput.ts` -- event-to-pending-input derivation (including
   `pending_input_resolved`, `done`-status-based clearing).
 - `chatExecutionSummary.ts` -- todos, subagent snapshots, turn diff
-  summaries.
+  summaries, and re-exports the shared scheduled-work derivation.
+- `apps/desktop/src/shared/chatScheduledWork.ts` -- scheduled-work
+  snapshots from `scheduled_work_update` envelopes.
 - `chatNavigation.ts` -- keyboard navigation between transcript rows.
 - `chatToolAppearance.tsx` -- tool-specific visuals (icons, tone, label
   formatting).

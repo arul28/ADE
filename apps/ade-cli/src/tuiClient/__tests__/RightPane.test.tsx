@@ -55,6 +55,7 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     planExplanation: null,
     planStreamingText: null,
     todos: [],
+    scheduledWork: [],
     pr: null,
     resumableTerminal: false,
     ...overrides,
@@ -252,6 +253,82 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("open");
     expect(frame).toContain("3/5");
     expect(frame).toContain("/pr for details");
+  });
+
+  it("renders scheduled Claude wakeups in chat info without mixing them into the subagent roster", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            scheduledWork: [
+              {
+                id: "wake-1",
+                kind: "wakeup",
+                status: "scheduled",
+                origin: "schedule_wakeup",
+                title: "Check the nightly build",
+                summary: null,
+                prompt: "Look for CI failures",
+                reason: "after CI starts",
+                nextRunAt: "2026-07-08T04:00:00.000Z",
+                recurring: false,
+                durable: true,
+                sourceToolUseId: "toolu_1",
+                turnId: "turn-1",
+                createdAt: "2026-07-07T12:00:00.000Z",
+                updatedAt: "2026-07-07T12:00:00.000Z",
+              },
+            ],
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SCHEDULE");
+    expect(frame).toContain("Check the nightly build");
+    expect(frame).toContain("wakeup · scheduled");
+    expect(frame).toContain("after CI starts");
+    expect(frame).toContain("CHATS");
+    expect(frame).toContain("no subagents yet");
+  });
+
+  it("caps scheduled work rows in narrow chat info panes", () => {
+    const scheduledWork: ChatInfoSnapshot["scheduledWork"] = Array.from({ length: 7 }, (_, index) => {
+      const ordinal = String(index + 1).padStart(2, "0");
+      return {
+        id: `wake-${ordinal}`,
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        title: `Wakeup ${ordinal} with a very long title that must fit`,
+        summary: "A long summary that should be clipped before it can widen the pane",
+        reason: "scheduled review",
+        recurring: false,
+        durable: true,
+        createdAt: "2026-07-07T12:00:00.000Z",
+        updatedAt: `2026-07-07T12:0${index}:00.000Z`,
+      };
+    });
+    const result = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ scheduledWork }) }}
+        focused
+        width={44}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    const longestLine = Math.max(...frame.split("\n").map((line) => line.length));
+
+    expect(frame).toContain("SCHEDULE");
+    expect(frame).toContain("Wakeup 01");
+    expect(frame).toContain("Wakeup 05");
+    expect(frame).not.toContain("Wakeup 06");
+    expect(frame).toContain("↓ 2 more");
+    expect(longestLine).toBeLessThanOrEqual(44);
   });
 
   it("renders the plan explanation under the plan steps when present", () => {

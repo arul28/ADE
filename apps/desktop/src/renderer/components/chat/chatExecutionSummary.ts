@@ -1,7 +1,14 @@
-import type { AgentChatEventEnvelope, TurnDiffSummary } from "../../../shared/types";
+import type {
+  AgentChatEventEnvelope,
+  TurnDiffSummary,
+} from "../../../shared/types";
 import { latestPlan, type ChatInfoPlan } from "../../../shared/chatSubagents";
 
 export type { ChatInfoPlan, ChatInfoPlanStep } from "../../../shared/chatSubagents";
+export {
+  deriveScheduledWorkSnapshots,
+  type ChatScheduledWorkSnapshot,
+} from "../../../shared/chatScheduledWork";
 
 /**
  * Latest plan snapshot derived from the event stream. Returns null when the
@@ -53,16 +60,22 @@ function subagentIdentityKey(event: ChatSubagentEvent): string {
   return event.agentId ?? event.taskId;
 }
 
+function subagentParentKey(event: ChatSubagentEvent): string | null {
+  return event.parentToolUseId ?? event.parentAgentId ?? null;
+}
+
 function buildResolvedSubagentKeysByParent(events: AgentChatEventEnvelope[]): Map<string, Set<string>> {
   const keysByParent = new Map<string, Set<string>>();
   for (const envelope of events) {
     const event = envelope.event;
-    if (!isSubagentEvent(event) || !event.parentToolUseId) continue;
+    if (!isSubagentEvent(event)) continue;
+    const parentKey = subagentParentKey(event);
+    if (!parentKey) continue;
     const key = subagentIdentityKey(event);
-    if (key === event.parentToolUseId) continue;
-    const keys = keysByParent.get(event.parentToolUseId) ?? new Set<string>();
+    if (key === parentKey) continue;
+    const keys = keysByParent.get(parentKey) ?? new Set<string>();
     keys.add(key);
-    keysByParent.set(event.parentToolUseId, keys);
+    keysByParent.set(parentKey, keys);
   }
   return keysByParent;
 }
@@ -78,21 +91,22 @@ function resolveSubagentSnapshot(
 ): { key: string; existing: ChatSubagentSnapshot | undefined; adoptedPlaceholder: boolean } {
   const key = subagentIdentityKey(event);
   const direct = snapshots.get(key);
-  const parentPlaceholder = event.parentToolUseId ? snapshots.get(event.parentToolUseId) : undefined;
-  const parentResolvedKeys = event.parentToolUseId ? resolvedKeysByParent.get(event.parentToolUseId) : undefined;
+  const parentKey = subagentParentKey(event);
+  const parentPlaceholder = parentKey ? snapshots.get(parentKey) : undefined;
+  const parentResolvedKeys = parentKey ? resolvedKeysByParent.get(parentKey) : undefined;
   const canAdoptParentPlaceholder = Boolean(
-    event.parentToolUseId
+    parentKey
       && parentPlaceholder
-      && isParentPlaceholder(parentPlaceholder, event.parentToolUseId)
+      && isParentPlaceholder(parentPlaceholder, parentKey)
       && parentResolvedKeys?.size === 1
       && parentResolvedKeys.has(key),
   );
   const taskAliasCandidate = key !== event.taskId ? snapshots.get(event.taskId) : undefined;
   const taskAliasIsParentPlaceholder = Boolean(
     taskAliasCandidate
-      && event.parentToolUseId
-      && event.taskId === event.parentToolUseId
-      && isParentPlaceholder(taskAliasCandidate, event.parentToolUseId),
+      && parentKey
+      && event.taskId === parentKey
+      && isParentPlaceholder(taskAliasCandidate, parentKey),
   );
   const taskAlias = taskAliasCandidate && (!taskAliasIsParentPlaceholder || canAdoptParentPlaceholder)
     ? taskAliasCandidate
@@ -101,16 +115,16 @@ function resolveSubagentSnapshot(
   const adoptedPlaceholder = Boolean(adoptParentPlaceholder || (taskAlias && taskAliasIsParentPlaceholder));
 
   if (taskAlias && key !== event.taskId) snapshots.delete(event.taskId);
-  if (adoptParentPlaceholder && event.parentToolUseId) {
-    snapshots.delete(event.parentToolUseId);
+  if (adoptParentPlaceholder && parentKey) {
+    snapshots.delete(parentKey);
   } else if (
-    event.parentToolUseId
+    parentKey
     && parentPlaceholder
-    && isParentPlaceholder(parentPlaceholder, event.parentToolUseId)
+    && isParentPlaceholder(parentPlaceholder, parentKey)
     && parentResolvedKeys
     && parentResolvedKeys.size > 1
   ) {
-    snapshots.delete(event.parentToolUseId);
+    snapshots.delete(parentKey);
   }
 
   return {
@@ -142,7 +156,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskId: event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
-        parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
+        parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
@@ -165,7 +179,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
-        parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
+        parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: event.description?.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
@@ -188,7 +202,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
-        parentToolUseId: event.parentToolUseId ?? existing?.parentToolUseId ?? null,
+        parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: existing?.description ?? "Subagent task",
         status: event.status,
         turnId: event.turnId ?? existing?.turnId,

@@ -148,7 +148,9 @@ export type SetupPaneRow = {
 };
 
 export type { SubagentSnapshot, ChatInfoPlan, ChatInfoPlanStep } from "../../../desktop/src/shared/chatSubagents";
+export type { ChatScheduledWorkSnapshot } from "../../../desktop/src/shared/chatScheduledWork";
 import type { SubagentSnapshot, ChatInfoPlan } from "../../../desktop/src/shared/chatSubagents";
+import type { ChatScheduledWorkSnapshot } from "../../../desktop/src/shared/chatScheduledWork";
 import type { SubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import type { MissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 
@@ -182,6 +184,8 @@ export type ChatInfoSnapshot = {
   planStreamingText: string | null;
   /** Latest todo_update snapshot (desktop ChatTasksPanel parity). */
   todos: ChatInfoTodoItem[];
+  /** Latest scheduled/background wakeups surfaced by Claude Agent SDK events. */
+  scheduledWork: ChatScheduledWorkSnapshot[];
   /** Open/merged/closed PR on the chat's lane (desktop ChatPrPane parity). */
   pr: ChatInfoPrSummary | null;
   snapshots: SubagentSnapshot[];

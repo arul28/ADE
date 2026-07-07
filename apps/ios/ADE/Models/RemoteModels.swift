@@ -1847,9 +1847,11 @@ enum AgentChatEvent: Decodable, Equatable {
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
-  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
-  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
-  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentResult(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
+  case transcriptRetraction(messageIds: [String], reason: String?, replacementMessageId: String?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
   case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, state: AgentChatContextCompactState?, turnId: String?)
@@ -1922,11 +1924,26 @@ extension AgentChatEvent {
     case taskId
     case agentId
     case agentType
+    case parentAgentId
     case parentToolUseId
     case background
     case lastToolName
     case question
     case options
+    case id
+    case origin
+    case title
+    case prompt
+    case cron
+    case nextRunAt
+    case lastRunAt
+    case recurring
+    case durable
+    case sourceToolUseId
+    case sourceTaskId
+    case error
+    case messageIds
+    case replacementMessageId
     case toolUseIds
     case trigger
     case preTokens
@@ -2104,6 +2121,7 @@ extension AgentChatEvent {
         taskId: try container.decode(String.self, forKey: .taskId),
         agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentAgentId: try container.decodeIfPresent(String.self, forKey: .parentAgentId),
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decode(String.self, forKey: .description),
         background: try container.decodeIfPresent(Bool.self, forKey: .background),
@@ -2117,6 +2135,7 @@ extension AgentChatEvent {
         taskId: try container.decode(String.self, forKey: .taskId),
         agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentAgentId: try container.decodeIfPresent(String.self, forKey: .parentAgentId),
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decodeIfPresent(String.self, forKey: .description),
         summary: try container.decode(String.self, forKey: .summary),
@@ -2132,6 +2151,7 @@ extension AgentChatEvent {
         taskId: try container.decode(String.self, forKey: .taskId),
         agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentAgentId: try container.decodeIfPresent(String.self, forKey: .parentAgentId),
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         status: try container.decode(AgentChatSubagentStatus.self, forKey: .status),
         summary: try container.decode(String.self, forKey: .summary),
@@ -2139,6 +2159,33 @@ extension AgentChatEvent {
         label: try container.decodeIfPresent(String.self, forKey: .label),
         model: try container.decodeIfPresent(String.self, forKey: .model),
         reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "scheduled_work_update":
+      self = .scheduledWorkUpdate(
+        id: try container.decode(String.self, forKey: .id),
+        kind: try container.decode(String.self, forKey: .kind),
+        status: try container.decode(String.self, forKey: .status),
+        origin: try container.decodeIfPresent(String.self, forKey: .origin),
+        title: try container.decodeIfPresent(String.self, forKey: .title),
+        summary: try container.decodeIfPresent(String.self, forKey: .summary),
+        prompt: try container.decodeIfPresent(String.self, forKey: .prompt),
+        reason: try container.decodeIfPresent(String.self, forKey: .reason),
+        cron: try container.decodeIfPresent(String.self, forKey: .cron),
+        nextRunAt: try container.decodeIfPresent(String.self, forKey: .nextRunAt),
+        lastRunAt: try container.decodeIfPresent(String.self, forKey: .lastRunAt),
+        recurring: try container.decodeIfPresent(Bool.self, forKey: .recurring),
+        durable: try container.decodeIfPresent(Bool.self, forKey: .durable),
+        sourceToolUseId: try container.decodeIfPresent(String.self, forKey: .sourceToolUseId),
+        sourceTaskId: try container.decodeIfPresent(String.self, forKey: .sourceTaskId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        error: try container.decodeIfPresent(String.self, forKey: .error)
+      )
+    case "transcript_retraction":
+      self = .transcriptRetraction(
+        messageIds: try container.decodeIfPresent([String].self, forKey: .messageIds) ?? [],
+        reason: try container.decodeIfPresent(String.self, forKey: .reason),
+        replacementMessageId: try container.decodeIfPresent(String.self, forKey: .replacementMessageId),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "structured_question":
@@ -2273,6 +2320,8 @@ extension AgentChatEvent {
     case .subagentStarted: return "subagent_started"
     case .subagentProgress: return "subagent_progress"
     case .subagentResult: return "subagent_result"
+    case .scheduledWorkUpdate: return "scheduled_work_update"
+    case .transcriptRetraction: return "transcript_retraction"
     case .structuredQuestion: return "structured_question"
     case .toolUseSummary: return "tool_use_summary"
     case .contextCompact: return "context_compact"

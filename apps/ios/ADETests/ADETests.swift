@@ -8774,9 +8774,53 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(toolCards.first?.resultText?.contains("ADE") == true)
   }
 
+  func testParseWorkChatTranscriptBuildsScheduledWorkSnapshots() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"wakeup-1","kind":"wakeup","status":"running","origin":"schedule_wakeup","summary":"Wakeup fired","lastRunAt":"2026-07-07T00:05:00.000Z","turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"wakeup-1","kind":"wakeup","status":"scheduled","origin":"schedule_wakeup","title":"Wakeup scheduled","prompt":"Check CI","reason":"CI is still running","nextRunAt":"2026-07-07T00:05:00.000Z","recurring":false,"durable":true,"sourceToolUseId":"tool-1","turnId":"turn-1"}}
+    """
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.count, 1)
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.id, "wakeup-1")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.status, "running")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.title, "Wakeup scheduled")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.summary, "Wakeup fired")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.prompt, "Check CI")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.durable, true)
+  }
+
+  func testParseWorkChatTranscriptAppliesTranscriptRetractionsByMessageId() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Superseded answer","messageId":"provider-message-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":2,"event":{"type":"transcript_retraction","messageIds":["provider-message-1"],"reason":"assistant_supersedes","replacementMessageId":"provider-message-2","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:03.000Z","sequence":3,"event":{"type":"text","text":"Replacement answer","messageId":"provider-message-2","turnId":"turn-1"}}
+    """
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let messages = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload { return message }
+      return nil
+    }
+
+    XCTAssertEqual(messages.map(\.markdown), ["Replacement answer"])
+    XCTAssertEqual(messages.first?.itemId, "provider-message-2")
+  }
+
   func testWorkSubagentSnapshotsPreserveAgentIdAndRunningCount() {
     let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","description":"Docs helper","background":true,"turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":1,"event":{"type":"subagent_started","taskId":"task-1","agentId":"agent-1","parentAgentId":"parent-agent-1","description":"Docs helper","background":true,"turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":2,"event":{"type":"subagent_progress","taskId":"task-1","agentId":"agent-1","summary":"Reading README.md","lastToolName":"functions.Read","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":3,"event":{"type":"subagent_started","taskId":"task-2","agentId":"agent-2","description":"Done helper","turnId":"turn-1"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":4,"event":{"type":"subagent_result","taskId":"task-2","agentId":"agent-2","status":"completed","summary":"Done","turnId":"turn-1"}}
@@ -8787,6 +8831,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workSubagentRunningCount(snapshots), 1)
     XCTAssertEqual(snapshots.first?.taskId, "task-1")
     XCTAssertEqual(snapshots.first?.agentId, "agent-1")
+    XCTAssertEqual(snapshots.first?.parentToolUseId, "parent-agent-1")
     XCTAssertEqual(snapshots.first?.background, true)
     XCTAssertEqual(snapshots.first?.lastToolName, "functions.Read")
     XCTAssertEqual(snapshots.first?.startedAt, "2026-03-25T00:00:01.000Z")

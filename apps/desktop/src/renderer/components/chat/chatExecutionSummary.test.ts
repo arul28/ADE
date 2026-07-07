@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
-import { deriveChatSubagentSnapshots, deriveTodoItems } from "./chatExecutionSummary";
+import {
+  deriveChatSubagentSnapshots,
+  deriveScheduledWorkSnapshots,
+  deriveTodoItems,
+} from "./chatExecutionSummary";
 
 describe("deriveChatSubagentSnapshots", () => {
   it("keeps running subagents ahead of completed ones and preserves descriptions", () => {
@@ -96,6 +100,30 @@ describe("deriveChatSubagentSnapshots", () => {
         parentToolUseId: "call-spawn-1",
         status: "completed",
         summary: "Mapped the IPC path.",
+      }),
+    ]);
+  });
+
+  it("uses parentAgentId as a parent key when the SDK omits parentToolUseId", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "child-task-1",
+          agentId: "child-agent-1",
+          parentAgentId: "parent-agent-1",
+          description: "Inspect nested Claude task",
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "child-task-1",
+        agentId: "child-agent-1",
+        parentToolUseId: "parent-agent-1",
       }),
     ]);
   });
@@ -430,6 +458,116 @@ describe("deriveChatSubagentSnapshots", () => {
         summary: "Found the relevant guide.",
       }),
     ]);
+  });
+});
+
+describe("deriveScheduledWorkSnapshots", () => {
+  it("returns an empty array when there are no scheduled work events", () => {
+    expect(deriveScheduledWorkSnapshots([])).toEqual([]);
+  });
+
+  it("coalesces scheduled work updates by id while preserving first-seen details", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "wakeup-1",
+          kind: "wakeup",
+          status: "scheduled",
+          origin: "schedule_wakeup",
+          title: "Wakeup scheduled",
+          prompt: "Check CI again",
+          reason: "CI was still running",
+          sourceToolUseId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:03:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "wakeup-1",
+          kind: "wakeup",
+          status: "running",
+          summary: "Wakeup fired",
+          lastRunAt: "2026-03-10T12:03:00.000Z",
+          turnId: "turn-2",
+        },
+      },
+    ];
+
+    expect(deriveScheduledWorkSnapshots(events)).toEqual([
+      {
+        id: "wakeup-1",
+        kind: "wakeup",
+        status: "running",
+        origin: "schedule_wakeup",
+        title: "Wakeup scheduled",
+        summary: "Wakeup fired",
+        prompt: "Check CI again",
+        reason: "CI was still running",
+        lastRunAt: "2026-03-10T12:03:00.000Z",
+        sourceToolUseId: "tool-1",
+        turnId: "turn-2",
+        createdAt: "2026-03-10T12:00:00.000Z",
+        updatedAt: "2026-03-10T12:03:00.000Z",
+      },
+    ]);
+  });
+
+  it("sorts scheduled work by most recent update and supplies default titles", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "scheduled",
+          cron: "*/10 * * * *",
+          recurring: true,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:01:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "background-1",
+          kind: "background_task",
+          status: "running",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:02:00.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "completed",
+          lastRunAt: "2026-03-10T12:02:00.000Z",
+        },
+      },
+    ];
+
+    const snapshots = deriveScheduledWorkSnapshots(events);
+
+    expect(snapshots.map((snapshot) => snapshot.id)).toEqual(["cron-1", "background-1"]);
+    expect(snapshots[0]).toEqual(expect.objectContaining({
+      title: "Scheduled task",
+      cron: "*/10 * * * *",
+      recurring: true,
+      status: "completed",
+    }));
+    expect(snapshots[1]).toEqual(expect.objectContaining({
+      title: "Background work",
+      status: "running",
+    }));
   });
 });
 

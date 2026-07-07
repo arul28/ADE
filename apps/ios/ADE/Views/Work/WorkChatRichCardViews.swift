@@ -2331,32 +2331,322 @@ struct WorkSubagentStrip: View {
   }
 }
 
-struct WorkSubagentActivePopup: View {
-  let count: Int
+struct WorkComposerBadgeCapsule<Content: View>: View {
+  let tint: Color
+  let spacing: CGFloat
+  let strokeOpacity: Double
+  let accessibilityLabel: String
   let onOpen: () -> Void
+  @ViewBuilder let content: () -> Content
+
+  init(
+    tint: Color,
+    spacing: CGFloat = 7,
+    strokeOpacity: Double = 0.22,
+    accessibilityLabel: String,
+    onOpen: @escaping () -> Void,
+    @ViewBuilder content: @escaping () -> Content
+  ) {
+    self.tint = tint
+    self.spacing = spacing
+    self.strokeOpacity = strokeOpacity
+    self.accessibilityLabel = accessibilityLabel
+    self.onOpen = onOpen
+    self.content = content
+  }
 
   var body: some View {
     Button(action: onOpen) {
-      HStack(spacing: 8) {
-        Image(systemName: "person.2.fill")
-          .font(.system(size: 12, weight: .semibold))
-        Text("\(count) active")
-          .font(.caption.weight(.semibold))
+      HStack(spacing: spacing) {
+        content()
         Image(systemName: "chevron.up")
           .font(.system(size: 10, weight: .bold))
       }
-      .foregroundStyle(ADEColor.accent)
+      .foregroundStyle(tint)
       .padding(.horizontal, 12)
       .padding(.vertical, 8)
       .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
-          .stroke(ADEColor.accent.opacity(0.22), lineWidth: 1)
+          .stroke(tint.opacity(strokeOpacity), lineWidth: 1)
       )
+      .frame(minHeight: 44)
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(count) active subagent\(count == 1 ? "" : "s")")
+    .accessibilityLabel(accessibilityLabel)
+  }
+}
+
+struct WorkSubagentActivePopup: View {
+  let count: Int
+  let onOpen: () -> Void
+
+  var body: some View {
+    WorkComposerBadgeCapsule(
+      tint: ADEColor.accent,
+      spacing: 8,
+      accessibilityLabel: "\(count) active subagent\(count == 1 ? "" : "s")",
+      onOpen: onOpen
+    ) {
+      Image(systemName: "person.2.fill")
+        .font(.system(size: 12, weight: .semibold))
+      Text("\(count) active")
+        .font(.caption.weight(.semibold))
+    }
+  }
+}
+
+struct WorkChatInfoActivePopup: View {
+  let count: Int
+  let onOpen: () -> Void
+
+  var body: some View {
+    WorkComposerBadgeCapsule(
+      tint: ADEColor.accent,
+      accessibilityLabel: "Chat Info, \(count) scheduled item\(count == 1 ? "" : "s")",
+      onOpen: onOpen
+    ) {
+      Image(systemName: "info.circle.fill")
+        .font(.system(size: 12, weight: .semibold))
+      Text("Chat Info")
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+      Text("\(count)")
+        .font(.caption2.weight(.bold))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+    }
+  }
+}
+
+func workScheduledWorkIsActive(_ item: WorkScheduledWorkSnapshot) -> Bool {
+  let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return status == "scheduled" || status == "running" || status == "fired"
+}
+
+func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> Int {
+  snapshots.reduce(0) { count, item in
+    count + (workScheduledWorkIsActive(item) ? 1 : 0)
+  }
+}
+
+struct WorkChatInfoDetailsSheet: View {
+  let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
+
+  private var activeCount: Int {
+    workScheduledWorkActiveCount(scheduledWorkSnapshots)
+  }
+
+  var body: some View {
+    NavigationStack {
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 14) {
+          if scheduledWorkSnapshots.isEmpty {
+            ADEEmptyStateView(
+              symbol: "info.circle",
+              title: "No chat info",
+              message: "Scheduled wakeups and background work will appear here."
+            )
+            .padding(.top, 24)
+          } else {
+            summaryHeader
+            section(title: "Schedule", count: scheduledWorkSnapshots.count) {
+              VStack(spacing: 8) {
+                ForEach(scheduledWorkSnapshots) { item in
+                  WorkScheduledWorkRow(item: item)
+                }
+              }
+            }
+          }
+        }
+        .padding(16)
+      }
+      .scrollIndicators(.hidden)
+      .background(workChatCanvasBackground.ignoresSafeArea())
+      .navigationTitle("Chat Info")
+      .navigationBarTitleDisplayMode(.inline)
+    }
+  }
+
+  private var summaryHeader: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "clock")
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(ADEColor.accent)
+        .frame(width: 30, height: 30)
+        .background(ADEColor.accent.opacity(0.12), in: Circle())
+      VStack(alignment: .leading, spacing: 2) {
+        Text("\(scheduledWorkSnapshots.count) scheduled item\(scheduledWorkSnapshots.count == 1 ? "" : "s")")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(activeCount == 0 ? "No active scheduled work" : "\(activeCount) active")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      Spacer(minLength: 0)
+    }
+    .padding(12)
+    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.border.opacity(0.5), lineWidth: 0.6)
+    )
+  }
+
+  @ViewBuilder
+  private func section<Content: View>(title: String, count: Int, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack {
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .textCase(.uppercase)
+        Spacer(minLength: 0)
+        Text("\(count)")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      content()
+    }
+  }
+}
+
+private struct WorkScheduledWorkRow: View {
+  let item: WorkScheduledWorkSnapshot
+
+  private var status: String {
+    item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  private var tint: Color {
+    workScheduledWorkStatusTint(status)
+  }
+
+  private var metadata: String {
+    [
+      workScheduledWorkKindLabel(item.kind),
+      item.nextRunAt.map { "next \(relativeTimestamp($0))" },
+      item.lastRunAt.map { "last \(relativeTimestamp($0))" },
+      item.cron,
+    ].compactMap(workScheduledWorkText).joined(separator: " · ")
+  }
+
+  private var detail: String? {
+    let statusError = status == "failed" || status == "missed"
+      ? workScheduledWorkText(item.error)
+      : nil
+    return statusError
+      ?? workScheduledWorkText(item.summary)
+      ?? workScheduledWorkText(item.reason)
+      ?? workScheduledWorkText(item.prompt)
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: workScheduledWorkStatusSymbol(status))
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(tint)
+          .frame(width: 24, height: 24)
+          .background(tint.opacity(0.12), in: Circle())
+        VStack(alignment: .leading, spacing: 3) {
+          Text(item.title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+          if !metadata.isEmpty {
+            Text(metadata)
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(2)
+          }
+        }
+        Spacer(minLength: 0)
+        Text(workScheduledWorkStatusLabel(status))
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(tint)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 3)
+          .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+      }
+      if let detail {
+        Text(detail)
+          .font(.caption)
+          .foregroundStyle(status == "failed" || status == "missed" ? ADEColor.danger : ADEColor.textSecondary)
+          .lineLimit(3)
+      }
+    }
+    .padding(12)
+    .background(ADEColor.cardBackground.opacity(0.76), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(tint.opacity(0.18), lineWidth: 0.8)
+    )
+  }
+}
+
+private func workScheduledWorkText(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func workScheduledWorkKindLabel(_ raw: String) -> String {
+  switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "wakeup":
+    return "Wakeup"
+  case "cron":
+    return "Scheduled task"
+  case "loop":
+    return "Loop wakeup"
+  case "remote_trigger":
+    return "Remote trigger"
+  case "background_task":
+    return "Background work"
+  default:
+    return raw.replacingOccurrences(of: "_", with: " ").capitalized
+  }
+}
+
+private func workScheduledWorkStatusLabel(_ raw: String) -> String {
+  switch raw {
+  case "fired":
+    return "Fired"
+  default:
+    return raw.replacingOccurrences(of: "_", with: " ").capitalized
+  }
+}
+
+private func workScheduledWorkStatusTint(_ status: String) -> Color {
+  switch status {
+  case "running", "fired":
+    return ADEColor.accent
+  case "scheduled":
+    return ADEColor.warning
+  case "completed":
+    return ADEColor.success
+  case "failed", "missed":
+    return ADEColor.danger
+  default:
+    return ADEColor.textMuted
+  }
+}
+
+private func workScheduledWorkStatusSymbol(_ status: String) -> String {
+  switch status {
+  case "running", "fired":
+    return "play.circle.fill"
+  case "scheduled":
+    return "clock.fill"
+  case "completed":
+    return "checkmark.circle.fill"
+  case "failed", "missed":
+    return "xmark.circle.fill"
+  case "cancelled", "stopped":
+    return "stop.circle"
+  default:
+    return "circle"
   }
 }
 

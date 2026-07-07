@@ -167,6 +167,7 @@ import type {
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatSession,
+  AgentChatScheduledWorkKind,
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSessionSummary,
@@ -399,7 +400,7 @@ import {
 } from "../../../shared/orchestrationRuntimePolicy";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
-const CLAUDE_AGENT_SDK_VERSION = "0.3.186";
+const CLAUDE_AGENT_SDK_VERSION = "0.3.202";
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
@@ -687,6 +688,8 @@ type ClaudeRuntime = {
   inputPump: ClaudeInputPump | null;
   pendingPostResultNext: Promise<IteratorResult<SDKMessage, void>> | null;
   pendingPostResultNextSettledAt: number | null;
+  idleReaderPromise: Promise<void> | null;
+  idleReaderGeneration: number;
   warmQuery: WarmQuery | null;
   /** Resolves when startup() has produced a warm query handle. */
   warmupDone: Promise<void> | null;
@@ -702,6 +705,7 @@ type ClaudeRuntime = {
     finalSummary?: string;
     agentType?: string;
     agentId?: string;
+    parentAgentId?: string | null;
     /**
      * Cached at spawn time so task_progress / task_notification handlers don't
      * have to re-derive them from the message. Set for Claude SDK runs only.
@@ -735,6 +739,12 @@ type ClaudeRuntime = {
    * instead of duplicating rows (see claudeWorkflowProgress.ts).
    */
   workflowAgentsByTask: Map<string, Map<string, ClaudeWorkflowAgentEmitState>>;
+  scheduledWorkSignatures: Map<string, string>;
+  scheduledWorkKindById: Map<string, AgentChatScheduledWorkKind>;
+  scheduledWorkIdByTaskId: Map<string, string>;
+  scheduledWorkIdByToolUseId: Map<string, string>;
+  activeProviderCronIds: Set<string>;
+  activeProviderCronIdsByPrompt: Map<string, Set<string>>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
   activeTurnId: string | null;
@@ -9914,8 +9924,345 @@ export function createAgentChatService(args: {
     if (normalizedEvent.type === "todo_update") {
       managed.todoItems = normalizedEvent.items;
     }
-
     commitChatEventWithCanonical(managed, normalizedEvent, options);
+  };
+
+  type ScheduledWorkEvent = Extract<AgentChatEvent, { type: "scheduled_work_update" }>;
+
+  const compactString = (value: unknown): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  };
+
+  const scheduledWorkInputId = (args: Record<string, unknown>): string | undefined =>
+    compactString(args.id) ?? compactString(args.cron_id) ?? compactString(args.cronId);
+
+  const normalizeScheduledWorkLookupText = (value: unknown): string | undefined => {
+    const text = compactString(value);
+    if (!text) return undefined;
+    return text.replace(/\s+/g, " ").toLowerCase();
+  };
+
+  const scheduledWorkPromptLookupKeys = (record: Record<string, unknown>): string[] => {
+    const patch = asRecord(record.patch);
+    return [
+      record.prompt,
+      record.description,
+      record.summary,
+      patch?.description,
+      patch?.prompt,
+    ].map(normalizeScheduledWorkLookupText).filter((key): key is string => Boolean(key));
+  };
+
+  const rememberActiveProviderCron = (
+    runtime: ClaudeRuntime,
+    providerCronId: string,
+    record: Record<string, unknown>,
+  ): void => {
+    runtime.activeProviderCronIds.add(providerCronId);
+    for (const key of scheduledWorkPromptLookupKeys(record)) {
+      let ids = runtime.activeProviderCronIdsByPrompt.get(key);
+      if (!ids) {
+        ids = new Set();
+        runtime.activeProviderCronIdsByPrompt.set(key, ids);
+      }
+      ids.add(providerCronId);
+    }
+  };
+
+  const forgetActiveProviderCron = (runtime: ClaudeRuntime, providerCronId: string): void => {
+    runtime.activeProviderCronIds.delete(providerCronId);
+    for (const [key, ids] of runtime.activeProviderCronIdsByPrompt) {
+      ids.delete(providerCronId);
+      if (!ids.size) runtime.activeProviderCronIdsByPrompt.delete(key);
+    }
+  };
+
+  const activeProviderCronIdForRecord = (
+    runtime: ClaudeRuntime,
+    record: Record<string, unknown>,
+  ): string | undefined => {
+    for (const key of scheduledWorkPromptLookupKeys(record)) {
+      const ids = runtime.activeProviderCronIdsByPrompt.get(key);
+      if (ids?.size === 1) return Array.from(ids)[0];
+    }
+    return undefined;
+  };
+
+  const resolveClaudeScheduledWorkAlias = (runtime: ClaudeRuntime, id: string): string =>
+    runtime.scheduledWorkIdByTaskId.get(id) ?? runtime.scheduledWorkIdByToolUseId.get(id) ?? id;
+
+  const baseClaudeToolName = (toolName: string): string => {
+    const trimmed = toolName.trim();
+    const namespaceSplit = trimmed.split("__").filter(Boolean).pop() ?? trimmed;
+    return namespaceSplit.split(/[.:/]/).filter(Boolean).pop() ?? namespaceSplit;
+  };
+
+  const scheduledWorkSignature = (event: ScheduledWorkEvent): string => {
+    const { turnId: _turnId, ...stable } = event;
+    return JSON.stringify(stable);
+  };
+
+  const emitClaudeScheduledWorkUpdate = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    event: ScheduledWorkEvent,
+  ): void => {
+    const id = event.id.trim();
+    if (!id) return;
+    const normalized: ScheduledWorkEvent = {
+      ...event,
+      id,
+      kind: runtime.scheduledWorkKindById.get(id) ?? event.kind,
+    };
+    runtime.scheduledWorkKindById.set(id, normalized.kind);
+    if (normalized.sourceToolUseId?.trim()) {
+      runtime.scheduledWorkIdByToolUseId.set(normalized.sourceToolUseId.trim(), id);
+    }
+    if (normalized.sourceTaskId?.trim()) {
+      runtime.scheduledWorkIdByTaskId.set(normalized.sourceTaskId.trim(), id);
+    }
+    const signature = scheduledWorkSignature(normalized);
+    if (runtime.scheduledWorkSignatures.get(id) === signature) return;
+    runtime.scheduledWorkSignatures.set(id, signature);
+    emitChatEvent(managed, normalized);
+  };
+
+  const resolveClaudeScheduledWorkId = (
+    runtime: ClaudeRuntime,
+    taskId: string,
+    parentToolUseId?: string | null,
+    fallbackScheduledWorkId?: string | null,
+  ): string => {
+    const fromTask = runtime.scheduledWorkIdByTaskId.get(taskId);
+    if (fromTask) return fromTask;
+    const fromTool = parentToolUseId ? runtime.scheduledWorkIdByToolUseId.get(parentToolUseId) : undefined;
+    const fallback = fallbackScheduledWorkId ? resolveClaudeScheduledWorkAlias(runtime, fallbackScheduledWorkId) : null;
+    const resolved = fromTool ?? fallback ?? taskId;
+    runtime.scheduledWorkIdByTaskId.set(taskId, resolved);
+    return resolved;
+  };
+
+  const resolveClaudeCronScheduledWorkId = (
+    runtime: ClaudeRuntime,
+    taskId: string,
+    parentToolUseId: string | null | undefined,
+    record: Record<string, unknown>,
+  ): string | null => {
+    const fromTask = runtime.scheduledWorkIdByTaskId.get(taskId);
+    if (fromTask) return fromTask;
+    const fromTool = parentToolUseId ? runtime.scheduledWorkIdByToolUseId.get(parentToolUseId) : undefined;
+    if (fromTool) return resolveClaudeScheduledWorkAlias(runtime, fromTool);
+    const explicitCronId = scheduledWorkInputId(record);
+    const activeCronId = !parentToolUseId ? activeProviderCronIdForRecord(runtime, record) : undefined;
+    const singleActiveCronId = !parentToolUseId && runtime.activeProviderCronIds.size === 1
+      ? Array.from(runtime.activeProviderCronIds)[0]
+      : undefined;
+    const hasKnownCronWork = !parentToolUseId
+      && Array.from(runtime.scheduledWorkKindById.values()).some((kind) => kind === "cron");
+    if (
+      !parentToolUseId
+      && !explicitCronId
+      && !activeCronId
+      && !singleActiveCronId
+      && (hasKnownCronWork || runtime.activeProviderCronIds.size > 1)
+    ) {
+      return null;
+    }
+    return resolveClaudeScheduledWorkId(runtime, taskId, parentToolUseId, explicitCronId ?? activeCronId ?? singleActiveCronId);
+  };
+
+  const normalizeClaudeScheduledStatus = (value: unknown): ScheduledWorkEvent["status"] => {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+    if (normalized === "completed" || normalized === "complete" || normalized === "done") return "completed";
+    if (normalized === "failed" || normalized === "error") return "failed";
+    if (normalized === "cancelled" || normalized === "canceled") return "cancelled";
+    if (normalized === "killed" || normalized === "stopped") return "stopped";
+    if (normalized === "missed") return "missed";
+    if (normalized === "fired") return "fired";
+    if (normalized === "pending" || normalized === "queued" || normalized === "scheduled") return "scheduled";
+    return "running";
+  };
+
+  const emitClaudeTranscriptRetraction = (
+    managed: ManagedChatSession,
+    messageIds: unknown,
+    reason: Extract<AgentChatEvent, { type: "transcript_retraction" }>["reason"],
+    turnId?: string,
+    replacementMessageId?: string | null,
+  ): void => {
+    const ids = Array.isArray(messageIds)
+      ? [...new Set(messageIds
+        .filter((messageId): messageId is string => typeof messageId === "string" && messageId.trim().length > 0)
+        .map((messageId) => messageId.trim()))]
+      : [];
+    if (!ids.length) return;
+    emitChatEvent(managed, {
+      type: "transcript_retraction",
+      messageIds: ids,
+      reason,
+      ...(replacementMessageId ? { replacementMessageId } : {}),
+      ...(turnId ? { turnId } : {}),
+    });
+  };
+
+  const maybeEmitClaudeScheduledWorkFromToolCall = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    toolName: string,
+    input: unknown,
+    itemId: string,
+    turnId?: string,
+  ): void => {
+    const tool = baseClaudeToolName(toolName);
+    const args = asRecord(input) ?? {};
+    if (tool === "ScheduleWakeup") {
+      const stop = args.stop === true;
+      const wakeupId = `wakeup:${managed.session.id}`;
+      emitClaudeScheduledWorkUpdate(managed, runtime, {
+        type: "scheduled_work_update",
+        id: wakeupId,
+        kind: "wakeup",
+        status: stop ? "stopped" : "scheduled",
+        origin: "schedule_wakeup",
+        title: stop ? "Wakeup stopped" : "Wakeup scheduled",
+        reason: compactString(args.reason),
+        prompt: compactString(args.prompt),
+        sourceToolUseId: itemId,
+        ...(turnId ? { turnId } : {}),
+      });
+      return;
+    }
+
+    if (tool === "CronCreate") {
+      const cronId = scheduledWorkInputId(args);
+      if (!cronId) return;
+      if (args.recurring !== false) {
+        rememberActiveProviderCron(runtime, cronId, args);
+      }
+      emitClaudeScheduledWorkUpdate(managed, runtime, {
+        type: "scheduled_work_update",
+        id: cronId,
+        kind: "cron",
+        status: "scheduled",
+        origin: "cron",
+        title: "Cron scheduled",
+        cron: compactString(args.cron),
+        prompt: compactString(args.prompt),
+        recurring: args.recurring !== false,
+        durable: args.durable === true,
+        sourceToolUseId: itemId,
+        ...(turnId ? { turnId } : {}),
+      });
+      return;
+    }
+
+    if (tool === "CronDelete") {
+      const inputId = scheduledWorkInputId(args);
+      if (!inputId) return;
+      const id = resolveClaudeScheduledWorkAlias(runtime, inputId);
+      forgetActiveProviderCron(runtime, inputId);
+      forgetActiveProviderCron(runtime, id);
+      const kind = runtime.scheduledWorkKindById.get(id) ?? "cron";
+      emitClaudeScheduledWorkUpdate(managed, runtime, {
+        type: "scheduled_work_update",
+        id,
+        kind,
+        status: "cancelled",
+        origin: kind === "wakeup" ? "schedule_wakeup" : "cron",
+        title: kind === "wakeup" ? "Wakeup cancelled" : "Cron cancelled",
+        sourceToolUseId: itemId,
+        ...(turnId ? { turnId } : {}),
+      });
+      return;
+    }
+
+    if (tool === "RemoteTrigger") {
+      const action = compactString(args.action);
+      if (action !== "run" && action !== "create" && action !== "update") return;
+      const triggerId = compactString(args.trigger_id) ?? itemId;
+      emitClaudeScheduledWorkUpdate(managed, runtime, {
+        type: "scheduled_work_update",
+        id: triggerId,
+        kind: "remote_trigger",
+        status: action === "run" ? "running" : "completed",
+        origin: "remote_trigger",
+        title: action === "run" ? "Remote trigger running" : `Remote trigger ${action}`,
+        sourceToolUseId: itemId,
+        ...(turnId ? { turnId } : {}),
+      });
+    }
+  };
+
+  const emitClaudeHookScheduledWorkSnapshots = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    input: HookInput,
+  ): void => {
+    const hookRecord = input as unknown as Record<string, unknown>;
+    const turnId = runtime.activeTurnId ?? undefined;
+    const backgroundTasks = Array.isArray(hookRecord.background_tasks) ? hookRecord.background_tasks : [];
+    for (const rawTask of backgroundTasks) {
+      const task = asRecord(rawTask);
+      if (!task) continue;
+      const id = compactString(task.id);
+      if (!id) continue;
+      const type = compactString(task.type);
+      const description = compactString(task.description);
+      const command = compactString(task.command);
+      const agentType = compactString(task.agent_type);
+      const workflowName = compactString(task.name);
+      const title = description ?? command ?? workflowName ?? agentType ?? type ?? "Background work";
+      const summaryParts = [
+        type,
+        command ? `command: ${command}` : null,
+        agentType ? `agent: ${agentType}` : null,
+        workflowName ? `workflow: ${workflowName}` : null,
+      ].filter((part): part is string => Boolean(part));
+      emitClaudeScheduledWorkUpdate(managed, runtime, {
+        type: "scheduled_work_update",
+        id: `background:${id}`,
+        kind: "background_task",
+        status: normalizeClaudeScheduledStatus(task.status),
+        origin: "background_task",
+        title,
+        summary: summaryParts.length ? summaryParts.join(" | ") : undefined,
+        sourceTaskId: id,
+        ...(turnId ? { turnId } : {}),
+      });
+    }
+
+    const hasSessionCrons = Array.isArray(hookRecord.session_crons);
+    if (hasSessionCrons) {
+      runtime.activeProviderCronIds.clear();
+      runtime.activeProviderCronIdsByPrompt.clear();
+    }
+    const sessionCrons = hasSessionCrons ? hookRecord.session_crons as unknown[] : [];
+    for (const rawCron of sessionCrons) {
+      const cron = asRecord(rawCron);
+      if (!cron) continue;
+      const id = compactString(cron.id);
+      if (!id) continue;
+      const recurring = cron.recurring !== false;
+      if (recurring) {
+        rememberActiveProviderCron(runtime, id, cron);
+      }
+      const scheduledWorkId = recurring ? id : `wakeup:${managed.session.id}`;
+      emitClaudeScheduledWorkUpdate(managed, runtime, {
+        type: "scheduled_work_update",
+        id: scheduledWorkId,
+        kind: recurring ? "cron" : "wakeup",
+        status: "scheduled",
+        origin: recurring ? "cron" : "schedule_wakeup",
+        title: recurring ? "Cron scheduled" : "Wakeup scheduled",
+        cron: compactString(cron.schedule),
+        prompt: compactString(cron.prompt),
+        recurring,
+        sourceTaskId: id,
+        ...(turnId ? { turnId } : {}),
+      });
+    }
   };
 
   const publishChatEnvelope = (envelope: AgentChatEventEnvelope): void => {
@@ -12106,6 +12453,719 @@ export function createAgentChatService(args: {
 
   // ── Claude SDK streaming turn ──
 
+  type ClaudeIdleTurnState = {
+    turnId: string | null;
+    assistantText: string;
+    usage?: {
+      inputTokens?: number | null;
+      outputTokens?: number | null;
+      cacheReadTokens?: number | null;
+      cacheCreationTokens?: number | null;
+    };
+    costUsd: number | null;
+    emittedToolIds: Set<string>;
+    openToolUses: Map<string, { toolName: string }>;
+    toolInputJsonByContentIndex: Map<number, string>;
+    toolUseMetaByContentIndex: Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>;
+    currentStreamMessageId: string | null;
+  };
+
+  const startClaudeIdleTurn = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    state: ClaudeIdleTurnState,
+    detail = "Claude resumed background work",
+  ): string => {
+    if (state.turnId) return state.turnId;
+    const turnId = `claude-idle-${randomUUID()}`;
+    state.turnId = turnId;
+    captureTurnBeforeSha(managed);
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    setSessionActive(managed);
+    emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
+    emitChatEvent(managed, {
+      type: "activity",
+      activity: "working",
+      detail,
+      turnId,
+    });
+    return turnId;
+  };
+
+  const finishClaudeIdleTurn = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    state: ClaudeIdleTurnState,
+    status: "completed" | "interrupted" | "failed" = "completed",
+  ): Promise<void> => {
+    const turnId = state.turnId;
+    if (!turnId) return;
+    for (const [itemId, toolMeta] of state.openToolUses.entries()) {
+      emitChatEvent(managed, {
+        type: "tool_result",
+        tool: toolMeta.toolName,
+        result: {
+          synthetic: true,
+          source: "claude_idle_turn_finalization",
+          finalTurnStatus: status,
+          summary: `Completed ${toolMeta.toolName} when the Claude background turn ended.`,
+        },
+        itemId,
+        turnId,
+        status,
+      });
+    }
+    state.openToolUses.clear();
+    runtime.busy = false;
+    runtime.activeTurnId = null;
+    markSessionIdleWithFreshCache(managed);
+    reportProviderRuntimeReady("claude");
+    emitChatEvent(managed, { type: "status", turnStatus: status, turnId });
+    void emitTurnDiffSummaryIfChanged(managed, turnId);
+    emitChatEvent(managed, {
+      type: "done",
+      turnId,
+      status,
+      ...resolveClaudeTurnModelPayload(managed.session, []),
+      ...(state.usage ? { usage: state.usage } : {}),
+      ...(state.costUsd != null ? { costUsd: state.costUsd } : {}),
+    });
+    if (state.assistantText.trim().length > 0) {
+      appendCtoTurnJournal(managed, { assistantText: state.assistantText });
+    }
+    const endSha = await computeHeadShaBestEffort(resolveManagedExecutionLaneId(managed)).catch(() => null);
+    if (endSha) {
+      sessionService.setHeadShaEnd(managed.session.id, endSha);
+    }
+    persistChatState(managed);
+    state.turnId = null;
+    if (runtime.pendingSteers.length && managed.runtime === runtime) {
+      runtime.idleReaderPromise = null;
+      await deliverNextQueuedSteer(managed, runtime);
+    }
+  };
+
+  const handleClaudeIdleTaskMessage = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    msg: Record<string, unknown>,
+    state: ClaudeIdleTurnState,
+  ): boolean => {
+    const subtype = compactString(msg.subtype);
+    if (subtype !== "task_started" && subtype !== "task_progress" && subtype !== "task_updated" && subtype !== "task_notification") {
+      return false;
+    }
+    const taskId = compactString(msg.task_id);
+    if (!taskId) return true;
+    const existing = runtime.activeSubagents.get(taskId);
+    if (existing?.skipTranscript) {
+      if (subtype === "task_notification") {
+        runtime.activeSubagents.delete(taskId);
+      } else if (subtype === "task_updated") {
+        const patch = asRecord(msg.patch) ?? {};
+        const status = compactString(patch.status);
+        if (status === "completed" || status === "failed" || status === "killed") {
+          runtime.activeSubagents.delete(taskId);
+        }
+      }
+      return true;
+    }
+    if (subtype === "task_started" && msg.skip_transcript === true) {
+      runtime.activeSubagents.set(taskId, {
+        taskId,
+        description: compactString(msg.description) ?? "",
+        parentToolUseId: taskParentToolUseId(msg),
+        skipTranscript: true,
+      });
+      return true;
+    }
+    const taskType = normalizeClaudeTaskType(msg.task_type) ?? existing?.taskType;
+    const workflowName = normalizeClaudeWorkflowName(msg.workflow_name) ?? existing?.workflowName;
+    const parentToolUseId = taskParentToolUseId(msg) ?? existing?.parentToolUseId ?? null;
+    const agentId = compactString(msg.agent_id) ?? existing?.agentId;
+    const parentAgentId = compactString(msg.parent_agent_id) ?? existing?.parentAgentId ?? null;
+    const agentType = compactString(msg.subagent_type) ?? existing?.agentType;
+    const description = compactString(msg.description) ?? existing?.description ?? "Background task";
+    const turnId = startClaudeIdleTurn(managed, runtime, state, taskType === "cron" ? "Claude scheduled task is running" : "Claude background task is running");
+    if (subtype === "task_started") {
+      const background = taskType === "background" || taskType === "cron" || taskType === "local_workflow" || isBackgroundTask(msg);
+      runtime.activeSubagents.set(taskId, {
+        taskId,
+        description,
+        parentToolUseId,
+        background,
+        ...(agentType ? { agentType } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
+        ...(taskType ? { taskType } : {}),
+        ...(workflowName ? { workflowName } : {}),
+      });
+      if (taskType === "cron") {
+        const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
+        if (scheduledWorkId) {
+          emitClaudeScheduledWorkUpdate(managed, runtime, {
+            type: "scheduled_work_update",
+            id: scheduledWorkId,
+            kind: "cron",
+            status: "running",
+            origin: "cron",
+            title: description,
+            ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+            sourceTaskId: taskId,
+            turnId,
+          });
+        }
+      }
+      emitChatEvent(managed, {
+        type: "subagent_started",
+        taskId,
+        ...(agentId ? { agentId } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
+        ...(agentType ? { agentType } : {}),
+        parentToolUseId,
+        description,
+        background,
+        ...(taskType ? { taskType } : {}),
+        ...(workflowName ? { workflowName } : {}),
+        turnId,
+      });
+      return true;
+    }
+    if (subtype === "task_notification") {
+      const summary = String(msg.summary ?? existing?.finalSummary ?? "");
+      runtime.activeSubagents.delete(taskId);
+      if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
+      const finalStatus = msg.status === "completed" ? "completed" : msg.status === "stopped" ? "stopped" : "failed";
+      if (taskType === "cron") {
+        const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
+        if (scheduledWorkId) {
+          emitClaudeScheduledWorkUpdate(managed, runtime, {
+            type: "scheduled_work_update",
+            id: scheduledWorkId,
+            kind: "cron",
+            status: finalStatus,
+            origin: "cron",
+            title: existing?.description ?? description,
+            summary,
+            ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+            sourceTaskId: taskId,
+            turnId,
+          });
+        }
+      }
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId,
+        ...(agentId ? { agentId } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
+        ...(agentType ? { agentType } : {}),
+        parentToolUseId,
+        status: finalStatus,
+        summary,
+        finalSummary: summary,
+        ...(taskType ? { taskType } : {}),
+        ...(workflowName ? { workflowName } : {}),
+        turnId,
+      });
+      return true;
+    }
+    const patch = asRecord(msg.patch) ?? {};
+    const status = compactString(patch.status);
+    const summary = compactString(msg.summary) ?? compactString(patch.error) ?? (status ? `Status: ${status.replace(/_/g, " ")}` : "Task updated");
+    if (status === "completed" || status === "failed" || status === "killed") {
+      runtime.activeSubagents.delete(taskId);
+      if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
+      const finalStatus = status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed";
+      if (taskType === "cron") {
+        const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
+        if (scheduledWorkId) {
+          emitClaudeScheduledWorkUpdate(managed, runtime, {
+            type: "scheduled_work_update",
+            id: scheduledWorkId,
+            kind: "cron",
+            status: finalStatus,
+            origin: "cron",
+            title: existing?.description ?? description,
+            summary,
+            ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+            sourceTaskId: taskId,
+            turnId,
+          });
+        }
+      }
+      emitChatEvent(managed, {
+        type: "subagent_result",
+        taskId,
+        ...(agentId ? { agentId } : {}),
+        ...(parentAgentId ? { parentAgentId } : {}),
+        ...(agentType ? { agentType } : {}),
+        parentToolUseId,
+        status: finalStatus,
+        summary,
+        finalSummary: summary,
+        ...(taskType ? { taskType } : {}),
+        ...(workflowName ? { workflowName } : {}),
+        turnId,
+      });
+      return true;
+    }
+    runtime.activeSubagents.set(taskId, {
+      taskId,
+      description,
+      parentToolUseId,
+      background: patch.is_backgrounded === true || existing?.background === true,
+      finalSummary: existing?.finalSummary,
+      ...(agentType ? { agentType } : {}),
+      ...(agentId ? { agentId } : {}),
+      ...(parentAgentId ? { parentAgentId } : {}),
+      ...(taskType ? { taskType } : {}),
+      ...(workflowName ? { workflowName } : {}),
+    });
+    emitChatEvent(managed, {
+      type: "subagent_progress",
+      taskId,
+      ...(agentId ? { agentId } : {}),
+      ...(parentAgentId ? { parentAgentId } : {}),
+      ...(agentType ? { agentType } : {}),
+      parentToolUseId,
+      description,
+      summary,
+      ...(taskType ? { taskType } : {}),
+      ...(workflowName ? { workflowName } : {}),
+      turnId,
+    });
+    return true;
+  };
+
+  const handleClaudeIdleMessage = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    msg: SDKMessage,
+    state: ClaudeIdleTurnState,
+  ): Promise<void> => {
+    const record = msg as unknown as Record<string, unknown>;
+    const messageSessionId = compactString(record.session_id);
+    if (messageSessionId && runtime.sdkSessionId !== messageSessionId) {
+      runtime.sdkSessionId = messageSessionId;
+      mirrorClaudeSessionPointer(managed, runtime.sdkSessionId);
+      persistChatState(managed);
+    }
+
+    if (msg.type === "system" && record.subtype === "init") {
+      const initCommands = Array.isArray(record.slash_commands) ? record.slash_commands : [];
+      if (initCommands.length) applyClaudeSlashCommands(runtime, initCommands as any[]);
+      persistChatState(managed);
+      return;
+    }
+
+    if (msg.type === "system" && record.subtype === "commands_changed") {
+      if (Array.isArray(record.commands)) {
+        applyClaudeSlashCommands(runtime, record.commands as any[]);
+        persistChatState(managed);
+      }
+      return;
+    }
+
+    if (msg.type === "system" && record.subtype === "model_refusal_fallback") {
+      emitClaudeTranscriptRetraction(managed, record.retracted_message_uuids, "model_refusal_fallback", state.turnId ?? undefined);
+      return;
+    }
+
+    if (msg.type === "system" && record.subtype === "notification") {
+      const text = compactString(record.text);
+      if (!text) return;
+      const priority = compactString(record.priority) ?? "medium";
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: priority === "high" || priority === "immediate" ? "warning" : "info",
+        severity: priority === "high" || priority === "immediate" ? "warning" : "info",
+        status: "notification",
+        message: text,
+        ...(state.turnId ? { turnId: state.turnId } : {}),
+      });
+      return;
+    }
+
+    if (msg.type === "system" && handleClaudeIdleTaskMessage(managed, runtime, record, state)) {
+      return;
+    }
+
+    if (msg.type === "auth_status") {
+      const authRecord = record;
+      if (compactString(authRecord.error)) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "auth",
+          severity: "warning",
+          message: CLAUDE_AUTH_STOPPED_NOTICE,
+          ...(state.turnId ? { turnId: state.turnId } : {}),
+        });
+      } else if (authRecord.isAuthenticating === true) {
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "auth",
+          message: "Authenticating...",
+          ...(state.turnId ? { turnId: state.turnId } : {}),
+        });
+      }
+      return;
+    }
+
+    if (msg.type === "rate_limit_event") {
+      const info = asRecord(record.rate_limit_info) ?? {};
+      const rawStatus = compactString(info.status) ?? "updated";
+      if (rawStatus === "allowed") return;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "rate_limit",
+        severity: rawStatus === "allowed_warning" ? "info" : "error",
+        status: rawStatus,
+        message: rawStatus === "allowed_warning" ? "Approaching Claude plan limit" : `Claude rate limit ${rawStatus.replace(/_/g, " ")}`,
+        ...(state.turnId ? { turnId: state.turnId } : {}),
+      });
+      return;
+    }
+
+    if (msg.type === "assistant") {
+      const assistantMsg = record;
+      const betaMessage = asRecord(assistantMsg.message);
+      const assistantWireUuid = compactString(assistantMsg.uuid);
+      const assistantMessageId = compactString(betaMessage?.id);
+      const providerMessageId = assistantWireUuid ?? assistantMessageId ?? null;
+      const turnId = startClaudeIdleTurn(managed, runtime, state);
+      emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
+      const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
+      for (const [index, rawBlock] of content.entries()) {
+        const block = asRecord(rawBlock);
+        if (!block) continue;
+        if (block.type === "text") {
+          const text = typeof block.text === "string" ? block.text : "";
+          if (text.length) {
+            state.assistantText += text;
+            emitChatEvent(managed, {
+              type: "text",
+              text,
+              ...(providerMessageId ? { messageId: providerMessageId } : {}),
+              turnId,
+            });
+          }
+        } else if (block.type === "thinking") {
+          const text = typeof block.thinking === "string" ? block.thinking : typeof block.text === "string" ? block.text : "";
+          if (text.trim().length) {
+            emitChatEvent(managed, {
+              type: "reasoning",
+              text,
+              itemId: `claude-thinking:${turnId}:${index}`,
+              turnId,
+            });
+          }
+        } else if (block.type === "tool_use") {
+          const toolName = compactString(block.name) ?? "tool";
+          const itemId = compactString(block.id) ?? `claude-tool:${turnId}:${index}`;
+          if (!state.emittedToolIds.has(itemId)) {
+            state.emittedToolIds.add(itemId);
+            state.openToolUses.set(itemId, { toolName });
+            emitChatEvent(managed, {
+              type: "tool_call",
+              tool: toolName,
+              args: block.input ?? {},
+              itemId,
+              turnId,
+            });
+            maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, toolName, block.input, itemId, turnId);
+          }
+        }
+      }
+      const usage = asRecord(betaMessage?.usage);
+      if (usage) {
+        state.usage = {
+          inputTokens: typeof usage.input_tokens === "number" ? usage.input_tokens : null,
+          outputTokens: typeof usage.output_tokens === "number" ? usage.output_tokens : null,
+        };
+      }
+      return;
+    }
+
+    if (msg.type === "stream_event") {
+      const streamMsg = record;
+      const event = asRecord(streamMsg.event);
+      if (!event) return;
+      const turnId = startClaudeIdleTurn(managed, runtime, state);
+      const contentIndex = typeof event.index === "number" ? event.index : null;
+      if (event.type === "message_start") {
+        const message = asRecord(event.message);
+        state.currentStreamMessageId = compactString(message?.id) ?? compactString(streamMsg.uuid) ?? null;
+        return;
+      }
+      if (event.type === "content_block_delta") {
+        const delta = asRecord(event.delta);
+        if (delta?.type === "text_delta") {
+          const text = typeof delta.text === "string" ? delta.text : "";
+          if (text.length) {
+            state.assistantText += text;
+            const providerMessageId = compactString(streamMsg.uuid) ?? state.currentStreamMessageId;
+            emitChatEvent(managed, {
+              type: "text",
+              text,
+              ...(providerMessageId ? { messageId: providerMessageId } : {}),
+              turnId,
+            });
+          }
+        } else if (delta?.type === "thinking_delta") {
+          const text = typeof delta.thinking === "string" ? delta.thinking : typeof delta.text === "string" ? delta.text : "";
+          if (text.length) {
+            emitChatEvent(managed, {
+              type: "reasoning",
+              text,
+              ...(contentIndex != null ? { itemId: `claude-thinking:${turnId}:${contentIndex}` } : {}),
+              turnId,
+            });
+          }
+        } else if (delta?.type === "input_json_delta" && contentIndex != null) {
+          const partial = typeof delta.partial_json === "string" ? delta.partial_json : "";
+          state.toolInputJsonByContentIndex.set(contentIndex, `${state.toolInputJsonByContentIndex.get(contentIndex) ?? ""}${partial}`);
+        }
+        return;
+      }
+      if (event.type === "content_block_start") {
+        const block = asRecord(event.content_block);
+        if (block?.type !== "tool_use") return;
+        const toolName = compactString(block.name) ?? "tool";
+        const itemId = compactString(block.id) ?? (contentIndex != null ? `claude-tool:${turnId}:${contentIndex}` : randomUUID());
+        if (state.emittedToolIds.has(itemId)) return;
+        state.emittedToolIds.add(itemId);
+        state.openToolUses.set(itemId, { toolName });
+        emitChatEvent(managed, {
+          type: "tool_call",
+          tool: toolName,
+          args: block.input ?? {},
+          itemId,
+          turnId,
+        });
+        if (contentIndex != null) {
+          const initial = block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length
+            ? JSON.stringify(block.input)
+            : "";
+          state.toolInputJsonByContentIndex.set(contentIndex, initial);
+          state.toolUseMetaByContentIndex.set(contentIndex, {
+            toolName,
+            itemId,
+            ...(compactString(block.id) ? { toolUseId: compactString(block.id) } : {}),
+            argsWereEmpty: initial.length === 0,
+          });
+        }
+        return;
+      }
+      if (event.type === "content_block_stop" && contentIndex != null) {
+        const meta = state.toolUseMetaByContentIndex.get(contentIndex);
+        if (!meta) return;
+        state.toolUseMetaByContentIndex.delete(contentIndex);
+        const raw = state.toolInputJsonByContentIndex.get(contentIndex) ?? "";
+        state.toolInputJsonByContentIndex.delete(contentIndex);
+        let parsed: unknown = {};
+        if (raw.trim().length) {
+          try { parsed = JSON.parse(raw); } catch { parsed = {}; }
+        }
+        if (meta.argsWereEmpty && parsed && typeof parsed === "object" && Object.keys(parsed as object).length > 0) {
+          emitChatEvent(managed, {
+            type: "tool_call",
+            tool: meta.toolName,
+            args: parsed,
+            itemId: meta.itemId,
+            turnId,
+          });
+        }
+        maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
+      }
+      return;
+    }
+
+    if (msg.type === "tool_progress") {
+      const turnId = startClaudeIdleTurn(managed, runtime, state);
+      emitChatEvent(managed, {
+        type: "activity",
+        activity: "tool_calling",
+        detail: `Tool '${compactString(record.tool_name) ?? "tool"}' running (${Math.round(typeof record.elapsed_time_seconds === "number" ? record.elapsed_time_seconds : 0)}s)`,
+        turnId,
+      });
+      return;
+    }
+
+    if (msg.type === "result") {
+      const resultMsg = record;
+      const turnId = state.turnId;
+      const usage = asRecord(resultMsg.usage);
+      if (usage) {
+        state.usage = {
+          inputTokens: typeof usage.input_tokens === "number" ? usage.input_tokens : null,
+          outputTokens: typeof usage.output_tokens === "number" ? usage.output_tokens : null,
+          cacheReadTokens: typeof usage.cache_read_input_tokens === "number" ? usage.cache_read_input_tokens : null,
+          cacheCreationTokens: typeof usage.cache_creation_input_tokens === "number" ? usage.cache_creation_input_tokens : null,
+        };
+      }
+      if (typeof resultMsg.total_cost_usd === "number") {
+        state.costUsd = resultMsg.total_cost_usd;
+      }
+      if (resultMsg.is_error === true && Array.isArray(resultMsg.errors) && turnId) {
+        for (const error of resultMsg.errors) {
+          emitChatEvent(managed, { type: "error", message: String(error), turnId });
+        }
+      }
+      await finishClaudeIdleTurn(managed, runtime, state, resultMsg.is_error === true ? "failed" : "completed");
+      return;
+    }
+
+    if ((msg as any).type === "tool_use_summary" && state.turnId) {
+      const summaryMsg = record;
+      const toolUseIds = Array.isArray(summaryMsg.preceding_tool_use_ids) ? summaryMsg.preceding_tool_use_ids.map(String) : [];
+      for (const toolUseId of toolUseIds) {
+        state.openToolUses.delete(toolUseId);
+      }
+      emitChatEvent(managed, {
+        type: "tool_use_summary",
+        summary: String(summaryMsg.summary ?? ""),
+        toolUseIds,
+        turnId: state.turnId,
+      });
+      return;
+    }
+
+    if ((msg as any).type === "prompt_suggestion") {
+      const suggestion = [record.suggestion, record.prompt, record.text]
+        .find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim();
+      if (suggestion) {
+        emitLiveOnlyChatEvent(managed, {
+          type: "prompt_suggestion",
+          suggestion,
+          ...(state.turnId ? { turnId: state.turnId } : {}),
+        });
+      }
+    }
+  };
+
+  const startClaudeIdleReader = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    reason: "turn_completed" | "query_ready" = "turn_completed",
+  ): void => {
+    if (managed.closed || managed.deleted) return;
+    if (!runtime.query || !runtime.inputPump) return;
+    if (runtime.busy || runtime.activeTurnId) return;
+    if (runtime.idleReaderPromise) return;
+
+    const sessionQuery = runtime.query;
+    const generation = ++runtime.idleReaderGeneration;
+    const state: ClaudeIdleTurnState = {
+      turnId: null,
+      assistantText: "",
+      costUsd: null,
+      emittedToolIds: new Set(),
+      openToolUses: new Map(),
+      toolInputJsonByContentIndex: new Map(),
+      toolUseMetaByContentIndex: new Map(),
+      currentStreamMessageId: null,
+    };
+
+    logger.debug("agent_chat.claude_idle_reader_start", {
+      sessionId: managed.session.id,
+      reason,
+      sdkSessionId: runtime.sdkSessionId,
+    });
+
+    const handoffToForegroundIfActive = (
+      nextMessage: Promise<IteratorResult<SDKMessage, void>>,
+      next: IteratorResult<SDKMessage, void>,
+    ): boolean => {
+      if (!((runtime.busy || runtime.activeTurnId) && runtime.activeTurnId !== state.turnId)) {
+        return false;
+      }
+      if (runtime.pendingPostResultNext === nextMessage) {
+        runtime.pendingPostResultNext = Promise.resolve(next);
+        runtime.pendingPostResultNextSettledAt = Date.now();
+      }
+      return true;
+    };
+
+    runtime.idleReaderPromise = (async () => {
+      try {
+        while (
+          !managed.closed
+          && !managed.deleted
+          && managed.runtime === runtime
+          && runtime.query === sessionQuery
+          && runtime.idleReaderGeneration === generation
+        ) {
+          if ((runtime.busy || runtime.activeTurnId) && runtime.activeTurnId !== state.turnId) {
+            return;
+          }
+          const nextMessage = runtime.pendingPostResultNext ?? sessionQuery.next();
+          if (runtime.pendingPostResultNext !== nextMessage) {
+            runtime.pendingPostResultNext = nextMessage;
+            runtime.pendingPostResultNextSettledAt = null;
+            nextMessage.then(
+              () => {
+                if (runtime.pendingPostResultNext === nextMessage) {
+                  runtime.pendingPostResultNextSettledAt = Date.now();
+                }
+              },
+              () => {
+                if (runtime.pendingPostResultNext === nextMessage) {
+                  runtime.pendingPostResultNextSettledAt = Date.now();
+                }
+              },
+            );
+          }
+          let next: IteratorResult<SDKMessage, void>;
+          try {
+            next = await nextMessage;
+          } catch (error) {
+            if (runtime.pendingPostResultNext === nextMessage) {
+              runtime.pendingPostResultNext = null;
+              runtime.pendingPostResultNextSettledAt = null;
+            }
+            logger.debug("agent_chat.claude_idle_reader_next_failed", {
+              sessionId: managed.session.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          if (
+            managed.runtime !== runtime
+            || runtime.query !== sessionQuery
+            || runtime.idleReaderGeneration !== generation
+          ) {
+            return;
+          }
+          if (handoffToForegroundIfActive(nextMessage, next)) {
+            return;
+          }
+          if (runtime.pendingPostResultNext === nextMessage) {
+            runtime.pendingPostResultNext = null;
+            runtime.pendingPostResultNextSettledAt = null;
+          }
+          if (next.done) {
+            await finishClaudeIdleTurn(managed, runtime, state, "completed");
+            return;
+          }
+          await handleClaudeIdleMessage(managed, runtime, next.value, state);
+        }
+      } catch (error) {
+        logger.warn("agent_chat.claude_idle_reader_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        if (state.turnId && runtime.activeTurnId === state.turnId) {
+          await finishClaudeIdleTurn(managed, runtime, state, "failed").catch(() => undefined);
+        }
+      } finally {
+        if (runtime.idleReaderGeneration === generation && runtime.idleReaderPromise) {
+          runtime.idleReaderPromise = null;
+        }
+      }
+    })();
+  };
+
   const runClaudeTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -12586,6 +13646,15 @@ export function createAgentChatService(args: {
           continue;
         }
 
+        if (msg.type === "system" && (msg as any).subtype === "commands_changed") {
+          const commandsMsg = msg as any;
+          if (Array.isArray(commandsMsg.commands)) {
+            applyClaudeSlashCommands(runtime, commandsMsg.commands);
+            persistChatState(managed);
+          }
+          continue;
+        }
+
         // system:status — permission mode changes and turn-status signals.
         //
         // The SDK CLI emits SDKStatusMessage with the new permissionMode when
@@ -12829,17 +13898,18 @@ export function createAgentChatService(args: {
               ? `retracted ${retractedUuids.length} SDK message${retractedUuids.length === 1 ? "" : "s"}: ${retractedUuids.slice(0, 5).join(", ")}${retractedUuids.length > 5 ? ", ..." : ""}`
               : null,
           ].filter((entry): entry is string => Boolean(entry));
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "warning",
-            severity: "warning",
-            status: "model_refusal_fallback",
-            message: `Claude retried with ${fallback} after ${original} refused the request.`,
-            detail: details.length ? details.join(" | ") : undefined,
-            turnId,
-          });
-          continue;
-        }
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "warning",
+              severity: "warning",
+              status: "model_refusal_fallback",
+              message: `Claude retried with ${fallback} after ${original} refused the request.`,
+              detail: details.length ? details.join(" | ") : undefined,
+              turnId,
+            });
+            emitClaudeTranscriptRetraction(managed, retractedUuids, "model_refusal_fallback", turnId);
+            continue;
+          }
 
         // system:informational — loop banners such as hook block feedback.
         if (msg.type === "system" && (msg as any).subtype === "informational") {
@@ -12989,6 +14059,7 @@ export function createAgentChatService(args: {
             ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
+          const parentAgentId = compactString(taskMsg.parent_agent_id) ?? existing?.parentAgentId ?? null;
           const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
           const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
           // Undocumented Workflow-run snapshot (phases + per-agent status).
@@ -13004,6 +14075,7 @@ export function createAgentChatService(args: {
             finalSummary: existing?.finalSummary,
             ...(agentType ? { agentType } : {}),
             ...(agentId ? { agentId } : {}),
+            ...(parentAgentId ? { parentAgentId } : {}),
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
           });
@@ -13011,6 +14083,7 @@ export function createAgentChatService(args: {
             type: "subagent_progress",
             taskId,
             ...(agentId ? { agentId } : {}),
+            ...(parentAgentId ? { parentAgentId } : {}),
             ...(agentType ? { agentType } : {}),
             parentToolUseId,
             description,
@@ -13042,6 +14115,89 @@ export function createAgentChatService(args: {
                 turnId,
               });
             }
+          }
+          continue;
+        }
+
+        if (msg.type === "system" && (msg as any).subtype === "task_updated") {
+          const taskMsg = msg as any;
+          const taskId = String(taskMsg.task_id ?? "");
+          if (!taskId) continue;
+          const existing = runtime.activeSubagents.get(taskId);
+          if (existing?.skipTranscript) continue;
+          const patch = asRecord(taskMsg.patch) ?? {};
+          const status = compactString(patch.status);
+          const description = compactString(patch.description) ?? existing?.description ?? "Task update";
+          const parentToolUseId = existing?.parentToolUseId ?? null;
+          const agentId = existing?.agentId;
+          const parentAgentId = existing?.parentAgentId ?? null;
+          const agentType = existing?.agentType;
+          const taskType = existing?.taskType;
+          const workflowName = existing?.workflowName;
+          const background = patch.is_backgrounded === true || existing?.background === true;
+          const summary = compactString(patch.error)
+            ?? (status ? `Status: ${status.replace(/_/g, " ")}` : "Task updated");
+          if (status === "completed" || status === "failed" || status === "killed") {
+            runtime.activeSubagents.delete(taskId);
+            if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
+            const finalStatus = status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed";
+            if (taskType === "cron") {
+              const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, taskMsg as Record<string, unknown>);
+              if (scheduledWorkId) {
+                emitClaudeScheduledWorkUpdate(managed, runtime, {
+                  type: "scheduled_work_update",
+                  id: scheduledWorkId,
+                  kind: "cron",
+                  status: finalStatus,
+                  origin: "cron",
+                  title: existing?.description ?? description,
+                  summary,
+                  ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+                  sourceTaskId: taskId,
+                  turnId,
+                });
+              }
+            }
+            emitChatEvent(managed, {
+              type: "subagent_result",
+              taskId,
+              ...(agentId ? { agentId } : {}),
+              ...(parentAgentId ? { parentAgentId } : {}),
+              ...(agentType ? { agentType } : {}),
+              parentToolUseId,
+              status: finalStatus,
+              summary,
+              finalSummary: summary,
+              ...(taskType ? { taskType } : {}),
+              ...(workflowName ? { workflowName } : {}),
+              turnId,
+            });
+          } else {
+            runtime.activeSubagents.set(taskId, {
+              taskId,
+              description,
+              parentToolUseId,
+              background,
+              finalSummary: existing?.finalSummary,
+              ...(agentType ? { agentType } : {}),
+              ...(agentId ? { agentId } : {}),
+              ...(parentAgentId ? { parentAgentId } : {}),
+              ...(taskType ? { taskType } : {}),
+              ...(workflowName ? { workflowName } : {}),
+            });
+            emitChatEvent(managed, {
+              type: "subagent_progress",
+              taskId,
+              ...(agentId ? { agentId } : {}),
+              ...(parentAgentId ? { parentAgentId } : {}),
+              ...(agentType ? { agentType } : {}),
+              parentToolUseId,
+              description,
+              summary,
+              ...(taskType ? { taskType } : {}),
+              ...(workflowName ? { workflowName } : {}),
+              turnId,
+            });
           }
           continue;
         }
@@ -13081,6 +14237,7 @@ export function createAgentChatService(args: {
           const agentId = typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length
             ? taskMsg.agent_id.trim()
             : undefined;
+          const parentAgentId = compactString(taskMsg.parent_agent_id);
           const taskType = normalizeClaudeTaskType(taskMsg.task_type);
           const workflowName = normalizeClaudeWorkflowName(taskMsg.workflow_name);
           // The SDK sets task_type explicitly. When absent, fall back to the
@@ -13091,6 +14248,22 @@ export function createAgentChatService(args: {
             || taskType === "local_workflow"
             || isBackgroundTask(taskMsg as Record<string, unknown>)
             || stashed?.isBackground === true;
+          if (taskType === "cron") {
+            const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, taskMsg as Record<string, unknown>);
+            if (scheduledWorkId) {
+              emitClaudeScheduledWorkUpdate(managed, runtime, {
+                type: "scheduled_work_update",
+                id: scheduledWorkId,
+                kind: "cron",
+                status: "running",
+                origin: "cron",
+                title: description || "Scheduled task running",
+                ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+                sourceTaskId: taskId,
+                ...(turnId ? { turnId } : {}),
+              });
+            }
+          }
           runtime.activeSubagents.set(taskId, {
             taskId,
             description,
@@ -13098,6 +14271,7 @@ export function createAgentChatService(args: {
             background,
             ...(agentType ? { agentType } : {}),
             ...(agentId ? { agentId } : {}),
+            ...(parentAgentId ? { parentAgentId } : {}),
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
           });
@@ -13117,6 +14291,7 @@ export function createAgentChatService(args: {
             type: "subagent_started",
             taskId,
             ...(agentId ? { agentId } : {}),
+            ...(parentAgentId ? { parentAgentId } : {}),
             ...(agentType ? { agentType } : {}),
             parentToolUseId,
             description,
@@ -13148,14 +14323,33 @@ export function createAgentChatService(args: {
             ?? (typeof taskMsg.subagent_type === "string" && taskMsg.subagent_type.trim().length ? taskMsg.subagent_type.trim() : undefined);
           const agentId = existing?.agentId
             ?? (typeof taskMsg.agent_id === "string" && taskMsg.agent_id.trim().length ? taskMsg.agent_id.trim() : undefined);
+          const parentAgentId = compactString(taskMsg.parent_agent_id) ?? existing?.parentAgentId ?? null;
           const taskType = existing?.taskType ?? normalizeClaudeTaskType(taskMsg.task_type);
           const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
+          if (taskType === "cron") {
+            const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, taskMsg as Record<string, unknown>);
+            if (scheduledWorkId) {
+              emitClaudeScheduledWorkUpdate(managed, runtime, {
+                type: "scheduled_work_update",
+                id: scheduledWorkId,
+                kind: "cron",
+                status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
+                origin: "cron",
+                title: existing?.description || "Scheduled task",
+                summary,
+                ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+                sourceTaskId: taskId,
+                ...(turnId ? { turnId } : {}),
+              });
+            }
+          }
           runtime.activeSubagents.delete(taskId);
           if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
           emitChatEvent(managed, {
             type: "subagent_result",
             taskId,
             ...(agentId ? { agentId } : {}),
+            ...(parentAgentId ? { parentAgentId } : {}),
             ...(agentType ? { agentType } : {}),
             parentToolUseId,
             status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
@@ -13205,6 +14399,15 @@ export function createAgentChatService(args: {
           }
           const betaMessage = assistantMsg.message;
           const assistantMessageId = typeof betaMessage?.id === "string" ? betaMessage.id : null;
+          const assistantWireUuid = compactString(assistantMsg.uuid);
+          const assistantProviderMessageId = assistantWireUuid ?? assistantMessageId ?? null;
+          emitClaudeTranscriptRetraction(
+            managed,
+            assistantMsg.supersedes,
+            "assistant_supersedes",
+            turnId,
+            assistantProviderMessageId,
+          );
           // If the snapshot has no id, advance the id-less boundary once the
           // prior snapshot is sealed — so two back-to-back id-less assistants
           // don't alias to the same key. While the stream preamble is actively
@@ -13243,6 +14446,7 @@ export function createAgentChatService(args: {
                   emitChatEvent(managed, {
                     type: "text",
                     text: textToEmit,
+                    ...(assistantProviderMessageId ? { messageId: assistantProviderMessageId } : {}),
                     turnId,
                   });
                 }
@@ -13298,14 +14502,15 @@ export function createAgentChatService(args: {
                     detail: nextActivity.detail,
                     turnId,
                   });
-                  emitChatEvent(managed, {
-                    type: "tool_call",
-                    tool: toolName,
-                    args: block.input ?? {},
-                    itemId,
-                    turnId,
-                  });
-                  maybeEmitTodoUpdate(toolName, block.input, itemId);
+                    emitChatEvent(managed, {
+                      type: "tool_call",
+                      tool: toolName,
+                      args: block.input ?? {},
+                      itemId,
+                      turnId,
+                    });
+                    maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, toolName, block.input, itemId, turnId);
+                    maybeEmitTodoUpdate(toolName, block.input, itemId);
                   // Synthesize a tool_result for the proof observer when the
                   // SDK stream does not surface tool results directly.
                   const syntheticResult = maybeSyntheticToolResult(toolName, block.input ?? {}, itemId, turnId);
@@ -13341,13 +14546,19 @@ export function createAgentChatService(args: {
             const delta = event.delta;
             if (delta?.type === "text_delta") {
               const text = delta.text ?? "";
-              if (text.length) {
-                const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
-                if (textKey) streamedClaudeTextContentKeys.add(textKey);
-                recentClaudeTextDeltaBuffer += text;
-                assistantText += text;
-                emitChatEvent(managed, { type: "text", text, turnId });
-              }
+                if (text.length) {
+                  const textKey = claudeDedupeKey(currentClaudeStreamMessageId, contentIndex);
+                  if (textKey) streamedClaudeTextContentKeys.add(textKey);
+                  recentClaudeTextDeltaBuffer += text;
+                  assistantText += text;
+                  const streamProviderMessageId = compactString(streamMsg.uuid) ?? currentClaudeStreamMessageId;
+                  emitChatEvent(managed, {
+                    type: "text",
+                    text,
+                    ...(streamProviderMessageId ? { messageId: streamProviderMessageId } : {}),
+                    turnId,
+                  });
+                }
             } else if (delta?.type === "thinking_delta") {
               const text = delta.thinking ?? delta.text ?? "";
               if (text.length) {
@@ -13483,8 +14694,8 @@ export function createAgentChatService(args: {
                 // of a bare tool name. Desktop's appendWorkLogRow and the TUI's
                 // tool registry both collapse this into the original entry via
                 // turn+itemId, so no duplicate row renders.
-                if (
-                  meta.argsWereEmpty
+                  if (
+                    meta.argsWereEmpty
                   && parsed != null
                   && typeof parsed === "object"
                   && Object.keys(parsed as object).length > 0
@@ -13496,8 +14707,9 @@ export function createAgentChatService(args: {
                     itemId: meta.itemId,
                     turnId,
                   });
-                }
-                maybeEmitTodoUpdate(meta.toolName, parsed, meta.itemId);
+                  }
+                  maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
+                  maybeEmitTodoUpdate(meta.toolName, parsed, meta.itemId);
                 const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
                 if (syntheticResult && !emittedSyntheticItemIds.has(meta.itemId)) {
                   emittedSyntheticItemIds.add(meta.itemId);
@@ -13729,6 +14941,8 @@ export function createAgentChatService(args: {
       // Process queued steers (skip if session was disposed during execution)
       if (runtime.pendingSteers.length) {
         await deliverNextQueuedSteer(managed, runtime);
+      } else {
+        startClaudeIdleReader(managed, runtime, "turn_completed");
       }
     } catch (error) {
       clearClaudeTurnTimers();
@@ -19103,20 +20317,21 @@ export function createAgentChatService(args: {
     SubagentStop: [
       {
         hooks: [
-          async (input: HookInput) => {
-            if (input.hook_event_name === "SubagentStop") {
-              const taskId = input.agent_id;
-              const existing = runtime.activeSubagents.get(taskId);
-              runtime.activeSubagents.set(taskId, {
+            async (input: HookInput) => {
+              if (input.hook_event_name === "SubagentStop") {
+                const taskId = input.agent_id;
+                const existing = runtime.activeSubagents.get(taskId);
+                runtime.activeSubagents.set(taskId, {
                 taskId,
                 description: existing?.description ?? input.agent_type,
                 parentToolUseId: existing?.parentToolUseId ?? null,
-                background: existing?.background,
-                finalSummary: input.last_assistant_message ?? "",
-              });
-            }
-            return { continue: true };
-          },
+                  background: existing?.background,
+                  finalSummary: input.last_assistant_message ?? "",
+                });
+                emitClaudeHookScheduledWorkSnapshots(managed, runtime, input);
+              }
+              return { continue: true };
+            },
         ],
       },
     ],
@@ -19186,13 +20401,16 @@ export function createAgentChatService(args: {
         ],
       },
     ],
-    Stop: [
-      {
-        hooks: [
-          async () => ({ continue: true }),
-        ],
-      },
-    ],
+      Stop: [
+        {
+          hooks: [
+            async (input: HookInput) => {
+              emitClaudeHookScheduledWorkSnapshots(managed, runtime, input);
+              return { continue: true };
+            },
+          ],
+        },
+      ],
     TeammateIdle: [
       {
         hooks: [
@@ -19364,8 +20582,8 @@ export function createAgentChatService(args: {
         append: [
           "## Runtime Environment",
           "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API. The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
-          "**Wake-up semantics:** Work confidently inside the active turn. ADE keeps the SDK query alive for streamed user and steer messages, but this chat does not currently expose Claude Code CLI's scheduled self-resume. Treat `ScheduleWakeup` as unavailable in this ADE chat: it will not start a later turn by itself. `Bash run_in_background: true` notifications may appear in the SDK stream when ADE is reading a turn, but do not rely on them to begin a new turn.",
-          "**To wait:** For bounded waits, keep the turn active with a foreground command such as `sleep ... && <one-shot command>` or one bounded `until ... ; do sleep N; done` loop. For longer external waits, save state and tell the user exactly what to re-ping when ready.",
+            "**Wake-up semantics:** ADE keeps the Claude Agent SDK query alive after a visible turn completes and continues reading the session stream while this chat is idle. You may use Claude Code's scheduled/background capabilities (`ScheduleWakeup`, `CronCreate`, `/loop`, background tasks) when they fit the task. ADE will surface scheduled work, wakeups, background-task notifications, and later resumed output in Chat Info.",
+            "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer the SDK's scheduled/background tools and include a concise reason/prompt so ADE can show the pending work clearly.",
           "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
@@ -19445,12 +20663,20 @@ export function createAgentChatService(args: {
     options: { clearSdkSessionId?: boolean } = {},
   ): void => {
     cancelClaudeWarmup(managed, runtime, reason);
+    runtime.idleReaderGeneration += 1;
+    runtime.idleReaderPromise = null;
     try { runtime.query?.close(); } catch { /* ignore */ }
     runtime.inputPump?.close();
     runtime.query = null;
     runtime.inputPump = null;
     runtime.pendingPostResultNext = null;
     runtime.pendingPostResultNextSettledAt = null;
+    runtime.scheduledWorkKindById.clear();
+    runtime.scheduledWorkSignatures.clear();
+    runtime.scheduledWorkIdByTaskId.clear();
+    runtime.scheduledWorkIdByToolUseId.clear();
+    runtime.activeProviderCronIds.clear();
+    runtime.activeProviderCronIdsByPrompt.clear();
     runtime.warmupDone = null;
     if (options.clearSdkSessionId && runtime.sdkSessionId) {
       logger.info("agent_chat.claude_sdk_session_cleared", {
@@ -19983,16 +21209,24 @@ export function createAgentChatService(args: {
       sdkSessionId,
       forkFromSdkSessionId,
       query: null,
-      inputPump: null,
-      pendingPostResultNext: null,
-      pendingPostResultNextSettledAt: null,
-      warmQuery: null,
+        inputPump: null,
+        pendingPostResultNext: null,
+        pendingPostResultNextSettledAt: null,
+        idleReaderPromise: null,
+        idleReaderGeneration: 0,
+        warmQuery: null,
       warmupDone: null,
       warmupCancel: null,
       warmupCancelled: false,
       activeSubagents: new Map(),
       taskToolInputByToolUseId: new Map(),
       workflowAgentsByTask: new Map(),
+      scheduledWorkSignatures: new Map(),
+      scheduledWorkKindById: new Map(),
+      scheduledWorkIdByTaskId: new Map(),
+      scheduledWorkIdByToolUseId: new Map(),
+      activeProviderCronIds: new Set(),
+      activeProviderCronIdsByPrompt: new Map(),
       slashCommands: [],
       busy: false,
       activeTurnId: null,

@@ -487,7 +487,8 @@ private enum WorkPreviewData {
         summary: WorkPreviewData.chatSummary
       ),
       lanesRenderSignature: workLaneListRenderSignature([]),
-      subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([])
+      subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([]),
+      scheduledWorkSnapshotsRenderSignature: workScheduledWorkSnapshotsRenderSignature([])
     )
   }
   .environmentObject(WorkPreviewData.syncService)

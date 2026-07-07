@@ -114,7 +114,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           taskId: stringValue(eventDict["taskId"]),
           agentId: optionalString(eventDict["agentId"]),
           agentType: optionalString(eventDict["agentType"]),
-          parentToolUseId: optionalString(eventDict["parentToolUseId"]),
+          parentToolUseId: optionalString(eventDict["parentToolUseId"]) ?? optionalString(eventDict["parentAgentId"]),
           description: stringValue(eventDict["description"]),
           background: (eventDict["background"] as? Bool) ?? false,
           label: optionalString(eventDict["label"]),
@@ -127,7 +127,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           taskId: stringValue(eventDict["taskId"]),
           agentId: optionalString(eventDict["agentId"]),
           agentType: optionalString(eventDict["agentType"]),
-          parentToolUseId: optionalString(eventDict["parentToolUseId"]),
+          parentToolUseId: optionalString(eventDict["parentToolUseId"]) ?? optionalString(eventDict["parentAgentId"]),
           description: optionalString(eventDict["description"]),
           summary: stringValue(eventDict["summary"]),
           toolName: optionalString(eventDict["lastToolName"]),
@@ -141,12 +141,40 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           taskId: stringValue(eventDict["taskId"]),
           agentId: optionalString(eventDict["agentId"]),
           agentType: optionalString(eventDict["agentType"]),
-          parentToolUseId: optionalString(eventDict["parentToolUseId"]),
+          parentToolUseId: optionalString(eventDict["parentToolUseId"]) ?? optionalString(eventDict["parentAgentId"]),
           status: stringValue(eventDict["status"]),
           summary: stringValue(eventDict["summary"]),
           label: optionalString(eventDict["label"]),
           model: optionalString(eventDict["model"]),
           reasoningEffort: optionalString(eventDict["reasoningEffort"]),
+          turnId: turnId
+        )
+      case "scheduled_work_update":
+        event = .scheduledWorkUpdate(
+          id: stringValue(eventDict["id"]),
+          kind: stringValue(eventDict["kind"]),
+          status: stringValue(eventDict["status"]),
+          origin: optionalString(eventDict["origin"]),
+          title: optionalString(eventDict["title"]),
+          summary: optionalString(eventDict["summary"]),
+          prompt: optionalString(eventDict["prompt"]),
+          reason: optionalString(eventDict["reason"]),
+          cron: optionalString(eventDict["cron"]),
+          nextRunAt: optionalString(eventDict["nextRunAt"]),
+          lastRunAt: optionalString(eventDict["lastRunAt"]),
+          recurring: workBoolValue(eventDict["recurring"]),
+          durable: workBoolValue(eventDict["durable"]),
+          sourceToolUseId: optionalString(eventDict["sourceToolUseId"]),
+          sourceTaskId: optionalString(eventDict["sourceTaskId"]),
+          turnId: turnId,
+          error: optionalString(eventDict["error"])
+        )
+      case "transcript_retraction":
+        let messageIds = (eventDict["messageIds"] as? [Any] ?? []).compactMap(optionalString)
+        event = .transcriptRetraction(
+          messageIds: messageIds,
+          reason: optionalString(eventDict["reason"]),
+          replacementMessageId: optionalString(eventDict["replacementMessageId"]),
           turnId: turnId
         )
       case "status":

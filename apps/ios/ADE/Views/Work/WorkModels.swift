@@ -595,6 +595,28 @@ struct WorkSubagentSelection: Identifiable, Equatable {
   var id: String { taskId }
 }
 
+struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
+  let id: String
+  let kind: String
+  let status: String
+  let origin: String?
+  let title: String
+  let summary: String?
+  let prompt: String?
+  let reason: String?
+  let cron: String?
+  let nextRunAt: String?
+  let lastRunAt: String?
+  let recurring: Bool?
+  let durable: Bool?
+  let sourceToolUseId: String?
+  let sourceTaskId: String?
+  let turnId: String?
+  let error: String?
+  let createdAt: String
+  let updatedAt: String
+}
+
 struct WorkChatTimelineSnapshot: Equatable {
   var signature: Int
   var pendingInputs: [WorkPendingInputItem]
@@ -604,6 +626,7 @@ struct WorkChatTimelineSnapshot: Equatable {
   var commandCards: [WorkCommandCardModel]
   var fileChangeCards: [WorkFileChangeCardModel]
   var subagentSnapshots: [WorkSubagentSnapshot]
+  var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
   var transcriptIndicatesActiveTurn: Bool
   var transcriptLatestTurnEnded: Bool
   var transcriptHasInterruptibleActivity: Bool
@@ -620,6 +643,7 @@ struct WorkChatTimelineSnapshot: Equatable {
     commandCards: [],
     fileChangeCards: [],
     subagentSnapshots: [],
+    scheduledWorkSnapshots: [],
     transcriptIndicatesActiveTurn: false,
     transcriptLatestTurnEnded: false,
     transcriptHasInterruptibleActivity: false,
@@ -796,6 +820,8 @@ enum WorkChatEvent: Equatable {
   case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, toolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: String, summary: String, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
+  case transcriptRetraction(messageIds: [String], reason: String?, replacementMessageId: String?, turnId: String?)
   case structuredQuestion(question: String, options: [WorkPendingQuestionOption], itemId: String, turnId: String?)
   case approvalRequest(description: String, detail: String?, itemId: String, turnId: String?)
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
@@ -830,6 +856,8 @@ enum WorkChatEvent: Equatable {
     case .subagentStarted: return "subagent_started"
     case .subagentProgress: return "subagent_progress"
     case .subagentResult: return "subagent_result"
+    case .scheduledWorkUpdate: return "scheduled_work_update"
+    case .transcriptRetraction: return "transcript_retraction"
     case .structuredQuestion: return "structured_question"
     case .approvalRequest: return "approval_request"
     case .pendingInputResolved: return "pending_input_resolved"

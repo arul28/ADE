@@ -547,6 +547,17 @@ export function renderChatLines(args: {
       });
       continue;
     }
+    if (event.type === "transcript_retraction") {
+      const retractedIds = new Set(event.messageIds.map((messageId) => messageId.trim()).filter(Boolean));
+      if (!retractedIds.size) continue;
+      for (let lineIndex = lines.length - 1; lineIndex >= 0; lineIndex -= 1) {
+        const line = lines[lineIndex];
+        if (line?.tone === "assistant" && line.messageId && retractedIds.has(line.messageId)) {
+          lines.splice(lineIndex, 1);
+        }
+      }
+      continue;
+    }
     if (event.type === "text") {
       // Codex subagent child content is namespaced `codex-subagent:` and belongs
       // in the subagent transcript, not the parent chat — mirror desktop, which

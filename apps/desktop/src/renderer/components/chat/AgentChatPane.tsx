@@ -123,7 +123,7 @@ import { QuickRunInlineList } from "../run/QuickRunMenu";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveScheduledWorkSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
@@ -3573,6 +3573,7 @@ export function AgentChatPane({
     return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  const selectedScheduledWorkSnapshots = useMemo(() => deriveScheduledWorkSnapshots(selectedEvents), [selectedEvents]);
   // Per-runtime subagent capability — the single source of truth for whether
   // clicking a subagent takes over the chat (full transcript) or only opens the
   // inline drawer. Computed from the provider with the same shared resolver the
@@ -3631,6 +3632,7 @@ export function AgentChatPane({
   // subagents are spawned).
   const selectedSubagentPaneAvailable =
     selectedSubagentSnapshots.length > 0
+    || selectedScheduledWorkSnapshots.length > 0
     || (selectedSession?.provider === "codex" && Boolean(selectedCodexGoal?.objective));
   // Latest snapshot for the currently drilled-in subagent — keeps the
   // breadcrumb status in sync as the agent transitions running → completed.
@@ -3895,7 +3897,7 @@ export function AgentChatPane({
       if (chatActionsOpen) setChatActionsOpen(false);
       return;
     }
-    const trackedActionCount = selectedSubagentSnapshots.length + selectedTodoItems.length;
+    const trackedActionCount = selectedSubagentSnapshots.length + selectedTodoItems.length + selectedScheduledWorkSnapshots.length;
     if (trackedActionCount === 0) {
       return;
     }
@@ -3939,7 +3941,7 @@ export function AgentChatPane({
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots.length, selectedTodoItems.length]);
+  }, [chatActionsOpen, chatActionsTab, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTodoItems.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
     if (!projectRoot || !laneId) return;
@@ -9126,11 +9128,12 @@ export function AgentChatPane({
   const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const proofSessionId = selectedSessionId ?? "";
-  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 ? (
+  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
     <ChatSubagentsPanel
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
       todoItems={selectedTodoItems}
+      scheduledItems={selectedScheduledWorkSnapshots}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({
@@ -9622,6 +9625,9 @@ export function AgentChatPane({
                   selectedSubagentSnapshots.length > 0
                     ? `${selectedSubagentSnapshots.length} subagent${selectedSubagentSnapshots.length === 1 ? "" : "s"}`
                     : null,
+                  selectedScheduledWorkSnapshots.length > 0
+                    ? `${selectedScheduledWorkSnapshots.length} scheduled`
+                    : null,
                   selectedTodoItems.length > 0
                     ? `${selectedTodoItems.length} task${selectedTodoItems.length === 1 ? "" : "s"}`
                     : null,
@@ -9661,6 +9667,10 @@ export function AgentChatPane({
                 ) : selectedSubagentSnapshots.length > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
                     {selectedSubagentSnapshots.length}
+                  </span>
+                ) : selectedScheduledWorkSnapshots.length > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
+                    {selectedScheduledWorkSnapshots.length}
                   </span>
                 ) : selectedTodoItems.length > 0 ? (
                   <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-violet-400/85 px-0.5 font-mono text-[8px] font-bold text-black">

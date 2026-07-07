@@ -75,12 +75,12 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .plan(steps: let steps, turnId: let turnId, explanation: let explanation):
     let mapped = steps.map { WorkPlanStep(text: $0.text, status: $0.status) }
     return .plan(steps: mapped, explanation: explanation, turnId: turnId)
-  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentAgentId, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     return .subagentStarted(
       taskId: taskId,
       agentId: agentId,
       agentType: agentType,
-      parentToolUseId: parentToolUseId,
+      parentToolUseId: parentToolUseId ?? parentAgentId,
       description: description,
       background: background ?? false,
       label: label,
@@ -88,12 +88,12 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       reasoningEffort: reasoningEffort,
       turnId: turnId
     )
-  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, _, let lastToolName, let label, let model, let reasoningEffort, let turnId):
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentAgentId, let parentToolUseId, let description, let summary, _, let lastToolName, let label, let model, let reasoningEffort, let turnId):
     return .subagentProgress(
       taskId: taskId,
       agentId: agentId,
       agentType: agentType,
-      parentToolUseId: parentToolUseId,
+      parentToolUseId: parentToolUseId ?? parentAgentId,
       description: description,
       summary: summary,
       toolName: lastToolName,
@@ -102,17 +102,44 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       reasoningEffort: reasoningEffort,
       turnId: turnId
     )
-  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, _, let label, let model, let reasoningEffort, let turnId):
+  case .subagentResult(let taskId, let agentId, let agentType, let parentAgentId, let parentToolUseId, let status, let summary, _, let label, let model, let reasoningEffort, let turnId):
     return .subagentResult(
       taskId: taskId,
       agentId: agentId,
       agentType: agentType,
-      parentToolUseId: parentToolUseId,
+      parentToolUseId: parentToolUseId ?? parentAgentId,
       status: status.rawValue,
       summary: summary,
       label: label,
       model: model,
       reasoningEffort: reasoningEffort,
+      turnId: turnId
+    )
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+    return .scheduledWorkUpdate(
+      id: id,
+      kind: kind,
+      status: status,
+      origin: origin,
+      title: title,
+      summary: summary,
+      prompt: prompt,
+      reason: reason,
+      cron: cron,
+      nextRunAt: nextRunAt,
+      lastRunAt: lastRunAt,
+      recurring: recurring,
+      durable: durable,
+      sourceToolUseId: sourceToolUseId,
+      sourceTaskId: sourceTaskId,
+      turnId: turnId,
+      error: error
+    )
+  case .transcriptRetraction(let messageIds, let reason, let replacementMessageId, let turnId):
+    return .transcriptRetraction(
+      messageIds: messageIds,
+      reason: reason,
+      replacementMessageId: replacementMessageId,
       turnId: turnId
     )
   case .structuredQuestion(let question, let options, let itemId, let turnId):

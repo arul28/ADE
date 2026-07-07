@@ -197,7 +197,10 @@ struct WorkChatSessionView: View {
   var onLoadOlderTranscript: (@MainActor () async -> Void)? = nil
   var subagentSnapshots: [WorkSubagentSnapshot] = []
   var subagentSnapshotsRenderSignature: Int = 0
+  var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
+  var scheduledWorkSnapshotsRenderSignature: Int = 0
   var selectedSubagentTaskId: String? = nil
+  var onOpenChatInfo: (() -> Void)? = nil
   var onOpenSubagents: (() -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
@@ -618,10 +621,15 @@ struct WorkChatSessionView: View {
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
       let runningSubagentCount = workSubagentRunningCount(subagentSnapshots)
+      let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
+      let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
       let showsSubagentBadge = inputLockMessage == nil && runningSubagentCount > 0 && onOpenSubagents != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
-      if showsSubagentBadge || showsPrBadge {
+      if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
         HStack(spacing: 8) {
+          if showsChatInfoBadge, let onOpenChatInfo {
+            WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
+          }
           if showsSubagentBadge, let onOpenSubagents {
             WorkSubagentActivePopup(count: runningSubagentCount, onOpen: onOpenSubagents)
           }
@@ -1157,6 +1165,33 @@ func workSubagentSnapshotsRenderSignature(_ snapshots: [WorkSubagentSnapshot]) -
     hasher.combine(snapshot.latestSummary)
     hasher.combine(snapshot.turnId)
     hasher.combine(snapshot.startedAt)
+    hasher.combine(snapshot.updatedAt)
+  }
+  return hasher.finalize()
+}
+
+func workScheduledWorkSnapshotsRenderSignature(_ snapshots: [WorkScheduledWorkSnapshot]) -> Int {
+  var hasher = Hasher()
+  hasher.combine(snapshots.count)
+  for snapshot in snapshots {
+    hasher.combine(snapshot.id)
+    hasher.combine(snapshot.kind)
+    hasher.combine(snapshot.status)
+    hasher.combine(snapshot.origin)
+    hasher.combine(snapshot.title)
+    hasher.combine(snapshot.summary)
+    hasher.combine(snapshot.prompt)
+    hasher.combine(snapshot.reason)
+    hasher.combine(snapshot.cron)
+    hasher.combine(snapshot.nextRunAt)
+    hasher.combine(snapshot.lastRunAt)
+    hasher.combine(snapshot.recurring)
+    hasher.combine(snapshot.durable)
+    hasher.combine(snapshot.sourceToolUseId)
+    hasher.combine(snapshot.sourceTaskId)
+    hasher.combine(snapshot.turnId)
+    hasher.combine(snapshot.error)
+    hasher.combine(snapshot.createdAt)
     hasher.combine(snapshot.updatedAt)
   }
   return hasher.finalize()

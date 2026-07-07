@@ -54,32 +54,22 @@ struct WorkChatPrActivePopup: View {
   }
 
   var body: some View {
-    Button(action: onOpen) {
-      HStack(spacing: 7) {
-        Image(systemName: "arrow.triangle.pull")
-          .font(.system(size: 12, weight: .semibold))
-        Text(badge.label)
-          .font(.caption.weight(.semibold))
-          .lineLimit(1)
-        if let ciSymbol {
-          Image(systemName: ciSymbol)
-            .font(.system(size: 10, weight: .bold))
-        }
-        Image(systemName: "chevron.up")
+    WorkComposerBadgeCapsule(
+      tint: tint,
+      strokeOpacity: 0.24,
+      accessibilityLabel: accessibilityText,
+      onOpen: onOpen
+    ) {
+      Image(systemName: "arrow.triangle.pull")
+        .font(.system(size: 12, weight: .semibold))
+      Text(badge.label)
+        .font(.caption.weight(.semibold))
+        .lineLimit(1)
+      if let ciSymbol {
+        Image(systemName: ciSymbol)
           .font(.system(size: 10, weight: .bold))
       }
-      .foregroundStyle(tint)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(tint.opacity(0.24), lineWidth: 1)
-      )
-      .contentShape(Capsule(style: .continuous))
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(accessibilityText)
   }
 }
 

@@ -82,6 +82,7 @@ struct WorkSessionHeader: View {
 /// Menu-relevant values for the chat header overflow menu, split out so the
 /// menu view can be `Equatable`-gated on exactly this data.
 struct WorkChatHeaderMenuModel: Equatable {
+  var chatInfoCount: Int
   var subagentCount: Int
   var artifactCount: Int
   var showsLaneActions: Bool
@@ -114,6 +115,7 @@ struct WorkChatHeaderMenuModel: Equatable {
 /// something the menu actually displays has changed.
 struct WorkChatHeaderMenu: View, Equatable {
   var model: WorkChatHeaderMenuModel
+  var onShowChatInfo: () -> Void
   var onShowSubagents: () -> Void
   var onShowProof: () -> Void
   var onViewPrDetails: () -> Void
@@ -134,6 +136,14 @@ struct WorkChatHeaderMenu: View, Equatable {
 
   var body: some View {
     Menu {
+      Button(action: onShowChatInfo) {
+        if model.chatInfoCount == 0 {
+          Label("Chat Info", systemImage: "info.circle")
+        } else {
+          Label("Chat Info (\(model.chatInfoCount))", systemImage: "info.circle")
+        }
+      }
+
       Button(action: onShowSubagents) {
         if model.subagentCount == 0 {
           Label("Subagents", systemImage: "person.2")
