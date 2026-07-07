@@ -44,6 +44,11 @@ type ChatCommandMenuProps = {
   onClose: () => void;
 };
 
+type FileSearch = ChatCommandMenuProps["onFileSearch"];
+type FileResult = { path: string };
+type CachedFileResults = { search: FileSearch; results: FileResult[] };
+type FileResultState = { search: FileSearch; results: FileResult[] };
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -112,15 +117,15 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
   function ChatCommandMenu({ trigger, slashCommands, onFileSearch, anchor, onSelect, onClose }, ref) {
     const [selectedIndex, setSelectedIndex] = useState(0);
-    const [fileResults, setFileResults] = useState<Array<{ path: string }>>([]);
+    const [fileResultState, setFileResultState] = useState<FileResultState>({ search: undefined, results: [] });
     const [fileLoading, setFileLoading] = useState(false);
     const listRef = useRef<HTMLDivElement | null>(null);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    // Per-query result cache for the lifetime of one menu session. Cached
-    // queries render in the same frame; a background revalidation still runs
-    // so watcher-driven index changes land on the next keystroke. Cleared
+    // Per-query, per-provider cache for the lifetime of one menu session.
+    // Cached queries render in the same frame; a background revalidation still
+    // runs so watcher-driven index changes land on the next keystroke. Cleared
     // when the menu closes so staleness cannot outlive the interaction.
-    const queryCacheRef = useRef<Map<string, Array<{ path: string }>>>(new Map());
+    const queryCacheRef = useRef<Map<string, CachedFileResults>>(new Map());
     const searchSeqRef = useRef(0);
 
     const triggerType = trigger?.type ?? null;
@@ -141,27 +146,34 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
         .slice(0, MAX_COMMAND_RESULTS);
     }, [trigger, slashCommands]);
 
-    // ---- File search: short debounce, per-query cache, stale-result guard ----
+    // ---- File search: short debounce, provider-scoped cache, stale-result guard ----
     useEffect(() => {
       if (triggerType !== "at") {
-        setFileResults([]);
+        searchSeqRef.current += 1;
+        setFileResultState({ search: onFileSearch, results: [] });
         setFileLoading(false);
         return;
       }
 
       const query = triggerQuery.trim();
       if (!onFileSearch) {
-        setFileResults([]);
+        searchSeqRef.current += 1;
+        setFileResultState({ search: onFileSearch, results: [] });
         setFileLoading(false);
         return;
       }
 
-      const cached = queryCacheRef.current.get(query);
+      const cachedEntry = queryCacheRef.current.get(query);
+      const cached = cachedEntry?.search === onFileSearch ? cachedEntry.results : undefined;
+      if (cachedEntry && cachedEntry.search !== onFileSearch) {
+        queryCacheRef.current.delete(query);
+      }
       if (cached) {
         // Warm path: render cached results immediately, revalidate silently.
-        setFileResults(cached.slice(0, MAX_FILE_RESULTS));
+        setFileResultState({ search: onFileSearch, results: cached.slice(0, MAX_FILE_RESULTS) });
         setFileLoading(false);
       } else {
+        setFileResultState({ search: onFileSearch, results: [] });
         setFileLoading(true);
       }
 
@@ -172,14 +184,16 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
           const results = await onFileSearch(query);
           if (searchSeqRef.current !== seq) return;
           queryCacheRef.current.delete(query);
-          queryCacheRef.current.set(query, results);
+          queryCacheRef.current.set(query, { search: onFileSearch, results });
           if (queryCacheRef.current.size > QUERY_CACHE_MAX) {
             const oldest = queryCacheRef.current.keys().next().value;
             if (oldest !== undefined) queryCacheRef.current.delete(oldest);
           }
-          setFileResults(results.slice(0, MAX_FILE_RESULTS));
+          setFileResultState({ search: onFileSearch, results: results.slice(0, MAX_FILE_RESULTS) });
         } catch {
-          if (searchSeqRef.current === seq && !cached) setFileResults([]);
+          if (searchSeqRef.current === seq && !cached) {
+            setFileResultState({ search: onFileSearch, results: [] });
+          }
         } finally {
           if (searchSeqRef.current === seq) setFileLoading(false);
         }
@@ -194,10 +208,11 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
     const items: ChatCommandMenuItem[] = useMemo(() => {
       if (!trigger) return [];
       if (trigger.type === "at") {
+        const fileResults = fileResultState.search === onFileSearch ? fileResultState.results : [];
         return fileResults.map((r) => ({ type: "file" as const, path: r.path }));
       }
       return filteredCommands.map((c) => ({ type: "command" as const, name: c.name }));
-    }, [trigger, fileResults, filteredCommands]);
+    }, [trigger, fileResultState, onFileSearch, filteredCommands]);
 
     // ---- Reset selection when items change ----
     useEffect(() => {
