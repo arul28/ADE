@@ -3529,6 +3529,18 @@ final class SyncService: ObservableObject {
     if savedProfileForPairingQr(hostIdentity: handoff.hostIdentity) != nil {
       return false
     }
+    // The host binds the pairing secret to the CLIP's deviceId, and paired
+    // hellos are rejected when auth.deviceId != peer.deviceId. Adopt the
+    // clip's id as this install's device id — but only on a fresh install
+    // (no other saved machines); rewriting the id under existing pairings
+    // would break their credentials, so in that rare case drop the handoff
+    // and let the user pair in-app.
+    if handoff.deviceId != deviceId {
+      guard loadSavedProfilesRaw().isEmpty else { return false }
+      deviceId = handoff.deviceId
+      UserDefaults.standard.set(handoff.deviceId, forKey: legacyDeviceIdKey)
+      keychain.saveDeviceId(handoff.deviceId)
+    }
     let directHosts = deduplicatedAddresses(
       ([handoff.host] + handoff.addressCandidates).compactMap { syncEndpointHost($0) }
     )
