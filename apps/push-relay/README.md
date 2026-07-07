@@ -58,7 +58,7 @@ change and redeploy to apply:
 
 | Var | Default | What it bounds |
 |---|---|---|
-| `DAILY_REQUEST_BUDGET` | `1000000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. Sized so a full month pinned at the cap stays under ~$10 of Cloudflare overage, while sitting ~1000× above realistic single/small-team use. |
+| `DAILY_REQUEST_BUDGET` | `500000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. Sized to keep a full month pinned at the cap ≈ $1.50 of Cloudflare overage — this accounts for the guards' own D1 counter writes (~2/request), which stay inside the 50M/month D1 free tier at this volume, plus request overage. Still ~100–500× realistic single/small-team use. |
 | `IP_RATE_LIMIT_PER_MIN` | `120` | Requests per client IP per 60 s across all routes. |
 | `CLAIM_RATE_LIMIT_PER_MIN` | `10` | Tighter per-IP limit on the unauthenticated `/claim` write path (bounds `machines`-table growth). |
 

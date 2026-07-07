@@ -70,16 +70,20 @@ class FakeD1Database {
     }
     if (sql.startsWith("insert into rate_counters") && sql.includes("returning count")) {
       if (sql.includes("case when")) {
-        // Rate-limit path: atomic increment with inline window rollover.
-        const [bucket, nowSeconds, updatedAt, windowSeconds] = values as [string, number, string, number];
+        // Rate-limit path: atomic increment with inline window rollover; the
+        // WHERE guard makes an over-limit window a no-op (no write, no row).
+        const [bucket, nowSeconds, updatedAt, windowSeconds, limit] = values as [string, number, string, number, number];
         const existing = this.rateCounters.get(bucket);
         if (!existing || nowSeconds - existing.window_start >= windowSeconds) {
           this.rateCounters.set(bucket, { window_start: nowSeconds, count: 1, updated_at: updatedAt });
           return { count: 1 } as T;
         }
-        existing.count += 1;
-        existing.updated_at = updatedAt;
-        return { count: existing.count } as T;
+        if (existing.count < limit) {
+          existing.count += 1;
+          existing.updated_at = updatedAt;
+          return { count: existing.count } as T;
+        }
+        return null; // WHERE guard suppressed the update → rejected, no write
       }
       // Budget path: atomic increment-and-read (no window rollover).
       const [bucket, windowStart, updatedAt] = values as [string, number, string];

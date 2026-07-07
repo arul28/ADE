@@ -113,12 +113,15 @@ const DEFAULT_REGISTRATION_RETENTION_DAYS = 120;
 const DEFAULT_MAX_DEVICES_PER_MACHINE = 16;
 
 // Spend backstop. Cloudflare has no native hard billing cap, so we enforce one
-// in code. 1,000,000 requests/day = ~30M/month; on Workers Paid that is ~20M
-// over the 10M included, ≈ $6 of request overage at $0.30/M (D1 stays inside
-// the free tier at this volume) — comfortably under a ~$10 ceiling, while
-// leaving ~1000× headroom over realistic single/small-team use. Tunable via
-// the `DAILY_REQUEST_BUDGET` var without a code change.
-const DEFAULT_DAILY_REQUEST_BUDGET = 1_000_000;
+// in code. The default accounts for the guards' OWN D1 writes, not just Worker
+// requests: every under-cap request does ~2 counter writes (daily budget + the
+// per-IP gate). 500,000 requests/day = ~15M/month → requests are ~5M over the
+// 10M included ($0.30/M ≈ $1.50), and ~30M counter writes stay under the 50M
+// D1 free tier ($0) — so a full month pinned at the cap is ≈ $1.50, safely
+// under a ~$10 ceiling with margin, while still ~100–500× realistic
+// single/small-team use. (At 1M/day the counter writes alone would cross the
+// D1 free tier and push the month toward ~$16.) Tunable via `DAILY_REQUEST_BUDGET`.
+const DEFAULT_DAILY_REQUEST_BUDGET = 500_000;
 // General per-IP gate: a busy brain makes maybe 10–30 relay calls/min, so 120
 // tolerates several machines behind one NAT yet crushes a flood.
 const DEFAULT_IP_RATE_LIMIT_PER_MIN = 120;
@@ -503,11 +506,15 @@ function budgetExceededResponse(): Response {
 }
 
 /**
- * Fixed-window per-key limiter backed by the `rate_counters` D1 table.
- * Increment-and-read happens in a single atomic `INSERT ... ON CONFLICT ...
- * RETURNING` statement (window rollover handled inline via CASE), so a parallel
- * burst at a window boundary cannot all read below the limit and all be
- * admitted — the count each request sees already includes its own increment.
+ * Fixed-window per-key limiter backed by the `rate_counters` D1 table. A single
+ * atomic `INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING` both admits
+ * and counts:
+ *  - a `WHERE` guard on the DO UPDATE means an already-over-limit window is a
+ *    no-op — no write, and `RETURNING` yields no row, so a sustained flood costs
+ *    a read (not a write) per rejected hit and the limiter never amplifies the
+ *    spend it exists to bound;
+ *  - because it is one statement, a parallel burst at a window boundary cannot
+ *    all observe a below-limit count and all be admitted.
  */
 async function checkRateLimit(
   env: PushRelayEnv,
@@ -525,12 +532,15 @@ async function checkRateLimit(
          window_start = case when ?2 - window_start >= ?4 then ?2 else window_start end,
          count        = case when ?2 - window_start >= ?4 then 1  else count + 1 end,
          updated_at   = ?3
+         where (?2 - window_start >= ?4) or (count < ?5)
        returning count`,
     )
-    .bind(bucket, nowSeconds, nowIso, windowSeconds)
+    .bind(bucket, nowSeconds, nowIso, windowSeconds, limit)
     .first<{ count: number }>();
-  const count = row?.count ?? 1;
-  return { allowed: count <= limit, count };
+  // No returned row ⇒ the WHERE guard suppressed the update (window still open
+  // and already at the limit) ⇒ rejected, with no D1 write.
+  if (!row) return { allowed: false, count: limit };
+  return { allowed: true, count: row.count };
 }
 
 // Per-isolate memory: once this isolate has seen the daily budget blown, reject

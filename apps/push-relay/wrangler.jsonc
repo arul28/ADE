@@ -16,7 +16,7 @@
   // DAILY_REQUEST_BUDGET is the hard daily request ceiling (the ~$10-ceiling
   // backstop — see DEFAULT_DAILY_REQUEST_BUDGET in relay.ts for the math).
   "vars": {
-    "DAILY_REQUEST_BUDGET": "1000000",
+    "DAILY_REQUEST_BUDGET": "500000",
     "IP_RATE_LIMIT_PER_MIN": "120",
     "CLAIM_RATE_LIMIT_PER_MIN": "10"
   },
