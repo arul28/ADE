@@ -28915,7 +28915,9 @@ export function createAgentChatService(args: {
       const relativeToCwd = path.relative(cwd, absolutePath);
       if (relativeToCwd.startsWith("..") || path.isAbsolute(relativeToCwd)) continue;
       try {
-        fs.rmSync(absolutePath, { force: true, recursive: true });
+        const currentStat = fs.lstatSync(absolutePath);
+        if (currentStat.isDirectory()) continue;
+        fs.rmSync(absolutePath, { force: true });
         restored.push(file.path);
       } catch {
         // Keep going; the caller reports the successfully restored subset.
