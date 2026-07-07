@@ -4306,7 +4306,7 @@ export function AgentChatComposer({
               argumentHint: c.argumentHint,
               source: c.source,
             }))}
-            sessionId={sessionId ?? null}
+            onFileSearch={onSearchAttachments}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
             onClose={() => setCommandMenuTrigger(null)}
@@ -4398,7 +4398,7 @@ export function AgentChatComposer({
                 <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
                   <div
                     className={cn(
-                      "whitespace-pre-wrap break-words px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88",
+                      "whitespace-pre-wrap break-words px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88",
                       dragActive ? "opacity-30" : "",
                       parallelLaunchBusy || composerInputLocked ? "opacity-50" : "",
                     )}
@@ -4446,11 +4446,12 @@ export function AgentChatComposer({
                 spellCheck={true}
                 aria-label={composerInputAccessibleLabel}
                 className={cn(
-                  "block w-full resize-none bg-transparent px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
-                  plainOverlayContent ? "relative z-[1] text-transparent caret-fg" : "",
+                  "block w-full resize-none bg-transparent px-4 py-2.5 text-left text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors placeholder:text-muted-fg/30",
+                  plainOverlayContent ? "relative z-[1] text-transparent" : "",
                   dragActive ? "opacity-30" : "",
                   parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                 )}
+                style={plainOverlayContent ? { caretColor: "var(--color-fg)" } : undefined}
                 data-chat-layout-variant={layoutVariant}
                 placeholder={composerInputLockMessage ?? (turnActive ? "Steer the active turn..." : (promptSuggestion || messagePlaceholder || "Type to vibecode..."))}
                 onKeyDown={handleKeyDown}

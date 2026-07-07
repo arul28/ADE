@@ -34,8 +34,8 @@ type ChatCommandMenuProps = {
   trigger: ComposerTrigger | null;
   /** Available slash commands. */
   slashCommands: Array<{ name: string; description: string; argumentHint?: string; source?: "sdk" | "local" }>;
-  /** Session ID for file search. */
-  sessionId: string | null;
+  /** File search callback. When omitted, @ file suggestions are unavailable. */
+  onFileSearch?: (query: string) => Promise<Array<{ path: string }>>;
   /** Anchor position in viewport coordinates. */
   anchor: { top: number; left: number; bottom?: number } | null;
   /** Called when user selects an item. */
@@ -110,7 +110,7 @@ function getViewportMenuStyle(anchor: NonNullable<ChatCommandMenuProps["anchor"]
 }
 
 export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenuProps>(
-  function ChatCommandMenu({ trigger, slashCommands, sessionId, anchor, onSelect, onClose }, ref) {
+  function ChatCommandMenu({ trigger, slashCommands, onFileSearch, anchor, onSelect, onClose }, ref) {
     const [selectedIndex, setSelectedIndex] = useState(0);
     const [fileResults, setFileResults] = useState<Array<{ path: string }>>([]);
     const [fileLoading, setFileLoading] = useState(false);
@@ -150,7 +150,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       }
 
       const query = triggerQuery.trim();
-      if (!sessionId) {
+      if (!onFileSearch) {
         setFileResults([]);
         setFileLoading(false);
         return;
@@ -169,10 +169,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       if (debounceRef.current) clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(async () => {
         try {
-          const results = await window.ade.agentChat.fileSearch({
-            sessionId,
-            query,
-          });
+          const results = await onFileSearch(query);
           if (searchSeqRef.current !== seq) return;
           queryCacheRef.current.delete(query);
           queryCacheRef.current.set(query, results);
@@ -191,7 +188,7 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       return () => {
         if (debounceRef.current) clearTimeout(debounceRef.current);
       };
-    }, [triggerType, triggerQuery, sessionId]);
+    }, [triggerType, triggerQuery, onFileSearch]);
 
     // ---- Derive display items ----
     const items: ChatCommandMenuItem[] = useMemo(() => {
@@ -263,9 +260,10 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
 
     const query = trigger?.query.trim() ?? "";
     const isAtTrigger = trigger?.type === "at";
-    const isUnavailable = isAtTrigger && !sessionId;
+    const canSearchFiles = Boolean(onFileSearch);
+    const isUnavailable = isAtTrigger && !canSearchFiles;
     const isIdle = Boolean(trigger) && !query.length && !isUnavailable && !isAtTrigger;
-    const isNoResults = Boolean(query.length) && !fileLoading && items.length === 0 && (!isAtTrigger || Boolean(sessionId));
+    const isNoResults = Boolean(query.length) && !fileLoading && items.length === 0 && (!isAtTrigger || canSearchFiles);
     const isAtEmptyResults = isAtTrigger && !query.length && !fileLoading && !isUnavailable && items.length === 0;
     const menuStyle = anchor ? getViewportMenuStyle(anchor) : undefined;
 
