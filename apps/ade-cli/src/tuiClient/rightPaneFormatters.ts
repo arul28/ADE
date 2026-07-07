@@ -1,4 +1,5 @@
 import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
+import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -164,6 +165,9 @@ export function formatPrSummary(value: unknown): string {
   const derivedAdeUrl = repoOwner && repoName && prNumber
     ? buildDeeplink({ kind: "pr", repoOwner, repoName, prNumber })
     : null;
+  const derivedWebUrl = repoOwner && repoName && prNumber
+    ? buildWebClientUrl({ kind: "pr", repoOwner, repoName, prNumber })
+    : null;
   const adeUrl = pickString(root, ["adeUrl", "adePrUrl"])
     ?? pickString(pr, ["adeUrl", "adePrUrl"])
     ?? derivedAdeUrl;
@@ -179,6 +183,7 @@ export function formatPrSummary(value: unknown): string {
     githubUrl ? `github   ${githubUrl}` : null,
     fallbackUrl && fallbackUrl !== githubUrl ? `url      ${fallbackUrl}` : null,
     adeUrl ? `ade      ${adeUrl}` : null,
+    derivedWebUrl ? `web      ${derivedWebUrl}` : null,
   ];
   return rows.filter((row): row is string => row != null).join("\n");
 }

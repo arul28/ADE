@@ -1086,6 +1086,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --ade           Emit the custom "ade://" form. Defaults to the https mirror.
     --no-envelope   Skip best-effort repo/branch/PR envelope lookup.
+    --web           Emit the hosted web client URL (app.ade-app.dev).
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
 `,
   skill: `${ADE_BANNER}

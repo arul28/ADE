@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
@@ -12,8 +15,21 @@ function makePayload(
 
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
+  conflictService?: Record<string, unknown>;
+  diffService?: Record<string, unknown>;
   externalSessionsService?: Record<string, unknown>;
+  gitService?: Record<string, unknown>;
+  githubService?: Record<string, unknown>;
+  operationService?: Record<string, unknown>;
   prService?: Record<string, unknown>;
+  prSummaryService?: Record<string, unknown>;
+  projectRoot?: string;
+  queueLandingService?: Record<string, unknown>;
+  ptyService?: Record<string, unknown>;
+  sessionDeltaService?: Record<string, unknown>;
+  sessionService?: Record<string, unknown>;
+  projectConfigService?: Record<string, unknown>;
+  db?: Record<string, unknown>;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -21,19 +37,42 @@ function createService(options?: {
       ptyId: "pty-1",
       session: { id: "session-1", status: "running" },
     }),
+    ensureResumeTargets: vi.fn().mockResolvedValue(undefined),
+    enrichSessions: vi.fn((sessions: unknown[]) => sessions),
+    getRuntimeState: vi.fn(() => "idle"),
+    listTerminals: vi.fn().mockReturnValue([]),
+    activeForChat: vi.fn().mockReturnValue(null),
+    ...options?.ptyService,
+  };
+  const sessionService = {
+    list: vi.fn().mockReturnValue([]),
+    get: vi.fn().mockReturnValue(null),
+    updateMeta: vi.fn(),
+    ...options?.sessionService,
   };
   const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
   const service = createSyncRemoteCommandService({
+    ...(options?.db ? { db: options.db } : {}),
+    ...(options?.projectRoot ? { projectRoot: options.projectRoot } : {}),
     laneService: {},
     prService: options?.prService ?? {},
+    ...(options?.prSummaryService ? { prSummaryService: options.prSummaryService } : {}),
+    ...(options?.queueLandingService ? { queueLandingService: options.queueLandingService } : {}),
     ptyService,
-    sessionService: {},
+    sessionService,
+    ...(options?.sessionDeltaService ? { sessionDeltaService: options.sessionDeltaService } : {}),
     fileService: {},
+    ...(options?.gitService ? { gitService: options.gitService } : {}),
+    ...(options?.githubService ? { githubService: options.githubService } : {}),
+    ...(options?.diffService ? { diffService: options.diffService } : {}),
+    ...(options?.conflictService ? { conflictService: options.conflictService } : {}),
+    ...(options?.operationService ? { operationService: options.operationService } : {}),
+    ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     logger,
   } as any);
-  return { service, ptyService, externalSessionsService: options?.externalSessionsService, logger };
+  return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
 }
 
 describe("createSyncRemoteCommandService", () => {
@@ -435,6 +474,184 @@ describe("createSyncRemoteCommandService", () => {
     expect(result).toEqual([
       { taskId: "agent-1", agentId: "agent-1", agentType: "Sagan", description: "Read files", status: "stopped" },
     ]);
+  });
+
+  it("routes work.getSession through session enrichment and chat state projection", async () => {
+    const session = { id: "session-1", status: "running", toolType: "codex-chat", ptyId: "pty-1" };
+    const enrichedSession = { ...session, runtimeState: "running" };
+    const getSessionSummary = vi.fn().mockResolvedValue({
+      sessionId: "session-1",
+      status: "idle",
+      idleSinceAt: "2026-01-01T00:00:00.000Z",
+      orchestrationRunId: "run-1",
+      orchestrationRole: "worker",
+      orchestrationTag: "impl",
+    });
+    const { service, ptyService, sessionService } = createService({
+      sessionService: { get: vi.fn().mockReturnValue(session) },
+      ptyService: { enrichSessions: vi.fn().mockReturnValue([enrichedSession]) },
+      agentChatService: { getSessionSummary },
+    });
+
+    expect(service.getDescriptor("work.getSession")).toEqual({
+      action: "work.getSession",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    const result = await service.execute(makePayload("work.getSession", { sessionId: "session-1" }));
+
+    expect(sessionService.get).toHaveBeenCalledWith("session-1");
+    expect(ptyService.enrichSessions).toHaveBeenCalledWith([session]);
+    expect(getSessionSummary).toHaveBeenCalledWith("session-1");
+    expect(result).toEqual(expect.objectContaining({
+      id: "session-1",
+      runtimeState: "idle",
+      chatIdleSinceAt: "2026-01-01T00:00:00.000Z",
+      orchestrationRunId: "run-1",
+      orchestrationRole: "worker",
+      orchestrationTag: "impl",
+    }));
+  });
+
+  it("delegates PR merge contexts and queue state to the injected services", async () => {
+    const getMergeContexts = vi.fn().mockResolvedValue({ "pr-1": { prId: "pr-1", mergeable: true } });
+    const getQueueStateByGroup = vi.fn().mockReturnValue({ groupId: "queue-1", entries: [] });
+    const { service } = createService({
+      prService: { getMergeContexts },
+      queueLandingService: { getQueueStateByGroup },
+    });
+
+    const contexts = await service.execute(makePayload("prs.getMergeContexts", { prIds: ["pr-1"] }));
+    const queueState = await service.execute(makePayload("prs.getQueueState", { groupId: "queue-1" }));
+
+    expect(service.getDescriptor("prs.getMergeContexts")).toEqual({
+      action: "prs.getMergeContexts",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+    expect(getMergeContexts).toHaveBeenCalledWith(["pr-1"]);
+    expect(contexts).toEqual({ "pr-1": { prId: "pr-1", mergeable: true } });
+    expect(getQueueStateByGroup).toHaveBeenCalledWith("queue-1");
+    expect(queueState).toEqual({ groupId: "queue-1", entries: [] });
+  });
+
+  it("rejects missing required args for new remote-command parsers", async () => {
+    const postReviewComment = vi.fn();
+    const activeForChat = vi.fn();
+    const save = vi.fn();
+    const { service } = createService({
+      prService: { postReviewComment },
+      ptyService: { activeForChat },
+      projectConfigService: { save },
+    });
+
+    await expect(service.execute(makePayload("work.getSession"))).rejects.toThrow("work.getSession requires sessionId.");
+    await expect(service.execute(makePayload("terminal.activeForChat"))).rejects.toThrow("chatSessionId is required");
+    await expect(
+      service.execute(makePayload("prs.postReviewComment", { prId: "pr-1", threadId: "thread-1" })),
+    ).rejects.toThrow("prs.postReviewComment requires body.");
+    await expect(service.execute(makePayload("projectConfig.save"))).rejects.toThrow("projectConfig.save requires candidate.");
+
+    expect(activeForChat).not.toHaveBeenCalled();
+    expect(postReviewComment).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("saves browser-provided temporary image attachments inside the project .ade directory", async () => {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
+    const png = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    const { service } = createService({ projectRoot });
+
+    try {
+      const result = await service.execute(makePayload("chat.saveTempAttachment", {
+        dataUrl: `data:image/png;base64,${png.toString("base64")}`,
+        filename: "pasted.png",
+      })) as { path: string; mimeType: string; previewDataUrl: string | null };
+
+      expect(result.mimeType).toBe("image/png");
+      expect(result.previewDataUrl).toBeNull();
+      expect(result.path.startsWith(path.join(projectRoot, ".ade", "attachments"))).toBe(true);
+      await expect(fs.promises.readFile(result.path)).resolves.toEqual(png);
+    } finally {
+      await fs.promises.rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects temporary attachments with mismatched MIME or oversized payloads", async () => {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
+    const png = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    const maxEncodedLength = Math.ceil((10 * 1024 * 1024) / 3) * 4;
+    const { service } = createService({ projectRoot });
+
+    try {
+      await expect(service.execute(makePayload("chat.saveTempAttachment", {
+        dataUrl: `data:image/jpeg;base64,${png.toString("base64")}`,
+        filename: "wrong.jpg",
+      }))).rejects.toThrow("MIME type does not match");
+      await expect(service.execute(makePayload("chat.saveTempAttachment", {
+        base64: "A".repeat(maxEncodedLength + 4),
+        mime: "image/png",
+        filename: "too-large.png",
+      }))).rejects.toThrow("10 MB or smaller");
+      await expect(fs.promises.readdir(path.join(projectRoot, ".ade", "attachments"))).rejects.toThrow();
+    } finally {
+      await fs.promises.rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("advertises the requested web-parity remote actions", () => {
+    const { service } = createService();
+
+    expect(service.getSupportedActions()).toEqual(expect.arrayContaining([
+      "work.getSession",
+      "work.deleteSession",
+      "work.getSessionDelta",
+      "chat.getSlashCommands",
+      "chat.getParallelLaunchState",
+      "chat.setParallelLaunchState",
+      "chat.handoff",
+      "chat.getContextUsage",
+      "chat.rewindFiles",
+      "chat.getTurnFileDiff",
+      "chat.saveTempAttachment",
+      "chat.warmupModel",
+      "chat.launch",
+      "chat.getImageDataUrl",
+      "lanes.listDeleteProgress",
+      "git.getUserIdentity",
+      "git.stashClear",
+      "git.getFilePatch",
+      "terminal.list",
+      "terminal.activeForChat",
+      "prs.postReviewComment",
+      "prs.getAiSummary",
+      "prs.regenerateAiSummary",
+      "prs.getIntegrationResolutionState",
+      "prs.delete",
+      "prs.cleanupBranch",
+      "prs.listOpenForRepo",
+      "prs.listProposals",
+      "prs.getQueueState",
+      "prs.listQueueStates",
+      "prs.getMergeContext",
+      "prs.getMergeContexts",
+      "prs.listWithConflicts",
+      "prs.listSnapshots",
+      "prs.aiResolutionGetSession",
+      "prs.aiResolutionStart",
+      "rebase.scanNeeds",
+      "rebase.execute",
+      "history.listOperations",
+      "github.getStatus",
+      "github.getRemoteStatus",
+      "projectConfig.get",
+      "projectConfig.save",
+      "ai.getStatus",
+      "orchestration.runCreate",
+    ]));
+    expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
+    expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
   });
 });
 

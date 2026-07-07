@@ -1,0 +1,325 @@
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { buildDeeplink } from "../../../shared/deeplinks";
+import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
+import type { AdeSyncClientStatus, WebClientEnvironmentRecord } from "../sync";
+import { parseWebPath } from "./webRoutes";
+import { COLORS, MONO_FONT, SANS_FONT, connectionTone } from "./shellTokens";
+
+const STRIP_HEIGHT = 30;
+
+const menuStyle: React.CSSProperties = {
+  position: "absolute",
+  top: STRIP_HEIGHT + 2,
+  minWidth: 240,
+  maxWidth: 320,
+  background: "var(--color-popup-bg)",
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 10,
+  boxShadow: "0 12px 40px rgba(0,0,0,0.45)",
+  padding: 6,
+  zIndex: 50,
+  display: "grid",
+  gap: 2,
+};
+
+const triggerStyle = (open: boolean): React.CSSProperties => ({
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  height: 22,
+  padding: "0 8px",
+  borderRadius: 6,
+  border: "1px solid transparent",
+  background: open ? "color-mix(in srgb, var(--color-fg) 8%, transparent)" : "transparent",
+  color: COLORS.textSecondary,
+  fontFamily: SANS_FONT,
+  fontSize: 12,
+  fontWeight: 500,
+  cursor: "pointer",
+  maxWidth: 260,
+});
+
+const menuItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+  width: "100%",
+  height: 30,
+  padding: "0 8px",
+  borderRadius: 6,
+  border: "none",
+  background: "transparent",
+  color: COLORS.textPrimary,
+  fontFamily: SANS_FONT,
+  fontSize: 12,
+  cursor: "pointer",
+  textAlign: "left",
+};
+
+function Caret() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 10 10" aria-hidden style={{ opacity: 0.7, flexShrink: 0 }}>
+      <path d="M2 3.5 L5 6.5 L8 3.5" stroke="currentColor" strokeWidth="1.4" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function useDismiss(open: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, close]);
+  return ref;
+}
+
+export function WebShell({
+  status,
+  environments,
+  activeEnvId,
+  catalog,
+  activeProjectId,
+  onSwitchEnv,
+  onPairNew,
+  onForgetEnv,
+  onSwitchProject,
+  children,
+}: {
+  status: AdeSyncClientStatus;
+  environments: WebClientEnvironmentRecord[];
+  activeEnvId: string | null;
+  catalog: SyncMobileProjectSummary[];
+  activeProjectId: string | null;
+  onSwitchEnv: (environment: WebClientEnvironmentRecord) => void;
+  onPairNew: () => void;
+  onForgetEnv: (environment: WebClientEnvironmentRecord) => void;
+  onSwitchProject: (project: SyncMobileProjectSummary) => void;
+  children: React.ReactNode;
+}) {
+  const tone = connectionTone(status.state);
+  const activeEnv = environments.find((environment) => environment.envId === activeEnvId) ?? null;
+  const machineName = status.hostName ?? activeEnv?.machineName ?? "Machine";
+  const activeProject = catalog.find((project) => project.id === activeProjectId) ?? null;
+
+  const [machineMenu, setMachineMenu] = useState(false);
+  const [projectMenu, setProjectMenu] = useState(false);
+  const [confirmForget, setConfirmForget] = useState<string | null>(null);
+
+  const machineRef = useDismiss(machineMenu, useCallback(() => { setMachineMenu(false); setConfirmForget(null); }, []));
+  const projectRef = useDismiss(projectMenu, useCallback(() => setProjectMenu(false), []));
+
+  const openInDesktop = useCallback(() => {
+    const path = `${window.location.pathname}${window.location.search}`;
+    const target = parseWebPath(path);
+    const url = target ? buildDeeplink(target, { form: "ade" }) : "ade://";
+    window.location.href = url;
+  }, []);
+
+  return (
+    <div style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column", background: "var(--color-bg)" }}>
+      <div
+        style={{
+          height: STRIP_HEIGHT,
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          padding: "0 8px",
+          background: "var(--color-surface)",
+          borderBottom: `1px solid ${COLORS.border}`,
+          userSelect: "none",
+        }}
+      >
+        {/* Machine switcher */}
+        <div ref={machineRef} style={{ position: "relative" }}>
+          <button
+            type="button"
+            style={triggerStyle(machineMenu)}
+            onClick={() => { setMachineMenu((open) => !open); setProjectMenu(false); }}
+            title={`${machineName} · ${tone.label}`}
+          >
+            <span
+              aria-hidden
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: 999,
+                background: tone.color,
+                boxShadow: tone.live ? `0 0 6px ${tone.color}` : "none",
+                flexShrink: 0,
+              }}
+            />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{machineName}</span>
+            <Caret />
+          </button>
+          {machineMenu ? (
+            <div style={menuStyle}>
+              <div style={{ padding: "4px 8px 6px", color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                Machines
+              </div>
+              {environments.map((environment) => {
+                const isActive = environment.envId === activeEnvId;
+                const isConfirming = confirmForget === environment.envId;
+                return (
+                  <div key={environment.envId} style={{ display: "grid", gap: 2 }}>
+                    <button
+                      type="button"
+                      style={{
+                        ...menuItemStyle,
+                        background: isActive ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                      }}
+                      onClick={() => { if (!isActive) { onSwitchEnv(environment); } setMachineMenu(false); }}
+                    >
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                        {isActive ? (
+                          <span aria-hidden style={{ width: 6, height: 6, borderRadius: 999, background: tone.color, flexShrink: 0 }} />
+                        ) : (
+                          <span aria-hidden style={{ width: 6, flexShrink: 0 }} />
+                        )}
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isActive ? COLORS.textPrimary : COLORS.textSecondary }}>
+                          {environment.machineName}
+                        </span>
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => { event.stopPropagation(); setConfirmForget(isConfirming ? null : environment.envId); }}
+                        onKeyDown={(event) => { if (event.key === "Enter") { event.stopPropagation(); setConfirmForget(isConfirming ? null : environment.envId); } }}
+                        style={{ color: COLORS.textMuted, fontSize: 11, padding: "2px 4px", borderRadius: 4, cursor: "pointer" }}
+                        title="Forget this machine"
+                      >
+                        Forget
+                      </span>
+                    </button>
+                    {isConfirming ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 8px 6px" }}>
+                        <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Forget {environment.machineName}?</span>
+                        <button
+                          type="button"
+                          onClick={() => { onForgetEnv(environment); setConfirmForget(null); setMachineMenu(false); }}
+                          style={{ color: COLORS.danger, background: "transparent", border: "none", fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          Forget
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmForget(null)}
+                          style={{ color: COLORS.textMuted, background: "transparent", border: "none", fontFamily: SANS_FONT, fontSize: 11, cursor: "pointer" }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+              <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
+              <button type="button" style={menuItemStyle} onClick={() => { setMachineMenu(false); onPairNew(); }}>
+                Pair new machine…
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <span aria-hidden style={{ color: COLORS.textMuted, opacity: 0.5 }}>/</span>
+
+        {/* Project switcher */}
+        <div ref={projectRef} style={{ position: "relative" }}>
+          <button
+            type="button"
+            style={triggerStyle(projectMenu)}
+            onClick={() => { setProjectMenu((open) => !open); setMachineMenu(false); }}
+            disabled={catalog.length === 0}
+            title={activeProject?.rootPath ?? undefined}
+          >
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {activeProject?.displayName ?? "Select project"}
+            </span>
+            <Caret />
+          </button>
+          {projectMenu ? (
+            <div style={menuStyle}>
+              <div style={{ padding: "4px 8px 6px", color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
+                Projects
+              </div>
+              <div style={{ display: "grid", gap: 2, maxHeight: "60vh", overflow: "auto" }}>
+                {catalog.map((project) => {
+                  const isActive = project.id === activeProjectId;
+                  const disabled = !project.isAvailable && !project.isOpen;
+                  return (
+                    <button
+                      key={project.id}
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => { if (!isActive) onSwitchProject(project); setProjectMenu(false); }}
+                      style={{
+                        ...menuItemStyle,
+                        opacity: disabled ? 0.5 : 1,
+                        cursor: disabled ? "not-allowed" : "pointer",
+                        background: isActive ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
+                      }}
+                      title={project.rootPath ?? undefined}
+                    >
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isActive ? COLORS.textPrimary : COLORS.textSecondary }}>
+                        {project.displayName}
+                      </span>
+                      {project.isOpen ? (
+                        <span style={{ color: COLORS.success, fontSize: 10, fontFamily: MONO_FONT }}>open</span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* Reconnecting hint */}
+        {status.state === "reconnecting" ? (
+          <span style={{ color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11, marginRight: 4 }}>
+            Reconnecting…
+          </span>
+        ) : null}
+
+        <button
+          type="button"
+          onClick={openInDesktop}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 6,
+            height: 22,
+            padding: "0 8px",
+            borderRadius: 6,
+            border: `1px solid ${COLORS.border}`,
+            background: "transparent",
+            color: COLORS.textSecondary,
+            fontFamily: SANS_FONT,
+            fontSize: 11,
+            fontWeight: 500,
+            cursor: "pointer",
+          }}
+          title="Open the current view in the ADE desktop app"
+        >
+          Open in desktop
+        </button>
+      </div>
+
+      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>{children}</div>
+    </div>
+  );
+}

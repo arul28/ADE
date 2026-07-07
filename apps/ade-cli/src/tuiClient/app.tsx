@@ -297,7 +297,7 @@ import {
   type PendingQuestionSelectionState,
 } from "./pendingInput";
 import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
-import { buildDeeplinkForRow, type DeeplinkRow } from "./deeplinkRow";
+import { buildDeeplinkForRow, buildWebClientUrlForRow, type DeeplinkRow } from "./deeplinkRow";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   buildSubagentPaneRows,
@@ -11539,6 +11539,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice("ADE deeplink copied", "success");
       } else {
         addNotice(`ADE deeplink: ${url}`, "info");
+      }
+      return true;
+    }
+    if (action === "app:copyAdeWebLink") {
+      const row = resolveFocusedDeeplinkRow();
+      if (!row) {
+        addNotice("No lane or PR row is focused to copy a web link for.", "info");
+        return true;
+      }
+      const url = buildWebClientUrlForRow(row);
+      if (!url) {
+        addNotice("Cannot build an ADE web link for the focused row.", "error");
+        return true;
+      }
+      if (copyToClipboard(url)) {
+        addNotice("ADE web link copied", "success");
+      } else {
+        addNotice(`ADE web link: ${url}`, "info");
       }
       return true;
     }

@@ -20,6 +20,7 @@ import {
   type DeeplinkEnvelope,
   type DeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
+import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
 
 export class CliDeeplinkUsageError extends Error {}
@@ -68,6 +69,7 @@ const HELP_LINK = [
   "Options:",
   "  --ade           Emit the custom `ade://` form (default: https)",
   "  --no-envelope   Skip best-effort repo/branch/PR envelope lookup",
+  "  --web           Emit the hosted web client form (app.ade-app.dev)",
   "  --no-clipboard  Print the URL but don't copy to clipboard",
 ].join("\n");
 
@@ -226,7 +228,7 @@ function looksLikeAdeOpenUrl(rawUrl: string): boolean {
 export function runLinkCommand(args: string[]): DeeplinkCliResult {
   const plan = buildLinkPlan(args);
   if ("result" in plan) return plan.result;
-  return finishLink(buildDeeplink(plan.target, { form: plan.form }), plan.skipClipboard);
+  return finishLink(renderLink(plan.target, plan), plan.skipClipboard);
 }
 
 export async function runLinkCommandAsync(
@@ -244,7 +246,7 @@ export async function runLinkCommandAsync(
       if (target.kind === "commit") target = { ...target, envelope };
     }
   }
-  return finishLink(buildDeeplink(target, { form: plan.form }), plan.skipClipboard);
+  return finishLink(renderLink(target, plan), plan.skipClipboard);
 }
 
 type LinkPlan =
@@ -252,26 +254,40 @@ type LinkPlan =
   | {
       target: DeeplinkTarget;
       form: "ade" | "https";
+      useWeb: boolean;
       skipClipboard: boolean;
       noEnvelope: boolean;
       envelopeContext?: LinkEnvelopeContext;
     };
+
+function renderLink(
+  target: DeeplinkTarget,
+  plan: { form: "ade" | "https"; useWeb: boolean },
+): string {
+  return plan.useWeb ? buildWebClientUrl(target) : buildDeeplink(target, { form: plan.form });
+}
 
 function buildLinkPlan(args: string[]): LinkPlan {
   if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
     return { result: { output: `${HELP_LINK}\n`, exitCode: 0 } };
   }
   const flags = extractFlags(args, {
-    booleans: ["ade", "no-envelope", "no-clipboard"],
+    booleans: ["ade", "web", "no-envelope", "no-clipboard"],
     valued: ["pr", "branch", "lane", "line"],
   });
   const positional = flags.positional;
-  const form = flags.booleans.has("ade") ? "ade" : "https";
+  const wantsAde = flags.booleans.has("ade");
+  const wantsWeb = flags.booleans.has("web");
+  if (wantsAde && wantsWeb) {
+    throw new CliDeeplinkUsageError("--web cannot be combined with --ade");
+  }
+  const form = wantsAde ? "ade" : "https";
   const skipClipboard = flags.booleans.has("no-clipboard");
   const noEnvelope = flags.booleans.has("no-envelope");
   const plan = (target: DeeplinkTarget, envelopeContext?: LinkEnvelopeContext): LinkPlan => ({
     target,
     form,
+    useWeb: wantsWeb,
     skipClipboard,
     noEnvelope,
     ...(envelopeContext ? { envelopeContext } : {}),

@@ -6,6 +6,8 @@ import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 import { buildDeeplink } from "../../../shared/deeplinks";
+import { buildWebClientUrl } from "../../../shared/webClientUrl";
+import { openExternalUrl } from "../../lib/openExternal";
 
 function branchNameFromRef(ref: string | null | undefined): string {
   if (!ref) return "";
@@ -215,6 +217,15 @@ export function LaneContextMenu({
             }}
           >
             Copy ADE Lane Link
+          </HoverButton>
+          <HoverButton
+            style={menuItemStyle}
+            onClick={() => {
+              onClose();
+              openExternalUrl(buildWebClientUrl({ kind: "lane", laneId: laneContextMenu.laneId }));
+            }}
+          >
+            Open in web
           </HoverButton>
           {branchNameFromRef(ctxLane.branchRef) ? (
             <HoverButton

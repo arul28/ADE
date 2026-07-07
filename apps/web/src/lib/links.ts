@@ -9,6 +9,7 @@ export const LINKS = {
   releases: `https://github.com/${repo}/releases`,
   releasesLatest: `https://github.com/${repo}/releases/latest`,
   testflight: "https://testflight.apple.com/join/ZSdJGKPy",
+  webClient: "https://app.ade-app.dev",
   docs: "https://ade-app.dev/docs",
   changelog: "https://ade-app.dev/docs/changelog",
   prd: `https://github.com/${repo}/blob/main/docs/PRD.md`,

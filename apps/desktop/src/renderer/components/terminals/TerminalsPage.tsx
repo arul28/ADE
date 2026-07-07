@@ -11,6 +11,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
+import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { canBulkDeleteSession, canBulkStopSession, formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
@@ -19,7 +20,7 @@ import type { DropEdge } from "../ui/paneTreeOps";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { selectActiveProjectRoot, useAppStore, useRootAppStore, type WorkDraftKind } from "../../state/appStore";
-import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openExternalUrl } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
@@ -1159,6 +1160,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             );
             await navigator.clipboard.writeText(href).catch(() => {});
           })();
+        }}
+        onOpenSessionInWeb={(session) => {
+          openExternalUrl(buildWebClientUrl({ kind: "session", sessionId: session.id, laneId: session.laneId }));
         }}
         onTogglePinned={(session) => work.togglePinnedSession(session.id)}
         pinnedSessionIds={work.pinnedSessionIds}

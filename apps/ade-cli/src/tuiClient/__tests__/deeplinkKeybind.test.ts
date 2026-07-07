@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { copyToClipboard } from "../../lib/clipboard";
 import {
   buildDeeplinkForRow,
+  buildWebClientUrlForRow,
   parseGitHubPrUrl,
   type DeeplinkRow,
 } from "../deeplinkRow";
@@ -39,6 +40,19 @@ describe("copy ADE deeplink keybinding", () => {
     ).toBe("app:copyAdeDeeplink");
   });
 
+  it("registers the sibling web-link copy action", () => {
+    const diagnostics = validateClaudeKeybindingsConfig({
+      bindings: [
+        { context: "Tabs", bindings: { "ctrl+w": "app:copyAdeWebLink" } },
+      ],
+    });
+    expect(diagnostics.bindingCount).toBe(1);
+    expect(diagnostics.warnings).toEqual([]);
+    expect(
+      dispatchKeybinding(diagnostics.bindings, "Tabs", "w", { ctrl: true }),
+    ).toBe("app:copyAdeWebLink");
+  });
+
   it("does not dispatch in unrelated contexts (Chat)", () => {
     const diagnostics = validateClaudeKeybindingsConfig({
       bindings: [
@@ -53,6 +67,11 @@ describe("copy ADE deeplink keybinding", () => {
   it("builds the ade:// deeplink for a lane row", () => {
     const row: DeeplinkRow = { kind: "lane", lane: { id: laneUuid } };
     expect(buildDeeplinkForRow(row)).toBe(`ade://lane/${laneUuid}`);
+  });
+
+  it("builds the hosted web link for a lane row", () => {
+    const row: DeeplinkRow = { kind: "lane", lane: { id: laneUuid } };
+    expect(buildWebClientUrlForRow(row)).toBe(`https://app.ade-app.dev/open?type=lane&id=${laneUuid}`);
   });
 
   it("builds the ade:// deeplink for a PR row from explicit fields", () => {
@@ -71,12 +90,21 @@ describe("copy ADE deeplink keybinding", () => {
     expect(buildDeeplinkForRow(row)).toBe("ade://pr/anthropics/ade/322");
   });
 
+  it("builds the hosted web link for a PR row", () => {
+    const row: DeeplinkRow = {
+      kind: "pr",
+      pr: { repoOwner: "anthropics", repoName: "ade", prNumber: 42 },
+    };
+    expect(buildWebClientUrlForRow(row)).toBe("https://app.ade-app.dev/open?type=pr&repo=anthropics%2Fade&number=42");
+  });
+
   it("returns null when the PR row has no URL and no owner/repo", () => {
     const row: DeeplinkRow = {
       kind: "pr",
       pr: { url: "not-a-url" },
     };
     expect(buildDeeplinkForRow(row)).toBeNull();
+    expect(buildWebClientUrlForRow(row)).toBeNull();
   });
 
   it("parseGitHubPrUrl rejects non-pull paths", () => {

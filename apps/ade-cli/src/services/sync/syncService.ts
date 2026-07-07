@@ -16,15 +16,18 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
+import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
 import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
+import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
@@ -33,9 +36,12 @@ import type { createAutoRebaseService } from "../../../../desktop/src/main/servi
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
+import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
+import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
+import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
@@ -78,10 +84,16 @@ type SyncServiceArgs = {
   gitService?: ReturnType<typeof createGitOperationsService>;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  operationService?: ReturnType<typeof createOperationService> | null;
+  githubService?: ReturnType<typeof createGithubService> | null;
   prService: ReturnType<typeof createPrService>;
+  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
+  sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -629,16 +641,23 @@ export function createSyncService(args: SyncServiceArgs) {
 
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
+    projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
+    prSummaryService: args.prSummaryService,
     queueLandingService: args.queueLandingService,
     ptyService: args.ptyService,
     sessionService: args.sessionService,
+    sessionDeltaService: args.sessionDeltaService,
     fileService: args.fileService,
     gitService: args.gitService,
+    githubService: args.githubService,
     diffService: args.diffService,
     conflictService: args.conflictService,
+    operationService: args.operationService,
+    aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
@@ -709,14 +728,20 @@ export function createSyncService(args: SyncServiceArgs) {
       fileService: args.fileService,
       laneService: args.laneService,
       gitService: args.gitService,
+      githubService: args.githubService,
       diffService: args.diffService,
       conflictService: args.conflictService,
+      operationService: args.operationService,
       prService: args.prService,
+      prSummaryService: args.prSummaryService,
       queueLandingService: args.queueLandingService,
       sessionService: args.sessionService,
+      sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       processService: args.processService,
       agentChatService: args.agentChatService,
+      aiIntegrationService: args.aiIntegrationService,
+      orchestrationService: args.orchestrationService,
       pushPublisherService: args.pushPublisherService,
       ctoStateService: args.ctoStateService,
       ctoMemoryService: args.ctoMemoryService,
@@ -1240,7 +1265,7 @@ export function createSyncService(args: SyncServiceArgs) {
 
     async updateLocalDevice(argsIn: {
       name?: string;
-      deviceType?: "desktop" | "phone" | "vps" | "unknown";
+      deviceType?: "desktop" | "phone" | "vps" | "browser" | "unknown";
     }) {
       const updated = deviceRegistryService.updateLocalDevice(argsIn);
       hostService?.setLocalActiveLanePresence(activeLocalLanePresenceIds);
