@@ -500,6 +500,7 @@ private enum WorkPreviewData {
       lanes: [WorkPreviewData.lane],
       preferredLaneId: WorkPreviewData.lane.id,
       activeProjectId: nil,
+      activeProjectRootPath: nil,
       onStarted: { _, _ in },
       onCliStarted: { _ in },
       onRefreshLanes: {}

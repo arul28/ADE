@@ -1424,10 +1424,20 @@ struct WorkStartShellSessionRequest: Equatable {
   var title = "Shell"
   var cols = 48
   var rows = 24
+  var targetProjectId: String?
+  var targetProjectRootPath: String?
 }
 
-func workStartShellSessionRequest(laneId: String) -> WorkStartShellSessionRequest {
-  WorkStartShellSessionRequest(laneId: laneId)
+func workStartShellSessionRequest(
+  laneId: String,
+  targetProjectId: String? = nil,
+  targetProjectRootPath: String? = nil
+) -> WorkStartShellSessionRequest {
+  WorkStartShellSessionRequest(
+    laneId: laneId,
+    targetProjectId: targetProjectId,
+    targetProjectRootPath: targetProjectRootPath
+  )
 }
 
 @MainActor
@@ -5525,15 +5535,19 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws -> StartCliSessionResult {
-    let request = workStartShellSessionRequest(laneId: laneId)
+    let request = workStartShellSessionRequest(
+      laneId: laneId,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    )
     return try await startCliSession(
       laneId: request.laneId,
       provider: request.provider,
       title: request.title,
       cols: request.cols,
       rows: request.rows,
-      targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath
+      targetProjectId: request.targetProjectId,
+      targetProjectRootPath: request.targetProjectRootPath
     )
   }
 

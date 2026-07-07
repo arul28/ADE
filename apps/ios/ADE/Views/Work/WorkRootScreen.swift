@@ -660,6 +660,7 @@ struct WorkRootScreen: View {
           lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
           preferredLaneId: route.preferredLaneId,
           activeProjectId: syncService.activeProjectId,
+          activeProjectRootPath: syncService.activeProjectRootPath,
           onStarted: { summary, opener in
             let sessionId = summary.sessionId
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)

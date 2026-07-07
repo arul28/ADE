@@ -502,13 +502,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workCliPermissionMode(provider: "claude", runtimeMode: "auto"), "auto")
   }
 
-  func testWorkStartShellSessionRequestUsesShellDefaults() {
-    let request = workStartShellSessionRequest(laneId: "lane-work")
+  func testWorkStartShellSessionRequestUsesShellDefaultsAndScope() {
+    let request = workStartShellSessionRequest(
+      laneId: "lane-work",
+      targetProjectId: "project-1",
+      targetProjectRootPath: "/tmp/project-one"
+    )
     XCTAssertEqual(request.laneId, "lane-work")
     XCTAssertEqual(request.provider, "shell")
     XCTAssertEqual(request.title, "Shell")
     XCTAssertEqual(request.cols, 48)
     XCTAssertEqual(request.rows, 24)
+    XCTAssertEqual(request.targetProjectId, "project-1")
+    XCTAssertEqual(request.targetProjectRootPath, "/tmp/project-one")
   }
 
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {

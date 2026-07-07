@@ -486,6 +486,7 @@ struct WorkNewChatScreen: View {
   /// construction (the screen is pushed for the active project) so it is stable
   /// while shown.
   let activeProjectId: String?
+  let activeProjectRootPath: String?
   let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onChatImported: @MainActor (String) async -> Void
@@ -515,6 +516,7 @@ struct WorkNewChatScreen: View {
     lanes: [LaneSummary],
     preferredLaneId: String?,
     activeProjectId: String?,
+    activeProjectRootPath: String?,
     onStarted: @escaping @MainActor (AgentChatSessionSummary, String) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (String) async -> Void = { _ in },
@@ -523,6 +525,7 @@ struct WorkNewChatScreen: View {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
     self.activeProjectId = activeProjectId
+    self.activeProjectRootPath = activeProjectRootPath
     self.onStarted = onStarted
     self.onCliStarted = onCliStarted
     self.onChatImported = onChatImported
@@ -892,7 +895,11 @@ struct WorkNewChatScreen: View {
     defer { shellLaunchBusy = false }
 
     do {
-      let result = try await syncService.startShellSession(laneId: lane.id)
+      let result = try await syncService.startShellSession(
+        laneId: lane.id,
+        targetProjectId: activeProjectId,
+        targetProjectRootPath: activeProjectRootPath
+      )
       if let session = result.session {
         await onCliStarted(session)
       } else {
