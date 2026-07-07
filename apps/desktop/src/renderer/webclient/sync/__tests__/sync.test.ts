@@ -155,6 +155,36 @@ function createSocketFactory(handler: (socket: ScriptedSocket, envelope: SyncEnv
   };
 }
 
+class DelayedPutStorage extends MemoryStorage {
+  delayNextEnvironmentPut = false;
+  private pausedPut: Promise<void> | null = null;
+  private resolvePausedPut: (() => void) | null = null;
+  private resumePut: (() => void) | null = null;
+
+  override async put<T>(area: "environments" | "meta", key: string, value: T): Promise<void> {
+    if (area === "environments" && this.delayNextEnvironmentPut) {
+      this.delayNextEnvironmentPut = false;
+      this.pausedPut = new Promise((resolve) => {
+        this.resolvePausedPut = resolve;
+      });
+      await new Promise<void>((resolve) => {
+        this.resumePut = resolve;
+        this.resolvePausedPut?.();
+      });
+    }
+    await super.put(area, key, value);
+  }
+
+  async waitForPausedPut(): Promise<void> {
+    while (!this.pausedPut) await flush();
+    await this.pausedPut;
+  }
+
+  resumePausedPut(): void {
+    this.resumePut?.();
+  }
+}
+
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -611,6 +641,47 @@ describe("browser sync connection and client", () => {
     expect(script.sockets).toHaveLength(2);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(true);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(true);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+
+    client.dispose();
+  });
+
+  it("ignores stream subscriptions attempted during project switch", async () => {
+    const storage = new DelayedPutStorage();
+    const environment = await makeEnvironment(storage);
+    storage.delayNextEnvironmentPut = true;
+    let helloProjectId = "project-1";
+    const projectTwo = {
+      ...helloOk("project-2").projects![0],
+      displayName: "ADE Docs",
+      rootPath: "/repo/docs",
+    };
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk(helloProjectId) });
+      }
+      if (envelope.type === "project_switch_request") {
+        helloProjectId = "project-2";
+        socket.serverSend({
+          type: "project_switch_result",
+          requestId: envelope.requestId,
+          payload: { ok: true, project: projectTwo },
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await client.connect(environment.envId);
+    const switchPromise = client.switchProject("project-2");
+    await storage.waitForPausedPut();
+    client.subscribeChat("old-chat", {}, {});
+    client.subscribeTerminal("old-term", {}, {});
+    storage.resumePausedPut();
+    await switchPromise;
+    await flush();
+
+    expect(script.sockets).toHaveLength(2);
     expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
     expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
 

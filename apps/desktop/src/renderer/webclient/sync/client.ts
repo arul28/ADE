@@ -139,6 +139,7 @@ export class AdeSyncClient {
   private readonly pendingProjectSwitches = new Map<string, PendingRequest<SyncProjectSwitchResultPayload>>();
   private readonly chatSubscriptions = new Map<string, ChatSubscription>();
   private readonly terminalSubscriptions = new Map<string, TerminalSubscription>();
+  private streamSubscriptionsPaused = false;
   private readonly listeners: ListenerMap = {
     status: new Set(),
     brainStatus: new Set(),
@@ -355,6 +356,7 @@ export class AdeSyncClient {
   }
 
   subscribeChat(sessionId: string, opts: Omit<SyncChatSubscribePayload, "sessionId" | "sinceSeq"> = {}, handlers: ChatHandlers = {}): () => void {
+    if (this.streamSubscriptionsPaused) return () => undefined;
     const existing = this.chatSubscriptions.get(sessionId);
     const subscription: ChatSubscription = {
       payload: { ...opts, sessionId },
@@ -382,6 +384,7 @@ export class AdeSyncClient {
   }
 
   subscribeTerminal(sessionId: string, opts: { maxBytes?: number } = {}, handlers: TerminalHandlers = {}): () => void {
+    if (this.streamSubscriptionsPaused) return () => undefined;
     const existing = this.terminalSubscriptions.get(sessionId);
     const subscription: TerminalSubscription = {
       sessionId,
@@ -485,20 +488,28 @@ export class AdeSyncClient {
     });
     const result = await promise;
     if (result.ok) {
-      this.activeProjectId = result.project?.id ?? projectId;
-      this.clearStreamSubscriptions();
-      await this.persistCurrentEnvironment((environment) => ({
-        ...environment,
-        port: result.connection?.port ?? environment.port,
-        addressCandidates: result.connection?.addressCandidates ?? environment.addressCandidates,
-        hostIdentity: result.connection?.hostIdentity ?? environment.hostIdentity,
-        activeProjectId: this.activeProjectId,
-      }));
       const envId = this.selectedEnvId;
-      if (envId) {
-        this.connection.disconnect({ reconnect: false, code: 1000, reason: "Project switch" });
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        await this.connect(envId);
+      this.streamSubscriptionsPaused = true;
+      try {
+        this.activeProjectId = result.project?.id ?? projectId;
+        if (envId) {
+          this.connection.disconnect({ reconnect: false, code: 1000, reason: "Project switch" });
+          this.currentCatalog = null;
+        }
+        this.clearStreamSubscriptions();
+        await this.persistCurrentEnvironment((environment) => ({
+          ...environment,
+          port: result.connection?.port ?? environment.port,
+          addressCandidates: result.connection?.addressCandidates ?? environment.addressCandidates,
+          hostIdentity: result.connection?.hostIdentity ?? environment.hostIdentity,
+          activeProjectId: this.activeProjectId,
+        }));
+        if (envId) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          await this.connect(envId);
+        }
+      } finally {
+        this.streamSubscriptionsPaused = false;
       }
     }
     return result;
