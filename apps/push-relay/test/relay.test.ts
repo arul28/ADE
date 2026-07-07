@@ -685,10 +685,10 @@ describe("push relay", () => {
     expect(db.machines).toHaveLength(3);
   });
 
-  it("skips per-IP gates when cf-connecting-ip is absent (off-edge) but still counts the budget", async () => {
-    const env: PushRelayEnv = { ...makeEnv(db, undefined), IP_RATE_LIMIT_PER_MIN: "2", CLAIM_RATE_LIMIT_PER_MIN: "2" };
+  it("uses one fail-closed bucket when cf-connecting-ip is absent (never bypasses the claim gate)", async () => {
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), CLAIM_RATE_LIMIT_PER_MIN: "2", IP_RATE_LIMIT_PER_MIN: "1000" };
     const statuses: number[] = [];
-    for (let i = 0; i < 6; i += 1) {
+    for (let i = 0; i < 5; i += 1) {
       const key = "b".repeat(39) + (i % 10);
       const res = await handleRequest(
         new Request(`https://push.example/machines/${key}/claim`, { method: "POST", body: JSON.stringify({ secret: "x" }) }),
@@ -696,10 +696,26 @@ describe("push relay", () => {
       );
       statuses.push(res.status);
     }
-    // With no IP the per-IP/claim gates are skipped, so all 6 reach the handler
-    // (400 for the too-short secret) — a shared `unknown` bucket never throttles
-    // one off-edge caller against another.
-    expect(statuses.every((s) => s === 400)).toBe(true);
+    // No IP header → shared `unknown` bucket, still gated. On the real edge
+    // Cloudflare always sets the header; off-edge (dev) we fail closed so the
+    // unauthenticated /claim write is never bypassed.
+    expect(statuses).toEqual([400, 400, 429, 429, 429]);
+  });
+
+  it("counts rate-limited requests against the daily budget (the cap bounds abuse traffic)", async () => {
+    // A flooding IP is 429'd by the IP gate, but each 429 still ran the Worker —
+    // so it must advance the budget. With budget 3 and IP limit 1, the 4th
+    // request from the same IP flips from a rate-limit 429 to a budget 429.
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), IP_RATE_LIMIT_PER_MIN: "1", DAILY_REQUEST_BUDGET: "3" };
+    const ping = () =>
+      handleRequest(ipRequest(`/machines/${"e".repeat(40)}/devices`, "8.8.8.8", { method: "GET" }), env);
+    const bodies: unknown[] = [];
+    for (let i = 0; i < 4; i += 1) bodies.push(await (await ping()).json());
+    // First request passes the IP gate (then 401); #2 and #3 are rate-limited;
+    // #4 is over the daily budget — proving 429s were counted against the cap.
+    expect(bodies[1]).toMatchObject({ error: "rate limited" });
+    expect(bodies[2]).toMatchObject({ error: "rate limited" });
+    expect(bodies[3]).toMatchObject({ error: "relay daily budget reached" });
   });
 
   it("rate limits a flooding IP without affecting a different IP", async () => {

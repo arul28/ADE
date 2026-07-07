@@ -475,7 +475,9 @@ async function deleteActivityToken(env: PushRelayEnv, machineKey: string, device
  */
 function logEvent(kind: string, fields: Record<string, unknown> = {}): void {
   try {
-    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-push-relay", kind, ...fields }));
+    // `kind` is spread LAST so a caller field named `kind` can never clobber
+    // the event name that log filters key on.
+    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-push-relay", ...fields, kind }));
   } catch {
     console.log(`ade-push-relay ${kind}`);
   }
@@ -728,7 +730,7 @@ async function deliverAlertItem(
       await clearInvalidToken(env, machineKey, device.device_id, "apns_token");
     }
     if (!result.ok) {
-      logEvent("apns_error", { kind: "alert", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+      logEvent("apns_error", { push: "alert", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
     }
     outcomes.push({
       deviceId: device.device_id,
@@ -815,7 +817,7 @@ async function deliverLiveActivityItem(
         await clearInvalidToken(env, machineKey, device.device_id, "push_to_start_token");
       }
       if (!result.ok) {
-        logEvent("apns_error", { kind: "la_start", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+        logEvent("apns_error", { push: "la_start", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
       }
       outcomes.push({
         deviceId: device.device_id,
@@ -854,7 +856,7 @@ async function deliverLiveActivityItem(
       await deleteActivityToken(env, machineKey, tokenRow.device_id, item.activityId);
     }
     if (!result.ok) {
-      logEvent("apns_error", { kind: `la_${item.event}`, device: tokenRow.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+      logEvent("apns_error", { push: `la_${item.event}`, device: tokenRow.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
     }
     outcomes.push({
       deviceId: tokenRow.device_id,
@@ -1128,24 +1130,24 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   if (budgetTrippedNow()) {
     return budgetExceededResponse();
   }
-  // Cloudflare sets and overwrites cf-connecting-ip on every edge request, so a
-  // missing IP only happens off-edge (local `wrangler dev`, service bindings)
-  // where one shared `unknown` bucket would just throttle callers against each
-  // other. Skip the per-IP gates there — the global daily budget still bounds
-  // spend, and a client cannot strip the header on the real edge to reach here.
-  const ip = clientIp(request);
-  const ipKnown = ip !== "unknown";
-  if (ipKnown) {
-    const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
-    const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
-    if (!ipGate.allowed) {
-      logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
-      return rateLimitedResponse();
-    }
-  }
+  // Count EVERY billable request against the daily budget before any gate can
+  // reject it: a rejected request still ran the Worker (and a D1 read), so it
+  // must advance the spend cap — otherwise a single abusive IP could generate
+  // unbounded billable 429s the cap never sees.
   const budget = await recordDailyBudget(env);
   if (!budget.allowed) {
     return budgetExceededResponse();
+  }
+  // Per-IP gates apply on every route. On the real Cloudflare edge
+  // cf-connecting-ip is always set; when it is absent (local `wrangler dev`,
+  // service bindings) callers share one `unknown` bucket — fail-closed, so the
+  // limits are never bypassed off-edge. A dev machine never approaches them.
+  const ip = clientIp(request);
+  const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
+  const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
+  if (!ipGate.allowed) {
+    logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
+    return rateLimitedResponse();
   }
 
   const route = routeMachine(url.pathname);
@@ -1155,14 +1157,11 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   if (rest.length === 1 && rest[0] === "claim") {
     // Tighter gate on the one unauthenticated write path — closes the
     // machines-table-growth vector without touching the signed endpoints.
-    // (Skipped off-edge for the same reason as the general gate above.)
-    if (ipKnown) {
-      const claimLimit = positiveIntEnv(env.CLAIM_RATE_LIMIT_PER_MIN, DEFAULT_CLAIM_RATE_LIMIT_PER_MIN);
-      const claimGate = await checkRateLimit(env, `claim:${ip}`, claimLimit, RATE_WINDOW_SECONDS);
-      if (!claimGate.allowed) {
-        logEvent("rate_limited", { scope: "claim", ip, count: claimGate.count, limit: claimLimit });
-        return rateLimitedResponse();
-      }
+    const claimLimit = positiveIntEnv(env.CLAIM_RATE_LIMIT_PER_MIN, DEFAULT_CLAIM_RATE_LIMIT_PER_MIN);
+    const claimGate = await checkRateLimit(env, `claim:${ip}`, claimLimit, RATE_WINDOW_SECONDS);
+    if (!claimGate.allowed) {
+      logEvent("rate_limited", { scope: "claim", ip, count: claimGate.count, limit: claimLimit });
+      return rateLimitedResponse();
     }
     return await handleMachineClaim(request, env, machineKey);
   }
