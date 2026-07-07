@@ -744,6 +744,7 @@ type ClaudeRuntime = {
   scheduledWorkIdByTaskId: Map<string, string>;
   scheduledWorkIdByToolUseId: Map<string, string>;
   activeProviderCronIds: Set<string>;
+  activeProviderCronIdsByPrompt: Map<string, Set<string>>;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
   busy: boolean;
   activeTurnId: string | null;
@@ -9937,6 +9938,61 @@ export function createAgentChatService(args: {
   const scheduledWorkInputId = (args: Record<string, unknown>): string | undefined =>
     compactString(args.id) ?? compactString(args.cron_id) ?? compactString(args.cronId);
 
+  const normalizeScheduledWorkLookupText = (value: unknown): string | undefined => {
+    const text = compactString(value);
+    if (!text) return undefined;
+    return text.replace(/\s+/g, " ").toLowerCase();
+  };
+
+  const scheduledWorkPromptLookupKeys = (record: Record<string, unknown>): string[] => {
+    const patch = asRecord(record.patch);
+    return [
+      record.prompt,
+      record.description,
+      record.summary,
+      patch?.description,
+      patch?.prompt,
+    ].map(normalizeScheduledWorkLookupText).filter((key): key is string => Boolean(key));
+  };
+
+  const rememberActiveProviderCron = (
+    runtime: ClaudeRuntime,
+    providerCronId: string,
+    record: Record<string, unknown>,
+  ): void => {
+    runtime.activeProviderCronIds.add(providerCronId);
+    for (const key of scheduledWorkPromptLookupKeys(record)) {
+      let ids = runtime.activeProviderCronIdsByPrompt.get(key);
+      if (!ids) {
+        ids = new Set();
+        runtime.activeProviderCronIdsByPrompt.set(key, ids);
+      }
+      ids.add(providerCronId);
+    }
+  };
+
+  const forgetActiveProviderCron = (runtime: ClaudeRuntime, providerCronId: string): void => {
+    runtime.activeProviderCronIds.delete(providerCronId);
+    for (const [key, ids] of runtime.activeProviderCronIdsByPrompt) {
+      ids.delete(providerCronId);
+      if (!ids.size) runtime.activeProviderCronIdsByPrompt.delete(key);
+    }
+  };
+
+  const activeProviderCronIdForRecord = (
+    runtime: ClaudeRuntime,
+    record: Record<string, unknown>,
+  ): string | undefined => {
+    for (const key of scheduledWorkPromptLookupKeys(record)) {
+      const ids = runtime.activeProviderCronIdsByPrompt.get(key);
+      if (ids?.size === 1) return Array.from(ids)[0];
+    }
+    return undefined;
+  };
+
+  const resolveClaudeScheduledWorkAlias = (runtime: ClaudeRuntime, id: string): string =>
+    runtime.scheduledWorkIdByTaskId.get(id) ?? runtime.scheduledWorkIdByToolUseId.get(id) ?? id;
+
   const baseClaudeToolName = (toolName: string): string => {
     const trimmed = toolName.trim();
     const namespaceSplit = trimmed.split("__").filter(Boolean).pop() ?? trimmed;
@@ -9982,7 +10038,8 @@ export function createAgentChatService(args: {
     const fromTask = runtime.scheduledWorkIdByTaskId.get(taskId);
     if (fromTask) return fromTask;
     const fromTool = parentToolUseId ? runtime.scheduledWorkIdByToolUseId.get(parentToolUseId) : undefined;
-    const resolved = fromTool ?? fallbackScheduledWorkId ?? taskId;
+    const fallback = fallbackScheduledWorkId ? resolveClaudeScheduledWorkAlias(runtime, fallbackScheduledWorkId) : null;
+    const resolved = fromTool ?? fallback ?? taskId;
     runtime.scheduledWorkIdByTaskId.set(taskId, resolved);
     return resolved;
   };
@@ -9994,10 +10051,11 @@ export function createAgentChatService(args: {
     record: Record<string, unknown>,
   ): string => {
     const explicitCronId = scheduledWorkInputId(record);
+    const activeCronId = !parentToolUseId ? activeProviderCronIdForRecord(runtime, record) : undefined;
     const singleActiveCronId = !parentToolUseId && runtime.activeProviderCronIds.size === 1
       ? Array.from(runtime.activeProviderCronIds)[0]
       : undefined;
-    return resolveClaudeScheduledWorkId(runtime, taskId, parentToolUseId, explicitCronId ?? singleActiveCronId);
+    return resolveClaudeScheduledWorkId(runtime, taskId, parentToolUseId, explicitCronId ?? activeCronId ?? singleActiveCronId);
   };
 
   const normalizeClaudeScheduledStatus = (value: unknown): ScheduledWorkEvent["status"] => {
@@ -10066,7 +10124,7 @@ export function createAgentChatService(args: {
       const cronId = scheduledWorkInputId(args);
       if (!cronId) return;
       if (args.recurring !== false) {
-        runtime.activeProviderCronIds.add(cronId);
+        rememberActiveProviderCron(runtime, cronId, args);
       }
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
@@ -10086,16 +10144,19 @@ export function createAgentChatService(args: {
     }
 
     if (tool === "CronDelete") {
-      const id = scheduledWorkInputId(args);
-      if (!id) return;
-      runtime.activeProviderCronIds.delete(id);
+      const inputId = scheduledWorkInputId(args);
+      if (!inputId) return;
+      const id = resolveClaudeScheduledWorkAlias(runtime, inputId);
+      forgetActiveProviderCron(runtime, inputId);
+      forgetActiveProviderCron(runtime, id);
+      const kind = runtime.scheduledWorkKindById.get(id) ?? "cron";
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
         id,
-        kind: "cron",
+        kind,
         status: "cancelled",
-        origin: "cron",
-        title: "Cron cancelled",
+        origin: kind === "wakeup" ? "schedule_wakeup" : "cron",
+        title: kind === "wakeup" ? "Wakeup cancelled" : "Cron cancelled",
         sourceToolUseId: itemId,
         ...(turnId ? { turnId } : {}),
       });
@@ -10160,6 +10221,7 @@ export function createAgentChatService(args: {
     const hasSessionCrons = Array.isArray(hookRecord.session_crons);
     if (hasSessionCrons) {
       runtime.activeProviderCronIds.clear();
+      runtime.activeProviderCronIdsByPrompt.clear();
     }
     const sessionCrons = hasSessionCrons ? hookRecord.session_crons as unknown[] : [];
     for (const rawCron of sessionCrons) {
@@ -10169,7 +10231,7 @@ export function createAgentChatService(args: {
       if (!id) continue;
       const recurring = cron.recurring !== false;
       if (recurring) {
-        runtime.activeProviderCronIds.add(id);
+        rememberActiveProviderCron(runtime, id, cron);
       }
       const scheduledWorkId = recurring ? id : `wakeup:${managed.session.id}`;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
@@ -20587,6 +20649,7 @@ export function createAgentChatService(args: {
     runtime.scheduledWorkIdByTaskId.clear();
     runtime.scheduledWorkIdByToolUseId.clear();
     runtime.activeProviderCronIds.clear();
+    runtime.activeProviderCronIdsByPrompt.clear();
     runtime.warmupDone = null;
     if (options.clearSdkSessionId && runtime.sdkSessionId) {
       logger.info("agent_chat.claude_sdk_session_cleared", {
@@ -21136,6 +21199,7 @@ export function createAgentChatService(args: {
       scheduledWorkIdByTaskId: new Map(),
       scheduledWorkIdByToolUseId: new Map(),
       activeProviderCronIds: new Set(),
+      activeProviderCronIdsByPrompt: new Map(),
       slashCommands: [],
       busy: false,
       activeTurnId: null,

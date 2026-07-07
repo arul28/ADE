@@ -9444,6 +9444,8 @@ describe("createAgentChatService", () => {
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
       let streamCall = 0;
+      let cancelWakeup!: () => void;
+      const cancelWakeupPromise = new Promise<void>((resolve) => { cancelWakeup = resolve; });
 
       const stream = vi.fn(() => (async function* () {
         streamCall += 1;
@@ -9470,6 +9472,33 @@ describe("createAgentChatService", () => {
                 input: {
                   reason: "CI was still running",
                   prompt: "Check CI again.",
+                },
+              },
+            ],
+            usage: { input_tokens: 2, output_tokens: 3 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-wakeup-provider-id",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+
+        await cancelWakeupPromise;
+        yield {
+          type: "assistant",
+          uuid: "assistant-wakeup-provider-delete",
+          message: {
+            id: "msg-wakeup-provider-delete",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-wakeup-provider-delete",
+                name: "CronDelete",
+                input: {
+                  id: "wakeup-provider-1",
                 },
               },
             ],
@@ -9522,6 +9551,16 @@ describe("createAgentChatService", () => {
         }],
       });
 
+      cancelWakeup();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.id === wakeupId
+          && event.event.status === "cancelled",
+      );
+
       const scheduledEvents = events
         .filter((event): event is AgentChatEventEnvelope & {
           event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
@@ -9529,14 +9568,15 @@ describe("createAgentChatService", () => {
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
           && event.event.kind === "wakeup");
-      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId]);
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId, wakeupId]);
+      expect(scheduledEvents.map((event) => event.event.status)).toEqual(["scheduled", "scheduled", "cancelled"]);
 
       const snapshots = deriveScheduledWorkSnapshots(events);
       expect(snapshots).toHaveLength(1);
       expect(snapshots[0]).toMatchObject({
         id: wakeupId,
         kind: "wakeup",
-        status: "scheduled",
+        status: "cancelled",
         prompt: "Check CI again.",
         sourceTaskId: "wakeup-provider-1",
       });
@@ -9663,6 +9703,145 @@ describe("createAgentChatService", () => {
         kind: "cron",
         status: "completed",
         sourceTaskId: "cron-run-task-1",
+      });
+    });
+
+    it("matches parentless recurring cron runs by prompt when multiple provider crons are active", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startCronRun!: () => void;
+      const startCronRunPromise = new Promise<void>((resolve) => { startCronRun = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-parentless-multiple",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-parentless-multiple",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startCronRunPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-cron-parentless-multiple",
+          task_id: "cron-run-task-multiple",
+          task_type: "cron",
+          description: "Review issue comments.",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-cron-parentless-multiple",
+          task_id: "cron-run-task-multiple",
+          task_type: "cron",
+          patch: { status: "completed" },
+          summary: "One new review comment was found.",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-parentless-multiple",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-parentless-multiple",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule two recurring crons.",
+      });
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [
+          {
+            id: "cron-provider-multiple-ci",
+            schedule: "*/15 * * * *",
+            prompt: "Check CI status.",
+            recurring: true,
+          },
+          {
+            id: "cron-provider-multiple-review",
+            schedule: "*/20 * * * *",
+            prompt: "Review issue comments.",
+            recurring: true,
+          },
+        ],
+      });
+
+      startCronRun();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.id === "cron-provider-multiple-review"
+          && event.event.status === "completed",
+      );
+
+      const scheduledEvents = events
+        .filter((event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.kind === "cron");
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([
+        "cron-provider-multiple-ci",
+        "cron-provider-multiple-review",
+        "cron-provider-multiple-review",
+        "cron-provider-multiple-review",
+      ]);
+      expect(scheduledEvents.map((event) => event.event.id)).not.toContain("cron-run-task-multiple");
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(2);
+      expect(snapshots.find((snapshot) => snapshot.id === "cron-provider-multiple-ci")).toMatchObject({
+        id: "cron-provider-multiple-ci",
+        kind: "cron",
+        status: "scheduled",
+      });
+      expect(snapshots.find((snapshot) => snapshot.id === "cron-provider-multiple-review")).toMatchObject({
+        id: "cron-provider-multiple-review",
+        kind: "cron",
+        status: "completed",
+        sourceTaskId: "cron-run-task-multiple",
       });
     });
   });
