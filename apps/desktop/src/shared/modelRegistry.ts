@@ -713,6 +713,8 @@ export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: stri
 function normalizeAnthropicRuntimeAlias(modelId: string): {
   modelId: string;
   displayName: string;
+  contextWindow: number;
+  maxOutputTokens: number;
   capabilities: ModelCapabilities;
   reasoningTiers?: string[];
   serviceTiers?: string[];
@@ -728,6 +730,8 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     return {
       modelId: "claude-sonnet-5",
       displayName: "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
       reasoningTiers: ["low", "medium", "high", "max"],
       wasAlias: normalized !== "claude-sonnet-5",
@@ -747,6 +751,8 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     return {
       modelId: "claude-opus-4-8",
       displayName: "Claude Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: ALL_CAPS,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
       serviceTiers: ["fast"],
@@ -851,8 +857,8 @@ export function createDynamicOpenCodeModelDescriptor(
     displayName,
     family,
     authTypes,
-    contextWindow: options?.contextWindow ?? 200_000,
-    maxOutputTokens: options?.maxOutputTokens ?? 32_000,
+    contextWindow: options?.contextWindow ?? anthropicRuntime?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? anthropicRuntime?.maxOutputTokens ?? 32_000,
     capabilities,
     color,
     providerRoute: "opencode",

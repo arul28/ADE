@@ -50,6 +50,8 @@ describe("modelRegistry", () => {
       displayName: "Claude Sonnet 5",
       providerModelId: "anthropic/claude-sonnet-5",
       openCodeModelId: "claude-sonnet-5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
       reasoningTiers: ["low", "medium", "high", "max"],
     });
@@ -58,6 +60,8 @@ describe("modelRegistry", () => {
       displayName: "Claude Opus 4.8 1M",
       providerModelId: "anthropic/claude-opus-4-8",
       openCodeModelId: "claude-opus-4-8",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
       serviceTiers: ["fast"],
