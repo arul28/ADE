@@ -541,9 +541,7 @@ final class ADETests: XCTestCase {
           isAvailable: true,
           isCached: true
         ),
-      ],
-      fallbackProjectId: "project-active",
-      fallbackProjectRootPath: "/tmp/project-active"
+      ]
     )
 
     XCTAssertEqual(scope.projectId, "project-lane")
@@ -556,13 +554,73 @@ final class ADETests: XCTestCase {
 
     let scope = workShellProjectScope(
       for: lane,
-      projects: [],
-      fallbackProjectId: "project-active",
-      fallbackProjectRootPath: "/tmp/project-active"
+      projects: []
     )
 
     XCTAssertEqual(scope.projectId, "project-foreign")
     XCTAssertNil(scope.projectRootPath)
+  }
+
+  func testWorkShellProjectScopeDoesNotFallbackToActiveProjectWhenLaneScopeIsMissing() {
+    let lane = makeLaneSummary(id: "lane-missing", name: "Missing", laneType: "worktree", branchRef: "ade/missing")
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-active",
+          displayName: "Active",
+          rootPath: "/tmp/project-active",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertNil(scope.projectId)
+    XCTAssertNil(scope.projectRootPath)
+  }
+
+  @MainActor
+  func testQueuedShellStartDoesNotFallbackToActiveProjectWhenLaneScopeIsMissing() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "work.startCliSession",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-active", rootPath: "/tmp/project-active")
+    service.disconnect()
+
+    do {
+      _ = try await service.startShellSession(laneId: "lane-missing")
+      XCTFail("Expected queued shell start to throw after persisting the operation.")
+    } catch is QueuedRemoteCommandError {
+      // Expected: the shell command was queued for replay.
+    }
+
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.kind, "command")
+    XCTAssertEqual(queued.first?.action, "work.startCliSession")
+    XCTAssertNil(queued.first?.projectId)
+    XCTAssertNil(queued.first?.projectRootPath)
+    XCTAssertEqual(queued.first?.fallbackToActiveProjectScope, false)
   }
 
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {

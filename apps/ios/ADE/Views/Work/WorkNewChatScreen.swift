@@ -55,9 +55,7 @@ private func workPath(_ candidate: String, isEqualToOrInside root: String) -> Bo
 
 func workShellProjectScope(
   for lane: LaneSummary,
-  projects: [MobileProjectSummary],
-  fallbackProjectId: String?,
-  fallbackProjectRootPath: String?
+  projects: [MobileProjectSummary]
 ) -> WorkProjectCommandScope {
   let laneProjectId = workNonEmptyScopeValue(lane.projectId)
   let projectById = laneProjectId.flatMap { id in projects.first { $0.id == id } }
@@ -70,10 +68,8 @@ func workShellProjectScope(
   }
 
   let project = projectById ?? projectByLanePath
-  let projectId = project?.id ?? laneProjectId ?? workNonEmptyScopeValue(fallbackProjectId)
-  let shouldUseFallbackRoot = laneProjectId == nil && project == nil
+  let projectId = project?.id ?? laneProjectId
   let rootPath = syncNormalizedProjectRootScope(project?.rootPath)
-    ?? (shouldUseFallbackRoot ? syncNormalizedProjectRootScope(fallbackProjectRootPath) : nil)
 
   return WorkProjectCommandScope(projectId: projectId, projectRootPath: rootPath)
 }
@@ -547,6 +543,7 @@ struct WorkNewChatScreen: View {
   @State private var selectedModelOption: WorkModelOption?
   @State private var sessionMode: WorkNewSessionMode = .chat
   @State private var shellLaunchBusy: Bool = false
+  @State private var queuedShellLaneIds = Set<String>()
   /// Status banner shown above the composer while an auto-created lane is being
   /// minted before the chat/CLI session starts.
   @State private var autoCreateStatus: String?
@@ -814,15 +811,17 @@ struct WorkNewChatScreen: View {
   private var sessionActionChips: some View {
     if let lane = selectedConcreteLane {
       let chipsDisabled = busy || shellLaunchBusy
+      let shellQueued = queuedShellLaneIds.contains(lane.id)
+      let shellDisabled = chipsDisabled || shellQueued
       HStack(spacing: 8) {
         Spacer(minLength: 0)
         Button {
           Task { await launchShell(in: lane) }
         } label: {
-          shellSessionAffordance(isBusy: shellLaunchBusy, disabled: chipsDisabled)
+          shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
         }
         .buttonStyle(.plain)
-        .disabled(chipsDisabled)
+        .disabled(shellDisabled)
 
         NavigationLink {
           WorkImportSessionScreen(
@@ -843,18 +842,22 @@ struct WorkNewChatScreen: View {
     }
   }
 
-  private func shellSessionAffordance(isBusy: Bool, disabled: Bool) -> some View {
+  private func shellSessionAffordance(isBusy: Bool, isQueued: Bool, disabled: Bool) -> some View {
     HStack(spacing: 6) {
       if isBusy {
         ProgressView()
           .controlSize(.mini)
           .tint(ADEColor.accent)
+      } else if isQueued {
+        Image(systemName: "clock.badge.checkmark")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
       } else {
         Image(systemName: "terminal")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
       }
-      Text(isBusy ? "Starting shell" : "Shell")
+      Text(isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Shell"))
         .font(.subheadline.weight(.medium))
         .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
     }
@@ -863,7 +866,7 @@ struct WorkNewChatScreen: View {
     .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
     .overlay { Capsule(style: .continuous).stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6) }
     .opacity(disabled && !isBusy ? 0.5 : 1)
-    .accessibilityLabel(isBusy ? "Starting shell" : "Open shell")
+    .accessibilityLabel(isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Open shell"))
   }
 
   private func importSessionAffordance(disabled: Bool) -> some View {
@@ -936,9 +939,7 @@ struct WorkNewChatScreen: View {
     do {
       let scope = workShellProjectScope(
         for: lane,
-        projects: syncService.projects,
-        fallbackProjectId: activeProjectId,
-        fallbackProjectRootPath: activeProjectRootPath
+        projects: syncService.projects
       )
       let result = try await syncService.startShellSession(
         laneId: lane.id,
@@ -974,9 +975,10 @@ struct WorkNewChatScreen: View {
           chatIdleSinceAt: nil
         ))
       }
-    } catch let queuedError as QueuedRemoteCommandError {
+    } catch is QueuedRemoteCommandError {
       ADEHaptics.medium()
-      errorMessage = queuedError.errorDescription
+      queuedShellLaneIds.insert(lane.id)
+      errorMessage = nil
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription

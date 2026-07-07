@@ -2811,6 +2811,7 @@ final class SyncService: ObservableObject {
     let hostId: String?
     let projectId: String?
     let projectRootPath: String?
+    let fallbackToActiveProjectScope: Bool?
   }
 
   init(database: DatabaseService = DatabaseService()) {
@@ -5491,7 +5492,8 @@ final class SyncService: ObservableObject {
     cols: Int? = nil,
     rows: Int? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    fallbackToActiveProjectScope: Bool = true
   ) async throws -> StartCliSessionResult {
     var args: [String: Any] = [
       "laneId": laneId,
@@ -5526,6 +5528,7 @@ final class SyncService: ObservableObject {
       args: args,
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope,
       as: StartCliSessionResult.self
     )
   }
@@ -5547,7 +5550,8 @@ final class SyncService: ObservableObject {
       cols: request.cols,
       rows: request.rows,
       targetProjectId: request.targetProjectId,
-      targetProjectRootPath: request.targetProjectRootPath
+      targetProjectRootPath: request.targetProjectRootPath,
+      fallbackToActiveProjectScope: false
     )
   }
 
@@ -8855,14 +8859,15 @@ final class SyncService: ObservableObject {
     terminalBufferRevision += 1
   }
 
-  func pendingOperationsForTesting() -> [(id: String, kind: String, action: String, projectId: String?, projectRootPath: String?)] {
+  func pendingOperationsForTesting() -> [(id: String, kind: String, action: String, projectId: String?, projectRootPath: String?, fallbackToActiveProjectScope: Bool?)] {
     loadPendingOperations().map { operation in
       (
         id: operation.id,
         kind: operation.kind,
         action: operation.action,
         projectId: operation.projectId,
-        projectRootPath: operation.projectRootPath
+        projectRootPath: operation.projectRootPath,
+        fallbackToActiveProjectScope: operation.fallbackToActiveProjectScope
       )
     }
   }
@@ -9908,6 +9913,7 @@ final class SyncService: ObservableObject {
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
+    fallbackToActiveProjectScope: Bool = true,
     as type: T.Type
   ) async throws -> T {
     let response = try await sendCommand(
@@ -9916,7 +9922,8 @@ final class SyncService: ObservableObject {
       disconnectOnTimeout: disconnectOnTimeout,
       timeoutNanoseconds: timeoutNanoseconds,
       targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath
+      targetProjectRootPath: targetProjectRootPath,
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope
     )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
@@ -10070,7 +10077,8 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     id: String? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    fallbackToActiveProjectScope: Bool = true
   ) throws {
     guard JSONSerialization.isValidJSONObject(args) else {
       throw NSError(domain: "ADE", code: 11, userInfo: [NSLocalizedDescriptionKey: "Invalid queued operation payload."])
@@ -10084,8 +10092,9 @@ final class SyncService: ObservableObject {
       payload: payload,
       queuedAt: syncDateFormatter.string(from: Date()),
       hostId: activeHostStorageKey(),
-      projectId: targetProjectId ?? activeProjectId,
-      projectRootPath: targetProjectRootPath ?? activeProjectRootPath
+      projectId: fallbackToActiveProjectScope ? (targetProjectId ?? activeProjectId) : targetProjectId,
+      projectRootPath: fallbackToActiveProjectScope ? (targetProjectRootPath ?? activeProjectRootPath) : targetProjectRootPath,
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope
     ))
     savePendingOperations(queued)
     if canSendLiveRequests() {
@@ -10192,7 +10201,8 @@ final class SyncService: ObservableObject {
             args: args,
             commandId: operation.id,
             targetProjectId: operation.projectId,
-            targetProjectRootPath: operation.projectRootPath
+            targetProjectRootPath: operation.projectRootPath,
+            fallbackToActiveProjectScope: operation.fallbackToActiveProjectScope ?? true
           )
         case "file":
           guard queueableFileActions.contains(operation.action) else {
@@ -10248,7 +10258,8 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
@@ -10258,9 +10269,10 @@ final class SyncService: ObservableObject {
     // `targetProjectId` lets a command create-in-place in a NON-active project
     // (mobile hub composer): the host routes the command to that project's scope
     // via the command-payload projectId without switching the phone's active
-    // sync project. Defaults to the active project for every existing caller.
-    let resolvedProjectId = targetProjectId ?? self.activeProjectId
-    let resolvedProjectRootPath = targetProjectRootPath ?? self.activeProjectRootPath
+    // sync project. Most callers default to the active project; shell launches
+    // opt out when the selected lane does not carry trustworthy project scope.
+    let resolvedProjectId = fallbackToActiveProjectScope ? (targetProjectId ?? self.activeProjectId) : targetProjectId
+    let resolvedProjectRootPath = fallbackToActiveProjectScope ? (targetProjectRootPath ?? self.activeProjectRootPath) : targetProjectRootPath
     let raw = try await awaitResponse(
       requestId: requestId,
       disconnectOnTimeout: disconnectOnTimeout,
@@ -10289,7 +10301,8 @@ final class SyncService: ObservableObject {
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
     targetProjectId: String? = nil,
-    targetProjectRootPath: String? = nil
+    targetProjectRootPath: String? = nil,
+    fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     let commandId = makeRequestId()
     if canSendLiveRequests() {
@@ -10302,7 +10315,8 @@ final class SyncService: ObservableObject {
           timeoutMessage: timeoutMessage,
           timeoutNanoseconds: timeoutNanoseconds,
           targetProjectId: targetProjectId,
-          targetProjectRootPath: targetProjectRootPath
+          targetProjectRootPath: targetProjectRootPath,
+          fallbackToActiveProjectScope: fallbackToActiveProjectScope
         )
       } catch {
         let stillLive = canSendLiveRequests()
@@ -10317,7 +10331,8 @@ final class SyncService: ObservableObject {
             args: args,
             id: commandId,
             targetProjectId: targetProjectId,
-            targetProjectRootPath: targetProjectRootPath
+            targetProjectRootPath: targetProjectRootPath,
+            fallbackToActiveProjectScope: fallbackToActiveProjectScope
           )
           if stillLive, isSyncRequestTimeoutError(error) {
             verifyTransportAliveAfterRequestTimeout(error as NSError)
@@ -10338,7 +10353,8 @@ final class SyncService: ObservableObject {
       action: action,
       args: args,
       targetProjectId: targetProjectId,
-      targetProjectRootPath: targetProjectRootPath
+      targetProjectRootPath: targetProjectRootPath,
+      fallbackToActiveProjectScope: fallbackToActiveProjectScope
     )
     return ["queued": true]
   }
