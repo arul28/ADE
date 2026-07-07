@@ -27,6 +27,8 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 4_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+const MAX_CONSECUTIVE_AUTH_FAILURES = 5;
+const VISIBILITY_RECONNECT_DEBOUNCE_MS = 1_000;
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -122,6 +124,8 @@ export class SyncConnection {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private backoffMs = BACKOFF_MIN_MS;
+  private consecutiveAuthFailures = 0;
+  private lastDialStartedAtMs = 0;
   private intentionalClose = false;
   private latestHello: SyncHelloOkPayload | null = null;
   private readonly listeners: ListenerMap = {
@@ -184,11 +188,13 @@ export class SyncConnection {
     this.environment = environment;
     this.endpoints = endpoints;
     this.shouldReconnect = true;
+    this.consecutiveAuthFailures = 0;
     await this.connectWithCandidates(environment, endpoints);
   }
 
   async pairAndConnect(args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Pairing" });
+    this.consecutiveAuthFailures = 0;
     const dialable = args.endpoints.filter((candidate) => candidate.dialable);
     if (dialable.length === 0) throw new Error("No dialable sync endpoint is available.");
     let lastError: Error | null = null;
@@ -243,6 +249,7 @@ export class SyncConnection {
   }
 
   private async connectWithCandidates(environment: WebClientEnvironmentRecord, endpoints: BrowserDialCandidate[]): Promise<void> {
+    this.lastDialStartedAtMs = Date.now();
     const dialable = endpoints.filter((candidate) => candidate.dialable);
     if (dialable.length === 0) throw new Error("No dialable sync endpoint is available.");
     this.setStatus({
@@ -260,10 +267,22 @@ export class SyncConnection {
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         this.cleanupSocket();
-        if (error instanceof SyncConnectionError && error.code === "attributed_auth_failed") break;
+        if (
+          error instanceof SyncConnectionError
+          && (error.code === "attributed_auth_failed" || error.code === "terminal_auth_failed")
+        ) {
+          break;
+        }
       }
     }
     const message = lastError?.message ?? "Failed to connect to ADE machine.";
+    if (
+      lastError instanceof SyncConnectionError
+      && (lastError.code === "attributed_auth_failed" || lastError.code === "terminal_auth_failed")
+    ) {
+      this.emit("error", lastError);
+      throw lastError;
+    }
     this.setStatus({ state: "error", error: message, endpoint: null, connectedAt: null });
     this.emit("error", lastError ?? new Error(message));
     if (this.shouldReconnect) this.scheduleReconnect();
@@ -495,6 +514,7 @@ export class SyncConnection {
     this.environment = environment;
     this.latestHello = helloOk;
     this.backoffMs = BACKOFF_MIN_MS;
+    this.consecutiveAuthFailures = 0;
     this.setStatus({
       state: "connected",
       endpoint,
@@ -511,12 +531,21 @@ export class SyncConnection {
 
   private handleAuthFailure(environment: WebClientEnvironmentRecord, payload: SyncHelloErrorPayload): SyncConnectionError {
     const attributedToPairing = payload.host?.deviceId === environment.hostDeviceId;
+    this.consecutiveAuthFailures += 1;
     this.emit("authFailed", { payload, attributedToPairing });
     if (attributedToPairing) {
       this.shouldReconnect = false;
       this.setStatus({ state: "auth_failed", error: payload.message });
       this.emit("pairingRejected", { envId: environment.envId, hostDeviceId: environment.hostDeviceId });
       return new SyncConnectionError(payload.message, "attributed_auth_failed", payload);
+    }
+    if (this.consecutiveAuthFailures >= MAX_CONSECUTIVE_AUTH_FAILURES) {
+      this.shouldReconnect = false;
+      this.setStatus({
+        state: "auth_failed",
+        error: "Pairing invalid. Pair this browser with your ADE machine again.",
+      });
+      return new SyncConnectionError(payload.message, "terminal_auth_failed", payload);
     }
     this.setStatus({ state: "error", error: payload.message });
     return new SyncConnectionError(payload.message, "auth_failed", payload);
@@ -548,10 +577,10 @@ export class SyncConnection {
     if (this.shouldReconnect) this.scheduleReconnect();
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(minimumDelayMs = 0): void {
     if (!this.environment || !visible(this.documentRef) || this.reconnectTimer) return;
     const jitter = Math.floor(Math.random() * 350);
-    const delay = Math.min(BACKOFF_MAX_MS, this.backoffMs) + jitter;
+    const delay = Math.max(minimumDelayMs, Math.min(BACKOFF_MAX_MS, this.backoffMs) + jitter);
     this.backoffMs = Math.min(BACKOFF_MAX_MS, this.backoffMs * 2);
     this.setStatus({ state: "reconnecting" });
     this.reconnectTimer = setTimeout(() => {
@@ -565,13 +594,12 @@ export class SyncConnection {
 
   private readonly handleVisibilityChange = () => {
     if (!visible(this.documentRef) || this.isConnected() || !this.environment || !this.shouldReconnect) return;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    void this.connectWithCandidates(this.environment, this.endpoints).catch(() => {
-      if (this.shouldReconnect) this.scheduleReconnect();
-    });
+    if (this.reconnectTimer || this.status.state === "connecting" || this.status.state === "reconnecting") return;
+    const elapsedSinceDialMs = Date.now() - this.lastDialStartedAtMs;
+    const debounceDelayMs = elapsedSinceDialMs < VISIBILITY_RECONNECT_DEBOUNCE_MS
+      ? VISIBILITY_RECONNECT_DEBOUNCE_MS - elapsedSinceDialMs
+      : 0;
+    this.scheduleReconnect(debounceDelayMs);
   };
 
   private cleanupSocket(): void {

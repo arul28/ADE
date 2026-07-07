@@ -1,5 +1,5 @@
 import { gzipSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   SyncEnvelope,
   SyncFeatureFlags,
@@ -102,6 +102,12 @@ function helloOk(projectId = "project-1"): SyncHelloOkPayload {
   };
 }
 
+function helloOkWithoutProjects(): SyncHelloOkPayload {
+  const payload = helloOk();
+  delete payload.projects;
+  return payload;
+}
+
 class ScriptedSocket implements WebSocketLike {
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
@@ -151,6 +157,10 @@ function createSocketFactory(handler: (socket: ScriptedSocket, envelope: SyncEnv
 
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function flushMicrotasks(): Promise<void> {
+  for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
 
 async function makeEnvironment(storage: MemoryStorage, overrides: Partial<WebClientEnvironmentRecord> = {}): Promise<WebClientEnvironmentRecord> {
@@ -370,6 +380,11 @@ describe("browser sync endpoints and storage", () => {
 });
 
 describe("browser sync connection and client", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it("pairs, sends a paired DPoP hello, persists the environment, and connects", async () => {
     const storage = new MemoryStorage();
     const sequence: string[] = [];
@@ -449,6 +464,57 @@ describe("browser sync connection and client", () => {
     ambiguousClient.dispose();
   });
 
+  it("stops reconnecting and emits auth_failed after repeated unattributed auth failures", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { addressCandidates: [], port: 0, dpopPublicKeyX963: null });
+    const states: string[] = [];
+    let helloAttempts = 0;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        helloAttempts += 1;
+        socket.serverSend({
+          type: "hello_error",
+          requestId: envelope.requestId,
+          payload: {
+            code: "auth_failed",
+            message: "Browser peer type is not recognized.",
+          },
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    client.subscribe((status) => states.push(status.state));
+
+    const initialConnect = client.connect(environment.envId).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+
+    await expect(initialConnect).resolves.toBeInstanceOf(Error);
+    for (let tick = 0; tick < 60 && client.getStatus().state !== "auth_failed"; tick += 1) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(0);
+      await flushMicrotasks();
+    }
+
+    expect(helloAttempts).toBe(5);
+    expect(states).toContain("auth_failed");
+    expect(client.getStatus()).toMatchObject({
+      state: "auth_failed",
+      selectedEnvId: environment.envId,
+    });
+
+    const socketCountAfterTerminalFailure = script.sockets.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    expect(helloAttempts).toBe(5);
+    expect(script.sockets).toHaveLength(socketCountAfterTerminalFailure);
+    expect(await client.listEnvironments()).toHaveLength(1);
+    client.dispose();
+  });
+
   it("resubscribes chat and terminal streams with watermarks after reconnect", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
@@ -508,6 +574,62 @@ describe("browser sync connection and client", () => {
       sinceOffset: 42,
     });
     client.dispose();
+  });
+
+  it("serves the hello catalog from cache and coalesces concurrent catalog requests", async () => {
+    const cachedStorage = new MemoryStorage();
+    const cachedEnvironment = await makeEnvironment(cachedStorage);
+    let cachedCatalogRequests = 0;
+    const cachedScript = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+      if (envelope.type === "project_catalog_request") {
+        cachedCatalogRequests += 1;
+      }
+    });
+    const cachedClient = new AdeSyncClient({ storage: cachedStorage, socketFactory: cachedScript.factory, document: null });
+    await cachedClient.connect(cachedEnvironment.envId);
+
+    await expect(cachedClient.getProjectCatalog()).resolves.toMatchObject({
+      projects: [{ id: "project-1" }],
+    });
+    expect(cachedCatalogRequests).toBe(0);
+    cachedClient.dispose();
+
+    const uncachedStorage = new MemoryStorage();
+    const uncachedEnvironment = await makeEnvironment(uncachedStorage);
+    let catalogRequests = 0;
+    let catalogRequestId: string | null = null;
+    const uncachedScript = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOkWithoutProjects() });
+      }
+      if (envelope.type === "project_catalog_request") {
+        catalogRequests += 1;
+        catalogRequestId = envelope.requestId ?? null;
+      }
+    });
+    const uncachedClient = new AdeSyncClient({ storage: uncachedStorage, socketFactory: uncachedScript.factory, document: null });
+    await uncachedClient.connect(uncachedEnvironment.envId);
+
+    const first = uncachedClient.getProjectCatalog();
+    const second = uncachedClient.getProjectCatalog();
+    await flush();
+    expect(catalogRequests).toBe(1);
+    const catalogSocket = uncachedScript.sockets.at(-1);
+    expect(catalogSocket).toBeTruthy();
+    catalogSocket!.serverSend({
+      type: "project_catalog",
+      requestId: catalogRequestId,
+      payload: { projects: helloOk("project-2").projects ?? [] },
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { projects: helloOk("project-2").projects },
+      { projects: helloOk("project-2").projects },
+    ]);
+    uncachedClient.dispose();
   });
 
   it("correlates command ack/result, tolerates result before ack, and surfaces host error codes", async () => {

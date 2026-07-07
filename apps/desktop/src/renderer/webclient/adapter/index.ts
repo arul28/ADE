@@ -1,4 +1,5 @@
 import type { ProjectInfo } from "../../../shared/types";
+import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { createAgentChatNamespace } from "./agentChat";
 import { createAppNamespace, webUpdateMethods } from "./app";
@@ -41,7 +42,7 @@ export const WEB_HIDDEN_CAPABILITIES = {
   automations: false,
 } as const;
 
-export function createAdeWebAdapter(client: AdeSyncClient): AdeWebAdapter {
+export function createAdeWebAdapter(client: AdeSyncClient, initialCatalog?: SyncMobileProjectSummary[]): AdeWebAdapter {
   const disposers: Array<() => void> = [];
   const addDispose = (dispose: () => void) => disposers.push(dispose);
   const state = createProjectState(client);
@@ -60,7 +61,11 @@ export function createAdeWebAdapter(client: AdeSyncClient): AdeWebAdapter {
   };
 
   addDispose(state.dispose);
-  void client.getProjectCatalog().then((catalog) => state.updateCatalog(catalog.projects)).catch(() => undefined);
+  if (initialCatalog) {
+    state.updateCatalog(initialCatalog);
+  } else {
+    void client.getProjectCatalog().then((catalog) => state.updateCatalog(catalog.projects)).catch(() => undefined);
+  }
   addDispose(
     createInvalidationScheduler(
       (listener) => client.onTablesChanged(listener),

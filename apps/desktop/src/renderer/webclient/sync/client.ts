@@ -105,7 +105,7 @@ type ListenerMap = {
   [K in keyof ClientEvents]: Set<(payload: ClientEvents[K]) => void>;
 };
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 65_000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -253,6 +253,7 @@ export class AdeSyncClient {
     if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
+    this.currentCatalog = null;
     await this.envStore.setSelectedEnvId(envId);
     const endpoints = deriveBrowserSyncEndpoints({ environment });
     await this.connection.connect(environment, endpoints);
@@ -260,6 +261,7 @@ export class AdeSyncClient {
 
   disconnect(): void {
     this.connection.disconnect({ reconnect: false });
+    this.currentCatalog = null;
     this.rejectAllPending(new AdeSyncError("Disconnected from ADE machine.", "disconnected"));
     this.emitStatus();
   }
@@ -438,6 +440,8 @@ export class AdeSyncClient {
   }
 
   async getProjectCatalog(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<SyncProjectCatalogPayload> {
+    if (this.currentCatalog) return this.currentCatalog;
+    const shouldSendRequest = this.pendingProjectCatalog.length === 0;
     const promise = new Promise<SyncProjectCatalogPayload>((resolve, reject) => {
       const pending: PendingRequest<SyncProjectCatalogPayload> = {
         resolve,
@@ -450,11 +454,17 @@ export class AdeSyncClient {
       };
       this.pendingProjectCatalog.push(pending);
     });
-    this.connection.send({
-      type: "project_catalog_request",
-      requestId: uuid(),
-      payload: {},
-    });
+    if (shouldSendRequest) {
+      try {
+        this.connection.send({
+          type: "project_catalog_request",
+          requestId: uuid(),
+          payload: {},
+        });
+      } catch (error) {
+        this.rejectPendingProjectCatalog(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
     return await promise;
   }
 
@@ -689,6 +699,14 @@ export class AdeSyncClient {
     }
   }
 
+  private rejectPendingProjectCatalog(error: Error): void {
+    const pending = this.pendingProjectCatalog.splice(0);
+    for (const request of pending) {
+      clearTimeout(request.timer);
+      request.reject(error);
+    }
+  }
+
   private rejectAllPending(error: Error): void {
     for (const [requestId, pending] of this.pendingCommands) {
       clearTimeout(pending.timer);
@@ -710,10 +728,7 @@ export class AdeSyncClient {
       this.pendingProjectSwitches.delete(requestId);
       pending.reject(error);
     }
-    for (const pending of this.pendingProjectCatalog.splice(0)) {
-      clearTimeout(pending.timer);
-      pending.reject(error);
-    }
+    this.rejectPendingProjectCatalog(error);
   }
 
   private async persistCurrentEnvironment(

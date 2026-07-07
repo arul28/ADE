@@ -21,9 +21,9 @@ type AdeWebAdapter = {
   dispose: () => void;
 };
 
-async function loadAdapter(client: AdeSyncClient): Promise<AdeWebAdapter> {
+async function loadAdapter(client: AdeSyncClient, initialCatalog?: SyncMobileProjectSummary[]): Promise<AdeWebAdapter> {
   const module = await import("../adapter/index");
-  return module.createAdeWebAdapter(client);
+  return module.createAdeWebAdapter(client, initialCatalog);
 }
 
 async function loadAppRoot(): Promise<React.ComponentType> {
@@ -110,9 +110,14 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     return list;
   }, [client]);
 
+  const showPairing = useCallback((reloadOnSuccess: boolean) => {
+    fatalRebootRef.current = false;
+    setPhase({ kind: "pairing", reloadOnSuccess });
+  }, []);
+
   // Bring the connected machine's catalog + selected project online, then mount
   // the shared App with the sync-backed adapter installed on window.ade.
-  const enterProject = useCallback(async (project: SyncMobileProjectSummary) => {
+  const enterProject = useCallback(async (project: SyncMobileProjectSummary, catalogSeed?: SyncMobileProjectSummary[]) => {
     // Switch onto the target project's host only when it isn't already the
     // active one. The host serves file_request/commands for the peer's bound
     // project without a redundant switch, so avoid the extra disconnect +
@@ -121,7 +126,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
       await client.switchProject(project.id).catch(() => {});
     }
     if (!adapterRef.current) {
-      adapterRef.current = await loadAdapter(client);
+      adapterRef.current = await loadAdapter(client, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
     adapterRef.current.bindProject(toProjectInfo(project));
@@ -158,7 +163,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
       ?? (projects.length === 1 ? projects[0] : null);
 
     if (chosen) {
-      await enterProject(chosen);
+      await enterProject(chosen, projects);
     } else {
       setPhase({ kind: "project-picker", projects });
     }
@@ -209,15 +214,22 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
   useEffect(() => {
     return client.subscribe((next) => {
       setStatus(next);
-      // Pairing revoked / auth failed and attributed to this host: the client
-      // has already dropped the environment. Cold-reboot to reconnect to any
-      // remaining machine, or land on the welcome screen.
-      if (next.state === "auth_failed" && !fatalRebootRef.current && phaseIsReadyRef.current) {
+      // Pairing revoked or invalid after capped auth failures. Drop the selected
+      // environment locally so a reboot/retry cannot loop on the stale secret.
+      if (next.state === "auth_failed" && !fatalRebootRef.current) {
         fatalRebootRef.current = true;
-        window.location.assign("/");
+        void (async () => {
+          if (next.selectedEnvId) await client.removeEnvironment(next.selectedEnvId).catch(() => undefined);
+          await refreshEnvironments().catch(() => undefined);
+          if (phaseIsReadyRef.current) {
+            window.location.assign("/");
+          } else {
+            setPhase({ kind: "welcome" });
+          }
+        })();
       }
     });
-  }, [client]);
+  }, [client, refreshEnvironments]);
 
   useEffect(() => {
     return client.onProjectCatalog((payload) => setCatalog(payload.projects));
@@ -251,7 +263,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     })();
   }, [client]);
 
-  const onPairNew = useCallback(() => setPhase({ kind: "pairing", reloadOnSuccess: true }), []);
+  const onPairNew = useCallback(() => showPairing(true), [showPairing]);
 
   // ---- Render -------------------------------------------------------------
   switch (phase.kind) {
@@ -260,7 +272,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
     case "connecting":
       return <Connecting name={phase.name} />;
     case "welcome":
-      return <Welcome onPair={() => setPhase({ kind: "pairing", reloadOnSuccess: false })} />;
+      return <Welcome onPair={() => showPairing(false)} />;
     case "pairing":
       return (
         <PairFlow
@@ -268,6 +280,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
           hash={window.location.hash}
           onBack={environments.length > 0 ? () => setPhase({ kind: "loading" }) : undefined}
           onPaired={(environment) => {
+            fatalRebootRef.current = false;
             // Consumed the pairing payload — clear it from the address bar.
             window.history.replaceState(null, "", "/");
             if (phase.reloadOnSuccess) {
@@ -290,7 +303,7 @@ export function WebClientRoot({ client }: { client: AdeSyncClient }) {
           machineName={status.hostName}
           onPick={(project) => {
             setPhase({ kind: "connecting", name: project.displayName });
-            void enterProject(project).catch((error) => {
+            void enterProject(project, phase.projects).catch((error) => {
               setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
             });
           }}
