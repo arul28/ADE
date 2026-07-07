@@ -2,12 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>com.apple.developer.associated-appclip-app-identifiers</key>
+	<key>com.apple.developer.parent-application-identifiers</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.ade.ios.Clip</string>
+		<string>$(AppIdentifierPrefix)com.ade.ios</string>
 	</array>
-	<key>aps-environment</key>
-	<string>development</string>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>appclips:ade-app.dev</string>
+	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
 		<string>group.com.ade.ios</string>
