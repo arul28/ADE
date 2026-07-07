@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,12 @@ import { createExternalSessionsService } from "./externalSessionsService";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFile: vi.fn() };
+});
+
+const execFileMock = vi.mocked(execFile);
 let root: string;
 
 function writeJsonl(filePath: string, rows: unknown[]): void {
@@ -20,6 +27,7 @@ function makeLogger() {
 }
 
 beforeEach(() => {
+  execFileMock.mockReset();
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-external-service-"));
 });
 
@@ -82,6 +90,136 @@ describe("externalSessionsService", () => {
         importToChat: true,
       },
     });
+  });
+
+  it("reports droid fork disabled while the probe is pending and honors the override", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "droid-session-1";
+    writeJsonl(path.join(homeDir, ".factory", "sessions", "repo", `${id}.jsonl`), [
+      {
+        type: "session_start",
+        id,
+        cwd: laneCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+      },
+    ]);
+    execFileMock.mockImplementation(() => ({ pid: 123 }) as ReturnType<typeof execFile>);
+
+    const service = createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const sessions = await service.list({ providers: ["droid"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.capabilities).toMatchObject({ fork: false, forkIntoDifferentCwd: false });
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+
+    execFileMock.mockClear();
+    const overrideService = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const overrideSessions = await overrideService.list({ providers: ["droid"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(overrideSessions).toHaveLength(1);
+    expect(overrideSessions[0]!.capabilities).toMatchObject({ fork: true, forkIntoDifferentCwd: true });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it("awaits the droid fork probe before launching fork imports", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "droid-session-2";
+    writeJsonl(path.join(homeDir, ".factory", "sessions", "repo", `${id}.jsonl`), [
+      {
+        type: "session_start",
+        id,
+        cwd: laneCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+      },
+    ]);
+    execFileMock.mockImplementation((...callArgs: any[]) => {
+      const callback = callArgs[3] as (error: Error | null, stdout: string, stderr: string) => void;
+      setTimeout(() => callback(null, "usage: droid --resume --fork", ""), 0);
+      return { pid: 123 } as ReturnType<typeof execFile>;
+    });
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-droid", ptyId: "pty-droid", pid: 789 }));
+    const service = createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create },
+      logger: makeLogger(),
+    });
+
+    const result = await service.importExternalSession({
+      provider: "droid",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+    });
+
+    expect(result).toEqual({ kind: "cli", sessionId: "terminal-droid", ptyId: "pty-droid", laneId: "lane-1" });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create.mock.calls[0]![0].startupCommand).toBe(`droid --fork ${id}`);
+  });
+
+  it("rejects droid fork imports when the resolved probe is unsupported", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "droid-session-3";
+    writeJsonl(path.join(homeDir, ".factory", "sessions", "repo", `${id}.jsonl`), [
+      {
+        type: "session_start",
+        id,
+        cwd: laneCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+      },
+    ]);
+    execFileMock.mockImplementation((...callArgs: any[]) => {
+      const callback = callArgs[3] as (error: Error | null, stdout: string, stderr: string) => void;
+      setTimeout(() => callback(null, "usage: droid --resume", ""), 0);
+      return { pid: 123 } as ReturnType<typeof execFile>;
+    });
+    const create = vi.fn();
+    const service = createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create },
+      logger: makeLogger(),
+    });
+
+    await expect(service.importExternalSession({
+      provider: "droid",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+    })).rejects.toThrow(/installed droid CLI does not support forking/i);
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("imports a portable Codex session as a tracked CLI PTY in the target lane", async () => {

@@ -285,22 +285,30 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   // Factory's docs describe `droid --fork`, but installed CLIs predating it only
   // expose `--resume`; offering fork against such a binary launches a failing command.
   let droidForkProbe: boolean | null = typeof args.droidForkSupported === "boolean" ? args.droidForkSupported : null;
-  let droidForkProbeStarted = droidForkProbe !== null;
-  const startDroidForkProbe = (): void => {
-    if (droidForkProbeStarted) return;
-    droidForkProbeStarted = true;
-    execFile("droid", ["--help"], {
-      timeout: 1500,
-      encoding: "utf8",
-      env: args.env ?? process.env,
-    }, (_error, stdout, stderr) => {
-      droidForkProbe = /(^|\s)--fork\b/u.test(`${stdout ?? ""}\n${stderr ?? ""}`);
+  let droidForkProbePromise: Promise<boolean> | null = null;
+  const startDroidForkProbe = (): Promise<boolean> => {
+    if (droidForkProbe !== null) return Promise.resolve(droidForkProbe);
+    if (droidForkProbePromise) return droidForkProbePromise;
+    droidForkProbePromise = new Promise((resolve) => {
+      execFile("droid", ["--help"], {
+        timeout: 1500,
+        encoding: "utf8",
+        env: args.env ?? process.env,
+      }, (_error, stdout, stderr) => {
+        droidForkProbe = /(^|\s)--fork\b/u.test(`${stdout ?? ""}\n${stderr ?? ""}`);
+        resolve(droidForkProbe);
+      });
     });
+    return droidForkProbePromise;
   };
   const droidForkAvailable = (): boolean => {
     if (droidForkProbe !== null) return droidForkProbe;
-    startDroidForkProbe();
-    return PROVIDER_CAPABILITIES.droid.fork;
+    void startDroidForkProbe();
+    return false;
+  };
+  const resolveDroidForkAvailable = async (): Promise<boolean> => {
+    if (droidForkProbe !== null) return droidForkProbe;
+    return startDroidForkProbe();
   };
   const capabilitiesFor = (provider: ExternalSessionProvider): ExternalSessionCapabilities => {
     if (provider !== "droid") return PROVIDER_CAPABILITIES[provider];
@@ -417,7 +425,8 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         runCwd = sourceCwd;
       }
     } else {
-      if (!capabilitiesFor(provider).fork) {
+      const canFork = provider === "droid" ? await resolveDroidForkAvailable() : capabilitiesFor(provider).fork;
+      if (!canFork) {
         throw new Error(provider === "droid"
           ? "The installed droid CLI does not support forking (--fork unavailable) — resume the session in its original folder or update droid."
           : `${provider} sessions do not support fork import.`);

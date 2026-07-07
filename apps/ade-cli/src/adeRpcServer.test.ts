@@ -2822,6 +2822,123 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("scopes external-sessions ADE actions to the caller's lane", async () => {
+    const fixture = createRuntime();
+    const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-1") return ownChat;
+      return null;
+    });
+    const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
+    const lane2Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-2"));
+    const outsideCwd = path.join(fixture.runtime.projectRoot, "..", "outside-project");
+    const list = vi.fn(async () => [
+      { provider: "claude", id: "own-session", cwd: lane1Cwd, title: "Own", preview: "own" },
+      { provider: "claude", id: "other-lane-session", cwd: lane2Cwd, title: "Other lane", preview: "other" },
+      { provider: "claude", id: "outside-session", cwd: outsideCwd, title: "Outside", preview: "outside" },
+    ]);
+    const importExternalSession = vi.fn(async (args: { laneId: string }) => ({
+      kind: "cli",
+      sessionId: "terminal-import",
+      ptyId: "pty-import",
+      laneId: args.laneId,
+    }));
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+
+    const listed = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "list",
+      args: { scope: "all" },
+    });
+
+    expect(listed?.isError).toBeUndefined();
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({
+      scope: "project",
+      laneId: "lane-1",
+      cwd: lane1Cwd,
+    }));
+    expect(listed.structuredContent.result).toEqual([
+      { provider: "claude", id: "own-session", cwd: lane1Cwd, title: "Own", preview: "own" },
+    ]);
+
+    const deniedOutsideImport = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "claude",
+        sessionId: "outside-session",
+        laneId: "lane-1",
+        target: "cli",
+        mode: "resume",
+      },
+    });
+    expect(deniedOutsideImport.isError).toBe(true);
+    expect(importExternalSession).not.toHaveBeenCalled();
+
+    const deniedOtherLaneImport = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "codex",
+        sessionId: "own-session",
+        laneId: "lane-2",
+        target: "cli",
+        mode: "resume",
+      },
+    });
+    expect(deniedOtherLaneImport.isError).toBe(true);
+    expect(importExternalSession).not.toHaveBeenCalled();
+  });
+
+  it("allows CTO callers to use unscoped external-sessions ADE actions", async () => {
+    const fixture = createRuntime();
+    const list = vi.fn(async () => [
+      { provider: "claude", id: "outside-session", cwd: "/tmp/outside", title: "Outside", preview: "outside" },
+    ]);
+    const importExternalSession = vi.fn(async (args: { laneId: string }) => ({
+      kind: "cli",
+      sessionId: "terminal-import",
+      ptyId: "pty-import",
+      laneId: args.laneId,
+    }));
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+
+    const listed = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "list",
+      args: { scope: "all", limit: 10 },
+    });
+    expect(listed?.isError).toBeUndefined();
+    expect(list).toHaveBeenCalledWith({ scope: "all", limit: 10 });
+    expect(listed.structuredContent.result).toEqual([
+      { provider: "claude", id: "outside-session", cwd: "/tmp/outside", title: "Outside", preview: "outside" },
+    ]);
+
+    const imported = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "claude",
+        sessionId: "outside-session",
+        laneId: "lane-2",
+        target: "cli",
+        mode: "resume",
+      },
+    });
+    expect(imported?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "claude",
+      sessionId: "outside-session",
+      laneId: "lane-2",
+      target: "cli",
+      mode: "resume",
+    });
+  });
+
   it("keeps explicit chat ADE actions available to unbound external CLI callers", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
