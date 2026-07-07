@@ -2421,14 +2421,22 @@ struct WorkChatInfoActivePopup: View {
   }
 }
 
+func workScheduledWorkIsActive(_ item: WorkScheduledWorkSnapshot) -> Bool {
+  let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return status == "scheduled" || status == "running" || status == "fired"
+}
+
+func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> Int {
+  snapshots.reduce(0) { count, item in
+    count + (workScheduledWorkIsActive(item) ? 1 : 0)
+  }
+}
+
 struct WorkChatInfoDetailsSheet: View {
   let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
 
   private var activeCount: Int {
-    scheduledWorkSnapshots.filter { item in
-      let status = item.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-      return status == "scheduled" || status == "running" || status == "fired"
-    }.count
+    workScheduledWorkActiveCount(scheduledWorkSnapshots)
   }
 
   var body: some View {

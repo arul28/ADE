@@ -9933,6 +9933,9 @@ export function createAgentChatService(args: {
     return trimmed.length ? trimmed : undefined;
   };
 
+  const scheduledWorkInputId = (args: Record<string, unknown>): string | undefined =>
+    compactString(args.id) ?? compactString(args.cron_id) ?? compactString(args.cronId);
+
   const baseClaudeToolName = (toolName: string): string => {
     const trimmed = toolName.trim();
     const namespaceSplit = trimmed.split("__").filter(Boolean).pop() ?? trimmed;
@@ -10045,9 +10048,10 @@ export function createAgentChatService(args: {
     }
 
     if (tool === "CronCreate") {
+      const cronId = scheduledWorkInputId(args) ?? itemId;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
-        id: itemId,
+        id: cronId,
         kind: "cron",
         status: "scheduled",
         origin: "cron",
@@ -10063,7 +10067,7 @@ export function createAgentChatService(args: {
     }
 
     if (tool === "CronDelete") {
-      const id = compactString(args.id);
+      const id = scheduledWorkInputId(args);
       if (!id) return;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",

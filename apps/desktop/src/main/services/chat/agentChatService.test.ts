@@ -796,6 +796,7 @@ import { detectAllAuth } from "../ai/authDetector";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { createOrchestrationService } from "../orchestration/orchestrationService";
 import { runGit } from "../git/git";
+import { deriveScheduledWorkSnapshots } from "../../../shared/chatScheduledWork";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
@@ -9005,6 +9006,104 @@ describe("createAgentChatService", () => {
           && event.event.status === "completed",
       );
       expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("keys Claude cron create and delete events by the provider cron id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-id",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          uuid: "assistant-cron-tools",
+          message: {
+            id: "msg-cron-tools",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-cron-create",
+                name: "CronCreate",
+                input: {
+                  id: "cron-sdk-1",
+                  cron: "*/15 * * * *",
+                  prompt: "Check CI status.",
+                },
+              },
+              {
+                type: "tool_use",
+                id: "tool-cron-delete",
+                name: "CronDelete",
+                input: {
+                  id: "cron-sdk-1",
+                },
+              },
+            ],
+            usage: { input_tokens: 2, output_tokens: 3 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-id",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-id",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule and then cancel a CI cron.",
+      });
+
+      const scheduledEvents = events
+        .filter((event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.kind === "cron");
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual(["cron-sdk-1", "cron-sdk-1"]);
+      expect(scheduledEvents.map((event) => event.event.status)).toEqual(["scheduled", "cancelled"]);
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({
+        id: "cron-sdk-1",
+        status: "cancelled",
+        cron: "*/15 * * * *",
+        prompt: "Check CI status.",
+        sourceToolUseId: "tool-cron-delete",
+      });
     });
   });
 

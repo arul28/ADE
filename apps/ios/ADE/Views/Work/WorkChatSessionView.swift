@@ -621,13 +621,14 @@ struct WorkChatSessionView: View {
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
       let runningSubagentCount = workSubagentRunningCount(subagentSnapshots)
-      let showsChatInfoBadge = inputLockMessage == nil && !scheduledWorkSnapshots.isEmpty && onOpenChatInfo != nil
+      let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
+      let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil
       let showsSubagentBadge = inputLockMessage == nil && runningSubagentCount > 0 && onOpenSubagents != nil
       let showsPrBadge = inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
       if showsChatInfoBadge || showsSubagentBadge || showsPrBadge {
         HStack(spacing: 8) {
           if showsChatInfoBadge, let onOpenChatInfo {
-            WorkChatInfoActivePopup(count: scheduledWorkSnapshots.count, onOpen: onOpenChatInfo)
+            WorkChatInfoActivePopup(count: activeScheduledWorkCount, onOpen: onOpenChatInfo)
           }
           if showsSubagentBadge, let onOpenSubagents {
             WorkSubagentActivePopup(count: runningSubagentCount, onOpen: onOpenSubagents)
