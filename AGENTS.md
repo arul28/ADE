@@ -73,6 +73,7 @@ Release flows live behind `asc` (installed at `/opt/homebrew/bin/asc`). There's 
 iOS signing gotchas (don't repeat these):
 
 - The iOS project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI/archive determinism, but local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map).
+- The ADE app **embeds an App Clip** (`com.ade.ios.Clip`, target `ADEClip`, added in PR #706) alongside the app (`com.ade.ios`) and widgets (`com.ade.ios.widgets`). A manual-signing export needs a distribution profile for **every** embedded bundle. The clip's — **`ADE App Clip App Store`** (already minted in ASC, bound to the same distribution certs as the app) — is mapped in `ExportOptions.plist`. If a manual export ever fails signing the clip, the profile is missing/expired: re-mint with `asc profiles create --name "ADE App Clip App Store" --profile-type IOS_APP_STORE --bundle 97ZL5TPJB8 --certificate <dist-cert-ids>`. `ExportOptions.auto.plist` avoids the whole issue — Xcode provisions the clip via `-allowProvisioningUpdates`.
 - `asc signing fetch` only downloads provisioning profiles and the `.cer` — it does **not** include the private key. Don't expect it to make local signing work on its own.
 - Local exports need the App Store Connect API key passed to `xcodebuild` so it can create/fetch missing Distribution assets on demand. Add these flags (in addition to `-allowProvisioningUpdates`):
   ```

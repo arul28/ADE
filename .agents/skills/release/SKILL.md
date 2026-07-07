@@ -439,6 +439,7 @@ Fail fast if keychain auth is broken.
 ### 7c. iOS signing gotchas (mirrored from AGENTS.md — keep in sync)
 
 - Project uses **automatic** signing (`CODE_SIGN_STYLE = Automatic`, `DEVELOPMENT_TEAM = VQ372F39G6`). `apps/ios/ExportOptions.plist` ships with `signingStyle = manual` + named profiles for CI determinism. Local ad-hoc exports need `signingStyle = automatic` instead (drop the per-bundle profile map). `apps/ios/ExportOptions.auto.plist` is the ready-to-use auto-signing variant.
+- **Three embedded bundles must all be provisioned for a manual-signing export**: the app (`com.ade.ios`), widgets (`com.ade.ios.widgets`), and the **App Clip** (`com.ade.ios.Clip`, added PR #706). `ExportOptions.plist` maps all three to named App Store profiles; the clip's — **`ADE App Clip App Store`** — is already minted in ASC. If a manual export fails signing the clip, the profile is missing/expired: `asc profiles create --name "ADE App Clip App Store" --profile-type IOS_APP_STORE --bundle 97ZL5TPJB8 --certificate <dist-cert-ids>`. Using `ExportOptions.auto.plist` avoids the issue entirely (Xcode provisions the clip via `-allowProvisioningUpdates`).
 - `asc signing fetch` only downloads provisioning profiles and the `.cer` — it does **not** include the private key. Don't expect it to make local signing work on its own.
 - Local exports need the ASC API key passed to `xcodebuild`. In addition to `-allowProvisioningUpdates`:
   ```
