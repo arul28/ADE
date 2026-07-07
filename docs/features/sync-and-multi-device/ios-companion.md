@@ -76,13 +76,13 @@ apps/ios/
 │   │   │                            # flip tabs via .adeDeepLinkRequested;
 │   │   │                            # session event/offset anchors ride
 │   │   │                            # WorkSessionNavigationRequest.
-│   │   │                            # Lane/file/commit/artifact/repo-branch,
-│   │   │                            # full PR, and Linear issue links are
-│   │   │                            # local-only desktop concepts — they
-│   │   │                            # post .adeSendToMacRequested instead so the
-│   │   │                            # SendToMacCard sheet can bounce the URL to
-│   │   │                            # a paired host via the deeplinks.open sync
-│   │   │                            # command.
+│   │   │                            # Linear issue links route in-app when a
+│   │   │                            # project is open; lane/file/commit/artifact/
+│   │   │                            # repo-branch, full PR, and projectless
+│   │   │                            # Linear issue links post
+│   │   │                            # .adeSendToMacRequested so SendToMacCard can
+│   │   │                            # bounce the URL to a paired host via the
+│   │   │                            # deeplinks.open sync command.
 │   ├── Models/
 │   │   └── RemoteModels.swift       # Codable structs mirroring shared types
 │   ├── Resources/
@@ -109,7 +109,8 @@ apps/ios/
 │   │                                # CLI launcher (startCliSession), chat push,
 │   │                                # machine project browse/open/create/clone,
 │   │                                # lane reparent stack-base override payloads,
-│   │                                # worktree discovery
+│   │                                # Linear read/launch RPC wrappers, worktree
+│   │                                # discovery
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
@@ -179,6 +180,10 @@ apps/ios/
 │   │   │                            # WorkRootScreen+Selection (multi-select state +
 │   │   │                            #   bulk close/archive/restore/delete/export),
 │   │   │                            # WorkSelectionActionBar, etc.
+│   │   ├── Linear/                  # LinearPaneSheet, issue list/detail screens,
+│   │   │                            # launch config, brand/logo paths, pane store
+│   │   │                            # and toolbar button. Uses existing cto.* read
+│   │   │                            # RPCs plus lane/chat/CLI launch primitives.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),

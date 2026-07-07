@@ -75,6 +75,18 @@ struct ContentView: View {
           .environmentObject(syncService)
           .environmentObject(syncService.attentionDrawer)
       }
+      .sheet(isPresented: $syncService.linearPanePresented) {
+        LinearPaneSheet(syncService: syncService)
+          .environmentObject(syncService)
+      }
+      .onChange(of: syncService.requestedLinearIssueNavigation?.id) { _, requestId in
+        guard requestId != nil else { return }
+        // A linear-issue deep link opens the global pane (it consumes the
+        // request once presented). Only reached when a project is active — the
+        // router bounces the link to the Mac otherwise.
+        syncService.closeProjectHome()
+        syncService.linearPanePresented = true
+      }
       .onChange(of: syncService.requestedFilesNavigation?.id) { _, requestId in
         guard requestId != nil else { return }
         syncService.closeProjectHome()

@@ -497,6 +497,9 @@ struct WorkRootScreen: View {
                 }
               )
             }
+            // Real-Linear-logo button, immediately left of the bell; gated on the
+            // active project's Linear connection.
+            LinearPaneToolbarButton()
           }
         }
       }

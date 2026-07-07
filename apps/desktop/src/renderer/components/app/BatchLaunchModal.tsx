@@ -1,145 +1,37 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { CaretDown, CaretRight, ChatCircleDots, GitBranch, Rocket, Terminal, WarningCircle } from "@phosphor-icons/react";
-import * as Popover from "@radix-ui/react-popover";
-import type { AgentChatPermissionMode, LaneLinearIssue, LaneSummary } from "../../../shared/types";
+import { CaretRight, GitBranch, Rocket, WarningCircle } from "@phosphor-icons/react";
+import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
 import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   getDefaultModelDescriptor,
-  getModelById,
-  resolveProviderGroupForModel,
-  type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import {
-  batchLaunchSupportsFastMode,
   defaultKickoffPrompt,
   findIssueConflicts,
   type BatchLaunchIssueConfig,
-  type BatchLaunchSessionType,
 } from "../../lib/linearBatchLaunch";
+import type { NativeControlState } from "../../lib/draftLaunchJobs";
+import { defaultNativeControls } from "../../lib/nativeLaunchControls";
 import { LaneDialogShell } from "../lanes/LaneDialogShell";
 import { LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "../lanes/linearBrand";
 import { LaneCombobox } from "../terminals/LaneCombobox";
-import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
-import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import {
+  SessionLaunchModelControls,
+  type SessionLaunchModelConfig,
+} from "../shared/SessionLaunchModelControls";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
 import { useReasoningByFamily } from "../shared/ModelPicker/useReasoningByFamily";
-import { getPermissionOptions, safetyColors, type PermissionOption } from "../shared/permissionOptions";
+import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
+import { getModelById } from "../../../shared/modelRegistry";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
-
-function resolveModelDescriptor(modelId: string): ModelDescriptor | undefined {
-  return resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
-}
-
-/**
- * Permission options narrowed to the choices the launch surface exposes
- * (mirrors the old single-issue resolver). Keeps Claude/Codex provider-aware
- * while emitting a single unified `permissionMode`.
- */
-function launchPermissionOptions(modelId: string): PermissionOption[] {
-  const descriptor = resolveModelDescriptor(modelId);
-  const family = descriptor?.family ?? "opencode";
-  const providerGroup = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
-  const options = getPermissionOptions({ family, isCliWrapped: descriptor?.isCliWrapped ?? false });
-  if (providerGroup === "codex") {
-    return options.filter((o) => o.value === "default" || o.value === "plan" || o.value === "full-auto");
-  }
-  return options.filter(
-    (o) => o.value === "default" || o.value === "edit" || o.value === "plan" || o.value === "full-auto",
-  );
-}
-
-/**
- * Compact permission dropdown — same popover style as the model/reasoning
- * pickers so the launch row stays consistent with the new-chat composer.
- */
-function PermissionPicker({
-  modelId,
-  value,
-  onChange,
-}: {
-  modelId: string;
-  value: AgentChatPermissionMode | null;
-  onChange: (next: AgentChatPermissionMode) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const options = launchPermissionOptions(modelId);
-  if (!options.length) return null;
-  const active = (value && options.find((o) => o.value === value)) ?? options[0]!;
-  const activeColors = safetyColors(active.safety);
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <button
-          type="button"
-          title="Permission mode"
-          className={cn(
-            "inline-flex h-6 shrink-0 items-center gap-1 rounded-md border px-2 text-[10.5px] font-medium leading-none transition-colors",
-            "border-white/[0.08] bg-white/[0.02] text-fg/80 hover:border-white/[0.16] hover:text-fg",
-          )}
-        >
-          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", activeColors.activeBg)} />
-          {active.label}
-          <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
-        </button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          side="top"
-          align="end"
-          sideOffset={6}
-          collisionPadding={8}
-          avoidCollisions
-          className="z-[100] outline-none"
-          onCloseAutoFocus={(event) => event.preventDefault()}
-        >
-          <div
-            className="flex min-w-[220px] flex-col overflow-hidden rounded-lg border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-            role="radiogroup"
-            aria-label="Permission mode"
-          >
-            <div className="px-2 py-1 text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">
-              Permission
-            </div>
-            {options.map((option) => {
-              const colors = safetyColors(option.safety);
-              const isActive = active.value === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={isActive}
-                  onClick={() => {
-                    onChange(option.value);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "flex flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left transition-colors duration-150",
-                    isActive ? "bg-white/[0.06]" : "hover:bg-white/[0.04]",
-                  )}
-                >
-                  <span className="flex items-center gap-1.5 text-[11px] font-medium leading-none text-fg/90">
-                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", colors.activeBg)} />
-                    {option.label}
-                  </span>
-                  <span className="text-[9.5px] leading-tight text-muted-fg/55">{option.shortDesc}</span>
-                </button>
-              );
-            })}
-          </div>
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
 
 type PerIssueState = BatchLaunchIssueConfig & {
   /** When false the issue is excluded from the launch (skipped via the conflict guard). */
   include: boolean;
   /** "new" creates a lane per issue; "existing" launches into `existingLaneId`. */
   laneTarget: "new" | "existing";
+  nativeControls: NativeControlState;
 };
 
 const DEFAULT_PROMPT_STORAGE_PREFIX = "ade.linear.batchLaunch.defaultPrompt.v1:";
@@ -216,8 +108,6 @@ function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIs
     modelId: defaultModelId,
     reasoningEffort: null,
     fastMode: false,
-    // Seed the kickoff prompt with the default so the textarea is editable
-    // in-place (rather than only showing it as a placeholder).
     kickoffPrompt,
     branchOverride: "",
     sessionType: "chat",
@@ -225,47 +115,32 @@ function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIs
     existingLaneId: null,
     include: true,
     laneTarget: "new",
+    nativeControls: defaultNativeControls(),
   };
 }
 
-/** Compact two-option Chat/CLI toggle reused by the Default row and per-issue rows. */
-function SessionTypeToggle({
-  value,
-  onChange,
-}: {
-  value: BatchLaunchSessionType;
-  onChange: (next: BatchLaunchSessionType) => void;
-}) {
-  return (
-    <div
-      role="group"
-      aria-label="Session type"
-      className="inline-flex h-6 shrink-0 items-center rounded-md border border-white/[0.08] bg-white/[0.02] p-0.5"
-    >
-      {([
-        { key: "chat", label: "Chat", Icon: ChatCircleDots },
-        { key: "cli", label: "CLI", Icon: Terminal },
-      ] as const).map(({ key, label, Icon }) => {
-        const active = value === key;
-        return (
-          <button
-            key={key}
-            type="button"
-            aria-pressed={active}
-            title={key === "chat" ? "In-app chat agent" : "Terminal CLI agent"}
-            onClick={() => onChange(key)}
-            className={cn(
-              "inline-flex h-5 items-center gap-1 rounded px-1.5 text-[10.5px] font-medium leading-none transition-colors",
-              active ? "bg-white/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
-            )}
-          >
-            <Icon size={11} weight={active ? "fill" : "regular"} />
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  );
+function toLaunchModelConfig(state: PerIssueState): SessionLaunchModelConfig {
+  return {
+    modelId: state.modelId,
+    reasoningEffort: state.reasoningEffort,
+    fastMode: state.fastMode,
+    sessionType: state.sessionType ?? "chat",
+    nativeControls: state.nativeControls,
+  };
+}
+
+function patchFromLaunchModelConfig(
+  state: PerIssueState,
+  patch: Partial<SessionLaunchModelConfig>,
+): PerIssueState {
+  return {
+    ...state,
+    ...(patch.modelId !== undefined ? { modelId: patch.modelId } : {}),
+    ...(patch.reasoningEffort !== undefined ? { reasoningEffort: patch.reasoningEffort } : {}),
+    ...(patch.fastMode !== undefined ? { fastMode: patch.fastMode } : {}),
+    ...(patch.sessionType !== undefined ? { sessionType: patch.sessionType } : {}),
+    ...(patch.nativeControls !== undefined ? { nativeControls: patch.nativeControls } : {}),
+  };
 }
 
 export type BatchLaunchSubmit = {
@@ -302,58 +177,53 @@ export function BatchLaunchModal({
     [recents],
   );
 
-  const [defaultModel, setDefaultModel] = useState("");
-  const [defaultEffort, setDefaultEffort] = useState<string | null>(null);
-  const [defaultFast, setDefaultFast] = useState(false);
-  const [defaultSessionType, setDefaultSessionType] = useState<BatchLaunchSessionType>("chat");
-  const [defaultPermission, setDefaultPermission] = useState<AgentChatPermissionMode | null>(null);
+  const [defaultConfig, setDefaultConfig] = useState<SessionLaunchModelConfig>(() => ({
+  modelId: "",
+  reasoningEffort: null,
+  fastMode: false,
+  sessionType: "chat",
+  nativeControls: defaultNativeControls(),
+  }));
   const [projectDefaultPrompt, setProjectDefaultPrompt] = useState<string | null>(null);
   const [perIssue, setPerIssue] = useState<Record<string, PerIssueState>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
+  const multiIssue = issues.length > 1;
   const conflicts = useMemo(() => findIssueConflicts(issues, lanes), [issues, lanes]);
-  // Existing-lane targets exclude the primary lane (parity with the old resolver).
   const selectableLanes = useMemo(
     () => lanes.filter((lane) => lane.laneType !== "primary"),
     [lanes],
   );
 
-  // Seed config when the modal opens (or the issue set changes while open).
-  // New rows inherit the LIVE Default row (model / Chat↔CLI / reasoning / fast /
-  // permission), not hardcoded chat defaults — otherwise reopening (which clears
-  // perIssue below) would silently launch rows that disagree with the Default
-  // control the user still sees.
   useEffect(() => {
     if (!open) return;
     const fallbackPrompt = safeLoadDefaultPrompt(projectRoot);
     const kickoffPrompt = fallbackPrompt ?? defaultKickoffPrompt();
-    const seedModel = defaultModel || defaultModelId;
+    const seedModel = defaultModelId;
     setProjectDefaultPrompt(fallbackPrompt);
-    setDefaultModel(seedModel);
-    setPerIssue((current) => {
+    const seededDefaults = defaultNativeControls();
+    const seededConfig: SessionLaunchModelConfig = {
+      modelId: seedModel,
+      reasoningEffort: null,
+      fastMode: false,
+      sessionType: "chat",
+      nativeControls: seededDefaults,
+    };
+    setDefaultConfig(seededConfig);
+    setPerIssue(() => {
       const next: Record<string, PerIssueState> = {};
       for (const issue of issues) {
-        next[issue.id] = current[issue.id] ?? {
+        next[issue.id] = {
           ...makeInitialConfig(seedModel, kickoffPrompt),
-          sessionType: defaultSessionType,
-          reasoningEffort: defaultEffort,
-          fastMode: defaultFast,
-          permissionMode: defaultPermission,
+          nativeControls: { ...seededDefaults },
         };
       }
       return next;
     });
-  }, [
-    open,
-    projectRoot,
-    issues,
-    defaultModelId,
-    defaultModel,
-    defaultSessionType,
-    defaultEffort,
-    defaultFast,
-    defaultPermission,
-  ]);
+    if (issues.length === 1) {
+      setExpanded({ [issues[0]!.id]: true });
+    }
+  }, [open, projectRoot, issues, defaultModelId]);
 
   useEffect(() => {
     if (!open) return;
@@ -400,10 +270,6 @@ export function BatchLaunchModal({
 
   const { getReasoningForFamily } = useReasoningByFamily();
 
-  // Resolve the reasoning effort the picker is actually DISPLAYING for a row.
-  // The shared ReasoningEffortPicker shows a family-remembered default when the
-  // explicit value is null, so the submitted value must match what the user sees
-  // (otherwise null is sent and the runtime falls back to "medium").
   const resolveDisplayedReasoning = useCallback(
     (explicit: string | null, modelId: string): string | null => {
       if (explicit) return explicit;
@@ -413,9 +279,6 @@ export function BatchLaunchModal({
     [getReasoningForFamily],
   );
 
-  // The Default row is a LIVE default (parity with the work-tab composer's single
-  // model/permission/chat-cli control): changing a default value immediately
-  // applies it to every issue row. Users can still override an individual row.
   const applyDefaultField = useCallback(
     <K extends keyof PerIssueState>(key: K, value: PerIssueState[K]) => {
       setPerIssue((current) => {
@@ -435,25 +298,29 @@ export function BatchLaunchModal({
     [],
   );
 
-  const applyDefaultToAll = useCallback(() => {
-    if (!defaultModel.trim()) return;
+  const applyDefaultConfigToAll = useCallback((config: SessionLaunchModelConfig) => {
     setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
       for (const [id, state] of Object.entries(current)) {
-        next[id] = {
-          ...state,
-          modelId: defaultModel,
-          reasoningEffort: defaultEffort,
-          fastMode: defaultFast,
-          sessionType: defaultSessionType,
-          permissionMode: defaultPermission,
-        };
+        next[id] = patchFromLaunchModelConfig(state, config);
       }
       return next;
     });
-  }, [defaultModel, defaultEffort, defaultFast, defaultSessionType, defaultPermission]);
+  }, []);
 
-  // Copy one issue's kickoff prompt onto every other included issue.
+  const handleDefaultConfigChange = useCallback((patch: Partial<SessionLaunchModelConfig>) => {
+    setDefaultConfig((current) => {
+      const next = { ...current, ...patch };
+      applyDefaultConfigToAll(next);
+      if (patch.modelId !== undefined) applyDefaultField("modelId", patch.modelId);
+      if (patch.reasoningEffort !== undefined) applyDefaultField("reasoningEffort", patch.reasoningEffort);
+      if (patch.fastMode !== undefined) applyDefaultField("fastMode", patch.fastMode);
+      if (patch.sessionType !== undefined) applyDefaultField("sessionType", patch.sessionType);
+      if (patch.nativeControls !== undefined) applyDefaultField("nativeControls", patch.nativeControls);
+      return next;
+    });
+  }, [applyDefaultConfigToAll, applyDefaultField]);
+
   const applyPromptToAll = useCallback((sourcePrompt: string) => {
     setPerIssue((current) => {
       const next: Record<string, PerIssueState> = {};
@@ -480,22 +347,29 @@ export function BatchLaunchModal({
     for (const issue of issues) {
       const state = perIssue[issue.id];
       if (!state || state.include === false) continue;
-      if (!laneOnly && !state.modelId.trim()) continue;
-      const { include: _include, laneTarget, ...config } = state;
-      // An existing-lane target only takes effect when a lane is actually
-      // selected; otherwise fall back to creating a new lane.
+      const effectiveConfig = multiIssue
+        ? state
+        : patchFromLaunchModelConfig(state, defaultConfig);
+      if (!laneOnly && !effectiveConfig.modelId.trim()) continue;
+      const { include: _include, laneTarget, nativeControls, ...config } = effectiveConfig;
       const existingLaneId =
         !laneOnly && laneTarget === "existing" ? state.existingLaneId?.trim() || null : null;
       if (!laneOnly && laneTarget === "existing" && !existingLaneId) continue;
-      // Submit the reasoning the picker is actually DISPLAYING (it shows a
-      // family-remembered default when the explicit value is null), so the agent
-      // launches with the effort the user sees — not null → runtime "medium".
       const reasoningEffort = resolveDisplayedReasoning(config.reasoningEffort, config.modelId);
-      entries.push({ issue, config: { ...config, reasoningEffort, existingLaneId, laneOnly } });
+      entries.push({
+        issue,
+        config: {
+          ...config,
+          reasoningEffort,
+          existingLaneId,
+          laneOnly,
+          nativeControls,
+        },
+      });
     }
     if (!entries.length) return;
     onLaunch(entries);
-  }, [issues, perIssue, onLaunch, laneOnly, resolveDisplayedReasoning]);
+  }, [issues, perIssue, onLaunch, laneOnly, resolveDisplayedReasoning, multiIssue, defaultConfig]);
 
   if (!issues.length) return null;
 
@@ -514,56 +388,41 @@ export function BatchLaunchModal({
       description={
         laneOnly
           ? "A lane per issue, with the issue linked. Start agents from Work whenever you are ready."
-          : "Each issue gets its own lane and an agent kicked off with that issue's context. The Default row drives every issue — override an individual one below if you need to."
+          : multiIssue
+            ? "Each issue gets its own lane and agent. The Default row drives every issue — override an individual one below if you need to."
+            : "Configure the lane, branch, and kickoff prompt. Model settings below apply to this launch."
       }
       icon={Rocket}
-      widthClassName="w-[min(680px,calc(100vw-24px))]"
+      widthClassName="w-[min(960px,calc(100vw-32px))]"
     >
-      {/* Default row */}
       {!laneOnly ? (
         <div
-          className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-2.5"
+          className="flex flex-wrap items-center gap-2 rounded-lg border px-3 py-3"
           style={{ borderColor: LINEAR_BRAND.borderSubtle, background: LINEAR_BRAND.surface }}
         >
-          <span className="text-[11px] font-semibold text-fg/80">Default</span>
-          <SessionTypeToggle
-            value={defaultSessionType}
-            onChange={(next) => { setDefaultSessionType(next); applyDefaultField("sessionType", next); }}
-          />
-          <ModelPicker
-            value={defaultModel}
-            onChange={(next) => { setDefaultModel(next); applyDefaultField("modelId", next); }}
+          {multiIssue ? (
+            <span className="mr-1 text-[11px] font-semibold text-fg/80">Default</span>
+          ) : null}
+          <SessionLaunchModelControls
+            config={defaultConfig}
+            onChange={handleDefaultConfigChange}
             surfaceKey="batch-launch-default"
-            compact
-            fastModeActive={defaultFast}
-            onFastModeToggle={(next) => { setDefaultFast(next); applyDefaultField("fastMode", next); }}
-            fastModeSupported={batchLaunchSupportsFastMode(defaultModel)}
           />
-          <ReasoningEffortPicker
-            modelId={defaultModel}
-            reasoningEffort={defaultEffort}
-            onChange={(next) => { setDefaultEffort(next); applyDefaultField("reasoningEffort", next); }}
-            compact
-          />
-          <PermissionPicker
-            modelId={defaultModel}
-            value={defaultPermission}
-            onChange={(next) => { setDefaultPermission(next); applyDefaultField("permissionMode", next); }}
-          />
-          <button
-            type="button"
-            disabled={!defaultModel.trim()}
-            onClick={applyDefaultToAll}
-            title="Reset every issue to these defaults"
-            className="ml-auto inline-flex h-6 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10.5px] font-medium text-fg/75 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            Reset all
-          </button>
+          {multiIssue ? (
+            <button
+              type="button"
+              disabled={!defaultConfig.modelId.trim()}
+              onClick={() => applyDefaultConfigToAll(defaultConfig)}
+              title="Reset every issue to these defaults"
+              className="ml-auto inline-flex h-6 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10.5px] font-medium text-fg/75 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              Reset all
+            </button>
+          ) : null}
         </div>
       ) : null}
 
-      {/* Per-issue rows */}
-      <div className="mt-3 max-h-[46vh] space-y-1.5 overflow-y-auto pr-0.5">
+      <div className="mt-3 max-h-[58vh] space-y-2 overflow-y-auto pr-0.5">
         {issues.map((issue) => {
           const state = perIssue[issue.id];
           if (!state) return null;
@@ -581,7 +440,7 @@ export function BatchLaunchModal({
                 skipped && "opacity-45",
               )}
             >
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-2.5 py-2">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 px-3 py-2.5">
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <button
                     type="button"
@@ -617,33 +476,12 @@ export function BatchLaunchModal({
                     </span>
                   ) : null}
                 </div>
-                {!skipped && !laneOnly ? (
-                  <div className="flex flex-wrap items-center justify-end gap-1.5">
-                    <SessionTypeToggle
-                      value={state.sessionType ?? "chat"}
-                      onChange={(next) => patchIssue(issue.id, { sessionType: next })}
-                    />
-                    <ModelPicker
-                      value={state.modelId}
-                      onChange={(modelId) => patchIssue(issue.id, { modelId })}
-                      surfaceKey={`batch-launch-${issue.id}`}
-                      compact
-                      fastModeActive={state.fastMode}
-                      onFastModeToggle={(next) => patchIssue(issue.id, { fastMode: next })}
-                      fastModeSupported={batchLaunchSupportsFastMode(state.modelId)}
-                    />
-                    <ReasoningEffortPicker
-                      modelId={state.modelId}
-                      reasoningEffort={state.reasoningEffort}
-                      onChange={(effort) => patchIssue(issue.id, { reasoningEffort: effort })}
-                      compact
-                    />
-                    <PermissionPicker
-                      modelId={state.modelId}
-                      value={state.permissionMode ?? null}
-                      onChange={(mode) => patchIssue(issue.id, { permissionMode: mode })}
-                    />
-                  </div>
+                {!skipped && !laneOnly && multiIssue ? (
+                  <SessionLaunchModelControls
+                    config={toLaunchModelConfig(state)}
+                    onChange={(patch) => patchIssue(issue.id, patchFromLaunchModelConfig(state, patch))}
+                    surfaceKey={`batch-launch-${issue.id}`}
+                  />
                 ) : null}
                 {conflict ? (
                   <button
@@ -657,9 +495,9 @@ export function BatchLaunchModal({
               </div>
 
               {isExpanded && !skipped ? (
-                <div className="space-y-2 border-t border-white/[0.05] px-2.5 py-2.5">
+                <div className="space-y-3 border-t border-white/[0.05] px-3 py-3">
                   {!laneOnly ? (
-                    <div className="space-y-1">
+                    <div className="space-y-1.5">
                       <div className="flex items-center justify-between gap-2">
                         <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                           Kickoff prompt
@@ -678,30 +516,29 @@ export function BatchLaunchModal({
                           >
                             {promptSavedAsDefault ? "Default saved" : "Save default"}
                           </button>
-                          {issues.length > 1 ? (
-                          <button
-                            type="button"
-                            onClick={() => applyPromptToAll(state.kickoffPrompt)}
-                            className="inline-flex h-5 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg"
-                            title="Use this prompt for every issue"
-                          >
-                            Apply to all
-                          </button>
+                          {multiIssue ? (
+                            <button
+                              type="button"
+                              onClick={() => applyPromptToAll(state.kickoffPrompt)}
+                              className="inline-flex h-5 items-center rounded-md border border-white/[0.1] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/70 transition-colors hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg"
+                              title="Use this prompt for every issue"
+                            >
+                              Apply to all
+                            </button>
                           ) : null}
                         </div>
                       </div>
                       <textarea
                         value={state.kickoffPrompt}
                         onChange={(event) => patchIssue(issue.id, { kickoffPrompt: event.target.value })}
-                        rows={3}
-                        className="w-full resize-y rounded-md border border-white/[0.08] bg-black/25 px-2.5 py-2 text-[11.5px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-white/[0.18] focus:outline-none"
+                        rows={5}
+                        className="w-full resize-y rounded-md border border-white/[0.08] bg-black/25 px-3 py-2.5 text-[12px] leading-relaxed text-fg/90 placeholder:text-muted-fg/40 focus:border-white/[0.18] focus:outline-none"
                       />
                     </div>
                   ) : null}
 
-                  {/* Lane target: a fresh lane per issue, or launch into an existing lane. */}
                   {!laneOnly ? (
-                    <div className="space-y-1">
+                    <div className="space-y-1.5">
                       <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                         Lane
                       </span>
@@ -726,7 +563,7 @@ export function BatchLaunchModal({
                                 title={disabled ? "No existing lanes available yet" : undefined}
                                 onClick={() => patchIssue(issue.id, { laneTarget: key })}
                                 className={cn(
-                                  "inline-flex h-6 items-center rounded px-2 text-[10.5px] font-medium leading-none transition-colors",
+                                  "inline-flex h-6 items-center rounded px-2.5 text-[10.5px] font-medium leading-none transition-colors",
                                   active ? "bg-white/[0.1] text-fg" : "text-muted-fg/60 hover:text-fg/85",
                                   disabled && "cursor-not-allowed opacity-40 hover:text-muted-fg/60",
                                 )}
@@ -738,7 +575,7 @@ export function BatchLaunchModal({
                         </div>
                         {(state.laneTarget ?? "new") === "existing" ? (
                           selectableLanes.length > 0 ? (
-                            <div className="min-w-[180px] flex-1">
+                            <div className="min-w-[220px] flex-1">
                               <LaneCombobox
                                 lanes={selectableLanes}
                                 value={state.existingLaneId ?? ""}
@@ -757,19 +594,18 @@ export function BatchLaunchModal({
                     </div>
                   ) : null}
 
-                  {/* Branch override only applies when creating a new lane. */}
                   {laneOnly || (state.laneTarget ?? "new") === "new" ? (
-                    <label className="block space-y-1">
+                    <label className="block space-y-1.5">
                       <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg/55">
                         Branch
                       </span>
-                      <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/25 px-2.5">
+                      <div className="flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-black/25 px-3">
                         <GitBranch size={12} className="shrink-0 text-muted-fg/50" />
                         <input
                           value={state.branchOverride}
                           onChange={(event) => patchIssue(issue.id, { branchOverride: event.target.value })}
                           placeholder={branch}
-                          className="h-8 w-full bg-transparent font-mono text-[11px] text-fg/85 placeholder:text-muted-fg/40 focus:outline-none"
+                          className="h-9 w-full bg-transparent font-mono text-[11.5px] text-fg/85 placeholder:text-muted-fg/40 focus:outline-none"
                         />
                       </div>
                     </label>

@@ -1237,6 +1237,18 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   }
 }
 
+/// A request to open the global Linear pane on a specific issue identifier
+/// (e.g. `ENG-123`), produced by `ade://linear-issue/<IDENT>` deep links.
+struct LinearIssueNavigationRequest: Equatable, Identifiable {
+  let id: String
+  let identifier: String
+
+  init(identifier: String) {
+    self.id = UUID().uuidString
+    self.identifier = identifier
+  }
+}
+
 /// Carries a scanned/deep-linked pairing QR into the connection settings so it
 /// can present the pairing flow (reconnect for a known machine, or PIN entry
 /// pre-filled for a new one). Mirrors the other `requested*Navigation` shapes.
@@ -1495,6 +1507,16 @@ final class SyncService: ObservableObject {
   @Published var settingsPresented = false
   @Published var projectHomePresented = true
   @Published var attentionDrawerPresented = false
+  /// Drives the global Linear pane sheet (a full-screen issue browser + launcher
+  /// bound in `ContentView`). Opened from the Work top-bar Linear button and by
+  /// `requestedLinearIssueNavigation` deep links.
+  @Published var linearPanePresented = false
+  /// A `ade://linear-issue/<IDENT>` deep link that should open the Linear pane
+  /// straight to a specific issue instead of bouncing to the paired Mac.
+  @Published var requestedLinearIssueNavigation: LinearIssueNavigationRequest?
+  /// Last-known Linear connection status for the active project, refreshed by the
+  /// Work top-bar button. `nil` until the first check. Gates the pane entry point.
+  @Published private(set) var linearConnectionStatus: LinearConnectionStatus?
   @Published var requestedWorkLaneNavigation: WorkLaneNavigationRequest?
   @Published var requestedWorkSessionNavigation: WorkSessionNavigationRequest?
   @Published var requestedFilesNavigation: FilesNavigationRequest?
@@ -4357,6 +4379,42 @@ final class SyncService: ObservableObject {
 
   func fetchLinearConnectionStatus() async throws -> LinearConnectionStatus {
     try await sendDecodableCommand(action: "cto.getLinearConnectionStatus", as: LinearConnectionStatus.self)
+  }
+
+  /// True when the last connection check reported a live Linear workspace for the
+  /// active project. Drives whether the Work top-bar Linear button is shown.
+  var linearConnected: Bool { linearConnectionStatus?.connected == true }
+
+  /// Refreshes `linearConnectionStatus` for the active project. Best-effort: a
+  /// missing project or a failed/queued check resolves to "not connected" so the
+  /// entry point simply stays hidden rather than surfacing an error. Mirrors the
+  /// desktop pane's lightweight visibility poll.
+  @MainActor
+  func refreshLinearConnection() async {
+    guard activeProjectId != nil else {
+      linearConnectionStatus = nil
+      return
+    }
+    do {
+      linearConnectionStatus = try await fetchLinearConnectionStatus()
+    } catch {
+      // Older hosts, offline, or a queued command all mean "can't confirm a
+      // connection right now" — treat as not connected without logging noise.
+      linearConnectionStatus = LinearConnectionStatus(connected: false)
+    }
+  }
+
+  /// Linear issue ids already attached to a lane (primary issue + additional
+  /// links) in the active project, read from the local synced DB. Backs the
+  /// Linear pane's "has lane" duplicate-guard badge. Cheap local read; callers
+  /// re-run it when `lanesProjectionRevision` changes.
+  func attachedLinearIssueIds() -> Set<String> {
+    var ids = Set<String>()
+    for lane in database.fetchLanes(includeArchived: false) {
+      if let issue = lane.linearIssue { ids.insert(issue.id) }
+      for link in lane.linearIssueLinks ?? [] { ids.insert(link.issue.id) }
+    }
+    return ids
   }
 
   func fetchLinearQuickView() async throws -> LinearQuickView {

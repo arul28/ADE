@@ -3,6 +3,14 @@ import type {
   AgentChatContextAttachment,
   AgentChatPermissionMode,
   AgentChatProvider,
+  AgentChatClaudePermissionMode,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
+  AgentChatCursorConfigValue,
+  AgentChatDroidPermissionMode,
+  AgentChatInteractionMode,
+  AgentChatOpenCodePermissionMode,
   LaneLinearIssue,
   LaneSummary,
 } from "../../shared/types";
@@ -19,6 +27,12 @@ import {
   type ModelDescriptor,
 } from "../../shared/modelRegistry";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../components/shared/ModelPicker/modelCatalog";
+import type { NativeControlState } from "./draftLaunchJobs";
+import {
+  buildChatLaunchNativePayload,
+  cliPermissionModeFromNativeControls,
+  defaultNativeControls,
+} from "./nativeLaunchControls";
 
 /** Whether an issue launches the in-process chat SDK or a tracked CLI agent. */
 export type BatchLaunchSessionType = "chat" | "cli";
@@ -37,8 +51,11 @@ export type BatchLaunchIssueConfig = {
   /**
    * Unified permission mode for CLI launches; chat launches default the mode
    * server-side and ignore this. When null the CLI launch uses its default.
+   * @deprecated Prefer `nativeControls`, which mirrors the Work new-chat composer.
    */
   permissionMode?: AgentChatPermissionMode | null;
+  /** Provider-native permission controls (same shape as the Work composer). */
+  nativeControls?: NativeControlState;
   /** When launching into an existing lane (skips lane creation). */
   existingLaneId?: string | null;
   /** When true the orchestrator only creates the lane (no agent kickoff). */
@@ -222,6 +239,15 @@ export type BatchLaunchDeps = {
     reasoningEffort: string | null;
     fastMode?: boolean;
     permissionMode?: AgentChatPermissionMode | null;
+    interactionMode?: AgentChatInteractionMode | null;
+    claudePermissionMode?: AgentChatClaudePermissionMode;
+    codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+    codexSandbox?: AgentChatCodexSandbox;
+    codexConfigSource?: AgentChatCodexConfigSource;
+    opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+    droidPermissionMode?: AgentChatDroidPermissionMode;
+    cursorModeId?: string | null;
+    cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
     kickoffText: string;
     contextAttachments: AgentChatContextAttachment[];
   }) => Promise<{ id: string }>;
@@ -313,6 +339,8 @@ export async function runBatchLaunch(
       }
 
       const kickoffText = config.kickoffPrompt.trim() || defaultKickoffPrompt();
+      const nativeControls = config.nativeControls ?? defaultNativeControls();
+
       if (config.sessionType === "cli") {
         // Tracked CLI agent: spawns a terminal process with the issue attached
         // and ADE_LINEAR_* injected so it can run `ade linear` directly. The CLI
@@ -331,7 +359,7 @@ export async function runBatchLaunch(
           model,
           reasoningEffort: config.reasoningEffort,
           ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
-          permissionMode: config.permissionMode ?? null,
+          permissionMode: config.permissionMode ?? cliPermissionModeFromNativeControls(config.modelId, nativeControls),
           kickoffPrompt: config.kickoffPrompt.trim() || defaultKickoffIntro(),
           linearIssues: [issue],
         });
@@ -341,6 +369,7 @@ export async function runBatchLaunch(
       }
 
       const { provider, model } = resolveLaunchProviderAndModel(config.modelId);
+      const nativePayload = buildChatLaunchNativePayload(config.modelId, nativeControls);
       // Single headless launch: creates the session AND runs the kickoff turn
       // server-side (no mounted pane needed). Persist the issue as session context
       // so the agent reads it and the session→issue link is recorded (reused by
@@ -352,7 +381,8 @@ export async function runBatchLaunch(
         modelId: config.modelId,
         reasoningEffort: config.reasoningEffort,
         ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
-        ...(config.permissionMode ? { permissionMode: config.permissionMode } : {}),
+        ...nativePayload,
+        permissionMode: config.permissionMode ?? nativePayload.permissionMode ?? "default",
         kickoffText,
         contextAttachments: [makeLinearIssueContextAttachment(issue, "lane_link")],
       });
