@@ -10048,7 +10048,8 @@ export function createAgentChatService(args: {
     }
 
     if (tool === "CronCreate") {
-      const cronId = scheduledWorkInputId(args) ?? itemId;
+      const cronId = scheduledWorkInputId(args);
+      if (!cronId) return;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
         id: cronId,
@@ -12433,6 +12434,10 @@ export function createAgentChatService(args: {
     }
     persistChatState(managed);
     state.turnId = null;
+    if (runtime.pendingSteers.length && managed.runtime === runtime) {
+      runtime.idleReaderPromise = null;
+      await deliverNextQueuedSteer(managed, runtime);
+    }
   };
 
   const handleClaudeIdleTaskMessage = (

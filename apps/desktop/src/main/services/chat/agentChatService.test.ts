@@ -9008,6 +9008,131 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    it("delivers queued steers after an idle Claude turn completes", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startBackground!: () => void;
+      let finishBackground!: () => void;
+      const startBackgroundPromise = new Promise<void>((resolve) => { startBackground = resolve; });
+      const finishBackgroundPromise = new Promise<void>((resolve) => { finishBackground = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-queued-steer",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-queued-steer",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startBackgroundPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-queued-steer",
+          task_id: "cron-task-queued-steer",
+          task_type: "cron",
+          description: "Check queued steer",
+        };
+
+        await finishBackgroundPromise;
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-idle-queued-steer",
+          task_id: "cron-task-queued-steer",
+          task_type: "cron",
+          patch: { status: "completed" },
+          summary: "Background task completed.",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-queued-steer",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+
+        yield {
+          type: "assistant",
+          uuid: "assistant-queued-steer",
+          message: {
+            id: "msg-queued-steer",
+            content: [{ type: "text", text: "Queued steer delivered." }],
+            usage: { input_tokens: 3, output_tokens: 4 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-queued-steer",
+          usage: { input_tokens: 3, output_tokens: 4 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-queued-steer",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Start a scheduled check.",
+      });
+
+      startBackground();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.status === "running",
+      );
+
+      const steerResult = await service.steer({
+        sessionId: session.id,
+        text: "Follow up after the background task.",
+      });
+      expect(steerResult.queued).toBe(true);
+
+      finishBackground();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "text"
+          && event.event.text.includes("Queued steer delivered."),
+      );
+      expect(send).toHaveBeenCalledWith(expect.stringContaining("Follow up after the background task."));
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
     it("keys Claude cron create and delete events by the provider cron id", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -9103,6 +9228,104 @@ describe("createAgentChatService", () => {
         cron: "*/15 * * * *",
         prompt: "Check CI status.",
         sourceToolUseId: "tool-cron-delete",
+      });
+    });
+
+    it("waits for the provider cron id before creating a CronCreate scheduled row", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-provider-id",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          uuid: "assistant-cron-create-no-id",
+          message: {
+            id: "msg-cron-create-no-id",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-cron-create-no-id",
+                name: "CronCreate",
+                input: {
+                  cron: "*/15 * * * *",
+                  prompt: "Check CI status.",
+                },
+              },
+            ],
+            usage: { input_tokens: 2, output_tokens: 3 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-provider-id",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-provider-id",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule a CI cron.",
+      });
+
+      expect(events.filter((event) =>
+        event.sessionId === session.id
+        && event.event.type === "scheduled_work_update"
+        && event.event.kind === "cron",
+      )).toEqual([]);
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [{
+          id: "cron-provider-1",
+          schedule: "*/15 * * * *",
+          prompt: "Check CI status.",
+          recurring: true,
+        }],
+      });
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({
+        id: "cron-provider-1",
+        status: "scheduled",
+        cron: "*/15 * * * *",
+        prompt: "Check CI status.",
       });
     });
   });
