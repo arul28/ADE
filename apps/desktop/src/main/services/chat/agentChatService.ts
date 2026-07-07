@@ -3309,6 +3309,15 @@ function resolveClaudeCliModelIdFromRuntimeValue(model: string): string | undefi
   })?.id;
 }
 
+function isBareClaudeOpus47RuntimeValue(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+    .replace(/^anthropic\//, "")
+    .replace(/-api$/, "");
+  return normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "opus-4.7";
+}
+
 function resolveModelIdFromStoredValue(
   model: string,
   providerHint?: AgentChatProvider,
@@ -3388,7 +3397,7 @@ function resolveClaudeTurnModelPayload(
     || selectedDescriptor?.shortId === "opus-1m"
     || selectedDescriptor?.providerModelId.toLowerCase().includes("[1m]");
   const selectedIsOpus48 = selectedDescriptor?.id === "anthropic/claude-opus-4-8";
-  const shouldPreserveSelectedModel = (reportedModelId: string | undefined): boolean => {
+  const shouldPreserveSelectedModel = (reportedModelId: string | undefined, reportedModel?: string): boolean => {
     if (!reportedModelId || reportedModelId === session.modelId) return false;
     const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
     if (selectedIsOpus48) {
@@ -3397,6 +3406,7 @@ function resolveClaudeTurnModelPayload(
       );
     }
     if (!selectedIsOpusOneMillion) return false;
+    if (reportedModel && isBareClaudeOpus47RuntimeValue(reportedModel)) return true;
     return reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m";
   };
 
@@ -3408,7 +3418,7 @@ function resolveClaudeTurnModelPayload(
       resolveClaudeCliModelIdFromRuntimeValue(normalized)
       ?? resolveClaudeCliModelIdFromRuntimeValue(normalizedCliModel);
     if (resolvedCliModelId) {
-      if (shouldPreserveSelectedModel(resolvedCliModelId)) return sessionPayload;
+      if (shouldPreserveSelectedModel(resolvedCliModelId, normalized)) return sessionPayload;
       const descriptor = getModelById(resolvedCliModelId);
       const reportedMatchesCanonical = descriptor?.providerModelId === normalizedCliModel;
       return {
@@ -3420,7 +3430,7 @@ function resolveClaudeTurnModelPayload(
       resolveModelIdFromStoredValue(normalized, "claude")
       ?? resolveModelIdFromStoredValue(normalizedCliModel, "claude");
     if (resolvedModelId) {
-      if (shouldPreserveSelectedModel(resolvedModelId)) return sessionPayload;
+      if (shouldPreserveSelectedModel(resolvedModelId, normalized)) return sessionPayload;
       return { model: normalized, modelId: resolvedModelId };
     }
     return { model: normalized };

@@ -196,6 +196,9 @@ function normalizeOpenCodeProviderModel(
   if (
     normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
+    || normalized === "claude-opus-4-6"
+    || normalized === "opus-4-6"
+    || normalized === "opus-4.6"
     || normalized === "opus"
   ) {
     return {

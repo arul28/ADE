@@ -237,6 +237,39 @@ describe("openCodeInventory", () => {
                   stale: {},
                 },
               },
+              "claude-opus-4-6": {
+                id: "claude-opus-4-6",
+                name: "Claude Opus 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "opus-4-6": {
+                id: "opus-4-6",
+                name: "Opus 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "opus-4.6": {
+                id: "opus-4.6",
+                name: "Opus 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
               "claude-opus-4-8": {
                 id: "claude-opus-4-8",
                 name: "Claude Opus 4.8 1M",
@@ -267,6 +300,9 @@ describe("openCodeInventory", () => {
     const opusDescriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8");
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/opus-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/opus-4.6");
     expect(descriptor?.capabilities).toMatchObject({
       tools: true,
       vision: true,

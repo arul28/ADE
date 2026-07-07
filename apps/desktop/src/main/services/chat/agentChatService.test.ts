@@ -1883,6 +1883,81 @@ describe("createAgentChatService", () => {
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
     });
 
+    it("preserves selected Claude Opus 4.7 1M metadata when the SDK reports bare Opus 4.7", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-opus-4-7-1m",
+              model: "claude-opus-4-7",
+              slash_commands: [],
+            };
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              session_id: "sdk-opus-4-7-1m",
+              usage: { input_tokens: 1, output_tokens: 1 },
+              modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+            };
+            return;
+          }
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-opus-4-7-1m",
+            model: "claude-opus-4-7",
+            slash_commands: [],
+          };
+          yield {
+            type: "assistant",
+            message: {
+              model: "claude-opus-4-7",
+              content: [{ type: "text", text: "Done" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-opus-4-7-1m",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-opus-4-7-1m",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-7[1m]",
+        modelId: "anthropic/claude-opus-4-7-1m",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Report the selected model.",
+      });
+
+      const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
+      expect(doneEvent?.event.type).toBe("done");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
+    });
+
     it("fast-fails a logged-out Claude turn into the inline re-login card", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
