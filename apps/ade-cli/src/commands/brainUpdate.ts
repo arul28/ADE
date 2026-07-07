@@ -531,27 +531,56 @@ async function applyStagedBrainUpdate(
       path.dirname(manifest.binaryPath),
       `.${path.basename(manifest.binaryPath)}.updating-${process.pid}`,
     );
+    const binaryBackupPath = path.join(
+      path.dirname(manifest.binaryPath),
+      `.${path.basename(manifest.binaryPath)}.previous-${process.pid}`,
+    );
     let nativeBackupPath: string | null = null;
     let nativePromoted = false;
+    let binaryBackedUp = false;
+    let binaryPromoted = false;
+    const rollbackPromotedAssets = async () => {
+      await fsp.rm(replacementPath, { force: true }).catch(() => undefined);
+      if (binaryPromoted) {
+        await fsp.rm(manifest.binaryPath, { force: true }).catch(() => undefined);
+      }
+      if (binaryBackedUp) {
+        await fsp.rename(binaryBackupPath, manifest.binaryPath).catch(() => undefined);
+      }
+      if (nativePromoted) {
+        await rollbackPromotedNativeRuntime(manifest, nativeBackupPath);
+      }
+    };
+    const discardPromotedBackups = async () => {
+      await fsp.rm(binaryBackupPath, { force: true }).catch(() => undefined);
+      if (nativeBackupPath) {
+        await fsp.rm(nativeBackupPath, { recursive: true, force: true }).catch(() => undefined);
+      }
+    };
     await fsp.copyFile(manifest.stagedBinaryPath, replacementPath);
     await fsp.chmod(replacementPath, 0o755);
     try {
       nativeBackupPath = await promoteStagedNativeRuntime(manifest);
       nativePromoted = true;
+      await fsp.rm(binaryBackupPath, { force: true });
+      try {
+        await fsp.rename(manifest.binaryPath, binaryBackupPath);
+        binaryBackedUp = true;
+      } catch (error) {
+        if (!isNodeErrnoException(error) || error.code !== "ENOENT") {
+          throw error;
+        }
+      }
       await fsp.rename(replacementPath, manifest.binaryPath);
-      if (nativeBackupPath) {
-        await fsp.rm(nativeBackupPath, { recursive: true, force: true }).catch(() => undefined);
-      }
+      binaryPromoted = true;
     } catch (error) {
-      await fsp.rm(replacementPath, { force: true }).catch(() => undefined);
-      if (nativePromoted) {
-        await rollbackPromotedNativeRuntime(manifest, nativeBackupPath);
-      }
+      await rollbackPromotedAssets();
       throw error;
     }
 
     if (!manifest.restartService) {
       await writeStatus("succeeded", "ADE brain runtime updated. Service restart was skipped.");
+      await discardPromotedBackups();
       await cleanupStagingDir();
       return {
         ok: true,
@@ -579,21 +608,29 @@ async function applyStagedBrainUpdate(
     );
     if (result.status !== 0) {
       const message = result.stderr || result.stdout || "ADE brain service restart failed.";
-      await writeStatus("failed", message, message);
+      let rollbackMessage = "Update was rolled back.";
+      try {
+        await rollbackPromotedAssets();
+      } catch (error) {
+        rollbackMessage = `Rollback failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      const failureMessage = `${message} ${rollbackMessage}`;
+      await writeStatus("failed", failureMessage, failureMessage);
       return {
         ok: false,
         action: "update",
-        applied: true,
+        applied: false,
         restarted: false,
         version: manifest.version,
         target: manifest.target,
         binaryPath: manifest.binaryPath,
         runtimePath: manifest.runtimeTargetDir,
-        message,
+        message: failureMessage,
       };
     }
 
     await writeStatus("succeeded", "ADE brain updated and service restart requested.");
+    await discardPromotedBackups();
     await cleanupStagingDir();
     return {
       ok: true,

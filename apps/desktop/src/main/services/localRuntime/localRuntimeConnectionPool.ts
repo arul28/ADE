@@ -798,6 +798,29 @@ export class LocalRuntimeConnectionPool {
       });
       return;
     }
+    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+    const runningCompatibilityError = await this.probeRuntimeCompatibilityError(socketPath);
+    if (runningCompatibilityError && runningCompatibilityError.skewState !== "runtime_older") {
+      this.noteCompatibilityError(runningCompatibilityError);
+      this.serviceInstallStatus = {
+        state: "skipped",
+        attempted: false,
+        path: cliPath,
+        message: "Skipped ADE service install because a newer or unclassified ADE brain is already running.",
+        exitCode: null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.warn("local_runtime.service_install_skipped", {
+        cliPath,
+        socketPath,
+        reason: "preserve_running_runtime",
+        skewState: runningCompatibilityError.skewState,
+        runtimeVersion: runningCompatibilityError.runtimeVersion,
+        appVersion: this.appVersion,
+        runtimePid: runningCompatibilityError.pid,
+      });
+      return;
+    }
     this.serviceInstallStatus = {
       state: "installing",
       attempted: true,
@@ -1312,6 +1335,79 @@ export class LocalRuntimeConnectionPool {
     };
   }
 
+  private runtimeCompatibilityError(
+    socketPath: string,
+    runtimeInfo: ReturnType<typeof readRuntimeInfo>,
+  ): LocalRuntimeCompatibilityError | null {
+    const expectedBuildHash = computeLocalRuntimeBuildHash();
+    if (!isCompatibleRuntimeVersion({
+      runtimeVersion: runtimeInfo.version,
+      appVersion: this.appVersion,
+      runtimeBuildHash: runtimeInfo.buildHash,
+      expectedBuildHash,
+    })) {
+      this.logger.info("local_runtime.version_mismatch_detected", {
+        socketPath,
+        runtimeVersion: runtimeInfo.version,
+        appVersion: this.appVersion,
+        runtimeBuildHash: runtimeInfo.buildHash,
+        expectedBuildHash,
+        runtimePid: runtimeInfo.pid,
+      });
+      const comparison = compareRuntimeVersionStrings(runtimeInfo.version, this.appVersion);
+      return new LocalRuntimeCompatibilityError(
+        `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
+        runtimeInfo,
+        comparison == null || comparison === 0
+          ? "unknown"
+          : comparison > 0
+            ? "runtime_newer"
+            : "runtime_older",
+      );
+    }
+    if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
+      this.logger.info("local_runtime.build_mismatch_detected", {
+        socketPath,
+        runtimeBuildHash: runtimeInfo.buildHash,
+        expectedBuildHash,
+        runtimePid: runtimeInfo.pid,
+      });
+      return new LocalRuntimeCompatibilityError(
+        "ADE service build does not match the packaged desktop runtime.",
+        runtimeInfo,
+        "build_mismatch",
+      );
+    }
+    if (runtimeInfo.defaultRole !== "cto") {
+      this.logger.info("local_runtime.role_mismatch_detected", {
+        socketPath,
+        runtimeDefaultRole: runtimeInfo.defaultRole,
+        expectedDefaultRole: "cto",
+        runtimePid: runtimeInfo.pid,
+      });
+      return new LocalRuntimeCompatibilityError(
+        `ADE service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
+        runtimeInfo,
+        "role_mismatch",
+      );
+    }
+    return null;
+  }
+
+  private async probeRuntimeCompatibilityError(socketPath: string): Promise<LocalRuntimeCompatibilityError | null> {
+    let client: RuntimeRpcClient | null = null;
+    try {
+      const transport = await openSocketTransport(socketPath);
+      client = new RuntimeRpcClient(transport);
+      const initializeResult = await client.initialize("ade-desktop-service-install-probe", this.appVersion);
+      return this.runtimeCompatibilityError(socketPath, readRuntimeInfo(initializeResult));
+    } catch {
+      return null;
+    } finally {
+      if (client) closeRuntimeClient(client);
+    }
+  }
+
   private resetConnectionAfterActionTimeout(entry: LocalRuntimeConnection): void {
     this.clearConnectionIfCurrent(entry);
     this.preserveOwnedRuntimeChildOnNextConnect = entry.child != null && this.ownedRuntimeChild === entry.child;
@@ -1679,60 +1775,10 @@ export class LocalRuntimeConnectionPool {
       throw error;
     }
     const runtimeInfo = readRuntimeInfo(initializeResult);
-    const expectedBuildHash = computeLocalRuntimeBuildHash();
-    if (!isCompatibleRuntimeVersion({
-      runtimeVersion: runtimeInfo.version,
-      appVersion: this.appVersion,
-      runtimeBuildHash: runtimeInfo.buildHash,
-      expectedBuildHash,
-    })) {
-      this.logger.info("local_runtime.version_mismatch_detected", {
-        socketPath,
-        runtimeVersion: runtimeInfo.version,
-        appVersion: this.appVersion,
-        runtimeBuildHash: runtimeInfo.buildHash,
-        expectedBuildHash,
-        runtimePid: runtimeInfo.pid,
-      });
+    const compatibilityError = this.runtimeCompatibilityError(socketPath, runtimeInfo);
+    if (compatibilityError) {
       closeRuntimeClient(client);
-      const comparison = compareRuntimeVersionStrings(runtimeInfo.version, this.appVersion);
-      throw new LocalRuntimeCompatibilityError(
-        `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
-        runtimeInfo,
-        comparison == null || comparison === 0
-          ? "unknown"
-          : comparison > 0
-            ? "runtime_newer"
-            : "runtime_older",
-      );
-    }
-    if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
-      this.logger.info("local_runtime.build_mismatch_detected", {
-        socketPath,
-        runtimeBuildHash: runtimeInfo.buildHash,
-        expectedBuildHash,
-        runtimePid: runtimeInfo.pid,
-      });
-      closeRuntimeClient(client);
-      throw new LocalRuntimeCompatibilityError(
-        "ADE service build does not match the packaged desktop runtime.",
-        runtimeInfo,
-        "build_mismatch",
-      );
-    }
-    if (runtimeInfo.defaultRole !== "cto") {
-      this.logger.info("local_runtime.role_mismatch_detected", {
-        socketPath,
-        runtimeDefaultRole: runtimeInfo.defaultRole,
-        expectedDefaultRole: "cto",
-        runtimePid: runtimeInfo.pid,
-      });
-      closeRuntimeClient(client);
-      throw new LocalRuntimeCompatibilityError(
-        `ADE service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
-        runtimeInfo,
-        "role_mismatch",
-      );
+      throw compatibilityError;
     }
     if (!options.preserveVersionSkew) {
       this.clearVersionSkewStatus();

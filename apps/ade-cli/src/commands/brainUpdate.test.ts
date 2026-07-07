@@ -222,6 +222,64 @@ describe("brain update command", () => {
     expect(fs.existsSync(tmp)).toBe(false);
   });
 
+  it("rolls back promoted assets when the service restart fails", async () => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    const installedBinary = path.join(root, "bin", "ade");
+    const installedNativeMarker = path.join(root, "runtime", "linux-x64", "node_modules", ".keep");
+    fs.mkdirSync(path.dirname(installedBinary), { recursive: true });
+    fs.mkdirSync(path.dirname(installedNativeMarker), { recursive: true });
+    fs.writeFileSync(installedBinary, "old-binary");
+    fs.writeFileSync(installedNativeMarker, "old-native");
+    fs.mkdirSync(tmp, { recursive: true });
+
+    const result = await runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground"],
+      {
+        env: { ADE_HOME: root },
+        platform: "linux",
+        arch: "x64",
+        tmpDir: async () => tmp,
+        downloadFile: async (url, outPath) => {
+          if (url.endsWith("/SHA256SUMS")) {
+            fs.writeFileSync(
+              outPath,
+              checksumFileFor(
+                "linux-x64",
+                "https://github.com/arul28/ADE/releases/download/v1.2.13/ade-linux-x64",
+              ),
+            );
+          } else {
+            fs.writeFileSync(outPath, url.endsWith(".tar.gz") ? "archive" : url);
+          }
+        },
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: (command, args) => {
+          if (command === "tar") {
+            const targetDir = args[args.indexOf("-C") + 1];
+            fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
+            fs.writeFileSync(path.join(targetDir, "node_modules", ".keep"), "new-native");
+            return { status: 0, stdout: "", stderr: "" };
+          }
+          return { status: 1, stdout: "", stderr: "restart failed" };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      applied: false,
+      restarted: false,
+      message: "restart failed Update was rolled back.",
+    });
+    expect(fs.readFileSync(installedBinary, "utf8")).toBe("old-binary");
+    expect(fs.readFileSync(installedNativeMarker, "utf8")).toBe("old-native");
+    expect(readBrainUpdateStatus({ ADE_HOME: root })).toMatchObject({
+      state: "failed",
+      error: "restart failed Update was rolled back.",
+    });
+  });
+
   it("keeps the installed binary when staged native dependencies are incomplete", async () => {
     const root = tempRoot();
     const tmp = path.join(root, "tmp");

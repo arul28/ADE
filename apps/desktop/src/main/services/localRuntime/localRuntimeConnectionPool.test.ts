@@ -294,6 +294,88 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it("skips service install when a newer brain is already running", async () => {
+    const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
+    const cliPath = path.join(adeCliRoot, "src", "cli.ts");
+    const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
+    expect(fs.existsSync(cliPath)).toBe(true);
+    expect(fs.existsSync(tsxLoaderPath)).toBe(true);
+
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-skip-"));
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      NODE_OPTIONS: process.env.NODE_OPTIONS,
+    };
+    const daemonEnv = {
+      ...process.env,
+      ADE_HOME: adeHome,
+      ADE_RUNTIME_SOCKET_PATH: socketPath,
+      ADE_CLI_VERSION: "2.0.0",
+      NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
+    };
+    const daemon = startServeProcess({
+      cliPath,
+      cwd: adeCliRoot,
+      env: daemonEnv,
+      socketPath,
+    });
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never);
+
+    try {
+      await waitForRuntimeSocket(socketPath);
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_HOME = adeHome;
+      process.env.ADE_RUNTIME_SOCKET_PATH = socketPath;
+      process.env.NODE_OPTIONS = daemonEnv.NODE_OPTIONS;
+
+      await pool.installServiceBestEffort();
+
+      expect(pool.getStatus()).toMatchObject({
+        versionSkew: {
+          state: "runtime_newer",
+          appVersion: "1.0.0",
+          runtimeVersion: "2.0.0",
+        },
+        serviceInstall: {
+          state: "skipped",
+          attempted: false,
+          path: cliPath,
+        },
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        "local_runtime.service_install_skipped",
+        expect.objectContaining({
+          reason: "preserve_running_runtime",
+          skewState: "runtime_newer",
+          runtimeVersion: "2.0.0",
+          appVersion: "1.0.0",
+        }),
+      );
+    } finally {
+      pool.dispose();
+      await shutdownRuntime(socketPath);
+      if (!daemon.killed) daemon.kill("SIGKILL");
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      if (originalEnv.NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+      else process.env.NODE_OPTIONS = originalEnv.NODE_OPTIONS;
+      removeTempDir(adeHome);
+    }
+  }, 45_000);
+
   it("logs child runtime stderr by line and flushes partial output", () => {
     const logger = {
       debug: vi.fn(),
