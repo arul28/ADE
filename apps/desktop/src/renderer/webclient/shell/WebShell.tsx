@@ -140,6 +140,10 @@ export function WebShell({
           background: "var(--color-surface)",
           borderBottom: `1px solid ${COLORS.border}`,
           userSelect: "none",
+          // Sit above the reused App's viewport-fixed layers (graph canvas,
+          // drawers) so the machine/project chrome is never painted over.
+          position: "relative",
+          zIndex: 10050,
         }}
       >
         {/* Machine switcher */}

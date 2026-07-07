@@ -7,6 +7,10 @@ import geistMonoVariableUrl from "../../../node_modules/geist/dist/fonts/geist-m
 import { AdeSyncClient } from "./sync";
 import { WebClientRoot } from "./shell/WebClientRoot";
 
+// Mark web-client mode before any renderer module loads, so desktop-only chrome
+// (extra tabs, onboarding tour, native window controls, updater) hides cleanly.
+window.__adeWebClient = true;
+
 // window.ade must exist before any renderer module (loaded later by the App) is
 // evaluated. Install a pending placeholder; the shell overwrites it with the
 // sync-backed adapter's implementation once a machine + project are connected.

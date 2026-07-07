@@ -57,6 +57,24 @@ export function targetToWebPath(target: DeeplinkTarget): string {
     case "session":
       params.set("sessionId", target.sessionId);
       if (target.laneId) params.set("laneId", target.laneId);
+      // Anchors: chat scrolled to an event, terminal restored to a byte offset.
+      if (target.event != null) params.set("event", String(target.event));
+      if (target.offset != null) params.set("offset", String(target.offset));
+      return withQuery("/work", params);
+    case "file":
+      // Files tab opened at a path (and line), scoped to a lane worktree.
+      params.set("path", target.path);
+      if (target.line != null) params.set("line", String(target.line));
+      if (target.laneId) params.set("laneId", target.laneId);
+      return withQuery("/files", params);
+    case "commit":
+      // No standalone commit tab on web; the lane surface renders commit detail.
+      params.set("commit", target.sha);
+      if (target.laneId) params.set("laneId", target.laneId);
+      return withQuery("/lanes", params);
+    case "artifact":
+      // Artifacts live under the Work surface (proof/artifacts drawer).
+      params.set("artifact", target.artifactId);
       return withQuery("/work", params);
     case "pr":
       params.set("pr", String(target.prNumber));
@@ -110,11 +128,32 @@ export function parseWebPath(pathAndQuery: string): DeeplinkTarget | null {
     return laneId ? { kind: "lane", laneId } : null;
   }
 
+  if (pathname === "/files") {
+    const path = params.get("path");
+    if (!path) return null;
+    const line = parsePositiveInt(params.get("line"));
+    const laneId = params.get("laneId");
+    return {
+      kind: "file",
+      path,
+      ...(line ? { line } : {}),
+      ...(laneId ? { laneId } : {}),
+    };
+  }
+
   if (pathname === "/work") {
     const sessionId = params.get("sessionId");
     if (sessionId) {
       const laneId = params.get("laneId");
-      return { kind: "session", sessionId, ...(laneId ? { laneId } : {}) };
+      const event = parseNonNegativeInt(params.get("event"));
+      const offset = parseNonNegativeInt(params.get("offset"));
+      return {
+        kind: "session",
+        sessionId,
+        ...(laneId ? { laneId } : {}),
+        ...(event != null ? { event } : {}),
+        ...(offset != null ? { offset } : {}),
+      };
     }
     const issueIdentifier = params.get("linearIssue");
     if (issueIdentifier) {
@@ -146,4 +185,10 @@ function parsePositiveInt(value: string | null): number | null {
   if (value == null) return null;
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+}
+
+function parseNonNegativeInt(value: string | null): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
 }
