@@ -825,6 +825,11 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var cursorModeIdWasCleared: Bool = false
   var cursorModeSnapshot: RemoteJSONValue?
   var cursorConfigValues: [String: RemoteJSONValue]?
+  /// True when the event carried `cursorConfigValues: null` (an intentional
+  /// clear the host emits to drop the cursor config) rather than omitting the
+  /// key. Symmetric with `cursorModeIdWasCleared`: absent-key still means "no
+  /// change"; only an explicit null sets this so `applyModeUpdate` assigns nil.
+  var cursorConfigValuesWasCleared: Bool = false
 
   private enum CodingKeys: String, CodingKey {
     case permissionMode
@@ -869,7 +874,16 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       cursorModeIdWasCleared = false
     }
     cursorModeSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
-    cursorConfigValues = try c.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
+    // Same null-vs-absent distinction as cursorModeId: decodeIfPresent collapses
+    // `cursorConfigValues: null` (an explicit clear) into absent, so gate on
+    // `contains` to record the clear.
+    if c.contains(.cursorConfigValues) {
+      cursorConfigValues = try c.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
+      cursorConfigValuesWasCleared = cursorConfigValues == nil
+    } else {
+      cursorConfigValues = nil
+      cursorConfigValuesWasCleared = false
+    }
   }
 
   /// True when the event carries at least one mode field. A bare
@@ -887,6 +901,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
       || cursorConfigValues != nil
+      || cursorConfigValuesWasCleared
   }
 }
 
@@ -911,23 +926,32 @@ extension AgentChatSessionSummary {
       cursorModeId = nil
     }
     if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
-    if let v = update.cursorConfigValues { cursorConfigValues = v }
+    if let v = update.cursorConfigValues {
+      cursorConfigValues = v
+    } else if update.cursorConfigValuesWasCleared {
+      // Explicit `cursorConfigValues: null` from the host — drop the config
+      // rather than leaving the stale values in place.
+      cursorConfigValues = nil
+    }
   }
 
-  /// Overlay the non-nil mode fields from another summary (used to fold a
-  /// cache-side mode patch into an open view's live summary). Only non-nil
-  /// source values win, so it never blanks a field the source didn't populate.
+  /// Overlay the mode fields from another summary (used to fold a cache-side
+  /// mode patch into an open view's live summary on a chat-event revision bump).
   ///
-  /// `cursorModeIdCleared` is the one deliberate exception: when the cache
-  /// recorded an explicit `cursorModeId: null` clear (a folded
-  /// `session_meta_updated`), pass `true` so the nil propagates to the live
-  /// summary — the non-nil-only copy below would otherwise leave the stale
-  /// mode in place. It defaults to `false`, so a plain summary→summary merge
-  /// still never nulls cursorModeId (or any field) off a source nil.
-  mutating func mergeModeFields(
-    from other: AgentChatSessionSummary,
-    cursorModeIdCleared: Bool = false
-  ) {
+  /// The permission/interaction string fields copy only when non-nil: the host
+  /// never null-clears them, and a partial refresh summary that omits one must
+  /// not blank the live value.
+  ///
+  /// Cursor fields (`cursorModeId` / `cursorConfigValues`) copy WHOLESALE,
+  /// including a nil. The cache is authoritative for cursor state — every writer
+  /// (the `session_meta_updated` fold via `applyModeUpdate`, a full host summary
+  /// via `cacheChatSummary`, or a lane-list refresh) stores the host's true
+  /// value, and the host includes the field whenever a mode/config exists (a
+  /// clear arrives as an explicit `null`, an unset session simply has no mode).
+  /// So mirroring the cache's cursor fields — nil included — is exactly how an
+  /// explicit clear reaches the live composer, with no separate clear flag or
+  /// stateful marker to go stale.
+  mutating func mergeModeFields(from other: AgentChatSessionSummary) {
     if let v = other.permissionMode { permissionMode = v }
     if let v = other.interactionMode { interactionMode = v }
     if let v = other.claudePermissionMode { claudePermissionMode = v }
@@ -936,13 +960,9 @@ extension AgentChatSessionSummary {
     if let v = other.codexConfigSource { codexConfigSource = v }
     if let v = other.opencodePermissionMode { opencodePermissionMode = v }
     if let v = other.droidPermissionMode { droidPermissionMode = v }
-    if let v = other.cursorModeId {
-      cursorModeId = v
-    } else if cursorModeIdCleared {
-      cursorModeId = nil
-    }
+    cursorModeId = other.cursorModeId
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
-    if let v = other.cursorConfigValues { cursorConfigValues = v }
+    cursorConfigValues = other.cursorConfigValues
   }
 }
 

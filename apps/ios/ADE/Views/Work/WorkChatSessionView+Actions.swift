@@ -936,10 +936,11 @@ extension WorkChatSessionView {
   }
 
   @MainActor
-  func runSessionAction(_ action: @escaping @MainActor () async -> Void) async {
+  @discardableResult
+  func runSessionAction<T>(_ action: @escaping @MainActor () async -> T) async -> T {
     actionInFlight = true
     defer { actionInFlight = false }
-    await action()
+    return await action()
   }
 
   // MARK: - Consolidated pending-input answering
@@ -950,20 +951,33 @@ extension WorkChatSessionView {
   /// hide back so the card re-shows. Successful resolutions are cleared later by
   /// `reconcileOptimisticallyAnsweredInputs` once the item leaves the derived
   /// queue.
+  ///
+  /// Returns whether THIS answer succeeded so callers (the accept-all sweep) can
+  /// gate follow-up work on the real per-action result instead of the shared
+  /// `errorMessage` binding.
   @MainActor
+  @discardableResult
   func dispatchPendingInputAnswer(
     itemId: String,
     _ op: @escaping @MainActor () async -> Void
-  ) async {
+  ) async -> Bool {
     optimisticallyAnsweredInputIds.insert(itemId)
-    await runSessionAction(op)
-    // Every answer handler (`approveRequest`, `respondToPermission`,
-    // `submitQuestionAnswers`, `respondToQuestion`, `declineQuestion`) resets
-    // `errorMessage` to nil on success and sets a message on failure, so a
-    // non-nil value here means THIS command failed — roll the hide back.
-    if errorMessage != nil {
+    // Capture this action's outcome the instant its handler returns. Every
+    // answer handler (`approveRequest`, `respondToPermission`,
+    // `submitQuestionAnswers`, `respondToQuestion`, `declineQuestion`) writes
+    // `errorMessage` as its final synchronous step — nil on success, a message
+    // on failure — and there is no suspension point between that write and this
+    // read, so the value reflects THIS command rather than an unrelated
+    // concurrent action. Both the rollback below and the sweep gate key off the
+    // captured local result, never a later read of the shared binding.
+    let succeeded = await runSessionAction { () async -> Bool in
+      await op()
+      return errorMessage == nil
+    }
+    if !succeeded {
       optimisticallyAnsweredInputIds.remove(itemId)
     }
+    return succeeded
   }
 
   /// Drop optimistically-answered ids that are no longer in the canonical queue
@@ -989,8 +1003,11 @@ extension WorkChatSessionView {
     let sweepable = acceptAllSweepableInputs
     guard sweepable.contains(where: { $0.itemId == primary.itemId }) else { return }
 
-    // 1. Current item first with acceptForSession.
-    await sendPendingInputDecision(primary, decision: .acceptForSession)
+    // 1. Current item first with acceptForSession. If the session-scoped grant
+    //    fails, stop: do NOT fire `.accept` for the rest. The remaining items
+    //    stay pending and the primary's optimistic mark was already rolled back
+    //    by `dispatchPendingInputAnswer`.
+    guard await sendPendingInputDecision(primary, decision: .acceptForSession) else { return }
 
     // 2. Remaining approval/permission items, one await at a time.
     for item in sweepable where item.itemId != primary.itemId {
@@ -999,24 +1016,26 @@ extension WorkChatSessionView {
     }
   }
 
-  /// Route a single approval/permission decision through the optimistic path.
-  /// No-ops for kinds that must not be auto-answered.
+  /// Route a single approval/permission decision through the optimistic path,
+  /// returning whether the decision was dispatched successfully. No-ops (and
+  /// reports failure) for kinds that must not be auto-answered.
   @MainActor
+  @discardableResult
   private func sendPendingInputDecision(
     _ item: WorkPendingInputItem,
     decision: AgentChatApprovalDecision
-  ) async {
+  ) async -> Bool {
     switch item {
     case .approval(let model):
-      await dispatchPendingInputAnswer(itemId: model.id) {
+      return await dispatchPendingInputAnswer(itemId: model.id) {
         await onApproveRequest(model.id, decision, nil)
       }
     case .permission(let model):
-      await dispatchPendingInputAnswer(itemId: model.id) {
+      return await dispatchPendingInputAnswer(itemId: model.id) {
         await onRespondToPermission(model.id, decision)
       }
     case .question, .planApproval, .modelSelection:
-      break
+      return false
     }
   }
 }

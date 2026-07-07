@@ -1179,22 +1179,19 @@ struct WorkSessionDestinationView: View {
   /// `session_meta_updated` event arrives from another client) into the live
   /// `chatSummary` so the composer's model/permission pill reflects the change
   /// without a refetch. Runs on the chat-event revision bump the meta event
-  /// already triggers. Only non-nil cache mode fields are merged and the
-  /// assignment is gated on a real change to avoid needless re-renders. When
-  /// `chatSummary` is nil the composer already reads the patched cache via
-  /// `composerChatSummary`, so nothing to do here.
+  /// already triggers. `mergeModeFields` mirrors the cache's cursor fields
+  /// wholesale (the cache is authoritative), so an explicit `cursorModeId` /
+  /// `cursorConfigValues` clear folded into the cache reaches the live composer
+  /// here; the assignment is gated on a real change to avoid needless
+  /// re-renders. When `chatSummary` is nil the composer already reads the
+  /// patched cache via `composerChatSummary`, so nothing to do here.
   @MainActor
   func reconcileChatSummaryModeFromCacheIfNeeded() {
     guard var current = chatSummary,
           let cached = syncService.chatSummaryCache[sessionId],
           cached.sessionId == current.sessionId
     else { return }
-    current.mergeModeFields(
-      from: cached,
-      // A cache-side explicit `cursorModeId: null` clear must reach the live
-      // composer; the non-nil-only merge would otherwise leave the stale mode.
-      cursorModeIdCleared: syncService.cursorModeClearedSessionIds.contains(sessionId)
-    )
+    current.mergeModeFields(from: cached)
     if current != chatSummary {
       chatSummary = current
     }

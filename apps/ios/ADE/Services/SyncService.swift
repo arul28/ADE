@@ -1564,12 +1564,6 @@ final class SyncService: ObservableObject {
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
   private(set) var chatSummaryCache: [String: AgentChatSessionSummary] = [:]
-  /// Session ids whose cached summary carries an explicit cursor-mode clear (a
-  /// folded `session_meta_updated` with `cursorModeId: null`). The generic
-  /// summary→summary merge copies only non-nil cursor modes, so an open view's
-  /// `reconcileChatSummaryModeFromCacheIfNeeded` consults this set to null the
-  /// live `cursorModeId` too. Cleared once a real (non-nil) mode supersedes it.
-  private(set) var cursorModeClearedSessionIds: Set<String> = []
   private struct ChatModelsCacheEntry {
     var models: [AgentChatModelInfo]
     var fetchedAt: Date
@@ -10566,7 +10560,6 @@ final class SyncService: ObservableObject {
       // session), which means a full reset must clear it explicitly — otherwise
       // another project's / a stale connection's summaries would linger.
       chatSummaryCache.removeAll()
-      cursorModeClearedSessionIds.removeAll()
     } else {
       pruneChatEventHistoryCacheIfNeeded()
     }
@@ -10896,12 +10889,6 @@ extension SyncService {
 
   func cacheChatSummary(_ summary: AgentChatSessionSummary) {
     chatSummaryCache[summary.sessionId] = summary
-    // A full summary with a real cursor mode supersedes any pending clear
-    // marker (host confirmed a mode); a summary that itself carries nil leaves
-    // the marker untouched so an in-flight clear still reaches the open view.
-    if summary.cursorModeId != nil {
-      cursorModeClearedSessionIds.remove(summary.sessionId)
-    }
     refreshActiveSessionsAndSnapshot()
   }
 
@@ -10921,17 +10908,13 @@ extension SyncService {
           update.hasAnyField,
           var summary = chatSummaryCache[envelope.sessionId]
     else { return }
+    // `applyModeUpdate` applies an explicit `cursorModeId: null` /
+    // `cursorConfigValues: null` clear directly to the cached summary (nulling
+    // the field), so the cache is authoritative right here at receipt. The open
+    // view's reconcile mirrors the cache's cursor fields — nil included — on the
+    // revision bump, so the clear reaches the live composer without any stateful
+    // marker to go stale if the host later restores the mode.
     summary.applyModeUpdate(update)
-    // Track an explicit cursor-mode clear so the open view's reconcile can null
-    // the live cursorModeId (the non-nil-only summary merge can't). A later
-    // non-nil mode from this same event supersedes it. Done before the
-    // no-change guard below: the view reconciles off the chat-event revision
-    // bump regardless of whether the cached summary itself changed.
-    if update.cursorModeIdWasCleared {
-      cursorModeClearedSessionIds.insert(envelope.sessionId)
-    } else if update.cursorModeId != nil {
-      cursorModeClearedSessionIds.remove(envelope.sessionId)
-    }
     guard summary != chatSummaryCache[envelope.sessionId] else { return }
     chatSummaryCache[envelope.sessionId] = summary
     refreshActiveSessionsAndSnapshot()

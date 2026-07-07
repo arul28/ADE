@@ -9648,30 +9648,60 @@ final class ADETests: XCTestCase {
     summary.applyModeUpdate(unrelatedUpdate)
     XCTAssertEqual(summary.cursorModeId, "agent")
 
+    // An explicit `cursorConfigValues: null` is likewise an intentional clear —
+    // decodeIfPresent alone collapses it into "absent", so the decoder records
+    // `cursorConfigValuesWasCleared` and applyModeUpdate drops the stale config.
+    summary.cursorConfigValues = ["voice": .bool(true)]
+    let configClearUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "cursorConfigValues": NSNull(),
+      ])
+    )
+    XCTAssertTrue(configClearUpdate.cursorConfigValuesWasCleared)
+    XCTAssertTrue(configClearUpdate.hasAnyField)
+    summary.applyModeUpdate(configClearUpdate)
+    XCTAssertNil(summary.cursorConfigValues)
+
+    // A partial update that omits cursorConfigValues must NOT clear it.
+    summary.cursorConfigValues = ["voice": .bool(true)]
+    XCTAssertFalse(unrelatedUpdate.cursorConfigValuesWasCleared)
+    summary.applyModeUpdate(unrelatedUpdate)
+    XCTAssertEqual(summary.cursorConfigValues?["voice"], .bool(true))
+
     // The cache fold above is only half the story: the open chat view rebuilds
-    // its LIVE summary from the cache via `mergeModeFields(from:)`, which copies
-    // only non-nil cursor modes. An explicit clear must still reach that live
-    // summary, so the reconcile threads a `cursorModeIdCleared` flag.
+    // its LIVE summary from the cache via `mergeModeFields(from:)`. The cache is
+    // authoritative for cursor fields, so the merge mirrors them wholesale —
+    // nil included — which is exactly how an explicit clear reaches the live
+    // composer, with no stateful clear marker.
     var cachedAfterClear = summary
     cachedAfterClear.cursorModeId = nil
+    cachedAfterClear.cursorConfigValues = nil
     var liveSummary = summary
     liveSummary.cursorModeId = "agent"
-    // Without the cleared flag, a plain merge preserves the live mode (the
-    // invariant: a partial summary merge never nulls an unrelated field).
-    var mergedNoClear = liveSummary
-    mergedNoClear.mergeModeFields(from: cachedAfterClear)
-    XCTAssertEqual(mergedNoClear.cursorModeId, "agent")
-    // With the cleared flag, the nil propagates to the live summary/composer.
+    liveSummary.cursorConfigValues = ["voice": .bool(true)]
     var mergedCleared = liveSummary
-    mergedCleared.mergeModeFields(from: cachedAfterClear, cursorModeIdCleared: true)
-    XCTAssertNil(mergedCleared.cursorModeId)
-    // A non-nil cache mode still wins even under the cleared flag (belt-and-
-    // suspenders: a re-set mode is never clobbered to nil).
-    var cachedWithMode = summary
-    cachedWithMode.cursorModeId = "plan"
-    var mergedReset = liveSummary
-    mergedReset.mergeModeFields(from: cachedWithMode, cursorModeIdCleared: true)
-    XCTAssertEqual(mergedReset.cursorModeId, "plan")
+    mergedCleared.mergeModeFields(from: cachedAfterClear)
+    XCTAssertNil(mergedCleared.cursorModeId, "explicit cache clear must null the live cursor mode")
+    XCTAssertNil(mergedCleared.cursorConfigValues, "explicit cache clear must null the live cursor config")
+
+    // Regression guard (the "stale clear marker wins" bug): after a clear, a
+    // host that RESTORES a non-null mode/config must NOT be re-cleared. With no
+    // persistent clear state, each reconcile mirrors the current authoritative
+    // cache, so a restored value survives.
+    var cachedRestored = summary
+    cachedRestored.cursorModeId = "plan"
+    cachedRestored.cursorConfigValues = ["voice": .bool(false)]
+    var liveAfterClear = liveSummary
+    liveAfterClear.cursorModeId = nil
+    liveAfterClear.cursorConfigValues = nil
+    liveAfterClear.mergeModeFields(from: cachedRestored)
+    XCTAssertEqual(liveAfterClear.cursorModeId, "plan", "a host-restored mode must not be re-cleared")
+    XCTAssertEqual(
+      liveAfterClear.cursorConfigValues?["voice"], .bool(false),
+      "a host-restored config must not be re-cleared"
+    )
   }
 
   func testAgentChatSessionDecodesCodexFastModeFlag() throws {
