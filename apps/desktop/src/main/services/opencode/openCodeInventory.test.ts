@@ -192,6 +192,64 @@ describe("openCodeInventory", () => {
     expect(result.providers.find((provider) => provider.id === "anthropic")?.connected).toBe(false);
   });
 
+  it("prefers canonical OpenCode model rows over normalized retired aliases", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["anthropic"],
+        all: [
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-6": {
+                id: "claude-sonnet-4-6",
+                name: "Claude Sonnet 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-sonnet-5": {
+                id: "claude-sonnet-5",
+                name: "Claude Sonnet 5",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  high: {},
+                  fast: {},
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    const descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5");
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
+    expect(descriptor?.capabilities).toMatchObject({
+      tools: true,
+      vision: true,
+      reasoning: true,
+    });
+    expect(descriptor?.reasoningTiers).toEqual(["high"]);
+    expect(descriptor?.serviceTiers).toEqual(["fast"]);
+  });
+
   it("classifies OpenCode SDK model variants and v2 capabilities", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({

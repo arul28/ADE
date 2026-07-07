@@ -158,17 +158,37 @@ function normalizeOpenCodeProviderModel(
   providerId: string,
   modelId: string,
   displayName?: string,
-): { modelId: string; displayName?: string; contextWindow?: number; maxOutputTokens?: number } {
+): { modelId: string; displayName?: string; contextWindow?: number; maxOutputTokens?: number; preferredDuplicateSource: boolean } {
   if (providerId.trim().toLowerCase() !== "anthropic") {
-    return { modelId, ...(displayName ? { displayName } : {}) };
+    return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource: true };
   }
   const normalized = modelId.trim().toLowerCase();
+  const preferredDuplicateSource = normalized === "claude-sonnet-5" || normalized === "claude-opus-4-8";
+  if (normalized === "claude-sonnet-5") {
+    return {
+      modelId: "claude-sonnet-5",
+      displayName: displayName ?? "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      preferredDuplicateSource,
+    };
+  }
+  if (normalized === "claude-opus-4-8") {
+    return {
+      modelId: "claude-opus-4-8",
+      displayName: displayName ?? "Claude Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      preferredDuplicateSource,
+    };
+  }
   if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
     return {
       modelId: "claude-sonnet-5",
       displayName: "Claude Sonnet 5",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
+      preferredDuplicateSource,
     };
   }
   if (
@@ -181,9 +201,10 @@ function normalizeOpenCodeProviderModel(
       displayName: "Claude Opus 4.8 1M",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
+      preferredDuplicateSource,
     };
   }
-  return { modelId, ...(displayName ? { displayName } : {}) };
+  return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource };
 }
 
 function openCodeSdkErrorMessage(error: unknown): string | null {
@@ -275,7 +296,8 @@ export async function probeOpenCodeProviderInventory(args: {
         }
         const connected = new Set(data.connected);
         const descriptors: ModelDescriptor[] = [];
-        const descriptorIds = new Set<string>();
+        const descriptorIds = new Map<string, number>();
+        const descriptorPreferredDuplicateSources = new Map<string, boolean>();
         const availableProviderModelCounts = new Map<string, number>();
 
         // Build a set of loaded local model IDs so we can filter out unloaded models
@@ -335,8 +357,19 @@ export async function probeOpenCodeProviderInventory(args: {
               ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
               capabilities: readOpenCodeModelCapabilities(modelRecord),
             });
-            if (descriptorIds.has(descriptor.id)) continue;
-            descriptorIds.add(descriptor.id);
+            const existingIndex = descriptorIds.get(descriptor.id);
+            if (existingIndex !== undefined) {
+              if (
+                normalizedModel.preferredDuplicateSource
+                && descriptorPreferredDuplicateSources.get(descriptor.id) !== true
+              ) {
+                descriptors[existingIndex] = descriptor;
+                descriptorPreferredDuplicateSources.set(descriptor.id, true);
+              }
+              continue;
+            }
+            descriptorIds.set(descriptor.id, descriptors.length);
+            descriptorPreferredDuplicateSources.set(descriptor.id, normalizedModel.preferredDuplicateSource);
             descriptors.push(descriptor);
             if (connected.has(provider.id)) {
               availableProviderModelCounts.set(

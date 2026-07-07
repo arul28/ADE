@@ -790,13 +790,6 @@ struct WorkNewChatScreen: View {
       return known
     }
     let lower = trimmed.lowercased()
-    switch lower {
-    case "opus": return "Claude Opus 4.8 1M"
-    case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
-    case "sonnet": return "Claude Sonnet 5"
-    case "haiku": return "Claude Haiku 4.5"
-    default: break
-    }
     if lower.hasPrefix("claude-") {
       let tail = trimmed.dropFirst("claude-".count)
       let joined = tail.split(separator: "-").map { part -> String in

@@ -140,7 +140,10 @@ describe("discoverDroidCliModelDescriptors", () => {
       initResult: {
         availableModels: [
           { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+          { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
           { id: "claude-opus-4-7", displayName: "Claude Opus 4.7" },
+          { id: "opus-4-7", displayName: "Opus 4.7" },
+          { id: "opus", displayName: "Opus" },
           { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
         ],
       },

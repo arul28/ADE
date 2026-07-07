@@ -2041,14 +2041,9 @@ func prettyWorkChatModelName(_ raw: String) -> String {
     return known
   }
   switch trimmed.lowercased() {
-  case "opus": return "Claude Opus 4.8 1M"
-  case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
-  case "sonnet": return "Claude Sonnet 5"
-  case "haiku": return "Claude Haiku 4.5"
+  case let lower where lower.hasPrefix("claude-"):
+    return "Claude " + beautifyWorkModelSegment(String(trimmed.dropFirst("claude-".count)))
   default:
-    if trimmed.lowercased().hasPrefix("claude-") {
-      return "Claude " + beautifyWorkModelSegment(String(trimmed.dropFirst("claude-".count)))
-    }
     return beautifyWorkModelSegment(trimmed)
   }
 }

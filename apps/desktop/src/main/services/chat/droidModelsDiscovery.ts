@@ -246,10 +246,10 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
 
 function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
   const id = row.id.trim().toLowerCase();
-  if (id === "claude-sonnet-4-6") {
+  if (id === "claude-sonnet-4-6" || id === "sonnet-4-6") {
     return { ...row, id: "claude-sonnet-5", displayName: "Sonnet 5 (1.2x)" };
   }
-  if (id === "claude-opus-4-7") {
+  if (id === "claude-opus-4-7" || id === "opus-4-7" || id === "opus") {
     return { ...row, id: "claude-opus-4-8", displayName: "Opus 4.8 1M" };
   }
   return row;
