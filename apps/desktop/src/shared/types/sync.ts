@@ -49,7 +49,7 @@ export type SyncPayloadEncoding = "json" | "base64";
 
 export type SyncPeerPlatform = "macOS" | "linux" | "windows" | "iOS" | "unknown";
 
-export type SyncPeerDeviceType = "desktop" | "phone" | "vps" | "unknown";
+export type SyncPeerDeviceType = "desktop" | "phone" | "vps" | "browser" | "unknown";
 
 export type SyncPeerMetadata = {
   deviceId: string;
@@ -545,6 +545,15 @@ export type SyncPairingConnectInfo = {
   addressCandidates: SyncAddressCandidate[];
 };
 
+export type SyncWebPairingInfo = {
+  pairingUrl: string;
+  code: string | null;
+  pinConfigured: boolean;
+  machineName: string;
+  relayEnabled: boolean;
+  hasRelayCandidate: boolean;
+};
+
 /**
  * Machine-level cloud tunnel relay posture. Enabled by default so paired
  * phones stay reachable off LAN/tailnet with zero configuration: the brain
@@ -910,6 +919,7 @@ export type SyncSendToSessionResult = PtySendToSessionResult;
 
 export type SyncRemoteCommandAction =
   | "lanes.list"
+  | "lanes.listDeleteProgress"
   | "lanes.presence.announce"
   | "lanes.presence.release"
   | "lanes.refreshSnapshots"
@@ -945,6 +955,9 @@ export type SyncRemoteCommandAction =
   | "lanes.initEnv"
   | "lanes.getEnvStatus"
   | "lanes.applyTemplate"
+  | "work.getSession"
+  | "work.deleteSession"
+  | "work.getSessionDelta"
   | "work.listSessions"
   | "work.updateSessionMeta"
   | "work.runQuickCommand"
@@ -959,6 +972,17 @@ export type SyncRemoteCommandAction =
   | "processes.start"
   | "processes.stop"
   | "processes.kill"
+  | "chat.getSlashCommands"
+  | "chat.getParallelLaunchState"
+  | "chat.setParallelLaunchState"
+  | "chat.handoff"
+  | "chat.getContextUsage"
+  | "chat.rewindFiles"
+  | "chat.getTurnFileDiff"
+  | "chat.saveTempAttachment"
+  | "chat.warmupModel"
+  | "chat.launch"
+  | "chat.getImageDataUrl"
   | "chat.listSessions"
   | "chat.getSummary"
   | "chat.getTranscript"
@@ -999,6 +1023,8 @@ export type SyncRemoteCommandAction =
   | "cto.updateIdentity"
   | "git.getChanges"
   | "git.getFile"
+  | "git.getFilePatch"
+  | "git.getUserIdentity"
   | "files.writeTextAtomic"
   | "git.stageFile"
   | "git.stageAll"
@@ -1022,6 +1048,7 @@ export type SyncRemoteCommandAction =
   | "git.stashApply"
   | "git.stashPop"
   | "git.stashDrop"
+  | "git.stashClear"
   | "git.fetch"
   | "git.pull"
   | "git.undoLastHeadChange"
@@ -1036,13 +1063,39 @@ export type SyncRemoteCommandAction =
   | "git.mergeAbort"
   | "git.listBranches"
   | "git.checkoutBranch"
+  | "terminal.list"
+  | "terminal.activeForChat"
   | "conflicts.getLaneStatus"
   | "conflicts.listOverlaps"
   | "conflicts.getBatchAssessment"
+  | "rebase.scanNeeds"
+  | "rebase.execute"
+  | "history.listOperations"
+  | "github.getStatus"
+  | "github.getRemoteStatus"
+  | "github.publishCurrentProject"
+  | "projectConfig.get"
+  | "projectConfig.save"
+  | "ai.getStatus"
+  | "orchestration.runCreate"
   | "prs.list"
+  | "prs.listOpenForRepo"
   | "prs.refresh"
   | "prs.getForLane"
   | "prs.getDetail"
+  | "prs.postReviewComment"
+  | "prs.getAiSummary"
+  | "prs.regenerateAiSummary"
+  | "prs.getIntegrationResolutionState"
+  | "prs.delete"
+  | "prs.cleanupBranch"
+  | "prs.listProposals"
+  | "prs.getQueueState"
+  | "prs.listQueueStates"
+  | "prs.getMergeContext"
+  | "prs.getMergeContexts"
+  | "prs.listWithConflicts"
+  | "prs.listSnapshots"
   | "prs.getStatus"
   | "prs.getChecks"
   | "prs.getReviews"
@@ -1093,6 +1146,8 @@ export type SyncRemoteCommandAction =
   | "prs.cleanupIntegrationWorkflow"
   | "prs.createIntegrationLaneForProposal"
   | "prs.startIntegrationResolution"
+  | "prs.aiResolutionGetSession"
+  | "prs.aiResolutionStart"
   | "prs.recheckIntegrationStep"
   | "prs.landQueueNext"
   | "prs.startQueueAutomation"
@@ -1101,6 +1156,7 @@ export type SyncRemoteCommandAction =
   | "prs.cancelQueueAutomation"
   | "prs.reorderQueue"
   | "prs.getMobileSnapshot"
+  | "sync.getWebPairingInfo"
   | "modelPicker.getFavorites"
   | "modelPicker.setFavorites"
   | "modelPicker.toggleFavorite"

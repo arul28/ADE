@@ -5,12 +5,15 @@ import type {
   SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
+  SyncPeerDeviceType,
   SyncPairingConnectInfo,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
 } from "../../../shared/types";
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
 import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
+import { WEB_CLIENT_BASE_URL, buildWebClientPairUrl } from "../../../shared/webClientUrl";
+import { openExternalUrl } from "../../lib/openExternal";
 import { SettingsToggle } from "./settingsSectionUi";
 import {
   COLORS,
@@ -92,6 +95,21 @@ function tagStyle(color: string): React.CSSProperties {
     fontWeight: 700,
     letterSpacing: "0.04em",
   };
+}
+
+function deviceTypeLabel(deviceType: SyncPeerDeviceType): string {
+  switch (deviceType) {
+    case "desktop":
+      return "Desktop";
+    case "phone":
+      return "Phone";
+    case "vps":
+      return "VPS";
+    case "browser":
+      return "Browser";
+    case "unknown":
+      return "Unknown";
+  }
 }
 
 function formatEndpoint(host: string | null | undefined, port: number | null | undefined): string {
@@ -303,6 +321,9 @@ export function SyncDevicesSection() {
   const phones = devices.filter((device) => !device.isLocal && device.deviceType === "phone");
   const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
   const phonesOffline = phones.length - phonesConnected;
+  const browsers = devices.filter((device) => !device.isLocal && device.deviceType === "browser");
+  const browsersConnected = browsers.filter((d) => d.connectionState === "connected").length;
+  const browsersOffline = browsers.length - browsersConnected;
   const isLocalHost = status.runtimeRole === "host" || status.role === "brain";
   const hasTailscaleAddress = Boolean(status.localDevice.tailscaleIp);
   const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery);
@@ -336,6 +357,14 @@ export function SyncDevicesSection() {
       ) : (
         <ViewerPairingNotice />
       )}
+
+      {isLocalHost ? (
+        <WebClientCard
+          connectInfo={status.pairingConnectInfo}
+          pinConfigured={status.pairingPinConfigured}
+          pin={status.pairingPin}
+        />
+      ) : null}
 
       {showTailnetDiscovery ? (
         <TailnetDiscoveryPanel
@@ -379,6 +408,20 @@ export function SyncDevicesSection() {
         </summary>
         <div style={{ marginTop: 12 }}>
           <PhonesList devices={phones} busy={busy} onForget={handleForgetDevice} />
+        </div>
+      </details>
+
+      <details style={detailBlockStyle}>
+        <summary style={detailSummaryStyle}>
+          <span>Web clients</span>
+          <span style={helperTextStyle}>
+            {browsers.length === 0
+              ? "None paired"
+              : `${browsersConnected} connected, ${browsersOffline} offline`}
+          </span>
+        </summary>
+        <div style={{ marginTop: 12 }}>
+          <BrowsersList devices={browsers} busy={busy} onForget={handleForgetDevice} />
         </div>
       </details>
     </div>
@@ -749,14 +792,10 @@ function PairPhoneCard({
   );
 }
 
-function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
-  const qrUrl = useMemo(
-    () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo })),
-    [connectInfo],
-  );
-  // Same ADE-branded treatment as the welcome modal's TestFlight QR: white
-  // tile, accent-tinted border, excavated ADE mark in the center (which is
-  // why the error-correction level is H).
+// Same ADE-branded treatment as the welcome modal's TestFlight QR: white tile,
+// accent-tinted border, excavated ADE mark in the center (which is why the
+// error-correction level is H). Shared by phone and web-client pairing panels.
+function QrCodeBox({ value, title }: { value: string; title: string }) {
   return (
     <div style={{ ...panelStyle, gap: 0, padding: 12, placeItems: "center" }}>
       <div
@@ -769,13 +808,13 @@ function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
         }}
       >
         <QRCodeSVG
-          value={qrUrl}
+          value={value}
           size={148}
           level="H"
           marginSize={1}
           bgColor="#FFFFFF"
           fgColor="#111827"
-          title="QR code to pair ADE Mobile with this machine"
+          title={title}
           imageSettings={{
             src: publicAssetUrl("welcome/ade-icon.webp"),
             height: 32,
@@ -784,6 +823,163 @@ function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
           }}
         />
       </div>
+    </div>
+  );
+}
+
+function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
+  const qrUrl = useMemo(
+    () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo })),
+    [connectInfo],
+  );
+  return <QrCodeBox value={qrUrl} title="Pairing QR code" />;
+}
+
+function WebClientCard({
+  connectInfo,
+  pinConfigured,
+  pin,
+}: {
+  connectInfo: SyncPairingConnectInfo | null;
+  pinConfigured: boolean;
+  pin: string | null;
+}) {
+  const hasAddresses = (connectInfo?.addressCandidates.length ?? 0) > 0;
+  const pinMissing = !pinConfigured;
+
+  return (
+    <div style={cardStyle({ display: "grid", gap: 16 })}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
+          Web client
+        </div>
+        <button
+          type="button"
+          style={outlineButton({ height: 30 })}
+          onClick={() => openExternalUrl(WEB_CLIENT_BASE_URL)}
+        >
+          Open in browser
+        </button>
+      </div>
+
+      {hasAddresses ? (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto minmax(0, 1fr)",
+            gap: 16,
+            alignItems: "start",
+            minWidth: 0,
+          }}
+        >
+          <WebPairQrPanel connectInfo={connectInfo as SyncPairingConnectInfo} />
+          <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
+            <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
+              Scan the QR, or open the pairing link in a browser to pair.
+            </div>
+            <WebPairLink connectInfo={connectInfo as SyncPairingConnectInfo} />
+            <WebPairCode pin={pin} pinConfigured={pinConfigured} />
+          </div>
+        </div>
+      ) : (
+        <div style={helperTextStyle}>No machine addresses are published yet.</div>
+      )}
+
+      <div style={helperTextStyle}>
+        {pinMissing
+          ? "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section above."
+          : "Open the link, enter the pairing code in the browser, and the browser pairs to this machine."}
+      </div>
+    </div>
+  );
+}
+
+function WebPairCode({ pin, pinConfigured }: { pin: string | null; pinConfigured: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    if (!pin) return;
+    try {
+      await window.ade?.app?.writeClipboardText?.(pin);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable; the code stays visible to copy manually.
+    }
+  }, [pin]);
+
+  return (
+    <div style={{ ...panelStyle, gap: 8 }}>
+      <div style={LABEL_STYLE}>Pairing code</div>
+      <div style={{ ...codeValueStyle, fontSize: 18, letterSpacing: "0.32em", fontVariantNumeric: "tabular-nums" }}>
+        {pin ? pin : pinConfigured ? "••••••" : "Not set"}
+      </div>
+      <button
+        type="button"
+        style={outlineButton({ justifySelf: "start", height: 30 })}
+        onClick={() => void handleCopy()}
+        disabled={!pin}
+        title={pin ? undefined : "The PIN is hidden; reveal or set it in the phone pairing section above."}
+      >
+        {copied ? "Copied" : "Copy code"}
+      </button>
+    </div>
+  );
+}
+
+function WebPairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
+  const qrUrl = useMemo(
+    () => buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+    [connectInfo],
+  );
+  return <QrCodeBox value={qrUrl} title="Web client pairing QR code" />;
+}
+
+function WebPairLink({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
+  const url = useMemo(
+    () => buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+    [connectInfo],
+  );
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await window.ade?.app?.writeClipboardText?.(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable; leave the link visible to copy manually.
+    }
+  }, [url]);
+
+  return (
+    <div style={{ ...panelStyle, gap: 8 }}>
+      <div style={LABEL_STYLE}>Pairing link</div>
+      <div
+        style={{
+          ...codeValueStyle,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+        title={url}
+      >
+        {url}
+      </div>
+      <button
+        type="button"
+        style={outlineButton({ justifySelf: "start", height: 30 })}
+        onClick={() => void handleCopy()}
+      >
+        {copied ? "Copied" : "Copy link"}
+      </button>
     </div>
   );
 }
@@ -1211,8 +1407,56 @@ function ThisComputerDetails({
         <div style={LABEL_STYLE}>Device</div>
         <div style={codeValueStyle}>
           <div>Platform: {localDevice.platform}</div>
-          <div>Type: {localDevice.deviceType}</div>
+          <div>Type: {deviceTypeLabel(localDevice.deviceType)}</div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PairedDeviceRow({
+  device,
+  busy,
+  onForget,
+}: {
+  device: SyncDeviceRuntimeState;
+  busy: boolean;
+  onForget: (device: SyncDeviceRuntimeState) => Promise<void> | void;
+}) {
+  const connected = device.connectionState === "connected";
+  const pillColor = connectionColor(device.connectionState);
+  return (
+    <div
+      style={{
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 10,
+        padding: 12,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        flexWrap: "wrap",
+      }}
+    >
+      <div style={{ display: "grid", gap: 4, minWidth: 180 }}>
+        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
+          {device.name}
+        </div>
+        <div style={helperTextStyle}>
+          {device.platform} &middot; {deviceTypeLabel(device.deviceType)}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span style={tagStyle(pillColor)}>{deviceConnectionLabel(device)}</span>
+        <div style={helperTextStyle}>
+          {connected
+            ? `Latency ${formatLatency(device.latencyMs)}`
+            : `Last seen ${formatTimestamp(device.lastSeenAt)}`}
+        </div>
+        <button type="button" style={dangerButton()} disabled={busy} onClick={() => void onForget(device)}>
+          {connected ? "Revoke" : "Remove"}
+        </button>
       </div>
     </div>
   );
@@ -1232,46 +1476,30 @@ function PhonesList({
   }
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      {devices.map((device) => {
-        const connected = device.connectionState === "connected";
-        const pillColor = connectionColor(device.connectionState);
-        return (
-          <div
-            key={device.deviceId}
-            style={{
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 10,
-              padding: 12,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              flexWrap: "wrap",
-            }}
-          >
-            <div style={{ display: "grid", gap: 4, minWidth: 180 }}>
-              <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
-                {device.name}
-              </div>
-              <div style={helperTextStyle}>
-                {device.platform} &middot; {device.deviceType}
-              </div>
-            </div>
+      {devices.map((device) => (
+        <PairedDeviceRow key={device.deviceId} device={device} busy={busy} onForget={onForget} />
+      ))}
+    </div>
+  );
+}
 
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <span style={tagStyle(pillColor)}>{deviceConnectionLabel(device)}</span>
-              <div style={helperTextStyle}>
-                {connected
-                  ? `Latency ${formatLatency(device.latencyMs)}`
-                  : `Last seen ${formatTimestamp(device.lastSeenAt)}`}
-              </div>
-              <button type="button" style={dangerButton()} disabled={busy} onClick={() => void onForget(device)}>
-                {connected ? "Revoke" : "Remove"}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+function BrowsersList({
+  devices,
+  busy,
+  onForget,
+}: {
+  devices: SyncDeviceRuntimeState[];
+  busy: boolean;
+  onForget: (device: SyncDeviceRuntimeState) => Promise<void> | void;
+}) {
+  if (devices.length === 0) {
+    return <div style={helperTextStyle}>No browsers paired yet.</div>;
+  }
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {devices.map((device) => (
+        <PairedDeviceRow key={device.deviceId} device={device} busy={busy} onForget={onForget} />
+      ))}
     </div>
   );
 }

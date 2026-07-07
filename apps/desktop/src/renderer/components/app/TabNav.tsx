@@ -18,6 +18,7 @@ import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { openExternalUrl } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { docs } from "../../onboarding/docsLinks";
 import { SmartTooltip, type SmartTooltipContent } from "../ui/SmartTooltip";
@@ -277,6 +278,11 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     );
   };
 
+  // The hosted web client only surfaces the four cross-the-wire tabs; the tool
+  // tabs (Run/Review/CTO/Graph/History/Automations) and desktop Settings have no
+  // sync-protocol backing, so hide them instead of showing dead nav entries.
+  const webMode = isWebClientMode();
+
   return (
     <>
       <nav
@@ -288,13 +294,17 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           {mainItems.slice(0, 4).map((it) => renderItem(it))}
         </div>
 
-        {/* Group separator */}
-        <div className="ade-shell-sidebar-separator mx-3 my-1 border-t" />
+        {!webMode ? (
+          <>
+            {/* Group separator */}
+            <div className="ade-shell-sidebar-separator mx-3 my-1 border-t" />
 
-        {/* Tool navigation items */}
-        <div className="flex flex-col gap-px">
-          {mainItems.slice(4).map((it) => renderItem(it))}
-        </div>
+            {/* Tool navigation items */}
+            <div className="flex flex-col gap-px">
+              {mainItems.slice(4).map((it) => renderItem(it))}
+            </div>
+          </>
+        ) : null}
 
         {/* Spacer pushes settings to bottom */}
         <div className="mt-auto" />
@@ -321,11 +331,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           </button>
         ) : null}
 
-        {/* Divider line before settings */}
-        <div className="ade-shell-sidebar-separator mx-2 mb-1 border-t" />
+        {!webMode ? (
+          <>
+            {/* Divider line before settings */}
+            <div className="ade-shell-sidebar-separator mx-2 mb-1 border-t" />
 
-        {/* Settings pinned to bottom */}
-        {renderItem(settingsItem)}
+            {/* Settings pinned to bottom */}
+            {renderItem(settingsItem)}
+          </>
+        ) : null}
       </nav>
 
       {/* Context menu */}

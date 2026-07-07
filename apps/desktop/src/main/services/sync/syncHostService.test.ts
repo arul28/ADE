@@ -133,7 +133,7 @@ async function connectClient(args: {
   siteId: string;
   dbVersion: number;
   platform?: "macOS" | "linux" | "windows" | "iOS" | "unknown";
-  deviceType?: "desktop" | "phone" | "vps" | "unknown";
+  deviceType?: "desktop" | "phone" | "vps" | "browser" | "unknown";
   capabilities?: string[];
   auth?: { kind: "bootstrap"; token: string } | { kind: "paired"; deviceId: string; secret: string };
 }) {

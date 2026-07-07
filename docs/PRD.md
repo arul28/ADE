@@ -87,6 +87,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 - [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects.
 - [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine brain and starts it if missing. Same JSON-RPC surface as the desktop app and the iOS controller.
+- [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, PIN + DPoP pairing, sync WebSocket transport, no local DB.
 
 ### Work execution
 

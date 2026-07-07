@@ -61,6 +61,7 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("#42 · open");
     expect(body).toContain("github   https://github.com/acme/ade/pull/42");
     expect(body).toContain("ade      https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=42");
+    expect(body).toContain("web      https://app.ade-app.dev/open?type=pr&repo=acme%2Fade&number=42");
   });
 
   it("derives an ADE PR URL when repo metadata is present", () => {
@@ -74,6 +75,7 @@ describe("rightPaneFormatters", () => {
 
     expect(body).toContain("github   https://github.com/acme/ade/pull/7");
     expect(body).toContain("ade      https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=7");
+    expect(body).toContain("web      https://app.ade-app.dev/open?type=pr&repo=acme%2Fade&number=7");
   });
 
   it("renders a Ready merge block when GitHub merge state is clean", () => {

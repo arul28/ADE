@@ -1,26 +1,45 @@
+import fs from "node:fs";
+import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
+  AgentChatClaudePermissionMode,
   AgentChatTranscriptEntry,
   AgentChatEventHistorySnapshot,
   AgentChatApproveArgs,
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
+  AgentChatContextUsageArgs,
+  AgentChatDroidPermissionMode,
   AgentChatFileRef,
   AgentChatGetSummaryArgs,
+  AgentChatGetTurnFileDiffArgs,
+  AgentChatHandoffArgs,
+  AgentChatLaunchArgs,
   AgentChatListArgs,
   AgentChatModelCatalogArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatModelCatalogMode,
   AgentChatModelCatalogRefreshProvider,
+  AgentChatOpenCodePermissionMode,
+  AgentChatParallelLaunchState,
+  AgentChatParallelLaunchStateArgs,
+  AgentChatPermissionMode,
   AgentChatProvider,
+  AgentChatRewindFilesArgs,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
+  AgentChatSetParallelLaunchStateArgs,
   AgentChatSession,
   AgentChatSessionSummary,
+  AgentChatSlashCommandsArgs,
   AgentChatSteerArgs,
   AgentChatSubagentListArgs,
   AgentChatSubagentTranscriptArgs,
@@ -35,8 +54,11 @@ import type {
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
   AttachLaneArgs,
+  ChatTerminalActiveForChatArgs,
+  ChatTerminalListArgs,
   ClosePrArgs,
   CancelQueueAutomationArgs,
+  CleanupPrBranchArgs,
   CtoIdentity,
   CreateChildLaneArgs,
   CommitIntegrationArgs,
@@ -48,6 +70,7 @@ import type {
   CreateIntegrationLaneForProposalArgs,
   CleanupIntegrationWorkflowArgs,
   DeleteLaneArgs,
+  DeletePrArgs,
   DeleteIntegrationProposalArgs,
   DismissIntegrationCleanupArgs,
   DraftPrDescriptionArgs,
@@ -69,6 +92,9 @@ import type {
   GitPushArgs,
   GitResetCommitArgs,
   GitRevertArgs,
+  GitGetUserIdentityArgs,
+  GitHubRepoRef,
+  GitHubStatus,
   GitStashPushArgs,
   GitStashRefArgs,
   GitSyncArgs,
@@ -77,6 +103,9 @@ import type {
   LandQueueNextArgs,
   PauseQueueAutomationArgs,
   PrGithubCoords,
+  PublishProjectInput,
+  PublishProjectResult,
+  ProjectConfigCandidate,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
   LaneDetailPayload,
@@ -85,8 +114,18 @@ import type {
   LaneStateSnapshotSummary,
   ListLanesArgs,
   ListIntegrationWorkflowsArgs,
+  ListOperationsArgs,
   ListSessionsArgs,
   LinkPrToLaneArgs,
+  PostPrReviewCommentArgs,
+  PrAgentPermissionMode,
+  PrAiResolutionContext,
+  PrAiResolutionGetSessionArgs,
+  PrAiResolutionGetSessionResult,
+  PrAiResolutionSessionInfo,
+  PrAiResolutionSessionStatus,
+  PrAiResolutionStartArgs,
+  PrAiResolutionStartResult,
   RebasePushArgs,
   RebaseStartArgs,
   RenameLaneArgs,
@@ -118,10 +157,12 @@ import type {
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
+  SyncPairingConnectInfo,
   SyncSendToSessionArgs,
   SyncSendToSessionResult,
   SyncStartCliSessionArgs,
   SyncStartCliSessionResult,
+  SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
@@ -132,6 +173,7 @@ import type {
   UpdatePrTitleArgs,
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
+import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
 import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
@@ -144,6 +186,10 @@ import {
   type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
+import { buildPairingQrPayload } from "../../../../desktop/src/shared/pairingQr";
+import { buildWebClientPairUrl } from "../../../../desktop/src/shared/webClientUrl";
+import { buildPrAiResolutionContextKey } from "../../../../desktop/src/shared/types";
+import { getModelById } from "../../../../desktop/src/shared/modelRegistry";
 import {
   PUSH_GET_STATUS_ACTION,
   PUSH_REGISTER_DEVICE_ACTION,
@@ -160,6 +206,44 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
+import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
+import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
+import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
+import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
+import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
+import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
+import { matchLaneOverlayPolicies } from "../../../../desktop/src/main/services/config/laneOverlayMatcher";
+import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
+import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
+import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES, type createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
+import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
+import { runGit } from "../../../../desktop/src/main/services/git/git";
+import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
+import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
+import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
+import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
+import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
+import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
+import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
+import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
+import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
+import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { createOrchestrationDomainService } from "../../../../desktop/src/main/services/orchestration/orchestrationDomain";
+import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
+import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
+import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
+import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
+import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
+import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
+import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
+import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
+import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
+import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
+import { getErrorMessage, resolvePathWithinRoot } from "../../../../desktop/src/main/services/shared/utils";
+import { sanitizeResumeTargetId } from "../../../../desktop/src/main/utils/terminalSessionSignals";
+import type { SyncPinStore } from "./syncPinStore";
 
 export type ExternalSessionsRemoteService = {
   list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
@@ -173,31 +257,6 @@ const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>([
   "droid",
   "opencode",
 ]);
-import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
-import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
-import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
-import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
-import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
-import { matchLaneOverlayPolicies } from "../../../../desktop/src/main/services/config/laneOverlayMatcher";
-import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
-import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
-import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
-import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
-import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
-import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
-import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
-import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
-import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
-import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
-import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
-import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
-import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
-import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
-import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
-import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
-import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 
 type SyncRemoteCommandServiceArgs = {
   /**
@@ -208,16 +267,23 @@ type SyncRemoteCommandServiceArgs = {
    * production callers (bootstrap, syncHostService) always pass it.
    */
   db?: AdeDb;
+  projectRoot?: string;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
+  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   sessionService: ReturnType<typeof createSessionService>;
+  sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   fileService: ReturnType<typeof createFileService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
+  githubService?: ReturnType<typeof createGithubService> | null;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  operationService?: ReturnType<typeof createOperationService> | null;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
@@ -270,6 +336,18 @@ type SyncRemoteCommandServiceArgs = {
    * error so the phone can surface "push publishing is not running".
    */
   pushPublisherService?: PushPublisherService | null;
+  /**
+   * Machine-level pairing PIN store. Required by `sync.getWebPairingInfo`,
+   * which only runs after the paired command channel is authenticated.
+   */
+  syncPinStore?: SyncPinStore | null;
+  /**
+   * Builds the same connect info advertised by sync status / pairing QR,
+   * including direct address candidates and the optional relay candidate.
+   */
+  getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
+  /** Effective relay kill-switch state for the machine-level cloud tunnel. */
+  isCloudRelayEnabled?: () => boolean;
   logger: Logger;
 };
 
@@ -436,6 +514,278 @@ function requireStringArray(value: unknown, message: string): string[] {
 function requireService<T>(value: T | null | undefined, message: string): T {
   if (value == null) throw new Error(message);
   return value;
+}
+
+function parseGetWebPairingInfoArgs(_value: Record<string, unknown>): Record<string, never> {
+  return {};
+}
+
+function parsePublishCurrentProjectArgs(value: Record<string, unknown>): PublishProjectInput {
+  const owner = asTrimmedString(value.owner);
+  const description = asTrimmedString(value.description);
+  return {
+    ...(owner ? { owner } : {}),
+    name: requireString(value.name, "github.publishCurrentProject requires name."),
+    ...(description ? { description } : {}),
+    isPrivate: asOptionalBoolean(value.isPrivate) ?? true,
+  };
+}
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  ".bmp": "image/bmp",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".jpeg": "image/jpeg",
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp",
+};
+
+function requireProjectRoot(args: SyncRemoteCommandServiceArgs, action: string): string {
+  return requireString(args.projectRoot, `${action} requires a project root.`);
+}
+
+function parseSessionIdArgs(value: Record<string, unknown>, action: string): { sessionId: string } {
+  return {
+    sessionId: requireString(value.sessionId, `${action} requires sessionId.`),
+  };
+}
+
+function parseAgentChatContextUsageArgs(value: Record<string, unknown>): AgentChatContextUsageArgs {
+  return parseSessionIdArgs(value, "chat.getContextUsage");
+}
+
+function parseAgentChatRewindFilesArgs(value: Record<string, unknown>): AgentChatRewindFilesArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.rewindFiles requires sessionId."),
+    userMessageId: requireString(value.userMessageId, "chat.rewindFiles requires userMessageId."),
+    dryRun: asOptionalBoolean(value.dryRun),
+  };
+}
+
+function parseAgentChatTurnFileDiffArgs(value: Record<string, unknown>): AgentChatGetTurnFileDiffArgs {
+  return {
+    sessionId: requireString(value.sessionId, "chat.getTurnFileDiff requires sessionId."),
+    beforeSha: requireString(value.beforeSha, "chat.getTurnFileDiff requires beforeSha."),
+    afterSha: requireString(value.afterSha, "chat.getTurnFileDiff requires afterSha."),
+    filePath: requireString(value.filePath, "chat.getTurnFileDiff requires filePath."),
+  };
+}
+
+function parseAgentChatSlashCommandsArgs(value: Record<string, unknown>): AgentChatSlashCommandsArgs {
+  return {
+    ...(asTrimmedString(value.sessionId) ? { sessionId: asTrimmedString(value.sessionId)! } : {}),
+    ...("laneId" in value ? { laneId: value.laneId == null ? null : asTrimmedString(value.laneId) ?? null } : {}),
+    ...("provider" in value ? { provider: value.provider == null ? null : asTrimmedString(value.provider) as AgentChatProvider | null } : {}),
+    ...("projectRoot" in value ? { projectRoot: value.projectRoot == null ? null : asTrimmedString(value.projectRoot) ?? null } : {}),
+  };
+}
+
+function parseAgentChatParallelLaunchStateArgs(value: Record<string, unknown>): AgentChatParallelLaunchStateArgs {
+  return {
+    projectRoot: requireString(value.projectRoot, "chat.getParallelLaunchState requires projectRoot."),
+    parentLaneId: requireString(value.parentLaneId, "chat.getParallelLaunchState requires parentLaneId."),
+  };
+}
+
+function sanitizeParallelLaunchLaneIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+      .filter(Boolean),
+  ));
+}
+
+function normalizeAgentChatParallelLaunchState(
+  value: unknown,
+  parentLaneIdFallback: string,
+): AgentChatParallelLaunchState | null {
+  if (!isRecord(value)) return null;
+  const parentLaneId = asTrimmedString(value.parentLaneId) ?? parentLaneIdFallback;
+  const createdLaneIds = sanitizeParallelLaunchLaneIds(value.createdLaneIds);
+  if (createdLaneIds.length === 0) return null;
+  const sentLaneIds = sanitizeParallelLaunchLaneIds(value.sentLaneIds)
+    .filter((laneId) => createdLaneIds.includes(laneId));
+  const status = value.status === "creating_lanes"
+    || value.status === "sending"
+    || value.status === "completed"
+    || value.status === "cleanup_pending"
+    ? value.status
+    : sentLaneIds.length >= createdLaneIds.length
+      ? "completed"
+      : "creating_lanes";
+  return {
+    parentLaneId,
+    createdLaneIds,
+    sentLaneIds,
+    status,
+    updatedAt: asTrimmedString(value.updatedAt) ?? new Date(0).toISOString(),
+    lastError: asTrimmedString(value.lastError),
+  };
+}
+
+function parseAgentChatSetParallelLaunchStateArgs(value: Record<string, unknown>): AgentChatSetParallelLaunchStateArgs {
+  const parsed = parseAgentChatParallelLaunchStateArgs(value);
+  return {
+    ...parsed,
+    state: normalizeAgentChatParallelLaunchState(value.state, parsed.parentLaneId),
+  };
+}
+
+function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: string): string {
+  return `agent-chat-parallel-launch:${projectRoot}:${parentLaneId}`;
+}
+
+function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHandoffArgs {
+  return {
+    ...(value as AgentChatHandoffArgs),
+    sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
+    targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
+  };
+}
+
+function parseAgentChatLaunchArgs(value: Record<string, unknown>): AgentChatLaunchArgs {
+  return {
+    ...parseAgentChatCreateArgs(value),
+    kickoffText: requireString(value.kickoffText, "chat.launch requires kickoffText."),
+    ...(asTrimmedString(value.kickoffDisplayText) ? { kickoffDisplayText: asTrimmedString(value.kickoffDisplayText)! } : {}),
+    ...(Array.isArray(value.contextAttachments) ? { contextAttachments: value.contextAttachments as AgentChatLaunchArgs["contextAttachments"] } : {}),
+  };
+}
+
+function parseWarmupModelArgs(value: Record<string, unknown>): { sessionId: string; modelId: string } {
+  return {
+    sessionId: requireString(value.sessionId, "chat.warmupModel requires sessionId."),
+    modelId: requireString(value.modelId, "chat.warmupModel requires modelId."),
+  };
+}
+
+function parseTerminalRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function optionalTerminalString(
+  record: Record<string, unknown>,
+  field: string,
+  maxLength = 4096,
+  trim = true,
+): string | null | undefined {
+  const value = record[field];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new Error(`Invalid terminal payload: ${field} must be a string`);
+  const text = trim ? value.trim() : value;
+  if (text.includes("\0")) throw new Error(`Invalid terminal payload: ${field} cannot contain null bytes`);
+  if (text.length > maxLength) throw new Error(`Invalid terminal payload: ${field} is too long`);
+  return text;
+}
+
+function optionalTerminalNumber(
+  record: Record<string, unknown>,
+  field: string,
+  min: number,
+  max: number,
+): number | null | undefined {
+  const value = record[field];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Invalid terminal payload: ${field} must be a finite number`);
+  }
+  const next = Math.floor(value);
+  if (next < min || next > max) throw new Error(`Invalid terminal payload: ${field} is out of range`);
+  return next;
+}
+
+function parseTerminalListArgs(value: Record<string, unknown>): ChatTerminalListArgs {
+  const record = parseTerminalRecord(value);
+  return {
+    chatSessionId: optionalTerminalString(record, "chatSessionId", 128),
+    laneId: optionalTerminalString(record, "laneId", 512),
+    limit: optionalTerminalNumber(record, "limit", 1, 500),
+  };
+}
+
+function parseTerminalActiveForChatArgs(value: Record<string, unknown>): ChatTerminalActiveForChatArgs {
+  const record = parseTerminalRecord(value);
+  const chatSessionId = optionalTerminalString(record, "chatSessionId", 128);
+  if (!chatSessionId) throw new Error("Invalid terminal payload: chatSessionId is required");
+  return { chatSessionId };
+}
+
+function parseGitUserIdentityArgs(value: Record<string, unknown>): GitGetUserIdentityArgs {
+  return {
+    laneId: requireString(value.laneId, "git.getUserIdentity requires laneId."),
+  };
+}
+
+function parseListOperationsArgs(value: Record<string, unknown>): ListOperationsArgs {
+  const status = asTrimmedString(value.status);
+  return {
+    ...(asTrimmedString(value.laneId) ? { laneId: asTrimmedString(value.laneId)! } : {}),
+    ...(asTrimmedString(value.kind) ? { kind: asTrimmedString(value.kind)! } : {}),
+    ...(status === "running" || status === "succeeded" || status === "failed" || status === "canceled" ? { status } : {}),
+    ...(asOptionalNumber(value.limit) != null ? { limit: asOptionalNumber(value.limit)! } : {}),
+  };
+}
+
+function parseDeletePrArgs(value: Record<string, unknown>): DeletePrArgs {
+  return {
+    prId: requirePrId(value, "prs.delete"),
+    closeOnGitHub: asOptionalBoolean(value.closeOnGitHub),
+    archiveLane: asOptionalBoolean(value.archiveLane),
+  };
+}
+
+function parseCleanupPrBranchArgs(value: Record<string, unknown>): CleanupPrBranchArgs {
+  return {
+    prId: requirePrId(value, "prs.cleanupBranch"),
+    deleteLocalBranch: asOptionalBoolean(value.deleteLocalBranch),
+    deleteRemoteBranch: asOptionalBoolean(value.deleteRemoteBranch),
+    ...(asTrimmedString(value.remoteName) ? { remoteName: asTrimmedString(value.remoteName)! } : {}),
+  };
+}
+
+function parsePostPrReviewCommentArgs(value: Record<string, unknown>): PostPrReviewCommentArgs {
+  return {
+    prId: requirePrId(value, "prs.postReviewComment"),
+    threadId: requireString(value.threadId, "prs.postReviewComment requires threadId."),
+    body: requireString(value.body, "prs.postReviewComment requires body."),
+  };
+}
+
+function parseStartPrAiResolutionArgs(value: Record<string, unknown>): PrAiResolutionStartArgs {
+  return {
+    context: isRecord(value.context) ? value.context as PrAiResolutionContext : {} as PrAiResolutionContext,
+    model: requireString(value.model, "prs.aiResolutionStart requires model."),
+    ...("reasoning" in value ? { reasoning: value.reasoning == null ? null : asTrimmedString(value.reasoning) ?? null } : {}),
+    ...(asTrimmedString(value.permissionMode) ? { permissionMode: asTrimmedString(value.permissionMode)! as PrAgentPermissionMode } : {}),
+    ...("additionalInstructions" in value
+      ? { additionalInstructions: value.additionalInstructions == null ? null : asTrimmedString(value.additionalInstructions) ?? null }
+      : {}),
+  };
+}
+
+function parseGetPrAiResolutionSessionArgs(value: Record<string, unknown>): PrAiResolutionGetSessionArgs {
+  return {
+    context: isRecord(value.context) ? value.context as PrAiResolutionContext : {} as PrAiResolutionContext,
+  };
+}
+
+function parseProjectConfigSaveArgs(value: Record<string, unknown>): { candidate: ProjectConfigCandidate } {
+  if (!isRecord(value.candidate)) throw new Error("projectConfig.save requires candidate.");
+  return { candidate: value.candidate as ProjectConfigCandidate };
+}
+
+function parseOrchestrationRunCreateArgs(value: Record<string, unknown>): OrchestrationRunCreateRequest & { laneId: string } {
+  return {
+    ...(value as OrchestrationRunCreateRequest & { laneId: string }),
+    laneId: requireString(value.laneId, "orchestration.runCreate requires laneId."),
+  };
 }
 
 function parseProcessLaneArgs(payload: Record<string, unknown>, action: string): { laneId: string } {
@@ -849,6 +1199,690 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
   const t = toolType.trim().toLowerCase();
   return t === "cursor" || t.endsWith("-chat");
+}
+
+function sessionNeedsResumeTargetHydration(session: {
+  tracked: boolean;
+  status: string;
+  toolType: string | null;
+  resumeMetadata?: { targetId?: string | null } | null;
+}): boolean {
+  if (!session.tracked || session.status === "running") return false;
+  if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) return false;
+  return (
+    session.toolType === "claude"
+    || session.toolType === "codex"
+    || session.toolType === "claude-orchestrated"
+    || session.toolType === "codex-orchestrated"
+  );
+}
+
+function projectChatOntoSession(
+  session: ReturnType<SyncRemoteCommandServiceArgs["ptyService"]["enrichSessions"]>[number],
+  chat: AgentChatSessionSummary,
+) {
+  const base = {
+    ...session,
+    ...(chat.orchestrationRunId
+      ? {
+          orchestrationRunId: chat.orchestrationRunId,
+          orchestrationRole: chat.orchestrationRole,
+          orchestrationTag: chat.orchestrationTag,
+        }
+      : {}),
+  };
+  if (chat.awaitingInput) {
+    return {
+      ...base,
+      runtimeState: "waiting-input" as const,
+      chatIdleSinceAt: null,
+      pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+    };
+  }
+  if (chat.status === "active") {
+    return { ...base, runtimeState: "running" as const, chatIdleSinceAt: null };
+  }
+  if (chat.status === "idle" || chat.status === "ended") {
+    return { ...base, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
+  }
+  return base;
+}
+
+async function getRemoteWorkSession(
+  args: SyncRemoteCommandServiceArgs,
+  sessionId: string,
+) {
+  let session = args.sessionService.get(sessionId);
+  if (!session) return null;
+  if (sessionNeedsResumeTargetHydration(session)) {
+    try {
+      await args.ptyService.ensureResumeTargets([session.id]);
+      const hydrated = args.sessionService.get(sessionId);
+      if (hydrated) session = hydrated;
+    } catch (error) {
+      args.logger.warn("sessions.resume_target_hydration_failed", {
+        sessionIds: [session.id],
+        err: String(error),
+      });
+    }
+  }
+  let enriched = args.ptyService.enrichSessions([session])[0] ?? {
+    ...session,
+    runtimeState: args.ptyService.getRuntimeState(session.id, session.status),
+  };
+  if (enriched.status === "running" && isChatToolType(enriched.toolType)) {
+    try {
+      const chat = await args.agentChatService?.getSessionSummary(enriched.id);
+      if (chat) enriched = projectChatOntoSession(enriched, chat);
+    } catch {
+      // Detail reads should still return the persisted session if chat state
+      // hydration fails during runtime restart/recovery.
+    }
+  }
+  return enriched;
+}
+
+function resolveControllerSuppliedPath(rawPath: string, projectRoot: string): string {
+  let inputPath = rawPath;
+  if (/^ade-artifact:\/\/project(?:\/|$)/i.test(inputPath)) {
+    const parsed = new URL(inputPath);
+    inputPath = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+  }
+  if (/^file:\/\//i.test(inputPath)) {
+    try {
+      inputPath = fileURLToPath(inputPath);
+    } catch {
+      inputPath = decodeURIComponent(inputPath.replace(/^file:\/\//i, ""));
+    }
+  }
+  return path.resolve(path.isAbsolute(inputPath) ? inputPath : path.join(projectRoot, inputPath));
+}
+
+function resolveAllowedProjectPath(args: SyncRemoteCommandServiceArgs, rawPath: unknown, action: string): string {
+  const raw = typeof rawPath === "string" ? rawPath.trim() : "";
+  if (!raw) throw new Error("Missing path.");
+  const projectRoot = requireProjectRoot(args, action);
+  const normalized = resolveControllerSuppliedPath(raw, projectRoot);
+  return resolvePathWithinRoot(projectRoot, normalized);
+}
+
+function sniffImageMimeType(buffer: Buffer): string | null {
+  if (buffer.length >= 8
+    && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47
+    && buffer[4] === 0x0D && buffer[5] === 0x0A && buffer[6] === 0x1A && buffer[7] === 0x0A) {
+    return "image/png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) {
+    return "image/jpeg";
+  }
+  if (buffer.length >= 6
+    && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38
+    && (buffer[4] === 0x37 || buffer[4] === 0x39) && buffer[5] === 0x61) {
+    return "image/gif";
+  }
+  if (buffer.length >= 12
+    && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46
+    && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50) {
+    return "image/webp";
+  }
+  if (buffer.length >= 2 && buffer[0] === 0x42 && buffer[1] === 0x4D) {
+    return "image/bmp";
+  }
+  if (buffer.length >= 4
+    && buffer[0] === 0x00 && buffer[1] === 0x00
+    && buffer[2] === 0x01 && buffer[3] === 0x00) {
+    return "image/x-icon";
+  }
+  const head = buffer.slice(0, Math.min(buffer.length, 1024)).toString("utf8");
+  const stripped = head.replace(/^﻿/, "").trimStart();
+  if (/^<\?xml\b/i.test(stripped) && /<svg\b/i.test(head)) {
+    return "image/svg+xml";
+  }
+  if (/^<svg\b/i.test(stripped)) {
+    return "image/svg+xml";
+  }
+  return null;
+}
+
+async function readImageFileAndSniffMime(filePath: string): Promise<{ data: Buffer; mimeType: string }> {
+  const stat = await fs.promises.stat(filePath);
+  if (!stat.isFile()) throw new Error("Path is not a file.");
+  if (stat.size > MAX_IMAGE_BYTES) throw new Error("Image must be 10 MB or smaller.");
+  const data = await fs.promises.readFile(filePath);
+  const mimeType = sniffImageMimeType(data);
+  if (!mimeType) throw new Error("Path is not an image.");
+  return { data, mimeType };
+}
+
+function normalizeImageMime(mime: unknown, filename: string): string {
+  const raw = typeof mime === "string" ? mime.trim().toLowerCase() : "";
+  const fromExtension = IMAGE_MIME_BY_EXTENSION[path.extname(filename).toLowerCase()];
+  const normalized = raw || fromExtension || "";
+  if (!Object.values(IMAGE_MIME_BY_EXTENSION).includes(normalized)) {
+    throw new Error("Temporary attachment mime must be a supported image type.");
+  }
+  return normalized;
+}
+
+function decodeBase64ImagePayload(value: string): Buffer {
+  const compact = value.replace(/\s+/g, "");
+  if (!compact || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
+    throw new Error("Temporary attachment base64 is invalid.");
+  }
+  const maxEncodedLength = Math.ceil(MAX_TEMP_ATTACHMENT_BYTES / 3) * 4;
+  if (compact.length > maxEncodedLength) {
+    throw new Error("Temporary attachments must be 10 MB or smaller.");
+  }
+  const content = Buffer.from(compact, "base64");
+  if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
+    throw new Error("Temporary attachments must be 10 MB or smaller.");
+  }
+  return content;
+}
+
+function parseTempAttachmentPayload(payload: Record<string, unknown>): { content: Buffer; filename: string; mimeType: string } {
+  const dataUrl = typeof payload.dataUrl === "string" ? payload.dataUrl.trim() : "";
+  const filename = asTrimmedString(payload.filename) ?? "attachment.png";
+  if (dataUrl) {
+    const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(dataUrl);
+    if (!match) throw new Error("Temporary attachment dataUrl is invalid.");
+    const mimeType = normalizeImageMime(match[1], filename);
+    const isBase64 = match[2] === ";base64";
+    const content = isBase64
+      ? decodeBase64ImagePayload(match[3] ?? "")
+      : Buffer.from(decodeURIComponent(match[3] ?? ""), "utf8");
+    if (content.byteLength > MAX_TEMP_ATTACHMENT_BYTES) {
+      throw new Error("Temporary attachments must be 10 MB or smaller.");
+    }
+    const sniffed = sniffImageMimeType(content);
+    if (sniffed !== mimeType) throw new Error("Temporary attachment MIME type does not match payload.");
+    return { content, filename, mimeType };
+  }
+
+  const base64 = typeof payload.base64 === "string"
+    ? payload.base64
+    : typeof payload.data === "string"
+      ? payload.data
+      : "";
+  const mimeType = normalizeImageMime(payload.mime ?? payload.mimeType, filename);
+  const content = decodeBase64ImagePayload(base64);
+  const sniffed = sniffImageMimeType(content);
+  if (sniffed !== mimeType) throw new Error("Temporary attachment MIME type does not match payload.");
+  return { content, filename, mimeType };
+}
+
+async function saveAgentChatTempAttachment(
+  args: SyncRemoteCommandServiceArgs,
+  payload: Record<string, unknown>,
+): Promise<{ path: string; mimeType: string; previewDataUrl: string | null }> {
+  const { content, filename, mimeType } = parseTempAttachmentPayload(payload);
+  const projectRoot = requireProjectRoot(args, "chat.saveTempAttachment");
+  const baseDir = path.join(projectRoot, ".ade", "attachments");
+  await fs.promises.mkdir(baseDir, { recursive: true });
+  const ext = path.extname(filename) || Object.entries(IMAGE_MIME_BY_EXTENSION)
+    .find(([, entryMime]) => entryMime === mimeType)?.[0] || ".png";
+  const destPath = path.join(baseDir, `${randomUUID()}${ext}`);
+  await fs.promises.writeFile(destPath, content);
+  return { path: destPath, mimeType, previewDataUrl: null };
+}
+
+function inferPrAiProvider(modelId: string): "codex" | "claude" {
+  const descriptor = getModelById(modelId);
+  return descriptor?.family === "anthropic" ? "claude" : "codex";
+}
+
+function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string[] {
+  const sourceLaneIds = new Set<string>();
+  const add = (value: string | null | undefined) => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (normalized) sourceLaneIds.add(normalized);
+  };
+  for (const laneId of context.sourceLaneIds ?? []) {
+    add(laneId);
+  }
+  add(context.sourceLaneId ?? null);
+  if (context.sourceTab !== "integration") {
+    add(context.laneId ?? null);
+  }
+  return Array.from(sourceLaneIds);
+}
+
+function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermissionMode {
+  if (mode === "full_edit") return "full-auto";
+  if (mode === "guarded_edit") return "edit";
+  if (mode === "read_only") return "plan";
+  return mode;
+}
+
+function mapPrAiPermissionModeToNativeFields(
+  mode: PrAgentPermissionMode,
+  provider: string,
+): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId">> {
+  const legacy = mapPrAiPermissionMode(mode);
+  if (provider === "claude") {
+    const map: Record<string, AgentChatClaudePermissionMode> = {
+      "full-auto": "bypassPermissions",
+      "edit": "acceptEdits",
+      "plan": "plan",
+      "default": "default",
+    };
+    return { claudePermissionMode: map[legacy] ?? "default" };
+  }
+  if (provider === "codex") {
+    if (legacy === "config-toml") {
+      return {
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "config-toml",
+      };
+    }
+    if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access", codexConfigSource: "flags" };
+    if (legacy === "edit" || legacy === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write", codexConfigSource: "flags" };
+    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only", codexConfigSource: "flags" };
+  }
+  if (provider === "droid") {
+    if (legacy === "full-auto") return { droidPermissionMode: "auto-high" };
+    if (legacy === "edit") return { droidPermissionMode: "auto-low" };
+    return { droidPermissionMode: "read-only" };
+  }
+  if (provider === "cursor") {
+    if (legacy === "full-auto") return { cursorModeId: "full-auto" };
+    if (legacy === "plan") return { cursorModeId: "plan" };
+    return { cursorModeId: "agent" };
+  }
+  const umap: Record<string, AgentChatOpenCodePermissionMode> = {
+    "full-auto": "full-auto",
+    "edit": "edit",
+    "plan": "plan",
+    "config-toml": "config-toml",
+  };
+  return { opencodePermissionMode: umap[legacy] ?? "edit" };
+}
+
+function deriveAiPermissionModeFromSummary(
+  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "cursorModeId"> | null | undefined,
+): PrAgentPermissionMode | null {
+  if (!summary) return null;
+  if (summary.permissionMode) return summary.permissionMode;
+  if (summary.provider === "claude") {
+    if (summary.claudePermissionMode === "bypassPermissions") return "full-auto";
+    if (summary.claudePermissionMode === "acceptEdits") return "edit";
+    if (summary.claudePermissionMode === "plan") return "plan";
+    if (summary.claudePermissionMode === "default") return "default";
+    return null;
+  }
+  if (summary.provider === "codex") {
+    if (summary.codexConfigSource === "config-toml") return "config-toml";
+    if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full-auto";
+    if (summary.codexSandbox === "workspace-write") return "default";
+    if (summary.codexSandbox === "read-only") return "plan";
+    return null;
+  }
+  if (summary.provider === "droid") {
+    if (summary.droidPermissionMode === "auto-high") return "full-auto";
+    if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
+    if (summary.droidPermissionMode === "read-only") return "plan";
+    return null;
+  }
+  if (summary.provider === "cursor") {
+    if (summary.cursorModeId === "full-auto") return "full-auto";
+    if (summary.cursorModeId === "agent") return "edit";
+    if (summary.cursorModeId === "ask" || summary.cursorModeId === "plan") return "plan";
+    return null;
+  }
+  if (summary.opencodePermissionMode === "full-auto") return "full-auto";
+  if (summary.opencodePermissionMode === "edit") return "edit";
+  if (summary.opencodePermissionMode === "plan") return "plan";
+  if (summary.opencodePermissionMode === "config-toml") return "config-toml";
+  return null;
+}
+
+function mapExternalResolverStatusToPrAi(status: string): PrAiResolutionSessionStatus {
+  if (status === "completed") return "completed";
+  if (status === "failed" || status === "blocked") return "failed";
+  if (status === "canceled") return "cancelled";
+  return "running";
+}
+
+function buildPrAiDisplayText(context: PrAiResolutionContext): string {
+  if (context.sourceTab === "rebase") return "Resolve this rebase with AI.";
+  if (context.sourceTab === "queue") return "Resolve this queued PR with AI.";
+  if (context.sourceTab === "integration") {
+    return context.proposalId
+      ? "Resolve this integration proposal with AI."
+      : "Resolve this integration PR with AI.";
+  }
+  return "Resolve this PR with AI.";
+}
+
+function buildPrAiSessionInfo(args: {
+  context: PrAiResolutionContext;
+  contextKey: string;
+  sessionId: string;
+  provider: "codex" | "claude";
+  model: string | null;
+  modelId: string | null;
+  reasoning: string | null;
+  permissionMode: PrAgentPermissionMode | null;
+  status: PrAiResolutionSessionStatus;
+}): PrAiResolutionSessionInfo {
+  return {
+    contextKey: args.contextKey,
+    sessionId: args.sessionId,
+    provider: args.provider,
+    model: args.model,
+    modelId: args.modelId,
+    reasoning: args.reasoning,
+    permissionMode: args.permissionMode,
+    context: args.context,
+    status: args.status,
+  };
+}
+
+type PrAiRuntimeSession = {
+  sessionId: string;
+  ptyId: string | null;
+  runId: string;
+  provider: "codex" | "claude";
+  contextKey: string;
+  context: PrAiResolutionContext;
+  modelId: string;
+  reasoning: string | null;
+  permissionMode: PrAgentPermissionMode;
+  pollTimer: ReturnType<typeof setInterval> | null;
+  finalizing: boolean;
+};
+
+type PrAiRuntimeState = {
+  sessions: Map<string, PrAiRuntimeSession>;
+  sessionsByContextKey: Map<string, string>;
+};
+
+function clearPrAiSession(state: PrAiRuntimeState, sessionId: string): void {
+  const runtime = state.sessions.get(sessionId);
+  if (!runtime) return;
+  if (runtime.pollTimer) clearInterval(runtime.pollTimer);
+  if (state.sessionsByContextKey.get(runtime.contextKey) === sessionId) {
+    state.sessionsByContextKey.delete(runtime.contextKey);
+  }
+  state.sessions.delete(sessionId);
+}
+
+async function finalizePrAiSession(
+  args: SyncRemoteCommandServiceArgs,
+  state: PrAiRuntimeState,
+  sessionId: string,
+  opts: { forceStatus?: "cancelled" | "completed" | "failed"; message?: string } = {},
+): Promise<void> {
+  const runtime = state.sessions.get(sessionId);
+  if (!runtime || runtime.finalizing) return;
+  runtime.finalizing = true;
+  const conflictService = requireService(args.conflictService, "Conflict service not available.");
+  try {
+    const detail = args.sessionService.get(sessionId);
+    const derivedExitCode = opts.forceStatus === "cancelled"
+      ? 130
+      : (detail?.exitCode ?? (detail?.status === "completed" ? 0 : 1));
+    try {
+      await conflictService.finalizeResolverSession({
+        runId: runtime.runId,
+        exitCode: derivedExitCode,
+      });
+    } catch (error) {
+      args.logger.debug("sync.prs_ai_resolution_finalize_failed", {
+        sessionId,
+        runId: runtime.runId,
+        error: getErrorMessage(error),
+      });
+    }
+  } finally {
+    clearPrAiSession(state, sessionId);
+  }
+}
+
+async function getRemotePrAiResolutionSession(
+  args: SyncRemoteCommandServiceArgs,
+  state: PrAiRuntimeState,
+  payload: Record<string, unknown>,
+): Promise<PrAiResolutionGetSessionResult> {
+  const context = parseGetPrAiResolutionSessionArgs(payload).context;
+  const contextKey = buildPrAiResolutionContextKey(context);
+  const liveSessionId = state.sessionsByContextKey.get(contextKey);
+  const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+  const conflictService = requireService(args.conflictService, "Conflict service not available.");
+  const sessionSummaries = await agentChatService.listSessions();
+
+  if (liveSessionId) {
+    const runtime = state.sessions.get(liveSessionId);
+    if (runtime) {
+      const summary = sessionSummaries.find((entry) => entry.sessionId === liveSessionId) ?? null;
+      return buildPrAiSessionInfo({
+        context: runtime.context,
+        contextKey,
+        sessionId: liveSessionId,
+        provider: runtime.provider,
+        model: summary?.model ?? runtime.modelId,
+        modelId: summary?.modelId ?? runtime.modelId,
+        reasoning: summary?.reasoningEffort ?? runtime.reasoning,
+        permissionMode: deriveAiPermissionModeFromSummary(summary) ?? runtime.permissionMode,
+        status: "running",
+      });
+    }
+    state.sessionsByContextKey.delete(contextKey);
+  }
+
+  const persistedRun = conflictService
+    .listExternalResolverRuns({ limit: 200 })
+    .find((entry) => entry.resolverContextKey === contextKey && entry.sessionId);
+  if (!persistedRun?.sessionId) return null;
+
+  const summary = sessionSummaries.find((entry) => entry.sessionId === persistedRun.sessionId) ?? null;
+  return buildPrAiSessionInfo({
+    context,
+    contextKey,
+    sessionId: persistedRun.sessionId,
+    provider: persistedRun.provider,
+    model: summary?.model ?? persistedRun.model ?? null,
+    modelId: summary?.modelId ?? persistedRun.model ?? null,
+    reasoning: summary?.reasoningEffort ?? persistedRun.reasoningEffort ?? null,
+    permissionMode: deriveAiPermissionModeFromSummary(summary) ?? persistedRun.permissionMode ?? null,
+    status: mapExternalResolverStatusToPrAi(persistedRun.status),
+  });
+}
+
+async function startRemotePrAiResolution(
+  args: SyncRemoteCommandServiceArgs,
+  state: PrAiRuntimeState,
+  payload: Record<string, unknown>,
+): Promise<PrAiResolutionStartResult> {
+  const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+  const conflictService = requireService(args.conflictService, "Conflict service not available.");
+  const parsed = parseStartPrAiResolutionArgs(payload);
+  const context = parsed.context;
+  const model = parsed.model.trim();
+  const targetLaneId = typeof context.targetLaneId === "string" ? context.targetLaneId.trim() : "";
+  const sourceLaneIds = collectPrAiSourceLaneIds(context);
+  const permissionMode: PrAgentPermissionMode = parsed.permissionMode ?? "default";
+  const reasoning = typeof parsed.reasoning === "string" && parsed.reasoning.trim().length > 0
+    ? parsed.reasoning.trim()
+    : null;
+  const additionalInstructions = typeof parsed.additionalInstructions === "string" && parsed.additionalInstructions.trim().length > 0
+    ? parsed.additionalInstructions.trim()
+    : null;
+  let runId = "";
+
+  if (!model) {
+    const sessionId = randomUUID();
+    const error = "Model is required to start AI resolution.";
+    return { sessionId, provider: "codex", ptyId: null, status: "failed", error, context };
+  }
+  if (!targetLaneId) {
+    const sessionId = randomUUID();
+    const error = "Target lane is required to start AI resolution.";
+    return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
+  }
+  if (sourceLaneIds.length === 0) {
+    const sessionId = randomUUID();
+    const error = "At least one source lane is required to start AI resolution.";
+    return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
+  }
+
+  try {
+    const provider = inferPrAiProvider(model);
+    const modelDescriptor = getModelById(model);
+    const prep = await conflictService.prepareResolverSession({
+      provider,
+      targetLaneId,
+      sourceLaneIds,
+      cwdLaneId: typeof context.integrationLaneId === "string" && context.integrationLaneId.trim().length > 0
+        ? context.integrationLaneId.trim()
+        : (typeof context.laneId === "string" && context.laneId.trim().length > 0
+          ? context.laneId.trim()
+          : undefined),
+      proposalId: typeof context.proposalId === "string" && context.proposalId.trim().length > 0
+        ? context.proposalId.trim()
+        : undefined,
+      sourceTab: context.sourceTab,
+      scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge"),
+      model,
+      reasoningEffort: reasoning,
+      permissionMode,
+      additionalInstructions,
+      originSurface:
+        context.sourceTab === "integration" ? "integration"
+          : context.sourceTab === "rebase" ? "rebase"
+            : "manual",
+    });
+    runId = prep.runId;
+    if (prep.status === "blocked") {
+      const sessionId = randomUUID();
+      const reason = prep.contextGaps.length
+        ? prep.contextGaps.map((gap) => gap.message).join(", ")
+        : "Resolver session blocked due to insufficient context.";
+      return { sessionId, provider, ptyId: null, status: "failed", error: reason, context };
+    }
+
+    const session = await agentChatService.createSession({
+      laneId: prep.cwdLaneId,
+      provider,
+      model: modelDescriptor?.shortId ?? model,
+      ...(modelDescriptor?.id ? { modelId: modelDescriptor.id } : {}),
+      ...(reasoning ? { reasoningEffort: reasoning } : {}),
+      ...mapPrAiPermissionModeToNativeFields(permissionMode, provider),
+    });
+    const promptText = fs.readFileSync(prep.promptFilePath, "utf8");
+    const runtimeContext: PrAiResolutionContext = {
+      ...context,
+      laneId: prep.cwdLaneId,
+      targetLaneId,
+      sourceLaneId: sourceLaneIds[0] ?? context.sourceLaneId ?? context.laneId ?? null,
+      sourceLaneIds,
+      integrationLaneId: prep.integrationLaneId ?? context.integrationLaneId ?? null,
+    };
+    const contextKey = buildPrAiResolutionContextKey(runtimeContext);
+    const runtime: PrAiRuntimeSession = {
+      sessionId: session.id,
+      ptyId: null,
+      runId: prep.runId,
+      provider,
+      contextKey,
+      context: runtimeContext,
+      modelId: model,
+      reasoning,
+      permissionMode,
+      pollTimer: null,
+      finalizing: false,
+    };
+    await conflictService.attachResolverSession({
+      runId: prep.runId,
+      ptyId: null,
+      sessionId: session.id,
+      command: [],
+    });
+    runtime.pollTimer = setInterval(() => {
+      const current = state.sessions.get(runtime.sessionId);
+      if (!current || current.finalizing) return;
+      const detail = args.sessionService.get(runtime.sessionId);
+      if (!detail || detail.status === "running") return;
+      void finalizePrAiSession(args, state, runtime.sessionId);
+    }, 1_000);
+    state.sessions.set(runtime.sessionId, runtime);
+    state.sessionsByContextKey.set(contextKey, runtime.sessionId);
+    void agentChatService.sendMessage({
+      sessionId: runtime.sessionId,
+      text: promptText,
+      displayText: buildPrAiDisplayText(runtimeContext),
+      ...(reasoning ? { reasoningEffort: reasoning } : {}),
+    }).catch(async (error: unknown) => {
+      args.logger.warn("sync.prs_ai_resolution_send_failed", {
+        sessionId: runtime.sessionId,
+        runId: prep.runId,
+        error: getErrorMessage(error),
+      });
+      await finalizePrAiSession(args, state, runtime.sessionId, {
+        forceStatus: "failed",
+        message: getErrorMessage(error),
+      });
+    });
+    return {
+      sessionId: runtime.sessionId,
+      provider,
+      ptyId: null,
+      status: "started",
+      error: null,
+      context: runtimeContext,
+    };
+  } catch (error) {
+    if (runId) {
+      try {
+        await conflictService.finalizeResolverSession({ runId, exitCode: 1 });
+      } catch {
+        // Best-effort cleanup mirrors desktop IPC behavior.
+      }
+    }
+    const sessionId = randomUUID();
+    const message = getErrorMessage(error);
+    return {
+      sessionId,
+      provider: inferPrAiProvider(model),
+      ptyId: null,
+      status: "failed",
+      error: message,
+      context,
+    };
+  }
+}
+
+async function getRemoteTurnFileDiff(args: SyncRemoteCommandServiceArgs, payload: Record<string, unknown>) {
+  const parsed = parseAgentChatTurnFileDiffArgs(payload);
+  const cwd = requireProjectRoot(args, "chat.getTurnFileDiff");
+  const language = parsed.filePath.split(".").pop() ?? undefined;
+  const readSide = async (spec: string): Promise<{ exists: boolean; text: string; isTruncated?: boolean; isBinary?: boolean }> => {
+    const result = await runGit(["show", spec], {
+      cwd,
+      timeoutMs: 10_000,
+      maxOutputBytes: MAX_DIFF_SIDE_TEXT_BYTES + 64 * 1024,
+    });
+    if (result.exitCode !== 0) return { exists: false, text: "" };
+    const buf = Buffer.from(result.stdout, "utf8");
+    if (buf.includes(0)) return { exists: true, text: "", isBinary: true };
+    if (buf.length <= MAX_DIFF_SIDE_TEXT_BYTES) return { exists: true, text: result.stdout };
+    return {
+      exists: true,
+      text: appendDiffTruncationNotice(buf.subarray(0, MAX_DIFF_SIDE_TEXT_BYTES).toString("utf8")),
+      isTruncated: true,
+    };
+  };
+  const original = await readSide(`${parsed.beforeSha}:${parsed.filePath}`);
+  const modified = await readSide(`${parsed.afterSha}:${parsed.filePath}`);
+  return {
+    path: parsed.filePath,
+    mode: "commit",
+    language,
+    original,
+    modified,
+    ...(original.isBinary || modified.isBinary ? { isBinary: true } : {}),
+  };
 }
 
 async function listRemoteWorkSessions(
@@ -1371,6 +2405,16 @@ function parseGetFileDiffArgs(value: Record<string, unknown>): GetFileDiffArgs {
     laneId: requireString(value.laneId, "git.getFile requires laneId."),
     path: requireString(value.path, "git.getFile requires path."),
     mode: requireString(value.mode, "git.getFile requires mode.") as GetFileDiffArgs["mode"],
+    ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
+    ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
+  };
+}
+
+function parseGetFilePatchArgs(value: Record<string, unknown>): GetFileDiffArgs {
+  return {
+    laneId: requireString(value.laneId, "git.getFilePatch requires laneId."),
+    path: requireString(value.path, "git.getFilePatch requires path."),
+    mode: requireString(value.mode, "git.getFilePatch requires mode.") as GetFileDiffArgs["mode"],
     ...(asTrimmedString(value.compareRef) ? { compareRef: asTrimmedString(value.compareRef)! } : {}),
     ...(asTrimmedString(value.compareTo) ? { compareTo: value.compareTo as GetFileDiffArgs["compareTo"] } : {}),
   };
@@ -2200,6 +3244,7 @@ type RemoteCommandRegistrationDeps = {
 
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
+  register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
     const listArgs = parseListLanesArgs(payload);
     const refreshed = await args.laneService.refreshSnapshots(listArgs);
@@ -2398,6 +3443,18 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
 }
 
 function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("work.getSession", { viewerAllowed: true }, async (payload) =>
+    getRemoteWorkSession(args, parseSessionIdArgs(payload, "work.getSession").sessionId));
+  register("work.deleteSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionId = requireString(payload.sessionId, "Session id is required.");
+    await deleteTerminalSessionWithRuntimeCleanup({
+      sessionId,
+      sessionService: args.sessionService,
+      ptyService: args.ptyService,
+    });
+  });
+  register("work.getSessionDelta", { viewerAllowed: true }, async (payload) =>
+    args.sessionDeltaService?.getSessionDelta(parseSessionIdArgs(payload, "work.getSessionDelta").sessionId) ?? null);
   register("work.listSessions", { viewerAllowed: true }, async (payload) => listRemoteWorkSessions(args, parseListSessionsArgs(payload)));
   register("work.updateSessionMeta", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.sessionService.updateMeta(parseUpdateSessionMetaArgs(payload));
@@ -2569,6 +3626,46 @@ function registerProcessRemoteCommands({ args, register }: RemoteCommandRegistra
 }
 
 function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
+      parseAgentChatSlashCommandsArgs(payload),
+    ));
+  register("chat.getParallelLaunchState", { viewerAllowed: true }, async (payload) => {
+    const db = requireService(args.db, "Database not available.");
+    const parsed = parseAgentChatParallelLaunchStateArgs(payload);
+    const key = agentChatParallelLaunchStateKey(parsed.projectRoot, parsed.parentLaneId);
+    return normalizeAgentChatParallelLaunchState(db.getJson(key), parsed.parentLaneId);
+  });
+  register("chat.setParallelLaunchState", { viewerAllowed: true }, async (payload) => {
+    const db = requireService(args.db, "Database not available.");
+    const parsed = parseAgentChatSetParallelLaunchStateArgs(payload);
+    const key = agentChatParallelLaunchStateKey(parsed.projectRoot, parsed.parentLaneId);
+    db.setJson(key, parsed.state ?? null);
+  });
+  register("chat.handoff", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").handoffSession(
+      parseAgentChatHandoffArgs(payload),
+    ));
+  register("chat.getContextUsage", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").getContextUsage(
+      parseAgentChatContextUsageArgs(payload),
+    ));
+  register("chat.rewindFiles", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").rewindFiles(
+      parseAgentChatRewindFilesArgs(payload),
+    ));
+  register("chat.getTurnFileDiff", { viewerAllowed: true }, async (payload) => getRemoteTurnFileDiff(args, payload));
+  register("chat.saveTempAttachment", { viewerAllowed: true }, async (payload) =>
+    saveAgentChatTempAttachment(args, payload));
+  register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
+  register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.").launchHeadless(parseAgentChatLaunchArgs(payload)));
+  register("chat.getImageDataUrl", { viewerAllowed: true }, async (payload) => {
+    const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getImageDataUrl");
+    const { data, mimeType } = await readImageFileAndSniffMime(filePath);
+    return { dataUrl: `data:${mimeType};base64,${data.toString("base64")}` };
+  });
   register("chat.listSessions", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatListArgs(payload);
@@ -2798,6 +3895,35 @@ function registerPushRemoteCommands({ args, register }: RemoteCommandRegistratio
   );
 }
 
+function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register(
+    "sync.getWebPairingInfo",
+    { viewerAllowed: true },
+    async (payload): Promise<SyncWebPairingInfo> => {
+      parseGetWebPairingInfoArgs(payload);
+      const syncPinStore = requireService(args.syncPinStore, "Sync PIN store is not available.");
+      const getPairingConnectInfo = requireService(
+        args.getPairingConnectInfo,
+        "Sync pairing connect info is not available.",
+      );
+      const connectInfo = requireService(getPairingConnectInfo(), "Sync pairing connect info is not available.");
+      const pinConfigured = syncPinStore.hasPin();
+      const code = syncPinStore.getPin();
+      const hasRelayCandidate = connectInfo.addressCandidates.some((candidate) =>
+        candidate.kind === "relay" && candidate.host.trim().length > 0);
+      return {
+        pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
+        code: code ?? null,
+        pinConfigured,
+        machineName: connectInfo.hostIdentity.name,
+        relayEnabled: args.isCloudRelayEnabled?.() ?? hasRelayCandidate,
+        hasRelayCandidate,
+      };
+    },
+    "runtime",
+  );
+}
+
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
@@ -3019,6 +4145,19 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
       compareTo: parsed.compareTo,
     });
   });
+  register("git.getFilePatch", { viewerAllowed: true }, async (payload) => {
+    const diffService = requireService(args.diffService, "Diff service not available.");
+    const parsed = parseGetFilePatchArgs(payload);
+    return await diffService.getFilePatch({
+      laneId: parsed.laneId,
+      filePath: parsed.path,
+      mode: parsed.mode,
+      compareRef: parsed.compareRef,
+      compareTo: parsed.compareTo,
+    });
+  });
+  register("git.getUserIdentity", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getUserIdentity(parseGitUserIdentityArgs(payload)));
   register("files.writeTextAtomic", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseWriteTextAtomicArgs(payload);
     args.fileService.writeTextAtomic({ laneId: parsed.laneId, relPath: parsed.path, text: parsed.text });
@@ -3068,6 +4207,8 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").stashPop(parseGitStashRefArgs(payload, "git.stashPop")));
   register("git.stashDrop", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").stashDrop(parseGitStashRefArgs(payload, "git.stashDrop")));
+  register("git.stashClear", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").stashClear(parseConflictLaneArgs(payload, "git.stashClear")));
   register("git.fetch", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").fetch(parseConflictLaneArgs(payload, "git.fetch")));
   register("git.pull", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -3098,6 +4239,13 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").checkoutBranch(parseGitCheckoutBranchArgs(payload)));
 }
 
+function registerTerminalRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("terminal.list", { viewerAllowed: true }, async (payload) =>
+    args.ptyService.listTerminals(parseTerminalListArgs(payload)));
+  register("terminal.activeForChat", { viewerAllowed: true }, async (payload) =>
+    args.ptyService.activeForChat(parseTerminalActiveForChatArgs(payload)));
+}
+
 function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("conflicts.getLaneStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.conflictService, "Conflict service not available.").getLaneStatus(parseConflictLaneArgs(payload, "conflicts.getLaneStatus")));
@@ -3107,8 +4255,63 @@ function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistr
     requireService(args.conflictService, "Conflict service not available.").getBatchAssessment());
 }
 
+function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("rebase.scanNeeds", { viewerAllowed: true }, async () =>
+    requireService(args.conflictService, "Conflict service not available.").scanRebaseNeeds());
+  register("rebase.execute", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.conflictService, "Conflict service not available.").rebaseLane(
+      payload as Parameters<ReturnType<typeof createConflictService>["rebaseLane"]>[0],
+    ));
+  register("history.listOperations", { viewerAllowed: true }, async (payload) =>
+    requireService(args.operationService, "Operation service not available.").list(parseListOperationsArgs(payload)));
+  register("github.getStatus", { viewerAllowed: true }, async (payload): Promise<GitHubStatus> =>
+    requireService(args.githubService, "GitHub service not available.").getStatus({
+      forceRefresh: payload.forceRefresh === true,
+    }));
+  register("github.getRemoteStatus", { viewerAllowed: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
+    requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
+  register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
+    const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
+    return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({
+      ...(owner ? { owner } : {}),
+      name,
+      ...(description ? { description } : {}),
+      isPrivate,
+    });
+  }, "project");
+  register("projectConfig.get", { viewerAllowed: true }, async () =>
+    requireService(args.projectConfigService, "Project config service not available.").get());
+  register("projectConfig.save", { viewerAllowed: true }, async (payload) =>
+    requireService(args.projectConfigService, "Project config service not available.").save(
+      parseProjectConfigSaveArgs(payload).candidate,
+    ));
+  register("ai.getStatus", { viewerAllowed: true }, async (payload) => {
+    try {
+      return await buildAiSettingsStatus(args.aiIntegrationService, {
+        force: payload.force === true,
+        refreshOpenCodeInventory: payload.refreshOpenCodeInventory === true,
+      });
+    } catch (error) {
+      if (isDatabaseClosedError(error)) return getUnavailableAiStatus();
+      throw error;
+    }
+  });
+  register("orchestration.runCreate", { viewerAllowed: true }, async (payload) => {
+    const orchestrationService = requireService(args.orchestrationService, "Orchestration service not available.");
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    return createOrchestrationDomainService({
+      orchestrationService,
+      laneService: {
+        getLaneWorktreePath: (laneId: string) => args.laneService.getLaneWorktreePath(laneId),
+      },
+      agentChatService,
+    }).runCreate(parseOrchestrationRunCreateArgs(payload));
+  });
+}
+
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
+  register("prs.listOpenForRepo", { viewerAllowed: true }, async () => args.prService.listOpenPullRequests());
   register("prs.getForLane", { viewerAllowed: true }, async (payload) =>
     args.prService.getForLane(parseLaneIdArgs(payload, "prs.getForLane").laneId));
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
@@ -3159,6 +4362,39 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     return await args.dispatchDeeplinkUrl(url);
   });
   register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
+  register("prs.postReviewComment", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.postReviewComment(parsePostPrReviewCommentArgs(payload)));
+  register("prs.getAiSummary", { viewerAllowed: true }, async (payload) =>
+    args.prSummaryService?.getSummary(requirePrId(payload, "prs.getAiSummary")) ?? null);
+  register("prs.regenerateAiSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.prSummaryService, "PR summary service not available.").regenerateSummary(
+      requirePrId(payload, "prs.regenerateAiSummary"),
+    ));
+  register("prs.getIntegrationResolutionState", { viewerAllowed: true }, async (payload) =>
+    args.prService.getIntegrationResolutionState(
+      requireString(payload.proposalId, "prs.getIntegrationResolutionState requires proposalId."),
+    ));
+  register("prs.delete", { viewerAllowed: false, queueable: true }, async (payload) =>
+    args.prService.delete(parseDeletePrArgs(payload)));
+  register("prs.cleanupBranch", { viewerAllowed: false, queueable: true }, async (payload) =>
+    args.prService.cleanupBranch(parseCleanupPrBranchArgs(payload)));
+  register("prs.listProposals", { viewerAllowed: true }, async () => args.prService.listIntegrationProposals());
+  register("prs.getQueueState", { viewerAllowed: true }, async (payload) =>
+    args.queueLandingService?.getQueueStateByGroup(
+      requireString(payload.groupId, "prs.getQueueState requires groupId."),
+    ) ?? null);
+  register("prs.listQueueStates", { viewerAllowed: true }, async (payload) =>
+    args.queueLandingService?.listQueueStates(payload) ?? []);
+  register("prs.getMergeContext", { viewerAllowed: true }, async (payload) =>
+    args.prService.getMergeContext(requirePrId(payload, "prs.getMergeContext")));
+  register("prs.getMergeContexts", { viewerAllowed: true }, async (payload) =>
+    args.prService.getMergeContexts(asStringArray(payload.prIds)));
+  register("prs.listWithConflicts", { viewerAllowed: true }, async (payload) =>
+    args.prService.listWithConflicts({ includeConflictAnalysis: payload.includeConflictAnalysis === true }));
+  register("prs.listSnapshots", { viewerAllowed: true }, async (payload) =>
+    args.prService.listSnapshots({
+      ...(asTrimmedString(payload.prId) ? { prId: asTrimmedString(payload.prId)! } : {}),
+    }));
   register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
   register("prs.getChecks", { viewerAllowed: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
   register("prs.getReviews", { viewerAllowed: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
@@ -3260,6 +4496,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.createIntegrationLaneForProposal(parseCreateIntegrationLaneForProposalArgs(payload)));
   register("prs.startIntegrationResolution", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.startIntegrationResolution(parseStartIntegrationResolutionArgs(payload)));
+  const prAiState: PrAiRuntimeState = {
+    sessions: new Map(),
+    sessionsByContextKey: new Map(),
+  };
+  register("prs.aiResolutionGetSession", { viewerAllowed: true }, async (payload) =>
+    getRemotePrAiResolutionSession(args, prAiState, payload));
+  register("prs.aiResolutionStart", { viewerAllowed: true }, async (payload) =>
+    startRemotePrAiResolution(args, prAiState, payload));
   register("prs.recheckIntegrationStep", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
   register("prs.landQueueNext", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -3308,9 +4552,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerChatRemoteCommands({ args, register });
   registerModelPickerRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
+  registerSyncRemoteCommands({ args, register });
   registerCtoRemoteCommands({ args, register });
   registerGitAndFileRemoteCommands({ args, register });
+  registerTerminalRemoteCommands({ args, register });
   registerConflictRemoteCommands({ args, register });
+  registerMiscRemoteCommands({ args, register });
   registerPrAndDeeplinkRemoteCommands({ args, register });
   return {
     getSupportedActions(): SyncRemoteCommandAction[] {

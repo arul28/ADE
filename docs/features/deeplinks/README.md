@@ -135,8 +135,11 @@ ADE CLI — outbound + inbound:
     not connected Linear yet.
   - `ade link …` builds a deeplink for a lane / work session / branch / PR / Linear
     issue and copies it to the clipboard. `--ade` emits the custom
-    scheme; the default is the HTTPS form. Round-trip form
-    (`ade link <url>`) re-emits a parsed URL in the chosen form.
+    scheme; the default is the HTTPS form; `--web` emits the hosted web
+    client form (`https://app.ade-app.dev/open?...`, via `buildWebClientUrl`)
+    and cannot be combined with `--ade`. Round-trip form
+    (`ade link <url>`) re-emits a parsed URL in the chosen form, and the
+    round-trip validation gate also accepts a web-client URL.
   - `ade linear install` writes `~/.linear/coding-tools.json` so Linear's
     "Open issue in coding tool" dropdown can launch ADE. Backs up the
     previous file alongside.
@@ -150,9 +153,13 @@ ADE CLI — outbound + inbound:
   TUI's `Ctrl+Y` keybinding. Resolves the focused row (lane / PR) to a
   canonical `ade://` URL, including parsing GitHub PR URLs to lift
   owner/repo/number when the right-pane only carries the URL.
+  `buildWebClientUrlForRow` in the same file resolves the focused row to
+  the hosted web-client form (`https://app.ade-app.dev/open?...`) instead.
 - `apps/ade-cli/src/tuiClient/keybindings/index.ts` — registers
   `copy_deeplink` so `Ctrl+Y` over a highlighted lane or PR row builds
-  and copies the link via `tuiClient/app.tsx`.
+  and copies the `ade://` link via `tuiClient/app.tsx`. The bindable
+  action set also includes `app:copyAdeWebLink`, which copies the
+  web-client form of the focused row instead.
 
 Apps/web — landing page + OG unfurl:
 

@@ -18,6 +18,14 @@ struct SettingsPairingSection: View {
         }
 
         SettingsPairActionRow(
+          icon: "globe",
+          title: "Pair a browser",
+          subtitle: "Use ADE in any browser, signed in to this machine"
+        ) {
+          presentedSheet = .webClient
+        }
+
+        SettingsPairActionRow(
           icon: "dot.radiowaves.left.and.right",
           title: "Discover on network",
           subtitle: discoverSubtitle

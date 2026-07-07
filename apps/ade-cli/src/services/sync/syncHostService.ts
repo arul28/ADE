@@ -73,25 +73,31 @@ import type {
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
+import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
 import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
+import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
 import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
+import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
+import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
+import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
@@ -104,6 +110,7 @@ import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import {
   buildChangesetBatchPayload,
@@ -575,14 +582,20 @@ type SyncHostServiceArgs = {
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
   gitService?: ReturnType<typeof createGitOperationsService>;
+  githubService?: ReturnType<typeof createGithubService> | null;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  operationService?: ReturnType<typeof createOperationService> | null;
   prService: ReturnType<typeof createPrService>;
+  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
+  sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   processService?: ReturnType<typeof createProcessService>;
   agentChatService?: ReturnType<typeof createAgentChatService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   /** Brain→push-relay publisher; forwarded to the default remote-command service. */
   pushPublisherService?: PushPublisherService | null;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
@@ -1224,15 +1237,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const dpopNonceCache = createSyncDpopNonceCache();
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
     db: args.db,
+    projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
+    prSummaryService: args.prSummaryService,
     ptyService: args.ptyService,
     sessionService: args.sessionService,
+    sessionDeltaService: args.sessionDeltaService,
     fileService: args.fileService,
     gitService: args.gitService,
+    githubService: args.githubService,
     diffService: args.diffService,
     conflictService: args.conflictService,
+    operationService: args.operationService,
     agentChatService: args.agentChatService,
+    aiIntegrationService: args.aiIntegrationService,
+    orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
@@ -1252,6 +1272,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // wires the same stamp from the outside.
     getLanePresenceStamp: () => computeLanePresenceStamp(),
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+    syncPinStore: args.pinStore,
+    getPairingConnectInfo: args.deviceRegistryService
+      ? () => {
+        const localDevice = args.deviceRegistryService!.ensureLocalDevice();
+        const activePort = getListeningPort() ?? args.port ?? localDevice.lastPort;
+        const connectDevice = activePort != null && localDevice.lastPort !== activePort
+          ? args.deviceRegistryService!.touchLocalDevice({
+            lastSeenAt: nowIso(),
+            lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+            lastPort: activePort,
+          })
+          : localDevice;
+        return buildPairingConnectInfo({
+          localDevice: connectDevice,
+          relayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+        });
+      }
+      : undefined,
+    isCloudRelayEnabled: () => Boolean(args.getCloudRelayWssUrl?.()),
     logger: args.logger,
   });
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));

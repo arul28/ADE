@@ -80,6 +80,10 @@ ade chat attach-linear-issue <session> --issue-id ENG-431
 ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
 ```
 
+## Sync and pairing
+
+- `ade sync web [--open]` — print + copy the web-client pairing link and code (pair a browser to this machine).
+
 Start work from an issue:
 
 ```

@@ -47,6 +47,7 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
+      { label: "Web client", to: LINKS.webClient, kind: "external" },
       { label: "Docs", to: LINKS.docs, kind: "external" },
     ],
     []

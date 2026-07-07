@@ -3,7 +3,6 @@ import path from "node:path";
 import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
-  SyncAddressCandidate,
   SyncCloudRelayStatus,
   SyncDesktopConnectionDraft,
   SyncDeviceRuntimeState,
@@ -16,15 +15,18 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
+import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
 import type { createFileService } from "../../../../desktop/src/main/services/files/fileService";
 import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
+import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
 import type { createConflictService } from "../../../../desktop/src/main/services/conflicts/conflictService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
@@ -33,9 +35,12 @@ import type { createAutoRebaseService } from "../../../../desktop/src/main/servi
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
+import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
+import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
+import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
@@ -58,6 +63,11 @@ import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  buildAddressCandidates,
+  buildPairingConnectInfo,
+  tailscaleDnsNameFromDevice,
+} from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
@@ -78,10 +88,16 @@ type SyncServiceArgs = {
   gitService?: ReturnType<typeof createGitOperationsService>;
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
+  operationService?: ReturnType<typeof createOperationService> | null;
+  githubService?: ReturnType<typeof createGithubService> | null;
   prService: ReturnType<typeof createPrService>;
+  prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
+  sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
+  aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
@@ -302,50 +318,6 @@ function normalizeHostKey(host: string | null | undefined): string | null {
   return normalized.replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
 }
 
-function tailscaleDnsNameFromDevice(
-  localDevice: SyncRoleSnapshot["localDevice"],
-): string | null {
-  const value = localDevice.metadata?.tailscaleDnsName;
-  return typeof value === "string" && value.trim().toLowerCase().endsWith(".ts.net")
-    ? value.trim().replace(/\.$/, "").toLowerCase()
-    : null;
-}
-
-function buildAddressCandidates(
-  localDevice: SyncRoleSnapshot["localDevice"],
-): SyncAddressCandidate[] {
-  const candidates: SyncAddressCandidate[] = [];
-  const seen = new Set<string>();
-  const append = (
-    host: string | null | undefined,
-    kind: SyncAddressCandidate["kind"],
-  ) => {
-    const normalized = normalizeHost(host);
-    if (!normalized || seen.has(normalized)) return;
-    seen.add(normalized);
-    candidates.push({ host: normalized, kind });
-  };
-  const preferredSavedHost = normalizeHost(localDevice.lastHost);
-  const preferredSavedHostIsCurrent = preferredSavedHost != null && (
-    localDevice.ipAddresses.some((host) => normalizeHost(host) === preferredSavedHost)
-    || normalizeHost(localDevice.tailscaleIp) === preferredSavedHost
-    || tailscaleDnsNameFromDevice(localDevice) === preferredSavedHost
-  );
-  if (preferredSavedHostIsCurrent) {
-    append(localDevice.lastHost, "saved");
-  }
-  for (const lanAddress of localDevice.ipAddresses) {
-    append(lanAddress, "lan");
-  }
-  if (!preferredSavedHostIsCurrent) {
-    append(localDevice.lastHost, "saved");
-  }
-  append(tailscaleDnsNameFromDevice(localDevice), "tailscale");
-  append(localDevice.tailscaleIp, "tailscale");
-  append("127.0.0.1", "loopback");
-  return candidates;
-}
-
 function isDraftTargetLocalDevice(
   draft: SyncDesktopConnectionDraft,
   localDevice: SyncRoleSnapshot["localDevice"],
@@ -375,31 +347,6 @@ function isViewerDraftTransportError(error: unknown): boolean {
   }
   const message = error instanceof Error ? error.message : String(error);
   return VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN.test(message);
-}
-
-function buildPairingConnectInfo(argsIn: {
-  localDevice: SyncRoleSnapshot["localDevice"];
-  relayWssUrl?: string | null;
-}): SyncPairingConnectInfo {
-  const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
-  const addressCandidates = buildAddressCandidates(argsIn.localDevice);
-  // The cloud relay is the lowest-priority path: phones try every direct
-  // candidate first and fall back to the tunnel only when nothing answers.
-  if (argsIn.relayWssUrl) {
-    addressCandidates.push({ host: argsIn.relayWssUrl, kind: "relay" });
-  }
-  const hostIdentity = {
-    deviceId: argsIn.localDevice.deviceId,
-    siteId: argsIn.localDevice.siteId,
-    name: argsIn.localDevice.name,
-    platform: argsIn.localDevice.platform,
-    deviceType: argsIn.localDevice.deviceType,
-  };
-  return {
-    hostIdentity,
-    port,
-    addressCandidates,
-  };
 }
 
 function isRetryableHostBindError(error: unknown): boolean {
@@ -451,15 +398,6 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
     add(port);
   }
   return candidates;
-}
-
-function normalizeSyncHostPort(port: number | null | undefined): number {
-  const parsed = Number.isFinite(port)
-    ? Math.max(1, Math.min(65_535, Math.floor(Number(port))))
-    : DEFAULT_SYNC_HOST_PORT;
-  return parsed >= DEFAULT_SYNC_HOST_PORT && parsed <= SYNC_HOST_MAX_PORT
-    ? parsed
-    : DEFAULT_SYNC_HOST_PORT;
 }
 
 export function createSyncService(args: SyncServiceArgs) {
@@ -627,18 +565,41 @@ export function createSyncService(args: SyncServiceArgs) {
     },
   });
 
+  const buildCurrentPairingConnectInfo = (): SyncPairingConnectInfo => {
+    const activeHostPort = hostService?.getPort() ?? args.sharedSyncListener?.getPort() ?? null;
+    let localDevice = deviceRegistryService.ensureLocalDevice();
+    if (activeHostPort != null && localDevice.lastPort !== activeHostPort) {
+      localDevice = deviceRegistryService.touchLocalDevice({
+        lastSeenAt: nowIso(),
+        lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+        lastPort: activeHostPort,
+      });
+    }
+    return buildPairingConnectInfo({
+      localDevice,
+      relayWssUrl: cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+    });
+  };
+
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
+    projectRoot: args.projectRoot,
     laneService: args.laneService,
     prService: args.prService,
+    prSummaryService: args.prSummaryService,
     queueLandingService: args.queueLandingService,
     ptyService: args.ptyService,
     sessionService: args.sessionService,
+    sessionDeltaService: args.sessionDeltaService,
     fileService: args.fileService,
     gitService: args.gitService,
+    githubService: args.githubService,
     diffService: args.diffService,
     conflictService: args.conflictService,
+    operationService: args.operationService,
+    aiIntegrationService: args.aiIntegrationService,
     agentChatService: args.agentChatService,
+    orchestrationService: args.orchestrationService,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
@@ -656,6 +617,9 @@ export function createSyncService(args: SyncServiceArgs) {
     getLanePresenceStamp: () => hostService?.getLanePresenceStamp() ?? "",
     getModelPickerStore: args.getModelPickerStore,
     dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+    syncPinStore: pinStore,
+    getPairingConnectInfo: buildCurrentPairingConnectInfo,
+    isCloudRelayEnabled: () => cloudRelayStore.isEnabled(),
     logger: args.logger,
   });
 
@@ -709,14 +673,20 @@ export function createSyncService(args: SyncServiceArgs) {
       fileService: args.fileService,
       laneService: args.laneService,
       gitService: args.gitService,
+      githubService: args.githubService,
       diffService: args.diffService,
       conflictService: args.conflictService,
+      operationService: args.operationService,
       prService: args.prService,
+      prSummaryService: args.prSummaryService,
       queueLandingService: args.queueLandingService,
       sessionService: args.sessionService,
+      sessionDeltaService: args.sessionDeltaService,
       ptyService: args.ptyService,
       processService: args.processService,
       agentChatService: args.agentChatService,
+      aiIntegrationService: args.aiIntegrationService,
+      orchestrationService: args.orchestrationService,
       pushPublisherService: args.pushPublisherService,
       ctoStateService: args.ctoStateService,
       ctoMemoryService: args.ctoMemoryService,
@@ -1240,7 +1210,7 @@ export function createSyncService(args: SyncServiceArgs) {
 
     async updateLocalDevice(argsIn: {
       name?: string;
-      deviceType?: "desktop" | "phone" | "vps" | "unknown";
+      deviceType?: "desktop" | "phone" | "vps" | "browser" | "unknown";
     }) {
       const updated = deviceRegistryService.updateLocalDevice(argsIn);
       hostService?.setLocalActiveLanePresence(activeLocalLanePresenceIds);

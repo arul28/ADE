@@ -7,6 +7,7 @@
 // ---------------------------------------------------------------------------
 
 import { buildDeeplink, type DeeplinkEnvelope, type DeeplinkTarget } from "../../../desktop/src/shared/deeplinks";
+import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 
 /**
  * Minimal lane shape needed to build a lane deeplink. Subset of `LaneSummary`
@@ -60,15 +61,15 @@ export function parseGitHubPrUrl(url: string): { repoOwner: string; repoName: st
   return { repoOwner, repoName, prNumber };
 }
 
-/** Build the `ade://` deeplink for a focused lane or PR row. Returns `null`
- * when the row doesn't have enough data (e.g. a PR row with a malformed
- * URL and no explicit owner/repo). */
-export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
+export function deeplinkTargetForRow(row: DeeplinkRow): DeeplinkTarget | null {
   const isValidPrNumber = (value: number): boolean =>
     Number.isInteger(value) && value > 0;
 
   if (row.kind === "lane") {
     if (!row.lane.id) return null;
+    // Preserve the richer deeplink envelope (repo/branch/PR/Linear context) from
+    // the deeplinks-overhaul grammar, but return the TARGET so both the ade://
+    // and app.ade-app.dev web-URL builders below share one resolution path.
     const branch = (row.lane.branch ?? row.lane.branchRef ?? "").replace(/^refs\/heads\//, "");
     const envelope: DeeplinkEnvelope | undefined = row.lane.repoOwner && row.lane.repoName
       ? {
@@ -79,25 +80,29 @@ export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
           ...(row.lane.linearIssue?.identifier ? { linearIssue: row.lane.linearIssue.identifier } : {}),
         }
       : undefined;
-    // Most TUI lane rows only carry the lane id; when richer repo/branch fields
-    // are absent, keep Ctrl+Y local-only rather than doing hidden lookups here.
-    const target: DeeplinkTarget = { kind: "lane", laneId: row.lane.id, ...(envelope ? { envelope } : {}) };
-    return buildDeeplink(target, { form: "ade" });
+    return { kind: "lane", laneId: row.lane.id, ...(envelope ? { envelope } : {}) };
   }
   const pr = row.pr;
   if ("repoOwner" in pr) {
     if (!pr.repoOwner || !pr.repoName || !isValidPrNumber(pr.prNumber)) return null;
-    return buildDeeplink(
-      { kind: "pr", repoOwner: pr.repoOwner, repoName: pr.repoName, prNumber: pr.prNumber },
-      { form: "ade" },
-    );
+    return { kind: "pr", repoOwner: pr.repoOwner, repoName: pr.repoName, prNumber: pr.prNumber };
   }
   const parsed = parseGitHubPrUrl(pr.url);
   if (!parsed) return null;
   const prNumber = pr.prNumber ?? parsed.prNumber;
   if (!isValidPrNumber(prNumber)) return null;
-  return buildDeeplink(
-    { kind: "pr", repoOwner: parsed.repoOwner, repoName: parsed.repoName, prNumber },
-    { form: "ade" },
-  );
+  return { kind: "pr", repoOwner: parsed.repoOwner, repoName: parsed.repoName, prNumber };
+}
+
+/** Build the `ade://` deeplink for a focused lane or PR row. Returns `null`
+ * when the row doesn't have enough data (e.g. a PR row with a malformed
+ * URL and no explicit owner/repo). */
+export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
+  const target = deeplinkTargetForRow(row);
+  return target ? buildDeeplink(target, { form: "ade" }) : null;
+}
+
+export function buildWebClientUrlForRow(row: DeeplinkRow): string | null {
+  const target = deeplinkTargetForRow(row);
+  return target ? buildWebClientUrl(target) : null;
 }

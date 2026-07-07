@@ -41,6 +41,7 @@ docs/
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands
     ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
+    ├── web-client/                        # owner-only hosted browser client over sync WebSocket
     └── workspace-graph/                   # React Flow canvas + data sources
 ```
 

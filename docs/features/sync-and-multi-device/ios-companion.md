@@ -192,7 +192,10 @@ apps/ios/
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
 │   │   ├── Settings/                # ConnectionSettingsView, SettingsPairingSection,
 │   │   │                            # SettingsPairingScannerSheet (camera QR
-│   │   │                            #   scanner), SettingsConnectionHeader,
+│   │   │                            #   scanner), SettingsWebClientPairSheet
+│   │   │                            #   (pair a browser: QR + link + PIN via
+│   │   │                            #   sync.getWebPairingInfo),
+│   │   │                            # SettingsConnectionHeader,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
 │   │   │                            # SettingsVoiceInputSection
@@ -633,6 +636,33 @@ yet arrived in the catchup batch.
 `SettingsPinSheet` on iOS mirrors the desktop PIN sheet and handles
 the entry UX. If the user misreads the digits, the runtime applies
 per-IP rate limiting (5 failures → 10-minute cooldown).
+
+### Pair a browser
+
+Settings > Pairing also carries a **Pair a browser** row
+(`SettingsPairingSection` → `SettingsPairSheetRoute.webClient`) that lets the
+phone hand the hosted browser web client
+(`../web-client/README.md`) everything it needs to pair with the same machine —
+without the operator having to open ADE on the computer.
+
+`SettingsWebClientPairSheet` fetches the machine's pairing details over the
+runtime-scoped `sync.getWebPairingInfo` remote command (gated on
+`supportsRemoteAction("sync.getWebPairingInfo")`, so it stays hidden against
+older hosts). The runtime returns a `WebPairingInfo`: the web-client pairing URL
+(`https://app.ade-app.dev/pair#<payload>`, built host-side with
+`buildWebClientPairUrl(buildPairingQrPayload(...))`), the current 6-digit PIN
+(`code` / `pinConfigured`), the machine name, and relay reachability
+(`relayEnabled` / `hasRelayCandidate`). The sheet renders a QR of the pairing
+URL, a copyable/shareable link, and the pairing code as three separate panels —
+the payload carries machine identity, port, address candidates, and the relay
+URL, never the PIN, so the code is shown apart from the link.
+
+Because the browser is a hosted HTTPS page, it can only reach the machine over a
+`wss://` route: when the machine advertises no relay candidate the sheet warns
+that the browser may only work on the same network (or that no relay route is
+available yet), and when no PIN is set it tells the user to set one in ADE on the
+computer. This is the phone-side mirror of the desktop's Settings > Sync web
+client card.
 
 ### Background App Refresh
 

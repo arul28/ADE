@@ -88,7 +88,7 @@ function parseHostIdentity(value: unknown): SyncPairingHostIdentity | null {
     platform: (platform === "macOS" || platform === "iOS" || platform === "linux" || platform === "windows"
       ? platform
       : "unknown") as SyncPairingHostIdentity["platform"],
-    deviceType: (deviceType === "desktop" || deviceType === "phone" || deviceType === "vps"
+    deviceType: (deviceType === "desktop" || deviceType === "phone" || deviceType === "vps" || deviceType === "browser"
       ? deviceType
       : "unknown") as SyncPairingHostIdentity["deviceType"],
   };
@@ -164,3 +164,5 @@ export function parsePairingQrUrl(raw: string): SyncPairingQrPayload | null {
     ...(claimToken ? { claimToken } : {}),
   };
 }
+
+export const parsePairingQrText = parsePairingQrUrl;

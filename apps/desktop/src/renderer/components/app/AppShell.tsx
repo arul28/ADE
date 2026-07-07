@@ -15,6 +15,7 @@ import {
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { TabNav } from "./TabNav";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
 import {
   getPrToastHeadline,
@@ -1222,7 +1223,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       ? remoteConnectionNotice
       : null;
   return (
-    <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
+    <div
+      className={cn(
+        "text-fg overflow-hidden flex flex-col bg-bg",
+        // In the browser web client the App is nested under the shell's top
+        // strip, so fill that container (h-full) instead of the whole viewport
+        // (h-screen), which would overflow beneath the strip.
+        isWebClientMode() ? "h-full w-full" : "h-screen w-screen",
+      )}
+    >
       <div className="shrink-0 relative z-20">
         <TopBar />
       </div>
