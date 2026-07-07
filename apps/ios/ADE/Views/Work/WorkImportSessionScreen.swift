@@ -824,7 +824,9 @@ private func workImportToolType(provider: String) -> String {
   switch provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "claude": return "claude"
   case "codex": return "codex"
-  case "cursor": return "cursor"
+  // "cursor-cli" (not "cursor") so isWorkChatToolType classifies an imported
+  // Cursor session as a CLI terminal, matching the desktop import mapping.
+  case "cursor": return "cursor-cli"
   case "droid": return "droid"
   case "opencode": return "opencode"
   default: return provider
