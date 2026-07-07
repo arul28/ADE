@@ -371,6 +371,14 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     const readTranscript = vi.fn(async (sessionId: string, limit?: number, since?: string) => ([
       { role: "user", text: sessionId, timestamp: since ?? "now", limit },
     ]));
+    const getChatEventHistory = vi.fn((sessionId: string, options?: { maxEvents?: number; maxBytes?: number }) => ({
+      sessionId,
+      options,
+    }));
+    const getChatEventHistoryPage = vi.fn((sessionId: string, options: { beforeOffset: number; maxBytes?: number }) => ({
+      sessionId,
+      options,
+    }));
     const sendMessage = vi.fn(async () => undefined);
     const runtime = {
       agentChatService: {
@@ -378,6 +386,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
         getAvailableModels,
         getSessionSummary,
         readTranscript,
+        getChatEventHistory,
+        getChatEventHistoryPage,
         sendMessage,
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
@@ -387,6 +397,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       getAvailableModels?: (args?: unknown) => Promise<unknown>;
       getSessionSummary?: (args?: unknown) => Promise<unknown>;
       readTranscript?: (args?: unknown) => Promise<unknown>;
+      getChatEventHistory?: (args?: unknown) => Promise<unknown>;
+      getChatEventHistoryPage?: (args?: unknown) => Promise<unknown>;
       sendMessage?: (args?: unknown) => Promise<unknown>;
     };
 
@@ -429,6 +441,32 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       },
     ]);
     expect(readTranscript).toHaveBeenCalledWith("chat-1", 25, "2026-06-29T00:00:00.000Z");
+
+    await expect(Promise.resolve(chat.getChatEventHistory?.({
+      sessionId: " chat-1 ",
+      maxEvents: "128",
+      maxBytes: 65536,
+    }))).resolves.toEqual({
+      sessionId: "chat-1",
+      options: { maxEvents: 128, maxBytes: 65536 },
+    });
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", { maxEvents: 128, maxBytes: 65536 });
+
+    await expect(Promise.resolve(chat.getChatEventHistory?.([" chat-2 ", { maxEvents: 32 }]))).resolves.toEqual({
+      sessionId: "chat-2",
+      options: { maxEvents: 32 },
+    });
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-2", { maxEvents: 32 });
+
+    await expect(Promise.resolve(chat.getChatEventHistoryPage?.({
+      sessionId: " chat-1 ",
+      beforeOffset: "4096",
+      maxBytes: "8192",
+    }))).resolves.toEqual({
+      sessionId: "chat-1",
+      options: { beforeOffset: 4096, maxBytes: 8192 },
+    });
+    expect(getChatEventHistoryPage).toHaveBeenCalledWith("chat-1", { beforeOffset: 4096, maxBytes: 8192 });
 
     await expect(chat.sendMessage?.({
       sessionId: " chat-1 ",

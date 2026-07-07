@@ -1261,6 +1261,31 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     service.getSessionSummary = (args?: unknown) =>
       agentChatService.getSessionSummary(readStringActionArg(args, "sessionId"));
   }
+  if (typeof base.getChatEventHistory === "function") {
+    service.getChatEventHistory = (args?: unknown) => {
+      const { sessionId, options } = readChatHistoryActionArgs(args, "chat.getChatEventHistory");
+      const maxEvents = readOptionalIntegerActionField(options.maxEvents, "maxEvents");
+      const maxBytes = readOptionalIntegerActionField(options.maxBytes, "maxBytes");
+      return agentChatService.getChatEventHistory(sessionId, {
+        ...(maxEvents !== undefined ? { maxEvents } : {}),
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+      });
+    };
+  }
+  if (typeof base.getChatEventHistoryPage === "function") {
+    service.getChatEventHistoryPage = (args?: unknown) => {
+      const { sessionId, options } = readChatHistoryActionArgs(args, "chat.getChatEventHistoryPage");
+      const beforeOffset = readOptionalIntegerActionField(options.beforeOffset, "beforeOffset");
+      if (beforeOffset === undefined) {
+        throw new Error("Expected 'beforeOffset' to be a finite number.");
+      }
+      const maxBytes = readOptionalIntegerActionField(options.maxBytes, "maxBytes");
+      return agentChatService.getChatEventHistoryPage(sessionId, {
+        beforeOffset,
+        ...(maxBytes !== undefined ? { maxBytes } : {}),
+      });
+    };
+  }
   if (typeof agentChatService.getModelCatalog === "function") {
     service.modelCatalog = (args?: unknown) =>
       agentChatService.getModelCatalog(readObjectActionArg(args, "chat.modelCatalog") as never);
@@ -2013,6 +2038,42 @@ function readObjectActionArg(value: unknown, actionName: string): Record<string,
     return value as Record<string, unknown>;
   }
   throw new Error(`${actionName} expects an object input. Use --input-json '{...}' or see \`ade actions list --domain chat --text\`.`);
+}
+
+function readOptionalIntegerActionField(value: unknown, field: string): number | undefined {
+  if (value == null || value === "") return undefined;
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim()
+      ? Number.parseInt(value, 10)
+      : NaN;
+  if (!Number.isFinite(numeric)) {
+    throw new Error(`Expected '${field}' to be a finite number.`);
+  }
+  return Math.floor(numeric);
+}
+
+function readChatHistoryActionArgs(
+  value: unknown,
+  actionName: string,
+): { sessionId: string; options: Record<string, unknown> } {
+  if (Array.isArray(value)) {
+    return {
+      sessionId: requireNonEmptyString(value[0], "sessionId"),
+      options: asActionRecord(value[1]),
+    };
+  }
+  if (typeof value === "string") {
+    return {
+      sessionId: requireNonEmptyString(value, "sessionId"),
+      options: {},
+    };
+  }
+  const record = readObjectActionArg(value, actionName);
+  return {
+    sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
+    options: record,
+  };
 }
 
 function readRuntimeFileWatchSenderId(args: Record<string, unknown>): number {

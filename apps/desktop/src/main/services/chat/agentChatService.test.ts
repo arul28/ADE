@@ -8948,7 +8948,11 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
       const wakeupId = `wakeup:${session.id}`;
 
+      vi.mocked(runGit).mockClear();
       startBackground();
+      await vi.waitFor(() => {
+        expect(runGit).toHaveBeenCalledWith(["rev-parse", "HEAD"], expect.objectContaining({ timeoutMs: 8_000 }));
+      });
       const wakeupEvent = await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope & {
@@ -9005,6 +9009,112 @@ describe("createAgentChatService", () => {
           && event.event.turnId.startsWith("claude-idle-")
           && event.event.status === "completed",
       );
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("keeps idle skip_transcript tasks out of visible chat info", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startAmbient!: () => void;
+      let ambientDrained = false;
+      const startAmbientPromise = new Promise<void>((resolve) => { startAmbient = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-skip-transcript",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-skip-transcript",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startAmbientPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-skip-transcript",
+          task_id: "task-ambient-idle-1",
+          description: "Generate session title",
+          task_type: "other",
+          skip_transcript: true,
+        };
+        yield {
+          type: "system",
+          subtype: "task_progress",
+          session_id: "sdk-idle-skip-transcript",
+          task_id: "task-ambient-idle-1",
+          summary: "thinking",
+        };
+        yield {
+          type: "system",
+          subtype: "task_notification",
+          session_id: "sdk-idle-skip-transcript",
+          task_id: "task-ambient-idle-1",
+          status: "completed",
+          summary: "Done",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-skip-transcript",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        ambientDrained = true;
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-skip-transcript",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Complete a visible turn, then let idle housekeeping run.",
+      });
+
+      startAmbient();
+      await vi.waitFor(() => {
+        expect(ambientDrained).toBe(true);
+      });
+
+      expect(events.filter((event) =>
+        event.sessionId === session.id
+        && (event.event.type === "subagent_started"
+          || event.event.type === "subagent_progress"
+          || event.event.type === "subagent_result")
+        && (event.event as { taskId?: string }).taskId === "task-ambient-idle-1",
+      )).toEqual([]);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "status"
+        && event.event.turnId?.startsWith("claude-idle-") === true,
+      )).toBe(false);
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
@@ -9429,6 +9539,130 @@ describe("createAgentChatService", () => {
         status: "scheduled",
         prompt: "Check CI again.",
         sourceTaskId: "wakeup-provider-1",
+      });
+    });
+
+    it("coalesces parentless recurring cron run events with the provider cron row", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startCronRun!: () => void;
+      const startCronRunPromise = new Promise<void>((resolve) => { startCronRun = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-parentless-run",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-parentless-run",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startCronRunPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-cron-parentless-run",
+          task_id: "cron-run-task-1",
+          task_type: "cron",
+          description: "Check CI status.",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-cron-parentless-run",
+          task_id: "cron-run-task-1",
+          task_type: "cron",
+          patch: { status: "completed" },
+          summary: "CI passed.",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-parentless-run",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-parentless-run",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule a recurring CI cron.",
+      });
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [{
+          id: "cron-provider-parentless-1",
+          schedule: "*/15 * * * *",
+          prompt: "Check CI status.",
+          recurring: true,
+        }],
+      });
+
+      startCronRun();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.id === "cron-provider-parentless-1"
+          && event.event.status === "completed",
+      );
+
+      const scheduledEvents = events
+        .filter((event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.kind === "cron");
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([
+        "cron-provider-parentless-1",
+        "cron-provider-parentless-1",
+        "cron-provider-parentless-1",
+      ]);
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({
+        id: "cron-provider-parentless-1",
+        kind: "cron",
+        status: "completed",
+        sourceTaskId: "cron-run-task-1",
       });
     });
   });
