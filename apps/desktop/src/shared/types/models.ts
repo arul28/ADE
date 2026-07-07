@@ -9,7 +9,7 @@ export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "ma
 export type ModelConfig = {
   /** Optional provider hint; routing is resolved from modelId via model registry. */
   provider?: ModelProvider;
-  /** Canonical registry model id (for example: anthropic/claude-sonnet-4-6, openai/gpt-5.3-codex). */
+  /** Canonical registry model id (for example: anthropic/claude-sonnet-5, openai/gpt-5.3-codex). */
   modelId: string;
   thinkingLevel?: ThinkingLevel;
 };

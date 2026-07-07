@@ -221,12 +221,12 @@ function seedRuntimeModelCatalog(): void {
             key: "default",
             label: "Claude",
             models: [{
-              id: "anthropic/claude-sonnet-4-6",
-              runtimeModelId: "claude-sonnet-4-6",
+              id: "anthropic/claude-sonnet-5",
+              runtimeModelId: "claude-sonnet-5",
               provider: "claude",
               providerKey: "claude",
               groupKey: "claude",
-              displayName: "Claude Sonnet 4.6",
+              displayName: "Claude Sonnet 5",
               isDefault: true,
               isAvailable: true,
             }],
@@ -544,7 +544,7 @@ function installAdeMocks(options?: {
     agentChat: {
       models: vi.fn().mockImplementation(async ({ provider }: { provider: string }) => {
         if (provider === "codex") return [{ id: "gpt-5.4" }];
-        if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-4-6" }] : [];
+        if (provider === "claude") return options?.includeClaudeModel ? [{ id: "anthropic/claude-sonnet-5" }] : [];
         if (provider === "cursor") return options?.cursorModels ?? [];
         if (provider === "opencode") return [{ id: "openai/gpt-5.4-mini" }];
         return [];
@@ -1388,8 +1388,8 @@ describe("AgentChatPane submit recovery", () => {
   it("resends the latest user message for the selected session after auth retry", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       status: "idle",
     });
     const transcript = [
@@ -1456,7 +1456,7 @@ describe("AgentChatPane submit recovery", () => {
       detectedAuth: [
         { type: "cli-subscription", cli: "claude", authenticated: true },
       ],
-      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      availableModelIds: ["anthropic/claude-sonnet-5"],
     });
     window.ade.ai.getStatus = getStatus as any;
     seedDrawerStore();
@@ -1504,8 +1504,8 @@ describe("AgentChatPane submit recovery", () => {
   it("rejects the auth retry when a turn becomes active before resend", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       status: "idle",
     });
     const transcript = `${JSON.stringify({
@@ -1566,8 +1566,8 @@ describe("AgentChatPane submit recovery", () => {
   it("dispatches auth recovery once after a later successful turn", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       status: "idle",
     });
     const transcript = [
@@ -1576,7 +1576,7 @@ describe("AgentChatPane submit recovery", () => {
         timestamp: "2026-03-24T05:57:45.700Z",
         event: {
           type: "error",
-          message: "Authentication failed for Claude Sonnet 4.6.",
+          message: "Authentication failed for Claude Sonnet 5.",
           turnId: "turn-1",
           errorInfo: {
             category: "agent_cli_auth",
@@ -1630,11 +1630,11 @@ describe("AgentChatPane submit recovery", () => {
     seedRuntimeModelCatalog();
 
     renderParallelDraftPane({
-      availableModelIdsOverride: ["anthropic/claude-sonnet-4-6"],
+      availableModelIdsOverride: ["anthropic/claude-sonnet-5"],
     });
 
     expect(await screen.findByText("Start a new conversation")).toBeTruthy();
-    const includedModelLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const includedModelLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
     fireEvent.pointerDown(trigger, { button: 0 });
     fireEvent.click(trigger);
@@ -1705,7 +1705,7 @@ describe("AgentChatPane submit recovery", () => {
           laneId="lane-1"
           initialSessionId={session.sessionId}
           initialSessionSummary={session}
-          availableModelIdsOverride={["anthropic/claude-sonnet-4-6"]}
+          availableModelIdsOverride={["anthropic/claude-sonnet-5"]}
         />
       </MemoryRouter>,
     );
@@ -1924,7 +1924,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(textbox, { target: { value: "Launch on the selected lane and model." } });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
@@ -1950,7 +1950,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-2",
         provider: "claude",
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       }));
     });
   });
@@ -1969,14 +1969,14 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     renderParallelDraftPane({
-      availableModelIdsOverride: ["anthropic/claude-sonnet-4-6"],
+      availableModelIdsOverride: ["anthropic/claude-sonnet-5"],
     });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
-    await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
+    await clickEnabledModelOption(/Claude Sonnet 5/i);
 
     await waitFor(() => {
       expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(expect.objectContaining({
@@ -2568,8 +2568,8 @@ describe("AgentChatPane submit recovery", () => {
     const session = buildSession("session-1", {
       status: "idle",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       permissionMode: "default",
       interactionMode: "default",
       claudePermissionMode: "default",
@@ -2757,8 +2757,8 @@ describe("AgentChatPane submit recovery", () => {
     const session = buildSession("session-1", {
       status: "idle",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       permissionMode: "edit",
       interactionMode: "default",
       claudePermissionMode: "default",
@@ -2807,8 +2807,8 @@ describe("AgentChatPane submit recovery", () => {
     const session = buildSession("session-1", {
       status: "idle",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       permissionMode: "plan",
       interactionMode: "plan",
       // The Claude mode picker writes "plan" into claudePermissionMode too, so
@@ -3058,8 +3058,8 @@ describe("AgentChatPane submit recovery", () => {
   it("shows the Claude login prompt when the loaded chat history contains auth notices", async () => {
     const session = buildSession("session-1", {
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       status: "idle",
     });
     installAdeMocks({
@@ -3123,7 +3123,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
-    const nextLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
@@ -3135,7 +3135,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       }));
     });
     expect(screen.getByRole("button", { name: /^Select model/ }).textContent ?? "").toContain(currentLabel);
@@ -3144,8 +3144,8 @@ describe("AgentChatPane submit recovery", () => {
     const updatedSession: AgentChatSessionSummary = {
       ...session,
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       reasoningEffort: "medium",
       permissionMode: "default",
       interactionMode: "default",
@@ -3160,7 +3160,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(warmupModel).toHaveBeenCalledWith({
         sessionId: session.sessionId,
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       });
     });
   });
@@ -3180,7 +3180,7 @@ describe("AgentChatPane submit recovery", () => {
 
     const trigger = await screen.findByRole("button", { name: /^Select model/ });
     const currentLabel = getModelById(session.modelId ?? "")?.displayName ?? session.modelId ?? "";
-    const nextLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const nextLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     const nextLabelPattern = new RegExp(escapeRegExp(nextLabel), "i");
     expect(trigger.textContent ?? "").toContain(currentLabel);
 
@@ -3192,7 +3192,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       }));
     });
     await waitFor(() => {
@@ -3413,7 +3413,7 @@ describe("AgentChatPane submit recovery", () => {
         session: buildCreatedSession("session-2", {
           provider: "claude",
           model: "sonnet",
-          modelId: "anthropic/claude-sonnet-4-6",
+          modelId: "anthropic/claude-sonnet-5",
           interactionMode: "plan",
           permissionMode: "plan",
         }),
@@ -3430,7 +3430,7 @@ describe("AgentChatPane submit recovery", () => {
     const handoffMenu = handoffTextEl.parentElement!.parentElement!;
     expect(handoffMenu).toBeTruthy();
     fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
-    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
     expect(screen.getByText("Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message.")).toBeTruthy();
@@ -3443,7 +3443,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
-        targetModelId: "anthropic/claude-sonnet-4-6",
+        targetModelId: "anthropic/claude-sonnet-5",
         mode: "brief",
         claudePermissionMode: "plan",
         permissionMode: "plan",
@@ -3459,7 +3459,7 @@ describe("AgentChatPane submit recovery", () => {
         session: buildCreatedSession("session-2", {
           provider: "claude",
           model: "sonnet",
-          modelId: "anthropic/claude-sonnet-4-6",
+          modelId: "anthropic/claude-sonnet-5",
         }),
         usedFallbackSummary: false,
       },
@@ -3474,7 +3474,7 @@ describe("AgentChatPane submit recovery", () => {
     const handoffMenu = handoffTextEl2.parentElement!.parentElement!;
     expect(handoffMenu).toBeTruthy();
     fireEvent.click(within(handoffMenu as HTMLElement).getByRole("button", { name: /^Select model/ }));
-    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(claudeLabel), "i"));
     fireEvent.click(await screen.findByRole("button", { name: "Fork full history" }));
@@ -3482,7 +3482,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(handoff).toHaveBeenCalledWith(expect.objectContaining({
         sourceSessionId: session.sessionId,
-        targetModelId: "anthropic/claude-sonnet-4-6",
+        targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
       }));
     });
@@ -4021,7 +4021,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
@@ -4060,7 +4060,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
@@ -4094,7 +4094,7 @@ describe("AgentChatPane submit recovery", () => {
       renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-      const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+      const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
       fireEvent.pointerDown(modelTrigger, { button: 0 });
       fireEvent.click(modelTrigger);
       fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
@@ -5472,7 +5472,7 @@ describe("AgentChatPane submit recovery", () => {
     ].map(encodeURIComponent).join(":");
     window.localStorage.setItem(launchConfigKey, JSON.stringify({
       version: 1,
-      modelId: "anthropic/claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-5",
       reasoningEffort: null,
       fastMode: true,
       executionMode: "focused",
@@ -5502,7 +5502,7 @@ describe("AgentChatPane submit recovery", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole("button", { name: /current: Claude Sonnet 4\.6/i });
+    await screen.findByRole("button", { name: /current: Claude Sonnet 5/i });
     expect(screen.queryByRole("button", { name: /Fast mode/i })).toBeNull();
 
     const textbox = await screen.findByRole("textbox");
@@ -6012,8 +6012,8 @@ describe("AgentChatPane submit recovery", () => {
   it("keeps the Claude login prompt pinned in compact grid tiles", async () => {
     const session = buildSession("grid-claude-auth", {
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       status: "idle",
       title: "Claude auth grid tile",
     });
@@ -6023,7 +6023,7 @@ describe("AgentChatPane submit recovery", () => {
       sequence: 1,
       event: {
         type: "error",
-        message: "Authentication failed for Claude Sonnet 4.6.",
+        message: "Authentication failed for Claude Sonnet 5.",
         turnId: "turn-grid-auth",
         errorInfo: {
           category: "agent_cli_auth",
@@ -6325,7 +6325,7 @@ describe("AgentChatPane submit recovery", () => {
     renderParallelDraftPane({
       availableModelIdsOverride: [
         "openai/gpt-5.4",
-        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-sonnet-5",
       ],
     });
 
@@ -6340,7 +6340,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
+    const claudeLabel = getModelById("anthropic/claude-sonnet-5")?.displayName ?? "Claude Sonnet 5";
     fireEvent.pointerDown(modelTrigger, { button: 0 });
     fireEvent.click(modelTrigger);
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
@@ -6361,12 +6361,12 @@ describe("AgentChatPane submit recovery", () => {
     // Child lanes are created instantly with the deterministic base name…
     expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
       "fix-login-bug-codex-gpt-5-4",
-      "fix-login-bug-claude-sonnet",
+      "fix-login-bug-claude-sonnet-5",
     ]);
     // …then renamed to the AI base name in the background.
     await waitFor(() => {
       expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-1", name: "fix-login-codex-gpt-5-4" });
-      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet" });
+      expect(renameLane).toHaveBeenCalledWith({ laneId: "lane-child-2", name: "fix-login-claude-sonnet-5" });
     });
 
     await waitFor(() => {
@@ -6383,7 +6383,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(create).toHaveBeenNthCalledWith(2, expect.objectContaining({
       laneId: "lane-child-2",
       provider: "claude",
-      modelId: "anthropic/claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-5",
     }));
     expect(send).toHaveBeenNthCalledWith(1, expect.objectContaining({
       sessionId: "session-lane-child-1",
@@ -6501,7 +6501,7 @@ describe("AgentChatPane submit recovery", () => {
     renderParallelDraftPane({
       availableModelIdsOverride: [
         "openai/gpt-5.4",
-        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-sonnet-5",
       ],
     });
 
@@ -6516,7 +6516,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Configure" })[1]!);
     fireEvent.click(await screen.findByRole("button", { name: /^Select model/ }));
     fireEvent.click(await screen.findByRole("tab", { name: /^Anthropic$/i }));
-    await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
+    await clickEnabledModelOption(/Claude Sonnet 5/i);
 
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
     fireEvent.click(await screen.findByRole("button", { name: /Send to lanes/i }));

@@ -1559,7 +1559,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "claude",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         prompt: "Implement API wiring",
         title: "Orchestrator Spawn"
       });
@@ -1574,7 +1574,7 @@ describe("adeRpcServer", () => {
         tracked: true,
         toolType: "claude-orchestrated",
         command: claudePath,
-        args: expect.arrayContaining(["--model", "claude-sonnet-4-6", "--permission-mode", "default"]),
+        args: expect.arrayContaining(["--model", "claude-sonnet-5", "--permission-mode", "default"]),
         env: expect.objectContaining({
           ADE_DEFAULT_ROLE: "agent",
         }),
@@ -1993,7 +1993,7 @@ describe("adeRpcServer", () => {
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "claude",
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         prompt: "Implement API wiring",
         title: "Orchestrator Spawn",
         runId: "run-1",
@@ -2083,7 +2083,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       permissionMode: "config-toml",
       prompt: "Implement API wiring",
     });
@@ -2106,7 +2106,7 @@ describe("adeRpcServer", () => {
     const response = await callTool(handler, "spawn_agent", {
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
       prompt: "Implement API wiring",
       title: "Orchestrator Spawn",
       runId: "run-1",

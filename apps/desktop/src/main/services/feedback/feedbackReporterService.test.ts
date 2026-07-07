@@ -52,7 +52,7 @@ describe("createFeedbackReporterService", () => {
     });
 
     const draft = await service.prepareDraft({
-      modelId: "anthropic/claude-opus-4-7",
+      modelId: "anthropic/claude-opus-4-8",
       draftInput: {
         category: "bug",
         summary: "Failed submissions should show the error reason.",
@@ -135,7 +135,7 @@ describe("createFeedbackReporterService", () => {
           additionalContext: "",
         },
         userDescription: "## Summary\n\nPosting should preserve the prepared draft.",
-        modelId: "anthropic/claude-opus-4-7",
+        modelId: "anthropic/claude-opus-4-8",
         reasoningEffort: null,
         title: "Preserve reviewed drafts when GitHub posting fails",
         body: "## Description\n\nDeterministic body.",

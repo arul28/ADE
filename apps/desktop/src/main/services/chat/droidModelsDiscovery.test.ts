@@ -80,7 +80,7 @@ describe("parseDroidExecHelpModels", () => {
       "Usage: droid exec [options] [prompt]",
       "",
       "Custom Models:",
-      "  custom:claude-sonnet-4-6-thinking-32000   Claude Sonnet 4.6 (High)",
+      "  custom:claude-sonnet-5-thinking-32000   Claude Sonnet 5 (High)",
       "  custom:gpt-5.4(xhigh)                     GPT-5.4 (XHigh)",
       "",
       "Model details:",
@@ -88,8 +88,8 @@ describe("parseDroidExecHelpModels", () => {
 
     expect(parseDroidExecHelpModels(raw)).toEqual([
       {
-        id: "custom:claude-sonnet-4-6-thinking-32000",
-        displayName: "Claude Sonnet 4.6 (High)",
+        id: "custom:claude-sonnet-5-thinking-32000",
+        displayName: "Claude Sonnet 5 (High)",
       },
       {
         id: "custom:gpt-5.4(xhigh)",
@@ -106,8 +106,8 @@ describe("discoverDroidCliModelDescriptors", () => {
       initResult: {
         availableModels: [
           {
-            id: "claude-sonnet-4-6",
-            displayName: "Claude Sonnet 4.6",
+            id: "claude-sonnet-5",
+            displayName: "Claude Sonnet 5",
           },
           {
             id: "custom:gpt-5.4(xhigh)",
@@ -126,13 +126,37 @@ describe("discoverDroidCliModelDescriptors", () => {
     }));
     expect(close).toHaveBeenCalled();
     expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
-      "droid/claude-sonnet-4-6",
+      "droid/claude-sonnet-5",
       "droid/custom:gpt-5.4(xhigh)",
     ]);
     expect(descriptors[1]).toMatchObject({
       displayName: "GPT-5.4 (XHigh)",
       customProxy: true,
     });
+  });
+
+  it("normalizes removed Droid factory model IDs before surfacing them", async () => {
+    mockCreateSession.mockResolvedValueOnce({
+      initResult: {
+        availableModels: [
+          { id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" },
+          { id: "claude-opus-4-7", displayName: "Claude Opus 4.7" },
+          { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+        ],
+      },
+      close: vi.fn(async () => {}),
+    });
+
+    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "droid/claude-opus-4-8",
+      "droid/claude-sonnet-5",
+    ]);
+    expect(descriptors.map((descriptor) => descriptor.displayName)).toEqual([
+      "Opus 4.8 1M",
+      "Sonnet 5 (1.2x)",
+    ]);
   });
 
   it("preserves Droid SDK reasoning and media metadata without exposing tier as a toggle", async () => {
@@ -173,8 +197,8 @@ describe("discoverDroidCliModelDescriptors", () => {
       JSON.stringify({
         custom_models: [
           {
-            model: "claude-sonnet-4-6-thinking-32000",
-            model_display_name: "Claude Sonnet 4.6 (High)",
+            model: "claude-sonnet-5-thinking-32000",
+            model_display_name: "Claude Sonnet 5 (High)",
           },
         ],
       }),
@@ -184,8 +208,8 @@ describe("discoverDroidCliModelDescriptors", () => {
       initResult: {
         availableModels: [
           {
-            id: "claude-sonnet-4-6",
-            displayName: "Claude Sonnet 4.6",
+            id: "claude-sonnet-5",
+            displayName: "Claude Sonnet 5",
           },
         ],
       },
@@ -195,11 +219,11 @@ describe("discoverDroidCliModelDescriptors", () => {
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
     expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
-      "droid/claude-sonnet-4-6",
-      "droid/custom:claude-sonnet-4-6-thinking-32000",
+      "droid/claude-sonnet-5",
+      "droid/custom:claude-sonnet-5-thinking-32000",
     ]);
     expect(descriptors[1]).toMatchObject({
-      displayName: "Claude Sonnet 4.6 (High)",
+      displayName: "Claude Sonnet 5 (High)",
       customProxy: true,
     });
   });
@@ -208,9 +232,9 @@ describe("discoverDroidCliModelDescriptors", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-10T00:00:00.000Z"));
     try {
-      mockCreateSession.mockResolvedValueOnce(sessionWithModels(["claude-sonnet-4-6"]));
+      mockCreateSession.mockResolvedValueOnce(sessionWithModels(["claude-sonnet-5"]));
       const seeded = await discoverDroidCliModelDescriptors("/mock/bin/droid");
-      expect(seeded.map((d) => d.id)).toEqual(["droid/claude-sonnet-4-6"]);
+      expect(seeded.map((d) => d.id)).toEqual(["droid/claude-sonnet-5"]);
       expect(mockCreateSession).toHaveBeenCalledTimes(1);
 
       // Generic readiness invalidation ages the cache without dropping rows.
@@ -222,14 +246,14 @@ describe("discoverDroidCliModelDescriptors", () => {
       // A passive read past the 120s window still returns the cached rows
       // synchronously and kicks off exactly one background SDK session.
       const stale = await discoverDroidCliModelDescriptors("/mock/bin/droid", { mode: "cached-or-fallback" });
-      expect(stale.map((d) => d.id)).toEqual(["droid/claude-sonnet-4-6"]);
+      expect(stale.map((d) => d.id)).toEqual(["droid/claude-sonnet-5"]);
       expect(mockCreateSession).toHaveBeenCalledTimes(2);
 
       // Backoff: a second passive read inside the same freshness window must
       // NOT spawn another session, even though the cache is still aged and the
       // warm just failed — without backoff a broken droid gets a session per call.
       const again = await discoverDroidCliModelDescriptors("/mock/bin/droid", { mode: "cached-or-fallback" });
-      expect(again.map((d) => d.id)).toEqual(["droid/claude-sonnet-4-6"]);
+      expect(again.map((d) => d.id)).toEqual(["droid/claude-sonnet-5"]);
       expect(mockCreateSession).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

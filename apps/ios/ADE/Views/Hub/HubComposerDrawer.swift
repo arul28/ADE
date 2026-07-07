@@ -60,7 +60,7 @@ struct HubInlineComposer: View {
   // the provider/model onChange handlers don't reset runtimeMode on first
   // layout — same gotcha the in-project new-chat screen guards against).
   @State private var provider: String = "claude"
-  @State private var modelId: String = "claude-sonnet-4-6"
+  @State private var modelId: String = "claude-sonnet-5"
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
@@ -95,7 +95,7 @@ struct HubInlineComposer: View {
     self._expanded = expanded
     self.onCreated = onCreated
     var restoredProvider = "claude"
-    var restoredModelId = "claude-sonnet-4-6"
+    var restoredModelId = "claude-sonnet-5"
     if let saved = WorkComposerPreferences.load() {
       restoredProvider = saved.provider
       restoredModelId = saved.modelId
@@ -1056,8 +1056,8 @@ private func hubDefaultChatModelId(provider: String) -> String {
   switch hubNormalizedChatProvider(provider) {
   case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.5"
   case "cursor": return "auto"
-  case "opencode": return "opencode/anthropic/claude-sonnet-4-6"
-  default: return "claude-sonnet-4-6"
+  case "opencode": return "opencode/anthropic/claude-sonnet-5"
+  default: return "claude-sonnet-5"
   }
 }
 
@@ -1097,9 +1097,9 @@ private func hubPrettyModelName(_ model: String) -> String {
   }
   let lower = trimmed.lowercased()
   switch lower {
-  case "opus": return "Claude Opus 4.7"
+  case "opus": return "Claude Opus 4.8 1M"
   case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
-  case "sonnet": return "Claude Sonnet 4.6"
+  case "sonnet": return "Claude Sonnet 5"
   case "haiku": return "Claude Haiku 4.5"
   default: break
   }

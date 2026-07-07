@@ -24,8 +24,8 @@ import type {
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
   ModelPicker: ({ value, onChange }: { value: string; onChange: (id: string) => void }) => (
     <div data-testid="mock-model-picker" data-current-model={value}>
-      <button data-testid="mock-pick-claude-sonnet" onClick={() => onChange("claude-sonnet-4-6")}>
-        Pick claude-sonnet-4-6
+      <button data-testid="mock-pick-claude-sonnet" onClick={() => onChange("claude-sonnet-5")}>
+        Pick claude-sonnet-5
       </button>
       <button data-testid="mock-pick-claude-opus" onClick={() => onChange("opus[1m]")}>
         Pick opus[1m]
@@ -100,7 +100,7 @@ describe("ChatModelSelectionPendingCard", () => {
     fireEvent.click(screen.getByTestId("mock-pick-claude-sonnet"));
     fireEvent.click(screen.getByTestId("mock-pick-xhigh"));
     expect(screen.getByTestId("mock-model-picker").getAttribute("data-current-model")).toBe(
-      "claude-sonnet-4-6",
+      "claude-sonnet-5",
     );
     expect(screen.getByTestId("mock-reasoning-picker").getAttribute("data-current-reasoning")).toBe(
       "xhigh",
@@ -143,7 +143,7 @@ describe("ChatModelSelectionPendingCard", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
     expect(onConfirm.mock.calls[0]![0]).toMatchObject({
       provider: "claude",
-      modelId: "claude-sonnet-4-6",
+      modelId: "claude-sonnet-5",
       reasoningEffort: "xhigh",
     });
   });
@@ -244,6 +244,6 @@ describe("ChatModelSelectionPendingCard", () => {
     fireEvent.click(screen.getByTestId("mock-pick-claude-sonnet"));
     fireEvent.click(confirmBtn);
     expect(onConfirm).toHaveBeenCalledTimes(1);
-    expect(onConfirm.mock.calls[0]![0].modelId).toBe("claude-sonnet-4-6");
+    expect(onConfirm.mock.calls[0]![0].modelId).toBe("claude-sonnet-5");
   });
 });

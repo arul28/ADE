@@ -16,12 +16,12 @@ import { TemplateCard, type AutomationTemplate } from "./components/TemplateCard
 type TemplateDefinition = AutomationTemplate & { draft: Omit<AutomationRuleDraft, "id"> };
 
 const DEFAULT_MODEL = {
-  modelId: "anthropic/claude-sonnet-4-6" as const,
+  modelId: "anthropic/claude-sonnet-5" as const,
   thinkingLevel: "medium" as const,
 };
 
 const DEFAULT_MODEL_HIGH = {
-  modelId: "anthropic/claude-sonnet-4-6" as const,
+  modelId: "anthropic/claude-sonnet-5" as const,
   thinkingLevel: "high" as const,
 };
 

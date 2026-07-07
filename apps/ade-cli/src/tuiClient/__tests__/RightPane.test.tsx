@@ -109,7 +109,7 @@ describe("RightPane chat info", () => {
       <RightPane
         content={{
           kind: "chat-info",
-          info: chatInfo({ provider: "claude", modelLabel: "claude-opus-4-7", goal: null }),
+          info: chatInfo({ provider: "claude", modelLabel: "claude-opus-4-8", goal: null }),
         }}
         focused
         width={80}
@@ -815,11 +815,11 @@ describe("RightPane setup panes", () => {
         }}
         modelPickerInputs={{
           models: [
-            { id: "anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", isDefault: true },
+            { id: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", isDefault: true },
           ],
           favorites: [],
           recents: [],
-          activeModelId: "anthropic/claude-sonnet-4-6",
+          activeModelId: "anthropic/claude-sonnet-5",
           activeReasoningEffort: "high",
         }}
         focused
@@ -829,7 +829,7 @@ describe("RightPane setup panes", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("MODEL");
-    expect(frame).toContain("Claude Sonnet 4.6");
+    expect(frame).toContain("Claude Sonnet 5");
     // Reasoning is shown in the settings footer, not as an inline per-model
     // "think high" chip (that detail was removed from model rows).
     expect(frame).toContain("reasoning");

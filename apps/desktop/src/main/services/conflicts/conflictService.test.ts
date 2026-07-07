@@ -687,7 +687,7 @@ describe("conflictService conflict context integrity", () => {
       sourceLaneIds: ["lane-1"],
       targetLaneId: "lane-target",
       scenario: "single-merge",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
       reasoningEffort: "high",
       permissionMode: "full_edit",
       originSurface: "queue",
@@ -699,7 +699,7 @@ describe("conflictService conflict context integrity", () => {
     const preparedSummary = service.listExternalResolverRuns({ laneId: "lane-1" }).find((entry) => entry.runId === prepared.runId);
     expect(preparedSummary?.originSurface).toBe("queue");
     expect(preparedSummary?.originRunId).toBe("run-1");
-    expect(preparedSummary?.model).toBe("anthropic/claude-sonnet-4-6");
+    expect(preparedSummary?.model).toBe("anthropic/claude-sonnet-5");
     expect(preparedSummary?.reasoningEffort).toBe("high");
     expect(preparedSummary?.permissionMode).toBe("full_edit");
     expect(preparedSummary?.resolverContextKey).toBeTruthy();

@@ -244,6 +244,17 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   return rows;
 }
 
+function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
+  const id = row.id.trim().toLowerCase();
+  if (id === "claude-sonnet-4-6") {
+    return { ...row, id: "claude-sonnet-5", displayName: "Sonnet 5 (1.2x)" };
+  }
+  if (id === "claude-opus-4-7") {
+    return { ...row, id: "claude-opus-4-8", displayName: "Opus 4.8 1M" };
+  }
+  return row;
+}
+
 async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
   const now = Date.now();
   const controller = new AbortController();
@@ -365,7 +376,8 @@ export async function discoverDroidCliModelDescriptors(
 
   const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];
-  for (const row of [...baseRows, ...customRows]) {
+  for (const rawRow of [...baseRows, ...customRows]) {
+    const row = normalizeDroidDiscoveredModel(rawRow);
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed || seen.has(trimmed)) continue;
     seen.add(trimmed);

@@ -195,7 +195,7 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex",
     "opencode/openai/gpt-5.4",
     "fable", "claude-fable-5", "anthropic/claude-fable-5", "opencode/anthropic/claude-fable-5",
-    "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7", "opencode/anthropic/claude-opus-4-7",
+    "opus", "claude-opus-4-8", "anthropic/claude-opus-4-8", "opencode/anthropic/claude-opus-4-8",
     "opus-1m", "opus[1m]", "claude-opus-4-7-1m", "anthropic/claude-opus-4-7-1m",
     "opus-4.8", "opus-4-8", "claude-opus-4-8", "anthropic/claude-opus-4-8",
     "opencode/anthropic/claude-opus-4-8",
@@ -556,7 +556,7 @@ struct WorkComposerChipStrip: View {
   }
 
   private func prettyModelName(_ model: String) -> String {
-    // Match the desktop composer's model label: "Claude Sonnet 4.6" /
+    // Match the desktop composer's model label: "Claude Sonnet 5" /
     // "GPT-5.4" instead of a bare short id. Host-reported
     // `chatSummary.model` is usually just "sonnet" / "opus" / "haiku" for
     // Claude and the full long form for Codex, so we special-case the
@@ -569,9 +569,9 @@ struct WorkComposerChipStrip: View {
     let lower = trimmed.lowercased()
 
     switch lower {
-    case "opus": return "Claude Opus 4.7"
+    case "opus": return "Claude Opus 4.8 1M"
     case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
-    case "sonnet": return "Claude Sonnet 4.6"
+    case "sonnet": return "Claude Sonnet 5"
     case "haiku": return "Claude Haiku 4.5"
     default: break
     }

@@ -525,7 +525,7 @@ describe("buildTrackedCliStartupCommand", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "droid",
         permissionMode: "edit",
-        model: "droid/claude-sonnet-4-6",
+        model: "droid/claude-sonnet-5",
         reasoningEffort: "high",
         initialPrompt: "Run the Droid path.",
       });
@@ -534,7 +534,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("droid --settings \"$ADE_DROID_SETTINGS\"");
       expect(launch.startupCommand).toContain("Run the Droid path.");
       expect(launch.startupCommand).toContain("ADE session guidance");
-      expect(launch.startupCommand).toContain("\\\"model\\\":\\\"claude-sonnet-4-6\\\"");
+      expect(launch.startupCommand).toContain("\\\"model\\\":\\\"claude-sonnet-5\\\"");
       expect(launch.startupCommand).toContain("\\\"reasoningEffort\\\":\\\"high\\\"");
       expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
@@ -545,7 +545,7 @@ describe("buildTrackedCliStartupCommand", () => {
         const launch = buildTrackedCliLaunchCommand({
           provider: "droid",
           permissionMode: "edit",
-          model: "droid/claude-sonnet-4-6",
+          model: "droid/claude-sonnet-5",
           reasoningEffort: "high",
           initialPrompt: "Run the Droid path.",
         });
@@ -554,7 +554,7 @@ describe("buildTrackedCliStartupCommand", () => {
         expect(launch.startupCommand).toContain("$env:ADE_DROID_SETTINGS");
         expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS");
         expect(launch.startupCommand).toContain("Run the Droid path.");
-        expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-4-6\"");
+        expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-5\"");
       });
     });
 

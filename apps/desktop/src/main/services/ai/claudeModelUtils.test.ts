@@ -8,10 +8,15 @@ describe("resolveClaudeCliModel", () => {
     expect(resolveClaudeCliModel("claude-opus-4-8[1m]")).toBe("claude-opus-4-8");
   });
 
-  it("keeps Opus 4.7 and Opus 4.7 1M aliases on their existing CLI aliases", () => {
-    expect(resolveClaudeCliModel("claude-opus-4-7")).toBe("opus");
-    expect(resolveClaudeCliModel("claude-opus-4-7-1m")).toBe("opus[1m]");
-    expect(resolveClaudeCliModel("claude-opus-4-7[1m]")).toBe("opus[1m]");
-    expect(resolveClaudeCliModel("opus-11m")).toBe("opus");
+  it("maps removed basic Opus and Sonnet aliases to supported Claude CLI model ids", () => {
+    expect(resolveClaudeCliModel("claude-opus-4-7")).toBe("claude-opus-4-8");
+    expect(resolveClaudeCliModel("claude-sonnet-4-6")).toBe("claude-sonnet-5");
+    expect(resolveClaudeCliModel("sonnet")).toBe("claude-sonnet-5");
+  });
+
+  it("keeps Opus 4.7 1M aliases on their explicit 1M CLI id", () => {
+    expect(resolveClaudeCliModel("claude-opus-4-7-1m")).toBe("claude-opus-4-7[1m]");
+    expect(resolveClaudeCliModel("claude-opus-4-7[1m]")).toBe("claude-opus-4-7[1m]");
+    expect(resolveClaudeCliModel("opus-11m")).toBe("claude-opus-4-8");
   });
 });

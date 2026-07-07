@@ -290,7 +290,7 @@ struct WorkChatMessageBubble: View {
   /// Active session model id, used to resolve the per-model accent for the
   /// model badge chip and card border tint.
   @Environment(\.workChatModelId) private var sessionModelId
-  /// Pretty model label ("Claude Sonnet 4.6"), injected by the session view
+  /// Pretty model label ("Claude Sonnet 5"), injected by the session view
   /// so each bubble doesn't have to recompute the same string.
   @Environment(\.workChatModelLabel) private var sessionModelLabel
 

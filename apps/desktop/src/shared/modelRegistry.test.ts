@@ -236,11 +236,12 @@ describe("modelRegistry", () => {
   });
 
   describe("Claude descriptors", () => {
-    it("adds Fable 5 above Opus 4.8 in the Claude model registry", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 4).map((model) => model.id)).toEqual([
+    it("orders the Claude model registry for picker display", () => {
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
         "anthropic/claude-fable-5",
         "anthropic/claude-opus-4-8",
-        "anthropic/claude-opus-4-7",
+        "anthropic/claude-sonnet-5",
+        "anthropic/claude-haiku-4-5",
         "anthropic/claude-opus-4-7-1m",
       ]);
       const fable = getModelById("anthropic/claude-fable-5");
@@ -277,13 +278,21 @@ describe("modelRegistry", () => {
       expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5");
     });
 
-    it("keeps Opus 4.7 and Opus 4.7 1M as distinct selectable models", () => {
-      expect(getModelById("anthropic/claude-opus-4-7")).toMatchObject({
-        displayName: "Claude Opus 4.7",
-        shortId: "opus",
-        providerModelId: "claude-opus-4-7",
-        contextWindow: 200_000,
+    it("uses the exact Claude Sonnet 5 runtime model id", () => {
+      const sonnet = getModelById("anthropic/claude-sonnet-5");
+      expect(sonnet).toBeTruthy();
+      expect(sonnet).toMatchObject({
+        displayName: "Claude Sonnet 5",
+        shortId: "sonnet",
+        providerModelId: "claude-sonnet-5",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
       });
+      expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5");
+    });
+
+    it("removes Opus 4.7 basic while keeping Opus 4.7 1M selectable", () => {
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-opus-4-7")).toBe(false);
       expect(getModelById("anthropic/claude-opus-4-7-1m")).toMatchObject({
         displayName: "Claude Opus 4.7 1M",
         shortId: "opus-1m",
@@ -291,21 +300,20 @@ describe("modelRegistry", () => {
         contextWindow: 1_000_000,
         serviceTiers: ["fast"],
       });
-      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
-      expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-7");
+      expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("anthropic/claude-opus-4-7-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
     });
 
-    it("keeps claude-opus-4-6 ids as compatibility aliases to their existing 4.7 targets", () => {
-      expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
-      expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
-      expect(getModelById("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
-      expect(getModelById("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+    it("maps removed Sonnet aliases forward without listing Sonnet 4.6 as a row", () => {
+      expect(MODEL_REGISTRY.some((model) => model.id === "anthropic/claude-sonnet-4-6")).toBe(false);
+      expect(resolveModelAlias("anthropic/claude-sonnet-4-6")?.id).toBe("anthropic/claude-sonnet-5");
+      expect(getModelById("anthropic/claude-sonnet-4-6")?.id).toBe("anthropic/claude-sonnet-5");
     });
 
     it("does not advertise Claude Fast mode on non-Opus models", () => {
-      expect(getModelById("anthropic/claude-sonnet-4-6")?.serviceTiers).toBeUndefined();
+      expect(getModelById("anthropic/claude-sonnet-5")?.serviceTiers).toBeUndefined();
       expect(getModelById("anthropic/claude-haiku-4-5")?.serviceTiers).toBeUndefined();
     });
   });
@@ -347,21 +355,21 @@ describe("modelRegistry", () => {
   });
 
   it("formats Droid custom thinking models with the expected display label", () => {
-    const descriptor = getModelById("droid/custom:claude-sonnet-4-6-thinking-32000");
+    const descriptor = getModelById("droid/custom:claude-sonnet-5-thinking-32000");
     expect(descriptor).toBeTruthy();
-    expect(descriptor?.displayName).toBe("Claude Sonnet 4.6 (High)");
+    expect(descriptor?.displayName).toBe("Claude Sonnet 5 (High)");
   });
 
   it("keeps Droid custom models in their own picker group", () => {
-    expect(droidCliLineGroupFromModelId("custom:claude-sonnet-4-6-thinking-32000")).toBe("custom");
+    expect(droidCliLineGroupFromModelId("custom:claude-sonnet-5-thinking-32000")).toBe("custom");
     expect(droidCliLineGroupFromModelId("custom:gpt-5.4(xhigh)")).toBe("custom");
     expect(droidCliLineGroupLabel("custom")).toBe("Custom models");
   });
 
   it("uses compact Droid factory labels that match the CLI picker", () => {
-    const descriptor = getModelById("droid/claude-sonnet-4-6");
+    const descriptor = getModelById("droid/claude-sonnet-5");
     expect(descriptor).toBeTruthy();
-    expect(descriptor?.displayName).toBe("Sonnet 4.6 (1.2x)");
+    expect(descriptor?.displayName).toBe("Sonnet 5 (1.2x)");
   });
 
   describe("ensureOpenCodeBaseURL", () => {

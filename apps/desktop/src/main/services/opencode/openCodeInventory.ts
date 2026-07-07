@@ -154,6 +154,38 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
   };
 }
 
+function normalizeOpenCodeProviderModel(
+  providerId: string,
+  modelId: string,
+  displayName?: string,
+): { modelId: string; displayName?: string; contextWindow?: number; maxOutputTokens?: number } {
+  if (providerId.trim().toLowerCase() !== "anthropic") {
+    return { modelId, ...(displayName ? { displayName } : {}) };
+  }
+  const normalized = modelId.trim().toLowerCase();
+  if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
+    return {
+      modelId: "claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    };
+  }
+  if (
+    normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "opus"
+  ) {
+    return {
+      modelId: "claude-opus-4-8",
+      displayName: "Claude Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    };
+  }
+  return { modelId, ...(displayName ? { displayName } : {}) };
+}
+
 function openCodeSdkErrorMessage(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
   const record = error as Record<string, unknown>;
@@ -243,6 +275,7 @@ export async function probeOpenCodeProviderInventory(args: {
         }
         const connected = new Set(data.connected);
         const descriptors: ModelDescriptor[] = [];
+        const descriptorIds = new Set<string>();
         const availableProviderModelCounts = new Map<string, number>();
 
         // Build a set of loaded local model IDs so we can filter out unloaded models
@@ -277,7 +310,8 @@ export async function probeOpenCodeProviderInventory(args: {
             // For local providers, only include models that are actively loaded.
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
             const variants = classifyOpenCodeVariants(modelRecord);
-            const displayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
+            const rawDisplayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
+            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, rawDisplayName);
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
               ? modelRecord.limit as { context?: number; output?: number }
               : null;
@@ -287,18 +321,23 @@ export async function probeOpenCodeProviderInventory(args: {
             const out = typeof limit?.output === "number"
               ? Number(limit.output)
               : undefined;
-            descriptors.push(
-              createDynamicOpenCodeModelDescriptor("", {
-                openCodeProviderId: provider.id,
-                openCodeModelId: mid,
-                ...(displayName ? { displayName } : {}),
-                ...(Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
-                ...(Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
-                ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
-                ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
-                capabilities: readOpenCodeModelCapabilities(modelRecord),
-              }),
-            );
+            const descriptor = createDynamicOpenCodeModelDescriptor("", {
+              openCodeProviderId: provider.id,
+              openCodeModelId: normalizedModel.modelId,
+              ...(normalizedModel.displayName ? { displayName: normalizedModel.displayName } : {}),
+              ...(normalizedModel.contextWindow
+                ? { contextWindow: normalizedModel.contextWindow }
+                : Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
+              ...(normalizedModel.maxOutputTokens
+                ? { maxOutputTokens: normalizedModel.maxOutputTokens }
+                : Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
+              ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
+              ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
+              capabilities: readOpenCodeModelCapabilities(modelRecord),
+            });
+            if (descriptorIds.has(descriptor.id)) continue;
+            descriptorIds.add(descriptor.id);
+            descriptors.push(descriptor);
             if (connected.has(provider.id)) {
               availableProviderModelCounts.set(
                 provider.id,

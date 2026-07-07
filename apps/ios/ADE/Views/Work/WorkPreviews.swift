@@ -43,8 +43,8 @@ private enum WorkPreviewData {
     sessionId: "preview-chat-session",
     laneId: lane.id,
     provider: "claude",
-    model: "claude-sonnet-4-6",
-    modelId: "claude-sonnet-4-6",
+    model: "claude-sonnet-5",
+    modelId: "claude-sonnet-5",
     sessionProfile: nil,
     title: "Fix iOS Work tab lag",
     goal: "Make the Work tab responsive on iPhone",
@@ -276,8 +276,8 @@ private enum WorkPreviewData {
           costUsd: 0.0842
         ),
         turnId: "turn-1",
-        model: "claude-sonnet-4-6",
-        modelId: "anthropic/claude-sonnet-4-6"
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5"
       )
     ),
   ]
@@ -331,8 +331,8 @@ private enum WorkPreviewData {
       sessionId: sessionId,
       laneId: lane.id,
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "claude-sonnet-5",
       sessionProfile: nil,
       title: title,
       goal: goal,

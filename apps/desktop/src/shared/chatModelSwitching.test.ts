@@ -6,15 +6,15 @@ describe("chatModelSwitching", () => {
     expect(
       filterChatModelIdsForSession({
         availableModelIds: [
-          "anthropic/claude-sonnet-4-6",
+          "anthropic/claude-sonnet-5",
           "openai/gpt-5.4",
           "openai/gpt-5.3-codex",
         ],
-        activeSessionModelId: "anthropic/claude-sonnet-4-6",
+        activeSessionModelId: "anthropic/claude-sonnet-5",
         hasConversation: true,
       }),
     ).toEqual([
-      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-5",
       "openai/gpt-5.4",
       "openai/gpt-5.3-codex",
     ]);
@@ -23,13 +23,13 @@ describe("chatModelSwitching", () => {
   it("keeps the active session model visible when it fell out of the catalog", () => {
     expect(
       filterChatModelIdsForSession({
-        availableModelIds: ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4"],
+        availableModelIds: ["anthropic/claude-sonnet-5", "openai/gpt-5.4"],
         activeSessionModelId: "openai/gpt-5.2",
         hasConversation: true,
       }),
     ).toEqual([
       "openai/gpt-5.2",
-      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-5",
       "openai/gpt-5.4",
     ]);
   });
@@ -37,11 +37,11 @@ describe("chatModelSwitching", () => {
   it("can leave the active session model out when a caller supplies a strict allowlist", () => {
     expect(
       filterChatModelIdsForSession({
-        availableModelIds: ["anthropic/claude-sonnet-4-6"],
+        availableModelIds: ["anthropic/claude-sonnet-5"],
         activeSessionModelId: "openai/gpt-5.4",
         hasConversation: true,
         includeActiveSessionModel: false,
       }),
-    ).toEqual(["anthropic/claude-sonnet-4-6"]);
+    ).toEqual(["anthropic/claude-sonnet-5"]);
   });
 });

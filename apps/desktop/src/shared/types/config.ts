@@ -1346,7 +1346,7 @@ export type AiConfig = {
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-4-6" } */
+  /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-5" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Per-feature reasoning effort overrides */
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;

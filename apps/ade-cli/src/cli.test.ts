@@ -4448,7 +4448,7 @@ describe("ADE CLI", () => {
       id: "legacy-rule",
       actions: [
         { type: "create-lane", laneNameTemplate: "{{trigger.issue.title}}" },
-        { type: "agent-session", modelId: "claude-opus-4-7" },
+        { type: "agent-session", modelId: "claude-opus-4-8" },
       ],
     });
     const plan = buildCliPlan(["automations", "create", "--text", draft]);

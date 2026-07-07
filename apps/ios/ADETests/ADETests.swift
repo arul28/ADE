@@ -7249,21 +7249,21 @@ final class ADETests: XCTestCase {
     // one the drawer opened on (the hub project-switch regression). A CLI-capable
     // model honors a stored CLI choice.
     XCTAssertTrue(
-      workModelAllowedForAvailabilityMode(modelId: "claude-sonnet-4-6", provider: "claude", mode: .cli),
-      "precondition: claude-sonnet-4-6 must be CLI-capable"
+      workModelAllowedForAvailabilityMode(modelId: "claude-sonnet-5", provider: "claude", mode: .cli),
+      "precondition: claude-sonnet-5 must be CLI-capable"
     )
     WorkNewSessionModePreferences.save(.chat, projectId: "proj-a")
     WorkNewSessionModePreferences.save(.cli, projectId: "proj-b")
     XCTAssertEqual(
       WorkNewSessionModePreferences.resolvedMode(
         stored: WorkNewSessionModePreferences.load(projectId: "proj-a"),
-        modelId: "claude-sonnet-4-6", provider: "claude"),
+        modelId: "claude-sonnet-5", provider: "claude"),
       .chat
     )
     XCTAssertEqual(
       WorkNewSessionModePreferences.resolvedMode(
         stored: WorkNewSessionModePreferences.load(projectId: "proj-b"),
-        modelId: "claude-sonnet-4-6", provider: "claude"),
+        modelId: "claude-sonnet-5", provider: "claude"),
       .cli
     )
 
@@ -7271,7 +7271,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       WorkNewSessionModePreferences.resolvedMode(
         stored: WorkNewSessionModePreferences.load(projectId: "proj-unset"),
-        modelId: "claude-sonnet-4-6", provider: "claude"),
+        modelId: "claude-sonnet-5", provider: "claude"),
       .chat
     )
 
@@ -9824,7 +9824,7 @@ final class ADETests: XCTestCase {
       "sessionId": "chat-legacy",
       "laneId": "lane-1",
       "provider": "claude",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5",
       "status": "active",
       "startedAt": "2026-03-25T00:00:00.000Z",
       "lastActivityAt": "2026-03-25T00:00:01.000Z",
@@ -9933,8 +9933,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(info.cursorAvailability, CursorModelAvailability(cli: true, sdk: false))
 
     let plainData = try JSONSerialization.data(withJSONObject: [
-      "id": "claude-sonnet-4-6",
-      "displayName": "Sonnet 4.6",
+      "id": "claude-sonnet-5",
+      "displayName": "Sonnet 5",
       "isDefault": false,
     ])
     let plain = try JSONDecoder().decode(AgentChatModelInfo.self, from: plainData)
@@ -11123,19 +11123,19 @@ final class ADETests: XCTestCase {
 
   func testWorkModelCatalogInjectsMissingModelIntoMatchingProviderGroup() {
     XCTAssertEqual(
-      workModelCatalogGroupKey(for: "opencode/anthropic/claude-sonnet-4-6", currentProvider: "anthropic"),
+      workModelCatalogGroupKey(for: "opencode/anthropic/claude-sonnet-5", currentProvider: "anthropic"),
       "opencode"
     )
 
     let groups = workModelCatalogGroups(
-      currentModelId: "opencode/anthropic/claude-sonnet-4-6",
+      currentModelId: "opencode/anthropic/claude-sonnet-5",
       currentProvider: "anthropic"
     )
 
     let opencodeGroup = groups.first(where: { $0.key == "opencode" })
     let anthropicProvider = opencodeGroup?.providers.first(where: { $0.key == "anthropic" })
     XCTAssertEqual(
-      anthropicProvider?.models.filter { $0.id == "opencode/anthropic/claude-sonnet-4-6" }.count,
+      anthropicProvider?.models.filter { $0.id == "opencode/anthropic/claude-sonnet-5" }.count,
       1
     )
   }
@@ -11172,10 +11172,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "fable"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-4-6"), ["low", "medium", "high", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.2"), ["low", "medium", "high", "xhigh"])
@@ -11216,8 +11217,8 @@ final class ADETests: XCTestCase {
         ],
         "cursor": [
           AgentChatModelInfo(
-            id: "claude-4.6-sonnet",
-            displayName: "Sonnet 4.6",
+            id: "claude-sonnet-5",
+            displayName: "Sonnet 5",
             description: nil,
             isDefault: false,
             reasoningEfforts: nil,
@@ -11314,8 +11315,8 @@ final class ADETests: XCTestCase {
             displayName: "Anthropic",
             models: [
               WorkModelOption(
-                id: "claude-sonnet-4-6",
-                displayName: "Claude Sonnet 4.6",
+                id: "claude-sonnet-5",
+                displayName: "Claude Sonnet 5",
                 tier: .balanced,
                 tagline: "Claude",
                 provider: "claude"
@@ -11348,15 +11349,15 @@ final class ADETests: XCTestCase {
         .first?
         .models
         .map(\.id),
-      ["claude-sonnet-4-6"]
+      ["claude-sonnet-5"]
     )
   }
 
   func testWorkResolveCliProviderMapsModelFamiliesLikeDesktop() {
-    XCTAssertEqual(workResolveCliProvider(for: "claude-sonnet-4-6", provider: "claude"), "claude")
+    XCTAssertEqual(workResolveCliProvider(for: "claude-sonnet-5", provider: "claude"), "claude")
     XCTAssertEqual(workResolveCliProvider(for: "gpt-5.5", provider: "codex"), "codex")
     XCTAssertEqual(workResolveCliProvider(for: "auto", provider: "cursor"), "cursor")
-    XCTAssertEqual(workResolveCliProvider(for: "opencode/anthropic/claude-sonnet-4-6", provider: "opencode"), "opencode")
+    XCTAssertEqual(workResolveCliProvider(for: "opencode/anthropic/claude-sonnet-5", provider: "opencode"), "opencode")
   }
 
   func testWorkModelCatalogTreatsCodexRuntimeAndRegistryIdsAsSameModel() {
@@ -11798,7 +11799,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:03.000Z",
         sequence: 3,
-        event: .done(status: "completed", summary: "Completed\nclaude-sonnet-4-6", usage: nil, turnId: "turn-1", model: "claude-sonnet-4-6", modelId: "anthropic/claude-sonnet-4-6")
+        event: .done(status: "completed", summary: "Completed\nclaude-sonnet-5", usage: nil, turnId: "turn-1", model: "claude-sonnet-5", modelId: "anthropic/claude-sonnet-5")
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -11834,7 +11835,7 @@ final class ADETests: XCTestCase {
       return message
     }
     XCTAssertEqual(assistantMessages.map(\.turnProvider), ["claude", "codex"])
-    XCTAssertEqual(assistantMessages.map(\.turnModelId), ["anthropic/claude-sonnet-4-6", "openai/gpt-5.4-mini"])
+    XCTAssertEqual(assistantMessages.map(\.turnModelId), ["anthropic/claude-sonnet-5", "openai/gpt-5.4-mini"])
 
     let separated = injectWorkTurnSeparators(
       into: timeline,
@@ -11846,7 +11847,7 @@ final class ADETests: XCTestCase {
       return separator
     }
 
-    XCTAssertEqual(separators.map(\.modelLabel), ["Claude Sonnet 4.6", "GPT 5.4 Mini"])
+    XCTAssertEqual(separators.map(\.modelLabel), ["Claude Sonnet 5", "GPT 5.4 Mini"])
     XCTAssertEqual(separators.map(\.provider), ["claude", "codex"])
 
     let endMarkers = separated.compactMap { entry -> WorkTurnEndMarker? in
@@ -11856,7 +11857,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(endMarkers.map(\.turnId), ["turn-1", "turn-2"])
     XCTAssertEqual(endMarkers.map(\.workedDurationLabel), ["2s", "2s"])
     XCTAssertEqual(endMarkers.map(\.status), ["completed", "completed"])
-    XCTAssertEqual(endMarkers.map(\.modelLabel), ["Claude Sonnet 4.6", "GPT 5.4 Mini"])
+    XCTAssertEqual(endMarkers.map(\.modelLabel), ["Claude Sonnet 5", "GPT 5.4 Mini"])
     XCTAssertEqual(endMarkers.map(\.provider), ["claude", "codex"])
 
     let turnOrder = separated.compactMap { entry -> String? in
@@ -14661,7 +14662,7 @@ final class ADETests: XCTestCase {
             "reasoningEffort": "high",
             "fastMode": true
           },
-          "availableModels": ["gpt-5.4", "claude-sonnet-4-6"]
+          "availableModels": ["gpt-5.4", "claude-sonnet-5"]
         }
       }
     }
@@ -14679,7 +14680,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(model.workDescription, "Build the orchestration roster.")
     XCTAssertEqual(model.filesHint, ["OrchestrationPanel.tsx", "TaskCard.tsx"])
     XCTAssertEqual(model.dependsOn, ["planning-rounds", "model-routing"])
-    XCTAssertEqual(model.availableModelIds, ["gpt-5.4", "claude-sonnet-4-6"])
+    XCTAssertEqual(model.availableModelIds, ["gpt-5.4", "claude-sonnet-5"])
     XCTAssertFalse(
       Mirror(reflecting: model).children.contains { $0.label == "suggested" },
       "Mobile model-selection gates should not carry a suggested route."
@@ -14782,7 +14783,7 @@ final class ADETests: XCTestCase {
       "sessionId": "sess-orch-1",
       "laneId": "lane-1",
       "provider": "claude",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5",
       "status": "running",
       "startedAt": "2026-05-25T00:00:00.000Z",
       "lastActivityAt": "2026-05-25T00:01:00.000Z",
@@ -14854,7 +14855,7 @@ final class ADETests: XCTestCase {
       "sessionId": "sess-full-orch",
       "laneId": "lane-2",
       "provider": "claude",
-      "model": "claude-sonnet-4-6",
+      "model": "claude-sonnet-5",
       "status": "running",
       "createdAt": "2026-05-25T00:00:00.000Z",
       "lastActivityAt": "2026-05-25T00:02:00.000Z",

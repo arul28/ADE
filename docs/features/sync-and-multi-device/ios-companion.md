@@ -1280,11 +1280,14 @@ reflected in the phone's UI on the next descriptor read.
   (`WorkModelCatalog.swift`, mirroring desktop's
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
-  together; `shell` remains valid runtime-side but the phone no longer
-  offers a plain-shell launch. `SyncStartCliSessionArgs` also
-  carries an optional `reasoningEffort` field that the runtime forwards
-  to `buildTrackedCliLaunchCommand`, so the phone can launch a Codex
-  / Claude CLI session at a non-default effort tier without going
+  together; the Claude picker order mirrors desktop (Fable 5, Opus
+  4.8 1M, Sonnet 5, Haiku 4.5, Opus 4.7 1M) and legacy Sonnet 4.6 /
+  basic Opus 4.7 selections normalize forward instead of appearing as
+  rows. `shell` remains valid runtime-side but the phone no longer
+  offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
+  an optional `reasoningEffort` field that the runtime forwards to
+  `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /
+  Claude CLI session at a non-default effort tier without going
   through the desktop.
 - **Codex CLI launches receive the initial prompt as argv, not PTY
   echo.** Other providers still receive `initialInput` as bytes typed

@@ -44,7 +44,7 @@ describe("describeModelSource", () => {
   });
 
   it("returns 'CLI subscription' for CLI-wrapped models", () => {
-    const descriptor = getModelById("anthropic/claude-sonnet-4-6");
+    const descriptor = getModelById("anthropic/claude-sonnet-5");
     expect(descriptor).toBeTruthy();
     expect(descriptor!.isCliWrapped).toBe(true);
     expect(describeModelSource(descriptor!)).toBe("CLI subscription");
@@ -393,7 +393,7 @@ describe("deriveConfiguredModelOptions", () => {
       detectedAuth: [{ type: "cli-subscription", cli: "claude", authenticated: true }],
     });
     const options = deriveConfiguredModelOptions(status);
-    const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-4-6");
+    const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-5");
     expect(sonnet).toBeTruthy();
     expect(sonnet!.description).toBe("anthropic (CLI subscription)");
   });
@@ -403,9 +403,9 @@ describe("deriveConfiguredModelOptions", () => {
       detectedAuth: [{ type: "cli-subscription", cli: "claude", authenticated: true }],
     });
     const options = deriveConfiguredModelOptions(status);
-    const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-4-6");
+    const sonnet = options.find((o) => o.id === "anthropic/claude-sonnet-5");
     expect(sonnet).toBeTruthy();
-    expect(sonnet!.label).toBe("Claude Sonnet 4.6");
+    expect(sonnet!.label).toBe("Claude Sonnet 5");
   });
 
   it("preserves dynamic local model ids as options", () => {
@@ -427,7 +427,7 @@ describe("deriveConfiguredModelOptions", () => {
 
 describe("includeSelectedModelOption", () => {
   const baseOptions = [
-    { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet 4.6", description: "anthropic (CLI subscription)" },
+    { id: "anthropic/claude-sonnet-5", label: "Claude Sonnet 5", description: "anthropic (CLI subscription)" },
   ];
 
   it("returns options unchanged when selectedModelId is null", () => {
@@ -451,7 +451,7 @@ describe("includeSelectedModelOption", () => {
   });
 
   it("returns options unchanged when selectedModelId already exists", () => {
-    const result = includeSelectedModelOption(baseOptions, "anthropic/claude-sonnet-4-6");
+    const result = includeSelectedModelOption(baseOptions, "anthropic/claude-sonnet-5");
     expect(result).toBe(baseOptions);
   });
 
@@ -476,8 +476,8 @@ describe("includeSelectedModelOption", () => {
   });
 
   it("works with an empty options array", () => {
-    const result = includeSelectedModelOption([], "anthropic/claude-sonnet-4-6");
+    const result = includeSelectedModelOption([], "anthropic/claude-sonnet-5");
     expect(result.length).toBe(1);
-    expect(result[0].id).toBe("anthropic/claude-sonnet-4-6");
+    expect(result[0].id).toBe("anthropic/claude-sonnet-5");
   });
 });

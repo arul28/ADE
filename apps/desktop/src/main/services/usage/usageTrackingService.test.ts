@@ -1605,7 +1605,7 @@ describe("scanDroidLogs", () => {
       fs.writeFileSync(
         sessionPath.replace(/\.jsonl$/, ".settings.json"),
         JSON.stringify({
-          model: "custom:[anthropic]-claude-sonnet-4-6-20260501",
+          model: "custom:[anthropic]-claude-sonnet-5-20260501",
           tokenUsage: {
             inputTokens: 101,
             outputTokens: 41,
@@ -1620,7 +1620,7 @@ describe("scanDroidLogs", () => {
 
       expect(entries).toHaveLength(2);
       expect(entries[0]).toMatchObject({
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         inputTokens: 50,
         outputTokens: 21,
         cachedTokens: 4,
@@ -1634,7 +1634,7 @@ describe("scanDroidLogs", () => {
         billableCachedTokens: 5,
         cacheWriteTokens: 3,
       });
-      expect(aggregateCosts(entries, "droid").tokenBreakdownByPreset?.all?.["claude-sonnet-4-6"]?.costUsd).toBeGreaterThan(0);
+      expect(aggregateCosts(entries, "droid").tokenBreakdownByPreset?.all?.["claude-sonnet-5"]?.costUsd).toBeGreaterThan(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

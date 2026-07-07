@@ -74,7 +74,7 @@ describe("scoreModelPickerSearch", () => {
       {
         family: "anthropic",
         providerDisplayName: "Claude",
-        name: "Claude Opus 4.7",
+        name: "Claude Opus 4.8 1M",
         isFavorite: true,
       },
       "opu",

@@ -153,6 +153,19 @@ describe("openCodeInventory", () => {
                 name: "Claude Sonnet 4.6",
                 tool_call: true,
                 reasoning: true,
+                limit: { context: 200000, output: 32000 },
+              },
+              "claude-sonnet-5": {
+                id: "claude-sonnet-5",
+                name: "Claude Sonnet 5",
+                tool_call: true,
+                reasoning: true,
+              },
+              "claude-opus-4-7": {
+                id: "claude-opus-4-7",
+                name: "Claude Opus 4.7",
+                tool_call: true,
+                reasoning: true,
               },
             },
           },
@@ -167,8 +180,15 @@ describe("openCodeInventory", () => {
       force: true,
     });
 
-    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-4-6");
-    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-5");
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-7");
+    expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-5");
     expect(result.providers.find((provider) => provider.id === "anthropic")?.connected).toBe(false);
   });
 

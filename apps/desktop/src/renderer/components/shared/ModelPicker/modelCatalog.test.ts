@@ -14,7 +14,7 @@ describe("mergeSelectorModels", () => {
 
   it("re-buckets OpenCode-routed models into the 'opencode' family so they appear under one rail", () => {
     const ids = [
-      "opencode/anthropic/claude-sonnet-4-6",
+      "opencode/anthropic/claude-sonnet-5",
       "opencode/openai/gpt-5.4",
     ];
     const merged = mergeSelectorModels(ids, undefined, undefined, "available-only");
@@ -26,17 +26,17 @@ describe("mergeSelectorModels", () => {
   });
 
   it("keeps openCodeProviderId intact so rows can render per-sub-provider logos", () => {
-    const ids = ["opencode/anthropic/claude-sonnet-4-6"];
+    const ids = ["opencode/anthropic/claude-sonnet-5"];
     const merged = mergeSelectorModels(ids, undefined, undefined, "available-only");
-    const model = merged.find((m) => m.id === "opencode/anthropic/claude-sonnet-4-6");
+    const model = merged.find((m) => m.id === "opencode/anthropic/claude-sonnet-5");
     expect(model).toBeDefined();
     expect(model?.openCodeProviderId).toBe("anthropic");
   });
 
   it("does not change the family of non-OpenCode models", () => {
-    const ids = ["anthropic/claude-sonnet-4-6"];
+    const ids = ["anthropic/claude-sonnet-5"];
     const merged = mergeSelectorModels(ids, undefined, undefined, "available-only");
-    const model = merged.find((m) => m.id === "anthropic/claude-sonnet-4-6");
+    const model = merged.find((m) => m.id === "anthropic/claude-sonnet-5");
     expect(model).toBeDefined();
     expect(model?.family).toBe("anthropic");
   });
@@ -141,7 +141,7 @@ describe("mergeSelectorModels", () => {
                       provider: "cursor",
                       providerKey: "cursor",
                       groupKey: "cursor",
-                      displayName: "Claude Sonnet 4.6",
+                      displayName: "Claude Sonnet 5",
                       isDefault: false,
                       isAvailable: true,
                       supportsReasoning: true,
