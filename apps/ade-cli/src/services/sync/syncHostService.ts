@@ -164,6 +164,7 @@ const MAX_INBOUND_CHANGESET_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES * 40;
 function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
 }
+
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;

@@ -439,6 +439,9 @@ export function buildSetupRows(args: {
   models: AgentChatModelInfo[];
   includeRefresh: boolean;
   includeApply: boolean;
+  includeImportSession?: boolean;
+  importSessionEnabled?: boolean;
+  importSessionDetail?: string | null;
   outputStyle?: string | null;
   outputStyleEditable?: boolean;
   /** Draft/next-chat interface (Chat = SDK chat, CLI = tracked terminal). */
@@ -471,6 +474,15 @@ export function buildSetupRows(args: {
       disabled: !args.interfaceEditable,
       cyclable: args.interfaceEditable,
     },
+    ...(args.includeImportSession
+      ? [{
+          kind: "import-session" as const,
+          label: "Import session",
+          value: args.importSessionEnabled === false ? "unavailable" : "open",
+          detail: args.importSessionDetail ?? "external CLI history",
+          disabled: args.importSessionEnabled === false,
+        }]
+      : []),
     {
       kind: "model",
       label: "Model",

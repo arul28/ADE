@@ -138,6 +138,19 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const codexApprovalPolicy = typeof launchRecord.codexApprovalPolicy === "string" ? launchRecord.codexApprovalPolicy : null;
   const codexSandbox = typeof launchRecord.codexSandbox === "string" ? launchRecord.codexSandbox : null;
   const codexConfigSource = typeof launchRecord.codexConfigSource === "string" ? launchRecord.codexConfigSource : null;
+  const importedFromRecord = record.importedFrom != null && typeof record.importedFrom === "object" && !Array.isArray(record.importedFrom)
+    ? record.importedFrom as Record<string, unknown>
+    : null;
+  const importedFromProvider = isResumeProvider(importedFromRecord?.provider)
+    ? importedFromRecord.provider
+    : null;
+  const importedFromTargetId = sanitizeResumeTargetId(
+    typeof importedFromRecord?.targetId === "string" ? importedFromRecord.targetId : null,
+  );
+  const importedFromMode = importedFromRecord?.mode === "fork" ? "fork" : importedFromRecord?.mode === "resume" ? "resume" : null;
+  const importedFromAt = typeof importedFromRecord?.importedAt === "string" && importedFromRecord.importedAt.trim().length
+    ? importedFromRecord.importedAt.trim()
+    : null;
   if (!provider || !targetKind) return null;
   return {
     provider,
@@ -152,6 +165,16 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),
       ...(codexConfigSource ? { codexConfigSource: codexConfigSource as TerminalResumeMetadata["launch"]["codexConfigSource"] } : {}),
     },
+    ...(importedFromProvider && importedFromTargetId && importedFromMode
+      ? {
+          importedFrom: {
+            provider: importedFromProvider,
+            targetId: importedFromTargetId,
+            mode: importedFromMode,
+            ...(importedFromAt ? { importedAt: importedFromAt } : {}),
+          },
+        }
+      : {}),
     ...(legacyTarget ? { target: legacyTarget } : {}),
     ...(permissionMode ? { permissionMode } : {}),
   };

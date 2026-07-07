@@ -57,7 +57,7 @@ import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
-import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { PushPublisherService } from "../push/pushPublisherService";
 import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { SharedSyncListener } from "./sharedSyncListener";
@@ -105,6 +105,7 @@ type SyncServiceArgs = {
    * to them without requiring a specific init order.
    */
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
+  getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
   processService: ReturnType<typeof createProcessService>;
   /**
    * Brain-level websocket listener shared across hosted-project switches.
@@ -643,6 +644,7 @@ export function createSyncService(args: SyncServiceArgs) {
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
+    getExternalSessionsService: args.getExternalSessionsService,
     projectConfigService: args.projectConfigService,
     processService: args.processService,
     portAllocationService: args.portAllocationService,

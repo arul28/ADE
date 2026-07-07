@@ -889,6 +889,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onCloseItem={work.closeTab}
         onOpenChatSession={handleOpenChatSession}
         onLaunchPtySession={work.launchPtySession}
+        onImportedSession={work.adoptImportedSession}
         onDraftLaneChange={work.setDraftLaneId}
         onShowDraftKind={work.showDraftKind}
         closingPtyIds={work.closingPtyIds}
@@ -931,6 +932,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.setActiveItemId,
       work.closeTab,
       work.launchPtySession,
+      work.adoptImportedSession,
       work.closingPtyIds,
       work.filtered.length,
       work.workFocusSessionsHidden,

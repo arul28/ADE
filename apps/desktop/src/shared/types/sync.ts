@@ -7,6 +7,12 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
 } from "./core";
+import type {
+  ExternalSessionImportArgs,
+  ExternalSessionImportResult,
+  ExternalSessionListArgs,
+  ExternalSessionSummary,
+} from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 
 export type SyncScalarBytes = {
@@ -887,6 +893,12 @@ export type SyncStartCliSessionResult = {
   session: TerminalSessionSummary | null;
 };
 
+export type SyncListExternalSessionsArgs = ExternalSessionListArgs;
+export type SyncListExternalSessionsResult = ExternalSessionSummary[];
+
+export type SyncImportExternalSessionArgs = ExternalSessionImportArgs;
+export type SyncImportExternalSessionResult = ExternalSessionImportResult;
+
 export type SyncSendToSessionArgs = {
   sessionId: string;
   text: string;
@@ -938,6 +950,8 @@ export type SyncRemoteCommandAction =
   | "work.runQuickCommand"
   | "work.startCliSession"
   | "work.resumeCliSession"
+  | "work.listExternalSessions"
+  | "work.importExternalSession"
   | "work.sendToSession"
   | "work.stopRuntime"
   | "processes.listDefinitions"

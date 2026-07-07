@@ -338,6 +338,14 @@ export type AgentChatCompletionReport = {
 
 export type AgentChatRuntime = "local" | "cloud";
 
+export type AgentChatImportProvider = "claude" | "codex";
+
+export type AgentChatImportedFrom = {
+  provider: string;
+  sessionId: string;
+  importedAt: number;
+};
+
 export type AgentChatCloudRunStatus =
   | "creating"
   | "running"
@@ -1010,6 +1018,7 @@ export type AgentChatSession = {
   idleSinceAt?: string | null;
   archivedAt?: string | null;
   threadId?: string;
+  importedFrom?: AgentChatImportedFrom;
   /** Subdirectory or absolute path under the lane worktree used as cwd; persisted for relaunch/resume. */
   requestedCwd?: string | null;
   createdAt: string;
@@ -1064,6 +1073,7 @@ export type AgentChatSessionSummary = {
   awaitingInput?: boolean;
   pendingInputItemId?: string | null;
   threadId?: string;
+  importedFrom?: AgentChatImportedFrom;
   requestedCwd?: string | null;
   /**
    * Linear issues attached to this session (chat or CLI), independent of any
@@ -1415,6 +1425,19 @@ export type AgentChatCreateArgs = {
   orchestrationTag?: string;
   orchestrationStepId?: string;
   orchestrationBundlePath?: string;
+};
+
+export type AgentChatImportExternalSessionArgs = {
+  provider: AgentChatImportProvider;
+  externalSessionId: string;
+  laneId: string;
+  cwd: string | null;
+  fork: boolean;
+  title?: string;
+};
+
+export type AgentChatImportExternalSessionResult = {
+  chatSessionId: string;
 };
 
 /**

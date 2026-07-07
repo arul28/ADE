@@ -180,7 +180,8 @@ type FormatterId =
   | "automation-run-detail"
   | "automation-ingress"
   | "search-results"
-  | "search-status";
+  | "search-status"
+  | "external-sessions";
 
 type CliPlan =
   | { kind: "help"; text: string }
@@ -14671,6 +14672,32 @@ function formatSearchStatus(value: unknown): string {
   ]);
 }
 
+function formatExternalSessions(value: unknown): string {
+  if (isRecord(value) && (value.kind === "cli" || value.kind === "chat")) {
+    return renderKeyValues("ADE external session import", [
+      ["kind", value.kind],
+      ["session", value.sessionId ?? value.chatSessionId],
+      ["pty", value.ptyId],
+      ["lane", value.laneId],
+    ]);
+  }
+
+  const sessions = Array.isArray(value)
+    ? value.filter(isRecord)
+    : firstArray(value, ["sessions", "results", "items"]);
+  return renderTable(
+    ["provider", "id", "cwd", "status", "title"],
+    sessions.map((session) => [
+      session.provider,
+      session.id,
+      session.cwd,
+      session.alreadyImported ? "imported" : session.possiblyActive ? "active" : "",
+      session.title ?? session.preview,
+    ]),
+    "ADE external sessions\n(no sessions)",
+  );
+}
+
 function formatChatList(value: unknown): string {
   const sessions = firstArray(value, ["sessions", "chats", "items"]);
   return renderTable(
@@ -15729,6 +15756,8 @@ function formatTextOutput(
       return formatSearchResults(value);
     case "search-status":
       return formatSearchStatus(value);
+    case "external-sessions":
+      return formatExternalSessions(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -15848,6 +15877,18 @@ function inferFormatter(
   if (label === "history show") return "history-show";
   if (label === "actions list") return "actions-list";
   if (label.endsWith("actions")) return "actions-list";
+  const firstStep = plan.steps[0];
+  const params = typeof firstStep?.params === "object" && firstStep.params != null
+    ? firstStep.params as Record<string, unknown>
+    : null;
+  const actionArgs = isRecord(params?.arguments) ? params.arguments as Record<string, unknown> : null;
+  if (
+    firstStep?.method === "ade/actions/call"
+    && params?.name === "run_ade_action"
+    && actionArgs?.domain === "external-sessions"
+  ) {
+    return "external-sessions";
+  }
   return "action-result";
 }
 

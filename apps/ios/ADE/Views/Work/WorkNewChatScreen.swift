@@ -488,6 +488,7 @@ struct WorkNewChatScreen: View {
   let activeProjectId: String?
   let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
+  let onChatImported: @MainActor (String) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
 
   @State private var selectedLaneId: String = ""
@@ -515,6 +516,7 @@ struct WorkNewChatScreen: View {
     activeProjectId: String?,
     onStarted: @escaping @MainActor (AgentChatSessionSummary, String) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
+    onChatImported: @escaping @MainActor (String) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void
   ) {
     self.lanes = lanes
@@ -522,6 +524,7 @@ struct WorkNewChatScreen: View {
     self.activeProjectId = activeProjectId
     self.onStarted = onStarted
     self.onCliStarted = onCliStarted
+    self.onChatImported = onChatImported
     self.onRefreshLanes = onRefreshLanes
     // Restore the last-used model + access mode so a fresh New Chat screen opens
     // on the user's most recent choices. Seeding the @State initial values here
@@ -577,6 +580,11 @@ struct WorkNewChatScreen: View {
     return lanes.first { $0.laneType == "primary" }
       ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
       ?? lanes.first
+  }
+
+  private var selectedConcreteLane: LaneSummary? {
+    guard !isAutoCreateLane else { return nil }
+    return lanes.first(where: { $0.id == selectedLaneId })
   }
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models — the
@@ -754,14 +762,62 @@ struct WorkNewChatScreen: View {
 
   @ViewBuilder
   private var laneSelector: some View {
-    HStack {
+    VStack(spacing: 10) {
+      HStack {
+        Spacer(minLength: 0)
+        WorkLanePickerDropdown(
+          lanes: lanes,
+          selectedLaneId: $selectedLaneId,
+          onRefresh: onRefreshLanes
+        )
+        Spacer(minLength: 0)
+      }
+
+      if let lane = selectedConcreteLane {
+        NavigationLink {
+          WorkImportSessionScreen(
+            lane: lane,
+            onCliImported: onCliStarted,
+            onChatImported: onChatImported
+          )
+          .environmentObject(syncService)
+        } label: {
+          importSessionAffordance(subtitle: "Into \(lane.name)", disabled: false)
+        }
+        .buttonStyle(.plain)
+      } else {
+        importSessionAffordance(subtitle: "Select a lane first", disabled: true)
+          .opacity(0.48)
+      }
+    }
+  }
+
+  private func importSessionAffordance(subtitle: String, disabled: Bool) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: "square.and.arrow.down")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
+      VStack(alignment: .leading, spacing: 1) {
+        Text("Import session")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
+        Text(subtitle)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+      }
       Spacer(minLength: 0)
-      WorkLanePickerDropdown(
-        lanes: lanes,
-        selectedLaneId: $selectedLaneId,
-        onRefresh: onRefreshLanes
-      )
-      Spacer(minLength: 0)
+      Image(systemName: "chevron.right")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted.opacity(disabled ? 0.45 : 0.9))
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .frame(maxWidth: 320)
+    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6)
     }
   }
 

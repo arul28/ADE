@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { CircleNotch, Cube, Desktop, DeviceMobile, ArrowBendUpRight, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { CircleNotch, Cube, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -99,6 +99,13 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionBrowser";
+import {
+  readImportedFrom,
+  providerDisplayName as externalProviderDisplayName,
+  type ExternalSessionImportResult,
+  type ExternalSessionSummary,
+} from "../terminals/importSessions/contract";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { OrchestratorLeadFrame } from "./OrchestratorLeadFrame";
 import { OrchestrationPanel } from "../orchestration/OrchestrationPanel";
@@ -2770,6 +2777,7 @@ export function AgentChatPane({
   orchestratorEnabled = false,
   onLaunchCliSession,
   onOpenShellSession,
+  onImportedSession,
   availableLanes,
   onLaneChange,
   onToggleSessionsPane,
@@ -2825,6 +2833,14 @@ export function AgentChatPane({
   orchestratorEnabled?: boolean;
   onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onOpenShellSession?: (laneId: string) => void | Promise<void>;
+  /**
+   * Work draft surface: route the result of importing an external CLI session.
+   * Presence of this callback is what enables the "Import session" affordance.
+   */
+  onImportedSession?: (
+    summary: ExternalSessionSummary,
+    result: ExternalSessionImportResult,
+  ) => void;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
@@ -3067,6 +3083,7 @@ export function AgentChatPane({
   } | null>(null);
   const [busy, setBusy] = useState(false);
   const [shellLaunchBusy, setShellLaunchBusy] = useState(false);
+  const [importBrowserOpen, setImportBrowserOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [preferencesReady, setPreferencesReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4487,19 +4504,23 @@ export function AgentChatPane({
     : messagePlaceholder;
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
+  const selectedSessionImportedProvider = readImportedFrom(selectedSession)?.provider ?? null;
   const headerChips = useMemo<ChatSurfaceChip[]>(() => {
+    const chips = [...resolvedChips];
+    if (selectedSessionImportedProvider) {
+      chips.push({
+        label: `Imported · ${externalProviderDisplayName(selectedSessionImportedProvider)}`,
+        tone: "muted",
+      });
+    }
     const hasServiceTier = selectedSession?.provider === "codex"
       && Object.prototype.hasOwnProperty.call(selectedSession, "codexServiceTier");
-    if (!hasServiceTier) return resolvedChips;
-    const serviceTier = selectedSession?.codexServiceTier?.trim().toLowerCase() || "default";
-    return [
-      ...resolvedChips,
-      {
-        label: `Tier: ${serviceTier}`,
-        tone: serviceTier === "fast" ? "info" : "muted",
-      },
-    ];
-  }, [resolvedChips, selectedSession?.codexServiceTier, selectedSession?.provider]);
+    if (hasServiceTier) {
+      const serviceTier = selectedSession?.codexServiceTier?.trim().toLowerCase() || "default";
+      chips.push({ label: `Tier: ${serviceTier}`, tone: serviceTier === "fast" ? "info" : "muted" });
+    }
+    return chips;
+  }, [resolvedChips, selectedSession?.codexServiceTier, selectedSession?.provider, selectedSessionImportedProvider]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -10751,34 +10772,60 @@ export function AgentChatPane({
                             className="flex justify-center"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
-                            <div className="flex flex-col items-center gap-1.5">
-                              <div className="inline-flex items-center gap-2">
-                                <LaneCombobox
-                                  lanes={draftLaneSelectorLanes}
-                                  value={draftLaneSelectorValue}
-                                  onChange={handleDraftLaneSelectionChange}
-                                  variant="pill"
-                                  aria-label="Select lane"
-                                />
-                                {onOpenShellSession ? (
-                                  <SmartTooltip
-                                    content={{
-                                      label: "Open shell",
-                                      description: "Launch a new shell in the selected lane.",
-                                    }}
-                                  >
-                                    <button
-                                      type="button"
-                                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04] text-muted-fg/70 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
-                                      disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
-                                      aria-label="Open shell in selected lane"
-                                      onClick={() => void launchShellForDraftLane()}
+                            <div className="flex flex-col items-center gap-2">
+                              <LaneCombobox
+                                lanes={draftLaneSelectorLanes}
+                                value={draftLaneSelectorValue}
+                                onChange={handleDraftLaneSelectionChange}
+                                variant="pill"
+                                aria-label="Select lane"
+                              />
+                              {onOpenShellSession || onImportedSession ? (
+                                <div className="flex w-full min-w-[240px] items-stretch gap-1.5">
+                                  {onOpenShellSession ? (
+                                    <SmartTooltip
+                                      content={{
+                                        label: "Open shell",
+                                        description: draftLaunchTargetIsAutoCreate
+                                          ? "Select a lane first — a shell needs a lane folder."
+                                          : "Launch a new shell in the selected lane.",
+                                      }}
                                     >
-                                      <Terminal size={14} weight="regular" />
-                                    </button>
-                                  </SmartTooltip>
-                                ) : null}
-                              </div>
+                                      <button
+                                        type="button"
+                                        className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                        disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
+                                        aria-label="Open shell in selected lane"
+                                        onClick={() => void launchShellForDraftLane()}
+                                      >
+                                        <Terminal size={13} weight="regular" />
+                                        Shell
+                                      </button>
+                                    </SmartTooltip>
+                                  ) : null}
+                                  {onImportedSession ? (
+                                    <SmartTooltip
+                                      content={{
+                                        label: "Import session",
+                                        description: draftLaunchTargetIsAutoCreate
+                                          ? "Select a lane first — imports need a lane folder."
+                                          : "Continue an external Claude, Codex, Cursor, Droid, or OpenCode session here.",
+                                      }}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                        disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                                        aria-label="Import an external CLI session"
+                                        onClick={() => setImportBrowserOpen(true)}
+                                      >
+                                        <DownloadSimple size={13} weight="regular" />
+                                        Import session
+                                      </button>
+                                    </SmartTooltip>
+                                  ) : null}
+                                </div>
+                              ) : null}
                               {draftLaunchTargetIsAutoCreate && autoCreateToolsLane ? (
                                 <div className="font-sans text-[10px] leading-4 text-muted-fg/55">
                                   Tools use {autoCreateToolsLane.name} until the lane is created.
@@ -10838,6 +10885,17 @@ export function AgentChatPane({
         onConfirm={confirmRewindDialog}
       />
       <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
+      {onImportedSession && laneId ? (
+        <ImportSessionBrowser
+          open={importBrowserOpen}
+          onOpenChange={setImportBrowserOpen}
+          laneId={laneId}
+          laneName={
+            availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId
+          }
+          onImported={onImportedSession}
+        />
+      ) : null}
     </>
   );
 }

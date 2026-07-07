@@ -58,6 +58,12 @@ export type TerminalResumeMetadata = {
   targetKind: TerminalResumeTargetKind;
   targetId: string | null;
   launch: TerminalResumeLaunchConfig;
+  importedFrom?: {
+    provider: TerminalResumeProvider;
+    targetId: string;
+    mode: "resume" | "fork";
+    importedAt?: string | null;
+  } | null;
   // Legacy aliases kept for compatibility with existing helpers and stored rows.
   target?: string | null;
   permissionMode?: AgentChatPermissionMode | null;
@@ -156,6 +162,8 @@ export type PtyCreateArgs = {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /** Optional provider continuation metadata to persist for externally imported sessions. */
+  resumeMetadata?: TerminalResumeMetadata | null;
   /**
    * Linear issues to attach to this session before the process spawns, so the
    * CLI agent inherits `ADE_LINEAR_ISSUE_IDS` + `ADE_LINEAR_CONTEXT_FILE` and

@@ -313,14 +313,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncRemoteCommandService.ts` (~3,280 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
   `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
-  `work.startCliSession`, `modelPicker.*`, …). Each registration carries a
-  `SyncRemoteCommandDescriptor` with a **scope** label of
+  `work.startCliSession`, `work.listExternalSessions`,
+  `work.importExternalSession`, `modelPicker.*`, …). Each registration
+  carries a `SyncRemoteCommandDescriptor` with a **scope** label of
   `"runtime"` or `"project"`. The runtime rejects a `project`-scoped
   command when no project is open or when the caller did not bundle a
   matching `projectId` (see *Scope enforcement* below). Mobile /
   controller CLI launches resolve the target lane worktree before
   building provider argv/env so Agent Skill roots and
-  `ADE_AGENT_SKILLS_DIRS` stay lane-aware.
+  `ADE_AGENT_SKILLS_DIRS` stay lane-aware. External-session imports share
+  the desktop external-session service and DTOs: list returns provider
+  summaries and import returns either a tracked CLI PTY id or a native ADE
+  chat id.
   Lane snapshot commands accept decoration flags so mobile can refresh
   runtime/session buckets without recomputing conflict status, rebase
   suggestions, or auto-rebase status on every light refresh; lane detail
@@ -447,7 +451,9 @@ runtime connection or sync authority connection.
 The shared protocol DTOs (`SyncEnvelope`, controller-originated
 `terminal_input` / `terminal_resize`, the mobile CLI launcher payload —
 `SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
-`SyncStartCliSessionResult` — and so on) live in
+`SyncStartCliSessionResult` — the external session aliases
+`SyncListExternalSessionsArgs` / `SyncImportExternalSessionArgs`, and so on)
+live in
 `apps/desktop/src/shared/types/sync.ts`. The CLI launcher's
 provider-to-argv translation is shared with the desktop Work tab
 through `apps/desktop/src/shared/cliLaunch.ts`.
@@ -463,6 +469,7 @@ iOS service files (`apps/ios/ADE/Services/`):
   command routing, keychain integration, PIN-based pairing, lane
   presence announcements, terminal subscribe/unsubscribe tracking,
   terminal input/resize senders, mobile CLI launch/continuation,
+  external-session list/import commands for Work,
   PR mobile snapshot fetch, live chat-event push listener, lane
   reparent payload building with the optional stack base-branch
   override, project home/catalog state, active-project scoping,
@@ -779,7 +786,7 @@ payload.
 | Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session); per-session history is evicted with a 64-session LRU so a phone that has opened many chats cannot pin unbounded host memory. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). **Cross-project "quick look":** `chat_subscribe` / `chat_unsubscribe` accept an optional `projectId` / `projectRootPath` override. When it names a registered project OTHER than the socket's active one — and the host advertised the `crossProjectChat` feature flag — the host serves that session's transcript **read-only straight off the foreign project's `.ade` transcript JSONL** (byte-capped tail snapshot, then the pump tails the same file for live events), with no project switch and no runtime boot for that project. Such sessions have no live agent chat service here, so `turnActive` is omitted and the client derives turn state from the streamed `status` events. The transcript resolver is the security boundary — it validates the project is registered and confines the path to that project's transcripts dir. A host without a foreign-chat provider never sets `crossProjectChat`, so the phone falls back to a full project activation. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change also rides this stream, so a mode switch made on one client (desktop ↔ iOS) patches every subscribed client's cached summary and composer controls live without a refetch | iOS Work tab, iOS Hub, controller chat |
 | Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended (`run-shell` infrastructure rows excluded) — so the mobile Hub renders every project's sessions at once **without activating each project**. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Transcripts are excluded from the roster (they load on demand when a chat opens): on a host advertising `crossProjectChat` the phone opens a foreign-project chat as a read-only cross-project quick look (see the Chat stream row) without activating that project; CLI rows never take the quick look (no chat JSONL — they always activate + open the terminal), and only on older hosts lacking the flag does opening a chat fall back to activating the project's full sync. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
-| Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
+| Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
@@ -819,6 +826,23 @@ the phone trusts the runtime.
 
 See `remote-commands.md` for the full action set and the runtime /
 project scope split.
+
+## External session import commands
+
+Paired controllers can browse and import provider-native CLI sessions through
+the same runtime command registry that starts Work CLI sessions:
+
+| Command | Policy | Purpose |
+|---|---|---|
+| `work.listExternalSessions` | `viewerAllowed: true` | Returns `ExternalSessionSummary[]` from the runtime's external-session service. Payload mirrors `ExternalSessionListArgs` (`providers`, `laneId`, `cwd`, `scope`, `limit`). |
+| `work.importExternalSession` | `viewerAllowed: true`, `queueable: true` | Imports one external session into a lane as either `target: "cli"` (`ExternalSessionImportResult.kind = "cli"`, with `sessionId`/`ptyId`) or `target: "chat"` (`kind = "chat"`, with `chatSessionId`). Payload mirrors `ExternalSessionImportArgs` (`provider`, `sessionId`, `laneId`, `target`, `mode`, optional `model`/`permissionMode`). |
+
+These commands are viewer-allowed for the same reason as
+`work.startCliSession`: a paired phone or desktop controller is already a
+trusted controller for the runtime machine. The controller never reads provider
+session files or launches provider CLIs locally; it sends a command envelope,
+and the sync authority runtime does discovery, cwd validation, chat transcript
+seeding, PTY creation, and provider resume/fork execution on the host.
 
 ## Security model
 

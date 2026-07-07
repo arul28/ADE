@@ -26,6 +26,9 @@ import { createDiffService } from "../../desktop/src/main/services/diffs/diffSer
 import { createPtyService } from "../../desktop/src/main/services/pty/ptyService";
 import { createProjectSearchService } from "../../desktop/src/main/services/search/searchServiceWiring";
 import type { SearchService } from "../../desktop/src/main/services/search/searchService";
+import {
+  createExternalSessionsService,
+} from "../../desktop/src/main/services/externalSessions/externalSessionsService";
 import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -227,6 +230,7 @@ export type AdeRuntime = {
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   reviewService?: ReturnType<typeof createReviewService> | null;
   searchService?: SearchService | null;
+  externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   appNavigationService?: {
     navigate(args: AppNavigationRequest): Promise<AppNavigationResult>;
@@ -1315,6 +1319,7 @@ export async function createAdeRuntime(args: {
     });
   }
 
+  let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
   let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
@@ -1349,6 +1354,7 @@ export async function createAdeRuntime(args: {
       ctoMemoryService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
+      getExternalSessionsService: () => externalSessionsService,
       processService,
       sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
@@ -1419,6 +1425,14 @@ export async function createAdeRuntime(args: {
       for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
     }
   });
+  externalSessionsService = createExternalSessionsService({
+    projectRoot,
+    laneService,
+    sessionService,
+    ptyService,
+    logger,
+    chatImporter: agentChatService,
+  });
 
   const runtime: AdeRuntime = {
     projectRoot,
@@ -1455,6 +1469,7 @@ export async function createAdeRuntime(args: {
     testService,
     reviewService,
     searchService,
+    externalSessionsService,
     aiIntegrationService,
     agentChatService,
     orchestrationService,

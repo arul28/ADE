@@ -103,6 +103,19 @@ and in tests.
   managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
   per-lane cwd resolution that gates PTY creation to the lane worktree.
+- `apps/desktop/src/main/services/externalSessions/` —
+  external CLI session discovery and import. `externalSessionsService.ts`
+  orchestrates provider discovery, capability flags, project/all scoping,
+  already-imported detection, active-session hints, CLI import into tracked
+  PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
+  commands. The per-provider discovery modules scan Claude JSONL transcripts
+  under `~/.claude/projects`, Codex sessions under `~/.codex/sessions`,
+  Cursor transcripts under `~/.cursor/projects`, Droid sessions under
+  `~/.factory/sessions`, and OpenCode through `opencode session list`.
+  `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
+  used when forking or importing a Claude session into a different lane cwd;
+  `discoveryUtils.ts` owns safe filesystem reads, cwd slug resolution, cheap
+  previews, limits, and sorting.
 
 Shared types and IPC:
 
@@ -121,6 +134,12 @@ Shared types and IPC:
   `TerminalSerializedSnapshot`, `ChatTerminalPreviewArgs`,
   `ChatTerminalPreviewResult`) used by the `ade.terminal.*` IPC
   surface and the `terminal` ADE action domain.
+- `apps/desktop/src/shared/types/externalSessions.ts` —
+  `ExternalSessionProvider`, `ExternalSessionCapabilities`,
+  `ExternalSessionSummary`, `ExternalSessionListArgs`,
+  `ExternalSessionImportArgs`, and `ExternalSessionImportResult`. This is
+  the canonical DTO surface shared by desktop IPC, the ADE action domain,
+  `ade code`, sync remote commands, and iOS.
 - `apps/desktop/src/main/services/probeLocalhostPort.ts` — tiny shared
   helper (`probeLocalhostPort(port, timeoutMs)`) that performs a single
   127.0.0.1 TCP probe with a default 150 ms timeout. Used by the
@@ -137,7 +156,10 @@ Shared types and IPC:
   the mobile CLI launcher payload
   (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
   `SyncStartCliSessionResult`) consumed by the
-  `work.startCliSession` remote command.
+  `work.startCliSession` remote command and the external-session remote
+  command aliases (`SyncListExternalSessionsArgs` /
+  `SyncImportExternalSessionArgs`) consumed by
+  `work.listExternalSessions` and `work.importExternalSession`.
 - `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
   (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
   `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
@@ -153,12 +175,18 @@ Shared types and IPC:
   session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
   serialized xterm snapshot for the TUI / mobile renderers, `write`,
   `signal`, `activeForChat`), and the localhost-probe helper
-  `ade.localhost.probePort`.
+  `ade.localhost.probePort`, plus `ade.externalSessions.list` and
+  `ade.externalSessions.import`.
 
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.sessions`,
-  `window.ade.pty`, and `window.ade.processes` APIs.
+  `window.ade.pty`, `window.ade.processes`, and
+  `window.ade.externalSessions` APIs. The external-session calls prefer
+  the runtime `external-sessions` ADE action domain and fall back to the
+  legacy desktop IPC handlers only when no runtime binding exists.
+- `apps/desktop/src/preload/global.d.ts` — renderer-visible typing for
+  the `window.ade.externalSessions.list/import` bridge.
 
 IPC registration:
 
@@ -169,7 +197,8 @@ IPC registration:
   `ptyDispose`, the `processes.*` handlers,
   and the session-owned `terminalList` / `terminalRead` /
   `terminalWrite` / `terminalSignal` / `terminalActiveForChat`
-  handlers. `terminalRead` delegates transcript-tail reads to
+  handlers, plus `externalSessionsList` / `externalSessionsImport`.
+  `terminalRead` delegates transcript-tail reads to
   `ptyService` so attached terminal panels and `ade code` get the
   same live-tail merge as the Work tab.
 
@@ -198,6 +227,19 @@ Renderer surfaces:
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a
   draggable column separator.
+- `apps/desktop/src/renderer/components/terminals/importSessions/` —
+  desktop import browser, bridge contract, and pure capability-to-action
+  affordance mapper. It lists external sessions by provider/search,
+  shows provider/cwd/message-count/imported/possibly-active badges, and
+  offers only the safe actions for the target lane (`Open as ADE chat`,
+  `Fork as ADE chat`, `Resume here`, `Fork into this lane`, or
+  `Resume` in the original folder).
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` —
+  Work draft/new-chat surface. In draft mode the lane picker stays at
+  the top, with Shell and Import buttons below; Import opens
+  `ImportSessionBrowser` when the caller provides `onImportedSession`.
+  Auto-created lane launches keep import disabled because there is no
+  existing target lane to import into yet.
 - `apps/desktop/src/renderer/components/terminals/WorkSidebar.tsx` —
   right-edge sidebar tied to the active lane (and active Work session
   when present). Tabbed into `git` (lane git actions + selection-driven
@@ -263,7 +305,8 @@ Renderer surfaces:
   card also reports its multi-select state via `isMultiSelected`. While
   the card's lane is mid background AI auto-naming it swaps the preview
   line for an "Auto-naming lane underway…" status and warm-highlights the
-  title when it changes (subscribes to `laneNamingStore.ts`).
+  title when it changes (subscribes to `laneNamingStore.ts`). Sessions
+  carrying `importedFrom` provenance render an `Imported` badge.
 - `apps/desktop/src/renderer/state/laneNamingStore.ts` — ephemeral,
   renderer-only zustand store tracking which lanes have an AI
   auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
@@ -488,6 +531,23 @@ Renderer surfaces:
   to disk via a transient anchor + Object URL. Used by the bulk-export
   action in the session list.
 
+ADE CLI / TUI runtime surfaces:
+
+- `apps/ade-cli/src/bootstrap.ts` — constructs the shared
+  `externalSessionsService` inside the daemon/runtime alongside
+  `ptyService`, `sessionService`, and `agentChatService`, making the
+  `external-sessions` ADE action domain available to desktop, `ade code`,
+  sync remote commands, and headless runtimes.
+- `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts` and
+  `apps/ade-cli/src/tuiClient/app.tsx` — `ade code` import browser.
+  It reuses the same shared DTOs and affordance mapper as desktop, then
+  calls `external-sessions.list` / `external-sessions.import` through the
+  TUI action connection.
+- `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` —
+  registers `work.listExternalSessions` and
+  `work.importExternalSession` for trusted paired controllers. See
+  [Sync and multi-device](../sync-and-multi-device/README.md#external-session-import-commands).
+
 iOS Work surfaces:
 
 - `apps/ios/ADE/Views/Work/WorkRootScreen.swift`,
@@ -519,7 +579,59 @@ iOS Work surfaces:
   composer, command/tool/reasoning cards, and new-chat launch surface.
   `WorkNewChatScreen` segments between **ADE chat** and **CLI session**;
   the CLI mode submits `work.startCliSession` against the host through
-  `SyncService.startCliSession`.
+  `SyncService.startCliSession`, and the Import entry opens the external
+  session browser.
+- `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` — iOS import
+  browser/action sheet. It calls `SyncService.listExternalSessions` and
+  `SyncService.importExternalSession`, mirrors the desktop capability
+  affordances, and routes CLI imports to the terminal screen or chat
+  imports to the chat screen.
+
+## External CLI session import
+
+ADE can adopt provider-native CLI sessions that were started outside ADE in a
+plain terminal. Discovery is read-only: the runtime scans each provider's
+local session storage, returns recent sessions with title/preview/cwd metadata,
+and marks rows that already have ADE provenance or whose source file changed in
+the last couple of minutes. The default list scope is the current ADE project
+(including lane worktrees); callers can request `scope: "all"` to browse the
+user's wider provider history.
+
+Import has two targets:
+
+| Target | Providers | Result |
+|---|---|---|
+| CLI | Claude, Codex, Cursor, Droid, OpenCode | Starts a tracked ADE PTY (`terminal_sessions` row) that resumes or forks the provider CLI. The session keeps normal Work behavior: transcript capture, lane association, continuation composer, sync terminal streaming, and the `Imported` badge. |
+| ADE chat | Claude, Codex | Creates a native `AgentChatSession`, seeds the ADE transcript from the external provider history, and binds the provider runtime to the imported Claude session id or Codex thread id. See [Chat](../chat/README.md#external-chat-import). |
+
+Provider capabilities are intentionally explicit because each upstream CLI has
+different continuation rules:
+
+| Provider | Resume in source cwd | Resume in another lane cwd | Fork | Fork into another lane cwd | ADE chat import |
+|---|---:|---:|---:|---:|---:|
+| Claude | yes | no | yes | yes | yes |
+| Codex | yes | yes | yes | yes | yes |
+| Cursor | yes | no | no | no | no |
+| Droid | yes | no | if installed CLI supports `--fork` | if installed CLI supports `--fork` | no |
+| OpenCode | yes | no | yes | no | no |
+
+The cwd rule is the sharp edge. Claude, Cursor, Droid, and OpenCode sessions
+were born in a specific folder and their resume command must run there.
+If that folder is not the selected lane, ADE either offers a fork path that
+can land in the lane (Claude, Codex, Droid when supported) or a clearly labeled
+resume-in-place action that runs in the original folder with
+`allowExternalCwd`. Codex threads are cwd-portable, so Codex resume can target
+the selected lane directly.
+
+Resume means "take the baton": ADE starts a tracked continuation of the same
+provider session/thread. If the original terminal is still active, both tools
+can race on the same provider state, so the UI warns on recently modified
+sessions and nudges users to close the other terminal or fork. Fork means "make
+a branch": ADE asks the provider for a new continuation target where possible.
+Claude cross-lane fork/import copies the source JSONL into the target lane's
+Claude project storage with a new session id instead of moving or editing the
+original file; Codex uses its native thread fork path; Droid and OpenCode use
+their CLI fork flags within the limits above.
 
 ## Detail docs
 

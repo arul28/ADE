@@ -9,6 +9,7 @@ import type { WorkDraftKind } from "../../state/appStore";
 import { useAppStore } from "../../state/appStore";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
+import type { ExternalSessionImportResult, ExternalSessionSummary } from "./importSessions/contract";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
@@ -18,6 +19,7 @@ type WorkStartSurfaceProps = {
   lanes: LaneSummary[];
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
+  onImportedSession?: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
   onDraftLaneChange?: (laneId: string) => void;
   initialLinearIssueContext?: LaneLinearIssue | null;
   initialLinearIssueContextSource?: "manual" | "lane_link";
@@ -34,6 +36,7 @@ export function WorkStartSurface({
   lanes,
   onOpenChatSession,
   onLaunchPtySession,
+  onImportedSession,
   onDraftLaneChange,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
@@ -142,6 +145,7 @@ export function WorkStartSurface({
           onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
           onSessionCreated={onOpenChatSession}
           onLaunchCliSession={onLaunchPtySession}
+          onImportedSession={onImportedSession}
           onOpenShellSession={launchShell}
           availableLanes={lanes}
           onLaneChange={setLaneAndSync}

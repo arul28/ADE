@@ -22,6 +22,7 @@ import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
+import { readImportedFrom, providerDisplayName } from "./importSessions/contract";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
@@ -222,6 +223,7 @@ export const SessionCard = React.memo(function SessionCard({
     return () => clearTimeout(timer);
   }, [primaryText]);
   const staleAgeHours = getStaleRunningCliSessionAgeHours(session);
+  const importedFrom = readImportedFrom(session);
   const isHighlighted = isSelected || isMultiSelected;
   const highlightedBorder = isHighlighted
     ? "1px solid rgba(255,255,255,0.08)"
@@ -314,6 +316,18 @@ export const SessionCard = React.memo(function SessionCard({
               </span>
               {attentionBadge ? <AttentionCapsule badge={attentionBadge} compact={compact} /> : null}
               <div className="flex shrink-0 items-center gap-1.5">
+                {importedFrom ? (
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center rounded-full border border-white/[0.08] bg-white/[0.04] font-semibold uppercase tracking-wide leading-none text-muted-fg/80",
+                      compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
+                    )}
+                    title={`Imported from ${providerDisplayName(importedFrom.provider)}`}
+                    aria-label={`Imported from ${providerDisplayName(importedFrom.provider)}`}
+                  >
+                    Imported
+                  </span>
+                ) : null}
                 {session.orchestrationRole ? (
                   <>
                     <span className="sr-only">{orchestrationLabel}</span>

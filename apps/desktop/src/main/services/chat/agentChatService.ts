@@ -147,6 +147,9 @@ import type {
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
   AgentChatIdentityKey,
+  AgentChatImportedFrom,
+  AgentChatImportExternalSessionArgs,
+  AgentChatImportExternalSessionResult,
   AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
@@ -213,6 +216,13 @@ import {
   buildChatContextAttachmentPrompt,
   normalizeChatContextAttachments,
 } from "../../../shared/chatContextAttachments";
+import {
+  claudeJsonlToChatEvents,
+  codexTurnsToChatEvents,
+  deriveImportedChatTitle,
+  MAX_IMPORT_TRANSCRIPT_BYTES,
+  readTailLines,
+} from "./externalChatHistoryImport";
 import {
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
@@ -453,6 +463,7 @@ type PersistedChatState = {
   codexGoal?: CodexThreadGoal | null;
   codexTokenUsage?: CodexThreadTokenUsage | null;
   threadId?: string;
+  importedFrom?: AgentChatImportedFrom;
   /** Factory Droid SDK session id for Droid resume across app restarts (best-effort). */
   droidSdkSessionId?: string;
   sdkSessionId?: string;
@@ -5211,6 +5222,18 @@ function normalizePersistedCompletion(value: unknown): AgentChatCompletionReport
   };
 }
 
+function normalizeImportedFrom(value: unknown): AgentChatImportedFrom | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+  const sessionId = typeof record.sessionId === "string" ? record.sessionId.trim() : "";
+  const importedAt = typeof record.importedAt === "number" && Number.isFinite(record.importedAt)
+    ? record.importedAt
+    : undefined;
+  if (!provider || !sessionId || importedAt === undefined) return undefined;
+  return { provider, sessionId, importedAt };
+}
+
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
   return value === "cto" ? "cto" : undefined;
 }
@@ -8862,6 +8885,9 @@ export function createAgentChatService(args: {
       ...(managed.session.codexGoal ? { codexGoal: normalizeAdeCodexGoal(managed.session.codexGoal) } : {}),
       ...(managed.session.codexTokenUsage ? { codexTokenUsage: managed.session.codexTokenUsage } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
+      ...(managed.session.importedFrom
+        ? { importedFrom: managed.session.importedFrom }
+        : prevPersisted?.importedFrom ? { importedFrom: prevPersisted.importedFrom } : {}),
       ...(managed.session.runtimeMode ? { runtimeMode: managed.session.runtimeMode } : {}),
       ...(managed.runtime?.kind === "droid" && managed.runtime.sdkSessionId
         ? { droidSdkSessionId: managed.runtime.sdkSessionId }
@@ -9021,6 +9047,7 @@ export function createAgentChatService(args: {
       const codexGoal = normalizeCodexGoalPayload(record.codexGoal);
       const codexTokenUsageRecord = asRecord(record.codexTokenUsage);
       const codexTokenUsage = codexTokenUsageRecord ? normalizeCodexThreadTokenUsage(codexTokenUsageRecord) : null;
+      const importedFrom = normalizeImportedFrom(record.importedFrom);
       if (!laneId || !model) return null;
       const recentConversationEntries = Array.isArray(record.recentConversationEntries)
         ? record.recentConversationEntries
@@ -9142,6 +9169,7 @@ export function createAgentChatService(args: {
         ...(completion ? { completion } : {}),
         ...(codexGoal ? { codexGoal } : {}),
         ...(codexTokenUsage ? { codexTokenUsage } : {}),
+        ...(importedFrom ? { importedFrom } : {}),
         ...(typeof record.threadId === "string" && record.threadId.trim().length
           ? { threadId: record.threadId.trim() }
           : {}),
@@ -9820,6 +9848,70 @@ export function createAgentChatService(args: {
     }
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
+  };
+
+  const publishChatEnvelope = (envelope: AgentChatEventEnvelope): void => {
+    onEvent?.(envelope);
+    for (const subscriber of eventSubscribers) {
+      try {
+        subscriber(envelope);
+      } catch (error) {
+        logger.warn("agent_chat.event_subscriber_failed", {
+          sessionId: envelope.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
+
+  const appendImportedChatEvents = (
+    managed: ManagedChatSession,
+    envelopes: AgentChatEventEnvelope[],
+  ): void => {
+    flushBufferedReasoning(managed);
+    flushBufferedText(managed);
+
+    for (const envelope of envelopes) {
+      const liveEvent = envelope.event;
+      const storedEvent = compactChatEventForStorage(liveEvent);
+      trackSubagentEvent(managed, liveEvent);
+      appendRecentConversationEntry(managed, liveEvent);
+
+      if (storedEvent.type === "text") {
+        updatePreviewFromText(managed, storedEvent);
+      } else if (storedEvent.type === "command") {
+        setSessionPreview(managed, storedEvent.output);
+      } else if (storedEvent.type === "error") {
+        setSessionPreview(managed, storedEvent.message);
+      } else if (storedEvent.type === "completion_report") {
+        managed.session.completion = storedEvent.report;
+        if (storedEvent.report.summary.trim().length > 0) {
+          setSessionPreview(managed, storedEvent.report.summary);
+        }
+      }
+
+      const timestamp = envelope.timestamp || nowIso();
+      const sequence = ++managed.eventSequence;
+      const storedEnvelope: AgentChatEventEnvelope = {
+        ...envelope,
+        sessionId: managed.session.id,
+        timestamp,
+        event: storedEvent,
+        sequence,
+      };
+      const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
+        ? storedEnvelope
+        : {
+            ...storedEnvelope,
+            event: liveEvent,
+          };
+      writeTranscript(managed, storedEnvelope);
+      recordChatEventInHistory(storedEnvelope);
+      publishChatEnvelope(liveEnvelope);
+    }
+
+    managed.session.lastActivityAt = nowIso();
+    managed.lastActivityTimestamp = Date.now();
   };
 
   const setCodexGoalAndMaybeEmitUpdate = (
@@ -11052,6 +11144,7 @@ export function createAgentChatService(args: {
         completion: persisted?.completion ?? null,
         codexGoal: persisted?.codexGoal ?? null,
         codexTokenUsage: persisted?.codexTokenUsage ?? null,
+        ...(persisted?.importedFrom ? { importedFrom: persisted.importedFrom } : {}),
         status: mapTerminalStatusToChatStatus(row.status),
         idleSinceAt: persisted?.idleSinceAt ?? null,
         ...(persisted?.threadId ? { threadId: persisted.threadId } : {}),
@@ -20498,6 +20591,364 @@ export function createAgentChatService(args: {
     };
   };
 
+  type ExternalChatImportErrorCode =
+    | "EXTERNAL_CHAT_SESSION_NOT_FOUND"
+    | "EXTERNAL_CHAT_SESSION_INVALID_ARGS"
+    | "EXTERNAL_CHAT_SESSION_READ_FAILED"
+    | "EXTERNAL_CHAT_SESSION_TRANSPLANT_UNAVAILABLE";
+
+  type ClaudeSessionTransplantModule = {
+    transplantClaudeSession: (args: {
+      sessionId: string;
+      sourceCwd: string;
+      targetCwd: string;
+      fork: boolean;
+      configDir?: string;
+    }) => Promise<{ newSessionId: string; targetPath: string }>;
+  };
+
+  const externalChatImportError = (
+    code: ExternalChatImportErrorCode,
+    message: string,
+  ): Error & { code: ExternalChatImportErrorCode } => {
+    const error = new Error(message) as Error & { code: ExternalChatImportErrorCode };
+    error.name = "ExternalChatSessionImportError";
+    error.code = code;
+    return error;
+  };
+
+  const claudeConfigDir = (): string =>
+    path.resolve(process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude"));
+
+  const claudeProjectSlugForCwd = (cwd: string): string =>
+    cwd.replace(/[^A-Za-z0-9]/g, "-");
+
+  const hasPathSeparator = (value: string): boolean =>
+    value.includes("/") || value.includes("\\") || value.includes(path.sep);
+
+  const readClaudeCwdFromLines = (lines: readonly string[]): string | null => {
+    for (const line of lines.slice(0, 50)) {
+      try {
+        const parsed = JSON.parse(line) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+        const record = parsed as Record<string, unknown>;
+        const cwd = typeof record.cwd === "string" && record.cwd.trim().length ? record.cwd.trim() : null;
+        if (cwd) return cwd;
+      } catch {
+        // Ignore malformed JSONL rows; the history mapper skips them too.
+      }
+    }
+    return null;
+  };
+
+  const findClaudeSessionTranscript = (
+    sessionId: string,
+    sourceCwd: string | null,
+  ): { transcriptPath: string; sourceCwd: string | null } | null => {
+    const configDir = claudeConfigDir();
+    const projectsDir = path.join(configDir, "projects");
+    const fileName = `${sessionId}.jsonl`;
+    if (sourceCwd?.trim()) {
+      const candidate = path.join(projectsDir, claudeProjectSlugForCwd(sourceCwd.trim()), fileName);
+      if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: sourceCwd.trim() };
+    }
+    try {
+      const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(projectsDir, entry.name, fileName);
+        if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: sourceCwd?.trim() || null };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  const resolveComparableCwd = (cwd: string): string => {
+    const resolved = path.resolve(cwd);
+    try {
+      return fs.realpathSync.native(resolved);
+    } catch {
+      return resolved;
+    }
+  };
+
+  const isSameCwd = (left: string, right: string): boolean =>
+    resolveComparableCwd(left) === resolveComparableCwd(right);
+
+  const loadClaudeSessionTransplant = async (): Promise<ClaudeSessionTransplantModule> => {
+    try {
+      const modulePath = "../externalSessions/claudeSessionTransplant";
+      return await import(modulePath) as ClaudeSessionTransplantModule;
+    } catch (error) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_TRANSPLANT_UNAVAILABLE",
+        `Claude cwd transplant is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
+  const applyImportedChatMetadata = (
+    managed: ManagedChatSession,
+    args: AgentChatImportExternalSessionArgs,
+    envelopes: AgentChatEventEnvelope[],
+    importedAt: number,
+  ): void => {
+    managed.session.importedFrom = {
+      provider: args.provider,
+      sessionId: args.externalSessionId,
+      importedAt,
+    };
+    const explicitTitle = typeof args.title === "string" ? args.title.trim() : "";
+    if (!explicitTitle) {
+      setManagedSessionTitle(managed, deriveImportedChatTitle(envelopes, args.provider), { syncToRuntime: false });
+    }
+  };
+
+  const importClaudeExternalChatSession = async (
+    args: AgentChatImportExternalSessionArgs,
+    laneWorktreePath: string,
+    importedAt: number,
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const externalSessionId = args.externalSessionId.trim();
+    if (hasPathSeparator(externalSessionId)) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
+    }
+    const source = findClaudeSessionTranscript(externalSessionId, args.cwd);
+    if (!source) {
+      const sourceHint = args.cwd?.trim()
+        ? ` for cwd '${args.cwd.trim()}'`
+        : "";
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+        `External Claude session '${externalSessionId}' was not found${sourceHint} under ${path.join(claudeConfigDir(), "projects")}.`,
+      );
+    }
+
+    const sourceRead = readTailLines(source.transcriptPath, MAX_IMPORT_TRANSCRIPT_BYTES);
+    const sourceCwd = args.cwd?.trim() || readClaudeCwdFromLines(sourceRead.lines);
+    if (!sourceCwd) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_READ_FAILED",
+        `External Claude session '${externalSessionId}' does not include a cwd and no cwd was provided.`,
+      );
+    }
+
+    let targetClaudeSessionId = externalSessionId;
+    let targetTranscriptPath = source.transcriptPath;
+    let targetLines = sourceRead.lines;
+    let targetTranscriptTruncated = sourceRead.truncated;
+    if (!isSameCwd(sourceCwd, laneWorktreePath)) {
+      const { transplantClaudeSession } = await loadClaudeSessionTransplant();
+      const transplant = await transplantClaudeSession({
+        sessionId: externalSessionId,
+        sourceCwd,
+        targetCwd: laneWorktreePath,
+        fork: true,
+        configDir: claudeConfigDir(),
+      });
+      targetClaudeSessionId = typeof transplant.newSessionId === "string" ? transplant.newSessionId.trim() : "";
+      targetTranscriptPath = typeof transplant.targetPath === "string" ? transplant.targetPath.trim() : "";
+      if (!targetClaudeSessionId || !targetTranscriptPath || !fs.existsSync(targetTranscriptPath)) {
+        throw externalChatImportError(
+          "EXTERNAL_CHAT_SESSION_READ_FAILED",
+          `Claude transplant for session '${externalSessionId}' did not produce a readable target transcript.`,
+        );
+      }
+      const targetRead = readTailLines(targetTranscriptPath, MAX_IMPORT_TRANSCRIPT_BYTES);
+      targetLines = targetRead.lines;
+      targetTranscriptTruncated = targetRead.truncated;
+    }
+
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider: "claude",
+        model: DEFAULT_CLAUDE_MODEL,
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      if (managed.runtime?.kind === "claude") {
+        resetClaudeQuerySession(managed, managed.runtime, "session_reset", { clearSdkSessionId: true });
+        managed.runtime.sdkSessionId = targetClaudeSessionId;
+        managed.runtime.forkFromSdkSessionId = null;
+        managed.runtimeInvalidated = false;
+      }
+      managed.claudeBackgroundResumeSessionId = targetClaudeSessionId;
+      mirrorClaudeSessionPointer(managed, targetClaudeSessionId, {
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      const repair = repairClaudeResumeTranscript(targetClaudeSessionId, managed.laneWorktreePath);
+      if (repair.repaired) {
+        logger.warn("agent_chat.external_import_claude_thinking_transcript_repaired", {
+          sessionId: managed.session.id,
+          sdkSessionId: targetClaudeSessionId,
+          responsesRekeyed: repair.responsesRekeyed,
+          reusedMessageIds: repair.reusedMessageIds,
+        });
+      }
+      const events = claudeJsonlToChatEvents(targetLines, {
+        sessionId: managed.session.id,
+        provider: "claude",
+        externalSessionId,
+        importedAt,
+        laneId: managed.session.laneId,
+        transcriptBytesTruncated: targetTranscriptTruncated,
+        transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
+      });
+      applyImportedChatMetadata(managed, args, events, importedAt);
+      persistChatState(managed);
+      appendImportedChatEvents(managed, events);
+      persistChatState(managed);
+      return { chatSessionId: managed.session.id };
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
+  const extractCodexThreadTurns = (
+    response: unknown,
+    threadId: string,
+  ): { turns: unknown[]; responseThreadId: string; foundThread: boolean } => {
+    const record = response && typeof response === "object" && !Array.isArray(response)
+      ? response as Record<string, unknown>
+      : {};
+    const thread = record.thread && typeof record.thread === "object" && !Array.isArray(record.thread)
+      ? record.thread as Record<string, unknown>
+      : null;
+    const topLevelTurns = Array.isArray(record.turns) ? record.turns : null;
+    const responseThreadId = typeof thread?.id === "string" && thread.id.trim().length
+      ? thread.id.trim()
+      : threadId;
+    const turns = Array.isArray(thread?.turns)
+      ? thread.turns
+      : topLevelTurns
+        ? topLevelTurns
+        : [];
+    return { turns, responseThreadId, foundThread: Boolean(thread) || topLevelTurns !== null };
+  };
+
+  const importCodexExternalChatSession = async (
+    args: AgentChatImportExternalSessionArgs,
+    importedAt: number,
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const externalThreadId = args.externalSessionId.trim();
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider: "codex",
+        model: DEFAULT_CODEX_MODEL,
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      const runtime = await ensureCodexSessionRuntime(managed);
+      let targetThreadId = externalThreadId;
+      if (args.fork) {
+        const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+          threadId: externalThreadId,
+          excludeTurns: true,
+        });
+        const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
+        if (!forkedThreadId) {
+          throw externalChatImportError(
+            "EXTERNAL_CHAT_SESSION_READ_FAILED",
+            `Codex thread/fork did not return a new thread id for '${externalThreadId}'.`,
+          );
+        }
+        targetThreadId = forkedThreadId;
+      }
+
+      const readResponse = await runtime.request<unknown>("thread/read", {
+        threadId: targetThreadId,
+        includeTurns: true,
+      });
+      const { turns, responseThreadId, foundThread } = extractCodexThreadTurns(readResponse, targetThreadId);
+      if (!foundThread) {
+        throw externalChatImportError(
+          "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+          `External Codex thread '${targetThreadId}' was not found by thread/read.`,
+        );
+      }
+      targetThreadId = responseThreadId;
+      managed.session.threadId = targetThreadId;
+      runtime.threadResumed = false;
+      runtime.canAttachResumedTurnStart = false;
+      sessionService.setResumeCommand(managed.session.id, `chat:codex:${targetThreadId}`);
+      const events = codexTurnsToChatEvents(turns, {
+        sessionId: managed.session.id,
+        provider: "codex",
+        externalSessionId: externalThreadId,
+        importedAt,
+        laneId: managed.session.laneId,
+      });
+      applyImportedChatMetadata(managed, args, events, importedAt);
+      persistChatState(managed);
+      appendImportedChatEvents(managed, events);
+      persistChatState(managed);
+      return { chatSessionId: managed.session.id };
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
+  const importExternalChatSession = async (
+    args: AgentChatImportExternalSessionArgs,
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const provider = args.provider;
+    const externalSessionId = typeof args.externalSessionId === "string" ? args.externalSessionId.trim() : "";
+    const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+    if (provider !== "claude" && provider !== "codex") {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unsupported chat import provider '${String(provider)}'.`);
+    }
+    if (!externalSessionId) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "externalSessionId is required.");
+    }
+    if (!laneId) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "laneId is required.");
+    }
+    const launchContext = resolveLaneLaunchContext({
+      laneService,
+      projectRoot,
+      laneId,
+      purpose: "import this chat",
+    });
+    const normalizedArgs: AgentChatImportExternalSessionArgs = {
+      ...args,
+      provider,
+      externalSessionId,
+      laneId,
+      cwd: typeof args.cwd === "string" && args.cwd.trim().length ? args.cwd.trim() : null,
+      fork: args.fork === true,
+      ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+    };
+    const importedAt = Date.now();
+    if (provider === "claude") {
+      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt);
+    }
+    return importCodexExternalChatSession(normalizedArgs, importedAt);
+  };
+
   const prepareSendMessage = ({
     sessionId,
     text,
@@ -25059,6 +25510,9 @@ export function createAgentChatService(args: {
       completion: liveSession?.completion ?? persisted?.completion ?? null,
       codexGoal: normalizeAdeCodexGoal(liveSession?.codexGoal ?? persisted?.codexGoal ?? null),
       codexTokenUsage: liveSession?.codexTokenUsage ?? persisted?.codexTokenUsage ?? null,
+      ...(liveSession?.importedFrom || persisted?.importedFrom
+        ? { importedFrom: liveSession?.importedFrom ?? persisted?.importedFrom }
+        : {}),
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
@@ -28845,6 +29299,7 @@ export function createAgentChatService(args: {
 
   return {
     createSession,
+    importExternalChatSession,
     launchHeadless,
     suggestLaneNameFromPrompt,
     handoffSession,
@@ -28941,3 +29396,5 @@ export function createAgentChatService(args: {
     },
   };
 }
+
+export type AgentChatService = ReturnType<typeof createAgentChatService>;

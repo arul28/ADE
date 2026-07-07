@@ -62,6 +62,7 @@ import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
 import { createProjectSearchService } from "./services/search/searchServiceWiring";
 import type { SearchService } from "./services/search/searchService";
+import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -3283,6 +3284,14 @@ app.whenReady().then(async () => {
       backfillDelayMs: 10_000,
     });
     searchServiceHolder.current = searchService;
+    const externalSessionsService = createExternalSessionsService({
+      projectRoot,
+      laneService,
+      sessionService,
+      ptyService,
+      logger,
+      chatImporter: agentChatService,
+    });
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
@@ -3815,6 +3824,7 @@ app.whenReady().then(async () => {
       queueLandingService,
       fileService,
       searchService,
+      externalSessionsService,
       ctoStateService,
       ctoMemoryService,
       linearCredentialService,
@@ -4077,6 +4087,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       reviewService,
       searchService,
+      externalSessionsService,
       jobEngine,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService,

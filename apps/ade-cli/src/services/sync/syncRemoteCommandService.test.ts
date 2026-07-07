@@ -3,12 +3,16 @@ import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 
-function makePayload(action: string, args: Record<string, unknown> = {}): SyncCommandPayload {
+function makePayload(
+  action: string,
+  args: Record<string, unknown> = {},
+): SyncCommandPayload {
   return { commandId: "cmd-1", action, args };
 }
 
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
+  externalSessionsService?: Record<string, unknown>;
   prService?: Record<string, unknown>;
 }) {
   const ptyService = {
@@ -26,9 +30,10 @@ function createService(options?: {
     sessionService: {},
     fileService: {},
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
+    ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     logger,
   } as any);
-  return { service, ptyService, logger };
+  return { service, ptyService, externalSessionsService: options?.externalSessionsService, logger };
 }
 
 describe("createSyncRemoteCommandService", () => {
@@ -80,6 +85,226 @@ describe("createSyncRemoteCommandService", () => {
     expect(ptyService.resumeSession).toHaveBeenCalledWith({
       sessionId: "session-1",
     });
+  });
+
+  it("routes work.listExternalSessions to the external session service", async () => {
+    const list = vi.fn().mockResolvedValue([{
+      provider: "codex",
+      id: "thread-1",
+      cwd: "/repo",
+      title: "Fix tests",
+      preview: "Working on it",
+      createdAt: 10,
+      updatedAt: 20,
+      messageCount: 3,
+      alreadyImported: false,
+      possiblyActive: true,
+      cwdMatchesRequestedLane: true,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: true,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true,
+      },
+    }]);
+    const { service } = createService({
+      externalSessionsService: { list, importExternalSession: vi.fn() },
+    });
+
+    expect(service.getDescriptor("work.listExternalSessions")).toEqual({
+      action: "work.listExternalSessions",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    const result = await service.execute(makePayload("work.listExternalSessions", {
+      providers: ["codex"],
+      laneId: "lane-1",
+      cwd: "/repo",
+      scope: "all",
+      limit: 999,
+    }));
+
+    expect(list).toHaveBeenCalledWith({
+      providers: ["codex"],
+      laneId: "lane-1",
+      cwd: "/repo",
+      scope: "all",
+      limit: 100,
+    });
+    expect(result).toEqual([{
+      provider: "codex",
+      id: "thread-1",
+      cwd: "/repo",
+      title: "Fix tests",
+      preview: "Working on it",
+      createdAt: 10,
+      updatedAt: 20,
+      messageCount: 3,
+      alreadyImported: false,
+      possiblyActive: true,
+      cwdMatchesRequestedLane: true,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: true,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true,
+      },
+    }]);
+  });
+
+  it("exposes work.listExternalSessions as a viewer-allowed descriptor and passes scope through", async () => {
+    // Paired-device access is gated once, by policy.viewerAllowed at the sync host
+    // (see syncHostService), not by a client-declared role at this layer.
+    const list = vi.fn().mockResolvedValue([]);
+    const { service } = createService({
+      externalSessionsService: { list, importExternalSession: vi.fn() },
+    });
+
+    expect(service.getDescriptor("work.listExternalSessions")).toEqual({
+      action: "work.listExternalSessions",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    await expect(service.execute(makePayload("work.listExternalSessions", {
+      scope: "all",
+    }))).resolves.toEqual([]);
+    expect(list).toHaveBeenCalledWith({ scope: "all" });
+  });
+
+  it("rejects invalid work.listExternalSessions filters", async () => {
+    const list = vi.fn();
+    const { service } = createService({
+      externalSessionsService: { list, importExternalSession: vi.fn() },
+    });
+
+    await expect(service.execute(makePayload("work.listExternalSessions", {
+      providers: ["bogus"],
+    }))).rejects.toThrow("work.listExternalSessions requires a valid provider.");
+    await expect(service.execute(makePayload("work.listExternalSessions", {
+      scope: "workspace",
+    }))).rejects.toThrow("work.listExternalSessions scope must be project or all.");
+    await expect(service.execute(makePayload("work.listExternalSessions", {
+      laneId: 42,
+    }))).rejects.toThrow("work.listExternalSessions laneId must be a string.");
+    await expect(service.execute(makePayload("work.listExternalSessions", {
+      limit: Number.POSITIVE_INFINITY,
+    }))).rejects.toThrow("work.listExternalSessions limit must be a finite number.");
+    expect(list).not.toHaveBeenCalled();
+  });
+
+  it("routes work.importExternalSession to the external session service", async () => {
+    const importExternalSession = vi.fn().mockResolvedValue({
+      kind: "cli",
+      sessionId: "session-1",
+      ptyId: "pty-1",
+      laneId: "lane-1",
+    });
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession },
+    });
+
+    expect(service.getDescriptor("work.importExternalSession")).toEqual({
+      action: "work.importExternalSession",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: true },
+    });
+
+    const result = await service.execute(makePayload("work.importExternalSession", {
+      provider: "codex",
+      sessionId: "thread-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      model: "gpt-5.3-codex",
+      permissionMode: "default",
+    }));
+
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "codex",
+      sessionId: "thread-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      model: "gpt-5.3-codex",
+      permissionMode: "default",
+    });
+    expect(result).toEqual({
+      kind: "cli",
+      sessionId: "session-1",
+      ptyId: "pty-1",
+      laneId: "lane-1",
+    });
+  });
+
+  it("routes chat work.importExternalSession results without CLI fields", async () => {
+    const importExternalSession = vi.fn().mockResolvedValue({
+      kind: "chat",
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+    });
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession },
+    });
+
+    const result = await service.execute(makePayload("work.importExternalSession", {
+      provider: "claude",
+      sessionId: "thread-1",
+      laneId: "lane-1",
+      target: "chat",
+      mode: "fork",
+    }));
+
+    expect(result).toEqual({
+      kind: "chat",
+      chatSessionId: "chat-1",
+      laneId: "lane-1",
+    });
+  });
+
+  it("rejects invalid work.importExternalSession payloads", async () => {
+    const importExternalSession = vi.fn();
+    const { service } = createService({
+      externalSessionsService: { list: vi.fn(), importExternalSession },
+    });
+
+    await expect(service.execute(makePayload("work.importExternalSession", {
+      provider: "bogus",
+      sessionId: "thread-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+    }))).rejects.toThrow("work.importExternalSession requires a valid provider.");
+    await expect(service.execute(makePayload("work.importExternalSession", {
+      provider: "codex",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+    }))).rejects.toThrow("work.importExternalSession requires sessionId.");
+    await expect(service.execute(makePayload("work.importExternalSession", {
+      provider: "codex",
+      sessionId: "thread-1",
+      target: "cli",
+      mode: "resume",
+    }))).rejects.toThrow("work.importExternalSession requires laneId.");
+    await expect(service.execute(makePayload("work.importExternalSession", {
+      provider: "codex",
+      sessionId: "thread-1",
+      laneId: "lane-1",
+      target: "browser",
+      mode: "resume",
+    }))).rejects.toThrow("work.importExternalSession target must be cli or chat.");
+    await expect(service.execute(makePayload("work.importExternalSession", {
+      provider: "codex",
+      sessionId: "thread-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "clone",
+    }))).rejects.toThrow("work.importExternalSession mode must be resume or fork.");
+    expect(importExternalSession).not.toHaveBeenCalled();
   });
 
   it("routes the canonical chat history page command to the chat service", async () => {

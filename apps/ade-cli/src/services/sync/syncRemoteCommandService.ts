@@ -105,6 +105,15 @@ import type {
   StartIntegrationResolutionArgs,
   StartQueueAutomationArgs,
   SubmitPrReviewArgs,
+  ExternalSessionImportArgs,
+  ExternalSessionImportResult,
+  ExternalSessionListArgs,
+  ExternalSessionProvider,
+  ExternalSessionSummary,
+  SyncImportExternalSessionArgs,
+  SyncImportExternalSessionResult,
+  SyncListExternalSessionsArgs,
+  SyncListExternalSessionsResult,
   SyncCommandPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
@@ -151,6 +160,19 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
+
+export type ExternalSessionsRemoteService = {
+  list(args?: ExternalSessionListArgs): Promise<ExternalSessionSummary[]>;
+  importExternalSession(args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult>;
+};
+
+const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>([
+  "claude",
+  "codex",
+  "cursor",
+  "droid",
+  "opencode",
+]);
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -211,6 +233,8 @@ type SyncRemoteCommandServiceArgs = {
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
   rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
+  externalSessionsService?: ExternalSessionsRemoteService | null;
+  getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
   /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
@@ -751,6 +775,74 @@ function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliS
     reasoningEffort: asTrimmedString(value.reasoningEffort),
     fastMode: asOptionalBoolean(value.fastMode) ?? asOptionalBoolean(value.codexFastMode),
   };
+}
+
+function parseExternalSessionProvider(value: unknown, action: string): ExternalSessionProvider {
+  const provider = asTrimmedString(value)?.toLowerCase();
+  if (!provider || !EXTERNAL_SESSION_PROVIDERS.has(provider as ExternalSessionProvider)) {
+    throw new Error(`${action} requires a valid provider.`);
+  }
+  return provider as ExternalSessionProvider;
+}
+
+function parseListExternalSessionsArgs(value: Record<string, unknown>): SyncListExternalSessionsArgs {
+  const result: SyncListExternalSessionsArgs = {};
+  if (value.providers != null) {
+    if (!Array.isArray(value.providers)) throw new Error("work.listExternalSessions providers must be an array.");
+    result.providers = value.providers.map((provider) =>
+      parseExternalSessionProvider(provider, "work.listExternalSessions"));
+  }
+  if (value.laneId != null) {
+    if (typeof value.laneId !== "string") throw new Error("work.listExternalSessions laneId must be a string.");
+    result.laneId = value.laneId.trim();
+  }
+  if (value.cwd != null) {
+    if (typeof value.cwd !== "string") throw new Error("work.listExternalSessions cwd must be a string.");
+    result.cwd = value.cwd.trim();
+  }
+  if (value.scope != null) {
+    if (value.scope !== "project" && value.scope !== "all") {
+      throw new Error("work.listExternalSessions scope must be project or all.");
+    }
+    result.scope = value.scope;
+  }
+  if (value.limit != null) {
+    if (typeof value.limit !== "number" || !Number.isFinite(value.limit)) {
+      throw new Error("work.listExternalSessions limit must be a finite number.");
+    }
+    result.limit = Math.max(1, Math.min(100, Math.floor(value.limit)));
+  }
+  return result;
+}
+
+function parseImportExternalSessionArgs(value: Record<string, unknown>): SyncImportExternalSessionArgs {
+  const provider = parseExternalSessionProvider(value.provider, "work.importExternalSession");
+  const sessionId = requireString(value.sessionId, "work.importExternalSession requires sessionId.");
+  const laneId = requireString(value.laneId, "work.importExternalSession requires laneId.");
+  const target = asTrimmedString(value.target);
+  if (target !== "cli" && target !== "chat") {
+    throw new Error("work.importExternalSession target must be cli or chat.");
+  }
+  const mode = asTrimmedString(value.mode);
+  if (mode !== "resume" && mode !== "fork") {
+    throw new Error("work.importExternalSession mode must be resume or fork.");
+  }
+  return {
+    provider,
+    sessionId,
+    laneId,
+    target,
+    mode,
+    ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
+    ...(asTrimmedString(value.permissionMode) ? { permissionMode: asTrimmedString(value.permissionMode)! } : {}),
+  };
+}
+
+function resolveExternalSessionsService(args: SyncRemoteCommandServiceArgs): ExternalSessionsRemoteService {
+  return requireService(
+    args.getExternalSessionsService?.() ?? args.externalSessionsService,
+    "External sessions service not available.",
+  );
 }
 
 function isChatToolType(toolType: string | null | undefined): boolean {
@@ -2412,6 +2504,28 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       ptyId: result.ptyId,
       session: result.session,
     } satisfies SyncStartCliSessionResult;
+  });
+  register("work.listExternalSessions", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseListExternalSessionsArgs(payload);
+    const result = await resolveExternalSessionsService(args).list(parsed);
+    return result satisfies SyncListExternalSessionsResult;
+  });
+  register("work.importExternalSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const parsed = parseImportExternalSessionArgs(payload);
+    const result = await resolveExternalSessionsService(args).importExternalSession(parsed);
+    if (result.kind === "cli") {
+      return {
+        kind: "cli",
+        sessionId: result.sessionId,
+        ptyId: result.ptyId,
+        laneId: result.laneId,
+      } satisfies SyncImportExternalSessionResult;
+    }
+    return {
+      kind: "chat",
+      chatSessionId: result.chatSessionId,
+      laneId: result.laneId,
+    } satisfies SyncImportExternalSessionResult;
   });
   register("work.sendToSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseSendToSessionArgs(payload);

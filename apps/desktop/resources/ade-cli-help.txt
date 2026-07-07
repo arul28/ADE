@@ -44,8 +44,8 @@ _    ____  _____
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -150,8 +150,8 @@ _    ____  _____
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -256,8 +256,8 @@ _    ____  _____
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
@@ -533,6 +533,7 @@ _    ____  _____
     --lane, --lane-id <id>  Restrict to a lane (id or name; the service resolves names).
     --limit <n>             Max results to return.
     --cursor <c>            Continue from a previous query's nextCursor.
+    --actions               List the raw search service actions exposed via ADE actions.
     --status                Show index doc counts, backfill state, and index path.
     --rebuild               Rebuild the whole index from scratch (CTO-only).
     --text                  Aligned KIND/TITLE/SNIPPET/ID rows plus a count summary.
@@ -731,13 +732,104 @@ _    ____  _____
   / ___ \| |_| | |___
  /_/   \_\____/|_____|
 
-  CTO and Work state
+  Agent-focused command-line interface for ADE.
 
-    $ ade cto state --text                          Read CTO identity, recent sessions
-    $ ade cto chats list --text                     List CTO work chats
-    $ ade cto chats spawn --lane <lane> --prompt "plan this"
-    $ ade cto chats send <session> --text "continue"
-    $ ade actions run worker_agent.listAgents --input-json '{"includeDeleted":false}'
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
+
+    $ ade help <command...>                         Display help for a command
+    $ ade auth status                               Check local ADE CLI readiness
+    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
+    $ ade link lane | session | branch | pr | linear-issue
+                                                     Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
+    $ ade init [path]                               Register a project with this machine brain
+    $ ade projects list                             List projects registered on this machine
+    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
+    $ ade lanes list | show | create | child        Work with lanes and lane stacks
+    $ ade git status | commit | push | stash        Run ADE-aware git operations
+    $ ade operations status | wait                  Poll operation/test/chat/run status
+    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
+    $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
+    $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | resume | read | write | signal
+                                                    Control an attached session terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
+    $ ade chat list | create | send | interrupt     Work with ADE agent chats
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
+    $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
+    $ ade automations list | create | run | runs    Manage automation rules
+    $ ade coordinator <tool>                        Call coordinator runtime tools
+    $ ade tests list | run | stop | runs | logs     Run configured test suites
+    $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
+    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
+    $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade actions list | run | status | wait        Escape hatch for every ADE service action
+    $ ade cursor cloud agents | runs | artifacts | repos | models | me
+                                                    Drive Cursor Cloud agents via @cursor/sdk
+
+  Global options:
+    --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
+    --workspace-root <path> Lane/worktree to treat as the active workspace.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
+    --json                  Print machine-readable JSON. This is the default output mode.
+    --text                  Print a compact human-readable summary when a formatter exists.
+    --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+
+  Common agent flows:
+    $ ade doctor --text
+    $ ade lanes list --text
+    $ ade lanes create --name fix-login --description "Repair login redirect"
+    $ ade git status --lane <lane> --text
+    $ ade git status --full --lane <lane> --text
+    $ ade git sync --lane <lane> --rebase --base main
+    $ ade git stage --lane <lane> src/index.ts
+    $ ade git commit --lane <lane> -m "Fix login redirect"
+    $ ade prs create --lane <lane> --base main --draft
+    $ ade prs checks <pr-id-or-number-or-url> --text
+    $ ade proof record --seconds 20
+    $ ade ios-sim apps --text
+    $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade terminal read --chat-session <owner-session-id> --text
+    $ ade terminal read --pty <pty-id> --text
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+
+  Generic ADE action JSON contract:
+    Object-shaped call:
+      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
+      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
+    JSON value fields:
+      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
+    Multi-parameter service call:
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
+    $ ade actions list --text
+    $ ade actions list --domain pr --text
+    $ ade actions run <domain.action> --input-json '{"key":"value"}'
+
+  Start with: ade doctor --text
 
 ## ade linear --help
 _    ____  _____
@@ -777,17 +869,6 @@ _    ____  _____
                                                     Search issues for the lane Linear-issue picker
     $ ade --role cto linear issue-comments --issue-id <id>
                                                     Fetch comments on a Linear issue
-    $ ade linear workflows --text                   List configured workflows
-    $ ade linear sync dashboard --text              Show sync dashboard
-    $ ade linear sync run                           Trigger a sync run
-    $ ade linear sync queue --text                  List sync queue items
-    $ ade linear sync resolve --queue-item <id> --action approve
-    $ ade linear ingress status --text              Show Linear ingress status
-    $ ade linear ingress start --text               Ensure Linear webhook and start relay ingress
-    $ ade linear ingress start-local --text         Start only the local Linear webhook listener
-    $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
-    $ ade linear install                            Register ADE as the "Open in coding tool" target
-    $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
 
 ## ade automations --help
 _    ____  _____
@@ -835,13 +916,104 @@ _    ____  _____
   / ___ \| |_| | |___
  /_/   \_\____/|_____|
 
-  Flow policy
+  Agent-focused command-line interface for ADE.
 
-    $ ade flow policy get --text                    Read current workflow policy
-    $ ade flow policy validate --input-json '{...}' Validate policy JSON
-    $ ade flow policy save --input-json '{...}'     Save policy JSON
-    $ ade flow policy revisions --text              List saved revisions
-    $ ade flow policy rollback <revision-id>        Restore a prior revision
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
+
+    $ ade help <command...>                         Display help for a command
+    $ ade auth status                               Check local ADE CLI readiness
+    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade desktop                                   Launch the installed desktop app
+    $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
+    $ ade link lane | session | branch | pr | linear-issue
+                                                     Build a shareable deeplink (copies to clipboard)
+    $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
+    $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
+    $ ade init [path]                               Register a project with this machine brain
+    $ ade projects list                             List projects registered on this machine
+    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
+    $ ade lanes list | show | create | child        Work with lanes and lane stacks
+    $ ade git status | commit | push | stash        Run ADE-aware git operations
+    $ ade operations status | wait                  Poll operation/test/chat/run status
+    $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
+    $ ade files tree | read | write | search        Read and edit lane workspaces
+    $ ade search "<query>" --text                    Search chats, terminals, PRs, commits, lanes, files, Linear
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
+    $ ade shell start | write | resize | close      Launch and control tracked shell sessions
+    $ ade terminal list | resume | read | write | signal
+                                                    Control an attached session terminal
+    $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
+    $ ade chat list | create | send | interrupt     Work with ADE agent chats
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
+    $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
+    $ ade automations list | create | run | runs    Manage automation rules
+    $ ade coordinator <tool>                        Call coordinator runtime tools
+    $ ade tests list | run | stop | runs | logs     Run configured test suites
+    $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
+    $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
+    $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
+    $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade secrets list | get | set | delete          Manage encrypted ADE project secrets for agents
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
+    $ ade settings action <method>                  Call project config actions
+    $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade actions list | run | status | wait        Escape hatch for every ADE service action
+    $ ade cursor cloud agents | runs | artifacts | repos | models | me
+                                                    Drive Cursor Cloud agents via @cursor/sdk
+
+  Global options:
+    --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
+    --workspace-root <path> Lane/worktree to treat as the active workspace.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
+    --json                  Print machine-readable JSON. This is the default output mode.
+    --text                  Print a compact human-readable summary when a formatter exists.
+    --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
+
+  Common agent flows:
+    $ ade doctor --text
+    $ ade lanes list --text
+    $ ade lanes create --name fix-login --description "Repair login redirect"
+    $ ade git status --lane <lane> --text
+    $ ade git status --full --lane <lane> --text
+    $ ade git sync --lane <lane> --rebase --base main
+    $ ade git stage --lane <lane> src/index.ts
+    $ ade git commit --lane <lane> -m "Fix login redirect"
+    $ ade prs create --lane <lane> --base main --draft
+    $ ade prs checks <pr-id-or-number-or-url> --text
+    $ ade proof record --seconds 20
+    $ ade ios-sim apps --text
+    $ ade ios-sim launch --target <id> --text
+    $ ade app-control launch --command "pnpm dev" --text
+    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade terminal read --chat-session <owner-session-id> --text
+    $ ade terminal read --pty <pty-id> --text
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+
+  Generic ADE action JSON contract:
+    Object-shaped call:
+      $ ade actions run git.push --input-json '{"laneId":"lane-1","setUpstream":true}'
+      $ ade actions run git.push --arg laneId=lane-1 --arg setUpstream=true
+    JSON value fields:
+      $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
+    Multi-parameter service call:
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
+    $ ade actions list --text
+    $ ade actions list --domain pr --text
+    $ ade actions run <domain.action> --input-json '{"key":"value"}'
+
+  Start with: ade doctor --text
 
 ## ade coordinator --help
 _    ____  _____
@@ -1182,8 +1354,8 @@ _    ____  _____
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | interrupt     Work with ADE agent chats
-    $ ade cto state | chats                         Operate CTO state and Work chats
-    $ ade linear graphql | workflows | run | sync   Operate Linear GraphQL, routing, and sync workflows
+    $ ade linear attach | comment | set-state | issue | graphql
+                                                    Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
     $ ade coordinator <tool>                        Call coordinator runtime tools
