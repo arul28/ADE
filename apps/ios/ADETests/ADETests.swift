@@ -15239,10 +15239,11 @@ final class LinearPaneTests: XCTestCase {
 
   private func makeDeps(
     spy: LinearLaunchSpy,
+    create: @escaping () async throws -> String = { "lane1" },
     chat: @escaping () async throws -> String = { "sess1" }
   ) -> LinearLaunchDeps {
     LinearLaunchDeps(
-      createLane: { _, name, _ in await spy.recordCreate(name); return "lane1" },
+      createLane: { _, name, _ in await spy.recordCreate(name); return try await create() },
       launchChat: { _, _ in await spy.recordChat(); return try await chat() },
       launchCli: { _, _ in await spy.recordCli(); return "cli1" },
       deleteLane: { id in await spy.recordDelete(id) }
@@ -15340,13 +15341,33 @@ final class LinearPaneTests: XCTestCase {
     do {
       _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
       XCTFail("Expected the queued launch to throw")
-    } catch is QueuedRemoteCommandError {
+    } catch is LinearQueuedAgentLaunchError {
       // Expected — the queued chat needs the lane to exist when it drains.
     } catch {
-      XCTFail("Expected a queued command error, got \(error)")
+      XCTFail("Expected a queued agent launch error, got \(error)")
     }
     let deleted = await spy.deletedLaneIds
     XCTAssertTrue(deleted.isEmpty, "Queued launches must keep the lane for reconnect drain")
+  }
+
+  func testRunLinearLaunchSurfacesQueuedLaneCreationBeforeAgentLaunch() async {
+    let spy = LinearLaunchSpy()
+    let deps = makeDeps(
+      spy: spy,
+      create: { throw QueuedRemoteCommandError(action: "lane.create") }
+    )
+    do {
+      _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
+      XCTFail("Expected queued lane creation to throw")
+    } catch is QueuedRemoteCommandError {
+      // Expected — no lane id exists yet, so the agent launch was not queued.
+    } catch {
+      XCTFail("Expected the original queued create error, got \(error)")
+    }
+    let chat = await spy.chatLaunches
+    let deleted = await spy.deletedLaneIds
+    XCTAssertEqual(chat, 0)
+    XCTAssertTrue(deleted.isEmpty)
   }
 
   func testLinearIssueFallbackSearchWidensBeyondAssignedIssues() {

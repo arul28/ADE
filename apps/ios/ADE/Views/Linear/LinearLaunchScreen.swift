@@ -350,11 +350,20 @@ struct LinearLaunchScreen: View {
         syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
       }
       syncService.linearPanePresented = false
-    } catch is QueuedRemoteCommandError {
-      // Offline: the create was queued and will drain on reconnect. Dismiss
-      // cleanly rather than surfacing an error.
+    } catch is LinearQueuedAgentLaunchError {
+      // Offline after lane creation: the queued agent launch has a concrete lane
+      // id to drain into, so this handoff is complete from the sheet's view.
       ADEHaptics.medium()
       syncService.linearPanePresented = false
+    } catch is QueuedRemoteCommandError {
+      if config.sessionType.needsAgentConfig {
+        ADEHaptics.error()
+        errorMessage = "Lane creation was queued, but the agent was not launched yet. Reconnect your machine, wait for the lane to appear, then launch the agent again."
+        busy = false
+      } else {
+        ADEHaptics.medium()
+        syncService.linearPanePresented = false
+      }
     } catch {
       ADEHaptics.error()
       errorMessage = SyncUserFacingError.message(for: error)

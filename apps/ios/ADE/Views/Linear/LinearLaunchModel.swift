@@ -79,6 +79,16 @@ enum LinearLaunchOutcome: Equatable {
   }
 }
 
+/// A queued agent launch that happened after the lane was created. The caller
+/// can treat this as a successful handoff because the queue has a concrete lane
+/// id to drain into; queued lane creation before that point is left as the
+/// original `QueuedRemoteCommandError`.
+struct LinearQueuedAgentLaunchError: LocalizedError {
+  let underlying: QueuedRemoteCommandError
+
+  var errorDescription: String? { underlying.errorDescription }
+}
+
 /// Create-lane → launch-agent → return, with lane rollback on a post-lane
 /// launch failure (desktop parity). This is the single-issue slice of the
 /// desktop `runBatchLaunch`.
@@ -107,7 +117,7 @@ func runLinearLaunch(
     }
     return .session(laneId: laneId, sessionId: sessionId)
   } catch let queuedError as QueuedRemoteCommandError {
-    throw queuedError
+    throw LinearQueuedAgentLaunchError(underlying: queuedError)
   } catch {
     // The agent never launched into the lane we just minted, so roll back the
     // empty lane. Queued offline launches keep the lane so the queue can drain.
