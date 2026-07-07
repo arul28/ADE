@@ -394,6 +394,13 @@ function parsePositiveInteger(value: string, label: string): number {
 }
 
 function finishLink(url: string, skipClipboard: boolean): DeeplinkCliResult {
+  // Round-trip gate: never print/copy a link the shared parser would reject
+  // (e.g. `ade link file ../secret` or a malformed commit sha).
+  const roundTrip = parseDeeplink(url);
+  if (!roundTrip.ok) {
+    const reason = "reason" in roundTrip.error ? roundTrip.error.reason : roundTrip.error.kind;
+    throw new CliDeeplinkUsageError(`refusing to mint an invalid link (${reason}): ${url}`);
+  }
   let clipboardNote = "";
   if (!skipClipboard) {
     if (copyToClipboard(url)) {

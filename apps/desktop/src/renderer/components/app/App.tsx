@@ -108,6 +108,7 @@ import {
   parseGithubRemoteUrl,
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
+import { isValidRepoRelativePath } from "../../../shared/deeplinks";
 import type {
   AppNavigationRequest,
   AppNavigationTarget,
@@ -1001,6 +1002,10 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "file") {
+      // Defense in depth: targets normally arrive parser-validated, but the
+      // app/navigate RPC path bypasses URL parsing — never compose a path
+      // that could escape the resolved root.
+      if (!isValidRepoRelativePath(target.path)) return true;
       const lane = laneById(target.laneId);
       const root = lane?.worktreePath || project?.rootPath || "";
       const localPath = root
@@ -1028,8 +1033,19 @@ function AppNavigationBridge() {
       if (!options.forceLocal) {
         const handled = await resolvePortableFallback("commit", target, options);
         if (handled) return true;
+        // During switch-project retries the lane list may still be loading —
+        // report unhandled so the caller retries instead of dropping the sha.
+        if (options.suppressUnresolved) return false;
       }
-      navigate("/lanes");
+      // Last resort: keep the lane hint + sha in the route so LanesPage can
+      // apply them once lanes load, instead of landing on a bare list.
+      const params = new URLSearchParams();
+      if (target.laneId) {
+        params.set("laneId", target.laneId);
+        params.set("focus", "single");
+        params.set("commitSha", target.sha);
+      }
+      navigate(params.toString() ? `/lanes?${params.toString()}` : "/lanes");
       return true;
     }
 

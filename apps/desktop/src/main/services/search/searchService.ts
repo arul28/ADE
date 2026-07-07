@@ -1176,7 +1176,11 @@ export function createSearchService(deps: SearchServiceDeps) {
       if (parsed.sinceIso && lane.createdAt < parsed.sinceIso) continue;
       let deepLink: string;
       try {
-        deepLink = buildDeeplink({ kind: "lane", laneId: lane.id }, { form: "ade" });
+        const envelope = await envelopeForLane(lane.id, lane.branchRef);
+        deepLink = buildDeeplink(
+          { kind: "lane", laneId: lane.id, ...(envelope ? { envelope } : {}) },
+          { form: "ade" }
+        );
       } catch {
         deepLink = `ade://lane/${encodeURIComponent(lane.id)}`;
       }

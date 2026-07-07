@@ -8,11 +8,7 @@ import type { Server as NetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
-import {
-  githubRepoSlugsEqual,
-  parseGithubRemoteUrl,
-  type GithubRepoSlug,
-} from "../../../shared/githubRemote";
+import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
@@ -3791,18 +3787,9 @@ export function registerIpc({
       const repoOwner = typeof arg?.repoOwner === "string" ? arg.repoOwner.trim() : "";
       const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
       if (!repoOwner || !repoName) return null;
-      const targetRepo: GithubRepoSlug = { owner: repoOwner, repo: repoName };
-      for (const recent of listLocalRecentProjectSummaries()) {
-        if (!recent.exists) continue;
-        const rootPath = typeof recent.rootPath === "string" ? recent.rootPath.trim() : "";
-        if (!rootPath) continue;
-        const remote = await runGit(["remote", "get-url", "origin"], { cwd: rootPath, timeoutMs: 5_000 }).catch(() => null);
-        const parsed = remote?.exitCode === 0 ? parseGithubRemoteUrl(remote.stdout.trim()) : null;
-        if (githubRepoSlugsEqual(parsed, targetRepo)) {
-          return { rootPath: recent.rootPath, displayName: recent.displayName };
-        }
-      }
-      return null;
+      // One tested implementation: parses each recent project's git origin
+      // from .git/config (no git subprocess), cached by config mtime.
+      return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
     },
   );
 

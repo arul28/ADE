@@ -23,7 +23,7 @@ import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
-import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -5041,11 +5041,21 @@ export function createAdeRpcRequestHandler(args: {
         if (typeof target.offset === "number" && Number.isSafeInteger(target.offset) && target.offset >= 0) normalizedTarget.offset = target.offset;
       }
       if (kind === "file") {
-        normalizedTarget.path = asOptionalTrimmedString(target.path);
+        // Same repo-relative rules as parseDeeplink: RPC callers must not be
+        // able to smuggle traversal/absolute paths past the URL parser.
+        const filePath = asOptionalTrimmedString(target.path) ?? "";
+        if (!isValidRepoRelativePath(filePath)) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'file' requires a repo-relative path.");
+        }
+        normalizedTarget.path = filePath;
         if (typeof target.line === "number" && Number.isSafeInteger(target.line) && target.line > 0) normalizedTarget.line = target.line;
       }
       if (kind === "commit") {
-        normalizedTarget.sha = asOptionalTrimmedString(target.sha);
+        const sha = asOptionalTrimmedString(target.sha) ?? "";
+        if (!isValidCommitSha(sha)) {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "app/navigate target 'commit' requires a 7-40 hex sha.");
+        }
+        normalizedTarget.sha = sha.toLowerCase();
       }
       if (kind === "artifact") {
         normalizedTarget.artifactId = asOptionalTrimmedString(target.artifactId);

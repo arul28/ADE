@@ -1113,17 +1113,20 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       appliedQuerySessionIdRef.current = null;
       return;
     }
-    if (appliedQuerySessionIdRef.current === sessionParam) return;
+    // Key the apply-once guard by session AND anchor: re-opening the same
+    // session at a different event/offset must set a fresh pending anchor.
+    const eventRaw = (searchParams.get("event") ?? "").trim();
+    const offsetRaw = (searchParams.get("offset") ?? "").trim();
+    const applyKey = `${sessionParam}|${eventRaw}|${offsetRaw}`;
+    if (appliedQuerySessionIdRef.current === applyKey) return;
     if (pendingProjectSwitchRef.current != null) return;
 
     const session = sessions.find((entry) => entry.id === sessionParam);
     if (!session) return;
 
-    appliedQuerySessionIdRef.current = sessionParam;
+    appliedQuerySessionIdRef.current = applyKey;
     // Deeplink anchors (?event=<seq> for chat, ?offset=<bytes> for terminal
     // scrollback) are handed off one-shot to the session's content surface.
-    const eventRaw = (searchParams.get("event") ?? "").trim();
-    const offsetRaw = (searchParams.get("offset") ?? "").trim();
     setPendingSessionAnchor(session.id, {
       event: /^\d+$/.test(eventRaw) ? Number(eventRaw) : undefined,
       offset: /^\d+$/.test(offsetRaw) ? Number(offsetRaw) : undefined,

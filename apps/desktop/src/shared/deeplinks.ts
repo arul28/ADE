@@ -143,12 +143,23 @@ function isValidOpaqueId(value: string): boolean {
   return true;
 }
 
-function isValidRepoRelativePath(value: string): boolean {
+/**
+ * Repo-relative file path rule shared by the parser AND by trusted-input
+ * boundaries that bypass URL parsing (the `app/navigate` RPC, renderer
+ * dispatch). Rejects traversal, absolute paths, drive letters, backslashes,
+ * and control characters.
+ */
+export function isValidRepoRelativePath(value: string): boolean {
   if (!value || value.length > 1024) return false;
   if (value.startsWith("/") || value.endsWith("/")) return false;
   if (value.includes("\\") || /^[A-Za-z]:/.test(value)) return false;
   if (OPAQUE_ID_BAD_RE.test(value)) return false;
   return value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+/** Commit sha rule shared with non-URL boundaries (7-40 hex chars). */
+export function isValidCommitSha(value: string): boolean {
+  return COMMIT_SHA_RE.test(value);
 }
 
 function parseNonNegativeIntParam(raw: string | null): number | undefined | null {
@@ -419,33 +430,20 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     if (pathSegments.length < 4 || pathSegments[2] !== "branch") {
       return { ok: false, error: { kind: "malformed", reason: "expected repo/<owner>/<repo>/branch/<branch>" }, rawUrl };
     }
-    const owner = safeDecode(pathSegments[0]);
-    const repo = safeDecode(pathSegments[1]);
-    const branch = decodeBranchPath(pathSegments.slice(3).join("/"));
-    if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-    if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
-    if (!isValidBranch(branch)) return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
-    const prRaw = url.searchParams.get("pr");
-    const prNumber = prRaw ? Number(prRaw) : undefined;
-    if (prRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
-    }
-    return { ok: true, target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber }, rawUrl };
+    return buildBranchTarget(
+      safeDecode(pathSegments[0]),
+      safeDecode(pathSegments[1]),
+      decodeBranchPath(pathSegments.slice(3).join("/")),
+      url.searchParams.get("pr"),
+      rawUrl,
+    );
   }
 
   if (host === "pr") {
     if (pathSegments.length !== 3) {
       return { ok: false, error: { kind: "malformed", reason: "expected pr/<owner>/<repo>/<number>" }, rawUrl };
     }
-    const owner = safeDecode(pathSegments[0]);
-    const repo = safeDecode(pathSegments[1]);
-    const number = Number(pathSegments[2]);
-    if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-    if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
-    if (!Number.isInteger(number) || number < 1) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
-    }
-    return { ok: true, target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number }, rawUrl };
+    return buildPrTarget(safeDecode(pathSegments[0]), safeDecode(pathSegments[1]), pathSegments[2], rawUrl);
   }
 
   if (host === "linear-issue") {
@@ -496,23 +494,10 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     }
     const owner = repoCombined.slice(0, slash);
     const repo = repoCombined.slice(slash + 1);
-    if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-    if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
     if (type === "branch") {
-      const branch = url.searchParams.get("branch") ?? "";
-      if (!isValidBranch(branch)) return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
-      const prRaw = url.searchParams.get("pr");
-      const prNumber = prRaw ? Number(prRaw) : undefined;
-      if (prRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
-        return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
-      }
-      return { ok: true, target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber }, rawUrl };
+      return buildBranchTarget(owner, repo, url.searchParams.get("branch") ?? "", url.searchParams.get("pr"), rawUrl);
     }
-    const number = Number(url.searchParams.get("number") ?? "");
-    if (!Number.isInteger(number) || number < 1) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
-    }
-    return { ok: true, target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number }, rawUrl };
+    return buildPrTarget(owner, repo, url.searchParams.get("number") ?? "", rawUrl);
   }
   if (type === "linear-issue") {
     const issueIdentifier = url.searchParams.get("issue") ?? "";
@@ -530,6 +515,35 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     };
   }
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
+}
+
+/** Shared branch-target assembly for the ade:// and https:// parse paths. */
+function buildBranchTarget(
+  owner: string,
+  repo: string,
+  branch: string,
+  prRaw: string | null,
+  rawUrl: string,
+): ParseResult {
+  if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
+  if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
+  if (!isValidBranch(branch)) return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
+  const prNumber = prRaw ? Number(prRaw) : undefined;
+  if (prRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
+  }
+  return { ok: true, target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber }, rawUrl };
+}
+
+/** Shared pr-target assembly for the ade:// and https:// parse paths. */
+function buildPrTarget(owner: string, repo: string, numberRaw: string, rawUrl: string): ParseResult {
+  if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
+  if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
+  const number = Number(numberRaw);
+  if (!Number.isInteger(number) || number < 1) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
+  }
+  return { ok: true, target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number }, rawUrl };
 }
 
 function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
