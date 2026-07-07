@@ -20847,6 +20847,45 @@ export function createAgentChatService(args: {
     let createdSessionId: string | null = null;
     let forkedProviderThreadId: string | null = null;
     let forkedProviderRuntime: CodexRuntime | null = null;
+    const archiveForkedProviderThread = async (managed: ManagedChatSession): Promise<void> => {
+      if (!forkedProviderThreadId) return;
+      let staleRuntimeError: unknown = null;
+      if (forkedProviderRuntime) {
+        try {
+          await forkedProviderRuntime.request("thread/archive", {
+            threadId: forkedProviderThreadId,
+          }, { timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS });
+          return;
+        } catch (error) {
+          staleRuntimeError = error;
+        }
+      }
+
+      let freshRuntime: CodexRuntime | null = null;
+      try {
+        if (forkedProviderRuntime && managed.runtime === forkedProviderRuntime) {
+          teardownRuntime(managed, "ended_session");
+        }
+        freshRuntime = await startCodexRuntime(managed);
+        managed.runtime = freshRuntime;
+        managed.runtimeInvalidated = false;
+        await freshRuntime.request("thread/archive", {
+          threadId: forkedProviderThreadId,
+        }, { timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS });
+      } catch (retryError) {
+        logger.warn("agent_chat.external_import_codex_fork_cleanup_leaked", {
+          provider: "codex",
+          forkedThreadId: forkedProviderThreadId,
+          sourceId: externalThreadId,
+          initialError: staleRuntimeError instanceof Error ? staleRuntimeError.message : staleRuntimeError == null ? null : String(staleRuntimeError),
+          error: retryError instanceof Error ? retryError.message : String(retryError),
+        });
+      } finally {
+        if (freshRuntime && managed.runtime === freshRuntime) {
+          teardownRuntime(managed, "ended_session");
+        }
+      }
+    };
     try {
       const created = await createSession({
         laneId: args.laneId,
@@ -20860,15 +20899,26 @@ export function createAgentChatService(args: {
       forkedProviderRuntime = runtime;
       let targetThreadId = externalThreadId;
       if (args.fork) {
-        const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+        const sourceReadResponse = await runtime.request<unknown>("thread/read", {
           threadId: externalThreadId,
+          includeTurns: true,
+        });
+        const sourceThread = extractCodexThreadTurns(sourceReadResponse, externalThreadId);
+        if (!sourceThread.foundThread) {
+          throw externalChatImportError(
+            "EXTERNAL_CHAT_SESSION_NOT_FOUND",
+            `External Codex thread '${externalThreadId}' was not found by thread/read.`,
+          );
+        }
+        const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+          threadId: sourceThread.responseThreadId,
           excludeTurns: true,
         });
         const forkedThreadId = typeof forkResponse.thread?.id === "string" ? forkResponse.thread.id.trim() : "";
         if (!forkedThreadId) {
           throw externalChatImportError(
             "EXTERNAL_CHAT_SESSION_READ_FAILED",
-            `Codex thread/fork did not return a new thread id for '${externalThreadId}'.`,
+            `Codex thread/fork did not return a new thread id for '${sourceThread.responseThreadId}'.`,
           );
         }
         forkedProviderThreadId = forkedThreadId;
@@ -20904,15 +20954,16 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return { chatSessionId: managed.session.id };
     } catch (error) {
-      if (forkedProviderRuntime && forkedProviderThreadId) {
-        try {
-          await forkedProviderRuntime.request("thread/archive", {
-            threadId: forkedProviderThreadId,
-          }, { timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS });
-        } catch (cleanupError) {
-          logger.warn("agent_chat.external_import_codex_fork_cleanup_failed", {
-            threadId: forkedProviderThreadId,
-            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      if (createdSessionId && forkedProviderThreadId) {
+        const managed = managedSessions.get(createdSessionId);
+        if (managed) {
+          await archiveForkedProviderThread(managed);
+        } else {
+          logger.warn("agent_chat.external_import_codex_fork_cleanup_leaked", {
+            provider: "codex",
+            forkedThreadId: forkedProviderThreadId,
+            sourceId: externalThreadId,
+            error: "Managed chat session was missing during cleanup.",
           });
         }
       }

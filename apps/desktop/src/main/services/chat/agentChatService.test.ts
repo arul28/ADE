@@ -1997,7 +1997,13 @@ describe("createAgentChatService", () => {
       mockState.codexResponseOverrides.set("thread/fork", () => ({
         thread: { id: "forked-thread-1" },
       }));
-      mockState.codexResponseOverrides.set("thread/read", () => ({}));
+      mockState.codexResponseOverrides.set("thread/read", (payload) => {
+        const params = payload.params as { threadId?: unknown } | undefined;
+        if (params?.threadId === "source-thread-1") {
+          return { thread: { id: "source-thread-1", turns: [] } };
+        }
+        return {};
+      });
       const { service, sessionService } = createService();
 
       await expect(service.importExternalChatSession({
@@ -2014,6 +2020,49 @@ describe("createAgentChatService", () => {
           params: { threadId: "forked-thread-1" },
         }),
       ]));
+      expect(sessionService.get("test-uuid-1")).toBeNull();
+    });
+
+    it("reacquires a Codex runtime to archive a forked provider thread when the import runtime cannot clean up", async () => {
+      let archiveAttempts = 0;
+      mockState.codexResponseOverrides.set("thread/fork", () => ({
+        thread: { id: "forked-thread-2" },
+      }));
+      mockState.codexResponseOverrides.set("thread/read", (payload) => {
+        const params = payload.params as { threadId?: unknown } | undefined;
+        if (params?.threadId === "source-thread-2") {
+          return { thread: { id: "source-thread-2", turns: [] } };
+        }
+        return {};
+      });
+      mockState.codexResponseOverrides.set("thread/archive", () => {
+        archiveAttempts += 1;
+        if (archiveAttempts === 1) {
+          return { error: { code: -32000, message: "dead runtime" } };
+        }
+        return {};
+      });
+      const { service, logger, sessionService } = createService();
+
+      await expect(service.importExternalChatSession({
+        provider: "codex",
+        externalSessionId: "source-thread-2",
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: true,
+      })).rejects.toThrow(/was not found by thread\/read/i);
+
+      const initializeRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "initialize");
+      const archiveRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/archive");
+      expect(initializeRequests).toHaveLength(2);
+      expect(archiveRequests).toEqual([
+        expect.objectContaining({ params: { threadId: "forked-thread-2" } }),
+        expect.objectContaining({ params: { threadId: "forked-thread-2" } }),
+      ]);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "agent_chat.external_import_codex_fork_cleanup_leaked",
+        expect.anything(),
+      );
       expect(sessionService.get("test-uuid-1")).toBeNull();
     });
 

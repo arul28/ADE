@@ -184,6 +184,67 @@ describe("externalSessionsService", () => {
     });
   });
 
+  it("fills project-scoped results from in-project sessions after recent out-of-project sessions", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    const otherCwd = path.join(root, "other-repo");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    fs.mkdirSync(otherCwd, { recursive: true });
+
+    const claudeProjectsDir = path.join(homeDir, ".claude", "projects");
+    const writeSession = (cwd: string, id: string, prompt: string, mtime: Date) => {
+      const filePath = path.join(claudeProjectsDir, claudeProjectSlugForCwd(cwd), `${id}.jsonl`);
+      writeJsonl(filePath, [
+        {
+          type: "message",
+          sessionId: id,
+          cwd,
+          timestamp: mtime.toISOString(),
+          message: { role: "user", content: prompt },
+        },
+      ]);
+      fs.utimesSync(filePath, mtime, mtime);
+    };
+
+    for (let index = 0; index < 30; index += 1) {
+      writeSession(
+        otherCwd,
+        `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        `outside ${index}`,
+        new Date(Date.UTC(2026, 6, 7, 12, 0, index)),
+      );
+    }
+    const projectIds = [
+      "20000000-0000-4000-8000-000000000001",
+      "20000000-0000-4000-8000-000000000002",
+      "20000000-0000-4000-8000-000000000003",
+    ];
+    projectIds.forEach((id, index) => {
+      writeSession(
+        laneCwd,
+        id,
+        `inside ${index}`,
+        new Date(Date.UTC(2026, 6, 7, 11, 0, index)),
+      );
+    });
+
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(sessions.map((session) => session.id)).toEqual(projectIds.slice().reverse());
+    expect(sessions.every((session) => session.cwd === laneCwd)).toBe(true);
+  });
+
   it("reports droid fork disabled while the probe is pending and honors the override", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");

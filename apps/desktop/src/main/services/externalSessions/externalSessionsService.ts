@@ -98,6 +98,7 @@ type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
 const PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
 const UUIDISH_EXTERNAL_SESSION_ID = /^[0-9a-fA-F-]{8,64}$/u;
 const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
+const PROJECT_SCOPE_DISCOVERY_LIMIT = 200;
 
 const PROVIDER_CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapabilities> = {
   claude: {
@@ -412,6 +413,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
 
   const list = async (rawArgs: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
     const limit = normalizeExternalSessionLimit(rawArgs.limit);
+    const projectScoped = rawArgs.scope !== "all";
+    const discoveryLimit = projectScoped
+      ? Math.max(limit, PROJECT_SCOPE_DISCOVERY_LIMIT)
+      : limit;
     const providers = providerSet(rawArgs.providers);
     const requestedLaneCwd = rawArgs.laneId ? resolveLaneCwd(args.laneService, rawArgs.laneId) : null;
     const requestedCwd = rawArgs.cwd?.trim() ? realish(rawArgs.cwd) : requestedLaneCwd;
@@ -420,7 +425,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       env: args.env,
       cwd: requestedCwd,
       projectRoot: args.projectRoot,
-      limit,
+      limit: discoveryLimit,
     };
 
     const settled = await Promise.all(providers.map(async (provider) => {
@@ -438,10 +443,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const scopeRoots = deriveProjectScopeRoots(args.projectRoot);
     const imported = await importedSessionRefs(args.sessionService, args.chatImportedRefsProvider, args.logger);
     const activeCutoffMs = Date.now() - 2 * 60_000;
-    const discovered = sortDiscoveryRecords(settled.flat(), limit * providers.length);
-    const scoped = rawArgs.scope === "all"
-      ? discovered
-      : discovered.filter((session) => isInProjectScope(session.cwd, scopeRoots));
+    const discovered = sortDiscoveryRecords(settled.flat(), discoveryLimit * providers.length);
+    const scoped = projectScoped
+      ? discovered.filter((session) => isInProjectScope(session.cwd, scopeRoots))
+      : discovered;
 
     return scoped
       .map((session): ExternalSessionSummary => {
@@ -462,7 +467,8 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           capabilities: capabilitiesFor(session.provider),
         };
       })
-      .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+      .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
+      .slice(0, projectScoped ? limit : scoped.length);
   };
 
   const findExternalSummary = async (provider: ExternalSessionProvider, sessionId: string): Promise<ExternalSessionSummary | null> => {
