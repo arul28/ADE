@@ -6,6 +6,8 @@ import { randomUUID } from "node:crypto";
 import { claudeProjectSlugForCwd, isPathInside } from "./discoveryUtils";
 
 function defaultClaudeConfigDir(): string {
+  const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (configured) return configured;
   return path.join(os.homedir(), ".claude");
 }
 

@@ -2295,6 +2295,11 @@ function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexSe
   return { serviceTier };
 }
 
+function codexThreadConfigArgs(reasoningEffort: string | null | undefined): { config?: Record<string, string> } {
+  const effort = typeof reasoningEffort === "string" ? reasoningEffort.trim() : "";
+  return effort ? { config: { model_reasoning_effort: effort } } : {};
+}
+
 function normalizeCodexServiceTier(value: unknown): string | null {
   if (typeof value === "string") {
     const normalized = value.trim().toLowerCase();
@@ -18711,7 +18716,7 @@ export function createAgentChatService(args: {
     const startResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/start", {
       model: managed.session.model,
       cwd: managed.laneWorktreePath,
-      effort: reasoningEffort,
+      ...codexThreadConfigArgs(reasoningEffort),
       developerInstructions: buildCodexDeveloperInstructions({
         laneWorktreePath: managed.laneWorktreePath,
         session: managed.session,
@@ -18722,7 +18727,6 @@ export function createAgentChatService(args: {
       ...codexPolicyArgs(codexPolicy),
       ...(dynamicTools.length ? { dynamicTools } : {}),
       experimentalRawEvents: false,
-      persistExtendedHistory: true
     });
     applyCodexEffectiveThreadState(managed, startResponse, {
       requestedReasoningEffort: reasoningEffort,
@@ -24017,7 +24021,9 @@ export function createAgentChatService(args: {
 
         if (threadIdToResume) {
           try {
-            const dynamicTools = refreshCodexDynamicTools(managed, runtime);
+            // `thread/resume` has no dynamicTools field; refresh ADE's local
+            // handler map while leaving tool registration to the original thread.
+            refreshCodexDynamicTools(managed, runtime);
             const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
               managed.session.reasoningEffort,
               readPersistedState(sessionId)?.reasoningEffort,
@@ -24028,7 +24034,7 @@ export function createAgentChatService(args: {
               threadId: threadIdToResume,
               model: managed.session.model,
               cwd: managed.laneWorktreePath,
-              effort: resumeReasoningEffort,
+              ...codexThreadConfigArgs(resumeReasoningEffort),
               developerInstructions: buildCodexDeveloperInstructions({
                 laneWorktreePath: managed.laneWorktreePath,
                 session: managed.session,
@@ -24037,9 +24043,7 @@ export function createAgentChatService(args: {
               }),
               ...codexServiceTierArgs(managed.session),
               ...codexPolicyArgs(codexPolicy),
-              ...(dynamicTools.length ? { dynamicTools } : {}),
               excludeTurns: true,
-              persistExtendedHistory: true
             });
             applyCodexEffectiveThreadState(managed, resumeResponse, {
               requestedCodexPolicy: codexPolicy,
@@ -25183,17 +25187,17 @@ export function createAgentChatService(args: {
       if (threadId) {
         const { codexPolicy } = resolveCodexThreadParams(managed);
         try {
-          const dynamicTools = refreshCodexDynamicTools(managed, runtime);
+          // `thread/resume` has no dynamicTools field; refresh ADE's local
+          // handler map while leaving tool registration to the original thread.
+          refreshCodexDynamicTools(managed, runtime);
           const resumeResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/resume", {
             threadId,
             model: managed.session.model,
             cwd: managed.laneWorktreePath,
-            effort: managed.session.reasoningEffort,
+            ...codexThreadConfigArgs(managed.session.reasoningEffort),
             ...codexServiceTierArgs(managed.session),
             ...codexPolicyArgs(codexPolicy),
-            ...(dynamicTools.length ? { dynamicTools } : {}),
             excludeTurns: true,
-            persistExtendedHistory: true
           });
           applyCodexEffectiveThreadState(managed, resumeResponse, {
             requestedCodexPolicy: codexPolicy,
@@ -27192,6 +27196,10 @@ export function createAgentChatService(args: {
       if (managed.session.identityKey === "cto" && (modelChanged || reasoningEffort !== undefined)) {
         persistCtoModelPreference(managed, descriptor.id);
       }
+      if (reasoningEffort !== undefined && managed.runtime?.kind === "codex") {
+        managed.runtime.threadResumed = false;
+        managed.runtime.canAttachResumedTurnStart = false;
+      }
     } else if (reasoningEffort !== undefined) {
       const prev = managed.session.reasoningEffort ?? null;
       const requested = normalizeReasoningEffort(reasoningEffort);
@@ -27214,6 +27222,10 @@ export function createAgentChatService(args: {
         } else {
           resetClaudeQuerySession(managed, managed.runtime, "session_reset");
         }
+      }
+      if (prev !== next && managed.runtime?.kind === "codex") {
+        managed.runtime.threadResumed = false;
+        managed.runtime.canAttachResumedTurnStart = false;
       }
       // A reasoning-only change on the CTO thread must also land in identity
       // modelPreferences, or the next ensured session resurrects the old tier.
@@ -29157,7 +29169,9 @@ export function createAgentChatService(args: {
     const { codexPolicy } = resolveCodexThreadParams(managed);
     if (threadId) {
       try {
-        const dynamicTools = refreshCodexDynamicTools(managed, runtime);
+        // `thread/resume` has no dynamicTools field; refresh ADE's local
+        // handler map while leaving tool registration to the original thread.
+        refreshCodexDynamicTools(managed, runtime);
         const resumeReasoningEffort = resolveCodexReasoningEffortForRuntime(
           managed.session.reasoningEffort,
           readPersistedState(managed.session.id)?.reasoningEffort,
@@ -29168,7 +29182,7 @@ export function createAgentChatService(args: {
           threadId,
           model: managed.session.model,
           cwd: managed.laneWorktreePath,
-          effort: resumeReasoningEffort,
+          ...codexThreadConfigArgs(resumeReasoningEffort),
           developerInstructions: buildCodexDeveloperInstructions({
             laneWorktreePath: managed.laneWorktreePath,
             session: managed.session,
@@ -29176,9 +29190,7 @@ export function createAgentChatService(args: {
           }),
           ...codexServiceTierArgs(managed.session),
           ...codexPolicyArgs(codexPolicy),
-          ...(dynamicTools.length ? { dynamicTools } : {}),
           excludeTurns: true,
-          persistExtendedHistory: true,
         }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
         applyCodexEffectiveThreadState(managed, resumeResponse, {
           requestedCodexPolicy: codexPolicy,

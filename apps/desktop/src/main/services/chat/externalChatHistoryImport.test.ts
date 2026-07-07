@@ -259,6 +259,39 @@ describe("codexTurnsToChatEvents", () => {
     expect(events[4]!.event).toMatchObject({ type: "tool_result", result: "README.md" });
   });
 
+  it("maps Codex tagged file-change kinds from app-server history", () => {
+    const events = codexTurnsToChatEvents([
+      {
+        id: "turn-file-change",
+        items: [
+          {
+            type: "fileChange",
+            id: "item-file",
+            status: "completed",
+            changes: [
+              { path: "src/new.ts", kind: { type: "add" }, diff: "new file diff" },
+              { path: "src/old.ts", kind: { type: "delete" }, diff: "delete diff" },
+              { path: "src/edit.ts", kind: { type: "update", movePath: null }, diff: "edit diff" },
+            ],
+          },
+        ],
+      },
+    ], {
+      ...baseOptions,
+      provider: "codex",
+      externalSessionId: "thread_file_change",
+    });
+
+    const fileChanges = events
+      .map((event) => event.event)
+      .filter((event) => event.type === "file_change");
+    expect(fileChanges).toEqual([
+      expect.objectContaining({ path: "src/new.ts", kind: "create" }),
+      expect.objectContaining({ path: "src/old.ts", kind: "delete" }),
+      expect.objectContaining({ path: "src/edit.ts", kind: "modify" }),
+    ]);
+  });
+
   it("derives an imported chat title from the first user message", () => {
     const events = codexTurnsToChatEvents([
       { id: "turn-3", items: [{ type: "userMessage", id: "item-user", content: [{ type: "input_text", text: "Explain the lane status" }] }] },

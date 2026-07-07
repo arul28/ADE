@@ -3291,6 +3291,8 @@ app.whenReady().then(async () => {
       ptyService,
       logger,
       chatImporter: agentChatService,
+      homeDir: os.homedir(),
+      env: process.env,
     });
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,

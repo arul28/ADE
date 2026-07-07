@@ -23,8 +23,9 @@ import {
 } from "./discoveryUtils";
 
 export function claudeConfigDir(args: ExternalSessionDiscoveryArgs = {}): string {
-  const configured = typeof args.env?.CLAUDE_CONFIG_DIR === "string"
-    ? args.env.CLAUDE_CONFIG_DIR.trim()
+  const env = args.env ?? (args.homeDir ? undefined : process.env);
+  const configured = typeof env?.CLAUDE_CONFIG_DIR === "string"
+    ? env.CLAUDE_CONFIG_DIR.trim()
     : "";
   return configured || path.join(resolveHomeDir(args), ".claude");
 }

@@ -3503,6 +3503,11 @@ struct ExternalSessionCapabilities: Codable, Equatable {
   }
 }
 
+struct ExternalSessionImportedRef: Codable, Equatable {
+  var kind: String
+  var sessionId: String
+}
+
 struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var provider: String
   var id: String
@@ -3513,6 +3518,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var updatedAt: Double?
   var messageCount: Int?
   var alreadyImported: Bool
+  var importedSessionRef: ExternalSessionImportedRef?
   var possiblyActive: Bool
   var cwdMatchesRequestedLane: Bool?
   var capabilities: ExternalSessionCapabilities
@@ -3527,6 +3533,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     case updatedAt
     case messageCount
     case alreadyImported
+    case importedSessionRef
     case possiblyActive
     case cwdMatchesRequestedLane
     case capabilities
@@ -3542,6 +3549,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     updatedAt: Double? = nil,
     messageCount: Int? = nil,
     alreadyImported: Bool = false,
+    importedSessionRef: ExternalSessionImportedRef? = nil,
     possiblyActive: Bool = false,
     cwdMatchesRequestedLane: Bool? = nil,
     capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities()
@@ -3555,6 +3563,7 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     self.updatedAt = updatedAt
     self.messageCount = messageCount
     self.alreadyImported = alreadyImported
+    self.importedSessionRef = importedSessionRef
     self.possiblyActive = possiblyActive
     self.cwdMatchesRequestedLane = cwdMatchesRequestedLane
     self.capabilities = capabilities
@@ -3571,6 +3580,10 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     updatedAt = try container.decodeIfPresent(Double.self, forKey: .updatedAt)
     messageCount = try container.decodeIfPresent(Int.self, forKey: .messageCount)
     alreadyImported = try container.decodeIfPresent(Bool.self, forKey: .alreadyImported) ?? false
+    importedSessionRef = try? container.decodeIfPresent(
+      ExternalSessionImportedRef.self,
+      forKey: .importedSessionRef
+    )
     possiblyActive = try container.decodeIfPresent(Bool.self, forKey: .possiblyActive) ?? false
     cwdMatchesRequestedLane = try container.decodeIfPresent(Bool.self, forKey: .cwdMatchesRequestedLane)
     capabilities = try container.decodeIfPresent(ExternalSessionCapabilities.self, forKey: .capabilities)

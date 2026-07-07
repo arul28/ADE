@@ -51,7 +51,8 @@ export function normalizeExternalSessionLimit(limit: unknown): number {
 export function resolveHomeDir(args?: Pick<ExternalSessionDiscoveryArgs, "homeDir" | "env">): string {
   const explicit = typeof args?.homeDir === "string" ? args.homeDir.trim() : "";
   if (explicit) return explicit;
-  const envHome = typeof args?.env?.HOME === "string" ? args.env.HOME.trim() : "";
+  const env = args?.env ?? process.env;
+  const envHome = typeof env.HOME === "string" ? env.HOME.trim() : "";
   return envHome || os.homedir();
 }
 
@@ -367,11 +368,74 @@ export function resolveExistingPath(candidate: string): string | null {
   }
 }
 
+function uniqueNames(names: string[]): string[] {
+  return names.filter((name, index) => name.length > 0 && names.indexOf(name) === index);
+}
+
+function cursorSlugMixedNames(parts: string[]): string[] {
+  if (parts.length <= 1 || parts.length > 8) return [];
+  const separatorSlots = parts.length - 1;
+  const names: string[] = [];
+  for (let mask = 0; mask < (1 << separatorSlots); mask += 1) {
+    let name = parts[0] ?? "";
+    for (let index = 1; index < parts.length; index += 1) {
+      name += ((mask & (1 << (index - 1))) ? "." : "-") + parts[index];
+    }
+    names.push(name);
+  }
+  return names;
+}
+
+function cursorSlugSegmentNames(parts: string[]): string[] {
+  const hyphen = parts.join("-");
+  const dotted = parts.join(".");
+  const mixed = cursorSlugMixedNames(parts);
+  return uniqueNames([
+    hyphen,
+    dotted,
+    ...mixed,
+    `.${hyphen}`,
+    `.${dotted}`,
+    ...mixed.map((name) => `.${name}`),
+  ]);
+}
+
+function greedyCursorSlugCwdCandidate(slug: string): string | null {
+  const parts = slug.split("-").filter((part) => part.length > 0);
+  if (!parts.length) return null;
+  let current = path.parse(path.resolve("/")).root;
+  let index = 0;
+
+  while (index < parts.length) {
+    let matched: { dir: string; nextIndex: number } | null = null;
+    for (let nextIndex = parts.length; nextIndex > index; nextIndex -= 1) {
+      const segmentParts = parts.slice(index, nextIndex);
+      for (const name of cursorSlugSegmentNames(segmentParts)) {
+        const candidate = path.join(current, name);
+        const stat = safeStat(candidate);
+        if (stat?.isDirectory()) {
+          matched = { dir: candidate, nextIndex };
+          break;
+        }
+      }
+      if (matched) break;
+    }
+    if (!matched) return null;
+    current = matched.dir;
+    index = matched.nextIndex;
+  }
+
+  return current;
+}
+
 export function cursorSlugCwdCandidates(slug: string): string[] {
   const candidates: string[] = [];
   const add = (candidate: string) => {
     if (!candidates.includes(candidate)) candidates.push(candidate);
   };
+
+  const greedy = greedyCursorSlugCwdCandidate(slug);
+  if (greedy) add(greedy);
 
   if (slug.startsWith("Users-")) {
     const parts = slug.split("-");

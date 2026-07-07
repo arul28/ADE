@@ -4060,8 +4060,14 @@ describe("createAgentChatService", () => {
       );
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      const startParams = startPayload?.params as { effort?: unknown; reasoningEffort?: unknown; reasoning_effort?: unknown } | undefined;
-      expect(startParams?.effort).toBe("low");
+      const startParams = startPayload?.params as {
+        config?: { model_reasoning_effort?: unknown };
+        effort?: unknown;
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+      } | undefined;
+      expect(startParams?.config?.model_reasoning_effort).toBe("low");
+      expect(startParams?.effort).toBeUndefined();
       expect(startParams?.reasoningEffort).toBeUndefined();
       expect(startParams?.reasoning_effort).toBeUndefined();
     });
@@ -16804,10 +16810,12 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
         reasoning_effort?: unknown;
         effort?: unknown;
+        config?: { model_reasoning_effort?: unknown };
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.effort).toBe("medium");
+      expect(params?.config?.model_reasoning_effort).toBe("medium");
+      expect(params?.effort).toBeUndefined();
       expect(params?.reasoningEffort).toBeUndefined();
       expect(params?.reasoning_effort).toBeUndefined();
 
@@ -16939,8 +16947,14 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      const threadStartParams = threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined;
-      expect(threadStartParams?.effort).toBe("xhigh");
+      const threadStartParams = threadStartRequest?.params as {
+        config?: { model_reasoning_effort?: unknown };
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+        effort?: unknown;
+      } | undefined;
+      expect(threadStartParams?.config?.model_reasoning_effort).toBe("xhigh");
+      expect(threadStartParams?.effort).toBeUndefined();
       expect(threadStartParams?.reasoningEffort).toBeUndefined();
       expect(threadStartParams?.reasoning_effort).toBeUndefined();
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -17086,10 +17100,12 @@ describe("createAgentChatService", () => {
         sandbox?: unknown;
         reasoningEffort?: unknown;
         effort?: unknown;
+        config?: { model_reasoning_effort?: unknown };
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.effort).toBe("medium");
+      expect(params?.config?.model_reasoning_effort).toBe("medium");
+      expect(params?.effort).toBeUndefined();
       expect(params?.reasoningEffort).toBeUndefined();
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -18029,10 +18045,20 @@ describe("createAgentChatService", () => {
       const resumed = await service.resumeSession({ sessionId: session.id });
 
       const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
-      const resumeParams = resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined;
-      expect(resumeParams?.effort).toBe("xhigh");
+      const resumeParams = resumeRequest?.params as {
+        config?: { model_reasoning_effort?: unknown };
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+        effort?: unknown;
+        dynamicTools?: unknown;
+        persistExtendedHistory?: unknown;
+      } | undefined;
+      expect(resumeParams?.config?.model_reasoning_effort).toBe("xhigh");
+      expect(resumeParams?.effort).toBeUndefined();
       expect(resumeParams?.reasoningEffort).toBeUndefined();
       expect(resumeParams?.reasoning_effort).toBeUndefined();
+      expect(resumeParams?.dynamicTools).toBeUndefined();
+      expect(resumeParams?.persistExtendedHistory).toBeUndefined();
       expect(resumed.codexApprovalPolicy).toBe("never");
       expect(resumed.codexSandbox).toBe("danger-full-access");
       expect(resumed.permissionMode).toBe("full-auto");

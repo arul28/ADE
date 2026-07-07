@@ -341,7 +341,8 @@ function mapStatus(value: unknown): "running" | "completed" | "failed" {
 }
 
 function mapFileChangeKind(value: unknown): "create" | "modify" | "delete" {
-  const kind = typeof value === "string" ? value.toLowerCase() : "";
+  const raw = isRecord(value) ? value.type : value;
+  const kind = typeof raw === "string" ? raw.toLowerCase() : "";
   if (kind === "create" || kind === "add" || kind === "added") return "create";
   if (kind === "delete" || kind === "remove" || kind === "removed") return "delete";
   return "modify";

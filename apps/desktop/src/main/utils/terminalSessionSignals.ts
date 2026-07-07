@@ -201,7 +201,6 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--force"];
   if (permissionMode === "plan") return ["--mode", "plan"];
-  if (permissionMode === "edit") return ["--mode", "ask"];
   return [];
 }
 
@@ -376,7 +375,7 @@ function extractTrackedCliPermissionMode(command: string, provider: TerminalResu
   if (provider === "cursor") {
     if (normalized.includes("--force") || normalized.includes("--yolo")) return "full-auto";
     if (normalized.includes("--mode plan") || normalized.includes("--plan")) return "plan";
-    if (normalized.includes("--mode ask")) return "edit";
+    if (normalized.includes("--mode ask")) return "plan";
     return "default";
   }
 

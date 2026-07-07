@@ -12,6 +12,29 @@ private struct WorkExternalSessionAction: Identifiable {
   let mode: String
   var isPrimary = false
   var enabled = true
+  let importedSessionRef: ExternalSessionImportedRef?
+
+  init(
+    id: String,
+    title: String,
+    systemImage: String,
+    tint: Color,
+    target: String,
+    mode: String,
+    isPrimary: Bool = false,
+    enabled: Bool = true,
+    importedSessionRef: ExternalSessionImportedRef? = nil
+  ) {
+    self.id = id
+    self.title = title
+    self.systemImage = systemImage
+    self.tint = tint
+    self.target = target
+    self.mode = mode
+    self.isPrimary = isPrimary
+    self.enabled = enabled
+    self.importedSessionRef = importedSessionRef
+  }
 }
 
 struct WorkImportSessionScreen: View {
@@ -71,10 +94,6 @@ struct WorkImportSessionScreen: View {
   @ViewBuilder
   private var controls: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Import session")
-        .font(.title3.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
           ForEach(workImportSessionProviders, id: \.self) { provider in
@@ -261,7 +280,45 @@ struct WorkImportSessionScreen: View {
       }
     }
 
+    if let importedRef = importedSessionRef(for: session) {
+      result = result.filter { $0.mode == "fork" }
+      result.insert(WorkExternalSessionAction(
+        id: "open-existing",
+        title: "Open in ADE",
+        systemImage: "arrow.right.circle.fill",
+        tint: ADEColor.accent,
+        target: "existing",
+        mode: "open",
+        isPrimary: true,
+        enabled: true,
+        importedSessionRef: importedRef
+      ), at: 0)
+      return result
+    }
+
+    if !result.contains(where: { $0.isPrimary }), let index = result.firstIndex(where: { $0.enabled }) {
+      result[index].isPrimary = true
+    }
+
     return result
+  }
+
+  private func importedSessionRef(for session: ExternalSessionSummary) -> ExternalSessionImportedRef? {
+    guard session.alreadyImported, let ref = session.importedSessionRef else { return nil }
+    guard let kind = normalizedImportedSessionKind(ref.kind) else { return nil }
+    let sessionId = ref.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sessionId.isEmpty else { return nil }
+    return ExternalSessionImportedRef(kind: kind, sessionId: sessionId)
+  }
+
+  private func normalizedImportedSessionKind(_ kind: String) -> String? {
+    let normalized = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    switch normalized {
+    case "chat", "cli":
+      return normalized
+    default:
+      return nil
+    }
   }
 
   @MainActor
@@ -269,6 +326,11 @@ struct WorkImportSessionScreen: View {
     guard importingSessionId == nil else { return }
     importingSessionId = session.importIdentity
     errorMessage = nil
+    if let importedSessionRef = action.importedSessionRef {
+      await openExistingSession(session, ref: importedSessionRef, action: action)
+      importingSessionId = nil
+      return
+    }
     do {
       let result = try await syncService.importExternalSession(
         provider: session.provider,
@@ -300,6 +362,37 @@ struct WorkImportSessionScreen: View {
       errorMessage = error.localizedDescription
     }
     importingSessionId = nil
+  }
+
+  @MainActor
+  private func openExistingSession(
+    _ session: ExternalSessionSummary,
+    ref: ExternalSessionImportedRef,
+    action: WorkExternalSessionAction
+  ) async {
+    guard let kind = normalizedImportedSessionKind(ref.kind) else {
+      ADEHaptics.error()
+      errorMessage = "The imported session reference is not supported."
+      return
+    }
+    let sessionId = ref.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sessionId.isEmpty else {
+      ADEHaptics.error()
+      errorMessage = "The imported session reference is missing a session ID."
+      return
+    }
+
+    ADEHaptics.medium()
+    if kind == "chat" {
+      await onChatImported(sessionId)
+    } else {
+      await onCliImported(makeTerminalSessionSummary(
+        sessionId: sessionId,
+        ptyId: nil,
+        imported: session,
+        action: action
+      ))
+    }
   }
 
   private func makeTerminalSessionSummary(
@@ -389,12 +482,16 @@ private struct WorkImportSessionRow: View {
     ]
   }
 
+  private var existingActions: [WorkExternalSessionAction] {
+    actions.filter { $0.importedSessionRef != nil }
+  }
+
   private var chatActions: [WorkExternalSessionAction] {
-    actions.filter { $0.target == "chat" }
+    actions.filter { $0.importedSessionRef == nil && $0.target == "chat" }
   }
 
   private var cliActions: [WorkExternalSessionAction] {
-    actions.filter { $0.target == "cli" }
+    actions.filter { $0.importedSessionRef == nil && $0.target == "cli" }
   }
 
   var body: some View {
@@ -422,6 +519,11 @@ private struct WorkImportSessionRow: View {
 
       if !actions.isEmpty {
         VStack(spacing: 8) {
+          actionGrid(existingActions)
+          if !existingActions.isEmpty && (!chatActions.isEmpty || !cliActions.isEmpty) {
+            Divider()
+              .overlay(ADEColor.glassBorder.opacity(0.7))
+          }
           actionGrid(chatActions)
           if !chatActions.isEmpty && !cliActions.isEmpty {
             Divider()

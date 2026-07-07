@@ -363,6 +363,52 @@ describe("externalSessionsService", () => {
     });
   });
 
+  it("honors CLAUDE_CONFIG_DIR when discovering and transplanting cross-cwd Claude CLI forks", async () => {
+    const homeDir = path.join(root, "home");
+    const claudeConfigDir = path.join(root, "custom-claude");
+    const projectRoot = path.join(root, "repo");
+    const sourceCwd = path.join(projectRoot, "source");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(sourceCwd, { recursive: true });
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    writeJsonl(path.join(claudeConfigDir, "projects", claudeProjectSlugForCwd(sourceCwd), `${id}.jsonl`), [
+      {
+        type: "message",
+        sessionId: id,
+        cwd: sourceCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+        message: { role: "user", content: "fork from custom config" },
+      },
+    ]);
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-custom-claude", ptyId: "pty-custom-claude", pid: 456 }));
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: claudeConfigDir },
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create },
+      logger: makeLogger(),
+    });
+
+    await expect(service.importExternalSession({
+      provider: "claude",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+    })).resolves.toEqual({ kind: "cli", sessionId: "terminal-custom-claude", ptyId: "pty-custom-claude", laneId: "lane-1" });
+
+    const targetDir = path.join(claudeConfigDir, "projects", claudeProjectSlugForCwd(fs.realpathSync(laneCwd)));
+    const targetFiles = fs.readdirSync(targetDir).filter((name) => name.endsWith(".jsonl"));
+    expect(targetFiles).toHaveLength(1);
+    expect(fs.existsSync(path.join(homeDir, ".claude"))).toBe(false);
+    expect(create.mock.calls[0]![0].startupCommand).toContain("--resume");
+    expect(create.mock.calls[0]![0].startupCommand).not.toContain(id);
+  });
+
   it("throws a clear error when chat import is not wired", async () => {
     const projectRoot = path.join(root, "repo");
     const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
@@ -538,6 +584,13 @@ describe("externalSessionsService", () => {
       target: "cli",
       mode: "resume",
     })).rejects.toThrow(/opencode external session id is invalid/i);
+    await expect(service.importExternalSession({
+      provider: "cursor",
+      sessionId: "agent-77777777-7777-4777-8777-777777777777",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+    })).rejects.toThrow(/not resumable/i);
     expect(create).not.toHaveBeenCalled();
   });
 });

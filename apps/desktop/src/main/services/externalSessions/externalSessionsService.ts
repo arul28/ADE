@@ -19,7 +19,7 @@ import type {
   TerminalToolType,
 } from "../../../shared/types";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
-import { discoverClaudeSessions } from "./discoverClaude";
+import { claudeConfigDir, discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
@@ -242,6 +242,11 @@ function toolTypeForProvider(provider: ExternalSessionProvider): TerminalToolTyp
 
 export function validateExternalSessionId(provider: ExternalSessionProvider, id: string): string {
   const trimmed = id.trim();
+  if (provider === "cursor" && trimmed.startsWith("agent-")) {
+    throw new Error(
+      "cursor external session id is not resumable by cursor-agent; refusing to import SDK-origin transcript.",
+    );
+  }
   const pattern = provider === "claude" || provider === "codex"
     ? UUIDISH_EXTERNAL_SESSION_ID
     : CLI_EXTERNAL_SESSION_ID;
@@ -360,6 +365,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     if (droidForkProbe !== null) return droidForkProbe;
     return startDroidForkProbe();
   };
+  void startDroidForkProbe();
   const capabilitiesFor = (provider: ExternalSessionProvider): ExternalSessionCapabilities => {
     if (provider !== "droid") return PROVIDER_CAPABILITIES[provider];
     const fork = droidForkAvailable();
@@ -500,6 +506,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
             sourceCwd,
             targetCwd: laneCwd,
             fork: true,
+            configDir: claudeConfigDir({ env: args.env, homeDir: args.homeDir }),
           });
           launchTargetId = transplant.newSessionId;
           metadataTargetId = transplant.newSessionId;
