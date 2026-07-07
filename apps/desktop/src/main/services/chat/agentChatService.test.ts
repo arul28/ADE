@@ -3697,6 +3697,43 @@ describe("createAgentChatService", () => {
       expect(handoffMethods).toContain("thread/goal/set");
     });
 
+    it("forks Codex handoff from the source provider thread without injecting a summary prompt", async () => {
+      const { service, aiIntegrationService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({
+        thread: { id: "forked-thread-1" },
+      }));
+
+      const handoffStart = mockState.codexRequestPayloads.length;
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      expect(result.usedFallbackSummary).toBe(false);
+      expect(result.session.provider).toBe("codex");
+      expect(result.session.threadId).toBe("forked-thread-1");
+      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
+      expect(handoffPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "thread/fork",
+          params: expect.objectContaining({
+            threadId: "source-thread-1",
+            excludeTurns: true,
+          }),
+        }),
+      ]));
+      expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
     it("uses the selected Claude handoff permission instead of the source interaction mode", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);

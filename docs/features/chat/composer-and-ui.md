@@ -13,7 +13,7 @@ stream plus session metadata.
 |---|---|
 | `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through **root**-store-backed `DraftLaunchJob` state machines with multi-step progress (`creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`; auto-create names the lane deterministically up front and renames to the AI name in the background, so there is no blocking `naming-lane` phase); jobs live in the root store (not the per-project store) so an in-flight launch survives a remote project switch that tears down the originating project surface. The detached launch chain captures the originating `OpenProjectBinding`, passes it as a `pin` to branch/lane/chat/orchestration/PTY calls so a mid-launch project switch keeps targeting the originating runtime, pins rollback to that binding, and caps each step at 90 s (`withDraftLaunchTimeout`). The composer is cleared optimistically at job start, stale active rows gain a hide-status escape hatch, failed jobs expose Restore in the job strip and matching error banner, and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
 | `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (the legacy/unpinned abort error used only when no originating project binding is available and the active project drifts mid-launch). |
-| `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. |
+| `apps/desktop/src/renderer/lib/handoffLaunchJobs.ts` | Pure helper for handoff placeholder DTOs, scope keys, stable placeholder ids, status labels, and search matching. `AgentChatPane` writes these jobs into the root store while `TerminalsPage` passes matching jobs into the Work session sidebar. The handoff drawer can offer a brief summarized handoff or a full-history fork when source and target stay within Claude or within Codex; Codex forks use the app-server thread id returned by `thread/fork`. |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, voice-dictation target registration, and parallel model-slot controls. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
 | `VoiceDictationButton.tsx`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*` | Desktop dictation UI and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. The header indicator and composer pill render the same recording state. |
@@ -26,7 +26,7 @@ stream plus session metadata.
 | `apps/desktop/src/shared/composerTriggers.ts` | Cursor-relative typed-trigger detection shared by the desktop chat composer (rich + textarea), the `WorkViewArea` continue composer, and the ade-code TUI (iOS mirrors the same regexes in Swift). `detectComposerTrigger(text, cursorPos)` finds an in-progress `/command` / `@file` token ending at the cursor at any position; `replaceComposerTriggerSpan` splices exactly that span; `findConfirmedComposerTokens` locates confirmed chip tokens for overlay/prompt styling; `composerTriggerSpansWholeDraft` distinguishes a lone leading command from a mid-sentence one. |
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
-| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Claude-only undo confirmation. Builds a message-scoped file list from SDK dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. |
+| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex uses `thread/rollback` for the latest user message and restores files through ADE's git plan. |
 | `ChatSubagentsPanel.tsx`, `ChatSubagentStrip.tsx` | Subagent panels. For Codex sessions the panel also hosts the chat goal card above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
@@ -39,8 +39,8 @@ stream plus session metadata.
 | `apps/ios/ADE/Views/Work/WorkPlanComposerViews.swift` | iOS composer-level plan approval strip. The live `plan_approval` gate renders as a compact full-width strip above the prompt box, opens a large markdown sheet for review, and sends Approve/Reject decisions through `chat.approve` with optional rejection feedback as `responseText`. It is one body of the consolidated pending-input strip (see [Cross-surface parity](#cross-surface-parity)) — the strip in `WorkChatSessionView+Timeline.swift` renders the current request (plan / approval / permission / question / model-selection), a "Request 1 of N" header, and an "Accept all" sweep when more than one gate is queued. |
 | `ChatModelSelectionPendingCard.tsx` | Full agent-briefing model picker for orchestration pending inputs. Shows description, touched files, run-after dependencies, provider/model controls, and submitting/cancel states without a recommended default model. |
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
-| `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits/clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
-| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
+| `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits, status changes, and clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
+| `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Web-search work-log rows render provider action details (`query` / `queries`, `title`, `url`, `snippet`) as compact result chips; URL chips route through `openUrlInAdeBrowser()`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
 | `AgentChatMessageList.tsx` → `InlineQuestionRequestCard` | Inline question / structured-question card (provider logo + verb header, dedup body, monospace/markdown previews, per-provider accent, keyboard-first answering, A/B compare). See [Pending input card](#pending-input-card). |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
@@ -191,8 +191,11 @@ and a footer that contains the composer.
   Handoffs create a root-store `HandoffLaunchJob` before the IPC call
   starts, advance it through summary/chat/send labels while the old
   drawer closes, and remove it once the new chat is created or the
-  handoff fails. The Work sidebar renders that job as a non-selectable
-  placeholder in the same lane/status/time groups as real sessions.
+  handoff fails. When the selected target stays within Claude or Codex,
+  the handoff drawer exposes both **Brief handoff** and **Fork** actions;
+  Codex fork carries the app-server thread history through `thread/fork`.
+  The Work sidebar renders the job as a non-selectable placeholder in the
+  same lane/status/time groups as real sessions.
   Orchestration model-selection requests use
   `ChatModelSelectionPendingCard` instead of the inline selector: the
   card is an agent briefing first (role/tag, description, files,
@@ -483,13 +486,13 @@ session using `aggregateFiles(summaries)`:
 
 ## Rewind files confirmation
 
-Claude user messages expose an undo affordance when the SDK provides a
-file checkpoint. The pane first calls
-`ade.agentChat.rewindFiles({ dryRun: true })`; if the checkpoint can be
-restored, `rewindFilesPreview.ts` filters turn diff summaries after the
-selected user message and pairs each reported file with the earliest
-`beforeSha` and latest `afterSha` it can prove. The confirmation dialog
-then shows:
+Claude and Codex user messages expose an undo affordance when the provider
+can prove a rewind target. The pane first calls
+`ade.agentChat.rewindFiles({ dryRun: true })`; if the checkpoint or
+rollback plan can be restored, `rewindFilesPreview.ts` filters turn diff
+summaries after the selected user message and pairs each reported file
+with the earliest `beforeSha` and latest `afterSha` it can prove. The
+confirmation dialog then shows:
 
 - The user message being rewound to and its sent time.
 - Aggregate insertion/deletion counts from the SDK dry run.
@@ -497,8 +500,10 @@ then shows:
   a turn diff summary is available.
 - Lazy `AdeDiffViewer` previews via `ade.agentChat.getTurnFileDiff`.
 
-Confirming calls `rewindFiles` without `dryRun`. Conversation history is
-left untouched; only files are restored.
+Confirming calls `rewindFiles` without `dryRun`. Claude leaves
+conversation history untouched and only restores files. Codex rolls back
+the upstream thread by one turn with `thread/rollback` and restores the
+matching files; for now it is limited to the latest user message.
 
 ## Subagents panel
 
@@ -524,8 +529,14 @@ with a parent lineage (`ade chat create` from a tracked agent shell,
 "Subagent spawned" chip (a `status:"subagent_spawned"` system_notice) that
 deep-links to the child chat.
 
-Codex parallel agent failures emit a system-notice plus `failed` /
-`stopped` `subagent_result` rows. The agentChatService maps
+Codex parallel-agent lifecycle comes from both legacy `collabAgentToolCall`
+items and newer app-server `subAgentActivity` items. The service registers
+each child thread for transcript backfill, carries `label`, `model`, and
+`reasoningEffort` when the app-server provides them, and emits the same
+`subagent_started` / `subagent_progress` / `subagent_result` rows the
+panel already understands. Codex parallel agent failures emit a
+system-notice plus `failed` / `stopped` `subagent_result` rows. The
+agentChatService maps
 `failed | errored | rejected | refused | denied` Codex status values
 to `failed` and `stopped | interrupted | shutdown | notfound |
 cancelled | canceled` to `stopped`; `readCodexCollabFailureSummary`

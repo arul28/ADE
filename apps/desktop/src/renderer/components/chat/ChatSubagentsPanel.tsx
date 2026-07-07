@@ -451,6 +451,7 @@ export function ChatSubagentsPanel({
   goal,
   onEditGoal,
   onClearGoal,
+  onSetGoalStatus,
   goalPending = false,
   todoItems = [],
 }: {
@@ -473,6 +474,7 @@ export function ChatSubagentsPanel({
   goal?: CodexThreadGoal | null;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
+  onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
   goalPending?: boolean;
   todoItems?: TodoItemSnapshot[];
 }) {
@@ -624,6 +626,7 @@ export function ChatSubagentsPanel({
           goal={goal}
           onEdit={onEditGoal}
           onClear={onClearGoal}
+          onSetStatus={onSetGoalStatus}
           pending={goalPending}
         />
       ) : null}

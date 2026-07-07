@@ -631,7 +631,7 @@ export function renderChatLines(args: {
       const actionLines = event.actions?.length
         ? event.actions.map((action) => {
           const kind = action.type || "action";
-          const detail = action.title ?? action.url ?? action.query ?? "";
+          const detail = action.title ?? action.url ?? action.query ?? action.queries?.[0] ?? "";
           return `   ${kind.padEnd(12, " ")} ${singleLine(detail, 96)}`.trimEnd();
         })
         : event.action ? [`   ${event.action}`] : [];
@@ -639,6 +639,45 @@ export function renderChatLines(args: {
         id,
         tone: event.status === "failed" ? "error" : "tool",
         body: actionLines.length ? `${head}\n${actionLines.join("\n")}` : head,
+      });
+      continue;
+    }
+    if (event.type === "codex_safety_buffering") {
+      const model = event.state.fasterModel ?? event.state.model ?? "";
+      lines.push({
+        id,
+        tone: "notice",
+        body: `safety buffering${model ? ` · ${singleLine(model, 64)}` : ""}`,
+      });
+      continue;
+    }
+    if (event.type === "codex_moderation_metadata") {
+      lines.push({ id, tone: "notice", body: "moderation checked" });
+      continue;
+    }
+    if (event.type === "codex_sleep") {
+      const duration = typeof event.durationMs === "number" && Number.isFinite(event.durationMs)
+        ? event.durationMs < 1000
+          ? `${Math.max(1, Math.round(event.durationMs))}ms`
+          : `${Math.round(event.durationMs / 1000)}s`
+        : "";
+      lines.push({
+        id,
+        tone: "notice",
+        body: `${statusGlyph(event.status)} wait${duration ? ` ${duration}` : ""}`,
+      });
+      continue;
+    }
+    if (event.type === "codex_thread_deleted") {
+      lines.push({ id, tone: "error", body: "thread deleted upstream · next message starts fresh" });
+      continue;
+    }
+    if (event.type === "codex_turn_stalled") {
+      const options = event.recoveryOptions?.map((option) => option.replace(/_/g, " ")).join(" · ");
+      lines.push({
+        id,
+        tone: "error",
+        body: `recovery · ${singleLine(event.message, 140)}${options ? `\n   ${options}` : ""}`,
       });
       continue;
     }

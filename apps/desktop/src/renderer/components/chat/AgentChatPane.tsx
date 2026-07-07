@@ -3855,6 +3855,25 @@ export function AgentChatPane({
       });
     }
   }, []);
+  const setCodexGoalStatusFromPanel = useCallback(async (
+    sessionId: string,
+    status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">,
+  ) => {
+    setError(null);
+    setCodexGoalPendingBySession((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      await window.ade.agentChat.codex.setGoalStatus({ sessionId, status });
+    } catch (goalError) {
+      setError(errorMessage(goalError));
+    } finally {
+      setCodexGoalPendingBySession((prev) => {
+        if (!prev[sessionId]) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    }
+  }, []);
   // Per-session memo of which sessions have already triggered the auto-open
   // affordance, so the panel doesn't keep re-opening every time a new task or
   // subagent appears or the user navigates back to the chat. We only slide it in
@@ -4682,6 +4701,11 @@ export function AgentChatPane({
   const handoffTargetProvider = useMemo(
     () => (handoffTargetDescriptor ? resolveProviderGroupForModel(handoffTargetDescriptor) : null),
     [handoffTargetDescriptor],
+  );
+  const handoffSupportsFullHistoryFork = Boolean(
+    handoffTargetProvider
+      && selectedSession?.provider === handoffTargetProvider
+      && (handoffTargetProvider === "claude" || handoffTargetProvider === "codex"),
   );
   const handoffNativeControlState = useMemo((): NativeControlState => ({
     interactionMode,
@@ -9137,6 +9161,13 @@ export function AgentChatPane({
             }
           : undefined
       }
+      onSetGoalStatus={
+        selectedSession?.provider === "codex" && selectedSessionId
+          ? (status) => {
+              void setCodexGoalStatusFromPanel(selectedSessionId, status);
+            }
+          : undefined
+      }
     />
   ) : (
     <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
@@ -9157,8 +9188,10 @@ export function AgentChatPane({
       <div className="space-y-1">
         <div className="font-sans text-[12px] font-semibold text-fg/82">Start a sibling chat on another model</div>
         <div className="text-[11px] leading-5 text-fg/54">
-          {handoffTargetProvider === "claude"
-            ? "ADE can fork Claude with full SDK history, or start a brief handoff that sends a compact summary."
+          {handoffSupportsFullHistoryFork
+            ? handoffTargetProvider === "codex"
+              ? "ADE can fork the Codex thread history, or start a brief handoff that sends a compact summary."
+              : "ADE can fork Claude with full SDK history, or start a brief handoff that sends a compact summary."
             : "ADE will create a new work chat, inject a handoff summary from this session, and route you into the new tab."}
         </div>
         {laneId ? (
@@ -9290,12 +9323,14 @@ export function AgentChatPane({
         </div>
       ) : null}
       <div className="mt-3 rounded-md border border-white/[0.05] bg-white/[0.025] px-2.5 py-2 text-[10px] leading-4 text-fg/44">
-        {handoffTargetProvider === "claude"
-          ? "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
+        {handoffSupportsFullHistoryFork
+          ? handoffTargetProvider === "codex"
+            ? "Fork keeps the Codex provider thread history. Brief sends a summary as the first message."
+            : "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
           : "Create opens the new work chat and sends the handoff summary as its first message."}
       </div>
       <div className="mt-3 flex items-center justify-end gap-2">
-        {handoffTargetProvider === "claude" ? (
+        {handoffSupportsFullHistoryFork ? (
           <>
             <button
               type="button"
@@ -9315,7 +9350,7 @@ export function AgentChatPane({
               }}
               disabled={!handoffModelId || handoffBusy || handoffBlocked}
             >
-              {handoffBusy ? "Starting..." : "Fork full history"}
+              {handoffBusy ? "Starting..." : handoffTargetProvider === "codex" ? "Fork thread" : "Fork full history"}
             </button>
           </>
         ) : (
@@ -10672,7 +10707,7 @@ export function AgentChatPane({
                       onRevealChatTerminal={(terminal) => {
                         revealChatTerminal(terminal);
                       }}
-                      onRewindFiles={selectedSession?.provider === "claude" ? rewindFilesFromMessage : undefined}
+                      onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
                       }}

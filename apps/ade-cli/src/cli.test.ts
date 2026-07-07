@@ -2059,6 +2059,173 @@ describe("ADE CLI", () => {
     );
   });
 
+  it("builds typed Codex goal chat commands", () => {
+    const setGoal = expectExecutePlan(buildCliPlan([
+      "chat",
+      "goal",
+      "chat-1",
+      "--objective",
+      "Ship the Codex upgrade",
+    ]));
+    expect(setGoal.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "setCodexGoal",
+        args: {
+          sessionId: "chat-1",
+          objective: "Ship the Codex upgrade",
+        },
+      },
+    });
+
+    const pause = expectExecutePlan(buildCliPlan(["chat", "goal", "chat-1", "--status", "paused"]));
+    expect(pause.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "setCodexGoalStatus",
+        args: {
+          sessionId: "chat-1",
+          status: "paused",
+        },
+      },
+    });
+
+    const inspect = expectExecutePlan(buildCliPlan(["chat", "goal", "chat-1"]));
+    expect(inspect.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getCodexGoal",
+        args: { sessionId: "chat-1" },
+      },
+    });
+
+    const clear = expectExecutePlan(buildCliPlan(["chat", "clear-goal", "chat-1"]));
+    expect(clear.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "clearCodexGoal",
+        args: { sessionId: "chat-1" },
+      },
+    });
+
+    expect(() => buildCliPlan(["chat", "goal", "chat-1", "--status", "done"]))
+      .toThrow(/status must be active, paused, blocked, or complete/);
+  });
+
+  it("builds typed chat handoff and fork commands", () => {
+    const handoff = expectExecutePlan(buildCliPlan([
+      "chat",
+      "handoff",
+      "chat-1",
+      "--model",
+      "openai/gpt-5.5-codex",
+      "--reasoning-effort",
+      "xhigh",
+      "--no-fast",
+    ]));
+    expect(handoff.label).toBe("chat handoff");
+    expect(handoff.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "handoffSession",
+        args: {
+          sourceSessionId: "chat-1",
+          targetModelId: "openai/gpt-5.5-codex",
+          mode: "brief",
+          reasoningEffort: "xhigh",
+          fastMode: false,
+          codexFastMode: false,
+        },
+      },
+    });
+
+    const fork = expectExecutePlan(buildCliPlan([
+      "chat",
+      "fork",
+      "chat-1",
+      "openai/gpt-5.5-codex",
+      "--permissions",
+      "full-auto",
+      "--sandbox",
+      "danger-full-access",
+    ]));
+    expect(fork.label).toBe("chat fork");
+    expect(fork.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "handoffSession",
+        args: {
+          sourceSessionId: "chat-1",
+          targetModelId: "openai/gpt-5.5-codex",
+          mode: "fork",
+          permissionMode: "full-auto",
+          codexSandbox: "danger-full-access",
+        },
+      },
+    });
+  });
+
+  it("builds typed chat rewind and subagent commands", () => {
+    const rewind = expectExecutePlan(buildCliPlan([
+      "chat",
+      "rewind-files",
+      "chat-1",
+      "--message",
+      "user-msg-1",
+      "--dry-run",
+    ]));
+    expect(rewind.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "rewindFiles",
+        args: {
+          sessionId: "chat-1",
+          userMessageId: "user-msg-1",
+          dryRun: true,
+        },
+      },
+    });
+
+    const list = expectExecutePlan(buildCliPlan(["chat", "subagents", "chat-1"]));
+    expect(list.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "listSubagents",
+        args: { sessionId: "chat-1" },
+      },
+    });
+
+    const transcript = expectExecutePlan(buildCliPlan([
+      "chat",
+      "subagent-transcript",
+      "chat-1",
+      "--agent",
+      "agent-1",
+      "--limit",
+      "25",
+    ]));
+    expect(transcript.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getSubagentTranscript",
+        args: {
+          sessionId: "chat-1",
+          agentId: "agent-1",
+          limit: 25,
+        },
+      },
+    });
+  });
+
   it("rejects prototype-sensitive generic ADE action arg paths", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
 

@@ -1272,6 +1272,15 @@ reflected in the phone's UI on the next descriptor read.
   new event or card type, keep the phone's decoders tolerant — a foreign
   event should degrade to "that one event is missing", never "the whole
   transcript is gone".
+- **Codex app-server chat events are first-class on Work.** Mobile
+  mirrors the desktop/TUI Codex runtime rows by decoding
+  `codex_safety_buffering`, `codex_moderation_metadata`, `codex_sleep`,
+  `codex_thread_deleted`, and `codex_turn_stalled` in
+  `RemoteModels.swift`, mapping them through `WorkEventMapping.swift`,
+  and rendering compact timeline cards. Web-search events also carry
+  provider action metadata (`query` / `queries`, `title`, `url`,
+  `snippet`); Work keeps those in the enriched web-search tool card so
+  URLs are visible without duplicating the same event as a second row.
 - **Long Work chats must keep row work and root polling cheap.** The
   Work chat detail keeps the full timeline snapshot preview-free, then
   attaches cached initial assistant-message previews only to the visible

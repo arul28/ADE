@@ -313,10 +313,20 @@ function formatTokenCount(value: number | null | undefined): string | null {
   return String(Math.round(value));
 }
 
+function formatCompactDuration(value: number | null | undefined): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (value < 1000) return `${Math.max(1, Math.round(value))}ms`;
+  const seconds = Math.round(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  return `${minutes}m`;
+}
+
 function renderSubagentUsage(usage: {
   totalTokens?: number;
   toolUses?: number;
   durationMs?: number;
+  costUsd?: number;
 } | undefined): React.ReactNode {
   if (!usage) return null;
   return (
@@ -329,6 +339,9 @@ function renderSubagentUsage(usage: {
       ) : null}
       {usage.durationMs != null ? (
         <span>{(usage.durationMs / 1000).toFixed(1)}s</span>
+      ) : null}
+      {usage.costUsd != null ? (
+        <span>${usage.costUsd.toFixed(4)}</span>
       ) : null}
     </div>
   );
@@ -738,27 +751,47 @@ function WebSearchActionList({ actions, isFailed }: WebSearchActionListProps) {
   const hiddenCount = showAll ? 0 : actions.length - visible.length;
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
-      {visible.map((action, index) => (
-        <span
-          key={`${action.type}:${action.url ?? action.query ?? index}`}
-          className={cn(
-            "inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-tight",
-            isFailed
-              ? "border-red-400/15 bg-red-500/[0.06] text-red-100/75"
-              : "border-cyan-400/15 bg-cyan-500/[0.05] text-cyan-100/80",
-          )}
-          title={action.url ?? action.query ?? action.title ?? action.type}
-        >
-          <span className={cn("shrink-0", isFailed ? "text-red-200/55" : "text-cyan-200/65")}>
-            {action.type}
-          </span>
-          {action.title || action.url || action.query ? (
-            <span className="truncate text-fg/72">
-              {action.title ?? action.url ?? action.query}
+      {visible.map((action, index) => {
+        const label = action.title ?? action.url ?? action.query ?? action.queries?.[0] ?? action.type;
+        const title = [action.title, action.url, action.snippet].filter(Boolean).join("\n") || label;
+        const className = cn(
+          "inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-left text-[length:calc(var(--chat-font-size)*12/14)] leading-tight transition-colors",
+          isFailed
+            ? "border-red-400/15 bg-red-500/[0.06] text-red-100/75"
+            : "border-cyan-400/15 bg-cyan-500/[0.05] text-cyan-100/80",
+          action.url && !isFailed && "hover:border-cyan-300/30 hover:bg-cyan-500/[0.1]",
+        );
+        const content = (
+          <>
+            <span className={cn("shrink-0", isFailed ? "text-red-200/55" : "text-cyan-200/65")}>
+              {action.type}
             </span>
-          ) : null}
-        </span>
-      ))}
+            <span className="truncate text-fg/72">
+              {label}
+            </span>
+            {action.url ? <CaretRight size={10} className="shrink-0 text-fg/35" /> : null}
+          </>
+        );
+        return action.url ? (
+          <button
+            key={`${action.type}:${action.url}:${index}`}
+            type="button"
+            className={className}
+            title={title}
+            onClick={() => openUrlInAdeBrowser(action.url)}
+          >
+            {content}
+          </button>
+        ) : (
+          <span
+            key={`${action.type}:${action.query ?? action.queries?.join("|") ?? index}`}
+            className={className}
+            title={title}
+          >
+            {content}
+          </span>
+        );
+      })}
       {hiddenCount > 0 ? (
         <button
           type="button"
@@ -2740,6 +2773,87 @@ function renderEvent(
   /* ── Context Compaction (new variant) ── */
   if (event.type === "codex_context_compaction") {
     return <CodexContextCompactionChip event={event} timestamp={envelope.timestamp} />;
+  }
+
+  if (event.type === "codex_safety_buffering") {
+    const reasons = event.state.reasons?.filter(Boolean) ?? [];
+    return (
+      <div className="inline-flex max-w-[min(100%,46rem)] items-center gap-2 rounded-lg border border-sky-300/14 bg-sky-500/[0.05] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-sky-100/78">
+        <ShieldCheck size={12} weight="duotone" className="shrink-0 text-sky-200/70" />
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-sky-200/55">safety</span>
+        <span className="min-w-0 truncate">
+          {event.state.fasterModel ? `Buffering, ${event.state.fasterModel} ready` : "Buffering"}
+        </span>
+        {reasons.length ? (
+          <span className="min-w-0 truncate text-sky-100/45">{reasons[0]}</span>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (event.type === "codex_moderation_metadata") {
+    return (
+      <div className="inline-flex max-w-[min(100%,34rem)] items-center gap-2 rounded-lg border border-emerald-300/12 bg-emerald-500/[0.04] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-emerald-100/72">
+        <ShieldCheck size={12} weight="duotone" className="shrink-0 text-emerald-200/65" />
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-emerald-200/50">moderation</span>
+        <span className="min-w-0 truncate">Checked</span>
+      </div>
+    );
+  }
+
+  if (event.type === "codex_sleep") {
+    const duration = formatCompactDuration(event.durationMs);
+    const isRunning = event.status === "running";
+    return (
+      <div className="inline-flex max-w-[min(100%,34rem)] items-center gap-2 rounded-lg border border-white/[0.08] bg-white/[0.035] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/64">
+        {isRunning ? <ChatStatusGlyph status="working" size={12} /> : <Circle size={10} weight="fill" className="shrink-0 text-fg/32" />}
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-fg/38">wait</span>
+        <span className="min-w-0 truncate">{duration ? `Sleeping ${duration}` : "Sleeping"}</span>
+      </div>
+    );
+  }
+
+  if (event.type === "codex_thread_deleted") {
+    return (
+      <div className="inline-flex max-w-[min(100%,44rem)] items-center gap-2 rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
+        <Warning size={12} weight="duotone" className="shrink-0 text-amber-200/75" />
+        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">thread</span>
+        <span className="min-w-0 truncate">Deleted upstream. Next message starts fresh.</span>
+      </div>
+    );
+  }
+
+  if (event.type === "codex_turn_stalled") {
+    const optionLabels: Record<string, string> = {
+      wait: "Wait",
+      steer: "Nudge",
+      interrupt_retry_same_thread: "Retry",
+      restart_resume_thread: "Resume",
+    };
+    return (
+      <div className="w-fit max-w-[min(100%,42rem)] rounded-lg border border-amber-300/16 bg-amber-500/[0.055] px-3 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-amber-100/78">
+        <div className="flex items-center gap-2">
+          <Warning size={13} weight="duotone" className="shrink-0 text-amber-200/75" />
+          <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">recovery</span>
+          <span className="min-w-0 truncate">Codex paused unexpectedly</span>
+        </div>
+        <div className="mt-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/64">
+          {event.message}
+        </div>
+        {event.recoveryOptions?.length ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {event.recoveryOptions.slice(0, 4).map((option) => (
+              <span
+                key={option}
+                className="rounded-md border border-amber-200/12 bg-amber-300/[0.055] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-100/58"
+              >
+                {optionLabels[option] ?? option}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
   }
 
   /* ── Generic Context Compact (Claude/OpenCode; legacy pre-A.3 transcripts) ── */

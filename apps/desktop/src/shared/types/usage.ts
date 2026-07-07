@@ -306,12 +306,21 @@ export type ExtraUsage = {
   currency: string;
 };
 
+export type UsageProviderMessage = {
+  provider: UsageProvider;
+  id: string;
+  kind: "headline" | "announcement" | "unknown";
+  message: string;
+  createdAt?: string | null;
+};
+
 export type UsageSnapshot = {
   windows: UsageWindow[];
   pacing: UsagePacing;
   pacingByProvider?: UsagePacingByProvider;
   /** Per-provider freshness/health for the latest poll (drives quiet-retry UI). */
   providerStatus?: UsageProviderStatusMap;
+  providerMessages?: UsageProviderMessage[];
   costs: CostSnapshot[];
   /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
   adeCosts?: CostSnapshot[];

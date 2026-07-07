@@ -157,15 +157,18 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combinePlanSteps(steps, into: &hasher)
     combineOptionalText(explanation, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+  case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     hasher.combine(taskId)
     combineOptional(agentId, into: &hasher)
     combineOptional(agentType, into: &hasher)
     combineOptional(parentToolUseId, into: &hasher)
     hasher.combine(description)
     hasher.combine(background)
+    combineOptionalText(label, into: &hasher)
+    combineOptionalText(model, into: &hasher)
+    combineOptionalText(reasoningEffort, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let turnId):
+  case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
     hasher.combine(taskId)
     combineOptional(agentId, into: &hasher)
     combineOptional(agentType, into: &hasher)
@@ -173,14 +176,20 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptionalText(description, into: &hasher)
     combineLongTextSignature(summary, into: &hasher)
     combineOptional(toolName, into: &hasher)
+    combineOptionalText(label, into: &hasher)
+    combineOptionalText(model, into: &hasher)
+    combineOptionalText(reasoningEffort, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let turnId):
+  case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
     hasher.combine(taskId)
     combineOptional(agentId, into: &hasher)
     combineOptional(agentType, into: &hasher)
     combineOptional(parentToolUseId, into: &hasher)
     hasher.combine(status)
     combineLongTextSignature(summary, into: &hasher)
+    combineOptionalText(label, into: &hasher)
+    combineOptionalText(model, into: &hasher)
+    combineOptionalText(reasoningEffort, into: &hasher)
     combineOptional(turnId, into: &hasher)
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     combineLongTextSignature(question, into: &hasher)
@@ -234,12 +243,22 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
   case .autoApprovalReview(let summary, let turnId):
     combineLongTextSignature(summary, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .webSearch(let query, let action, let status, let itemId, let turnId):
+  case .webSearch(let query, let action, let actions, let status, let itemId, let turnId):
     combineLongTextSignature(query, into: &hasher)
     combineOptionalText(action, into: &hasher)
+    actions?.forEach { combineOptionalText($0.url ?? $0.title ?? $0.query ?? $0.queries?.first, into: &hasher) }
     hasher.combine(status.rawValue)
     hasher.combine(itemId)
     combineOptional(turnId, into: &hasher)
+  case .codexState(let title, let message, let icon, let turnId):
+    combineLongTextSignature(title, into: &hasher)
+    combineLongTextSignature(message, into: &hasher)
+    hasher.combine(icon)
+    combineOptional(turnId, into: &hasher)
+  case .codexTurnStalled(let message, let recoveryOptions, let turnId):
+    combineLongTextSignature(message, into: &hasher)
+    recoveryOptions.forEach { hasher.combine($0) }
+    hasher.combine(turnId)
   case .planText(let text, let turnId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -537,7 +556,7 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
 
   for envelope in transcript {
     switch envelope.event {
-    case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let turnId):
+    case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
       place(resolved.key, WorkSubagentSnapshot(
         taskId: taskId,
@@ -546,6 +565,9 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? resolved.existing?.parentToolUseId,
         description: description,
         background: background,
+        label: trimmedWorkSubagentText(label) ?? resolved.existing?.label,
+        model: trimmedWorkSubagentText(model) ?? resolved.existing?.model,
+        reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? resolved.existing?.reasoningEffort,
         status: .running,
         lastToolName: resolved.existing?.lastToolName,
         latestSummary: resolved.existing?.latestSummary,
@@ -553,7 +575,7 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         startedAt: resolved.existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp
       ), order: resolved.order)
-    case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let turnId):
+    case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
       let existing = resolved.existing
       place(resolved.key, WorkSubagentSnapshot(
@@ -563,6 +585,9 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
         description: description ?? existing?.description ?? "Subagent",
         background: existing?.background ?? false,
+        label: trimmedWorkSubagentText(label) ?? existing?.label,
+        model: trimmedWorkSubagentText(model) ?? existing?.model,
+        reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? existing?.reasoningEffort,
         status: .running,
         lastToolName: toolName ?? existing?.lastToolName,
         latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
@@ -570,7 +595,7 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp
       ), order: resolved.order)
-    case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let turnId):
+    case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
       let normalized = workSubagentStatus(from: status)
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
       let existing = resolved.existing
@@ -581,6 +606,9 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
         description: existing?.description ?? "Subagent",
         background: existing?.background ?? false,
+        label: trimmedWorkSubagentText(label) ?? existing?.label,
+        model: trimmedWorkSubagentText(model) ?? existing?.model,
+        reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? existing?.reasoningEffort,
         status: normalized,
         lastToolName: existing?.lastToolName,
         latestSummary: summary.isEmpty ? existing?.latestSummary : summary,
@@ -605,15 +633,15 @@ private func buildResolvedWorkSubagentKeysByParent(from transcript: [WorkChatEnv
     let agentId: String?
     let parentToolUseId: String?
     switch envelope.event {
-    case .subagentStarted(let value, let agent, _, let parent, _, _, _):
+    case .subagentStarted(let value, let agent, _, let parent, _, _, _, _, _, _):
       taskId = value
       agentId = agent
       parentToolUseId = parent
-    case .subagentProgress(let value, let agent, _, let parent, _, _, _, _):
+    case .subagentProgress(let value, let agent, _, let parent, _, _, _, _, _, _, _):
       taskId = value
       agentId = agent
       parentToolUseId = parent
-    case .subagentResult(let value, let agent, _, let parent, _, _, _):
+    case .subagentResult(let value, let agent, _, let parent, _, _, _, _, _, _):
       taskId = value
       agentId = agent
       parentToolUseId = parent
@@ -629,6 +657,11 @@ private func buildResolvedWorkSubagentKeysByParent(from transcript: [WorkChatEnv
 }
 
 private func normalizedWorkSubagentAgentId(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func trimmedWorkSubagentText(_ value: String?) -> String? {
   let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return trimmed.isEmpty ? nil : trimmed
 }
@@ -652,6 +685,9 @@ func workSubagentSnapshot(from remote: SyncService.AgentChatSubagentSnapshot) ->
     parentToolUseId: normalizedWorkSubagentAgentId(remote.parentToolUseId),
     description: remote.description,
     background: remote.background ?? false,
+    label: trimmedWorkSubagentText(remote.label),
+    model: trimmedWorkSubagentText(remote.model),
+    reasoningEffort: trimmedWorkSubagentText(remote.reasoningEffort),
     status: workSubagentStatus(from: remote.status),
     lastToolName: remote.lastToolName,
     latestSummary: remote.finalSummary ?? remote.summary,
@@ -720,6 +756,9 @@ private func mergedWorkSubagentSnapshot(
     parentToolUseId: remote.parentToolUseId ?? local.parentToolUseId,
     description: preferredWorkSubagentText(remote.description, fallback: local.description) ?? "Subagent",
     background: remote.background || local.background,
+    label: preferredWorkSubagentText(remote.label, fallback: local.label),
+    model: preferredWorkSubagentText(remote.model, fallback: local.model),
+    reasoningEffort: preferredWorkSubagentText(remote.reasoningEffort, fallback: local.reasoningEffort),
     status: mergedWorkSubagentStatus(remote: remote.status, local: local.status),
     lastToolName: local.lastToolName ?? remote.lastToolName,
     latestSummary: preferredWorkSubagentText(remote.latestSummary, fallback: local.latestSummary),
@@ -1683,11 +1722,31 @@ private func eventCard(
         metadata: []
       )
     case .webSearch:
-      // Web searches now surface as `WorkToolCardModel` entries built in
-      // `buildWorkToolCards`, so they cluster into the `Tool calls` panel
-      // alongside Read/Bash/etc. instead of leaking out as standalone event
-      // cards that break the surrounding tool group.
       return nil
+    case .codexState(let title, let message, let icon, _):
+      return WorkEventCardModel(
+        id: envelope.id,
+        kind: "codexState",
+        title: title,
+        icon: icon,
+        tint: .secondary,
+        timestamp: envelope.timestamp,
+        body: message,
+        bullets: [],
+        metadata: []
+      )
+    case .codexTurnStalled(let message, let recoveryOptions, _):
+      return WorkEventCardModel(
+        id: envelope.id,
+        kind: "codexRecovery",
+        title: "Recovery",
+        icon: "exclamationmark.triangle",
+        tint: .warning,
+        timestamp: envelope.timestamp,
+        body: message,
+        bullets: recoveryOptions.map { $0.replacingOccurrences(of: "_", with: " ") },
+        metadata: []
+      )
     case .planText(let text, let turnId):
       return WorkEventCardModel(
         id: workPlanTextCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
@@ -1934,9 +1993,9 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .toolResult(_, _, _, _, let turnId, _),
        .activity(_, _, let turnId),
        .plan(_, _, let turnId),
-       .subagentStarted(_, _, _, _, _, _, let turnId),
-       .subagentProgress(_, _, _, _, _, _, _, let turnId),
-       .subagentResult(_, _, _, _, _, _, let turnId),
+       .subagentStarted(_, _, _, _, _, _, _, _, _, let turnId),
+       .subagentProgress(_, _, _, _, _, _, _, _, _, _, let turnId),
+       .subagentResult(_, _, _, _, _, _, _, _, _, let turnId),
        .structuredQuestion(_, _, _, let turnId),
        .approvalRequest(_, _, _, let turnId),
        .pendingInputResolved(_, _, let turnId),
@@ -1946,7 +2005,9 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .promptSuggestion(_, let turnId),
        .contextCompact(_, _, let turnId),
        .autoApprovalReview(_, let turnId),
-       .webSearch(_, _, _, _, let turnId),
+       .webSearch(_, _, _, _, _, let turnId),
+       .codexState(_, _, _, let turnId),
+       .codexTurnStalled(_, _, let turnId),
        .planText(_, let turnId),
        .toolUseSummary(_, let turnId),
        .status(_, _, let turnId),

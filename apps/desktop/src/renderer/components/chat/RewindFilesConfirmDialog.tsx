@@ -99,7 +99,7 @@ function DiffPreview({
     return (
       <div className="flex min-h-[170px] items-center justify-center border-t border-white/[0.05] bg-black/15 px-4 py-5 text-center">
         <div className="max-w-[420px] text-[12px] leading-5 text-fg/45">
-          ADE can restore this file from the Claude checkpoint, but no turn-level diff summary was captured for a preview.
+          ADE can restore this file from the checkpoint, but no turn-level diff summary was captured for a preview.
         </div>
       </div>
     );
@@ -225,6 +225,7 @@ export function RewindFilesConfirmDialog({
   const { request, preview } = state;
   const filesCount = preview.filesChanged.length;
   const messagePreview = formatMessagePreview(request.text);
+  const contextRollback = preview.conversationRollback === true;
 
   const handleOverlayClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.target === event.currentTarget) onCancel();
@@ -257,7 +258,7 @@ export function RewindFilesConfirmDialog({
           <div className="flex flex-wrap items-center gap-2">
             <GitDiff size={16} weight="regular" className="text-amber-200/75" />
             <h2 id="rewind-files-title" className="text-[14px] font-semibold text-fg/92">
-              Undo file changes
+              {contextRollback ? "Rewind Codex context" : "Undo file changes"}
             </h2>
             <span className="rounded-md border border-amber-200/10 bg-amber-300/[0.06] px-2 py-0.5 font-mono text-[10px] text-amber-100/58">
               +{preview.insertions} / -{preview.deletions}
@@ -275,7 +276,7 @@ export function RewindFilesConfirmDialog({
           <div className="mt-4">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="text-[12px] font-medium text-fg/70">
-                Files that will be restored
+                {contextRollback ? "Files ADE can restore" : "Files that will be restored"}
               </div>
               <div className="font-mono text-[11px] text-fg/42">
                 {filesCount} file{filesCount === 1 ? "" : "s"}
@@ -322,14 +323,18 @@ export function RewindFilesConfirmDialog({
                 );
               }) : (
                 <div className="px-3 py-6 text-center text-[12px] text-fg/38">
-                  No file paths were reported by the checkpoint preview.
+                  {contextRollback
+                    ? "No git-backed file changes were found for this rewind."
+                    : "No file paths were reported by the checkpoint preview."}
                 </div>
               )}
             </div>
           </div>
 
           <div className="mt-4 rounded-md border border-white/[0.055] bg-black/14 px-3 py-2 text-[12px] text-fg/48">
-            Conversation history is not affected.
+            {contextRollback
+              ? "Codex conversation context will roll back. Saved ADE transcript stays visible."
+              : "Conversation history is not affected."}
           </div>
         </div>
 
@@ -347,7 +352,9 @@ export function RewindFilesConfirmDialog({
             onClick={onConfirm}
             autoFocus
           >
-            Revert {filesCount} file{filesCount === 1 ? "" : "s"}
+            {contextRollback && filesCount === 0
+              ? "Rollback context"
+              : `Revert ${filesCount} file${filesCount === 1 ? "" : "s"}`}
           </button>
         </div>
       </div>

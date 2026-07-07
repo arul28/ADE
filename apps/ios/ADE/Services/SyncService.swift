@@ -6500,6 +6500,9 @@ final class SyncService: ObservableObject {
     var parentToolUseId: String?
     var description: String
     var status: String
+    var label: String?
+    var model: String?
+    var reasoningEffort: String?
     var turnId: String?
     var startTimestamp: String?
     var endTimestamp: String?

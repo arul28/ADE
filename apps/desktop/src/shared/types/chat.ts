@@ -275,9 +275,26 @@ export type CodexWebSearchAction = {
   type: string;
   status?: "pending" | "running" | "completed" | "failed";
   query?: string;
+  queries?: string[];
   url?: string;
   title?: string;
   snippet?: string;
+};
+
+export type CodexSafetyBufferingState = {
+  threadId?: string | null;
+  turnId?: string | null;
+  model?: string | null;
+  useCases?: string[];
+  reasons?: string[];
+  showBufferingUi: boolean;
+  fasterModel?: string | null;
+};
+
+export type CodexModerationMetadata = {
+  threadId?: string | null;
+  turnId?: string | null;
+  metadata: Record<string, unknown> | null;
 };
 
 export type CodexTokenUsageBreakdown = {
@@ -574,6 +591,9 @@ export type AgentChatEvent =
       taskId: string;
       agentId?: string;
       agentType?: string;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      label?: string | null;
       parentToolUseId?: string | null;
       description: string;
       background?: boolean;
@@ -586,6 +606,9 @@ export type AgentChatEvent =
       taskId: string;
       agentId?: string;
       agentType?: string;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      label?: string | null;
       parentToolUseId?: string | null;
       description?: string;
       summary: string;
@@ -606,6 +629,9 @@ export type AgentChatEvent =
       taskId: string;
       agentId?: string;
       agentType?: string;
+      model?: string | null;
+      reasoningEffort?: string | null;
+      label?: string | null;
       parentToolUseId?: string | null;
       status: "completed" | "failed" | "stopped";
       summary: string;
@@ -706,6 +732,23 @@ export type AgentChatEvent =
       trigger: "manual" | "auto";
     }
   | {
+      type: "codex_safety_buffering";
+      state: CodexSafetyBufferingState;
+      turnId?: string;
+    }
+  | {
+      type: "codex_moderation_metadata";
+      metadata: CodexModerationMetadata;
+      turnId?: string;
+    }
+  | {
+      type: "codex_sleep";
+      itemId: string;
+      turnId?: string;
+      durationMs?: number | null;
+      status: "running" | "completed" | "failed";
+    }
+  | {
       type: "context_usage";
       usage: AgentChatContextUsage;
       turnId?: string;
@@ -782,6 +825,11 @@ export type AgentChatEvent =
       recoveryOptions?: Array<"wait" | "steer" | "interrupt_retry_same_thread" | "restart_resume_thread">;
       sourceSessionId?: string;
       parentSessionId?: string;
+    }
+  | {
+      type: "codex_thread_deleted";
+      threadId: string;
+      turnId?: string;
     }
   | {
       type: "codex_goal_updated";
@@ -968,6 +1016,7 @@ export type PendingInputRequest = {
   canProceedWithoutAnswer: boolean;
   options?: PendingInputOption[];
   providerMetadata?: Record<string, unknown>;
+  autoResolutionMs?: number | null;
   turnId?: string | null;
 };
 
@@ -1215,6 +1264,7 @@ export type AgentChatRewindFilesResult = {
   insertions: number;
   deletions: number;
   dryRun: boolean;
+  conversationRollback?: boolean;
 };
 
 export type AgentChatClaudeSessionListArgs = {

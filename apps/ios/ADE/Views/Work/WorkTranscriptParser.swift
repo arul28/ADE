@@ -117,6 +117,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           parentToolUseId: optionalString(eventDict["parentToolUseId"]),
           description: stringValue(eventDict["description"]),
           background: (eventDict["background"] as? Bool) ?? false,
+          label: optionalString(eventDict["label"]),
+          model: optionalString(eventDict["model"]),
+          reasoningEffort: optionalString(eventDict["reasoningEffort"]),
           turnId: turnId
         )
       case "subagent_progress":
@@ -128,6 +131,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           description: optionalString(eventDict["description"]),
           summary: stringValue(eventDict["summary"]),
           toolName: optionalString(eventDict["lastToolName"]),
+          label: optionalString(eventDict["label"]),
+          model: optionalString(eventDict["model"]),
+          reasoningEffort: optionalString(eventDict["reasoningEffort"]),
           turnId: turnId
         )
       case "subagent_result":
@@ -138,6 +144,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           parentToolUseId: optionalString(eventDict["parentToolUseId"]),
           status: stringValue(eventDict["status"]),
           summary: stringValue(eventDict["summary"]),
+          label: optionalString(eventDict["label"]),
+          model: optionalString(eventDict["model"]),
+          reasoningEffort: optionalString(eventDict["reasoningEffort"]),
           turnId: turnId
         )
       case "status":
@@ -350,6 +359,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .webSearch(
           query: stringValue(eventDict["query"]),
           action: optionalString(eventDict["action"]),
+          actions: nil,
           status: toolStatus(from: stringValue(eventDict["status"])),
           itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,
