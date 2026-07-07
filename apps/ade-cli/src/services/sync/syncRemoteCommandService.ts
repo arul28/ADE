@@ -103,6 +103,8 @@ import type {
   LandQueueNextArgs,
   PauseQueueAutomationArgs,
   PrGithubCoords,
+  PublishProjectInput,
+  PublishProjectResult,
   ProjectConfigCandidate,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
@@ -516,6 +518,17 @@ function requireService<T>(value: T | null | undefined, message: string): T {
 
 function parseGetWebPairingInfoArgs(_value: Record<string, unknown>): Record<string, never> {
   return {};
+}
+
+function parsePublishCurrentProjectArgs(value: Record<string, unknown>): PublishProjectInput {
+  const owner = asTrimmedString(value.owner);
+  const description = asTrimmedString(value.description);
+  return {
+    ...(owner ? { owner } : {}),
+    name: requireString(value.name, "github.publishCurrentProject requires name."),
+    ...(description ? { description } : {}),
+    isPrivate: asOptionalBoolean(value.isPrivate) ?? true,
+  };
 }
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
@@ -4257,6 +4270,15 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     }));
   register("github.getRemoteStatus", { viewerAllowed: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
     requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
+  register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
+    const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
+    return await requireService(args.githubService, "GitHub service not available.").publishCurrentProject({
+      ...(owner ? { owner } : {}),
+      name,
+      ...(description ? { description } : {}),
+      isPrivate,
+    });
+  }, "project");
   register("projectConfig.get", { viewerAllowed: true }, async () =>
     requireService(args.projectConfigService, "Project config service not available.").get());
   register("projectConfig.save", { viewerAllowed: true }, async (payload) =>

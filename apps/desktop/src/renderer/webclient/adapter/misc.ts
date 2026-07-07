@@ -253,7 +253,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     listRepoLabels: async () => [],
     listRepoCollaborators: async () => [],
     listMyRepos: async () => ({ repositories: [], nextCursor: null }),
-    publishCurrentProject: async () => ({ ok: false, error: "unsupported" }),
+    publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }),
     onStatusChanged: (listener: (status: unknown) => void) => events.on("githubStatusChanged", listener as never),
   };
 

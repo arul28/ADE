@@ -726,6 +726,7 @@ describe("createSyncRemoteCommandService", () => {
       "history.listOperations",
       "github.getStatus",
       "github.getRemoteStatus",
+      "github.publishCurrentProject",
       "projectConfig.get",
       "projectConfig.save",
       "ai.getStatus",
@@ -733,6 +734,51 @@ describe("createSyncRemoteCommandService", () => {
     ]));
     expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
     expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
+  });
+
+  it("routes github.publishCurrentProject through the GitHub service with validated args", async () => {
+    const publishCurrentProject = vi.fn().mockResolvedValue({
+      state: "pushed",
+      owner: "acme",
+      name: "ade",
+      fullName: "acme/ade",
+      htmlUrl: "https://github.com/acme/ade",
+    });
+    const { service } = createService({
+      githubService: { publishCurrentProject },
+    });
+
+    expect(service.getSupportedActions()).toContain("github.publishCurrentProject");
+    expect(service.getDescriptor("github.publishCurrentProject")).toEqual({
+      action: "github.publishCurrentProject",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+
+    await expect(service.execute(makePayload("github.publishCurrentProject", {
+      owner: "acme",
+    }))).rejects.toThrow("github.publishCurrentProject requires name.");
+    expect(publishCurrentProject).not.toHaveBeenCalled();
+
+    const result = await service.execute(makePayload("github.publishCurrentProject", {
+      owner: " acme ",
+      name: " ade ",
+      description: " Local-first agent desk ",
+    }));
+
+    expect(result).toEqual({
+      state: "pushed",
+      owner: "acme",
+      name: "ade",
+      fullName: "acme/ade",
+      htmlUrl: "https://github.com/acme/ade",
+    });
+    expect(publishCurrentProject).toHaveBeenCalledWith({
+      owner: "acme",
+      name: "ade",
+      description: "Local-first agent desk",
+      isPrivate: true,
+    });
   });
 });
 

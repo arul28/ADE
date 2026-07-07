@@ -1073,6 +1073,7 @@ export type SyncRemoteCommandAction =
   | "history.listOperations"
   | "github.getStatus"
   | "github.getRemoteStatus"
+  | "github.publishCurrentProject"
   | "projectConfig.get"
   | "projectConfig.save"
   | "ai.getStatus"
