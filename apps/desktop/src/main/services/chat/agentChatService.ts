@@ -10059,7 +10059,15 @@ export function createAgentChatService(args: {
     const singleActiveCronId = !parentToolUseId && runtime.activeProviderCronIds.size === 1
       ? Array.from(runtime.activeProviderCronIds)[0]
       : undefined;
-    if (!parentToolUseId && !explicitCronId && !activeCronId && !singleActiveCronId && runtime.activeProviderCronIds.size > 1) {
+    const hasKnownCronWork = !parentToolUseId
+      && Array.from(runtime.scheduledWorkKindById.values()).some((kind) => kind === "cron");
+    if (
+      !parentToolUseId
+      && !explicitCronId
+      && !activeCronId
+      && !singleActiveCronId
+      && (hasKnownCronWork || runtime.activeProviderCronIds.size > 1)
+    ) {
       return null;
     }
     return resolveClaudeScheduledWorkId(runtime, taskId, parentToolUseId, explicitCronId ?? activeCronId ?? singleActiveCronId);

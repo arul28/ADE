@@ -9970,6 +9970,129 @@ describe("createAgentChatService", () => {
       expect(snapshots).toHaveLength(2);
       expect(snapshots.map((snapshot) => snapshot.status).sort()).toEqual(["scheduled", "scheduled"]);
     });
+
+    it("does not create task-id scheduled rows for parentless cron runs when aliases are empty", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startCronRun!: () => void;
+      const startCronRunPromise = new Promise<void>((resolve) => { startCronRun = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-empty-aliases",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-empty-aliases",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startCronRunPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-cron-empty-aliases",
+          task_id: "cron-run-task-empty-aliases",
+          task_type: "cron",
+          description: "Check CI status.",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-cron-empty-aliases",
+          task_id: "cron-run-task-empty-aliases",
+          task_type: "cron",
+          patch: { status: "completed" },
+          summary: "CI passed.",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-empty-aliases",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-empty-aliases",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Resume after a persisted cron was scheduled.",
+      });
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [{
+          id: "cron-provider-empty-aliases",
+          schedule: "*/15 * * * *",
+          prompt: "Check CI status.",
+          recurring: true,
+        }],
+      });
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [],
+      });
+
+      startCronRun();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && event.event.taskId === "cron-run-task-empty-aliases",
+      );
+
+      const scheduledEvents = events
+        .filter((event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.kind === "cron");
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual(["cron-provider-empty-aliases"]);
+      expect(scheduledEvents.map((event) => event.event.id)).not.toContain("cron-run-task-empty-aliases");
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({
+        id: "cron-provider-empty-aliases",
+        kind: "cron",
+        status: "scheduled",
+      });
+    });
   });
 
   describe("hasRetainableSessions", () => {
