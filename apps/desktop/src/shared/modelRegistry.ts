@@ -739,6 +739,7 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     || normalized === "opus-4-7"
     || normalized === "opus-4.7"
     || normalized === "claude-opus-4-6"
+    || normalized === "claude-opus-4-6-fast"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
     || normalized === "opus"

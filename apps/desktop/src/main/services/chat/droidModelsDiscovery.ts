@@ -16,6 +16,7 @@ export type DroidExecHelpModelRow = {
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
   reasoningTiers?: string[];
+  serviceTiers?: string[];
   capabilities?: Partial<ModelCapabilities>;
 };
 type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
@@ -28,6 +29,13 @@ const TTL_MS = 120_000;
 // Serve last-known-good rows well past the freshness window (revalidating in
 // the background) so passive consumers never lose models between probes.
 const POSITIVE_TTL_MS = 6 * 60 * 60_000;
+
+const CANONICAL_DROID_ANTHROPIC_CAPABILITIES: Partial<ModelCapabilities> = {
+  tools: true,
+  vision: true,
+  reasoning: true,
+  streaming: true,
+};
 
 export function parseDroidExecHelpModels(stdout: string): DroidExecHelpModelRow[] {
   const lines = stdout.split(/\r?\n/);
@@ -247,17 +255,31 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
 function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
   const id = row.id.trim().toLowerCase();
   if (id === "claude-sonnet-4-6" || id === "sonnet-4-6") {
-    return { ...row, id: "claude-sonnet-5", displayName: "Sonnet 5 (1.2x)" };
+    return {
+      ...row,
+      id: "claude-sonnet-5",
+      displayName: "Sonnet 5 (1.2x)",
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "max"],
+    };
   }
   if (
     id === "claude-opus-4-7"
     || id === "opus-4-7"
     || id === "claude-opus-4-6"
+    || id === "claude-opus-4-6-fast"
     || id === "opus-4-6"
     || id === "opus-4.6"
     || id === "opus"
   ) {
-    return { ...row, id: "claude-opus-4-8", displayName: "Opus 4.8 1M" };
+    return {
+      ...row,
+      id: "claude-opus-4-8",
+      displayName: "Opus 4.8 1M",
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+    };
   }
   return row;
 }
@@ -393,6 +415,7 @@ export async function discoverDroidCliModelDescriptors(
     const descriptor = createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
       customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
+      ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
       ...(row.capabilities ? { capabilities: row.capabilities } : {}),
     });
     const existingIndex = descriptorIds.get(descriptorKey);

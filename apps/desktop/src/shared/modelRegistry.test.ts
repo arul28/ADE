@@ -401,6 +401,11 @@ describe("modelRegistry", () => {
       providerModelId: "claude-opus-4-8",
       displayName: "Opus 4.8 1M",
     });
+    expect(getModelById("droid/claude-opus-4-6-fast")).toMatchObject({
+      id: "droid/claude-opus-4-8",
+      providerModelId: "claude-opus-4-8",
+      displayName: "Opus 4.8 1M",
+    });
   });
 
 
