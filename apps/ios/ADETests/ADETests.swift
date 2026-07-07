@@ -11410,6 +11410,16 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(prettyWorkChatModelName("openai/gpt-5.5"), "GPT-5.5")
   }
 
+  func testWorkModelCatalogTreatsOpus46AliasesAsMigratedRows() {
+    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-6", "anthropic/claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-4-6", "claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6-1m", "claude-opus-4-7-1m"))
+    XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6[1m]", "claude-opus-4-7-1m"))
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-4-6"), "Claude Opus 4.8 1M")
+  }
+
   func testExtractWorkNavigationTargetsFindsFilePathsAndPullRequestNumbers() {
     let targets = extractWorkNavigationTargets(
       from: #"Updated apps/ios/ADE/Views/WorkTabView.swift and docs/plan.md before opening PR #145. See src/main.ts too."#

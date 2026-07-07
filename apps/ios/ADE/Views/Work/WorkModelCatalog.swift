@@ -624,9 +624,11 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
     return "anthropic/claude-opus-4-8"
-  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
+  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7",
+       "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
     return "anthropic/claude-opus-4-8"
-  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
+  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
+       "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "anthropic/claude-opus-4-7-1m"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
@@ -646,9 +648,11 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
     return "claude-opus-4-8"
-  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
+  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7",
+       "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
     return "claude-opus-4-8"
-  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
+  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
+       "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "claude-opus-4-7[1m]"
   case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
@@ -712,9 +716,11 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
     return "Claude Opus 4.8 1M"
-  case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
+  case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7",
+       "opus-4.6", "opus-4-6", "anthropic/claude-opus-4-6", "claude-opus-4-6":
     return "Claude Opus 4.8 1M"
-  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
+  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
+       "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
     return "Claude Opus 4.7 1M"
   case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
