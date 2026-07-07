@@ -104,6 +104,32 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("returns the host's structured file results (not a blob-wrapped JSON string)", async () => {
+    // Regression: the host answers file_request with a structured `result`
+    // (workspaces array, tree array), and requestFile() resolves with it
+    // directly. The adapter must return it as-is — treating every result as a
+    // SyncFileBlob and JSON.parsing `.content` silently emptied the Files tab.
+    const workspaces = [
+      { id: "ws-1", kind: "primary", laneId: null, name: "repo", rootPath: "/repo", isReadOnlyByDefault: false },
+    ];
+    const tree = [
+      { name: "src", path: "src", type: "directory", hasChildren: true },
+      { name: "README.md", path: "README.md", type: "file" },
+    ];
+    fake.fileResults.set("listWorkspaces", workspaces);
+    fake.fileResults.set("listTree", tree);
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project);
+
+    await expect(adapter.ade.files.listWorkspaces()).resolves.toEqual(workspaces);
+    await expect(adapter.ade.files.listTree({ workspaceId: "ws-1" } as never)).resolves.toEqual(tree);
+    // A host that has no data for the action still yields the typed fallback.
+    await expect(adapter.ade.files.searchText({ workspaceId: "ws-1", query: "x" } as never)).resolves.toEqual([]);
+
+    adapter.dispose();
+  });
+
   it("fans out table, chat, and terminal events and unsubscribes listeners", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["work.listSessions"]);
@@ -227,7 +253,11 @@ type CommandCall = {
 class FakeAdeSyncClient {
   descriptors: SyncRemoteCommandDescriptor[] = [];
   commandResults = new Map<string, unknown>();
-  fileResults = new Map<string, SyncFileBlob>();
+  // The real sync client resolves requestFile() with the host's structured
+  // `result` — a SyncFileBlob only for readFile/readArtifact, but an array/object
+  // for listWorkspaces/listTree/etc. Model that faithfully (unknown), not "always
+  // a blob", so adapter mis-parsing is caught.
+  fileResults = new Map<string, unknown>();
   commandCalls: CommandCall[] = [];
   fileCalls: Array<{ action: string; args: Record<string, unknown>; opts: { projectId?: string | null; timeoutMs?: number } }> = [];
   terminalInputs: Array<{ sessionId: string; data: string }> = [];
@@ -288,9 +318,9 @@ class FakeAdeSyncClient {
     return this.commandResults.has(action) ? this.commandResults.get(action) : null;
   }
 
-  async requestFile(action: string, args: Record<string, unknown>, opts: { projectId?: string | null; timeoutMs?: number } = {}): Promise<SyncFileBlob> {
+  async requestFile(action: string, args: Record<string, unknown>, opts: { projectId?: string | null; timeoutMs?: number } = {}): Promise<unknown> {
     this.fileCalls.push({ action, args, opts });
-    return this.fileResults.get(action) ?? fileBlob("");
+    return this.fileResults.has(action) ? this.fileResults.get(action) : null;
   }
 
   subscribeChat(sessionId: string, _opts: unknown, handlers: ChatHandlers): () => void {

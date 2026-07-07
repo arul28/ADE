@@ -6,11 +6,18 @@ import { fileContentFromBlob, requestFileBlob } from "./infra/fileBlob";
 export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files"> {
   const { client, events, state } = infra;
 
-  async function requestJson<T>(action: SupportedFileAction, args: unknown, fallback: T): Promise<T> {
+  // The host answers file_request with a structured `result`: an array/object for
+  // listing/search/range actions, and a SyncFileBlob ONLY for readFile/readArtifact.
+  // The sync client resolves requestFile() with that `result` directly, so return
+  // it as-is. (The earlier code treated every result as a blob and JSON.parsed a
+  // `content` field, which silently emptied listWorkspaces/listTree and crashed the
+  // Files tab downstream on undefined paths.)
+  async function requestResult<T>(action: SupportedFileAction, args: unknown, fallback: T): Promise<T> {
     try {
-      const blob = await requestFileBlob(client, state, action, asRecord(args));
-      if (!blob.content) return fallback;
-      return JSON.parse(blob.content) as T;
+      const result = await client.requestFile(action, asRecord(args) as never, {
+        projectId: state.getProjectId(),
+      });
+      return (result ?? fallback) as T;
     } catch {
       return fallback;
     }
@@ -40,10 +47,10 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     writeTextAtomic: async (args: unknown) => {
       await requestVoid("writeText", args, changeEvent(args, "modified"));
     },
-    listWorkspaces: (args?: unknown) => requestJson("listWorkspaces", args, []),
-    listTree: (args: unknown) => requestJson("listTree", args, []),
+    listWorkspaces: (args?: unknown) => requestResult("listWorkspaces", args, []),
+    listTree: (args: unknown) => requestResult("listTree", args, []),
     listTreeChildren: (args: unknown) =>
-      requestJson("listTreeChildren", args, {
+      requestResult("listTreeChildren", args, {
         parentPath: stringField(asRecord(args), "parentPath"),
         children: [],
         offset: numberField(asRecord(args), "offset") ?? 0,
@@ -52,7 +59,7 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         nextOffset: null,
       }),
     refreshGitDecorations: async (args: unknown) => {
-      const result = await requestJson("refreshGitDecorations", args, {
+      const result = await requestResult("refreshGitDecorations", args, {
         workspaceId: stringField(asRecord(args), "workspaceId"),
         files: [],
         directories: [],
@@ -81,24 +88,20 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         };
       }
     },
-    readFileRange: async (args: unknown): Promise<FilesReadFileRangeResult> => {
-      try {
-        return JSON.parse((await requestFileBlob(client, state, "readFileRange", asRecord(args))).content);
-      } catch {
-        const record = asRecord(args);
-        return {
-          path: stringField(record, "path"),
-          encoding: "utf-8",
-          content: "",
-          rangeStart: numberField(record, "offset") ?? 0,
-          rangeEnd: numberField(record, "offset") ?? 0,
-          nextOffset: null,
-          totalSize: 0,
-          eof: true,
-        };
-      }
+    readFileRange: (args: unknown): Promise<FilesReadFileRangeResult> => {
+      const record = asRecord(args);
+      return requestResult("readFileRange", args, {
+        path: stringField(record, "path"),
+        encoding: "utf-8",
+        content: "",
+        rangeStart: numberField(record, "offset") ?? 0,
+        rangeEnd: numberField(record, "offset") ?? 0,
+        nextOffset: null,
+        totalSize: 0,
+        eof: true,
+      });
     },
-    gitBlame: (args: unknown) => requestJson("gitBlame", args, { path: stringField(asRecord(args), "path"), lines: [] }),
+    gitBlame: (args: unknown) => requestResult("gitBlame", args, { path: stringField(asRecord(args), "path"), lines: [] }),
     writeText: async (args: unknown) => {
       await requestVoid("writeText", args, changeEvent(args, "modified"));
     },
@@ -123,8 +126,8 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     },
     watchChanges: async () => undefined,
     stopWatching: async () => undefined,
-    quickOpen: (args: unknown) => requestJson("quickOpen", args, []),
-    searchText: (args: unknown) => requestJson("searchText", args, []),
+    quickOpen: (args: unknown) => requestResult("quickOpen", args, []),
+    searchText: (args: unknown) => requestResult("searchText", args, []),
     onChange: (listener: (event: unknown) => void) => events.on("filesChanged", listener as never),
   };
   return files as AdeNamespace<"files">;
