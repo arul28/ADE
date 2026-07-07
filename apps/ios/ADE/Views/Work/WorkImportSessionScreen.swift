@@ -11,12 +11,8 @@ private struct WorkExternalSessionAction: Identifiable {
   let tint: Color
   let target: String
   let mode: String
+  var isPrimary = false
   var enabled = true
-}
-
-private struct WorkExternalSessionSelection: Identifiable {
-  let session: ExternalSessionSummary
-  var id: String { session.importIdentity }
 }
 
 struct WorkImportSessionScreen: View {
@@ -32,7 +28,6 @@ struct WorkImportSessionScreen: View {
   @State private var loading = false
   @State private var hasLoaded = false
   @State private var errorMessage: String?
-  @State private var selectedSession: WorkExternalSessionSelection?
   @State private var importingSessionId: String?
 
   private var queryKey: String {
@@ -65,30 +60,28 @@ struct WorkImportSessionScreen: View {
     }
     .adeScreenBackground()
     .adeNavigationGlass()
-    .navigationTitle("Import session")
+    .navigationTitle("Import a CLI session")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar(.hidden, for: .tabBar)
     .adeRootTabBarHidden()
     .task(id: queryKey) {
       await loadSessions()
     }
-    .sheet(item: $selectedSession) { selection in
-      WorkImportSessionActionSheet(
-        session: selection.session,
-        laneName: lane.name,
-        actions: actions(for: selection.session),
-        onSelect: { action in
-          Task { await importSession(selection.session, action: action) }
-        }
-      )
-      .presentationDetents([.medium])
-      .presentationDragIndicator(.visible)
-    }
   }
 
   @ViewBuilder
   private var controls: some View {
     VStack(alignment: .leading, spacing: 12) {
+      VStack(alignment: .leading, spacing: 5) {
+        Text("Import a CLI session")
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("Continue a Claude, Codex, Cursor, Droid, or OpenCode session you started in a terminal into \(lane.name).")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
       ScrollView(.horizontal, showsIndicators: false) {
         HStack(spacing: 8) {
           ForEach(workImportSessionProviders, id: \.self) { provider in
@@ -107,6 +100,11 @@ struct WorkImportSessionScreen: View {
         Text("All folders").tag("all")
       }
       .pickerStyle(.segmented)
+
+      Text("Open continues the original · Fork starts a copy. ADE chat opens the history in a chat; CLI session opens the terminal.")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
   }
 
@@ -135,22 +133,31 @@ struct WorkImportSessionScreen: View {
       List {
         Section {
           ForEach(sortedSessions, id: \.importIdentity) { session in
-            Button {
-              selectedSession = WorkExternalSessionSelection(session: session)
-            } label: {
-              WorkImportSessionRow(
-                session: session,
-                importing: importingSessionId == session.importIdentity
-              )
-            }
-            .buttonStyle(.plain)
-            .disabled(importingSessionId != nil)
+            WorkImportSessionRow(
+              session: session,
+              actions: actions(for: session),
+              importing: importingSessionId == session.importIdentity,
+              importDisabled: importingSessionId != nil,
+              onSelectAction: { action in
+                Task { await importSession(session, action: action) }
+              }
+            )
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowSeparator(.hidden)
             .listRowBackground(Color.clear)
           }
+        } header: {
+          HStack(spacing: 5) {
+            Text("CLI sessions")
+            Text("·")
+            Text("started in a terminal")
+              .fontWeight(.regular)
+              .textCase(nil)
+          }
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
         } footer: {
-          Text("Resume can take over a live CLI. Fork keeps the original session untouched.")
+          Text("Pull to refresh the session list.")
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
             .padding(.top, 4)
@@ -191,20 +198,21 @@ struct WorkImportSessionScreen: View {
 
     if caps.importToChat {
       result.append(WorkExternalSessionAction(
-        id: "chat-resume",
+        id: "open-as-chat",
         title: "Open as ADE chat",
-        subtitle: "Import transcript",
+        subtitle: nil,
         systemImage: "bubble.left.and.bubble.right.fill",
         tint: ADEColor.accent,
         target: "chat",
-        mode: "resume"
+        mode: "resume",
+        isPrimary: true
       ))
       result.append(WorkExternalSessionAction(
-        id: "chat-fork",
+        id: "fork-as-chat",
         title: "Fork as ADE chat",
-        subtitle: "Copy transcript",
+        subtitle: nil,
         systemImage: "arrow.triangle.branch",
-        tint: ADEColor.accent,
+        tint: ADEColor.textPrimary,
         target: "chat",
         mode: "fork"
       ))
@@ -213,9 +221,9 @@ struct WorkImportSessionScreen: View {
     if cwdMatchesLane {
       if caps.resumeInPlace {
         result.append(WorkExternalSessionAction(
-          id: "cli-resume-here",
-          title: "Resume here",
-          subtitle: lane.name,
+          id: "resume-here",
+          title: "Open as CLI session",
+          subtitle: nil,
           systemImage: "terminal.fill",
           tint: ADEColor.textPrimary,
           target: "cli",
@@ -224,20 +232,20 @@ struct WorkImportSessionScreen: View {
       }
       if caps.fork {
         result.append(WorkExternalSessionAction(
-          id: "cli-fork",
-          title: "Fork into this lane",
-          subtitle: lane.name,
+          id: "fork-into-lane",
+          title: "Fork as CLI session",
+          subtitle: nil,
           systemImage: "arrow.triangle.branch",
-          tint: ADEColor.info,
+          tint: ADEColor.textPrimary,
           target: "cli",
           mode: "fork"
         ))
       }
     } else if caps.resumeInDifferentCwd {
       result.append(WorkExternalSessionAction(
-        id: "cli-resume-here",
-        title: "Resume here",
-        subtitle: lane.name,
+        id: "resume-here",
+        title: "Open as CLI session",
+        subtitle: nil,
         systemImage: "terminal.fill",
         tint: ADEColor.textPrimary,
         target: "cli",
@@ -245,11 +253,11 @@ struct WorkImportSessionScreen: View {
       ))
       if caps.forkIntoDifferentCwd {
         result.append(WorkExternalSessionAction(
-          id: "cli-fork",
-          title: "Fork into this lane",
-          subtitle: lane.name,
+          id: "fork-into-lane",
+          title: "Fork as CLI session",
+          subtitle: nil,
           systemImage: "arrow.triangle.branch",
-          tint: ADEColor.info,
+          tint: ADEColor.textPrimary,
           target: "cli",
           mode: "fork"
         ))
@@ -257,21 +265,21 @@ struct WorkImportSessionScreen: View {
     } else {
       if caps.forkIntoDifferentCwd {
         result.append(WorkExternalSessionAction(
-          id: "cli-fork",
-          title: "Fork into this lane",
-          subtitle: lane.name,
+          id: "fork-into-lane",
+          title: "Fork as CLI session",
+          subtitle: nil,
           systemImage: "arrow.triangle.branch",
-          tint: ADEColor.info,
+          tint: ADEColor.textPrimary,
           target: "cli",
           mode: "fork"
         ))
       }
       if caps.resumeInPlace {
         result.append(WorkExternalSessionAction(
-          id: "cli-resume-original",
-          title: "Resume in original folder",
-          subtitle: session.cwdDisplayName,
-          systemImage: "folder.fill",
+          id: "resume-in-place",
+          title: "Open as CLI session",
+          subtitle: "Runs in its original folder",
+          systemImage: "terminal.fill",
           tint: ADEColor.textPrimary,
           target: "cli",
           mode: "resume"
@@ -279,8 +287,8 @@ struct WorkImportSessionScreen: View {
       }
       if !caps.forkIntoDifferentCwd && !caps.resumeInPlace {
         result.append(WorkExternalSessionAction(
-          id: "cli-resume-here",
-          title: "Resume here",
+          id: "resume-here",
+          title: "Open as CLI session",
           subtitle: "This session lives in another folder and \(providerDisplayName(session.provider)) can't resume across folders.",
           systemImage: "terminal.fill",
           tint: ADEColor.textMuted,
@@ -394,63 +402,65 @@ private struct WorkImportProviderChip: View {
 
   @ViewBuilder
   private var providerLogo: some View {
-    if let assetName = providerAssetName(provider) {
-      Image(assetName)
-        .resizable()
-        .aspectRatio(contentMode: .fit)
-        .frame(width: 15, height: 15)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-    } else {
-      Circle()
-        .fill(ADEColor.providerChatAccent(for: provider))
-        .frame(width: 7, height: 7)
-    }
+    WorkProviderBareLogo(
+      provider: provider,
+      fallbackSymbol: providerIcon(provider),
+      tint: ADEColor.providerChatAccent(for: provider),
+      size: 18
+    )
   }
 }
 
 private struct WorkImportSessionRow: View {
   let session: ExternalSessionSummary
+  let actions: [WorkExternalSessionAction]
   let importing: Bool
+  let importDisabled: Bool
+  let onSelectAction: (WorkExternalSessionAction) -> Void
+
+  private var actionColumns: [GridItem] {
+    [
+      GridItem(.flexible(), spacing: 8),
+      GridItem(.flexible(), spacing: 8)
+    ]
+  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 9) {
+    VStack(alignment: .leading, spacing: 11) {
       HStack(alignment: .top, spacing: 10) {
         providerMark
 
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: 6) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(session.displayTitle)
               .font(.subheadline.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(2)
             Spacer(minLength: 6)
-            Text(session.relativeUpdatedAt)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
+            if !session.relativeUpdatedAt.isEmpty {
+              Text(session.relativeUpdatedAt)
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
           }
 
-          HStack(spacing: 6) {
-            WorkImportBadge(text: providerDisplayName(session.provider), tint: ADEColor.providerChatAccent(for: session.provider))
+          HStack(spacing: 5) {
+            Text(providerDisplayName(session.provider))
             if let messageCount = session.messageCount {
-              WorkImportBadge(text: "\(messageCount) \(messageCount == 1 ? "message" : "messages")", tint: ADEColor.textSecondary)
+              Text("·")
+              Text("\(messageCount) \(messageCount == 1 ? "msg" : "msgs")")
             }
-            if session.alreadyImported {
-              WorkImportBadge(text: "Imported", tint: ADEColor.success)
-            }
-            if session.possiblyActive {
-              WorkImportBadge(text: "May be open elsewhere", tint: ADEColor.warning)
+            if let cwd = session.cwd, !cwd.isEmpty {
+              Text("·")
+              Text(session.cwdDisplayName)
+                .lineLimit(1)
+                .truncationMode(.middle)
             }
           }
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(1)
-
-          if let cwd = session.cwd, !cwd.isEmpty {
-            Text(session.cwdDisplayName)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
 
           if let preview = session.preview, !preview.isEmpty {
             Text(preview)
@@ -458,17 +468,33 @@ private struct WorkImportSessionRow: View {
               .foregroundStyle(ADEColor.textMuted)
               .lineLimit(2)
           }
+
+          statusBadges
         }
 
         if importing {
           ProgressView()
             .controlSize(.small)
             .padding(.top, 2)
-        } else {
-          Image(systemName: "chevron.right")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .padding(.top, 3)
+        }
+      }
+
+      if session.possiblyActive {
+        Text("Recently active — may still be running in a terminal; fork to avoid conflicts.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if !actions.isEmpty {
+        LazyVGrid(columns: actionColumns, alignment: .leading, spacing: 8) {
+          ForEach(actions) { action in
+            WorkImportActionButton(
+              action: action,
+              importDisabled: importDisabled,
+              onSelect: onSelectAction
+            )
+          }
         }
       }
     }
@@ -482,21 +508,28 @@ private struct WorkImportSessionRow: View {
   }
 
   @ViewBuilder
-  private var providerMark: some View {
-    if providerAssetName(session.provider) != nil {
-      WorkProviderLogo(
-        provider: session.provider,
-        fallbackSymbol: providerIcon(session.provider),
-        tint: ADEColor.providerChatAccent(for: session.provider),
-        size: 24
-      )
-      .padding(.top, 1)
-    } else {
-      Circle()
-        .fill(ADEColor.providerChatAccent(for: session.provider))
-        .frame(width: 10, height: 10)
-        .padding(.top, 5)
+  private var statusBadges: some View {
+    if session.alreadyImported || session.possiblyActive {
+      HStack(spacing: 6) {
+        if session.alreadyImported {
+          WorkImportBadge(text: "Imported", tint: ADEColor.success)
+        }
+        if session.possiblyActive {
+          WorkImportBadge(text: "May be open elsewhere", tint: ADEColor.warning)
+        }
+      }
     }
+  }
+
+  @ViewBuilder
+  private var providerMark: some View {
+    WorkProviderBareLogo(
+      provider: session.provider,
+      fallbackSymbol: providerIcon(session.provider),
+      tint: ADEColor.providerChatAccent(for: session.provider),
+      size: 26
+    )
+    .padding(.top, 2)
   }
 }
 
@@ -514,101 +547,91 @@ private struct WorkImportBadge: View {
   }
 }
 
-private struct WorkImportSessionActionSheet: View {
-  @Environment(\.dismiss) private var dismiss
-
-  let session: ExternalSessionSummary
-  let laneName: String
-  let actions: [WorkExternalSessionAction]
+private struct WorkImportActionButton: View {
+  let action: WorkExternalSessionAction
+  let importDisabled: Bool
   let onSelect: (WorkExternalSessionAction) -> Void
 
-  var body: some View {
-    NavigationStack {
-      VStack(alignment: .leading, spacing: 16) {
-        VStack(alignment: .leading, spacing: 6) {
-          HStack(spacing: 8) {
-            providerMark
-            Text(providerDisplayName(session.provider))
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-          Text(session.displayTitle)
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(2)
-          Text(session.cwdDisplayName)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
+  private var isEnabled: Bool {
+    action.enabled && !importDisabled
+  }
 
-        VStack(spacing: 10) {
-          ForEach(actions) { action in
-            Button {
-              guard action.enabled else { return }
-              dismiss()
-              onSelect(action)
-            } label: {
-              HStack(spacing: 12) {
-                Image(systemName: action.systemImage)
-                  .font(.system(size: 15, weight: .semibold))
-                  .foregroundStyle(action.tint)
-                  .frame(width: 22)
-                VStack(alignment: .leading, spacing: 2) {
-                  Text(action.title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(ADEColor.textPrimary)
-                  if let subtitle = action.subtitle, !subtitle.isEmpty {
-                    Text(subtitle)
-                      .font(.caption)
-                      .foregroundStyle(ADEColor.textSecondary)
-                      .lineLimit(1)
-                      .truncationMode(.middle)
-                  }
-                }
-                Spacer()
-              }
-              .padding(13)
-              .background(action.tint.opacity(action.target == "chat" ? 0.14 : 0.08), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-              .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                  .stroke(action.tint.opacity(0.18), lineWidth: 0.6)
-              }
-            }
-            .buttonStyle(.plain)
-            .disabled(!action.enabled)
+  var body: some View {
+    Button {
+      guard action.enabled else { return }
+      onSelect(action)
+    } label: {
+      HStack(alignment: .top, spacing: 7) {
+        Image(systemName: action.systemImage)
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(iconColor)
+          .frame(width: 14, height: 18)
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(action.title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(titleColor)
+            .lineLimit(2)
+            .fixedSize(horizontal: false, vertical: true)
+
+          if let subtitle = action.subtitle, !subtitle.isEmpty {
+            Text(subtitle)
+              .font(.caption2)
+              .foregroundStyle(subtitleColor)
+              .lineLimit(3)
+              .fixedSize(horizontal: false, vertical: true)
           }
         }
 
         Spacer(minLength: 0)
       }
-      .padding(20)
-      .adeScreenBackground()
-      .navigationTitle("Import")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .topBarTrailing) {
-          Button("Close") { dismiss() }
-        }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      .background(backgroundStyle, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+      .overlay {
+        RoundedRectangle(cornerRadius: 11, style: .continuous)
+          .stroke(borderColor, lineWidth: 0.7)
       }
+      .opacity(isEnabled ? 1 : 0.58)
     }
+    .buttonStyle(.plain)
+    .disabled(!isEnabled)
   }
 
-  @ViewBuilder
-  private var providerMark: some View {
-    if providerAssetName(session.provider) != nil {
-      WorkProviderBareLogo(
-        provider: session.provider,
-        fallbackSymbol: providerIcon(session.provider),
-        tint: ADEColor.providerChatAccent(for: session.provider),
-        size: 14
-      )
-    } else {
-      Circle()
-        .fill(ADEColor.providerChatAccent(for: session.provider))
-        .frame(width: 9, height: 9)
+  private var backgroundStyle: Color {
+    if action.isPrimary && action.enabled {
+      return ADEColor.accent
     }
+    return ADEColor.textPrimary.opacity(action.enabled ? 0.04 : 0.025)
+  }
+
+  private var borderColor: Color {
+    if action.isPrimary && action.enabled {
+      return Color.white.opacity(0.18)
+    }
+    return action.enabled ? ADEColor.glassBorder : ADEColor.glassBorder.opacity(0.55)
+  }
+
+  private var iconColor: Color {
+    if action.isPrimary && action.enabled {
+      return .white
+    }
+    return action.enabled ? action.tint : ADEColor.textMuted
+  }
+
+  private var titleColor: Color {
+    if action.isPrimary && action.enabled {
+      return .white
+    }
+    return action.enabled ? ADEColor.textPrimary : ADEColor.textMuted
+  }
+
+  private var subtitleColor: Color {
+    if action.isPrimary && action.enabled {
+      return .white.opacity(0.82)
+    }
+    return action.enabled ? ADEColor.textSecondary : ADEColor.textMuted
   }
 }
 
