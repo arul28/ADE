@@ -5173,6 +5173,8 @@ describe("laneService rename", () => {
       laneType: "primary" | "worktree";
       branchRef: string;
       worktreePath: string;
+      status?: "active" | "archived";
+      archivedAt?: string | null;
     },
   ) {
     db.run(
@@ -5195,9 +5197,9 @@ describe("laneService rename", () => {
         null,
         null,
         null,
-        "active",
+        args.status ?? "active",
         RENAME_NOW,
-        null,
+        args.archivedAt ?? null,
       ],
     );
   }
@@ -5216,12 +5218,14 @@ describe("laneService rename", () => {
         worktreePath: path.join(repoRoot, "lane-a"),
       });
 
+      const onLifecycleEvent = vi.fn();
       const service = createLaneService({
         db,
         projectRoot: repoRoot,
         projectId: "proj-rename",
         defaultBaseRef: "main",
         worktreesDir: path.join(repoRoot, "worktrees"),
+        onLifecycleEvent,
         logger: createLogger(),
       });
 
@@ -5232,6 +5236,60 @@ describe("laneService rename", () => {
         ["lane-a", "proj-rename"],
       );
       expect(row?.name).toBe("new-name");
+      expect(onLifecycleEvent).toHaveBeenCalledWith({
+        type: "lane-renamed",
+        laneId: "lane-a",
+        laneName: "new-name",
+        previousLaneName: "old-name",
+        color: null,
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not emit lifecycle events when archive and unarchive do not change status", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-archive-noop-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      seedRenameProject(db, { projectId: "proj-archive-noop", repoRoot });
+      insertRenameLane(db, {
+        id: "lane-active",
+        projectId: "proj-archive-noop",
+        name: "active-lane",
+        laneType: "worktree",
+        branchRef: "ade/active-lane",
+        worktreePath: path.join(repoRoot, "lane-active"),
+      });
+      insertRenameLane(db, {
+        id: "lane-archived",
+        projectId: "proj-archive-noop",
+        name: "archived-lane",
+        laneType: "worktree",
+        branchRef: "ade/archived-lane",
+        worktreePath: path.join(repoRoot, "lane-archived"),
+        status: "archived",
+        archivedAt: RENAME_NOW,
+      });
+
+      const onLifecycleEvent = vi.fn();
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-archive-noop",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+        onLifecycleEvent,
+        logger: createLogger(),
+      });
+
+      service.archive({ laneId: "lane-archived" });
+      service.unarchive({ laneId: "lane-active" });
+
+      expect(onLifecycleEvent).not.toHaveBeenCalled();
+      expect(db.get<{ status: string }>("select status from lanes where id = ?", ["lane-archived"])?.status).toBe("archived");
+      expect(db.get<{ status: string }>("select status from lanes where id = ?", ["lane-active"])?.status).toBe("active");
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });

@@ -14,6 +14,7 @@ import type {
   PrSummary,
   PrWithConflicts,
   RebaseNeed,
+  LaneLifecycleEvent,
 } from "../../../../shared/types";
 import { PrsProvider, usePrs } from "./PrsContext";
 
@@ -221,6 +222,7 @@ describe("PrsContext refresh", () => {
         list: vi.fn().mockResolvedValue([]),
         listAutoRebaseStatuses: vi.fn().mockResolvedValue([refreshedAutoStatus]),
         onAutoRebaseEvent: vi.fn(() => () => {}),
+        onLifecycleEvent: vi.fn(() => () => {}),
       },
       rebase: {
         scanNeeds: vi.fn().mockResolvedValue([refreshedNeed]),
@@ -251,6 +253,55 @@ describe("PrsContext refresh", () => {
     expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
     expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
     expect(window.ade.prs.refresh).toHaveBeenCalledWith({});
+  });
+
+  it("replays a hidden lane lifecycle refresh when the PRs tab becomes visible", async () => {
+    let lifecycleListener: ((event: LaneLifecycleEvent) => void) | null = null;
+    vi.mocked(window.ade.lanes.onLifecycleEvent).mockImplementation((listener) => {
+      lifecycleListener = listener;
+      return vi.fn();
+    });
+    let visibilityState: DocumentVisibilityState = "visible";
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
+
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    const baselineRefreshCount = vi.mocked(window.ade.prs.listWithConflicts).mock.calls.length;
+    expect(baselineRefreshCount).toBeGreaterThan(0);
+
+    vi.useFakeTimers();
+    visibilityState = "hidden";
+    act(() => {
+      lifecycleListener?.({
+        type: "lane-created",
+        laneId: "lane-new",
+        laneName: "New lane",
+      });
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(baselineRefreshCount);
+
+    visibilityState = "visible";
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(180);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledTimes(baselineRefreshCount + 1);
   });
 
   it("bounds automatic retries after persistent refresh failures", async () => {
@@ -1425,4 +1476,3 @@ function makeFakePr(id: string, overrides: Partial<PrWithConflicts> = {}): PrWit
     ...overrides,
   };
 }
-

@@ -62,6 +62,7 @@ function installAde(listSnapshots: ReturnType<typeof vi.fn>) {
       list: vi.fn().mockResolvedValue([]),
       listAutoRebaseStatuses: vi.fn().mockResolvedValue([]),
       onAutoRebaseEvent: vi.fn(() => () => {}),
+      onLifecycleEvent: vi.fn(() => () => {}),
     },
     rebase: {
       scanNeeds: vi.fn().mockResolvedValue([]),

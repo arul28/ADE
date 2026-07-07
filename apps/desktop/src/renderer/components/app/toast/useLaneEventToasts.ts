@@ -28,11 +28,16 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           });
           return;
         }
+        if (event.type === "lane-renamed") return;
         showToast({
           id: `lane-${event.type}-${event.laneId}`,
           title: event.laneName,
           message:
-            event.type === "lane-archived" ? "Lane archived" : "Lane deleted",
+            event.type === "lane-archived"
+              ? "Lane archived"
+              : event.type === "lane-unarchived"
+                ? "Lane unarchived"
+                : "Lane deleted",
           tone: "info",
           colorDot: dot,
         });
