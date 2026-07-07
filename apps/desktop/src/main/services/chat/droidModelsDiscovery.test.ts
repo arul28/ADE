@@ -366,6 +366,50 @@ describe("discoverDroidCliModelDescriptors", () => {
     });
   });
 
+  it("adds canonical metadata to Factory config custom models that already use canonical ids", async () => {
+    fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, ".factory", "config.json"),
+      JSON.stringify({
+        custom_models: [
+          {
+            model: "claude-sonnet-5",
+            model_display_name: "Canonical Sonnet custom proxy",
+          },
+          {
+            model: "claude-opus-4-8",
+            model_display_name: "Canonical Opus custom proxy",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    mockCreateSession.mockResolvedValueOnce({
+      initResult: {
+        availableModels: [],
+      },
+      close: vi.fn(async () => {}),
+    });
+
+    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-sonnet-5")).toMatchObject({
+      providerModelId: "custom:claude-sonnet-5",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "max"],
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-4-8")).toMatchObject({
+      providerModelId: "custom:claude-opus-4-8",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      serviceTiers: ["fast"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    });
+  });
+
   it("serves last-known-good rows past the freshness window and revalidates once in the background", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-10T00:00:00.000Z"));

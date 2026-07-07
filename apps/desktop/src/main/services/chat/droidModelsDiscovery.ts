@@ -261,7 +261,11 @@ function canonicalDroidReplacementForAlias(
   const normalized = id.trim().toLowerCase();
   const idPrefix = options?.customProxy ? "custom:" : "";
   const customProxy = options?.customProxy ? { customProxy: true } : {};
-  if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
+  if (
+    normalized === "claude-sonnet-4-6"
+    || normalized === "sonnet-4-6"
+    || (options?.customProxy && normalized === "claude-sonnet-5")
+  ) {
     return {
       id: `${idPrefix}claude-sonnet-5`,
       displayName: "Sonnet 5 (1.2x)",
@@ -281,6 +285,7 @@ function canonicalDroidReplacementForAlias(
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
     || normalized === "opus"
+    || (options?.customProxy && normalized === "claude-opus-4-8")
   ) {
     return {
       id: `${idPrefix}claude-opus-4-8`,
