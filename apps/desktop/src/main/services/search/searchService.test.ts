@@ -150,6 +150,39 @@ describe("searchService", () => {
     expect(hit!.deepLink).toContain("event=41");
   });
 
+  it("adds repo envelope params to session deep links when repoSlug is available", async () => {
+    service.dispose();
+    service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      repoSlug: async () => ({ owner: "owner", name: "repo" }),
+      sessions: {
+        list: async () => sessions,
+        get: async (id) => sessions.find((s) => s.id === id) ?? null
+      },
+      lanes: {
+        list: async () => [
+          {
+            id: "lane-1",
+            name: "universal-search",
+            laneType: "workspace",
+            branchRef: "refs/heads/ade/universal-search"
+          } as never
+        ]
+      },
+      now: () => NOW
+    });
+    sessions.push(makeSession({ id: "chat-repo", title: "Repo chat" }));
+    writeChatLine("chat-repo", { type: "user_message", text: "portable envelope message" }, "2026-07-05T10:00:00.000Z");
+    service.notifyChatEvent("chat-repo");
+    await service.processPendingNow();
+
+    const hit = (await service.query({ query: "portable envelope" })).results.find((item) => item.kind === "chat");
+    expect(hit?.deepLink).toContain("repo=owner%2Frepo");
+    expect(hit?.deepLink).toContain("branch=ade%2Funiversal-search");
+  });
+
   it("indexes only new lines on subsequent appends (incremental cursor)", async () => {
     sessions.push(makeSession({ id: "chat-2", title: "Chat two" }));
     writeChatLine("chat-2", { type: "user_message", text: "first message alpha" }, "2026-07-05T10:00:00.000Z");
@@ -432,6 +465,79 @@ describe("searchService classification and lane-git dedup", () => {
     const result = await service.query({ query: "kind:branch feature" });
     const branchIds = result.results.map((item) => item.id);
     expect(branchIds).toEqual(["branch:lane-primary:ade/feature"]);
+    service.dispose();
+  });
+
+  it("emits canonical commit deep links", async () => {
+    const lanes = [
+      {
+        id: "lane-work",
+        name: "feature",
+        laneType: "worktree",
+        baseRef: "main",
+        branchRef: "ade/feature",
+        worktreePath: "/tmp/b",
+        parentLaneId: null,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: null,
+        isEditProtected: false,
+        status: { dirty: false, ahead: 0, behind: 0 },
+        color: null,
+        icon: null,
+        tags: [],
+        createdAt: "2026-07-01T00:00:00.000Z"
+      }
+    ] as never[];
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      repoSlug: async () => ({ owner: "owner", name: "repo" }),
+      sessions: { list: async () => [] },
+      lanes: { list: async () => lanes as never },
+      git: {
+        listRecentCommits: async () => [
+          {
+            sha: "abc123456789",
+            shortSha: "abc1234",
+            subject: "Wire canonical commits",
+            authorName: "Ada",
+            authoredAt: "2026-07-05T00:00:00.000Z"
+          } as never
+        ],
+        listBranches: async () => []
+      },
+      now: () => NOW
+    });
+
+    service.notifyLaneActivity("lane-work");
+    await service.processPendingNow();
+    const commit = (await service.query({ query: "canonical commits kind:commit" })).results[0];
+    expect(commit?.deepLink).toMatch(/^ade:\/\/commit\//);
+    expect(commit?.deepLink).toContain("repo=owner%2Frepo");
+    service.dispose();
+  });
+
+  it("emits canonical artifact deep links", async () => {
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: { list: async () => [] },
+      artifacts: {
+        list: () => [{
+          id: "artifact-123",
+          title: "Proof artifact",
+          description: "screenshot evidence",
+          createdAt: "2026-07-05T00:00:00.000Z"
+        }]
+      },
+      now: () => NOW
+    });
+
+    const artifact = (await service.query({ query: "screenshot kind:artifact" })).results[0];
+    expect(artifact?.deepLink).toMatch(/^ade:\/\/artifact\//);
     service.dispose();
   });
 });

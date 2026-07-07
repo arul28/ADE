@@ -16,8 +16,7 @@ function parsePathParts(pathname: string): GithubRepoSlug | null {
   if (parts.length !== 2) return null;
   const owner = parts[0]?.trim() ?? "";
   const repo = stripGitSuffix(parts[1]?.trim() ?? "");
-  if (!owner || !repo) return null;
-  return { owner, repo };
+  return owner && repo ? { owner, repo } : null;
 }
 
 export function parseGithubRemoteUrl(remoteUrl: string | null | undefined): GithubRepoSlug | null {

@@ -33,6 +33,7 @@ import type {
   RemoteRuntimeProjectRecord,
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
+import { parseDeeplink } from "../../../shared/deeplinks";
 import { extractError } from "../../lib/format";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
@@ -46,7 +47,6 @@ import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
-import { parseDeeplink } from "../../../shared/deeplinks";
 import { setPendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { readStoredPrsRoute } from "../prs/prsRouteState";
 import { AddProjectChooser } from "../projects/AddProjectChooser";
@@ -1164,10 +1164,24 @@ export function CommandPalette({
           navigate(`/prs?prId=${encodeURIComponent(prId)}`);
           break;
         }
-        case "commit":
+        case "commit": {
+          const parsed = item.deepLink ? parseDeeplink(item.deepLink) : null;
+          const target = parsed?.ok && parsed.target.kind === "commit" ? parsed.target : null;
+          const laneId = target?.laneId ?? item.laneId ?? null;
+          if (laneId && target?.sha) {
+            navigate(
+              `/lanes?laneId=${encodeURIComponent(laneId)}&focus=single&commitSha=${encodeURIComponent(target.sha)}`,
+            );
+          } else if (item.laneId) {
+            navigate(
+              `/lanes?laneId=${encodeURIComponent(item.laneId)}&focus=single`,
+            );
+          } else {
+            navigate("/lanes");
+          }
+          break;
+        }
         case "branch": {
-          // Commit/branch deep-anchoring inside lane detail isn't wired yet;
-          // opening the owning lane is the correct v1 behavior.
           if (item.laneId) {
             navigate(
               `/lanes?laneId=${encodeURIComponent(item.laneId)}&focus=single`,

@@ -1,6 +1,6 @@
 ---
 name: ade-deeplinks
-description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
+description: Use this skill when an agent needs to mint, share, or open ADE deeplinks (lane, work session, file, commit, artifact, branch, PR, Linear issue) so users — or the agent itself — can jump straight to a specific ADE surface from anywhere (GitHub PR description, Linear issue, Slack, email, terminal, mobile).
 ---
 
 # ADE deeplinks
@@ -12,13 +12,19 @@ identical semantics:
 
 ```
 ade://lane/<uuid>                                # local-only — focuses an existing lane
-ade://session/<id>[?lane=<lane-uuid>]            # local-only — opens a Work session
+ade://session/<id>[?lane=<lane-uuid>&event=<n>&offset=<bytes>]  # Work session + anchors
+ade://file/<repo-relative-path>[?line=<n>&lane=<lane-uuid>]      # Files tab
+ade://commit/<sha>[?lane=<lane-uuid>]            # Lanes git detail, or GitHub fallback with envelope
+ade://artifact/<artifact-id>                     # local proof/history artifact
 ade://repo/<owner>/<repo>/branch/<branch>        # cross-machine — find or offer-to-create lane
 ade://pr/<owner>/<repo>/<number>                 # PR detail view
 ade://linear-issue/<ADE-123>[?branch=<branch>]   # Linear handoff — opens the Linear pane
 
 https://ade-app.dev/open?type=lane&id=<uuid>
 https://ade-app.dev/open?type=session&id=<id>[&lane=<lane-uuid>]
+https://ade-app.dev/open?type=file&path=<path>[&line=<n>&lane=<lane-uuid>]
+https://ade-app.dev/open?type=commit&sha=<sha>[&lane=<lane-uuid>]
+https://ade-app.dev/open?type=artifact&id=<artifact-id>
 https://ade-app.dev/open?type=branch&repo=<owner/repo>&branch=<branch>[&pr=<n>]
 https://ade-app.dev/open?type=pr&repo=<owner/repo>&number=<n>
 https://ade-app.dev/open?type=linear-issue&issue=<ADE-123>[&branch=<branch>]
@@ -29,8 +35,18 @@ OpenGraph card in Slack/Discord/iMessage/Gmail/Linear). The web landing page
 tries the `ade://` upgrade and falls back to an install card. Both forms parse
 to the same target shape.
 
-**Lane links are local** — the UUID is meaningful only on the machine that
-created the lane. **Branch links are portable** — they fetch/import the remote
+**Lane, session, commit, and artifact ids are local** — the UUID/id is
+meaningful only on the machine that created it. ADE can attach an envelope to
+local links as query params:
+
+```
+repo=<owner>/<repo>&branch=<branch>&pr=<number>&linear=<ADE-123>
+```
+
+The envelope does not change the primary target; it gives receivers a portable
+fallback chain. If the local id is unknown, ADE can offer to switch to the
+matching project, create/open the branch or PR, open the Linear issue, or open a
+commit on GitHub. **Branch links are portable** — they fetch/import the remote
 branch as a lane if the receiver does not have it yet. **Linear-issue links are
 portable** — they open ADE's Linear pane for the issue and show setup if the
 active project has not connected Linear.
@@ -41,6 +57,10 @@ active project has not connected Linear.
 | ------------------------------------------------------------- | ------------------------------------ |
 | Jump back to MY lane from another terminal on the same Mac    | `ade://lane/<uuid>`                  |
 | Jump back to a Work session on this Mac                       | `ade://session/<id>`                 |
+| Jump to a chat event or terminal scrollback byte offset       | `ade://session/<id>?event=<n>` / `?offset=<bytes>` |
+| Open a file and reveal a line                                 | `ade://file/src/app.ts?line=42`      |
+| Open a commit from a local lane or GitHub fallback            | `ade://commit/<sha>?lane=<uuid>&repo=owner/repo` |
+| Open a local proof artifact/history entry                     | `ade://artifact/<artifact-id>`       |
 | Share a branch with a teammate or your other devices          | `https://ade-app.dev/open?type=branch&…` |
 | Drop into a PR's detail tab                                   | `https://ade-app.dev/open?type=pr&…`     |
 | Linear "Open in coding tool" hand-off (opens Linear pane)     | `https://ade-app.dev/open?type=linear-issue&…` |
@@ -50,6 +70,9 @@ active project has not connected Linear.
 ```bash
 ade link lane <lane-uuid>                                  # local lane link
 ade link session <session-id> [--lane <lane-uuid>]          # local Work session link
+ade link file <path> [--line N] [--lane <lane-uuid>]        # file link
+ade link commit <sha> [--lane <lane-uuid>]                  # commit link
+ade link artifact <id>                                      # proof/history artifact
 ade link branch <owner/repo> <branch> [--pr <number>]      # cross-machine branch
 ade link pr <owner/repo> <number>                          # PR detail
 ade link linear-issue <ADE-123> [--branch <branch>]        # Linear hand-off
@@ -57,11 +80,21 @@ ade link <url>                                             # round-trip an exist
 
 # Flags
 --ade            # emit ade:// instead of https:// (default: https)
+--no-envelope    # skip best-effort repo/branch/PR envelope lookup
 --no-clipboard   # print without copying
 ```
 
 Every form copies to the clipboard by default and prints the URL to stdout.
-Use `--no-clipboard` in scripts.
+When a live ADE runtime is bound, `ade link lane`, `session --lane`, and
+`commit --lane` attach repo/branch/PR envelope params best-effort. Use
+`--no-envelope` to skip that lookup and `--no-clipboard` in scripts.
+
+Concrete examples:
+
+```bash
+ade link file apps/desktop/src/shared/deeplinks.ts --line 12 --ade --no-clipboard
+ade link commit abc1234 --lane 550e8400-e29b-41d4-a716-446655440000 --no-clipboard
+```
 
 ## Opening a deeplink — `ade open`
 
@@ -103,6 +136,15 @@ existing `app/navigate` method:
     "target": { "kind": "work", "sessionId": "<session-id>", "laneId": "<uuid>" }
 }}
 { "method": "app/navigate", "params": {
+    "target": { "kind": "file", "path": "src/app.ts", "line": 42, "laneId": "<uuid>" }
+}}
+{ "method": "app/navigate", "params": {
+    "target": { "kind": "commit", "sha": "<sha>", "laneId": "<uuid>", "envelope": { "repoOwner": "anthropics", "repoName": "claude-code", "branch": "feat-x" } }
+}}
+{ "method": "app/navigate", "params": {
+    "target": { "kind": "artifact", "artifactId": "<artifact-id>" }
+}}
+{ "method": "app/navigate", "params": {
     "target": { "kind": "branch", "repoOwner": "anthropics", "repoName": "claude-code", "branch": "feat-x" }
 }}
 { "method": "app/navigate", "params": {
@@ -120,10 +162,10 @@ something a user pasted).
 ## Auto-attached deeplinks
 
 ADE automatically appends an "Open in ADE" footer to PR descriptions it
-creates or adopts (idempotent via an HTML marker), and pushes the same
-cross-machine link to any Linear issue linked to the lane (Linear attachment
-+ one-time comment). Agents do not need to call `ade link` for those flows —
-they fire on PR creation / Linear-link events.
+creates or adopts (idempotent via an HTML marker), and pushes ADE lane/chat
+links with repo envelopes to any Linear issue linked to the lane (Linear
+attachment + one-time comment). Agents do not need to call `ade link` for
+those flows — they fire on PR creation / Linear-link events.
 
 Linear card/comment matrix:
 
@@ -178,6 +220,9 @@ link for returning to the selected terminal/chat session on the same desktop.
 ade link branch anthropics/claude-code feat-deeplinks               # share with teammates
 ade link pr anthropics/claude-code 1234                             # PR detail
 ade link linear-issue ADE-512 --branch arul/ade-512-feat            # Linear hand-off
+ade link file apps/desktop/src/shared/deeplinks.ts --line 12         # source location
+ade link commit abc1234 --lane <lane-uuid>                           # commit detail
+ade link artifact proof-123                                          # proof/history artifact
 ade link session <session-id> --lane <lane-uuid>                    # Work session
 ade link lane "$(ade lanes list --text | head -2 | tail -1 | awk '{print $1}')"  # current lane
 

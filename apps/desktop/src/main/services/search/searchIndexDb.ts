@@ -17,7 +17,7 @@ const { DatabaseSync } = require("node:sqlite") as {
  * cheap as deleting the file. Bump the schema version for any DDL change —
  * mismatches drop and recreate the database instead of migrating.
  */
-export const SEARCH_INDEX_SCHEMA_VERSION = 3;
+export const SEARCH_INDEX_SCHEMA_VERSION = 4;
 
 export const SEARCH_INDEX_DB_FILENAME = "search-index.db";
 

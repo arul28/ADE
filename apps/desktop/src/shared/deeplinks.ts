@@ -8,25 +8,23 @@
 //   ade://file/<repo-relative-path>[?line=<n>&lane=<uuid>]
 //   ade://commit/<sha>[?lane=<uuid>]
 //   ade://artifact/<id>
-//   ade://repo/<owner>/<repo>/branch/<branch>
+//   ade://repo/<owner>/<repo>/branch/<branch>[?pr=<n>]
 //   ade://pr/<owner>/<repo>/<number>
+//   ade://linear-issue/<ADE-123>[?branch=<branch>]
 //
-//   https://ade-app.dev/open?type=lane&id=<uuid>
-//   https://ade-app.dev/open?type=session&id=<id>[&lane=<uuid>&event=<seq>&offset=<bytes>]
-//   https://ade-app.dev/open?type=file&path=<repo-relative-path>[&line=<n>&lane=<uuid>]
-//   https://ade-app.dev/open?type=commit&sha=<sha>[&lane=<uuid>]
-//   https://ade-app.dev/open?type=artifact&id=<id>
-//   https://ade-app.dev/open?type=branch&repo=<owner/repo>&branch=<branch>
-//   https://ade-app.dev/open?type=pr&repo=<owner/repo>&number=<n>
+//   https://ade-app.dev/open?type=<lane|session|file|commit|artifact|branch|pr|linear-issue>&...
+//   (param names: lane→id; session→id[+lane,event,offset]; file→path[+line,lane];
+//    commit→sha[+lane]; artifact→id; branch→repo&branch[+pr]; pr→repo&number;
+//    linear-issue→issue[+branch])
+//
+// The HTTPS form lives on apps/web; it attempts the ade:// upgrade in the
+// browser and falls back to an install/marketing card if no handler is
+// registered. Both forms parse to the same AppNavigationTarget shape.
 //
 // Machine-local targets (lane / session / commit / artifact) additionally
 // carry a portable envelope (?repo=<owner>/<repo>&branch=..&pr=..&linear=..)
 // so a receiver that cannot resolve the primary id can fall back to the
 // branch, PR, or Linear issue — see DeeplinkEnvelope.
-//
-// The HTTPS form lives on apps/web; it attempts the ade:// upgrade in the
-// browser and falls back to an install/marketing card if no handler is
-// registered. Both forms parse to the same AppNavigationTarget shape.
 
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
@@ -34,14 +32,6 @@ export const ADE_DEEPLINK_LEGACY_HTTPS_HOSTS = ["ade.app"] as const;
 export const ADE_DEEPLINK_HTTPS_PATH = "/open";
 export const ADE_DEEPLINK_HTTPS_BASE_URL = `https://${ADE_DEEPLINK_HTTPS_HOST}${ADE_DEEPLINK_HTTPS_PATH}`;
 
-/**
- * Portable link envelope: repo coordinates plus a fallback chain carried as
- * query params on machine-local targets (lane / session / commit / artifact).
- * A receiver that cannot resolve the primary id locally uses the envelope to
- * offer real alternatives — switch to the owning project, open the branch,
- * open the PR, open the Linear issue. Builders populate what they know at
- * mint time; the parser preserves the envelope without requiring it.
- */
 export type DeeplinkEnvelope = {
   repoOwner?: string;
   repoName?: string;
@@ -55,35 +45,22 @@ export type DeeplinkSessionTarget = {
   kind: "session";
   sessionId: string;
   laneId?: string;
-  /** Chat anchor: event sequence number of the message to scroll to. */
   event?: number;
-  /** Terminal anchor: byte offset into the session scrollback. */
   offset?: number;
   envelope?: DeeplinkEnvelope;
 };
-/**
- * Workspace file target. `path` is repo-relative (forward slashes); when
- * `laneId` is present the file resolves inside that lane's worktree, else the
- * project root.
- */
 export type DeeplinkFileTarget = {
   kind: "file";
   path: string;
   line?: number;
   laneId?: string;
 };
-/**
- * Commit target: opens the owning lane's git history locally. The envelope
- * carries the repo so a foreign receiver can fall back to the GitHub commit
- * URL.
- */
 export type DeeplinkCommitTarget = {
   kind: "commit";
   sha: string;
   laneId?: string;
   envelope?: DeeplinkEnvelope;
 };
-/** Proof artifact target: opens the proof drawer locally. Machine-local id. */
 export type DeeplinkArtifactTarget = {
   kind: "artifact";
   artifactId: string;
@@ -166,8 +143,6 @@ function isValidOpaqueId(value: string): boolean {
   return true;
 }
 
-// Repo-relative file paths: forward slashes only, no traversal, no control
-// chars, no absolute/drive-letter forms.
 function isValidRepoRelativePath(value: string): boolean {
   if (!value || value.length > 1024) return false;
   if (value.startsWith("/") || value.endsWith("/")) return false;
@@ -176,7 +151,6 @@ function isValidRepoRelativePath(value: string): boolean {
   return value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
 }
 
-/** Parse a query-param integer; returns undefined when absent, null when malformed. */
 function parseNonNegativeIntParam(raw: string | null): number | undefined | null {
   if (raw == null) return undefined;
   if (!/^\d{1,15}$/.test(raw)) return null;
@@ -186,19 +160,12 @@ function parseNonNegativeIntParam(raw: string | null): number | undefined | null
 
 function appendEnvelopeParams(params: URLSearchParams, envelope: DeeplinkEnvelope | undefined): void {
   if (!envelope) return;
-  if (envelope.repoOwner && envelope.repoName) {
-    params.set("repo", `${envelope.repoOwner}/${envelope.repoName}`);
-  }
+  if (envelope.repoOwner && envelope.repoName) params.set("repo", `${envelope.repoOwner}/${envelope.repoName}`);
   if (envelope.branch) params.set("branch", envelope.branch);
   if (envelope.prNumber != null) params.set("pr", String(envelope.prNumber));
   if (envelope.linearIssue) params.set("linear", envelope.linearIssue);
 }
 
-/**
- * Read envelope params leniently: the envelope is auxiliary fallback data, so
- * a malformed component is dropped rather than failing the whole link.
- * Returns undefined when nothing valid is present.
- */
 function readEnvelopeParams(searchParams: URLSearchParams): DeeplinkEnvelope | undefined {
   const envelope: DeeplinkEnvelope = {};
   const repo = searchParams.get("repo");
@@ -229,8 +196,6 @@ export function isAdeDeeplinkHttpsHost(host: string): boolean {
 }
 
 function encodeBranchSegment(branch: string): string {
-  // Branches can contain `/`; we keep them as-is so the URL stays readable,
-  // and rely on encodeURIComponent for any other reserved characters.
   return branch
     .split("/")
     .map((segment) => encodeURIComponent(segment))
@@ -250,19 +215,12 @@ function decodeBranchPath(path: string): string {
     .join("/");
 }
 
-// ---------------------------------------------------------------------------
-// Builders
-// ---------------------------------------------------------------------------
-
 export type BuildOptions = {
-  /** "ade" = custom scheme, "https" = web mirror. Defaults to "https". */
   form?: "ade" | "https";
 };
 
 export function buildDeeplink(target: DeeplinkTarget, options: BuildOptions = {}): string {
-  const form = options.form ?? "https";
-  if (form === "ade") return buildAdeUrl(target);
-  return buildHttpsUrl(target);
+  return (options.form ?? "https") === "ade" ? buildAdeUrl(target) : buildHttpsUrl(target);
 }
 
 export function buildAdePrUrl(pr: {
@@ -281,43 +239,43 @@ export function buildAdePrUrl(pr: {
 function buildAdeUrl(target: DeeplinkTarget): string {
   switch (target.kind) {
     case "lane": {
-      const base = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       const params = new URLSearchParams();
       appendEnvelopeParams(params, target.envelope);
       const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       return qs ? `${base}?${qs}` : base;
     }
     case "session": {
-      const base = `${ADE_DEEPLINK_SCHEME}://session/${encodeURIComponent(target.sessionId)}`;
       const params = new URLSearchParams();
       if (target.laneId) params.set("lane", target.laneId);
       if (target.event != null) params.set("event", String(target.event));
       if (target.offset != null) params.set("offset", String(target.offset));
       appendEnvelopeParams(params, target.envelope);
       const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://session/${encodeURIComponent(target.sessionId)}`;
       return qs ? `${base}?${qs}` : base;
     }
     case "file": {
-      const base = `${ADE_DEEPLINK_SCHEME}://file/${encodeBranchSegment(target.path)}`;
       const params = new URLSearchParams();
       if (target.line != null) params.set("line", String(target.line));
       if (target.laneId) params.set("lane", target.laneId);
       const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://file/${encodeBranchSegment(target.path)}`;
       return qs ? `${base}?${qs}` : base;
     }
     case "commit": {
-      const base = `${ADE_DEEPLINK_SCHEME}://commit/${encodeURIComponent(target.sha)}`;
       const params = new URLSearchParams();
       if (target.laneId) params.set("lane", target.laneId);
       appendEnvelopeParams(params, target.envelope);
       const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://commit/${encodeURIComponent(target.sha)}`;
       return qs ? `${base}?${qs}` : base;
     }
     case "artifact": {
-      const base = `${ADE_DEEPLINK_SCHEME}://artifact/${encodeURIComponent(target.artifactId)}`;
       const params = new URLSearchParams();
       appendEnvelopeParams(params, target.envelope);
       const qs = params.toString();
+      const base = `${ADE_DEEPLINK_SCHEME}://artifact/${encodeURIComponent(target.artifactId)}`;
       return qs ? `${base}?${qs}` : base;
     }
     case "branch": {
@@ -386,10 +344,6 @@ function buildHttpsUrl(target: DeeplinkTarget): string {
   return `${ADE_DEEPLINK_HTTPS_BASE_URL}?${params.toString()}`;
 }
 
-// ---------------------------------------------------------------------------
-// Parser
-// ---------------------------------------------------------------------------
-
 export type ParseError =
   | { kind: "empty" }
   | { kind: "unsupported_scheme"; scheme: string }
@@ -411,9 +365,7 @@ export function parseDeeplink(rawUrl: string): ParseResult {
   } catch {
     return { ok: false, error: { kind: "malformed", reason: "not a URL" }, rawUrl };
   }
-  if (url.protocol === `${ADE_DEEPLINK_SCHEME}:`) {
-    return parseAdeUrl(url, rawUrl);
-  }
+  if (url.protocol === `${ADE_DEEPLINK_SCHEME}:`) return parseAdeUrl(url, rawUrl);
   if (url.protocol === "https:") {
     if (!isAdeDeeplinkHttpsHost(url.hostname)) {
       return { ok: false, error: { kind: "unsupported_host", host: url.hostname }, rawUrl };
@@ -431,8 +383,6 @@ export function parseDeeplink(rawUrl: string): ParseResult {
 }
 
 function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
-  // URL.host is the first path-like segment for non-special schemes.
-  // For ade://lane/<id>, host = "lane" and pathname = "/<id>".
   const host = url.host.toLowerCase();
   const pathSegments = url.pathname.split("/").filter(Boolean);
 
@@ -453,10 +403,7 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     return buildSessionTarget(sessionId, url.searchParams, rawUrl);
   }
 
-  if (host === "file") {
-    const path = decodeBranchPath(pathSegments.join("/"));
-    return buildFileTarget(path, url.searchParams, rawUrl);
-  }
+  if (host === "file") return buildFileTarget(decodeBranchPath(pathSegments.join("/")), url.searchParams, rawUrl);
 
   if (host === "commit") {
     const sha = pathSegments[0] ? safeDecode(pathSegments[0]) : "";
@@ -469,74 +416,41 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
   }
 
   if (host === "repo") {
-    // Path: <owner>/<repo>/branch/<branch...>
     if (pathSegments.length < 4 || pathSegments[2] !== "branch") {
-      return {
-        ok: false,
-        error: { kind: "malformed", reason: "expected repo/<owner>/<repo>/branch/<branch>" },
-        rawUrl,
-      };
+      return { ok: false, error: { kind: "malformed", reason: "expected repo/<owner>/<repo>/branch/<branch>" }, rawUrl };
     }
     const owner = safeDecode(pathSegments[0]);
     const repo = safeDecode(pathSegments[1]);
     const branch = decodeBranchPath(pathSegments.slice(3).join("/"));
-    if (!isValidGhOwner(owner)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-    }
-    if (!isValidGhRepo(repo)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
-    }
-    if (!isValidBranch(branch)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
-    }
+    if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
+    if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
+    if (!isValidBranch(branch)) return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
     const prRaw = url.searchParams.get("pr");
     const prNumber = prRaw ? Number(prRaw) : undefined;
     if (prRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
       return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
     }
-    return {
-      ok: true,
-      target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber },
-      rawUrl,
-    };
+    return { ok: true, target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber }, rawUrl };
   }
 
   if (host === "pr") {
-    // Path: <owner>/<repo>/<number>
     if (pathSegments.length !== 3) {
-      return {
-        ok: false,
-        error: { kind: "malformed", reason: "expected pr/<owner>/<repo>/<number>" },
-        rawUrl,
-      };
+      return { ok: false, error: { kind: "malformed", reason: "expected pr/<owner>/<repo>/<number>" }, rawUrl };
     }
     const owner = safeDecode(pathSegments[0]);
     const repo = safeDecode(pathSegments[1]);
     const number = Number(pathSegments[2]);
-    if (!isValidGhOwner(owner)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-    }
-    if (!isValidGhRepo(repo)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
-    }
+    if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
+    if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
     if (!Number.isInteger(number) || number < 1) {
       return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
     }
-    return {
-      ok: true,
-      target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number },
-      rawUrl,
-    };
+    return { ok: true, target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number }, rawUrl };
   }
 
   if (host === "linear-issue") {
-    // Path: <linear-id>
     if (pathSegments.length < 1) {
-      return {
-        ok: false,
-        error: { kind: "malformed", reason: "expected linear-issue/<id>" },
-        rawUrl,
-      };
+      return { ok: false, error: { kind: "malformed", reason: "expected linear-issue/<id>" }, rawUrl };
     }
     const issueIdentifier = safeDecode(pathSegments[0]);
     if (!isValidLinearIdentifier(issueIdentifier)) {
@@ -548,11 +462,7 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     }
     return {
       ok: true,
-      target: {
-        kind: "linear-issue",
-        issueIdentifier,
-        ...(branchParam ? { branch: branchParam } : {}),
-      },
+      target: { kind: "linear-issue", issueIdentifier, ...(branchParam ? { branch: branchParam } : {}) },
       rawUrl,
     };
   }
@@ -564,9 +474,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
   const type = (url.searchParams.get("type") ?? "").toLowerCase();
   if (type === "lane") {
     const laneId = url.searchParams.get("id") ?? "";
-    if (!isValidUuid(laneId)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
-    }
+    if (!isValidUuid(laneId)) return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
     const envelope = readEnvelopeParams(url.searchParams);
     return { ok: true, target: { kind: "lane", laneId, ...(envelope ? { envelope } : {}) }, rawUrl };
   }
@@ -577,18 +485,9 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     }
     return buildSessionTarget(sessionId, url.searchParams, rawUrl);
   }
-  if (type === "file") {
-    const path = url.searchParams.get("path") ?? "";
-    return buildFileTarget(path, url.searchParams, rawUrl);
-  }
-  if (type === "commit") {
-    const sha = url.searchParams.get("sha") ?? "";
-    return buildCommitTarget(sha, url.searchParams, rawUrl);
-  }
-  if (type === "artifact") {
-    const artifactId = url.searchParams.get("id") ?? "";
-    return buildArtifactTarget(artifactId, url.searchParams, rawUrl);
-  }
+  if (type === "file") return buildFileTarget(url.searchParams.get("path") ?? "", url.searchParams, rawUrl);
+  if (type === "commit") return buildCommitTarget(url.searchParams.get("sha") ?? "", url.searchParams, rawUrl);
+  if (type === "artifact") return buildArtifactTarget(url.searchParams.get("id") ?? "", url.searchParams, rawUrl);
   if (type === "branch" || type === "pr") {
     const repoCombined = url.searchParams.get("repo") ?? "";
     const slash = repoCombined.indexOf("/");
@@ -597,37 +496,23 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     }
     const owner = repoCombined.slice(0, slash);
     const repo = repoCombined.slice(slash + 1);
-    if (!isValidGhOwner(owner)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
-    }
-    if (!isValidGhRepo(repo)) {
-      return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
-    }
+    if (!isValidGhOwner(owner)) return { ok: false, error: { kind: "malformed", reason: "invalid owner" }, rawUrl };
+    if (!isValidGhRepo(repo)) return { ok: false, error: { kind: "malformed", reason: "invalid repo" }, rawUrl };
     if (type === "branch") {
       const branch = url.searchParams.get("branch") ?? "";
-      if (!isValidBranch(branch)) {
-        return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
-      }
+      if (!isValidBranch(branch)) return { ok: false, error: { kind: "malformed", reason: "invalid branch" }, rawUrl };
       const prRaw = url.searchParams.get("pr");
       const prNumber = prRaw ? Number(prRaw) : undefined;
       if (prRaw != null && (!Number.isInteger(prNumber) || prNumber == null || prNumber < 1)) {
         return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
       }
-      return {
-        ok: true,
-        target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber },
-        rawUrl,
-      };
+      return { ok: true, target: { kind: "branch", repoOwner: owner, repoName: repo, branch, prNumber }, rawUrl };
     }
     const number = Number(url.searchParams.get("number") ?? "");
     if (!Number.isInteger(number) || number < 1) {
       return { ok: false, error: { kind: "malformed", reason: "invalid pr number" }, rawUrl };
     }
-    return {
-      ok: true,
-      target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number },
-      rawUrl,
-    };
+    return { ok: true, target: { kind: "pr", repoOwner: owner, repoName: repo, prNumber: number }, rawUrl };
   }
   if (type === "linear-issue") {
     const issueIdentifier = url.searchParams.get("issue") ?? "";
@@ -640,31 +525,22 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
     }
     return {
       ok: true,
-      target: {
-        kind: "linear-issue",
-        issueIdentifier,
-        ...(branchParam ? { branch: branchParam } : {}),
-      },
+      target: { kind: "linear-issue", issueIdentifier, ...(branchParam ? { branch: branchParam } : {}) },
       rawUrl,
     };
   }
   return { ok: false, error: { kind: "unknown_type", type }, rawUrl };
 }
 
-/** Shared session-target assembly for the ade:// and https:// parse paths. */
 function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
   const laneId = searchParams.get("lane") ?? undefined;
   if (laneId != null && !isValidUuid(laneId)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
   }
   const event = parseNonNegativeIntParam(searchParams.get("event"));
-  if (event === null) {
-    return { ok: false, error: { kind: "malformed", reason: "invalid event anchor" }, rawUrl };
-  }
+  if (event === null) return { ok: false, error: { kind: "malformed", reason: "invalid event anchor" }, rawUrl };
   const offset = parseNonNegativeIntParam(searchParams.get("offset"));
-  if (offset === null) {
-    return { ok: false, error: { kind: "malformed", reason: "invalid offset anchor" }, rawUrl };
-  }
+  if (offset === null) return { ok: false, error: { kind: "malformed", reason: "invalid offset anchor" }, rawUrl };
   const envelope = readEnvelopeParams(searchParams);
   return {
     ok: true,
@@ -680,7 +556,25 @@ function buildSessionTarget(sessionId: string, searchParams: URLSearchParams, ra
   };
 }
 
-/** Shared commit-target assembly for the ade:// and https:// parse paths. */
+function buildFileTarget(path: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
+  if (!isValidRepoRelativePath(path)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid file path" }, rawUrl };
+  }
+  const laneId = searchParams.get("lane") ?? undefined;
+  if (laneId != null && !isValidUuid(laneId)) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
+  }
+  const line = parseNonNegativeIntParam(searchParams.get("line"));
+  if (line === null || line === 0) {
+    return { ok: false, error: { kind: "malformed", reason: "invalid line number" }, rawUrl };
+  }
+  return {
+    ok: true,
+    target: { kind: "file", path, ...(line != null ? { line } : {}), ...(laneId ? { laneId } : {}) },
+    rawUrl,
+  };
+}
+
 function buildCommitTarget(sha: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
   if (!COMMIT_SHA_RE.test(sha)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid commit sha" }, rawUrl };
@@ -702,7 +596,6 @@ function buildCommitTarget(sha: string, searchParams: URLSearchParams, rawUrl: s
   };
 }
 
-/** Shared artifact-target assembly for the ade:// and https:// parse paths. */
 function buildArtifactTarget(artifactId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
   if (!isValidOpaqueId(artifactId)) {
     return { ok: false, error: { kind: "malformed", reason: "invalid artifact id" }, rawUrl };
@@ -710,36 +603,7 @@ function buildArtifactTarget(artifactId: string, searchParams: URLSearchParams, 
   const envelope = readEnvelopeParams(searchParams);
   return {
     ok: true,
-    target: {
-      kind: "artifact",
-      artifactId,
-      ...(envelope ? { envelope } : {}),
-    },
-    rawUrl,
-  };
-}
-
-/** Shared file-target assembly for the ade:// and https:// parse paths. */
-function buildFileTarget(path: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
-  if (!isValidRepoRelativePath(path)) {
-    return { ok: false, error: { kind: "malformed", reason: "invalid file path" }, rawUrl };
-  }
-  const laneId = searchParams.get("lane") ?? undefined;
-  if (laneId != null && !isValidUuid(laneId)) {
-    return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
-  }
-  const line = parseNonNegativeIntParam(searchParams.get("line"));
-  if (line === null || line === 0) {
-    return { ok: false, error: { kind: "malformed", reason: "invalid line number" }, rawUrl };
-  }
-  return {
-    ok: true,
-    target: {
-      kind: "file",
-      path,
-      ...(line != null ? { line } : {}),
-      ...(laneId ? { laneId } : {}),
-    },
+    target: { kind: "artifact", artifactId, ...(envelope ? { envelope } : {}) },
     rawUrl,
   };
 }
@@ -752,11 +616,6 @@ function safeDecode(value: string): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Predicates
-// ---------------------------------------------------------------------------
-
-/** True if `rawUrl` looks like one of our deeplink forms — used for clipboard sniffing. */
 export function looksLikeAdeDeeplink(rawUrl: string): boolean {
   if (!rawUrl || typeof rawUrl !== "string") return false;
   const trimmed = rawUrl.trim();
@@ -772,7 +631,6 @@ export function looksLikeAdeDeeplink(rawUrl: string): boolean {
   }
 }
 
-/** Convenience: human-readable summary of a target, used for toasts. */
 export function describeTarget(target: DeeplinkTarget): string {
   switch (target.kind) {
     case "lane":
@@ -780,11 +638,11 @@ export function describeTarget(target: DeeplinkTarget): string {
     case "session":
       return "work session";
     case "file":
-      return target.line != null ? `${target.path}:${target.line}` : target.path;
+      return target.line ? `${target.path}:${target.line}` : target.path;
     case "commit":
-      return `commit ${target.sha.slice(0, 12)}`;
+      return `commit ${target.sha}`;
     case "artifact":
-      return "proof artifact";
+      return `artifact ${target.artifactId}`;
     case "branch":
       return `${target.repoOwner}/${target.repoName}@${target.branch}`;
     case "pr":

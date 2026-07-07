@@ -227,11 +227,18 @@ export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigatio
         laneId: target.laneId ?? null,
       };
     case "commit":
-      return target.laneId
-        ? { kind: "lane", laneId: target.laneId, envelope: target.envelope ?? null }
-        : { kind: "route", route: "/lanes" };
+      return {
+        kind: "commit",
+        sha: target.sha,
+        laneId: target.laneId ?? null,
+        envelope: target.envelope ?? null,
+      };
     case "artifact":
-      return { kind: "route", route: "/work" };
+      return {
+        kind: "artifact",
+        artifactId: target.artifactId,
+        envelope: target.envelope ?? null,
+      };
     case "pr":
       return {
         kind: "pr",

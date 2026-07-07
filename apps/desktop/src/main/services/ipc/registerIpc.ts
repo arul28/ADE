@@ -8,6 +8,11 @@ import type { Server as NetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import {
+  githubRepoSlugsEqual,
+  parseGithubRemoteUrl,
+  type GithubRepoSlug,
+} from "../../../shared/githubRemote";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
@@ -348,8 +353,6 @@ import type {
   ProjectBrowseResult,
   ProjectDetail,
   ProjectIcon,
-  ProjectFindForRepoArgs,
-  ProjectFindForRepoResult,
   ProjectInfo,
   OpenProjectBinding,
   CreateProjectInput,
@@ -542,7 +545,6 @@ import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrows
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
 import type { RecentProject } from "../state/globalState";
-import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
@@ -3783,12 +3785,26 @@ export function registerIpc({
     listRecentProjectSummaries()
   );
 
-  ipcMain.handle(IPC.projectFindForRepo, async (_event, arg: ProjectFindForRepoArgs): Promise<ProjectFindForRepoResult> => {
-    const repoOwner = typeof arg?.repoOwner === "string" ? arg.repoOwner.trim() : "";
-    const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
-    if (!repoOwner || !repoName) return null;
-    return findRecentProjectForRepo(listLocalRecentProjectSummaries(), { repoOwner, repoName });
-  });
+  ipcMain.handle(
+    IPC.projectFindForRepo,
+    async (_event, arg: { repoOwner?: string; repoName?: string } = {}): Promise<{ rootPath: string; displayName: string } | null> => {
+      const repoOwner = typeof arg?.repoOwner === "string" ? arg.repoOwner.trim() : "";
+      const repoName = typeof arg?.repoName === "string" ? arg.repoName.trim() : "";
+      if (!repoOwner || !repoName) return null;
+      const targetRepo: GithubRepoSlug = { owner: repoOwner, repo: repoName };
+      for (const recent of listLocalRecentProjectSummaries()) {
+        if (!recent.exists) continue;
+        const rootPath = typeof recent.rootPath === "string" ? recent.rootPath.trim() : "";
+        if (!rootPath) continue;
+        const remote = await runGit(["remote", "get-url", "origin"], { cwd: rootPath, timeoutMs: 5_000 }).catch(() => null);
+        const parsed = remote?.exitCode === 0 ? parseGithubRemoteUrl(remote.stdout.trim()) : null;
+        if (githubRepoSlugsEqual(parsed, targetRepo)) {
+          return { rootPath: recent.rootPath, displayName: recent.displayName };
+        }
+      }
+      return null;
+    },
+  );
 
   registerRuntimeBridge({
     appVersion: app.getVersion(),

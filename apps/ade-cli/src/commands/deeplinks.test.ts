@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CliDeeplinkUsageError,
   runDeeplinkCommand,
+  runDeeplinkCommandAsync,
   runLinearInstall,
   runLinkCommand,
   runOpenCommand,
@@ -31,6 +32,43 @@ describe("ade link", () => {
     expect(r.output).toContain("https://ade-app.dev/open?type=session");
     expect(r.output).toContain("id=session-123");
     expect(r.output).toContain(`lane=${UUID}`);
+  });
+
+  it("emits file, commit, and artifact links", () => {
+    const file = runLinkCommand(["file", "src/index.ts", "--line", "12", "--lane", UUID, "--ade", "--no-clipboard"]);
+    expect(file.output).toContain(`ade://file/src/index.ts?line=12&lane=${UUID}`);
+
+    const commit = runLinkCommand(["commit", "abc1234", "--lane", UUID, "--ade", "--no-clipboard"]);
+    expect(commit.output).toContain(`ade://commit/abc1234?lane=${UUID}`);
+
+    const artifact = runLinkCommand(["artifact", "proof-123", "--ade", "--no-clipboard"]);
+    expect(artifact.output).toContain("ade://artifact/proof-123");
+  });
+
+  it("adds envelopes through the async link command", async () => {
+    const r = await runDeeplinkCommandAsync(["link", "commit", "abc1234", "--lane", UUID, "--ade", "--no-clipboard"], {
+      resolveEnvelope: async () => ({
+        repoOwner: "owner",
+        repoName: "repo",
+        branch: "feat",
+        prNumber: 42,
+      }),
+    });
+    expect(r.output).toContain("ade://commit/abc1234?");
+    expect(r.output).toContain("repo=owner%2Frepo");
+    expect(r.output).toContain("branch=feat");
+    expect(r.output).toContain("pr=42");
+  });
+
+  it("skips async envelope lookup when --no-envelope is set", async () => {
+    const resolveEnvelope = vi.fn(async () => ({ repoOwner: "owner", repoName: "repo" }));
+    const r = await runDeeplinkCommandAsync(
+      ["link", "lane", UUID, "--ade", "--no-envelope", "--no-clipboard"],
+      { resolveEnvelope },
+    );
+    expect(resolveEnvelope).not.toHaveBeenCalled();
+    expect(r.output).toContain(`ade://lane/${UUID}`);
+    expect(r.output).not.toContain("repo=");
   });
 
   it("emits a branch link", () => {

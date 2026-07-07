@@ -6,13 +6,21 @@
 // unit-test the dispatch path without rendering the whole app.
 // ---------------------------------------------------------------------------
 
-import { buildDeeplink, type DeeplinkTarget } from "../../../desktop/src/shared/deeplinks";
+import { buildDeeplink, type DeeplinkEnvelope, type DeeplinkTarget } from "../../../desktop/src/shared/deeplinks";
 
 /**
  * Minimal lane shape needed to build a lane deeplink. Subset of `LaneSummary`
  * so tests can construct fixtures without pulling the full type.
  */
-export type DeeplinkLaneRow = { id: string };
+export type DeeplinkLaneRow = {
+  id: string;
+  repoOwner?: string | null;
+  repoName?: string | null;
+  branchRef?: string | null;
+  branch?: string | null;
+  prNumber?: number | null;
+  linearIssue?: { identifier?: string | null } | null;
+};
 
 /**
  * Minimal PR shape needed to build a PR deeplink. We accept either an explicit
@@ -61,7 +69,19 @@ export function buildDeeplinkForRow(row: DeeplinkRow): string | null {
 
   if (row.kind === "lane") {
     if (!row.lane.id) return null;
-    const target: DeeplinkTarget = { kind: "lane", laneId: row.lane.id };
+    const branch = (row.lane.branch ?? row.lane.branchRef ?? "").replace(/^refs\/heads\//, "");
+    const envelope: DeeplinkEnvelope | undefined = row.lane.repoOwner && row.lane.repoName
+      ? {
+          repoOwner: row.lane.repoOwner,
+          repoName: row.lane.repoName,
+          ...(branch ? { branch } : {}),
+          ...(row.lane.prNumber ? { prNumber: row.lane.prNumber } : {}),
+          ...(row.lane.linearIssue?.identifier ? { linearIssue: row.lane.linearIssue.identifier } : {}),
+        }
+      : undefined;
+    // Most TUI lane rows only carry the lane id; when richer repo/branch fields
+    // are absent, keep Ctrl+Y local-only rather than doing hidden lookups here.
+    const target: DeeplinkTarget = { kind: "lane", laneId: row.lane.id, ...(envelope ? { envelope } : {}) };
     return buildDeeplink(target, { form: "ade" });
   }
   const pr = row.pr;

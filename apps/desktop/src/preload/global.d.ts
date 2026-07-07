@@ -404,8 +404,6 @@ import type {
   ProjectConfigSnapshot,
   ProjectConfigTrust,
   ProjectConfigValidationResult,
-  ProjectFindForRepoArgs,
-  ProjectFindForRepoResult,
   ProjectInfo,
   OpenProjectBinding,
   CreateProjectInput,
@@ -697,9 +695,10 @@ declare global {
           args?: ClearLocalAdeDataArgs,
         ) => Promise<ClearLocalAdeDataResult>;
         listRecent: () => Promise<RecentProjectSummary[]>;
-        findForRepo: (
-          args: ProjectFindForRepoArgs,
-        ) => Promise<ProjectFindForRepoResult>;
+        findForRepo: (args: {
+          repoOwner: string;
+          repoName: string;
+        }) => Promise<{ rootPath: string; displayName: string } | null>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
         forgetRecent: (keyOrRootPath: string) => Promise<RecentProjectSummary[]>;

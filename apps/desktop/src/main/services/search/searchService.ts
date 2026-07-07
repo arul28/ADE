@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { Buffer } from "node:buffer";
-import { buildDeeplink } from "../../../shared/deeplinks";
+import { buildDeeplink, type DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { LaneSummary } from "../../../shared/types/lanes";
@@ -111,6 +111,7 @@ export type SearchServiceDeps = {
   transcriptsDir: string;
   chatTranscriptsDir: string;
   logger?: Logger | null;
+  repoSlug?: () => Promise<{ owner: string; name: string } | null>;
   sessions: {
     list: () => Promise<TerminalSessionSummary[]>;
     get?: (sessionId: string) => Promise<TerminalSessionSummary | null>;
@@ -177,10 +178,18 @@ function sessionUpdatedAt(session: TerminalSessionSummary): string {
   return session.lastActivityAt || session.endedAt || session.startedAt || "";
 }
 
-function sessionDeepLink(session: Pick<TerminalSessionSummary, "id" | "laneId">): string {
+function sessionDeepLink(
+  session: Pick<TerminalSessionSummary, "id" | "laneId">,
+  envelope?: DeeplinkEnvelope | null,
+): string {
   try {
     return buildDeeplink(
-      { kind: "session", sessionId: session.id, laneId: session.laneId || undefined },
+      {
+        kind: "session",
+        sessionId: session.id,
+        laneId: session.laneId || undefined,
+        ...(envelope ? { envelope } : {}),
+      },
       { form: "ade" }
     );
   } catch {
@@ -246,6 +255,55 @@ export function createSearchService(deps: SearchServiceDeps) {
     return (ensureDb().db.prepare(sql).get(...params) as T | undefined) ?? null;
   };
 
+  let repoSlugPass: Promise<{ owner: string; name: string } | null> | null = null;
+  let laneBranchPass: Promise<Map<string, string>> | null = null;
+
+  const stripBranchRef = (branchRef: string | null | undefined): string | null => {
+    const trimmed = (branchRef ?? "").trim();
+    if (!trimmed) return null;
+    return trimmed.replace(/^refs\/heads\//, "");
+  };
+
+  const resolveRepoSlug = async (): Promise<{ owner: string; name: string } | null> => {
+    if (!deps.repoSlug) return null;
+    if (!repoSlugPass) {
+      repoSlugPass = deps.repoSlug().catch(() => null);
+    }
+    return repoSlugPass;
+  };
+
+  const resolveLaneBranchMap = async (): Promise<Map<string, string>> => {
+    if (!deps.lanes) return new Map();
+    if (!laneBranchPass) {
+      laneBranchPass = deps.lanes.list()
+        .then((lanes) => {
+          const map = new Map<string, string>();
+          for (const lane of lanes) {
+            const branch = stripBranchRef(lane.branchRef);
+            if (branch) map.set(lane.id, branch);
+          }
+          return map;
+        })
+        .catch(() => new Map());
+    }
+    return laneBranchPass;
+  };
+
+  const envelopeForLane = async (
+    laneId: string | null | undefined,
+    branchHint?: string | null,
+  ): Promise<DeeplinkEnvelope | null> => {
+    const repo = await resolveRepoSlug();
+    if (!repo) return null;
+    const branchMap = await resolveLaneBranchMap();
+    const branch = stripBranchRef(branchHint) ?? (laneId ? branchMap.get(laneId) ?? null : null);
+    return {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      ...(branch ? { branch } : {}),
+    };
+  };
+
   // ---------------------------------------------------------------------
   // Ingestion queue
   // ---------------------------------------------------------------------
@@ -292,6 +350,8 @@ export function createSearchService(deps: SearchServiceDeps) {
         if (disposed) return;
         const dueNow = [...queue.entries()].filter(([, entry]) => entry.dueAt <= Date.now());
         if (dueNow.length === 0) break;
+        repoSlugPass = null;
+        laneBranchPass = null;
         for (const [key, entry] of dueNow) {
           queue.delete(key);
           try {
@@ -449,7 +509,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     }
   };
 
-  const upsertSessionMetaDoc = (session: TerminalSessionSummary, kind: "chat" | "terminal"): void => {
+  const upsertSessionMetaDoc = (session: TerminalSessionSummary, kind: "chat" | "terminal", deepLink: string): void => {
     const prefix = kind === "chat" ? "chat" : "term";
     const bodyParts = [session.title, session.goal ?? "", session.summary ?? ""].filter(Boolean);
     upsertDoc({
@@ -462,7 +522,7 @@ export function createSearchService(deps: SearchServiceDeps) {
       title: session.title,
       rankTitle: session.title,
       snippetSource: session.summary || session.lastOutputPreview || session.goal || null,
-      deepLink: sessionDeepLink(session),
+      deepLink,
       updatedAt: sessionUpdatedAt(session),
       body: sanitizeIndexedText(bodyParts.join("\n"))
     });
@@ -501,7 +561,8 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (!isChatSession(session)) return;
     const sourceId = `chat:${sessionId}`;
     const filePath = chatTranscriptPathFor(session);
-    withTransaction(() => upsertSessionMetaDoc(session, "chat"));
+    const baseLink = sessionDeepLink(session, await envelopeForLane(session.laneId));
+    withTransaction(() => upsertSessionMetaDoc(session, "chat", baseLink));
     if (!filePath) return;
 
     let source = getSource(sourceId);
@@ -557,7 +618,6 @@ export function createSearchService(deps: SearchServiceDeps) {
     const envelopes = parseAgentChatTranscript(buf.subarray(0, consumed).toString("utf8"));
     const laneId = session.laneId || null;
     const laneName = session.laneName || null;
-    const baseLink = sessionDeepLink(session);
     let docSeq = source.docSeq;
 
     withTransaction(() => {
@@ -566,10 +626,15 @@ export function createSearchService(deps: SearchServiceDeps) {
         docSeq += 1;
         const text = chatEventSearchText(envelope);
         if (!text) continue;
-        const eventAnchor = typeof envelope.sequence === "number" && envelope.sequence >= 0
-          ? envelope.sequence
-          : seq;
         const sanitized = sanitizeIndexedText(text);
+        // Anchor by the persisted envelope sequence when present — the
+        // renderer matches loaded envelopes by `sequence`, which a tail-paged
+        // transcript can resolve; the docSeq ordinal only aligns when the
+        // full history is loaded.
+        const anchorSeq =
+          typeof envelope.sequence === "number" && envelope.sequence >= 0
+            ? envelope.sequence
+            : seq;
         upsertDoc({
           docId: `chat:${sessionId}:${seq}`,
           kind: "chat",
@@ -579,7 +644,7 @@ export function createSearchService(deps: SearchServiceDeps) {
           title: session.title,
           rankTitle: null,
           snippetSource: sanitized.slice(0, 240),
-          deepLink: withQueryParam(baseLink, "event", eventAnchor),
+          deepLink: withQueryParam(baseLink, "event", anchorSeq),
           updatedAt: envelope.timestamp,
           body: sanitized
         });
@@ -606,7 +671,8 @@ export function createSearchService(deps: SearchServiceDeps) {
     // legacy value like "other" — never index it as a terminal.
     if (isChatSession(session)) return;
     const sourceId = `term:${sessionId}`;
-    withTransaction(() => upsertSessionMetaDoc(session, "terminal"));
+    const baseLink = sessionDeepLink(session, await envelopeForLane(session.laneId));
+    withTransaction(() => upsertSessionMetaDoc(session, "terminal", baseLink));
     const filePath = terminalTranscriptPathFor(session);
     if (!filePath) return;
 
@@ -638,7 +704,6 @@ export function createSearchService(deps: SearchServiceDeps) {
     const { chunks, consumedBytes } = chunkTerminalTranscript(buf, source.cursor, { force });
     if (consumedBytes === 0) return;
 
-    const baseLink = sessionDeepLink(session);
     let docSeq = source.docSeq;
     withTransaction(() => {
       for (const chunk of chunks) {
@@ -765,9 +830,14 @@ export function createSearchService(deps: SearchServiceDeps) {
         // ignore
       }
     }
+    const laneEnvelope = await envelopeForLane(laneId, lane.branchRef);
+    const repo = await resolveRepoSlug();
     let laneLink: string;
     try {
-      laneLink = buildDeeplink({ kind: "lane", laneId }, { form: "ade" });
+      laneLink = buildDeeplink(
+        { kind: "lane", laneId, ...(laneEnvelope ? { envelope: laneEnvelope } : {}) },
+        { form: "ade" },
+      );
     } catch {
       laneLink = `ade://lane/${encodeURIComponent(laneId)}`;
     }
@@ -783,7 +853,10 @@ export function createSearchService(deps: SearchServiceDeps) {
           title: commit.subject,
           rankTitle: commit.subject,
           snippetSource: `${commit.shortSha} ${commit.authorName}`,
-          deepLink: withQueryParam(laneLink, "commit", commit.sha),
+          deepLink: buildDeeplink(
+            { kind: "commit", sha: commit.sha, laneId, ...(laneEnvelope ? { envelope: laneEnvelope } : {}) },
+            { form: "ade" },
+          ),
           updatedAt: commit.authoredAt,
           body: sanitizeIndexedText(
             [commit.subject, commit.authorName, commit.sha, commit.shortSha].join("\n")
@@ -800,7 +873,12 @@ export function createSearchService(deps: SearchServiceDeps) {
           title: branch.name,
           rankTitle: branch.name,
           snippetSource: branch.lastCommitMessage ?? null,
-          deepLink: withQueryParam(laneLink, "branch", branch.name),
+          deepLink: repo
+            ? buildDeeplink(
+              { kind: "branch", repoOwner: repo.owner, repoName: repo.name, branch: branch.name },
+              { form: "ade" },
+            )
+            : withQueryParam(laneLink, "branch", branch.name),
           updatedAt: lane.createdAt,
           body: sanitizeIndexedText([branch.name, branch.lastCommitMessage ?? ""].join("\n"))
         });
@@ -1215,7 +1293,7 @@ export function createSearchService(deps: SearchServiceDeps) {
         laneId: null,
         laneName: null,
         sessionId: null,
-        deepLink: `ade://proof?artifactId=${encodeURIComponent(artifact.id)}`,
+        deepLink: buildDeeplink({ kind: "artifact", artifactId: artifact.id }, { form: "ade" }),
         updatedAt: artifact.createdAt ?? "",
         bm25: 0,
         snippet,

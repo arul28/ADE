@@ -363,8 +363,6 @@ import type {
   ProjectConfigSnapshot,
   ProjectConfigTrust,
   ProjectConfigValidationResult,
-  ProjectFindForRepoArgs,
-  ProjectFindForRepoResult,
   ProjectInfo,
   OpenProjectBinding,
   CreateProjectInput,
@@ -3337,9 +3335,10 @@ contextBridge.exposeInMainWorld("ade", {
       ),
     listRecent: async (): Promise<RecentProjectSummary[]> =>
       ipcRenderer.invoke(IPC.projectListRecent),
-    findForRepo: async (
-      args: ProjectFindForRepoArgs,
-    ): Promise<ProjectFindForRepoResult> =>
+    findForRepo: async (args: {
+      repoOwner: string;
+      repoName: string;
+    }): Promise<{ rootPath: string; displayName: string } | null> =>
       ipcRenderer.invoke(IPC.projectFindForRepo, args),
     closeCurrent: async (): Promise<void> =>
       clearAround(

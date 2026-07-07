@@ -118,7 +118,7 @@ export function FilesWorkbench({
   active?: boolean;
   externalOpenPath?: string | null;
   externalOpenNonce?: string | null;
-  externalOpenLine?: number | null;
+  externalOpenLine?: string | null;
 }) {
   const project = useAppStore((s) => s.project);
   const projectRootPath = project?.rootPath ?? "";
@@ -172,7 +172,6 @@ export function FilesWorkbench({
     path: string | null;
     pathType: "file" | "directory";
     nonce: string;
-    line?: number | null;
   } | null>(null);
   const handledExternalOpenRef = useRef<string | null>(null);
   const lastGlobalLaneIdRef = useRef(globalLaneId);
@@ -768,7 +767,7 @@ export function FilesWorkbench({
   );
 
   const openExternalPathRequest = useCallback(
-    async (absolutePath: string, nonce: string, line?: number | null) => {
+    async (absolutePath: string, nonce: string) => {
       try {
         const result = await window.ade.files.openExternalPath({ path: absolutePath });
         if (result.workspace.kind === "external") {
@@ -780,7 +779,6 @@ export function FilesWorkbench({
           path: result.openPath,
           pathType: result.pathType,
           nonce,
-          line: line ?? null,
         });
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -791,21 +789,21 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (!active || !externalOpenPath) return;
-    const key = `${externalOpenNonce ?? ""}:${externalOpenPath}`;
+    const key = `${externalOpenNonce ?? ""}:${externalOpenPath}:${externalOpenLine ?? ""}`;
     if (handledExternalOpenRef.current === key) return;
     handledExternalOpenRef.current = key;
-    void openExternalPathRequest(externalOpenPath, key, externalOpenLine);
-  }, [active, externalOpenPath, externalOpenNonce, externalOpenLine, openExternalPathRequest]);
+    void openExternalPathRequest(externalOpenPath, key);
+  }, [active, externalOpenPath, externalOpenLine, externalOpenNonce, openExternalPathRequest]);
 
   useEffect(() => {
     if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
     const pending = pendingWorkspaceOpen;
     setPendingWorkspaceOpen(null);
     if (pending.pathType === "file" && pending.path) {
-      void openFile(pending.path, {
-        preview: false,
-        ...(pending.line && pending.line > 0 ? { line: pending.line } : {}),
-      });
+      const line = externalOpenLine && /^\d+$/.test(externalOpenLine)
+        ? Number(externalOpenLine)
+        : undefined;
+      void openFile(pending.path, { preview: false, line });
       return;
     }
     setSelectedNodePath(pending.path);
@@ -822,7 +820,7 @@ export function FilesWorkbench({
     } else {
       void refreshRoot({ preserveLoadedChildren: false });
     }
-  }, [active, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
+  }, [active, externalOpenLine, loadDirectoryPath, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(

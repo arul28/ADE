@@ -108,7 +108,12 @@ import {
   parseGithubRemoteUrl,
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
-import type { AppNavigationRequest, AppNavigationTarget, OpenProjectBinding, ProjectInfo } from "../../../shared/types";
+import type {
+  AppNavigationRequest,
+  AppNavigationTarget,
+  OpenProjectBinding,
+  ProjectInfo,
+} from "../../../shared/types";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
 // Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
@@ -916,83 +921,74 @@ function AppNavigationBridge() {
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
-  // Refs keep the navigate listener stable while still reading fresh state.
-  const lanesRef = React.useRef(lanes);
-  lanesRef.current = lanes;
-  const projectRootRef = React.useRef<string | null>(project?.rootPath ?? null);
-  projectRootRef.current = project?.rootPath ?? null;
-  const [inbound, setInbound] = React.useState<InboundDeeplinkTarget | null>(null);
+  const [inboundTarget, setInboundTarget] = React.useState<InboundDeeplinkTarget | null>(null);
 
-  const resolveActiveProjectRepoSlug = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
-    const lane = lanesRef.current.find((candidate) => candidate.laneType === "primary")
-      ?? lanesRef.current[0]
-      ?? null;
-    const getOriginRemote = window.ade?.git?.getOriginRemote;
-    if (!lane || !getOriginRemote) return null;
+  const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
+    const lane = lanes[0];
+    if (!lane) return null;
     try {
-      const remote = await getOriginRemote({ laneId: lane.id });
-      return parseGithubRemoteUrl(remote.remoteUrl);
+      const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id });
+      return parseGithubRemoteUrl(remote?.remoteUrl ?? null);
     } catch {
       return null;
     }
-  }, []);
+  }, [lanes]);
 
-  const resolveUnresolvedPortableTarget = React.useCallback(async (
-    entity: "chat" | "lane",
+  const resolvePortableFallback = React.useCallback(async (
+    entity: "chat" | "lane" | "commit",
     original: AppNavigationTarget,
     options: InboundDeeplinkDispatchOptions,
   ): Promise<boolean> => {
     if (options.forceLocal || options.suppressUnresolved) return false;
-    const envelope = "envelope" in original ? original.envelope ?? null : null;
-    const repoOwner = envelope?.repoOwner ?? null;
-    const repoName = envelope?.repoName ?? null;
-
-    if (!repoOwner || !repoName) {
-      setInbound({ kind: "foreign", entity, envelope, original });
+    const envelope = original.kind === "work"
+      || original.kind === "chat"
+      || original.kind === "lane"
+      || original.kind === "commit"
+      || original.kind === "artifact"
+      ? original.envelope ?? null
+      : null;
+    if (!envelope?.repoOwner || !envelope.repoName) {
+      setInboundTarget({ kind: "foreign", entity, envelope, original });
       return true;
     }
-
-    const targetRepo = { owner: repoOwner, repo: repoName };
-    const activeRepo = await resolveActiveProjectRepoSlug();
+    const targetRepo: GithubRepoSlug = { owner: envelope.repoOwner, repo: envelope.repoName };
+    const activeRepo = await resolveActiveProjectRepo();
     if (githubRepoSlugsEqual(activeRepo, targetRepo)) {
-      setInbound({ kind: "foreign", entity, envelope, original });
+      setInboundTarget({ kind: "foreign", entity, envelope, original });
       return true;
     }
 
-    let matchingProject: { rootPath: string; displayName: string } | null = null;
-    try {
-      matchingProject = await window.ade?.project?.findForRepo?.({ repoOwner, repoName }) ?? null;
-    } catch {
-      matchingProject = null;
-    }
-
-    if (matchingProject && matchingProject.rootPath !== projectRootRef.current) {
-      setInbound({
-        kind: "switch-project",
-        entity,
-        project: matchingProject,
-        original,
-      });
+    const projectApi = window.ade?.project as typeof window.ade.project & {
+      findForRepo?: (args: { repoOwner: string; repoName: string }) => Promise<{
+        rootPath: string;
+        displayName: string;
+      } | null>;
+    };
+    const match = await projectApi?.findForRepo?.({
+      repoOwner: envelope.repoOwner,
+      repoName: envelope.repoName,
+    }).catch(() => null);
+    if (match?.rootPath && match.rootPath !== project?.rootPath) {
+      setInboundTarget({ kind: "switch-project", entity, project: match, original });
       return true;
     }
-
-    setInbound({ kind: "foreign", entity, envelope, original });
+    setInboundTarget({ kind: "foreign", entity, envelope, original });
     return true;
-  }, [resolveActiveProjectRepoSlug]);
+  }, [project?.rootPath, resolveActiveProjectRepo]);
 
   const dispatchTarget = React.useCallback(async (
     target: AppNavigationTarget,
     options: InboundDeeplinkDispatchOptions = {},
   ): Promise<boolean> => {
+    const laneById = (laneId: string | null | undefined) =>
+      laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
+
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
-        try {
-          const sessions = await window.ade?.sessions?.list?.();
-          if (Array.isArray(sessions) && !sessions.some((session) => session.id === target.sessionId)) {
-            return resolveUnresolvedPortableTarget("chat", target, options);
-          }
-        } catch {
-          // Fail open to the pre-existing navigation behavior.
+        const localSession = await window.ade?.sessions?.get?.(target.sessionId).catch(() => null);
+        if (!localSession) {
+          const handled = await resolvePortableFallback("chat", target, options);
+          if (handled) return true;
         }
       }
       const params = new URLSearchParams();
@@ -1003,33 +999,52 @@ function AppNavigationBridge() {
       navigate(`/work${params.toString() ? `?${params.toString()}` : ""}`);
       return true;
     }
+
     if (target.kind === "file") {
-      // Repo-relative path: resolve inside the lane worktree when the link
-      // carries a lane, else the project root (same rule as the ⌘K palette).
-      const laneWorktree = target.laneId
-        ? lanesRef.current.find((lane) => lane.id === target.laneId)?.worktreePath ?? null
-        : null;
-      const root = laneWorktree ?? projectRootRef.current;
-      if (!root) return true;
-      const separator = root.includes("\\") ? "\\" : "/";
-      const relative = separator === "\\" ? target.path.replace(/\//g, "\\") : target.path;
-      const absolute = `${root}${root.endsWith(separator) ? "" : separator}${relative}`;
+      const lane = laneById(target.laneId);
+      const root = lane?.worktreePath || project?.rootPath || "";
+      const localPath = root
+        ? `${root.replace(/\/+$/, "")}/${target.path.replace(/^\/+/, "")}`
+        : target.path;
       const params = new URLSearchParams();
-      params.set("externalPath", absolute);
+      params.set("externalPath", localPath);
       params.set("externalOpen", String(Date.now()));
-      if (target.line != null && target.line > 0) params.set("line", String(target.line));
+      if (target.line != null) params.set("line", String(target.line));
       navigate(`/files?${params.toString()}`);
       return true;
     }
+
+    if (target.kind === "commit") {
+      const lane = laneById(target.laneId);
+      if (lane) {
+        const params = new URLSearchParams();
+        params.set("laneId", lane.id);
+        params.set("focus", "single");
+        // LanesPage consumes commitSha and opens the Git detail for that commit.
+        params.set("commitSha", target.sha);
+        navigate(`/lanes?${params.toString()}`);
+        return true;
+      }
+      if (!options.forceLocal) {
+        const handled = await resolvePortableFallback("commit", target, options);
+        if (handled) return true;
+      }
+      navigate("/lanes");
+      return true;
+    }
+
+    if (target.kind === "artifact") {
+      // History does not expose a stable focused-artifact URL yet; route to the
+      // local proof/history surface optimistically.
+      navigate("/history");
+      return true;
+    }
+
     if (target.kind === "lane") {
-      const currentLanes = lanesRef.current;
-      if (
-        target.laneId
-        && !options.forceLocal
-        && currentLanes.length > 0
-        && !currentLanes.some((lane) => lane.id === target.laneId)
-      ) {
-        return resolveUnresolvedPortableTarget("lane", target, options);
+      const lane = laneById(target.laneId);
+      if (!lane && !options.forceLocal) {
+        const handled = await resolvePortableFallback("lane", target, options);
+        if (handled) return true;
       }
       const params = new URLSearchParams();
       params.set("laneId", target.laneId);
@@ -1037,6 +1052,7 @@ function AppNavigationBridge() {
       navigate(`/lanes?${params.toString()}`);
       return true;
     }
+
     if (target.kind === "pr") {
       const params = new URLSearchParams();
       if (target.prId) params.set("prId", target.prId);
@@ -1050,8 +1066,9 @@ function AppNavigationBridge() {
       navigate(`/prs${params.toString() ? `?${params.toString()}` : ""}`);
       return true;
     }
+
     if (target.kind === "branch") {
-      setInbound({
+      setInboundTarget({
         kind: "branch",
         repoOwner: target.repoOwner,
         repoName: target.repoName,
@@ -1060,6 +1077,7 @@ function AppNavigationBridge() {
       });
       return true;
     }
+
     if (target.kind === "linear-issue") {
       requestLinearIssueQuickView({
         issueIdentifier: target.issueIdentifier,
@@ -1068,6 +1086,7 @@ function AppNavigationBridge() {
       });
       return true;
     }
+
     if (target.kind === "files-external") {
       const params = new URLSearchParams();
       params.set("externalPath", target.path);
@@ -1075,12 +1094,14 @@ function AppNavigationBridge() {
       navigate(`/files?${params.toString()}`);
       return true;
     }
+
     if (target.kind === "route") {
       navigate(target.route.startsWith("/") ? target.route : `/${target.route}`);
       return true;
     }
-    return true;
-  }, [navigate, resolveUnresolvedPortableTarget]);
+
+    return false;
+  }, [lanes, navigate, project?.rootPath, resolvePortableFallback]);
 
   React.useEffect(() => {
     const onNavigate = window.ade?.app?.onNavigate;
@@ -1090,12 +1111,12 @@ function AppNavigationBridge() {
     });
   }, [dispatchTarget]);
 
-  if (!inbound) return null;
+  if (!inboundTarget) return null;
   return (
     <InboundDeeplinkModal
-      target={inbound}
+      target={inboundTarget}
       lanes={lanes}
-      onClose={() => setInbound(null)}
+      onClose={() => setInboundTarget(null)}
       onDispatchTarget={dispatchTarget}
       projectOpen={Boolean(project?.rootPath)}
       onLaneOpened={(laneId) => {

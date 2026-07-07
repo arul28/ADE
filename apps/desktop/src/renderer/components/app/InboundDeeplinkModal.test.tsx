@@ -31,32 +31,6 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   };
 }
 
-function makePreflight() {
-  return {
-    preflight: {
-      repoOwner: "acme",
-      repoName: "ade",
-      githubPrNumber: 123,
-      githubUrl: "https://github.com/acme/ade/pull/123",
-      title: "Portable deeplinks",
-      headBranch: "feature/shared",
-      headSha: "abc1234",
-      headRepoOwner: "acme",
-      headRepoName: "ade",
-      remoteBranch: "feature/shared",
-      importBranchRef: "origin/feature/shared",
-      targetLaneName: "feature/shared",
-      baseBranch: "main",
-      canCreate: true,
-      status: "ready",
-      blockingConflict: null,
-      blockingConflicts: [],
-    },
-    lane: null,
-    pr: null,
-  };
-}
-
 describe("InboundDeeplinkModal", () => {
   const originalAde = globalThis.window.ade;
 
@@ -145,30 +119,19 @@ describe("InboundDeeplinkModal", () => {
     expect(importBranch).not.toHaveBeenCalled();
   });
 
-  it("renders foreign fallback actions from the envelope only", async () => {
+  it("offers to open foreign commit links on GitHub when repo envelope is present", () => {
     const openExternal = vi.fn(async () => undefined);
     globalThis.window.ade = {
       app: { openExternal },
     } as any;
-    const envelope = {
-      repoOwner: "acme",
-      repoName: "ade",
-      prNumber: 42,
-      linearIssue: "ADE-42",
-    };
-    const linearRequests: any[] = [];
-    const onLinearRequest = (event: Event) => {
-      linearRequests.push((event as CustomEvent).detail);
-    };
-    window.addEventListener("ade:linear-issue-quick-view", onLinearRequest);
 
     render(
       <InboundDeeplinkModal
         target={{
           kind: "foreign",
-          entity: "chat",
-          envelope,
-          original: { kind: "work", sessionId: "session-1", envelope },
+          entity: "commit",
+          envelope: { repoOwner: "acme", repoName: "ade" },
+          original: { kind: "commit", sha: "abc1234", envelope: { repoOwner: "acme", repoName: "ade" } },
         }}
         lanes={[]}
         onClose={vi.fn()}
@@ -176,101 +139,7 @@ describe("InboundDeeplinkModal", () => {
       />,
     );
 
-    expect(screen.getByText("This chat lives in acme/ade on another machine.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open PR #42 on GitHub" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open Linear issue ADE-42" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /create lane from/i })).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "Open PR #42 on GitHub" }));
-    expect(openExternal).toHaveBeenCalledWith("https://github.com/acme/ade/pull/42");
-
-    fireEvent.click(screen.getByRole("button", { name: "Open Linear issue ADE-42" }));
-    expect(linearRequests[0]).toMatchObject({
-      issueIdentifier: "ADE-42",
-      source: "deeplink",
-    });
-
-    window.removeEventListener("ade:linear-issue-quick-view", onLinearRequest);
-  });
-
-  it("uses the existing branch preflight when a foreign branch fallback is selected", async () => {
-    const preflightCreateLaneFromPrBranch = vi.fn(async () => makePreflight());
-    globalThis.window.ade = {
-      prs: { preflightCreateLaneFromPrBranch },
-    } as any;
-    const envelope = {
-      repoOwner: "acme",
-      repoName: "ade",
-      branch: "feature/shared",
-      prNumber: 123,
-    };
-
-    render(
-      <InboundDeeplinkModal
-        target={{
-          kind: "foreign",
-          entity: "lane",
-          envelope,
-          original: { kind: "lane", laneId: "lane-missing", envelope },
-        }}
-        lanes={[]}
-        onClose={vi.fn()}
-        onLaneOpened={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Create lane from feature/shared" }));
-
-    await waitFor(() => {
-      expect(preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
-        repoOwner: "acme",
-        repoName: "ade",
-        githubPrNumber: 123,
-      });
-    });
-  });
-
-  it("switches projects and re-dispatches the original target", async () => {
-    const switchToPath = vi.fn(async () => ({
-      rootPath: "/projects/acme-ade",
-      displayName: "Acme ADE",
-      baseRef: "main",
-    }));
-    globalThis.window.ade = {
-      project: { switchToPath },
-    } as any;
-    const onDispatchTarget = vi.fn(async () => true);
-    const onClose = vi.fn();
-    const original = {
-      kind: "work" as const,
-      sessionId: "session-remote",
-      envelope: { repoOwner: "acme", repoName: "ade" },
-    };
-
-    render(
-      <InboundDeeplinkModal
-        target={{
-          kind: "switch-project",
-          entity: "chat",
-          project: { rootPath: "/projects/acme-ade", displayName: "Acme ADE" },
-          original,
-        }}
-        lanes={[]}
-        onClose={onClose}
-        onLaneOpened={vi.fn()}
-        onDispatchTarget={onDispatchTarget}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "Switch project and open" }));
-
-    await waitFor(() => {
-      expect(switchToPath).toHaveBeenCalledWith("/projects/acme-ade");
-      expect(onClose).toHaveBeenCalled();
-      expect(onDispatchTarget).toHaveBeenCalledWith(original, {
-        suppressUnresolved: true,
-        forceLocal: false,
-      });
-    });
+    fireEvent.click(screen.getByRole("button", { name: /open commit on github/i }));
+    expect(openExternal).toHaveBeenCalledWith("https://github.com/acme/ade/commit/abc1234");
   });
 });

@@ -173,17 +173,25 @@ export type AppNavigationTarget =
       sessionId?: string | null;
       laneId?: string | null;
       envelope?: DeeplinkEnvelope | null;
-      /** Chat anchor: event sequence number of the message to scroll to. */
       event?: number | null;
-      /** Terminal anchor: byte offset into the session scrollback. */
       offset?: number | null;
     }
   | {
       kind: "file";
-      /** Repo-relative path; resolved against the lane worktree when laneId is present. */
       path: string;
       line?: number | null;
       laneId?: string | null;
+    }
+  | {
+      kind: "commit";
+      sha: string;
+      laneId?: string | null;
+      envelope?: DeeplinkEnvelope | null;
+    }
+  | {
+      kind: "artifact";
+      artifactId: string;
+      envelope?: DeeplinkEnvelope | null;
     }
   | {
       kind: "lane";
@@ -346,6 +354,7 @@ export type ProjectFindForRepoArgs = {
   repoName: string;
 };
 
+/** A known local project (active or recent) whose git origin matches the repo. */
 export type ProjectFindForRepoResult = {
   rootPath: string;
   displayName: string;
