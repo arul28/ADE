@@ -29,10 +29,38 @@ function cloudflarePagesOutput(): Plugin {
   };
 }
 
+/**
+ * In dev, Vite's root (src/renderer) also contains the desktop renderer's
+ * index.html, which would otherwise be served at `/` and `/work` (the desktop
+ * app + browserMock), shadowing the web client. Rewrite every HTML navigation
+ * request to webclient.html so dev matches the production SPA fallback: any
+ * deep route (/, /work, /pair, …) loads the web client, and its router takes
+ * over. Asset requests (with a file extension) are left untouched.
+ */
+function webClientDevEntry(): Plugin {
+  return {
+    name: "ade-web-client-dev-entry",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const url = req.url ?? "/";
+        const pathname = url.split("?")[0];
+        const accepts = String(req.headers.accept ?? "");
+        const isNavigation = accepts.includes("text/html");
+        const isAsset = pathname.includes(".") && !pathname.endsWith(".html");
+        if (isNavigation && !isAsset && pathname !== "/webclient.html") {
+          req.url = "/webclient.html";
+        }
+        next();
+      });
+    }
+  };
+}
+
 export default defineConfig({
   root: "src/renderer",
   base: "/",
-  plugins: [react(), cloudflarePagesOutput()],
+  plugins: [react(), webClientDevEntry(), cloudflarePagesOutput()],
   server: {
     host: true,
     port: 5174,
