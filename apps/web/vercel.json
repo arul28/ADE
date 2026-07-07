@@ -24,15 +24,6 @@
           "value": "public, max-age=0, s-maxage=31536000, must-revalidate"
         }
       ]
-    },
-    {
-      "source": "/.well-known/apple-app-site-association",
-      "headers": [
-        {
-          "key": "Content-Type",
-          "value": "application/json"
-        }
-      ]
     }
   ],
   "rewrites": [
