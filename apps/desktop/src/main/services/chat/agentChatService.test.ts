@@ -9328,6 +9328,109 @@ describe("createAgentChatService", () => {
         prompt: "Check CI status.",
       });
     });
+
+    it("coalesces one-shot wakeup hook snapshots with the scheduled wakeup row", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-wakeup-provider-id",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          uuid: "assistant-wakeup-provider-id",
+          message: {
+            id: "msg-wakeup-provider-id",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-wakeup-provider-id",
+                name: "ScheduleWakeup",
+                input: {
+                  reason: "CI was still running",
+                  prompt: "Check CI again.",
+                },
+              },
+            ],
+            usage: { input_tokens: 2, output_tokens: 3 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-wakeup-provider-id",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-wakeup-provider-id",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+      const wakeupId = `wakeup:${session.id}`;
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule a one-shot CI wakeup.",
+      });
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [{
+          id: "wakeup-provider-1",
+          schedule: "once",
+          prompt: "Check CI again.",
+          recurring: false,
+        }],
+      });
+
+      const scheduledEvents = events
+        .filter((event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.kind === "wakeup");
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([wakeupId, wakeupId]);
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toMatchObject({
+        id: wakeupId,
+        kind: "wakeup",
+        status: "scheduled",
+        prompt: "Check CI again.",
+        sourceTaskId: "wakeup-provider-1",
+      });
+    });
   });
 
   describe("hasRetainableSessions", () => {

@@ -10145,9 +10145,10 @@ export function createAgentChatService(args: {
       const id = compactString(cron.id);
       if (!id) continue;
       const recurring = cron.recurring !== false;
+      const scheduledWorkId = recurring ? id : `wakeup:${managed.session.id}`;
       emitClaudeScheduledWorkUpdate(managed, runtime, {
         type: "scheduled_work_update",
-        id,
+        id: scheduledWorkId,
         kind: recurring ? "cron" : "wakeup",
         status: "scheduled",
         origin: recurring ? "cron" : "schedule_wakeup",
@@ -10155,6 +10156,7 @@ export function createAgentChatService(args: {
         cron: compactString(cron.schedule),
         prompt: compactString(cron.prompt),
         recurring,
+        sourceTaskId: id,
         ...(turnId ? { turnId } : {}),
       });
     }
