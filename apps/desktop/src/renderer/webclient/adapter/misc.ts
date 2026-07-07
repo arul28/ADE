@@ -120,7 +120,14 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     client.subscribe((status) => {
       events.emit("syncStatus", { type: "sync-status", snapshot: syncSnapshot() });
       if (status.state === "connected") {
-        events.emit("githubStatusChanged", githubDisconnectedStatus());
+        // Re-resolve the real GitHub status on (re)connect so a stale/disconnected
+        // banner self-heals once the project host is bound and the host's command
+        // descriptors are known. (Previously this pushed a hardcoded disconnected
+        // status on every connect, which pinned the "GitHub not connected" banner.)
+        void (async () => {
+          const gh = await call("github.getStatus", {}, githubDisconnectedStatus());
+          events.emit("githubStatusChanged", gh);
+        })();
       }
     })
   );
