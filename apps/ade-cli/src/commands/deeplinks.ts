@@ -15,6 +15,7 @@ import {
   ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
   isAdeDeeplinkHttpsHost,
+  isValidRepoRelativePath,
   parseDeeplink,
   type DeeplinkEnvelope,
   type DeeplinkTarget,
@@ -305,6 +306,12 @@ function buildLinkPlan(args: string[]): LinkPlan {
     const filePath = positional[1];
     if (!filePath) {
       throw new CliDeeplinkUsageError("ade link file <path> [--line <number>] [--lane <lane-uuid>]");
+    }
+    // Validate BEFORE building: the ade:// path form URL-normalizes dot
+    // segments, so a post-build round-trip would silently accept ../secret
+    // as a link to a different in-repo path.
+    if (!isValidRepoRelativePath(filePath)) {
+      throw new CliDeeplinkUsageError("ade link file requires a repo-relative path (no leading /, no .. segments)");
     }
     const lineRaw = flags.valued.get("line");
     const line = lineRaw != null ? parsePositiveInteger(lineRaw, "--line") : undefined;

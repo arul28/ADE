@@ -72,10 +72,15 @@ describe("ade link", () => {
   });
 
   it("refuses to mint links the shared parser rejects", () => {
-    // Traversal file paths, absolute paths, and malformed shas must fail the
-    // round-trip gate instead of printing an unopenable link.
-    expect(() => runLinkCommand(["file", "../secret", "--no-clipboard"])).toThrow(/invalid link/);
-    expect(() => runLinkCommand(["file", "/etc/passwd", "--no-clipboard"])).toThrow(/invalid link/);
+    // Traversal file paths, absolute paths, and malformed shas must be
+    // rejected up front — the ade:// path form URL-normalizes dot segments,
+    // so `--ade` would otherwise silently mint a link to a DIFFERENT
+    // in-repo path instead of failing.
+    for (const form of [[], ["--ade"]]) {
+      expect(() => runLinkCommand(["file", "../secret", ...form, "--no-clipboard"])).toThrow(/repo-relative|invalid link/);
+      expect(() => runLinkCommand(["file", "/etc/passwd", ...form, "--no-clipboard"])).toThrow(/repo-relative|invalid link/);
+      expect(() => runLinkCommand(["file", "src/../../x", ...form, "--no-clipboard"])).toThrow(/repo-relative|invalid link/);
+    }
     expect(() => runLinkCommand(["commit", "not-a-sha", "--no-clipboard"])).toThrow(/invalid link|sha/);
   });
 

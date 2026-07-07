@@ -161,7 +161,11 @@ final class DeepLinkRouter {
       postSendToMac(url: url)
     case "pr":
       guard let number = ADEDeepLinkURLParsing.positiveInteger(query["number"]) else { return true }
-      if resolvePrId(from: "\(number)") != nil || (query["repo"]?.isEmpty ?? true) {
+      // PR numbers are only unique within a repository, and the local
+      // workspace snapshot carries no repo identity — when the link names a
+      // repo, hand off to the paired Mac (whose resolution ladder verifies
+      // the repo) instead of guessing a local PR by bare number.
+      if query["repo"]?.isEmpty ?? true {
         post(kind: "pr", identifier: "\(number)", prNumber: number)
         return true
       }
