@@ -307,6 +307,61 @@ describe("discoverDroidCliModelDescriptors", () => {
     });
   });
 
+  it("normalizes retired Factory config custom aliases before surfacing them", async () => {
+    fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, ".factory", "config.json"),
+      JSON.stringify({
+        custom_models: [
+          {
+            model: "sonnet-4-6",
+            model_display_name: "Retired Sonnet custom alias",
+          },
+          {
+            model: "opus-4-7",
+            model_display_name: "Retired Opus custom alias",
+          },
+          {
+            model: "custom-real-model",
+            model_display_name: "Custom Real Model",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    mockCreateSession.mockResolvedValueOnce({
+      initResult: {
+        availableModels: [],
+      },
+      close: vi.fn(async () => {}),
+    });
+
+    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
+      "droid/claude-opus-4-8",
+      "droid/claude-sonnet-5",
+      "droid/custom:custom-real-model",
+    ]);
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toMatchObject({
+      providerModelId: "claude-sonnet-5",
+      displayName: "Sonnet 5 (1.2x)",
+      reasoningTiers: ["low", "medium", "high", "max"],
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).toMatchObject({
+      providerModelId: "claude-opus-4-8",
+      displayName: "Opus 4.8 1M",
+      serviceTiers: ["fast"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).not.toHaveProperty("customProxy");
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).not.toHaveProperty("customProxy");
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:custom-real-model")).toMatchObject({
+      displayName: "Custom Real Model",
+      customProxy: true,
+    });
+  });
+
   it("serves last-known-good rows past the freshness window and revalidates once in the background", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-10T00:00:00.000Z"));

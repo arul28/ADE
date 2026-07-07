@@ -47,7 +47,7 @@ const STATIC_TOKEN_PRICES: Record<string, TokenPrice> = {
   "claude-opus-4-7": tokenPrice(5, 25, 0.5, 6.25),
   "claude-opus-4-6": tokenPrice(5, 25, 0.5, 6.25),
   "claude-opus-4-5": tokenPrice(5, 25, 0.5, 6.25),
-  "claude-sonnet-5": tokenPrice(3, 15, 0.3, 3.75),
+  "claude-sonnet-5": tokenPrice(2, 10, 0.2, 2.5),
   "claude-sonnet-4-6": tokenPrice(3, 15, 0.3, 3.75),
   "claude-sonnet-4-5": tokenPrice(3, 15, 0.3, 3.75),
   "claude-sonnet-4": tokenPrice(3, 15, 0.3, 3.75),

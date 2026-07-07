@@ -252,11 +252,10 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   return rows;
 }
 
-function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
-  const id = row.id.trim().toLowerCase();
-  if (id === "claude-sonnet-4-6" || id === "sonnet-4-6") {
+function canonicalDroidReplacementForAlias(id: string): DroidExecHelpModelRow | null {
+  const normalized = id.trim().toLowerCase();
+  if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
     return {
-      ...row,
       id: "claude-sonnet-5",
       displayName: "Sonnet 5 (1.2x)",
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
@@ -264,16 +263,16 @@ function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHel
     };
   }
   if (
-    id === "claude-opus-4-7"
-    || id === "opus-4-7"
-    || id === "claude-opus-4-6"
-    || id === "claude-opus-4-6-fast"
-    || id === "opus-4-6"
-    || id === "opus-4.6"
-    || id === "opus"
+    normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "opus-4.7"
+    || normalized === "claude-opus-4-6"
+    || normalized === "claude-opus-4-6-fast"
+    || normalized === "opus-4-6"
+    || normalized === "opus-4.6"
+    || normalized === "opus"
   ) {
     return {
-      ...row,
       id: "claude-opus-4-8",
       displayName: "Opus 4.8 1M",
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
@@ -281,6 +280,14 @@ function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHel
       serviceTiers: ["fast"],
     };
   }
+  return null;
+}
+
+function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
+  const id = row.id.trim().toLowerCase();
+  const normalizedCustomId = id.startsWith("custom:") ? id.slice("custom:".length) : id;
+  const replacement = canonicalDroidReplacementForAlias(normalizedCustomId);
+  if (replacement) return replacement;
   return row;
 }
 

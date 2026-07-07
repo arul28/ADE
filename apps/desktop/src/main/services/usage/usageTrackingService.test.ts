@@ -473,6 +473,14 @@ describe("resolveTokenPrice", () => {
     expect(price.input).toBe(3 / 1_000_000);
   });
 
+  it("uses Sonnet 5 introductory pricing for the static fallback", () => {
+    const price = resolveTokenPrice("claude-sonnet-5");
+    expect(price.input).toBe(2 / 1_000_000);
+    expect(price.output).toBe(10 / 1_000_000);
+    expect(price.cacheRead).toBe(0.2 / 1_000_000);
+    expect(price.cacheWrite).toBe(2.5 / 1_000_000);
+  });
+
   it("returns haiku pricing for haiku models", () => {
     const price = resolveTokenPrice("claude-haiku-3");
     expect(price.input).toBe(1 / 1_000_000);
@@ -521,7 +529,7 @@ describe("resolveTokenPrice", () => {
     const price = resolveTokenPrice("cursor-auto");
     expect(price.input).toBe(3 / 1_000_000);
     expect(price.output).toBe(15 / 1_000_000);
-    expect(resolveTokenPrice("composer-2.5").input).toBe(3 / 1_000_000);
+    expect(resolveTokenPrice("composer-2.5").input).toBe(2 / 1_000_000);
   });
 
   it("prices every ADE Claude and Codex registry id and alias without dynamic pricing", () => {
