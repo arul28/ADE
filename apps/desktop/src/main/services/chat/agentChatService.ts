@@ -10049,12 +10049,19 @@ export function createAgentChatService(args: {
     taskId: string,
     parentToolUseId: string | null | undefined,
     record: Record<string, unknown>,
-  ): string => {
+  ): string | null => {
+    const fromTask = runtime.scheduledWorkIdByTaskId.get(taskId);
+    if (fromTask) return fromTask;
+    const fromTool = parentToolUseId ? runtime.scheduledWorkIdByToolUseId.get(parentToolUseId) : undefined;
+    if (fromTool) return resolveClaudeScheduledWorkAlias(runtime, fromTool);
     const explicitCronId = scheduledWorkInputId(record);
     const activeCronId = !parentToolUseId ? activeProviderCronIdForRecord(runtime, record) : undefined;
     const singleActiveCronId = !parentToolUseId && runtime.activeProviderCronIds.size === 1
       ? Array.from(runtime.activeProviderCronIds)[0]
       : undefined;
+    if (!parentToolUseId && !explicitCronId && !activeCronId && !singleActiveCronId && runtime.activeProviderCronIds.size > 1) {
+      return null;
+    }
     return resolveClaudeScheduledWorkId(runtime, taskId, parentToolUseId, explicitCronId ?? activeCronId ?? singleActiveCronId);
   };
 
@@ -12588,17 +12595,19 @@ export function createAgentChatService(args: {
       });
       if (taskType === "cron") {
         const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
-        emitClaudeScheduledWorkUpdate(managed, runtime, {
-          type: "scheduled_work_update",
-          id: scheduledWorkId,
-          kind: "cron",
-          status: "running",
-          origin: "cron",
-          title: description,
-          ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
-          sourceTaskId: taskId,
-          turnId,
-        });
+        if (scheduledWorkId) {
+          emitClaudeScheduledWorkUpdate(managed, runtime, {
+            type: "scheduled_work_update",
+            id: scheduledWorkId,
+            kind: "cron",
+            status: "running",
+            origin: "cron",
+            title: description,
+            ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+            sourceTaskId: taskId,
+            turnId,
+          });
+        }
       }
       emitChatEvent(managed, {
         type: "subagent_started",
@@ -12622,18 +12631,20 @@ export function createAgentChatService(args: {
       const finalStatus = msg.status === "completed" ? "completed" : msg.status === "stopped" ? "stopped" : "failed";
       if (taskType === "cron") {
         const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
-        emitClaudeScheduledWorkUpdate(managed, runtime, {
-          type: "scheduled_work_update",
-          id: scheduledWorkId,
-          kind: "cron",
-          status: finalStatus,
-          origin: "cron",
-          title: existing?.description ?? description,
-          summary,
-          ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
-          sourceTaskId: taskId,
-          turnId,
-        });
+        if (scheduledWorkId) {
+          emitClaudeScheduledWorkUpdate(managed, runtime, {
+            type: "scheduled_work_update",
+            id: scheduledWorkId,
+            kind: "cron",
+            status: finalStatus,
+            origin: "cron",
+            title: existing?.description ?? description,
+            summary,
+            ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+            sourceTaskId: taskId,
+            turnId,
+          });
+        }
       }
       emitChatEvent(managed, {
         type: "subagent_result",
@@ -12660,18 +12671,20 @@ export function createAgentChatService(args: {
       const finalStatus = status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed";
       if (taskType === "cron") {
         const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
-        emitClaudeScheduledWorkUpdate(managed, runtime, {
-          type: "scheduled_work_update",
-          id: scheduledWorkId,
-          kind: "cron",
-          status: finalStatus,
-          origin: "cron",
-          title: existing?.description ?? description,
-          summary,
-          ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
-          sourceTaskId: taskId,
-          turnId,
-        });
+        if (scheduledWorkId) {
+          emitClaudeScheduledWorkUpdate(managed, runtime, {
+            type: "scheduled_work_update",
+            id: scheduledWorkId,
+            kind: "cron",
+            status: finalStatus,
+            origin: "cron",
+            title: existing?.description ?? description,
+            summary,
+            ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+            sourceTaskId: taskId,
+            turnId,
+          });
+        }
       }
       emitChatEvent(managed, {
         type: "subagent_result",
@@ -14122,18 +14135,20 @@ export function createAgentChatService(args: {
             const finalStatus = status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed";
             if (taskType === "cron") {
               const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, taskMsg as Record<string, unknown>);
-              emitClaudeScheduledWorkUpdate(managed, runtime, {
-                type: "scheduled_work_update",
-                id: scheduledWorkId,
-                kind: "cron",
-                status: finalStatus,
-                origin: "cron",
-                title: existing?.description ?? description,
-                summary,
-                ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
-                sourceTaskId: taskId,
-                turnId,
-              });
+              if (scheduledWorkId) {
+                emitClaudeScheduledWorkUpdate(managed, runtime, {
+                  type: "scheduled_work_update",
+                  id: scheduledWorkId,
+                  kind: "cron",
+                  status: finalStatus,
+                  origin: "cron",
+                  title: existing?.description ?? description,
+                  summary,
+                  ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+                  sourceTaskId: taskId,
+                  turnId,
+                });
+              }
             }
             emitChatEvent(managed, {
               type: "subagent_result",
@@ -14227,17 +14242,19 @@ export function createAgentChatService(args: {
             || stashed?.isBackground === true;
           if (taskType === "cron") {
             const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, taskMsg as Record<string, unknown>);
-            emitClaudeScheduledWorkUpdate(managed, runtime, {
-              type: "scheduled_work_update",
-              id: scheduledWorkId,
-              kind: "cron",
-              status: "running",
-              origin: "cron",
-              title: description || "Scheduled task running",
-              ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
-              sourceTaskId: taskId,
-              ...(turnId ? { turnId } : {}),
-            });
+            if (scheduledWorkId) {
+              emitClaudeScheduledWorkUpdate(managed, runtime, {
+                type: "scheduled_work_update",
+                id: scheduledWorkId,
+                kind: "cron",
+                status: "running",
+                origin: "cron",
+                title: description || "Scheduled task running",
+                ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+                sourceTaskId: taskId,
+                ...(turnId ? { turnId } : {}),
+              });
+            }
           }
           runtime.activeSubagents.set(taskId, {
             taskId,
@@ -14303,18 +14320,20 @@ export function createAgentChatService(args: {
           const workflowName = existing?.workflowName ?? normalizeClaudeWorkflowName(taskMsg.workflow_name);
           if (taskType === "cron") {
             const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, taskMsg as Record<string, unknown>);
-            emitClaudeScheduledWorkUpdate(managed, runtime, {
-              type: "scheduled_work_update",
-              id: scheduledWorkId,
-              kind: "cron",
-              status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
-              origin: "cron",
-              title: existing?.description || "Scheduled task",
-              summary,
-              ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
-              sourceTaskId: taskId,
-              ...(turnId ? { turnId } : {}),
-            });
+            if (scheduledWorkId) {
+              emitClaudeScheduledWorkUpdate(managed, runtime, {
+                type: "scheduled_work_update",
+                id: scheduledWorkId,
+                kind: "cron",
+                status: taskMsg.status === "completed" ? "completed" : taskMsg.status === "stopped" ? "stopped" : "failed",
+                origin: "cron",
+                title: existing?.description || "Scheduled task",
+                summary,
+                ...(parentToolUseId ? { sourceToolUseId: parentToolUseId } : {}),
+                sourceTaskId: taskId,
+                ...(turnId ? { turnId } : {}),
+              });
+            }
           }
           runtime.activeSubagents.delete(taskId);
           if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);

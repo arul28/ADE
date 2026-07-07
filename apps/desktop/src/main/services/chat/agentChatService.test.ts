@@ -9844,6 +9844,132 @@ describe("createAgentChatService", () => {
         sourceTaskId: "cron-run-task-multiple",
       });
     });
+
+    it("does not create task-id scheduled rows for ambiguous parentless cron runs", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startCronRun!: () => void;
+      const startCronRunPromise = new Promise<void>((resolve) => { startCronRun = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-parentless-ambiguous",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-parentless-ambiguous",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startCronRunPromise;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-cron-parentless-ambiguous",
+          task_id: "cron-run-task-ambiguous",
+          task_type: "cron",
+          description: "Run scheduled maintenance.",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-cron-parentless-ambiguous",
+          task_id: "cron-run-task-ambiguous",
+          task_type: "cron",
+          patch: { status: "completed" },
+          summary: "Finished scheduled maintenance.",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-parentless-ambiguous",
+          usage: { input_tokens: 2, output_tokens: 3 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-parentless-ambiguous",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Schedule two recurring crons.",
+      });
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_crons: [
+          {
+            id: "cron-provider-ambiguous-ci",
+            schedule: "*/15 * * * *",
+            prompt: "Check CI status.",
+            recurring: true,
+          },
+          {
+            id: "cron-provider-ambiguous-review",
+            schedule: "*/20 * * * *",
+            prompt: "Review issue comments.",
+            recurring: true,
+          },
+        ],
+      });
+
+      startCronRun();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && event.event.taskId === "cron-run-task-ambiguous",
+      );
+
+      const scheduledEvents = events
+        .filter((event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.kind === "cron");
+      expect(scheduledEvents.map((event) => event.event.id)).toEqual([
+        "cron-provider-ambiguous-ci",
+        "cron-provider-ambiguous-review",
+      ]);
+      expect(scheduledEvents.map((event) => event.event.id)).not.toContain("cron-run-task-ambiguous");
+
+      const snapshots = deriveScheduledWorkSnapshots(events);
+      expect(snapshots).toHaveLength(2);
+      expect(snapshots.map((snapshot) => snapshot.status).sort()).toEqual(["scheduled", "scheduled"]);
+    });
   });
 
   describe("hasRetainableSessions", () => {
