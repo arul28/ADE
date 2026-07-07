@@ -49,8 +49,21 @@ private func workNonEmptyScopeValue(_ value: String?) -> String? {
   return trimmed.isEmpty ? nil : trimmed
 }
 
-private func workPath(_ candidate: String, isEqualToOrInside root: String) -> Bool {
-  candidate == root || candidate.hasPrefix(root + "/")
+private func workShellProjectRootCandidate(from path: String?) -> String? {
+  guard let normalized = syncNormalizedProjectRootScope(path) else { return nil }
+  if let range = normalized.range(of: "/.ade/worktrees/") {
+    return String(normalized[..<range.lowerBound])
+  }
+  return normalized
+}
+
+private func workUniqueRoots(_ roots: [String?]) -> [String] {
+  var seen = Set<String>()
+  return roots.compactMap { root in
+    guard let root, !seen.contains(root) else { return nil }
+    seen.insert(root)
+    return root
+  }
 }
 
 func workShellProjectScope(
@@ -59,18 +72,15 @@ func workShellProjectScope(
 ) -> WorkProjectCommandScope {
   let laneProjectId = workNonEmptyScopeValue(lane.projectId)
   let projectById = laneProjectId.flatMap { id in projects.first { $0.id == id } }
-  let laneRoots = [lane.attachedRootPath, lane.worktreePath]
-    .compactMap(syncNormalizedProjectRootScope)
+  let expectedRoots = workUniqueRoots([
+    workShellProjectRootCandidate(from: lane.attachedRootPath),
+    workShellProjectRootCandidate(from: lane.worktreePath),
+  ])
 
-  let projectByLanePath = projects.compactMap { project -> (project: MobileProjectSummary, root: String)? in
-    guard let root = syncNormalizedProjectRootScope(project.rootPath),
-          laneRoots.contains(where: { workPath($0, isEqualToOrInside: root) })
-    else { return nil }
-    return (project, root)
+  let projectByLanePath = projects.first { project in
+    guard let root = syncNormalizedProjectRootScope(project.rootPath) else { return false }
+    return expectedRoots.contains(root)
   }
-  .max { left, right in
-    left.root.count < right.root.count
-  }?.project
 
   let project = laneProjectId == nil ? projectByLanePath : projectById
   let projectId = laneProjectId ?? project?.id

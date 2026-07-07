@@ -635,6 +635,28 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(scope.projectRootPath, "/repo/mobile")
   }
 
+  func testWorkShellProjectScopeDoesNotUseParentProjectForNestedLanePath() {
+    var lane = makeLaneSummary(id: "lane-mobile", name: "Mobile", laneType: "worktree", branchRef: "ade/mobile")
+    lane.worktreePath = "/repo/mobile/.ade/worktrees/lane-mobile"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-parent",
+          displayName: "Parent",
+          rootPath: "/repo",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertNil(scope.projectId)
+    XCTAssertNil(scope.projectRootPath)
+  }
+
   @MainActor
   func testQueuedShellStartUsesLaneProjectScopeWithoutActiveFallback() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
