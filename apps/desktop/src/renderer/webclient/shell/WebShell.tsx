@@ -128,11 +128,14 @@ export function WebShell({
   }, []);
 
   return (
-    <div style={{ position: "fixed", inset: 0, display: "flex", flexDirection: "column", background: "var(--color-bg)" }}>
+    <>
       <div
         style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          right: 0,
           height: STRIP_HEIGHT,
-          flexShrink: 0,
           display: "flex",
           alignItems: "center",
           gap: 4,
@@ -140,10 +143,11 @@ export function WebShell({
           background: "var(--color-surface)",
           borderBottom: `1px solid ${COLORS.border}`,
           userSelect: "none",
-          // Sit above the reused App's viewport-fixed layers (graph canvas,
-          // drawers) so the machine/project chrome is never painted over.
-          position: "relative",
-          zIndex: 10050,
+          // The reused desktop App renders in its own fixed layer directly below
+          // this strip; pin the machine/project chrome on top of everything the
+          // App can paint (including its viewport-fixed graph/drawer layers) so
+          // it is never covered regardless of the App's internal layout.
+          zIndex: 2147483000,
         }}
       >
         {/* Machine switcher */}
@@ -323,7 +327,19 @@ export function WebShell({
         </button>
       </div>
 
-      <div style={{ position: "relative", flex: 1, minHeight: 0 }}>{children}</div>
-    </div>
+      <div
+        style={{
+          position: "fixed",
+          top: STRIP_HEIGHT,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          overflow: "hidden",
+          background: "var(--color-bg)",
+        }}
+      >
+        {children}
+      </div>
+    </>
   );
 }
