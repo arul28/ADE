@@ -19,6 +19,11 @@ export function createProjectNamespace(infra: AdapterInfra): AdeNamespace<"proje
       displayName: project.displayName,
       baseRef: project.defaultBaseRef,
       lastOpenedAt: project.lastOpenedAt,
+      // `exists` drives the desktop "missing project" (strikethrough) state. On
+      // web the project "exists" when the machine is serving it — there is no
+      // local filesystem to stat — so treat an available catalog entry as
+      // present. (Omitting it read as undefined → missing → struck-through tab.)
+      exists: project.isAvailable !== false,
       isAvailable: project.isAvailable,
       isCached: project.isCached,
       isOpen: project.isOpen,
