@@ -493,7 +493,7 @@ async function rollbackPromotedNativeRuntime(
 ): Promise<void> {
   await fsp.rm(manifest.runtimeTargetDir, { recursive: true, force: true }).catch(() => undefined);
   if (backupPath) {
-    await fsp.rename(backupPath, manifest.runtimeTargetDir).catch(() => undefined);
+    await fsp.rename(backupPath, manifest.runtimeTargetDir);
   }
 }
 
@@ -542,10 +542,10 @@ async function applyStagedBrainUpdate(
     const rollbackPromotedAssets = async () => {
       await fsp.rm(replacementPath, { force: true }).catch(() => undefined);
       if (binaryPromoted) {
-        await fsp.rm(manifest.binaryPath, { force: true }).catch(() => undefined);
+        await fsp.rm(manifest.binaryPath, { force: true });
       }
       if (binaryBackedUp) {
-        await fsp.rename(binaryBackupPath, manifest.binaryPath).catch(() => undefined);
+        await fsp.rename(binaryBackupPath, manifest.binaryPath);
       }
       if (nativePromoted) {
         await rollbackPromotedNativeRuntime(manifest, nativeBackupPath);
@@ -574,7 +574,7 @@ async function applyStagedBrainUpdate(
       await fsp.rename(replacementPath, manifest.binaryPath);
       binaryPromoted = true;
     } catch (error) {
-      await rollbackPromotedAssets();
+      await rollbackPromotedAssets().catch(() => undefined);
       throw error;
     }
 

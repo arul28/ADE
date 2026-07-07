@@ -800,13 +800,13 @@ export class LocalRuntimeConnectionPool {
     }
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
     const runningCompatibilityError = await this.probeRuntimeCompatibilityError(socketPath);
-    if (runningCompatibilityError && runningCompatibilityError.skewState !== "runtime_older") {
+    if (runningCompatibilityError?.skewState === "runtime_newer") {
       this.noteCompatibilityError(runningCompatibilityError);
       this.serviceInstallStatus = {
         state: "skipped",
         attempted: false,
         path: cliPath,
-        message: "Skipped ADE service install because a newer or unclassified ADE brain is already running.",
+        message: "Skipped ADE service install because a newer ADE brain is already running.",
         exitCode: null,
         updatedAt: new Date().toISOString(),
       };

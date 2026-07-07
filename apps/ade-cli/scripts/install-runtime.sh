@@ -146,24 +146,23 @@ chmod 755 "$dest_dir/ade"
 
 staged_runtime_dir="$tmp_dir/runtime"
 staged_node_modules="$staged_runtime_dir/node_modules"
-runtime_node_modules="$runtime_dir/node_modules"
-backup_node_modules="$tmp_dir/node_modules.previous"
+backup_runtime_dir="$tmp_dir/runtime.previous"
 
-rm -rf "$staged_runtime_dir" "$backup_node_modules"
+rm -rf "$staged_runtime_dir" "$backup_runtime_dir"
 mkdir -p "$staged_runtime_dir"
 tar -xzf "$tmp_dir/native.tar.gz" -C "$staged_runtime_dir"
 [ -d "$staged_node_modules" ] || die "native dependency archive is missing node_modules"
 
-if [ -e "$runtime_node_modules" ]; then
-  mv "$runtime_node_modules" "$backup_node_modules"
+if [ -e "$runtime_dir" ]; then
+  mv "$runtime_dir" "$backup_runtime_dir"
 fi
 
-if mv "$staged_node_modules" "$runtime_node_modules"; then
-  rm -rf "$backup_node_modules"
+if mv "$staged_runtime_dir" "$runtime_dir"; then
+  rm -rf "$backup_runtime_dir"
 else
-  if [ -e "$backup_node_modules" ]; then
-    rm -rf "$runtime_node_modules"
-    mv "$backup_node_modules" "$runtime_node_modules"
+  if [ -e "$backup_runtime_dir" ]; then
+    rm -rf "$runtime_dir"
+    mv "$backup_runtime_dir" "$runtime_dir"
   fi
   die "failed to install ADE native runtime dependencies"
 fi
