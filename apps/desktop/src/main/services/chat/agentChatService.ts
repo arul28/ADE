@@ -1,5 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+// Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
+// dynamic import() with a variable path is left unresolved in cli.cjs and fails
+// at runtime ("Cannot find module .../externalSessions/claudeSessionTransplant").
+import { transplantClaudeSession as staticTransplantClaudeSession } from "../externalSessions/claudeSessionTransplant";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -20678,15 +20682,7 @@ export function createAgentChatService(args: {
     resolveComparableCwd(left) === resolveComparableCwd(right);
 
   const loadClaudeSessionTransplant = async (): Promise<ClaudeSessionTransplantModule> => {
-    try {
-      const modulePath = "../externalSessions/claudeSessionTransplant";
-      return await import(modulePath) as ClaudeSessionTransplantModule;
-    } catch (error) {
-      throw externalChatImportError(
-        "EXTERNAL_CHAT_SESSION_TRANSPLANT_UNAVAILABLE",
-        `Claude cwd transplant is unavailable: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
+    return { transplantClaudeSession: staticTransplantClaudeSession };
   };
 
   const applyImportedChatMetadata = (
