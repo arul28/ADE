@@ -734,6 +734,8 @@ describe("createSyncRemoteCommandService", () => {
     ]));
     expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
     expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
+    expect(service.getDescriptor("prs.delete")?.policy).toEqual({ viewerAllowed: false, queueable: true });
+    expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
   });
 
   it("routes github.publishCurrentProject through the GitHub service with validated args", async () => {

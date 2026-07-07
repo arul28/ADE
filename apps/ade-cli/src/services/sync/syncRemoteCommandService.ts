@@ -4374,9 +4374,9 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getIntegrationResolutionState(
       requireString(payload.proposalId, "prs.getIntegrationResolutionState requires proposalId."),
     ));
-  register("prs.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
+  register("prs.delete", { viewerAllowed: false, queueable: true }, async (payload) =>
     args.prService.delete(parseDeletePrArgs(payload)));
-  register("prs.cleanupBranch", { viewerAllowed: true, queueable: true }, async (payload) =>
+  register("prs.cleanupBranch", { viewerAllowed: false, queueable: true }, async (payload) =>
     args.prService.cleanupBranch(parseCleanupPrBranchArgs(payload)));
   register("prs.listProposals", { viewerAllowed: true }, async () => args.prService.listIntegrationProposals());
   register("prs.getQueueState", { viewerAllowed: true }, async (payload) =>

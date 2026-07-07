@@ -576,6 +576,85 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("drops stream subscriptions when switching projects", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let helloProjectId = "project-1";
+    const projectTwo = {
+      ...helloOk("project-2").projects![0],
+      displayName: "ADE Docs",
+      rootPath: "/repo/docs",
+    };
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk(helloProjectId) });
+      }
+      if (envelope.type === "project_switch_request") {
+        helloProjectId = "project-2";
+        socket.serverSend({
+          type: "project_switch_result",
+          requestId: envelope.requestId,
+          payload: { ok: true, project: projectTwo },
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await client.connect(environment.envId);
+    client.subscribeChat("chat-1", {}, {});
+    client.subscribeTerminal("term-1", {}, {});
+    await flush();
+
+    await client.switchProject("project-2");
+    await flush();
+
+    expect(script.sockets).toHaveLength(2);
+    expect(script.sockets[0].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(true);
+    expect(script.sockets[0].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(true);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+
+    client.dispose();
+  });
+
+  it("uses terminal data offsets as reconnect watermarks", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+      if (envelope.type === "terminal_subscribe" && !("sinceOffset" in (envelope.payload as object))) {
+        socket.serverSend({
+          type: "terminal_data",
+          requestId: envelope.requestId,
+          payload: {
+            sessionId: "term-1",
+            ptyId: "pty-1",
+            data: "live output",
+            at: new Date().toISOString(),
+            offset: 105,
+          },
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await client.connect(environment.envId);
+    client.subscribeTerminal("term-1", {}, {});
+    await flush();
+    script.sockets[0].close(1006, "network");
+    await client.connect(environment.envId);
+    await flush();
+
+    expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")?.payload).toMatchObject({
+      sessionId: "term-1",
+      sinceOffset: 105,
+    });
+
+    client.dispose();
+  });
+
   it("serves the hello catalog from cache and coalesces concurrent catalog requests", async () => {
     const cachedStorage = new MemoryStorage();
     const cachedEnvironment = await makeEnvironment(cachedStorage);

@@ -486,6 +486,7 @@ export class AdeSyncClient {
     const result = await promise;
     if (result.ok) {
       this.activeProjectId = result.project?.id ?? projectId;
+      this.clearStreamSubscriptions();
       await this.persistCurrentEnvironment((environment) => ({
         ...environment,
         port: result.connection?.port ?? environment.port,
@@ -689,6 +690,11 @@ export class AdeSyncClient {
   private resubscribeStreams(): void {
     for (const subscription of this.chatSubscriptions.values()) this.sendChatSubscribe(subscription);
     for (const subscription of this.terminalSubscriptions.values()) this.sendTerminalSubscribe(subscription);
+  }
+
+  private clearStreamSubscriptions(): void {
+    this.chatSubscriptions.clear();
+    this.terminalSubscriptions.clear();
   }
 
   private resolveProjectCatalog(payload: SyncProjectCatalogPayload): void {
