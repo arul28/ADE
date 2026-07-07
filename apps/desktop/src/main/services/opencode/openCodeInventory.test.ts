@@ -366,8 +366,8 @@ describe("openCodeInventory", () => {
       displayName: "Claude Sonnet 5",
       openCodeModelId: "claude-sonnet-5",
       providerModelId: "anthropic/claude-sonnet-5",
-      contextWindow: 200_000,
-      maxOutputTokens: 32_000,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({
         tools: true,
         vision: true,
@@ -379,8 +379,8 @@ describe("openCodeInventory", () => {
       displayName: "Claude Opus 4.8 1M",
       openCodeModelId: "claude-opus-4-8",
       providerModelId: "anthropic/claude-opus-4-8",
-      contextWindow: 200_000,
-      maxOutputTokens: 32_000,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({
         tools: true,
         vision: true,

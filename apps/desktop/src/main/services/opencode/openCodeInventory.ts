@@ -165,7 +165,7 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
 function normalizeOpenCodeProviderModel(
   providerId: string,
   modelId: string,
-  availableProviderModelIds: Set<string>,
+  _availableProviderModelIds: Set<string>,
   displayName?: string,
 ): {
   modelId: string;
@@ -182,8 +182,6 @@ function normalizeOpenCodeProviderModel(
   }
   const normalized = modelId.trim().toLowerCase();
   const preferredDuplicateSource = normalized === "claude-sonnet-5" || normalized === "claude-opus-4-8";
-  const hasCanonicalSonnet = availableProviderModelIds.has("claude-sonnet-5");
-  const hasCanonicalOpus = availableProviderModelIds.has("claude-opus-4-8");
   if (normalized === "claude-sonnet-5") {
     return {
       modelId: "claude-sonnet-5",
@@ -206,7 +204,8 @@ function normalizeOpenCodeProviderModel(
     return {
       modelId: "claude-sonnet-5",
       displayName: "Claude Sonnet 5",
-      ...(hasCanonicalSonnet ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "max"],
       preferredDuplicateSource,
@@ -223,7 +222,8 @@ function normalizeOpenCodeProviderModel(
     return {
       modelId: "claude-opus-4-8",
       displayName: "Claude Opus 4.8 1M",
-      ...(hasCanonicalOpus ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
       serviceTiers: ["fast"],

@@ -722,7 +722,7 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
        "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
     return "Claude Opus 4.7 1M"
-  case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
+  case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
     return "Claude Sonnet 5"
   case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5":

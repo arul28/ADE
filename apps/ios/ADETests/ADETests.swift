@@ -11279,6 +11279,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sonnet?.id, "cursor/claude-4.6-sonnet-medium")
     XCTAssertEqual(sonnet?.provider, "cursor")
     XCTAssertEqual(workResolveCliProvider(for: sonnet?.id ?? "", provider: "cursor"), "cursor")
+    XCTAssertEqual(workKnownModelDisplayName(sonnet?.id), "Claude Sonnet 5")
   }
 
   func testWorkModelCatalogFiltersCursorModelsByChatAndCliAvailability() {
