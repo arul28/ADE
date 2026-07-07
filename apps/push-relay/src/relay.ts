@@ -502,14 +502,12 @@ function budgetExceededResponse(): Response {
   return json({ ok: false, error: "relay daily budget reached" }, { status: 429, headers: { "retry-after": "3600" } });
 }
 
-type RateCounterRow = { window_start: number; count: number };
-
 /**
- * Fixed-window per-key limiter backed by the `rate_counters` D1 table. Reads
- * first and rejects WITHOUT a write once a window is at/over the limit, so a
- * sustained flood costs a cheap read per hit (not a write) — the limiter never
- * amplifies the spend it exists to bound. Slight over-count under high
- * concurrency is acceptable for abuse protection.
+ * Fixed-window per-key limiter backed by the `rate_counters` D1 table.
+ * Increment-and-read happens in a single atomic `INSERT ... ON CONFLICT ...
+ * RETURNING` statement (window rollover handled inline via CASE), so a parallel
+ * burst at a window boundary cannot all read below the limit and all be
+ * admitted — the count each request sees already includes its own increment.
  */
 async function checkRateLimit(
   env: PushRelayEnv,
@@ -520,30 +518,19 @@ async function checkRateLimit(
   const nowSeconds = Math.floor(Date.now() / 1000);
   const nowIso = new Date().toISOString();
   const row = await env.DB
-    .prepare("select window_start, count from rate_counters where bucket = ? limit 1")
-    .bind(bucket)
-    .first<RateCounterRow>();
-  if (!row || nowSeconds - row.window_start >= windowSeconds) {
-    await env.DB
-      .prepare(
-        `insert into rate_counters(bucket, window_start, count, updated_at)
-         values (?, ?, 1, ?)
-         on conflict(bucket) do update set window_start = excluded.window_start,
-                                           count = excluded.count,
-                                           updated_at = excluded.updated_at`,
-      )
-      .bind(bucket, nowSeconds, nowIso)
-      .run();
-    return { allowed: true, count: 1 };
-  }
-  if (row.count >= limit) {
-    return { allowed: false, count: row.count };
-  }
-  await env.DB
-    .prepare("update rate_counters set count = count + 1, updated_at = ? where bucket = ?")
-    .bind(nowIso, bucket)
-    .run();
-  return { allowed: true, count: row.count + 1 };
+    .prepare(
+      `insert into rate_counters(bucket, window_start, count, updated_at)
+       values (?1, ?2, 1, ?3)
+       on conflict(bucket) do update set
+         window_start = case when ?2 - window_start >= ?4 then ?2 else window_start end,
+         count        = case when ?2 - window_start >= ?4 then 1  else count + 1 end,
+         updated_at   = ?3
+       returning count`,
+    )
+    .bind(bucket, nowSeconds, nowIso, windowSeconds)
+    .first<{ count: number }>();
+  const count = row?.count ?? 1;
+  return { allowed: count <= limit, count };
 }
 
 // Per-isolate memory: once this isolate has seen the daily budget blown, reject
@@ -595,7 +582,7 @@ async function recordDailyBudget(env: PushRelayEnv): Promise<{ allowed: boolean 
   return { allowed: true };
 }
 
-async function pruneRelayState(env: PushRelayEnv): Promise<void> {
+export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   const suppressionCutoff = new Date(Date.now() - SUPPRESSION_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
   await env.DB
     .prepare("delete from publish_suppression where published_at < ?")

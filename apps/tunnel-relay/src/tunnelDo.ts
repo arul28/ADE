@@ -119,7 +119,10 @@ export class TunnelDurableObject implements DurableObject {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
     const secret = await this.loadSecret();
-    if (!secret) return new Response("unknown machine", { status: 401 });
+    if (!secret) {
+      logTunnel("auth_failed", { role: "host", machineKey: machineKey.slice(0, 8), reason: "unknown_machine" });
+      return new Response("unknown machine", { status: 401 });
+    }
     const ts = url.searchParams.get("ts") ?? "";
     const sig = url.searchParams.get("sig") ?? "";
     const verified = await verifySignedQuery({
@@ -150,7 +153,10 @@ export class TunnelDurableObject implements DurableObject {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
     const secret = await this.loadSecret();
-    if (!secret) return new Response("unknown machine", { status: 401 });
+    if (!secret) {
+      logTunnel("auth_failed", { role: "pipe", machineKey: machineKey.slice(0, 8), reason: "unknown_machine" });
+      return new Response("unknown machine", { status: 401 });
+    }
     const ts = url.searchParams.get("ts") ?? "";
     const sig = url.searchParams.get("sig") ?? "";
     const verified = await verifySignedQuery({

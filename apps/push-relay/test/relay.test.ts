@@ -69,7 +69,19 @@ class FakeD1Database {
       return (row ? { content_hash: row.content_hash } : null) as T | null;
     }
     if (sql.startsWith("insert into rate_counters") && sql.includes("returning count")) {
-      // Budget path: atomic increment-and-read via INSERT ... RETURNING count.
+      if (sql.includes("case when")) {
+        // Rate-limit path: atomic increment with inline window rollover.
+        const [bucket, nowSeconds, updatedAt, windowSeconds] = values as [string, number, string, number];
+        const existing = this.rateCounters.get(bucket);
+        if (!existing || nowSeconds - existing.window_start >= windowSeconds) {
+          this.rateCounters.set(bucket, { window_start: nowSeconds, count: 1, updated_at: updatedAt });
+          return { count: 1 } as T;
+        }
+        existing.count += 1;
+        existing.updated_at = updatedAt;
+        return { count: existing.count } as T;
+      }
+      // Budget path: atomic increment-and-read (no window rollover).
       const [bucket, windowStart, updatedAt] = values as [string, number, string];
       const existing = this.rateCounters.get(bucket);
       if (!existing) {

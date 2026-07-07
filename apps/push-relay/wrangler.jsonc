@@ -9,6 +9,9 @@
   // → Logs). Every rate_limited / budget_exceeded / auth_failed / apns_error /
   // claim_conflict event is a structured JSON line filterable there.
   "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // Hourly prune of expired suppression / registration / rate-limit rows,
+  // independent of request traffic (see the scheduled handler in index.ts).
+  "triggers": { "crons": ["17 * * * *"] },
   // Spend + abuse controls. Change these without a code change; redeploy to apply.
   // DAILY_REQUEST_BUDGET is the hard daily request ceiling (the ~$10-ceiling
   // backstop — see DEFAULT_DAILY_REQUEST_BUDGET in relay.ts for the math).
