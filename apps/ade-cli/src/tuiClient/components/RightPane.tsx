@@ -5,6 +5,7 @@ import type {
   AdeCodeProvider,
   ChatInfoPlanStep,
   ChatInfoSnapshot,
+  ChatScheduledWorkSnapshot,
   RightPaneContent,
   SubagentSnapshot,
 } from "../types";
@@ -1014,6 +1015,64 @@ function ChatInfoMissionBlock({ mission, width, brandColor }: { mission: Mission
 // Desktop ChatTasksPanel parity: latest todo_update snapshot. Rendered BELOW
 // the roster (like Mission) so the roster's click line-math stays intact.
 const TASKS_VISIBLE_CAP = 6;
+const SCHEDULE_VISIBLE_CAP = 5;
+
+function scheduleStatusColor(status: ChatScheduledWorkSnapshot["status"]): string {
+  if (status === "running" || status === "fired") return theme.color.running;
+  if (status === "failed" || status === "missed") return theme.color.error;
+  if (status === "completed") return theme.color.done;
+  if (status === "cancelled" || status === "stopped") return theme.color.t4;
+  return theme.color.info;
+}
+
+function scheduleStatusGlyph(status: ChatScheduledWorkSnapshot["status"]): string {
+  if (status === "running" || status === "fired") return "●";
+  if (status === "failed" || status === "missed") return "×";
+  if (status === "completed") return "✓";
+  if (status === "cancelled" || status === "stopped") return "○";
+  return "◷";
+}
+
+function scheduleKindLabel(kind: ChatScheduledWorkSnapshot["kind"]): string {
+  if (kind === "remote_trigger") return "trigger";
+  if (kind === "background_task") return "background";
+  return kind;
+}
+
+function scheduleLineDetail(item: ChatScheduledWorkSnapshot): string {
+  return item.cron ?? item.reason ?? item.summary ?? item.prompt ?? "";
+}
+
+function ChatInfoScheduleBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  if (!info.scheduledWork.length) return null;
+  const inner = Math.max(10, width - 4);
+  const visible = info.scheduledWork.slice(0, SCHEDULE_VISIBLE_CAP);
+  const hiddenAfter = info.scheduledWork.length - visible.length;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="SCHEDULE" hint={`${info.scheduledWork.length}`} color={brandColor} width={width} />
+      {visible.map((item) => {
+        const detail = scheduleLineDetail(item);
+        const label = `${scheduleKindLabel(item.kind)} · ${item.status}`;
+        const titleBudget = Math.max(6, inner - label.length - 4);
+        return (
+          <Box key={item.id} flexDirection="column">
+            <Text color={scheduleStatusColor(item.status)} wrap="truncate-end">
+              {scheduleStatusGlyph(item.status)} {endTruncate(item.title, titleBudget)} <Text color={theme.color.t4}>{label}</Text>
+            </Text>
+            {detail ? (
+              <Text color={theme.color.t4} dimColor wrap="truncate-end">
+                {"  "}{endTruncate(detail, inner - 2)}
+              </Text>
+            ) : null}
+          </Box>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+    </Box>
+  );
+}
+
 function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
   if (!info.todos.length) return null;
   const inner = Math.max(10, width - 4);
@@ -1092,6 +1151,7 @@ function ChatInfoPane({
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} />
       <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>
   );
@@ -2036,16 +2096,16 @@ function RightPaneComponent({
   /** Reports the model-picker's measured content origin for click hit-testing. */
   onModelPickerMeasureOrigin?: (origin: { x: number; y: number; width: number }) => void;
   /** Data passed in by app.tsx for the model-picker content kind. */
-		  modelPickerInputs?: {
-		    models: AgentChatModelInfo[];
-		    catalog?: AgentChatModelCatalog | null;
-		    favorites: string[];
-	    recents: string[];
-	    activeModelId: string | null;
-	    activeReasoningEffort?: string | null;
-	    aiStatus?: AiSettingsStatus | null;
-	    interfaceMode?: AdeCodeInterfaceMode;
-	  };
+  modelPickerInputs?: {
+    models: AgentChatModelInfo[];
+    catalog?: AgentChatModelCatalog | null;
+    favorites: string[];
+    recents: string[];
+    activeModelId: string | null;
+    activeReasoningEffort?: string | null;
+    aiStatus?: AiSettingsStatus | null;
+    interfaceMode?: AdeCodeInterfaceMode;
+  };
 }) {
   const { title, hint, branch } = paneTitle(content);
   const paneWidth = Math.max(30, width);
@@ -2103,12 +2163,12 @@ function RightPaneComponent({
             return content.rows.length ? visibleRows.map((row, visibleIndex) => {
               const index = listStart + visibleIndex;
               return (
-	            <Text
-	              key={`${content.action?.ids[index] ?? row}:${index}`}
-	              color={content.action && (index === selectedIndex || hoveredId === `right:list:${index}`) ? theme.color.violet : undefined}
-	            >
-	              {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
-	            </Text>
+                <Text
+                  key={`${content.action?.ids[index] ?? row}:${index}`}
+                  color={content.action && (index === selectedIndex || hoveredId === `right:list:${index}`) ? theme.color.violet : undefined}
+                >
+                  {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
+                </Text>
               );
             }) : <Text color={theme.color.t4} dimColor>{content.emptyText ?? "No data."}</Text>;
           })()}
@@ -2192,22 +2252,22 @@ function RightPaneComponent({
 
       {content.kind === "model-picker" && modelPickerInputs ? (
         <ModelPickerPane
-	          state={buildModelPickerLayout({
-	            models: modelPickerInputs.models,
-	            catalog: modelPickerInputs.catalog,
-	            favorites: modelPickerInputs.favorites,
-	            recents: modelPickerInputs.recents,
-			            activeModelId: modelPickerInputs.activeModelId,
-			            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
-			            aiStatus: modelPickerInputs.aiStatus,
-			            interfaceMode: modelPickerInputs.interfaceMode,
-			            settingsRows: content.settingsRows,
-		            footerFocus: content.footerFocus ?? null,
-		            laneLabel: content.laneLabel ?? null,
-		            query: content.query,
-	            selection: content.selection,
-	            providerTabKey: content.providerTabKey ?? null,
-	            focusedIndex: content.focusedIndex,
+          state={buildModelPickerLayout({
+            models: modelPickerInputs.models,
+            catalog: modelPickerInputs.catalog,
+            favorites: modelPickerInputs.favorites,
+            recents: modelPickerInputs.recents,
+            activeModelId: modelPickerInputs.activeModelId,
+            activeReasoningEffort: modelPickerInputs.activeReasoningEffort,
+            aiStatus: modelPickerInputs.aiStatus,
+            interfaceMode: modelPickerInputs.interfaceMode,
+            settingsRows: content.settingsRows,
+            footerFocus: content.footerFocus ?? null,
+            laneLabel: content.laneLabel ?? null,
+            query: content.query,
+            selection: content.selection,
+            providerTabKey: content.providerTabKey ?? null,
+            focusedIndex: content.focusedIndex,
             searchMode: content.searchMode,
           })}
           width={paneWidth}
@@ -2251,17 +2311,17 @@ function RightPaneComponent({
               </Text>
             </Box>
           ) : null}
-	          {content.fields.map((field, index) => {
+          {content.fields.map((field, index) => {
             const value = formValues[field.name]?.trim();
             const displayValue = endTruncate(
               (value || field.placeholder || "").replace(/\s+/g, " "),
               Math.max(8, paneWidth - field.label.length - 8),
             );
-	            return (
-	              <Text
-	                key={field.name}
-	                color={index === activeFormField || hoveredId === `right:form:${field.name}` ? theme.color.violet : undefined}
-	              >
+            return (
+              <Text
+                key={field.name}
+                color={index === activeFormField || hoveredId === `right:form:${field.name}` ? theme.color.violet : undefined}
+              >
                 {index === activeFormField ? theme.rail : " "} {field.label}
                 {field.required ? " *" : ""}: {displayValue}
               </Text>

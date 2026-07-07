@@ -355,12 +355,14 @@ struct WorkSessionDestinationView: View {
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var subagentSnapshots: [WorkSubagentSnapshot] = []
   @State var remoteSubagentSnapshots: [WorkSubagentSnapshot] = []
+  @State var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot] = []
   @State var subagentView: WorkSubagentSelection?
   @State var subagentTranscript: [WorkChatEnvelope] = []
   @State var subagentTranscriptRenderSignature = 0
   @State var parentTranscriptBeforeSubagent: [WorkChatEnvelope] = []
   @State var parentFallbackEntriesBeforeSubagent: [AgentChatTranscriptEntry] = []
   @State var subagentDrawerPresented = false
+  @State var chatInfoPresented = false
   @State var expandedSubagentDetailIds: Set<String> = []
   @State var probingSubagentTaskId: String?
   @State var remoteSubagentRefreshInFlight = false
@@ -641,6 +643,7 @@ struct WorkSessionDestinationView: View {
 
         WorkChatHeaderMenu(
           model: headerMenuModel(session),
+          onShowChatInfo: { chatInfoPresented = true },
           onShowSubagents: { Task { await prepareSubagentDrawerPresentation() } },
           onShowProof: { artifactDrawerPresented = true },
           onViewPrDetails: { presentChatPrDetails() },
@@ -664,6 +667,7 @@ struct WorkSessionDestinationView: View {
 
   private func headerMenuModel(_ session: TerminalSessionSummary) -> WorkChatHeaderMenuModel {
     WorkChatHeaderMenuModel(
+      chatInfoCount: scheduledWorkSnapshots.count,
       subagentCount: subagentSnapshots.count,
       artifactCount: artifacts.count,
       showsLaneActions: showsLaneActions,
@@ -774,6 +778,11 @@ struct WorkSessionDestinationView: View {
           await refreshRemoteSubagentSnapshots()
         }
       }
+      .sheet(isPresented: $chatInfoPresented) {
+        WorkChatInfoDetailsSheet(scheduledWorkSnapshots: scheduledWorkSnapshots)
+          .presentationDetents([.medium, .large])
+          .presentationDragIndicator(.visible)
+      }
       .sheet(isPresented: $createPrPresented) {
         chatCreatePrWizardSheet
       }
@@ -845,7 +854,7 @@ struct WorkSessionDestinationView: View {
         stageInitialOpeningPromptEchoIfNeeded()
         await load()
         await sendInitialOpeningPromptIfNeeded()
-        refreshSubagentSnapshots()
+        refreshChatInfoSnapshots()
         // Remote subagent probing hits the host; skip the eager pass for a
         // cross-project quick look (the drawer still loads it on demand).
         if !isCrossProject {
@@ -915,7 +924,7 @@ struct WorkSessionDestinationView: View {
         }
       }
       .onChange(of: transcript) { _, _ in
-        refreshSubagentSnapshots()
+        refreshChatInfoSnapshots()
       }
       .onChange(of: subagentDrawerPresented) { _, presented in
         guard presented else { return }
@@ -1079,7 +1088,10 @@ struct WorkSessionDestinationView: View {
       onLoadOlderTranscript: loadOlderTranscriptAction,
       subagentSnapshots: subagentSnapshots,
       subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature(subagentSnapshots),
+      scheduledWorkSnapshots: viewingSubagent ? [] : scheduledWorkSnapshots,
+      scheduledWorkSnapshotsRenderSignature: viewingSubagent ? 0 : workScheduledWorkSnapshotsRenderSignature(scheduledWorkSnapshots),
       selectedSubagentTaskId: subagentView?.taskId,
+      onOpenChatInfo: viewingSubagent ? nil : { chatInfoPresented = true },
       onOpenSubagents: { Task { await prepareSubagentDrawerPresentation() } },
       prBadge: chatPrBadge,
       onOpenPrDetails: openPrDetails,
@@ -1906,6 +1918,12 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
+  func refreshChatInfoSnapshots() {
+    refreshSubagentSnapshots()
+    refreshScheduledWorkSnapshots()
+  }
+
+  @MainActor
   func refreshSubagentSnapshots() {
     let local = buildWorkSubagentSnapshots(from: transcript)
     let next = mergeWorkSubagentSnapshots(local: local, remote: remoteSubagentSnapshots)
@@ -1922,6 +1940,14 @@ struct WorkSessionDestinationView: View {
       if selection != subagentView {
         self.subagentView = selection
       }
+    }
+  }
+
+  @MainActor
+  func refreshScheduledWorkSnapshots() {
+    let next = buildWorkScheduledWorkSnapshots(from: transcript)
+    if next != scheduledWorkSnapshots {
+      scheduledWorkSnapshots = next
     }
   }
 

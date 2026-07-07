@@ -258,6 +258,7 @@ struct WorkActivityIndicator: View {
            .systemNotice, .error, .promptSuggestion, .contextCompact,
            .autoApprovalReview, .pendingInputResolved, .subagentResult,
            .codexState, .codexTurnStalled,
+           .scheduledWorkUpdate, .transcriptRetraction,
            .completionReport, .tokens, .unknown:
         continue
       }

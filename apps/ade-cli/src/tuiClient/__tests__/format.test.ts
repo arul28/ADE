@@ -898,6 +898,43 @@ describe("renderChatLines", () => {
     expect(lines[2]?.header).toBeUndefined();
   });
 
+  it("removes assistant lines superseded by transcript retractions", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 1,
+          event: { type: "text", text: "Original answer", messageId: "msg-old", turnId: "turn-1" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 2,
+          event: {
+            type: "transcript_retraction",
+            messageIds: ["msg-old"],
+            reason: "assistant_supersedes",
+            replacementMessageId: "msg-new",
+            turnId: "turn-1",
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:03.000Z",
+          sequence: 3,
+          event: { type: "text", text: "Replacement answer", messageId: "msg-new", turnId: "turn-1" },
+        },
+      ],
+    });
+
+    expect(lines.filter((line) => line.tone === "assistant").map((line) => line.body)).toEqual([
+      "Replacement answer",
+    ]);
+  });
+
   it("renders expanded failed tool output when requested", () => {
     const events = [{
       sessionId: "s1",

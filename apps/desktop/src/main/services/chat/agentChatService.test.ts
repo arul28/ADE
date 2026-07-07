@@ -860,7 +860,9 @@ function legacyClaudeSendPayload(message: unknown): unknown {
 }
 
 function beginClaudeStartupWarmup(session: any) {
-  if (!session) return;
+  if (!session) {
+    throw new Error("beginClaudeStartupWarmup requires a session fixture");
+  }
   void (async () => {
     try {
       if (typeof session.send === "function") {
@@ -8825,6 +8827,182 @@ describe("createAgentChatService", () => {
           && event.event.status === "completed",
       );
 
+      expect(service.hasActiveWorkloads()).toBe(false);
+    });
+
+    it("keeps the Claude SDK stream alive for scheduled wakeups after a foreground result", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let startBackground!: () => void;
+      let finishBackground!: () => void;
+      const startBackgroundPromise = new Promise<void>((resolve) => { startBackground = resolve; });
+      const finishBackgroundPromise = new Promise<void>((resolve) => { finishBackground = resolve; });
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-idle-wakeup",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-wakeup",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+
+        await startBackgroundPromise;
+        yield {
+          type: "assistant",
+          uuid: "assistant-idle-tool",
+          message: {
+            id: "msg-idle-tool",
+            content: [
+              {
+                type: "tool_use",
+                id: "tool-wakeup-1",
+                name: "ScheduleWakeup",
+                input: {
+                  reason: "CI was still running",
+                  prompt: "Check CI again and report back.",
+                },
+              },
+            ],
+            usage: { input_tokens: 2, output_tokens: 3 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-idle-wakeup",
+          task_id: "cron-task-1",
+          task_type: "cron",
+          parent_tool_use_id: "tool-wakeup-1",
+          description: "Check CI again",
+          agent_id: "agent-child-1",
+          parent_agent_id: "agent-parent-1",
+        };
+
+        await finishBackgroundPromise;
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-idle-wakeup",
+          task_id: "cron-task-1",
+          task_type: "cron",
+          parent_tool_use_id: "tool-wakeup-1",
+          patch: { status: "completed" },
+          summary: "CI passed.",
+          agent_id: "agent-child-1",
+          parent_agent_id: "agent-parent-1",
+        };
+        yield {
+          type: "assistant",
+          uuid: "assistant-idle-text",
+          message: {
+            id: "msg-idle-text",
+            content: [{ type: "text", text: "CI passed." }],
+            usage: { input_tokens: 2, output_tokens: 4 },
+          },
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-idle-wakeup",
+          usage: { input_tokens: 2, output_tokens: 4 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-idle-wakeup",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Run CI and wake up when it finishes.",
+      });
+      expect(service.hasActiveWorkloads()).toBe(false);
+
+      startBackground();
+      const wakeupEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.id === "tool-wakeup-1",
+      );
+      expect(wakeupEvent.event).toMatchObject({
+        kind: "wakeup",
+        status: "scheduled",
+        origin: "schedule_wakeup",
+        reason: "CI was still running",
+        prompt: "Check CI again and report back.",
+      });
+      expect(wakeupEvent.event.turnId).toMatch(/^claude-idle-/);
+      expect(service.hasActiveWorkloads()).toBe(true);
+
+      const cronRunningEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.id === "tool-wakeup-1"
+          && event.event.status === "running",
+      );
+      expect(cronRunningEvent.event).toMatchObject({
+        kind: "wakeup",
+        origin: "cron",
+        title: "Check CI again",
+        sourceToolUseId: "tool-wakeup-1",
+        sourceTaskId: "cron-task-1",
+      });
+
+      finishBackground();
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "scheduled_work_update" }>;
+        } =>
+          event.sessionId === session.id
+          && event.event.type === "scheduled_work_update"
+          && event.event.id === "tool-wakeup-1"
+          && event.event.status === "completed",
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.sessionId === session.id
+          && event.event.type === "done"
+          && event.event.turnId.startsWith("claude-idle-")
+          && event.event.status === "completed",
+      );
       expect(service.hasActiveWorkloads()).toBe(false);
     });
   });

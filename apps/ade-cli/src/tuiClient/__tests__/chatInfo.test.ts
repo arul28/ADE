@@ -214,4 +214,49 @@ describe("deriveChatInfoSnapshot", () => {
     ]);
     expect(snapshot.pr).toEqual({ number: 7, state: "open", checksPassed: 1, checksTotal: 2 });
   });
+
+  it("derives the latest scheduled work rows from Claude SDK wakeup events", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [
+        env("2026-07-07T12:00:00.000Z", {
+          type: "scheduled_work_update",
+          id: "wake-1",
+          kind: "wakeup",
+          status: "scheduled",
+          title: "Check the build",
+          nextRunAt: "2026-07-07T12:15:00.000Z",
+          reason: "after CI starts",
+        }, 1),
+        env("2026-07-07T12:16:00.000Z", {
+          type: "scheduled_work_update",
+          id: "wake-1",
+          kind: "wakeup",
+          status: "running",
+          title: "Check the build",
+          lastRunAt: "2026-07-07T12:16:00.000Z",
+          reason: "after CI starts",
+        }, 2),
+      ],
+      activeSession: session({ provider: "claude" }),
+      provider: "claude",
+      modelLabel: "claude-opus-4-7",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.scheduledWork).toEqual([
+      expect.objectContaining({
+        id: "wake-1",
+        kind: "wakeup",
+        status: "running",
+        title: "Check the build",
+        reason: "after CI starts",
+        createdAt: "2026-07-07T12:00:00.000Z",
+        updatedAt: "2026-07-07T12:16:00.000Z",
+      }),
+    ]);
+  });
 });

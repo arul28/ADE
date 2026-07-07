@@ -4,6 +4,7 @@ import type {
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { latestPlan } from "../../../desktop/src/shared/chatSubagents";
+import { deriveScheduledWorkSnapshots } from "../../../desktop/src/shared/chatScheduledWork";
 import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
@@ -78,6 +79,7 @@ export function deriveChatInfoSnapshot(args: {
     planExplanation: trimmedOrNull(planEventRecord?.explanation),
     planStreamingText: trimmedOrNull(planEventRecord?.streamingText),
     todos: deriveTodoItems(args.events),
+    scheduledWork: deriveScheduledWorkSnapshots(args.events),
     pr: args.pr ?? null,
     snapshots: args.snapshots,
     inspectedSubagentId: args.inspectedSubagentId ?? null,

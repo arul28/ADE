@@ -149,6 +149,34 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           reasoningEffort: optionalString(eventDict["reasoningEffort"]),
           turnId: turnId
         )
+      case "scheduled_work_update":
+        event = .scheduledWorkUpdate(
+          id: stringValue(eventDict["id"]),
+          kind: stringValue(eventDict["kind"]),
+          status: stringValue(eventDict["status"]),
+          origin: optionalString(eventDict["origin"]),
+          title: optionalString(eventDict["title"]),
+          summary: optionalString(eventDict["summary"]),
+          prompt: optionalString(eventDict["prompt"]),
+          reason: optionalString(eventDict["reason"]),
+          cron: optionalString(eventDict["cron"]),
+          nextRunAt: optionalString(eventDict["nextRunAt"]),
+          lastRunAt: optionalString(eventDict["lastRunAt"]),
+          recurring: workBoolValue(eventDict["recurring"]),
+          durable: workBoolValue(eventDict["durable"]),
+          sourceToolUseId: optionalString(eventDict["sourceToolUseId"]),
+          sourceTaskId: optionalString(eventDict["sourceTaskId"]),
+          turnId: turnId,
+          error: optionalString(eventDict["error"])
+        )
+      case "transcript_retraction":
+        let messageIds = (eventDict["messageIds"] as? [Any] ?? []).compactMap(optionalString)
+        event = .transcriptRetraction(
+          messageIds: messageIds,
+          reason: optionalString(eventDict["reason"]),
+          replacementMessageId: optionalString(eventDict["replacementMessageId"]),
+          turnId: turnId
+        )
       case "status":
         event = .status(turnStatus: stringValue(eventDict["turnStatus"]), message: optionalString(eventDict["message"]), turnId: turnId)
       case "reasoning":

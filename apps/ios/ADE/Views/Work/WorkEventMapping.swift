@@ -115,6 +115,33 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       reasoningEffort: reasoningEffort,
       turnId: turnId
     )
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+    return .scheduledWorkUpdate(
+      id: id,
+      kind: kind,
+      status: status,
+      origin: origin,
+      title: title,
+      summary: summary,
+      prompt: prompt,
+      reason: reason,
+      cron: cron,
+      nextRunAt: nextRunAt,
+      lastRunAt: lastRunAt,
+      recurring: recurring,
+      durable: durable,
+      sourceToolUseId: sourceToolUseId,
+      sourceTaskId: sourceTaskId,
+      turnId: turnId,
+      error: error
+    )
+  case .transcriptRetraction(let messageIds, let reason, let replacementMessageId, let turnId):
+    return .transcriptRetraction(
+      messageIds: messageIds,
+      reason: reason,
+      replacementMessageId: replacementMessageId,
+      turnId: turnId
+    )
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     let mapped = (options ?? []).map { opt in
       WorkPendingQuestionOption(

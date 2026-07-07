@@ -8,7 +8,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
+import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan } from "./chatExecutionSummary";
 import type { TodoItemSnapshot } from "./chatExecutionSummary";
 import { ChatTaskList } from "./ChatTasksPanel";
@@ -165,12 +165,13 @@ function PlanGlyph({ status }: { status: ChatInfoPlanStep["status"] }) {
 
 /* ── Section header — sentence case, paper-section feel ── */
 
-type SectionTone = "subagent" | "background" | "workflow" | "neutral";
+type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "neutral";
 
 const SECTION_DOT_CLASS: Record<SectionTone, string> = {
   subagent: "bg-[color:var(--color-accent,#A78BFA)]/70",
   background: "bg-cyan-300/65",
   workflow: "bg-amber-300/65",
+  scheduled: "bg-sky-300/65",
   neutral: "bg-fg/30",
 };
 
@@ -275,6 +276,104 @@ function kindBadge(snapshot: ChatSubagentSnapshot): string | null {
     default:
       return null;
   }
+}
+
+const SCHEDULE_STATUS_LABEL: Record<ChatScheduledWorkSnapshot["status"], string> = {
+  scheduled: "scheduled",
+  running: "running",
+  fired: "fired",
+  missed: "missed",
+  completed: "done",
+  cancelled: "cancelled",
+  failed: "failed",
+  stopped: "stopped",
+};
+
+function scheduledKindLabel(kind: ChatScheduledWorkSnapshot["kind"]): string {
+  switch (kind) {
+    case "wakeup":
+      return "wakeup";
+    case "cron":
+      return "cron";
+    case "loop":
+      return "loop";
+    case "remote_trigger":
+      return "trigger";
+    case "background_task":
+      return "background";
+  }
+}
+
+function scheduledDetail(snapshot: ChatScheduledWorkSnapshot): string | null {
+  const parts = [
+    snapshot.cron ? snapshot.cron : null,
+    snapshot.reason ? snapshot.reason : null,
+    snapshot.summary ? snapshot.summary : null,
+  ].filter((part): part is string => Boolean(part));
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function ScheduledWorkRow({ snapshot }: { snapshot: ChatScheduledWorkSnapshot }) {
+  const isActive = snapshot.status === "running" || snapshot.status === "fired";
+  const isProblem = snapshot.status === "failed" || snapshot.status === "missed";
+  const isMuted = snapshot.status === "completed" || snapshot.status === "cancelled" || snapshot.status === "stopped";
+  const detail = scheduledDetail(snapshot);
+  const prompt = snapshot.prompt?.trim();
+
+  return (
+    <div
+      className={cn(
+        "group grid min-h-[42px] grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-1.5",
+        "transition-colors duration-150 hover:bg-white/[0.035]",
+      )}
+      title={prompt || detail || snapshot.title}
+    >
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span
+            aria-hidden
+            className={cn(
+              "h-2 w-2 shrink-0 rounded-full",
+              isActive && "bg-sky-300/75 motion-safe:ade-glow-pulse",
+              isProblem && "bg-rose-300/80",
+              isMuted && "bg-fg/25",
+              !isActive && !isProblem && !isMuted && "bg-sky-300/55",
+            )}
+          />
+          <span
+            className={cn(
+              "min-w-0 truncate font-sans text-[12.5px] leading-5",
+              isActive && "text-sky-100/90",
+              isProblem && "text-rose-200/85",
+              isMuted && "text-fg/45",
+              !isActive && !isProblem && !isMuted && "text-fg/70",
+            )}
+          >
+            {snapshot.title}
+          </span>
+          <span className="shrink-0 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
+            {scheduledKindLabel(snapshot.kind)}
+          </span>
+        </div>
+        {detail || prompt ? (
+          <div className="min-w-0 truncate pl-3.5 font-sans text-[10.5px] leading-4 text-fg/38">
+            {detail ?? prompt}
+          </div>
+        ) : null}
+      </div>
+      <span
+        className={cn(
+          "shrink-0 font-sans text-[10.5px] tabular-nums",
+          isActive && "text-sky-300/75",
+          isProblem && "text-rose-300/75",
+          isMuted && "text-fg/35",
+          !isActive && !isProblem && !isMuted && "text-fg/45",
+        )}
+      >
+        {SCHEDULE_STATUS_LABEL[snapshot.status]}
+      </span>
+    </div>
+  );
 }
 
 function SubagentRow({
@@ -454,6 +553,7 @@ export function ChatSubagentsPanel({
   onSetGoalStatus,
   goalPending = false,
   todoItems = [],
+  scheduledItems = [],
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
@@ -477,6 +577,7 @@ export function ChatSubagentsPanel({
   onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
   goalPending?: boolean;
   todoItems?: TodoItemSnapshot[];
+  scheduledItems?: ChatScheduledWorkSnapshot[];
 }) {
   const [expanded, setExpanded] = useState(false);
   // Which agent's inline details drawer is open (agents with no transcript).
@@ -520,11 +621,12 @@ export function ChatSubagentsPanel({
     const parts: string[] = [];
     if (runningCount) parts.push(`${runningCount} running`);
     if (bgRunningCount) parts.push(`${bgRunningCount} bg`);
+    if (scheduledItems.length) parts.push(`${scheduledItems.length} scheduled`);
     if (completedCount) parts.push(`${completedCount} done`);
     if (!parts.length && snapshots.length) parts.push(`${snapshots.length} tracked`);
     if (!parts.length) parts.push("idle");
     return parts.join(" · ");
-  }, [runningCount, bgRunningCount, completedCount, snapshots.length]);
+  }, [runningCount, bgRunningCount, scheduledItems.length, completedCount, snapshots.length]);
 
   const takeover = (snap: ChatSubagentSnapshot) => {
     setExpandedTaskId(null);
@@ -616,7 +718,8 @@ export function ChatSubagentsPanel({
 
   const hasGoal = Boolean(goal?.objective?.trim());
   const hasTasks = todoItems.length > 0;
-  const hasAnything = hasGoal || Boolean(plan) || hasTasks || foreground.length > 0 || background.length > 0;
+  const hasScheduled = scheduledItems.length > 0;
+  const hasAnything = hasGoal || Boolean(plan) || hasTasks || hasScheduled || foreground.length > 0 || background.length > 0;
 
   const body = (
     <div className="flex flex-col font-sans">
@@ -685,11 +788,33 @@ export function ChatSubagentsPanel({
         </section>
       ) : null}
 
+      {/* ── Schedule ─────────────────────────────────────────────── */}
+      {hasScheduled ? (
+        <section
+          className={cn(
+            "pb-3",
+            (hasGoal || plan || hasTasks) && "border-t border-white/[0.04]",
+          )}
+        >
+          <SectionHeader
+            label="Schedule"
+            hint={`${scheduledItems.length}`}
+            tone="scheduled"
+            emphasized
+          />
+          <div className="space-y-px px-2 pb-1">
+            {scheduledItems.map((item) => (
+              <ScheduledWorkRow key={item.id} snapshot={item} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {/* ── Subagents ────────────────────────────────────────────── */}
       <section
         className={cn(
           "pb-3",
-          (plan || hasTasks || background.length) && "border-t border-white/[0.04]",
+          (plan || hasTasks || hasScheduled || background.length) && "border-t border-white/[0.04]",
         )}
       >
         <SectionHeader

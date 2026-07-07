@@ -351,6 +351,14 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(getAdeActionInputContract("chat", "readTranscript")).toMatchObject({
       input: expect.stringContaining("limit"),
     });
+    expect(getAdeActionInputContract("chat", "getChatEventHistory")).toMatchObject({
+      description: expect.stringContaining("scheduled work"),
+      input: expect.stringContaining("maxEvents"),
+    });
+    expect(getAdeActionInputContract("chat", "getChatEventHistoryPage")).toMatchObject({
+      description: expect.stringContaining("older raw chat events"),
+      input: expect.stringContaining("beforeOffset"),
+    });
     expect(getAdeActionInputContract("chat", "sendMessage")).toMatchObject({
       description: expect.stringContaining("asynchronously"),
     });

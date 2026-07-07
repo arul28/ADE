@@ -1419,4 +1419,36 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.entry.entryKind).toBe("web_search");
     expect(rows[0]!.event.entry.query).toBe("typescript patterns");
   });
+
+  it("removes assistant text rows superseded by transcript retractions", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "text", text: "Original answer", messageId: "msg-old", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "transcript_retraction",
+          messageIds: ["msg-old"],
+          reason: "assistant_supersedes",
+          replacementMessageId: "msg-new",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: { type: "text", text: "Replacement answer", messageId: "msg-new", turnId: "turn-1" },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.event.type).toBe("text");
+    if (rows[0]!.event.type !== "text") throw new Error("Expected text row");
+    expect(rows[0]!.event.text).toBe("Replacement answer");
+    expect(rows[0]!.event.messageId).toBe("msg-new");
+  });
 });

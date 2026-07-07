@@ -730,6 +730,16 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "object { sessionId: string, limit?: number, since?: ISO timestamp }",
       example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20}'",
     },
+    getChatEventHistory: {
+      description: "Read the recent raw chat event stream, including scheduled work, transcript retractions, tool calls, and metadata events.",
+      input: "object { sessionId: string, maxEvents?: number, maxBytes?: number } or argsList [sessionId, options?]",
+      example: "ade actions run chat.getChatEventHistory --input-json '{\"sessionId\":\"chat-123\",\"maxEvents\":128}' --json",
+    },
+    getChatEventHistoryPage: {
+      description: "Page older raw chat events before an event-history byte offset.",
+      input: "object { sessionId: string, beforeOffset: number, maxBytes?: number } or argsList [sessionId, options]",
+      example: "ade actions run chat.getChatEventHistoryPage --input-json '{\"sessionId\":\"chat-123\",\"beforeOffset\":4096,\"maxBytes\":65536}' --json",
+    },
     sendMessage: {
       description: "Send a user message to a chat session; provider dispatch continues asynchronously.",
       input: "object { sessionId: string, text: string, attachments? }",

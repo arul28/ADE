@@ -22,6 +22,7 @@ import {
   formatGitConflictReport,
   formatLaneDeleteRisk,
   formFieldUsesPromptInput,
+  isChatFlushEdge,
   isChatSessionAnimating,
   isPromptLineBackspace,
   isPromptWordBackspace,
@@ -67,6 +68,7 @@ import {
   sameTerminalPreviewFrame,
   selectVisibleNotices,
   shouldBufferPtyDataForSession,
+  shouldAutoOpenChatInfoForEvent,
   splitTerminalControlInput,
   stableInkViewportRows,
   subagentSnapshotsFromEvents,
@@ -176,6 +178,36 @@ describe("session activity helpers", () => {
     expect(isChatSessionAnimating({ status: "active", awaitingInput: true, idleSinceAt: null })).toBe(false);
     expect(isChatSessionAnimating({ status: "active", awaitingInput: false, idleSinceAt: "2026-05-20T07:00:00.000Z" })).toBe(false);
     expect(isChatSessionAnimating({ status: "idle", awaitingInput: false, idleSinceAt: null })).toBe(false);
+  });
+
+  it("treats chat-info snapshot events as immediate auto-open edges", () => {
+    expect(isChatFlushEdge("scheduled_work_update")).toBe(true);
+    expect(isChatFlushEdge("todo_update")).toBe(true);
+    expect(isChatFlushEdge("subagent_progress")).toBe(false);
+    expect(shouldAutoOpenChatInfoForEvent({
+      eventType: "scheduled_work_update",
+      isActiveSessionEvent: true,
+      activePane: "chat",
+      userDismissedRightPane: false,
+    })).toBe(true);
+    expect(shouldAutoOpenChatInfoForEvent({
+      eventType: "scheduled_work_update",
+      isActiveSessionEvent: true,
+      activePane: "drawer",
+      userDismissedRightPane: false,
+    })).toBe(false);
+    expect(shouldAutoOpenChatInfoForEvent({
+      eventType: "scheduled_work_update",
+      isActiveSessionEvent: true,
+      activePane: "chat",
+      userDismissedRightPane: true,
+    })).toBe(false);
+    expect(shouldAutoOpenChatInfoForEvent({
+      eventType: "scheduled_work_update",
+      isActiveSessionEvent: false,
+      activePane: "chat",
+      userDismissedRightPane: false,
+    })).toBe(false);
   });
 
   it("routes prompt submission to an existing chat before starting a provider-specific fallback", () => {
@@ -636,6 +668,7 @@ describe("right pane context defaults", () => {
       planExplanation: null,
       planStreamingText: null,
       todos: [],
+      scheduledWork: [],
       pr: null,
       snapshots: [],
       inspectedSubagentId: null,

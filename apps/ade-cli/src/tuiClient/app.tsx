@@ -371,7 +371,30 @@ const PTY_ATTACHED_FLUSH_MS = 16;
 const PTY_PREVIEW_FLUSH_MS = 32;
 const TERMINAL_PREVIEW_POLL_MS = 1_000;
 
-function isChatFlushEdge(eventType: string): boolean {
+function isChatInfoAutoOpenEvent(eventType: string): boolean {
+  return (
+    eventType === "subagent_started"
+    || eventType === "subagent.started"
+    || eventType === "todo_update"
+    || eventType === "scheduled_work_update"
+  );
+}
+
+export function shouldAutoOpenChatInfoForEvent(args: {
+  eventType: string;
+  isActiveSessionEvent: boolean;
+  activePane: string;
+  userDismissedRightPane: boolean;
+}): boolean {
+  return (
+    isChatInfoAutoOpenEvent(args.eventType)
+    && args.isActiveSessionEvent
+    && args.activePane !== "drawer"
+    && !args.userDismissedRightPane
+  );
+}
+
+export function isChatFlushEdge(eventType: string): boolean {
   // Only the event types that drive an immediate side-effect below (spinner /
   // interrupt / right-pane) force a synchronous flush. Notably NOT the broad
   // "subagent" prefix — subagent_progress is high-frequency and would defeat
@@ -381,8 +404,7 @@ function isChatFlushEdge(eventType: string): boolean {
     || eventType === "done"
     || eventType === "user_message"
     || eventType === "error"
-    || eventType === "subagent_started"
-    || eventType === "subagent.started"
+    || isChatInfoAutoOpenEvent(eventType)
   );
 }
 
@@ -3861,10 +3883,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     subagentPaneCommandAvailable,
   ]);
   // Auto-open the chat-info pane the first time a subagent appears for a session
-  // (once per session), mirroring the desktop subagent auto-open. Unlike a
-  // manual open, this does NOT steal focus from the composer — the pane simply
-  // appears alongside the chat. Respects an explicit user dismissal and never
-  // stomps a different pane the user opened.
+  // (once per session), mirroring the desktop subagent auto-open. Scheduled
+  // work and task snapshots also use the immediate event path below, keeping
+  // this derivation cheap while preserving the same "new info appeared" feel.
+  // Unlike a manual open, this does NOT steal focus from the composer — the
+  // pane simply appears alongside the chat. Respects an explicit user dismissal
+  // and never stomps a different pane the user opened.
   useEffect(() => {
     const sessionId = activeSessionId;
     if (!sessionId || !subagentPaneCommandAvailable) return;
@@ -7368,14 +7392,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setSessionInterrupted(envelope.sessionId, false);
         if (isActiveSessionEvent) setInterrupted(false);
       }
-      if (event.type === "subagent_started" || event.type === "subagent.started") {
+      if (shouldAutoOpenChatInfoForEvent({
+        eventType,
+        isActiveSessionEvent,
+        activePane: activePaneRef.current,
+        userDismissedRightPane: userDismissedRightPaneRef.current,
+      })) {
         // Auto-open chat info only when the user is in the chat surface.
         // Drawer navigation keeps lane details in the right pane.
-        if (!isActiveSessionEvent || activePaneRef.current === "drawer") return;
         setRightPane((prev) => {
-          if (prev.kind === "chat-info") return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
+          if (prev.kind === "chat-info") {
+            subagentAutoOpenedSessionsRef.current.add(envelope.sessionId);
+            return { kind: "chat-info", info: buildChatInfoSnapshotRef.current() };
+          }
           if (prev.kind !== "empty" && prev.kind !== "lane-details") return prev;
           setRightOpen(true);
+          subagentAutoOpenedSessionsRef.current.add(envelope.sessionId);
           return {
             kind: "chat-info",
             info: buildChatInfoSnapshotRef.current(),

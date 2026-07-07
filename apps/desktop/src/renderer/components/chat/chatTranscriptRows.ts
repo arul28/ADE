@@ -699,6 +699,18 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
+  if (event.type === "transcript_retraction") {
+    const retractedIds = new Set(event.messageIds.map((messageId) => messageId.trim()).filter(Boolean));
+    if (!retractedIds.size) return;
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index];
+      if (row?.event.type === "text" && row.event.messageId && retractedIds.has(row.event.messageId)) {
+        rows.splice(index, 1);
+      }
+    }
+    return;
+  }
+
   if (event.type === "text") {
     if (!event.text.trim().length) return;
     const previous = rows[rows.length - 1];

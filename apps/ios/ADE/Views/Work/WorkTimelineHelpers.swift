@@ -25,6 +25,7 @@ func buildWorkChatTimelineSnapshot(
   let commandCards: [WorkCommandCardModel] = []
   let fileChangeCards: [WorkFileChangeCardModel] = []
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
+  let scheduledWorkSnapshots = buildWorkScheduledWorkSnapshots(from: transcript)
   let transcriptIndicatesActiveTurn = workTranscriptIndicatesActiveTurn(transcript)
   let transcriptLatestTurnEnded = workTranscriptLatestTurnEnded(transcript)
   let transcriptHasInterruptibleActivity = WorkActivityIndicator.derivePresentation(from: transcript) != nil
@@ -50,6 +51,7 @@ func buildWorkChatTimelineSnapshot(
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
     subagentSnapshots: subagentSnapshots,
+    scheduledWorkSnapshots: scheduledWorkSnapshots,
     transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
     transcriptLatestTurnEnded: transcriptLatestTurnEnded,
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
@@ -190,6 +192,32 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptionalText(label, into: &hasher)
     combineOptionalText(model, into: &hasher)
     combineOptionalText(reasoningEffort, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+    hasher.combine(id)
+    hasher.combine(kind)
+    hasher.combine(status)
+    combineOptional(origin, into: &hasher)
+    combineOptionalText(title, into: &hasher)
+    combineOptionalText(summary, into: &hasher)
+    combineOptionalText(prompt, into: &hasher)
+    combineOptionalText(reason, into: &hasher)
+    combineOptional(cron, into: &hasher)
+    combineOptional(nextRunAt, into: &hasher)
+    combineOptional(lastRunAt, into: &hasher)
+    combineOptional(recurring, into: &hasher)
+    combineOptional(durable, into: &hasher)
+    combineOptional(sourceToolUseId, into: &hasher)
+    combineOptional(sourceTaskId, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+    combineOptionalText(error, into: &hasher)
+  case .transcriptRetraction(let messageIds, let reason, let replacementMessageId, let turnId):
+    hasher.combine(messageIds.count)
+    for messageId in messageIds {
+      hasher.combine(messageId)
+    }
+    combineOptionalText(reason, into: &hasher)
+    combineOptional(replacementMessageId, into: &hasher)
     combineOptional(turnId, into: &hasher)
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     combineLongTextSignature(question, into: &hasher)
@@ -624,6 +652,101 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
   return entries.values
     .sorted { $0.order < $1.order }
     .map { $0.snapshot }
+}
+
+func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkScheduledWorkSnapshot] {
+  struct Entry {
+    var snapshot: WorkScheduledWorkSnapshot
+    var order: Int
+  }
+
+  var entries: [String: Entry] = [:]
+  var nextOrder = 0
+
+  for envelope in transcript {
+    guard case .scheduledWorkUpdate(
+      let id,
+      let kind,
+      let status,
+      let origin,
+      let title,
+      let summary,
+      let prompt,
+      let reason,
+      let cron,
+      let nextRunAt,
+      let lastRunAt,
+      let recurring,
+      let durable,
+      let sourceToolUseId,
+      let sourceTaskId,
+      let turnId,
+      let error
+    ) = envelope.event else {
+      continue
+    }
+
+    let key = id.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !key.isEmpty else { continue }
+    let existing = entries[key]
+    let displayTitle = nonEmptyWorkTimelineText(title)
+      ?? existing?.snapshot.title
+      ?? workScheduledWorkDefaultTitle(kind: kind)
+
+    entries[key] = Entry(
+      snapshot: WorkScheduledWorkSnapshot(
+        id: key,
+        kind: kind,
+        status: status,
+        origin: origin,
+        title: displayTitle,
+        summary: nonEmptyWorkTimelineText(summary) ?? existing?.snapshot.summary,
+        prompt: nonEmptyWorkTimelineText(prompt) ?? existing?.snapshot.prompt,
+        reason: nonEmptyWorkTimelineText(reason) ?? existing?.snapshot.reason,
+        cron: nonEmptyWorkTimelineText(cron) ?? existing?.snapshot.cron,
+        nextRunAt: nonEmptyWorkTimelineText(nextRunAt) ?? existing?.snapshot.nextRunAt,
+        lastRunAt: nonEmptyWorkTimelineText(lastRunAt) ?? existing?.snapshot.lastRunAt,
+        recurring: recurring ?? existing?.snapshot.recurring,
+        durable: durable ?? existing?.snapshot.durable,
+        sourceToolUseId: nonEmptyWorkTimelineText(sourceToolUseId) ?? existing?.snapshot.sourceToolUseId,
+        sourceTaskId: nonEmptyWorkTimelineText(sourceTaskId) ?? existing?.snapshot.sourceTaskId,
+        turnId: nonEmptyWorkTimelineText(turnId) ?? existing?.snapshot.turnId,
+        error: nonEmptyWorkTimelineText(error) ?? existing?.snapshot.error,
+        createdAt: existing?.snapshot.createdAt ?? envelope.timestamp,
+        updatedAt: envelope.timestamp
+      ),
+      order: existing?.order ?? nextOrder
+    )
+    if existing == nil {
+      nextOrder += 1
+    }
+  }
+
+  return entries.values
+    .sorted { lhs, rhs in
+      if lhs.snapshot.updatedAt == rhs.snapshot.updatedAt {
+        return lhs.order < rhs.order
+      }
+      return lhs.snapshot.updatedAt > rhs.snapshot.updatedAt
+    }
+    .map(\.snapshot)
+}
+
+private func workScheduledWorkDefaultTitle(kind: String) -> String {
+  switch kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "wakeup":
+    return "Scheduled wakeup"
+  case "cron":
+    return "Scheduled task"
+  case "loop":
+    return "Loop wakeup"
+  case "remote_trigger":
+    return "Remote trigger"
+  case "background_task":
+    return "Background work"
+  default:
+    return "Scheduled work"
+  }
 }
 
 private func buildResolvedWorkSubagentKeysByParent(from transcript: [WorkChatEnvelope]) -> [String: Set<String>] {
@@ -1996,6 +2119,8 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .subagentStarted(_, _, _, _, _, _, _, _, _, let turnId),
        .subagentProgress(_, _, _, _, _, _, _, _, _, _, let turnId),
        .subagentResult(_, _, _, _, _, _, _, _, _, let turnId),
+       .scheduledWorkUpdate(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, let turnId, _),
+       .transcriptRetraction(_, _, _, let turnId),
        .structuredQuestion(_, _, _, let turnId),
        .approvalRequest(_, _, _, let turnId),
        .pendingInputResolved(_, _, let turnId),

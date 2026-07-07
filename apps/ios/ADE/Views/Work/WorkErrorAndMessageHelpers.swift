@@ -138,6 +138,22 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         ))
       }
       previousEnvelopeWasAssistantText = true
+    case .transcriptRetraction(let messageIds, _, _, _):
+      previousEnvelopeWasAssistantText = false
+      let retractedIds = Set(
+        messageIds
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+          .filter { !$0.isEmpty }
+      )
+      guard !retractedIds.isEmpty else { continue }
+      messages.removeAll { message in
+        guard message.role == "assistant" else { return false }
+        if retractedIds.contains(message.id) { return true }
+        guard let itemId = message.itemId?.trimmingCharacters(in: .whitespacesAndNewlines), !itemId.isEmpty else {
+          return false
+        }
+        return retractedIds.contains(itemId)
+      }
     default:
       previousEnvelopeWasAssistantText = false
       continue
@@ -1642,6 +1658,24 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["subagent_progress", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description ?? "", summary, toolName ?? "", label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
   case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
     return ["subagent_result", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", status, summary, label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
+  case .scheduledWorkUpdate(let id, let kind, let status, let origin, let title, let summary, let prompt, let reason, let cron, let nextRunAt, let lastRunAt, let recurring, let durable, let sourceToolUseId, let sourceTaskId, let turnId, let error):
+    var parts = ["scheduled_work_update", id, turnId ?? "", kind, status]
+    parts.append(origin ?? "")
+    parts.append(title ?? "")
+    parts.append(summary ?? "")
+    parts.append(prompt ?? "")
+    parts.append(reason ?? "")
+    parts.append(cron ?? "")
+    parts.append(nextRunAt ?? "")
+    parts.append(lastRunAt ?? "")
+    parts.append(recurring.map { $0 ? "1" : "0" } ?? "")
+    parts.append(durable.map { $0 ? "1" : "0" } ?? "")
+    parts.append(sourceToolUseId ?? "")
+    parts.append(sourceTaskId ?? "")
+    parts.append(error ?? "")
+    return parts.joined(separator: "|")
+  case .transcriptRetraction(let messageIds, let reason, let replacementMessageId, let turnId):
+    return ["transcript_retraction", turnId ?? "", replacementMessageId ?? "", reason ?? "", messageIds.joined(separator: ",")].joined(separator: "|")
   case .structuredQuestion(let question, let options, let itemId, let turnId):
     let digest = options.map { "\($0.label)\t\($0.value)\t\($0.description ?? "")\t\($0.recommended ? "1" : "0")" }.joined(separator: "\n")
     return ["structured_question", turnId ?? "", itemId, question, digest].joined(separator: "|")

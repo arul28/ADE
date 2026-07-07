@@ -1,7 +1,14 @@
-import type { AgentChatEventEnvelope, TurnDiffSummary } from "../../../shared/types";
+import type {
+  AgentChatEventEnvelope,
+  TurnDiffSummary,
+} from "../../../shared/types";
 import { latestPlan, type ChatInfoPlan } from "../../../shared/chatSubagents";
 
 export type { ChatInfoPlan, ChatInfoPlanStep } from "../../../shared/chatSubagents";
+export {
+  deriveScheduledWorkSnapshots,
+  type ChatScheduledWorkSnapshot,
+} from "../../../shared/chatScheduledWork";
 
 /**
  * Latest plan snapshot derived from the event stream. Returns null when the

@@ -373,6 +373,31 @@ export type AgentChatCloudRunStatus =
 
 export type AgentChatEventMetadata = Record<string, unknown>;
 
+export type AgentChatScheduledWorkKind =
+  | "wakeup"
+  | "cron"
+  | "loop"
+  | "remote_trigger"
+  | "background_task";
+
+export type AgentChatScheduledWorkStatus =
+  | "scheduled"
+  | "running"
+  | "fired"
+  | "missed"
+  | "completed"
+  | "cancelled"
+  | "failed"
+  | "stopped";
+
+export type AgentChatScheduledWorkOrigin =
+  | "schedule_wakeup"
+  | "cron"
+  | "loop"
+  | "remote_trigger"
+  | "background_task"
+  | "sdk";
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -590,6 +615,7 @@ export type AgentChatEvent =
       type: "subagent_started";
       taskId: string;
       agentId?: string;
+      parentAgentId?: string | null;
       agentType?: string;
       model?: string | null;
       reasoningEffort?: string | null;
@@ -605,6 +631,7 @@ export type AgentChatEvent =
       type: "subagent_progress";
       taskId: string;
       agentId?: string;
+      parentAgentId?: string | null;
       agentType?: string;
       model?: string | null;
       reasoningEffort?: string | null;
@@ -628,6 +655,7 @@ export type AgentChatEvent =
       type: "subagent_result";
       taskId: string;
       agentId?: string;
+      parentAgentId?: string | null;
       agentType?: string;
       model?: string | null;
       reasoningEffort?: string | null;
@@ -711,6 +739,33 @@ export type AgentChatEvent =
       type: "tool_use_summary";
       summary: string;
       toolUseIds: string[];
+      turnId?: string;
+    }
+  | {
+      type: "scheduled_work_update";
+      id: string;
+      kind: AgentChatScheduledWorkKind;
+      status: AgentChatScheduledWorkStatus;
+      origin?: AgentChatScheduledWorkOrigin;
+      title?: string;
+      summary?: string;
+      prompt?: string;
+      reason?: string;
+      cron?: string;
+      nextRunAt?: string;
+      lastRunAt?: string;
+      recurring?: boolean;
+      durable?: boolean;
+      sourceToolUseId?: string;
+      sourceTaskId?: string;
+      turnId?: string;
+      error?: string;
+    }
+  | {
+      type: "transcript_retraction";
+      messageIds: string[];
+      reason?: "model_refusal_fallback" | "assistant_supersedes" | "provider";
+      replacementMessageId?: string;
       turnId?: string;
     }
   | {
@@ -886,6 +941,11 @@ export type AgentChatEventEnvelope = {
   sequence?: number;
   provenance?: {
     messageId?: string;
+    providerMessageId?: string;
+    providerParentAgentId?: string | null;
+    providerOrigin?: string | null;
+    providerSupersedes?: string[];
+    providerRetractedMessageIds?: string[];
     threadId?: string | null;
     role?: "user" | "orchestrator" | "worker" | "agent" | null;
     targetKind?: string | null;
