@@ -189,8 +189,7 @@ function normalizeOpenCodeProviderModel(
     return {
       modelId: hasCanonicalSonnet ? "claude-sonnet-5" : modelId,
       displayName: "Claude Sonnet 5",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
+      ...(hasCanonicalSonnet ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
       preferredDuplicateSource,
     };
   }
@@ -202,8 +201,7 @@ function normalizeOpenCodeProviderModel(
     return {
       modelId: hasCanonicalOpus ? "claude-opus-4-8" : modelId,
       displayName: "Claude Opus 4.8 1M",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
+      ...(hasCanonicalOpus ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
       preferredDuplicateSource,
     };
   }

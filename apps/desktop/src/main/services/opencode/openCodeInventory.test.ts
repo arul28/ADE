@@ -330,15 +330,15 @@ describe("openCodeInventory", () => {
       displayName: "Claude Sonnet 5",
       openCodeModelId: "claude-sonnet-4-6",
       providerModelId: "anthropic/claude-sonnet-4-6",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
+      contextWindow: 200_000,
+      maxOutputTokens: 32_000,
     });
     expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/opus")).toMatchObject({
       displayName: "Claude Opus 4.8 1M",
       openCodeModelId: "opus",
       providerModelId: "anthropic/opus",
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
+      contextWindow: 200_000,
+      maxOutputTokens: 32_000,
     });
   });
 

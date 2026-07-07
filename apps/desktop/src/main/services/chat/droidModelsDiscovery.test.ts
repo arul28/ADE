@@ -167,7 +167,7 @@ describe("discoverDroidCliModelDescriptors", () => {
     ]);
   });
 
-  it("preserves removed Droid runtime ids when canonical replacements are absent", async () => {
+  it("reroutes removed Droid runtime ids when canonical replacements are absent", async () => {
     mockCreateSession.mockResolvedValueOnce({
       initResult: {
         availableModels: [
@@ -180,15 +180,13 @@ describe("discoverDroidCliModelDescriptors", () => {
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).not.toContain("droid/claude-sonnet-5");
-    expect(descriptors.map((descriptor) => descriptor.id)).not.toContain("droid/claude-opus-4-8");
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/sonnet-4-6")).toMatchObject({
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toMatchObject({
       displayName: "Sonnet 5 (1.2x)",
-      providerModelId: "sonnet-4-6",
+      providerModelId: "claude-sonnet-5",
     });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/opus")).toMatchObject({
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).toMatchObject({
       displayName: "Opus 4.8 1M",
-      providerModelId: "opus",
+      providerModelId: "claude-opus-4-8",
     });
   });
 
