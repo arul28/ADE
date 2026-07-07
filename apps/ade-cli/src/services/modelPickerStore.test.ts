@@ -57,14 +57,14 @@ describe("modelPickerStore (db-backed)", () => {
     const { db, root } = await makeDb();
     const store = createModelPickerStore({ db, legacyFilePath: noMigration(root) });
 
-    const first = store.toggleFavorite("claude-opus-4-7");
-    expect(first).toEqual({ favorites: ["claude-opus-4-7"], isFavorite: true });
+    const first = store.toggleFavorite("claude-opus-4-8");
+    expect(first).toEqual({ favorites: ["claude-opus-4-8"], isFavorite: true });
 
     const second = store.toggleFavorite("gpt-5");
-    expect(second.favorites).toEqual(["claude-opus-4-7", "gpt-5"]);
+    expect(second.favorites).toEqual(["claude-opus-4-8", "gpt-5"]);
     expect(second.isFavorite).toBe(true);
 
-    const third = store.toggleFavorite("claude-opus-4-7");
+    const third = store.toggleFavorite("claude-opus-4-8");
     expect(third).toEqual({ favorites: ["gpt-5"], isFavorite: false });
   });
 

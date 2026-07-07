@@ -59,7 +59,7 @@ import {
 } from "./modelCatalog";
 import type { AgentChatModelCatalog } from "../../../../shared/types";
 
-const ANTHROPIC_MODEL_ID = "anthropic/claude-sonnet-4-6";
+const ANTHROPIC_MODEL_ID = "anthropic/claude-sonnet-5";
 const OPENCODE_MODEL_ID = "opencode/some-model-without-reasoning";
 
 beforeEach(() => {

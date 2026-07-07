@@ -545,7 +545,7 @@ describe("headlessLinearServices", () => {
 
     expect(codex.model).toBe("gpt-5.5");
     expect(codex.modelId).toBe("openai/gpt-5.5");
-    expect(claude.model).toBe("opus-4.8-1m");
+    expect(claude.model).toBe("claude-opus-4-8");
     expect(claude.modelId).toBe("anthropic/claude-opus-4-8");
 
     services.dispose();

@@ -104,7 +104,7 @@ const PREVIEW_USAGE_MODEL: Record<
   { Logo: React.ComponentType<{ size?: number; className?: string }>; label: string }
 > = {
   codex: { Logo: CodexLogo, label: "gpt-5.5" },
-  claude: { Logo: ClaudeLogo, label: "Claude Opus 4.7" },
+  claude: { Logo: ClaudeLogo, label: "Claude Sonnet 5" },
   opencode: { Logo: OpenCodeLogo, label: "local · runtime" },
   cursor: { Logo: CursorAgentLogo, label: "cursor · auto" },
   droid: { Logo: DroidLogo, label: "droid · factory" },

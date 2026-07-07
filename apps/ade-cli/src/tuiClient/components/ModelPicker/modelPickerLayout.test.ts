@@ -21,7 +21,7 @@ const modelState: Pick<AdeCodeModelState, "modelId" | "reasoningEffort" | "inter
 describe("buildModelPickerLayout", () => {
   const models: AgentChatModelInfo[] = [
     modelInfo({ id: "anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M" }),
-    modelInfo({ id: "anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6" }),
+    modelInfo({ id: "anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5" }),
     modelInfo({ id: "openai/gpt-5", displayName: "GPT-5" }),
   ];
 
@@ -116,12 +116,12 @@ describe("buildModelPickerLayout", () => {
             key: "default",
             label: "Anthropic",
             models: [{
-              id: "anthropic/claude-sonnet-4-6",
-              runtimeModelId: "claude-sonnet-4-6",
+              id: "anthropic/claude-sonnet-5",
+              runtimeModelId: "claude-sonnet-5",
               provider: "anthropic",
               providerKey: "anthropic",
               groupKey: "anthropic",
-              displayName: "Claude Sonnet 4.6",
+              displayName: "Claude Sonnet 5",
               isDefault: true,
               isAvailable: true,
             }],
@@ -141,7 +141,7 @@ describe("buildModelPickerLayout", () => {
       focusedIndex: 0,
       searchMode: false,
     });
-    expect(layout.entries.some((entry) => entry.modelId === "anthropic/claude-sonnet-4-6")).toBe(true);
+    expect(layout.entries.some((entry) => entry.modelId === "anthropic/claude-sonnet-5")).toBe(true);
     expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
   });
 
@@ -316,7 +316,7 @@ describe("modelPickerController", () => {
       models: [],
       catalog: null,
       favorites: ["openai/gpt-5.5"],
-      recents: ["anthropic/claude-sonnet-4-6"],
+      recents: ["anthropic/claude-sonnet-5"],
       modelState,
       aiStatus: null,
     })).toMatchObject({

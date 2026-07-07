@@ -414,7 +414,7 @@ describe("TerminalPane", () => {
             "││What's new│",
             "│Welcome back Arul!│Added `claude agents --json` to list live Claude sessions",
             "│ ▐▛███▜▌│Statusline JSON input now includes GitHub repo and PR information",
-            "│Sonnet 4.6 with low effort · Claude Max · ││",
+            "│Sonnet 5 with low effort · Claude Max · ││",
             "│~/Projects/ADE/.ade/worktrees/scratch-tui-claude-audit││",
             "○ low · /effort",
             "❯ sayokthenstop",

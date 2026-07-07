@@ -133,7 +133,7 @@ describe("runProviderTask", () => {
       descriptor: {
         family: "anthropic",
         isCliWrapped: true,
-        providerModelId: "claude-sonnet-4-6",
+        providerModelId: "claude-sonnet-5",
       } as any,
       prompt: "Summarize the worktree state.",
       feature: "unit-test",

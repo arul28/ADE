@@ -67,7 +67,7 @@ struct CtoIdentityEditor: View {
               .textInputAutocapitalization(.never)
               .disableAutocorrection(true)
               .font(.system(.body, design: .monospaced))
-            TextField("claude-sonnet-4-6", text: $localModel)
+            TextField("claude-sonnet-5", text: $localModel)
               .textInputAutocapitalization(.never)
               .disableAutocorrection(true)
               .font(.system(.body, design: .monospaced))

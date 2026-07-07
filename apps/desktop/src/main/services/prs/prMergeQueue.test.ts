@@ -281,7 +281,7 @@ describe("queueLandingService", () => {
         cwdLaneId: "lane-1",
         integrationLaneId: null,
         scenario: "single-merge",
-        model: "anthropic/claude-sonnet-4-6",
+        model: "anthropic/claude-sonnet-5",
         reasoningEffort: "medium",
         permissionMode: "guarded_edit",
         command: [],
@@ -339,7 +339,7 @@ describe("queueLandingService", () => {
       groupId: "group-2",
       method: "squash",
       autoResolve: true,
-      resolverModel: "anthropic/claude-sonnet-4-6",
+      resolverModel: "anthropic/claude-sonnet-5",
       reasoningEffort: "medium",
       originSurface: "queue",
       originLabel: "Queue B",
@@ -353,7 +353,7 @@ describe("queueLandingService", () => {
     expect(runExternalResolver).toHaveBeenCalledTimes(1);
     expect(runExternalResolver.mock.calls[0]?.[0]).toMatchObject({
       originSurface: "queue",
-      model: "anthropic/claude-sonnet-4-6",
+      model: "anthropic/claude-sonnet-5",
     });
     expect(completed.entries[0]?.resolvedByAi).toBe(true);
     expect(land).toHaveBeenCalledTimes(2);

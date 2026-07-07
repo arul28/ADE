@@ -223,7 +223,7 @@ type WatchedFileRoot = {
 const DEFAULT_AUTOMATION_CHAT_MODEL_ID =
   getDefaultModelDescriptor("opencode")?.id
   ?? getDefaultModelDescriptor("claude")?.id
-  ?? "anthropic/claude-sonnet-4-6";
+  ?? "anthropic/claude-sonnet-5";
 
 type AutomationRunRow = {
   id: string;

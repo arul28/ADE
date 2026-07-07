@@ -114,7 +114,7 @@ enum ADEColor {
 
   /// Per-model brand colors mirroring desktop's MODEL_REGISTRY entries.
   /// Keep in sync with apps/desktop/src/shared/modelRegistry.ts.
-  /// Keys cover both the registry id ("anthropic/claude-opus-4-7") and shortId ("opus").
+  /// Keys cover both the registry id ("anthropic/claude-sonnet-5") and shortId ("sonnet").
   private static let modelColors: [String: UInt32] = [
     // Anthropic
     "anthropic/claude-fable-5": 0xD97706,
@@ -123,15 +123,13 @@ enum ADEColor {
     "fable": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
     "claude-opus-4-8": 0xD97706,
-    "anthropic/claude-opus-4-7": 0xD97706,
-    "claude-opus-4-7": 0xD97706,
-    "opus": 0xD97706,
     "anthropic/claude-opus-4-7-1m": 0xB45309,
     "claude-opus-4-7-1m": 0xB45309,
     "opus-1m": 0xB45309,
     "opus[1m]": 0xB45309,
     "claude-opus-4-7[1m]": 0xB45309,
-    "anthropic/claude-sonnet-4-6": 0x8B5CF6,
+    "anthropic/claude-sonnet-5": 0x8B5CF6,
+    "claude-sonnet-5": 0x8B5CF6,
     "sonnet": 0x8B5CF6,
     "anthropic/claude-haiku-4-5": 0x06B6D4,
     "haiku": 0x06B6D4,
@@ -189,11 +187,16 @@ enum ADEColor {
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
     case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
-      append("anthropic/claude-opus-4-7")
-      append("opus")
+      append("anthropic/claude-opus-4-8")
+      append("claude-opus-4-8")
     case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
       append("anthropic/claude-opus-4-7-1m")
       append("opus-1m")
+    case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
+         "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+      append("anthropic/claude-sonnet-5")
+      append("claude-sonnet-5")
+      append("sonnet")
     default:
       break
     }
@@ -231,7 +234,7 @@ enum ADEColor {
 
   /// Per-model reasoning tiers mirroring desktop's `reasoningTiers` field in
   /// `apps/desktop/src/shared/modelRegistry.ts`. Keys cover both the registry
-  /// id ("anthropic/claude-opus-4-7") and shortId ("opus") so lookups work
+  /// id ("anthropic/claude-sonnet-5") and shortId ("sonnet") so lookups work
   /// against either form of `chatSummary.modelId`. Keep this aligned with
   /// `apps/desktop/src/shared/modelRegistry.ts` so the mobile composer exposes
   /// the same effort actions as desktop and the ADE TUI.
@@ -243,15 +246,13 @@ enum ADEColor {
     "fable": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
-    "anthropic/claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
-    "claude-opus-4-7": ["low", "medium", "high", "xhigh", "max"],
-    "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
     "opus-1m": ["low", "medium", "high", "xhigh", "max"],
     "opus[1m]": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-4-7[1m]": ["low", "medium", "high", "xhigh", "max"],
-    "anthropic/claude-sonnet-4-6": ["low", "medium", "high", "max"],
+    "anthropic/claude-sonnet-5": ["low", "medium", "high", "max"],
+    "claude-sonnet-5": ["low", "medium", "high", "max"],
     "sonnet": ["low", "medium", "high", "max"],
     // Claude Haiku intentionally absent — no reasoning tiers.
     // OpenAI / Codex

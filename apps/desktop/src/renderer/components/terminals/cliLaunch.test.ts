@@ -268,14 +268,14 @@ describe("buildTrackedCliStartupCommand", () => {
 
       expect(launch.args).toEqual(expect.arrayContaining([
         "--model",
-        "fable",
+        "claude-fable-5",
         "--effort",
         "xhigh",
         "--settings",
         JSON.stringify({ fastMode: true, ultracode: true }),
       ]));
       expect(launch.args).not.toEqual(expect.arrayContaining(["--effort", "ultracode"]));
-      expect(launch.startupCommand).toContain("--model fable");
+      expect(launch.startupCommand).toContain("--model claude-fable-5");
       expect(launch.startupCommand).toContain("--effort xhigh");
       expect(launch.startupCommand).toContain("ultracode");
     });
@@ -532,7 +532,7 @@ describe("buildTrackedCliStartupCommand", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "droid",
         permissionMode: "edit",
-        model: "droid/claude-sonnet-4-6",
+        model: "droid/claude-sonnet-5",
         reasoningEffort: "high",
         initialPrompt: "Run the Droid path.",
       });
@@ -541,7 +541,7 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("droid --settings \"$ADE_DROID_SETTINGS\"");
       expect(launch.startupCommand).toContain("Run the Droid path.");
       expect(launch.startupCommand).toContain("ADE session guidance");
-      expect(launch.startupCommand).toContain("\\\"model\\\":\\\"claude-sonnet-4-6\\\"");
+      expect(launch.startupCommand).toContain("\\\"model\\\":\\\"claude-sonnet-5\\\"");
       expect(launch.startupCommand).toContain("\\\"reasoningEffort\\\":\\\"high\\\"");
       expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
@@ -552,7 +552,7 @@ describe("buildTrackedCliStartupCommand", () => {
         const launch = buildTrackedCliLaunchCommand({
           provider: "droid",
           permissionMode: "edit",
-          model: "droid/claude-sonnet-4-6",
+          model: "droid/claude-sonnet-5",
           reasoningEffort: "high",
           initialPrompt: "Run the Droid path.",
         });
@@ -561,7 +561,7 @@ describe("buildTrackedCliStartupCommand", () => {
         expect(launch.startupCommand).toContain("$env:ADE_DROID_SETTINGS");
         expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS");
         expect(launch.startupCommand).toContain("Run the Droid path.");
-        expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-4-6\"");
+        expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-5\"");
       });
     });
 
@@ -750,7 +750,7 @@ describe("tracked CLI resume helpers", () => {
       targetId: "claude-session-1",
       launch: { permissionMode: "default" },
     }, { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low", permissionMode: "auto" })).toBe(
-      "claude --permission-mode auto --model haiku --effort low --resume claude-session-1",
+      "claude --permission-mode auto --model claude-haiku-4-5 --effort low --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({
@@ -781,7 +781,7 @@ describe("tracked CLI resume helpers", () => {
         reasoningEffort: "ultracode",
       },
     })).toBe(
-      "claude --permission-mode default --model fable --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
+      "claude --permission-mode default --model claude-fable-5 --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({

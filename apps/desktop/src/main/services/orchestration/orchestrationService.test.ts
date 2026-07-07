@@ -909,7 +909,7 @@ function resolveModel(
 
 const MODEL_FALLBACK: ModelSelection = {
   provider: "claude",
-  modelId: "claude-sonnet-4-6",
+  modelId: "claude-sonnet-5",
   reasoningEffort: null,
 };
 
@@ -958,7 +958,7 @@ describe("model routing precedence", () => {
 
   it("caller fallback when routing is empty", () => {
     const res = resolveModel({}, "validator", "anything", MODEL_FALLBACK);
-    expect(res.selection.modelId).toBe("claude-sonnet-4-6");
+    expect(res.selection.modelId).toBe("claude-sonnet-5");
     expect(res.routingKey).toBe("fallback");
   });
 
@@ -1986,7 +1986,7 @@ describe("orchestration watcher resilience", () => {
           briefText: BRIEF,
           spawnFingerprint: {
             provider: "claude",
-            modelId: "claude-sonnet-4-6",
+            modelId: "claude-sonnet-5",
             reasoningEffort: null,
             resolvedAt: "now",
             routingKey: "default",

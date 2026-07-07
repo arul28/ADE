@@ -201,7 +201,7 @@ const DEFAULT_AI_FEATURE_FLAGS: Record<AiFeatureKey, boolean> = {
   initial_context: true,
 };
 
-const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CLAUDE_TASK_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CODEX_TASK_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 
 const TASK_DEFAULTS: Record<AiTaskType, RuntimeTaskDefaults> = {
@@ -1416,7 +1416,7 @@ export function createAiIntegrationService(args: {
       if (exact) return exact.id;
     }
 
-    // Resolve from alias (e.g. "sonnet" -> "anthropic/claude-sonnet-4-6")
+    // Resolve from alias (e.g. "sonnet" -> "anthropic/claude-sonnet-5")
     if (requestedModelHint) {
       const resolved = resolveModelAlias(requestedModelHint);
       if (resolved) return resolved.id;

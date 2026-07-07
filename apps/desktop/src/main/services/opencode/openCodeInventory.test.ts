@@ -153,6 +153,19 @@ describe("openCodeInventory", () => {
                 name: "Claude Sonnet 4.6",
                 tool_call: true,
                 reasoning: true,
+                limit: { context: 200000, output: 32000 },
+              },
+              "claude-sonnet-5": {
+                id: "claude-sonnet-5",
+                name: "Claude Sonnet 5",
+                tool_call: true,
+                reasoning: true,
+              },
+              "claude-opus-4-7": {
+                id: "claude-opus-4-7",
+                name: "Claude Opus 4.7",
+                tool_call: true,
+                reasoning: true,
               },
             },
           },
@@ -167,9 +180,215 @@ describe("openCodeInventory", () => {
       force: true,
     });
 
-    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-4-6");
-    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-5");
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-7");
+    expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-5");
     expect(result.providers.find((provider) => provider.id === "anthropic")?.connected).toBe(false);
+  });
+
+  it("prefers canonical OpenCode model rows over normalized retired aliases", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["anthropic"],
+        all: [
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-6": {
+                id: "claude-sonnet-4-6",
+                name: "Claude Sonnet 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-sonnet-5": {
+                id: "claude-sonnet-5",
+                name: "Claude Sonnet 5",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  high: {},
+                  fast: {},
+                },
+              },
+              "claude-opus-4-7": {
+                id: "claude-opus-4-7",
+                name: "Claude Opus 4.7",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-opus-4-6": {
+                id: "claude-opus-4-6",
+                name: "Claude Opus 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "opus-4-6": {
+                id: "opus-4-6",
+                name: "Opus 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "opus-4.6": {
+                id: "opus-4.6",
+                name: "Opus 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-opus-4-8": {
+                id: "claude-opus-4-8",
+                name: "Claude Opus 4.8 1M",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  max: {},
+                  fast: {},
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    const descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5");
+    const opusDescriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8");
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/opus-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/opus-4.6");
+    expect(descriptor?.capabilities).toMatchObject({
+      tools: true,
+      vision: true,
+      reasoning: true,
+    });
+    expect(descriptor?.reasoningTiers).toEqual(["high"]);
+    expect(descriptor?.serviceTiers).toEqual(["fast"]);
+    expect(opusDescriptor?.capabilities).toMatchObject({
+      tools: true,
+      vision: true,
+      reasoning: true,
+    });
+    expect(opusDescriptor?.reasoningTiers).toEqual(["max"]);
+    expect(opusDescriptor?.serviceTiers).toEqual(["fast"]);
+  });
+
+  it("normalizes retired-only Anthropic OpenCode rows to canonical launch ids", async () => {
+    const logger = { warn: vi.fn() } as any;
+    mockState.providerList.mockResolvedValueOnce({
+      data: {
+        connected: ["anthropic"],
+        all: [
+          {
+            id: "anthropic",
+            name: "Anthropic",
+            models: {
+              "claude-sonnet-4-6": {
+                id: "claude-sonnet-4-6",
+                name: "Claude Sonnet 4.6",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+              },
+              "opus": {
+                id: "opus",
+                name: "Opus",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+              },
+            },
+          },
+        ],
+      },
+    } as any);
+
+    const result = await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: {} },
+      logger,
+      force: true,
+    });
+
+    expect(result.modelIds).toContain("opencode/anthropic/claude-sonnet-5");
+    expect(result.modelIds).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/opus");
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
+      displayName: "Claude Sonnet 5",
+      openCodeModelId: "claude-sonnet-5",
+      providerModelId: "anthropic/claude-sonnet-5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: expect.objectContaining({
+        tools: true,
+        vision: true,
+        reasoning: true,
+      }),
+      reasoningTiers: ["low", "medium", "high", "max"],
+    });
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toMatchObject({
+      displayName: "Claude Opus 4.8 1M",
+      openCodeModelId: "claude-opus-4-8",
+      providerModelId: "anthropic/claude-opus-4-8",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: expect.objectContaining({
+        tools: true,
+        vision: true,
+        reasoning: true,
+      }),
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+    });
   });
 
   it("classifies OpenCode SDK model variants and v2 capabilities", async () => {

@@ -43,7 +43,7 @@ function descriptorToEntry(d: ModelDescriptor, overrides?: { recommended?: boole
   };
 }
 
-const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+const DEFAULT_CLAUDE_MODEL_ID = getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const DEFAULT_CODEX_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 
 // CLI-wrapped Anthropic models (claude provider)
@@ -110,7 +110,7 @@ export function modelConfigToServiceModel(config: ModelConfig): string {
   const modelId = config.modelId?.trim();
   if (modelId && modelId.length > 0) return modelId;
   if (config.provider === "codex") return DEFAULT_CODEX_MODEL_ID;
-  return "anthropic/claude-sonnet-4-6";
+  return DEFAULT_CLAUDE_MODEL_ID;
 }
 
 /** Convert ThinkingLevel to reasoning effort string for AI service */

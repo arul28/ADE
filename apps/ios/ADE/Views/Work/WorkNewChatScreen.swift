@@ -493,7 +493,7 @@ struct WorkNewChatScreen: View {
 
   @State private var selectedLaneId: String = ""
   @State private var provider: String = "claude"
-  @State private var modelId: String = "claude-sonnet-4-6"
+  @State private var modelId: String = "claude-sonnet-5"
   @State private var busy: Bool = false
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
@@ -531,7 +531,7 @@ struct WorkNewChatScreen: View {
     // (rather than assigning in onAppear) avoids the provider/model onChange
     // handlers firing and resetting runtimeMode back to the provider default.
     var restoredProvider = "claude"
-    var restoredModelId = "claude-sonnet-4-6"
+    var restoredModelId = "claude-sonnet-5"
     if let saved = WorkComposerPreferences.load() {
       restoredProvider = saved.provider
       restoredModelId = saved.modelId
@@ -831,13 +831,6 @@ struct WorkNewChatScreen: View {
       return known
     }
     let lower = trimmed.lowercased()
-    switch lower {
-    case "opus": return "Claude Opus 4.7"
-    case "opus[1m]", "opus-1m": return "Claude Opus 4.7 1M"
-    case "sonnet": return "Claude Sonnet 4.6"
-    case "haiku": return "Claude Haiku 4.5"
-    default: break
-    }
     if lower.hasPrefix("claude-") {
       let tail = trimmed.dropFirst("claude-".count)
       let joined = tail.split(separator: "-").map { part -> String in
@@ -1077,8 +1070,8 @@ private func workDefaultNewChatModelId(provider: String) -> String {
   switch workNormalizedNewChatProvider(provider) {
   case "codex": return workDefaultCatalogModelId(provider: "codex") ?? "gpt-5.5"
   case "cursor": return "auto"
-  case "opencode": return "opencode/anthropic/claude-sonnet-4-6"
-  default: return "claude-sonnet-4-6"
+  case "opencode": return "opencode/anthropic/claude-sonnet-5"
+  default: return "claude-sonnet-5"
   }
 }
 

@@ -3,10 +3,11 @@ import { getDefaultModelDescriptor, getModelById, resolveModelAlias } from "../.
 
 /**
  * Normalize arbitrary Claude model strings into CLI-safe values accepted by
- * Claude Code (`claude-opus-4-8`, `opus`, `opus[1m]`, `sonnet`, `haiku`) where possible.
+ * Claude Code (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`,
+ * `claude-haiku-4-5`, `claude-opus-4-7[1m]`) where possible.
  */
 export function resolveClaudeCliModel(model: string | null | undefined): string {
-  return resolveClaudeCliModelAlias(model, "sonnet") ?? "sonnet";
+  return resolveClaudeCliModelAlias(model, "claude-sonnet-5") ?? "claude-sonnet-5";
 }
 
 /**

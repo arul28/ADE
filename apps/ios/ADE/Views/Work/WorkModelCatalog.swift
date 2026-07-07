@@ -242,10 +242,9 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         models: [
           WorkModelOption(id: "claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
           WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced · great default for coding", provider: "claude"),
+          WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
+          WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
         ]
       )
     ]
@@ -280,8 +279,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         models: [
           WorkModelOption(id: "claude-fable-5-thinking-high", displayName: "Claude Fable 5 Thinking High", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
           WorkModelOption(id: "claude-fable-5-thinking-xhigh", displayName: "Claude Fable 5 Thinking XHigh", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
-          WorkModelOption(id: "claude-4.6-sonnet-thinking", displayName: "Sonnet 4.6 · Thinking", tier: .reasoning, tagline: "Extended reasoning", provider: "claude"),
-          WorkModelOption(id: "claude-4.6-sonnet", displayName: "Sonnet 4.6", tier: .balanced, tagline: "Fast coding default", provider: "claude"),
+          WorkModelOption(id: "cursor/claude-4.6-sonnet-medium", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "cursor"),
         ]
       ),
       WorkModelProvider(
@@ -313,7 +311,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
           WorkModelOption(id: "claude-opus-4-6", displayName: "Opus 4.6 (2x)", tier: .flagship, tagline: "Flagship reasoning · 2x usage", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-6-fast", displayName: "Opus 4.6 Fast Mode (12x)", tier: .flagship, tagline: "Faster Opus · 12x usage", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-5-20251101", displayName: "Opus 4.5 (2x)", tier: .flagship, tagline: "Prior-gen Opus", provider: "claude"),
-          WorkModelOption(id: "claude-sonnet-4-6", displayName: "Sonnet 4.6 (1.2x)", tier: .balanced, tagline: "Balanced default", provider: "claude"),
+          WorkModelOption(id: "claude-sonnet-5", displayName: "Sonnet 5 (1.2x)", tier: .balanced, tagline: "Balanced default", provider: "claude"),
           WorkModelOption(id: "claude-sonnet-4-5-20250929", displayName: "Sonnet 4.5 (1.2x)", tier: .balanced, tagline: "Prior-gen Sonnet", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5-20251001", displayName: "Haiku 4.5 (0.4x)", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
         ]
@@ -362,10 +360,10 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Anthropic",
         models: [
           WorkModelOption(id: "opencode/anthropic/claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "opencode/anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced coder", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship reasoning · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship reasoning", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
         ]
       ),
       WorkModelProvider(
@@ -626,12 +624,15 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
     return "anthropic/claude-opus-4-8"
-  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
-    return "anthropic/claude-opus-4-7"
-  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
+  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7",
+       "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
+    return "anthropic/claude-opus-4-8"
+  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
+       "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "anthropic/claude-opus-4-7-1m"
-  case "sonnet", "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
-    return "anthropic/claude-sonnet-4-6"
+  case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
+       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+    return "anthropic/claude-sonnet-5"
   case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
     return "anthropic/claude-haiku-4-5"
   default:
@@ -647,14 +648,17 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
     return "claude-opus-4-8"
-  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7":
-    return "claude-opus-4-7"
-  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m":
+  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7",
+       "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
+    return "claude-opus-4-8"
+  case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
+       "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "claude-opus-4-7[1m]"
-  case "sonnet", "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
-    return "sonnet"
+  case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
+       "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6":
+    return "claude-sonnet-5"
   case "haiku", "claude-haiku-4-5", "anthropic/claude-haiku-4-5":
-    return "haiku"
+    return "claude-haiku-4-5"
   default:
     return nil
   }
@@ -712,12 +716,15 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
     return "Claude Opus 4.8 1M"
-  case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
-    return "Claude Opus 4.7"
-  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
+  case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7",
+       "opus-4.6", "opus-4-6", "anthropic/claude-opus-4-6", "claude-opus-4-6":
+    return "Claude Opus 4.8 1M"
+  case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
+       "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
     return "Claude Opus 4.7 1M"
-  case "sonnet", "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
-    return "Claude Sonnet 4.6"
+  case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
+       "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6":
+    return "Claude Sonnet 5"
   case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5":
     return "Claude Haiku 4.5"
   case "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex":

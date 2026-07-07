@@ -256,6 +256,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     shortId: "opus-4.8-1m",
     aliases: [
       "claude-opus-4-8",
+      "opus",
       "opus-4.8",
       "opus-4-8",
       "opus-4.8-1m",
@@ -265,6 +266,16 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
       "claude-opus-4-8[1m]",
       "anthropic/claude-opus-4-8-1m",
       "anthropic/claude-opus-4-8-api",
+      "opus-4.7",
+      "opus-4-7",
+      "opus-4.6",
+      "opus-4-6",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "anthropic/claude-opus-4-6",
+      "anthropic/claude-opus-4-6-api",
+      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-7-api",
     ],
     displayName: "Claude Opus 4.8 1M",
     family: "anthropic",
@@ -284,35 +295,66 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
-    id: "anthropic/claude-opus-4-7",
-    shortId: "opus",
-    aliases: ["claude-opus-4-7", "anthropic/claude-opus-4-6", "claude-opus-4-6"],
-    displayName: "Claude Opus 4.7",
+    id: "anthropic/claude-sonnet-5",
+    shortId: "sonnet",
+    aliases: [
+      "sonnet",
+      "sonnet-5",
+      "claude-sonnet-5",
+      "anthropic/claude-sonnet-5-api",
+      "sonnet-4-6",
+      "claude-sonnet-4-6",
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-4-6-api",
+    ],
+    displayName: "Claude Sonnet 5",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#8B5CF6",
+    providerRoute: "claude-cli",
+    providerModelId: "claude-sonnet-5",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 10,
+    costTier: "medium",
+  },
+  {
+    id: "anthropic/claude-haiku-4-5",
+    shortId: "haiku",
+    aliases: ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "anthropic/claude-haiku-4-5-api"],
+    displayName: "Claude Haiku 4.5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 200_000,
-    maxOutputTokens: 128_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-    serviceTiers: ["fast"],
-    color: "#D97706",
+    maxOutputTokens: 64_000,
+    capabilities: NO_REASONING,
+    color: "#06B6D4",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-7",
+    providerModelId: "claude-haiku-4-5",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 5,
-    outputPricePer1M: 25,
-    costTier: "very_high",
+    inputPricePer1M: 1,
+    outputPricePer1M: 5,
+    costTier: "low",
   },
   {
     id: "anthropic/claude-opus-4-7-1m",
     shortId: "opus-1m",
     aliases: [
       "opus[1m]",
+      "opus-1m",
+      "opus-4-6-1m",
       "claude-opus-4-7[1m]",
-      "anthropic/claude-opus-4-6-1m",
-      "claude-opus-4-6-1m",
+      "claude-opus-4-7-1m",
       "claude-opus-4-6[1m]",
+      "claude-opus-4-6-1m",
+      "anthropic/claude-opus-4-6-1m",
+      "anthropic/claude-opus-4-7-1m",
     ],
     displayName: "Claude Opus 4.7 1M",
     family: "anthropic",
@@ -330,43 +372,6 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 5,
     outputPricePer1M: 25,
     costTier: "very_high",
-  },
-  {
-    id: "anthropic/claude-sonnet-4-6",
-    shortId: "sonnet",
-    displayName: "Claude Sonnet 4.6",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
-    capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
-    color: "#8B5CF6",
-    providerRoute: "claude-cli",
-    providerModelId: "sonnet",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
-    costTier: "medium",
-  },
-  {
-    id: "anthropic/claude-haiku-4-5",
-    shortId: "haiku",
-    displayName: "Claude Haiku 4.5",
-    family: "anthropic",
-    authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
-    capabilities: NO_REASONING,
-    color: "#06B6D4",
-    providerRoute: "claude-cli",
-    providerModelId: "haiku",
-    cliCommand: "claude",
-    isCliWrapped: true,
-    inputPricePer1M: 1,
-    outputPricePer1M: 5,
-    costTier: "low",
   },
 
   // ---- OpenAI (CLI-wrapped via codex) ----
@@ -705,6 +710,58 @@ export function decodeOpenCodeRegistryId(id: string): { openCodeProviderId: stri
   }
 }
 
+function normalizeAnthropicRuntimeAlias(modelId: string): {
+  modelId: string;
+  displayName: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  capabilities: ModelCapabilities;
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+  wasAlias: boolean;
+} | null {
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized.length) return null;
+  if (
+    normalized === "claude-sonnet-5"
+    || normalized === "claude-sonnet-4-6"
+    || normalized === "sonnet-4-6"
+  ) {
+    return {
+      modelId: "claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "max"],
+      wasAlias: normalized !== "claude-sonnet-5",
+    };
+  }
+  if (
+    normalized === "claude-opus-4-8"
+    || normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "opus-4.7"
+    || normalized === "claude-opus-4-6"
+    || normalized === "claude-opus-4-6-fast"
+    || normalized === "opus-4-6"
+    || normalized === "opus-4.6"
+    || normalized === "opus"
+  ) {
+    return {
+      modelId: "claude-opus-4-8",
+      displayName: "Claude Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+      wasAlias: normalized !== "claude-opus-4-8",
+    };
+  }
+  return null;
+}
+
 function formatOpenCodeDisplayName(modelId: string): string {
   return modelId
     .split(/[-_/]+/g)
@@ -759,21 +816,36 @@ export function createDynamicOpenCodeModelDescriptor(
   options?: DynamicOpenCodeModelDescriptorOptions,
 ): ModelDescriptor {
   const opPid = options?.openCodeProviderId?.trim();
-  const opMid = options?.openCodeModelId?.trim();
+  const rawOpMid = options?.openCodeModelId?.trim();
+  const anthropicRuntime = opPid?.toLowerCase() === "anthropic" && rawOpMid
+    ? normalizeAnthropicRuntimeAlias(rawOpMid)
+    : null;
+  const opMid = anthropicRuntime?.modelId ?? rawOpMid;
   const normalizedModelId = modelId.trim();
   const usesPairedIds = Boolean(opPid && opMid);
   const id = usesPairedIds ? encodeOpenCodeRegistryId(opPid!, opMid!) : `opencode/${normalizedModelId}`;
   const shortId = usesPairedIds ? opMid! : normalizedModelId;
   const providerModelId = usesPairedIds ? `${opPid}/${opMid}` : normalizedModelId;
   const displayName =
-    options?.displayName?.trim()
+    (anthropicRuntime?.wasAlias ? anthropicRuntime.displayName : undefined)
+    || options?.displayName?.trim()
+    || anthropicRuntime?.displayName
     || (usesPairedIds ? formatOpenCodeDisplayName(opMid!) : formatOpenCodeDisplayName(normalizedModelId));
+  const canonicalCapabilities = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.capabilities)
+    ? anthropicRuntime.capabilities
+    : undefined;
   const capabilities: ModelCapabilities = {
-    tools: options?.capabilities?.tools ?? true,
-    vision: options?.capabilities?.vision ?? false,
-    reasoning: options?.capabilities?.reasoning ?? true,
-    streaming: options?.capabilities?.streaming ?? true,
+    tools: canonicalCapabilities?.tools ?? options?.capabilities?.tools ?? true,
+    vision: canonicalCapabilities?.vision ?? options?.capabilities?.vision ?? false,
+    reasoning: canonicalCapabilities?.reasoning ?? options?.capabilities?.reasoning ?? true,
+    streaming: canonicalCapabilities?.streaming ?? options?.capabilities?.streaming ?? true,
   };
+  const reasoningTiers = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.reasoningTiers?.length)
+    ? anthropicRuntime.reasoningTiers
+    : options?.reasoningTiers;
+  const serviceTiers = anthropicRuntime && (anthropicRuntime.wasAlias || !options?.serviceTiers?.length)
+    ? anthropicRuntime.serviceTiers
+    : options?.serviceTiers;
   const aliases = options?.aliases?.map((alias) => alias.trim()).filter(Boolean) ?? [];
   const family: ProviderFamily = (opPid && OPENCODE_PROVIDER_FAMILY_MAP[opPid]) || "opencode";
   const isLocal = opPid ? LOCAL_OPENCODE_PROVIDERS.has(opPid) : false;
@@ -785,15 +857,15 @@ export function createDynamicOpenCodeModelDescriptor(
     displayName,
     family,
     authTypes,
-    contextWindow: options?.contextWindow ?? 200_000,
-    maxOutputTokens: options?.maxOutputTokens ?? 32_000,
+    contextWindow: options?.contextWindow ?? anthropicRuntime?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? anthropicRuntime?.maxOutputTokens ?? 32_000,
     capabilities,
     color,
     providerRoute: "opencode",
     providerModelId,
     ...(usesPairedIds ? { openCodeProviderId: opPid, openCodeModelId: opMid } : {}),
-    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
-    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
+    ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(isLocal || options?.harnessProfile ? { harnessProfile: options?.harnessProfile ?? "guarded" } : {}),
     isCliWrapped: false,
@@ -1063,11 +1135,13 @@ function normalizeDroidEffortLabel(value: string): string {
 
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
   "claude-fable-5": "Fable 5",
+  "claude-opus-4-8": "Opus 4.8 1M",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
   "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
   "claude-sonnet-4-5-20250929": "Sonnet 4.5 (1.2x)",
-  "claude-sonnet-4-6": "Sonnet 4.6 (1.2x)",
+  "claude-sonnet-5": "Sonnet 5 (1.2x)",
+  "claude-sonnet-4-6": "Sonnet 5 (1.2x)",
   "claude-haiku-4-5-20251001": "Haiku 4.5 (0.4x)",
   "gpt-5.1": "GPT-5.1 (0.5x)",
   "gpt-5.2": "GPT-5.2 (0.7x)",
@@ -1137,36 +1211,49 @@ export function createDynamicDroidCliModelDescriptor(
     customProxy?: boolean;
     reasoningTiers?: string[];
     serviceTiers?: string[];
+    contextWindow?: number;
+    maxOutputTokens?: number;
     capabilities?: Partial<ModelCapabilities>;
   },
 ): ModelDescriptor {
-  const trimmedProviderModelId = providerModelId.trim();
+  const rawProviderModelId = providerModelId.trim();
+  const canonicalDroid = normalizeAnthropicRuntimeAlias(rawProviderModelId);
+  const trimmedProviderModelId = canonicalDroid?.modelId ?? rawProviderModelId;
   const id = `droid/${trimmedProviderModelId}`;
   const knownCompact = KNOWN_DROID_COMPACT_DISPLAY_NAMES[trimmedProviderModelId.toLowerCase()];
   const display =
-    knownCompact
+    canonicalDroid?.wasAlias
+      ? knownCompact ?? canonicalDroid.displayName
+      : knownCompact
       ? knownCompact
       : typeof cliDisplayName === "string" && cliDisplayName.trim().length
       ? cliDisplayName.trim()
       : formatDroidCliFallbackDisplayName(trimmedProviderModelId);
+  const reasoningTiers = options?.reasoningTiers?.length
+    ? options.reasoningTiers
+    : canonicalDroid?.reasoningTiers;
+  const serviceTiers = options?.serviceTiers?.length
+    ? options.serviceTiers
+    : canonicalDroid?.serviceTiers;
   return {
     id,
     shortId: trimmedProviderModelId,
     displayName: display,
     family: "factory",
     authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
+    contextWindow: options?.contextWindow ?? canonicalDroid?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? canonicalDroid?.maxOutputTokens ?? 32_000,
     capabilities: {
       ...ALL_CAPS,
+      ...(canonicalDroid?.capabilities ?? {}),
       ...(options?.capabilities ?? {}),
     },
     color: colorForDroidModelId(trimmedProviderModelId),
     providerRoute: "droid-cli",
     providerModelId: trimmedProviderModelId,
     cliCommand: "droid",
-    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
-    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
+    ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     isCliWrapped: true,
     ...(options?.customProxy ? { customProxy: true } : {}),
   };
@@ -1416,7 +1503,7 @@ export function getRuntimeModelRefForDescriptor(
 ): string {
   const provider = providerHint ?? resolveProviderGroupForModel(descriptor);
   if (provider === "claude") {
-    return descriptor.shortId;
+    return descriptor.providerModelId;
   }
   if (provider === "codex" || provider === "cursor" || provider === "droid") {
     return descriptor.providerModelId;
@@ -1504,7 +1591,7 @@ function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | 
   return pickPreferredModel(models, [
     (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.providerModelId}`),
     (model) => model.id === "opencode/anthropic/claude-fable-5" || (model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`)),
-    (model) => model.id === "opencode/anthropic/claude-sonnet-4-6" || (model.family === "anthropic" && model.providerRoute === "opencode"),
+    (model) => model.id === "opencode/anthropic/claude-sonnet-5" || (model.family === "anthropic" && model.providerRoute === "opencode"),
     (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
     (model) => model.family === "anthropic",
     (model) => model.family === "openai",
@@ -1606,7 +1693,7 @@ export function enrichModelRegistry(enrichments: Map<string, ModelEnrichment>): 
 // ---------------------------------------------------------------------------
 
 /**
- * Get pricing for a model by its providerModelId (e.g. "claude-sonnet-4-6").
+ * Get pricing for a model by its providerModelId (e.g. "claude-sonnet-5").
  * Returns per-million-token pricing. Checks dynamic overrides first,
  * then falls back to the static pricing in MODEL_REGISTRY.
  */
