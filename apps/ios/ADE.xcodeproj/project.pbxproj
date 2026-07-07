@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		E20000000000000000000091 /* LinearBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000091 /* LinearBrand.swift */; };
+		E20000000000000000000092 /* LinearSVGPath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000092 /* LinearSVGPath.swift */; };
+		E20000000000000000000093 /* LinearLaunchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000093 /* LinearLaunchModel.swift */; };
+		E20000000000000000000094 /* LinearPaneStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000094 /* LinearPaneStore.swift */; };
+		E20000000000000000000095 /* LinearIssueListScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000095 /* LinearIssueListScreen.swift */; };
+		E20000000000000000000096 /* LinearIssueDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000096 /* LinearIssueDetailScreen.swift */; };
+		E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000097 /* LinearLaunchScreen.swift */; };
+		E20000000000000000000098 /* LinearPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000098 /* LinearPaneSheet.swift */; };
+		E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000099 /* LinearPaneToolbarButton.swift */; };
 		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
 		AA1100000000000000000002 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
 		AA1100000000000000000003 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
@@ -244,6 +253,15 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		D20000000000000000000091 /* LinearBrand.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearBrand.swift; path = ADE/Views/Linear/LinearBrand.swift; sourceTree = "<group>"; };
+		D20000000000000000000092 /* LinearSVGPath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearSVGPath.swift; path = ADE/Views/Linear/LinearSVGPath.swift; sourceTree = "<group>"; };
+		D20000000000000000000093 /* LinearLaunchModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchModel.swift; path = ADE/Views/Linear/LinearLaunchModel.swift; sourceTree = "<group>"; };
+		D20000000000000000000094 /* LinearPaneStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneStore.swift; path = ADE/Views/Linear/LinearPaneStore.swift; sourceTree = "<group>"; };
+		D20000000000000000000095 /* LinearIssueListScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueListScreen.swift; path = ADE/Views/Linear/LinearIssueListScreen.swift; sourceTree = "<group>"; };
+		D20000000000000000000096 /* LinearIssueDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearIssueDetailScreen.swift; path = ADE/Views/Linear/LinearIssueDetailScreen.swift; sourceTree = "<group>"; };
+		D20000000000000000000097 /* LinearLaunchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchScreen.swift; path = ADE/Views/Linear/LinearLaunchScreen.swift; sourceTree = "<group>"; };
+		D20000000000000000000098 /* LinearPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneSheet.swift; path = ADE/Views/Linear/LinearPaneSheet.swift; sourceTree = "<group>"; };
+		D20000000000000000000099 /* LinearPaneToolbarButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneToolbarButton.swift; path = ADE/Views/Linear/LinearPaneToolbarButton.swift; sourceTree = "<group>"; };
 		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
 		AA1000000000000000000002 /* ADESharedModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedModels.swift; path = ADE/Shared/ADESharedModels.swift; sourceTree = "<group>"; };
 		AA1000000000000000000003 /* ADESharedTheme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedTheme.swift; path = ADE/Shared/ADESharedTheme.swift; sourceTree = "<group>"; };
@@ -488,6 +506,22 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		D2000000000000000000009F /* Linear */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000091 /* LinearBrand.swift */,
+				D20000000000000000000092 /* LinearSVGPath.swift */,
+				D20000000000000000000093 /* LinearLaunchModel.swift */,
+				D20000000000000000000094 /* LinearPaneStore.swift */,
+				D20000000000000000000095 /* LinearIssueListScreen.swift */,
+				D20000000000000000000096 /* LinearIssueDetailScreen.swift */,
+				D20000000000000000000097 /* LinearLaunchScreen.swift */,
+				D20000000000000000000098 /* LinearPaneSheet.swift */,
+				D20000000000000000000099 /* LinearPaneToolbarButton.swift */,
+			);
+			name = Linear;
+			sourceTree = "<group>";
+		};
 		02B9E655310A24835B5CFC3B /* Components */ = {
 			isa = PBXGroup;
 			children = (
@@ -551,6 +585,7 @@
 				A10000000000000000000001 /* Lanes */,
 				D10000000000000000000021 /* Work */,
 				H10000000000000000000020 /* Cto */,
+				D2000000000000000000009F /* Linear */,
 				G20000000000000000000000 /* PRs */,
 				A10000000000000000000015 /* Settings */,
 				D30000000000000000000004 /* AttentionDrawer */,
@@ -1115,6 +1150,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E20000000000000000000091 /* LinearBrand.swift in Sources */,
+				E20000000000000000000092 /* LinearSVGPath.swift in Sources */,
+				E20000000000000000000093 /* LinearLaunchModel.swift in Sources */,
+				E20000000000000000000094 /* LinearPaneStore.swift in Sources */,
+				E20000000000000000000095 /* LinearIssueListScreen.swift in Sources */,
+				E20000000000000000000096 /* LinearIssueDetailScreen.swift in Sources */,
+				E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */,
+				E20000000000000000000098 /* LinearPaneSheet.swift in Sources */,
+				E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */,
 				AA1100000000000000000001 /* ADESharedContainer.swift in Sources */,
 				AA1100000000000000000002 /* ADESharedModels.swift in Sources */,
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,

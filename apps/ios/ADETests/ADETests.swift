@@ -15460,3 +15460,196 @@ final class TerminalLiveTailPinningTests: XCTestCase {
     XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 0, viewportHeight: 460, contentHeight: 300))
   }
 }
+
+// MARK: - Linear pane
+
+private enum LinearTestError: Error { case launchFailed }
+
+/// Records the side-effects `runLinearLaunch` fires so tests can assert the
+/// create-lane → launch → rollback contract.
+private actor LinearLaunchSpy {
+  private(set) var createdLaneNames: [String] = []
+  private(set) var deletedLaneIds: [String] = []
+  private(set) var chatLaunches = 0
+  private(set) var cliLaunches = 0
+  func recordCreate(_ name: String) { createdLaneNames.append(name) }
+  func recordDelete(_ id: String) { deletedLaneIds.append(id) }
+  func recordChat() { chatLaunches += 1 }
+  func recordCli() { cliLaunches += 1 }
+}
+
+final class LinearPaneTests: XCTestCase {
+  private func makeIssue(
+    id: String = "i1",
+    identifier: String = "ENG-1",
+    title: String = "Title",
+    stateId: String? = nil,
+    stateName: String? = nil,
+    stateType: String? = nil
+  ) -> NormalizedLinearIssue {
+    NormalizedLinearIssue(
+      id: id, identifier: identifier, title: title,
+      stateId: stateId, stateName: stateName, stateType: stateType
+    )
+  }
+
+  private func makeConfig(_ type: LinearLaunchSessionType) -> LinearLaunchConfig {
+    LinearLaunchConfig(
+      sessionType: type,
+      provider: "claude",
+      modelId: "claude-opus-4-8",
+      reasoningEffort: "",
+      codexFastMode: false,
+      runtimeMode: "default",
+      kickoff: "do the thing"
+    )
+  }
+
+  private func makeDeps(
+    spy: LinearLaunchSpy,
+    create: @escaping () async throws -> String = { "lane1" },
+    chat: @escaping () async throws -> String = { "sess1" }
+  ) -> LinearLaunchDeps {
+    LinearLaunchDeps(
+      createLane: { _, name, _ in await spy.recordCreate(name); return try await create() },
+      launchChat: { _, _ in await spy.recordChat(); return try await chat() },
+      launchCli: { _, _ in await spy.recordCli(); return "cli1" },
+      deleteLane: { id in await spy.recordDelete(id) }
+    )
+  }
+
+  // Naming / branch derivation (parity with shared/linearIssueBranch.ts).
+
+  func testLinearIssueLaneNameJoinsIdentifierAndTitle() {
+    XCTAssertEqual(linearIssueLaneName(identifier: " ENG-1 ", title: " Do it "), "ENG-1 Do it")
+  }
+
+  func testLinearIssueBranchNameSlugifiesAndSanitizes() {
+    XCTAssertEqual(
+      linearIssueBranchName(identifier: "ENG-123", title: "Fix: the thing!!"),
+      "eng-123-fix-the-thing"
+    )
+  }
+
+  func testLinearSanitizeBranchNameStripsRefPrefixesAndCollapses() {
+    XCTAssertEqual(linearSanitizeBranchName("refs/heads/eng--1--fix"), "eng-1-fix")
+    XCTAssertEqual(linearSanitizeBranchName("  --bad..name.lock  "), "bad-name")
+    XCTAssertEqual(linearSanitizeBranchName(""), "linear-issue")
+  }
+
+  func testLaneLinearIssueDerivesBranchFromIssue() {
+    let issue = makeIssue(identifier: "ENG-9", title: "Ship pane")
+    let lane = laneLinearIssue(from: issue)
+    XCTAssertEqual(lane.identifier, "ENG-9")
+    XCTAssertEqual(lane.branchName, "eng-9-ship-pane")
+  }
+
+  // Grouping / ordering.
+
+  func testLinearGroupIssuesOrdersActiveWorkFirst() {
+    let issues = [
+      makeIssue(id: "1", identifier: "E-1", title: "a", stateId: "s-backlog", stateName: "Backlog", stateType: "backlog"),
+      makeIssue(id: "2", identifier: "E-2", title: "b", stateId: "s-started", stateName: "In Progress", stateType: "started"),
+      makeIssue(id: "3", identifier: "E-3", title: "c", stateId: "s-todo", stateName: "Todo", stateType: "unstarted"),
+    ]
+    let groups = linearGroupIssues(issues)
+    XCTAssertEqual(groups.map(\.stateType), ["started", "unstarted", "backlog"])
+    XCTAssertEqual(groups.first?.issues.count, 1)
+  }
+
+  func testLinearStateRankAndColorMapping() {
+    XCTAssertLessThan(linearStateRank("started"), linearStateRank("completed"))
+    XCTAssertEqual(linearNormalizedStateType("weird"), "unstarted")
+    // Started/completed carry distinct brand hues (not the neutral gray).
+    XCTAssertNotEqual(linearStateColor("started"), linearStateColor("backlog"))
+  }
+
+  // Launch orchestration contract.
+
+  func testRunLinearLaunchLaneOnlySkipsAgent() async throws {
+    let spy = LinearLaunchSpy()
+    let outcome = try await runLinearLaunch(
+      issue: makeIssue(), config: makeConfig(.laneOnly), deps: makeDeps(spy: spy)
+    )
+    XCTAssertEqual(outcome, .laneOnly(laneId: "lane1"))
+    let chat = await spy.chatLaunches
+    let cli = await spy.cliLaunches
+    let deleted = await spy.deletedLaneIds
+    XCTAssertEqual(chat, 0)
+    XCTAssertEqual(cli, 0)
+    XCTAssertTrue(deleted.isEmpty)
+  }
+
+  func testRunLinearLaunchChatReturnsSession() async throws {
+    let spy = LinearLaunchSpy()
+    let outcome = try await runLinearLaunch(
+      issue: makeIssue(), config: makeConfig(.chat), deps: makeDeps(spy: spy)
+    )
+    XCTAssertEqual(outcome, .session(laneId: "lane1", sessionId: "sess1"))
+    let chat = await spy.chatLaunches
+    XCTAssertEqual(chat, 1)
+  }
+
+  func testRunLinearLaunchRollsBackLaneWhenAgentLaunchFails() async {
+    let spy = LinearLaunchSpy()
+    let deps = makeDeps(spy: spy, chat: { throw LinearTestError.launchFailed })
+    do {
+      _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
+      XCTFail("Expected the launch to throw")
+    } catch {
+      // Expected — the lane we minted must be torn back down.
+    }
+    let deleted = await spy.deletedLaneIds
+    XCTAssertEqual(deleted, ["lane1"], "A post-lane launch failure must roll back the lane")
+  }
+
+  func testRunLinearLaunchKeepsLaneWhenAgentLaunchQueues() async {
+    let spy = LinearLaunchSpy()
+    let deps = makeDeps(spy: spy, chat: { throw QueuedRemoteCommandError(action: "chat.create") })
+    do {
+      _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
+      XCTFail("Expected the queued launch to throw")
+    } catch is LinearQueuedAgentLaunchError {
+      // Expected — the queued chat needs the lane to exist when it drains.
+    } catch {
+      XCTFail("Expected a queued agent launch error, got \(error)")
+    }
+    let deleted = await spy.deletedLaneIds
+    XCTAssertTrue(deleted.isEmpty, "Queued launches must keep the lane for reconnect drain")
+  }
+
+  func testRunLinearLaunchSurfacesQueuedLaneCreationBeforeAgentLaunch() async {
+    let spy = LinearLaunchSpy()
+    let deps = makeDeps(
+      spy: spy,
+      create: { throw QueuedRemoteCommandError(action: "lane.create") }
+    )
+    do {
+      _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
+      XCTFail("Expected queued lane creation to throw")
+    } catch is QueuedRemoteCommandError {
+      // Expected — no lane id exists yet, so the agent launch was not queued.
+    } catch {
+      XCTFail("Expected the original queued create error, got \(error)")
+    }
+    let chat = await spy.chatLaunches
+    let deleted = await spy.deletedLaneIds
+    XCTAssertEqual(chat, 0)
+    XCTAssertTrue(deleted.isEmpty)
+  }
+
+  func testLinearIssueFallbackSearchWidensBeyondAssignedIssues() {
+    let fallback = linearIssueFallbackSearch(identifier: "ENG-123")
+    XCTAssertEqual(fallback.query, "ENG-123")
+    XCTAssertFalse(fallback.assignedToMe)
+  }
+
+  // Brand mark renders a real (non-empty) path filling its box.
+
+  func testLinearMarkPathFillsBox() {
+    let path = LinearMarkShape().path(in: CGRect(x: 0, y: 0, width: 24, height: 24))
+    XCTAssertFalse(path.isEmpty)
+    XCTAssertGreaterThan(path.boundingRect.width, 18)
+    XCTAssertGreaterThan(path.boundingRect.height, 18)
+  }
+}

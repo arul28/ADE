@@ -89,15 +89,15 @@ final class DeepLinkRouter {
       postSendToMac(url: url)
     case "linear-issue":
       // `ade://linear-issue/<ADE-123>[?branch=<branch>]` — Linear "Open in
-      // coding tool" hand-off. Resolving the issue to a lane requires the
-      // workspace's `lane.linearIssue` mapping, which only the desktop has,
-      // so we bounce the link to the paired Mac. We validate the identifier
-      // shape so a stray `ade://linear-issue/` doesn't pop an empty sheet.
+      // coding tool" hand-off. When a project is open on the phone the global
+      // Linear pane resolves the issue itself (it searches Linear by
+      // identifier); otherwise we bounce the link to the paired Mac. We validate
+      // the identifier shape so a stray `ade://linear-issue/` doesn't fire.
       guard let identifier = pathComponents.first,
             ADEDeepLinkURLParsing.isValidLinearIdentifier(identifier),
             isValidLinearIssueBranch(url: url)
       else { return }
-      postSendToMac(url: url)
+      routeLinearIssue(identifier: identifier, url: url)
     default:
       return
     }
@@ -172,10 +172,11 @@ final class DeepLinkRouter {
       guard ADEDeepLinkURLParsing.splitRepo(query["repo"]) != nil else { return true }
       postSendToMac(url: url)
     case "linear-issue":
-      guard ADEDeepLinkURLParsing.isValidLinearIdentifier(query["issue"]),
+      guard let identifier = query["issue"],
+            ADEDeepLinkURLParsing.isValidLinearIdentifier(identifier),
             ADEDeepLinkURLParsing.isValidBranch(query["branch"] ?? "main")
               || query["branch"] == nil else { return true }
-      postSendToMac(url: url)
+      routeLinearIssue(identifier: identifier, url: url)
     default:
       break
     }
@@ -290,6 +291,17 @@ final class DeepLinkRouter {
     let query = ADEDeepLinkURLParsing.adeQueryValues(from: components)
     guard let branch = query["branch"] else { return true }
     return ADEDeepLinkURLParsing.isValidBranch(branch)
+  }
+
+  /// A `linear-issue` link resolves in-app when a project is open on the phone
+  /// (the global Linear pane searches Linear by identifier); otherwise it bounces
+  /// to the paired Mac, which owns the workspace's lane↔issue mapping.
+  private func routeLinearIssue(identifier: String, url: URL) {
+    if SyncService.shared?.activeProjectId != nil {
+      SyncService.shared?.requestedLinearIssueNavigation = LinearIssueNavigationRequest(identifier: identifier)
+    } else {
+      postSendToMac(url: url)
+    }
   }
 
   /// Cross-machine deep links (lane / repo-branch / linear-issue) post on the

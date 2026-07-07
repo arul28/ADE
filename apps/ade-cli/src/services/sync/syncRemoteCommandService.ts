@@ -3044,10 +3044,10 @@ async function deleteLaneWithRuntimeCleanup(
   return { ok: true };
 }
 
-async function resolveChatCreateArgs(
+async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
   service: ReturnType<typeof createAgentChatService>,
-  payload: AgentChatCreateArgs,
-): Promise<AgentChatCreateArgs> {
+  payload: T,
+): Promise<T> {
   if (payload.model.trim().length > 0) return payload;
   const available = await service.getAvailableModels({
     provider: payload.provider,
@@ -3659,8 +3659,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     saveAgentChatTempAttachment(args, payload));
   register("chat.warmupModel", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").warmupModel(parseWarmupModelArgs(payload)));
-  register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").launchHeadless(parseAgentChatLaunchArgs(payload)));
+  register("chat.launch", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseAgentChatLaunchArgs(payload);
+    const session = await agentChatService.launchHeadless(await resolveChatCreateArgs(agentChatService, parsed));
+    return summarizeChatSessionForRemote(agentChatService, session);
+  });
   register("chat.getImageDataUrl", { viewerAllowed: true }, async (payload) => {
     const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getImageDataUrl");
     const { data, mimeType } = await readImageFileAndSniffMime(filePath);

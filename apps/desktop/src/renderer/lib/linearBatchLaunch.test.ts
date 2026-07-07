@@ -9,6 +9,7 @@ import {
   type BatchLaunchDeps,
   type BatchLaunchIssueConfig,
 } from "./linearBatchLaunch";
+import { applyUnifiedPermissionToNativeControls, defaultNativeControls } from "./nativeLaunchControls";
 
 afterEach(() => {
   resetRuntimeCatalogDescriptorCacheForTests();
@@ -358,7 +359,17 @@ describe("runBatchLaunch", () => {
     });
 
     const entries = [
-      { issue: makeIssue({ id: "a", identifier: "ENG-7" }), config: makeConfig({ sessionType: "cli", permissionMode: "plan" }) },
+      {
+        issue: makeIssue({ id: "a", identifier: "ENG-7" }),
+        config: makeConfig({
+          sessionType: "cli",
+          nativeControls: applyUnifiedPermissionToNativeControls(
+            "anthropic/claude-opus-4-8",
+            "plan",
+            defaultNativeControls(),
+          ),
+        }),
+      },
     ];
     const result = await runBatchLaunch(entries, { createLane, launch, launchCli }, { onItem: vi.fn() });
 
@@ -372,6 +383,69 @@ describe("runBatchLaunch", () => {
     });
     expect(launchCli.mock.calls[0]?.[0]?.kickoffPrompt).not.toMatch(/[A-Z]{2,}-\d+/);
     expect(result.createdSessionIds).toEqual(["cli-1"]);
+  });
+
+  it("passes native permission payload through to chat launches (plan mode)", async () => {
+    const createLane = vi.fn(async () => ({ id: "lane-a" }));
+    const launch = vi.fn(async () => ({ id: "chat-1" }));
+    const entries = [{
+      issue: makeIssue({ id: "a" }),
+      config: makeConfig({
+        modelId: "openai/gpt-5.5",
+        nativeControls: applyUnifiedPermissionToNativeControls(
+          "openai/gpt-5.5",
+          "plan",
+          defaultNativeControls(),
+        ),
+      }),
+    }];
+    await runBatchLaunch(entries, { createLane, launch, launchCli: makeLaunchCli() }, { onItem: vi.fn() });
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+    }));
+  });
+
+  it("leaves headless chat permissions unset when native controls are omitted", async () => {
+    type LaunchArgs = Parameters<BatchLaunchDeps["launch"]>[0];
+    const createLane = vi.fn(async () => ({ id: "lane-a" }));
+    const launch = vi.fn(async (_args: LaunchArgs) => ({ id: "chat-1" }));
+    const entries = [{
+      issue: makeIssue({ id: "a" }),
+      config: makeConfig({
+        modelId: "openai/gpt-5.5",
+      }),
+    }];
+
+    await runBatchLaunch(entries, { createLane, launch, launchCli: makeLaunchCli() }, { onItem: vi.fn() });
+
+    const args = launch.mock.calls[0]?.[0];
+    expect(args).not.toHaveProperty("permissionMode");
+    expect(args).not.toHaveProperty("codexApprovalPolicy");
+    expect(args).not.toHaveProperty("codexSandbox");
+    expect(args).not.toHaveProperty("codexConfigSource");
+  });
+
+  it("passes the visible full-auto defaults through to headless chat launches", async () => {
+    const createLane = vi.fn(async () => ({ id: "lane-a" }));
+    const launch = vi.fn(async () => ({ id: "chat-1" }));
+    const entries = [{
+      issue: makeIssue({ id: "a" }),
+      config: makeConfig({
+        modelId: "openai/gpt-5.5",
+        nativeControls: defaultNativeControls("persistent_identity"),
+      }),
+    }];
+
+    await runBatchLaunch(entries, { createLane, launch, launchCli: makeLaunchCli() }, { onItem: vi.fn() });
+
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({
+      permissionMode: "full-auto",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
+      codexConfigSource: "flags",
+    }));
   });
 
   it("passes fast mode through to CLI launches for fast-capable models", async () => {
