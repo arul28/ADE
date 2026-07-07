@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { handleRequest, signPushRelayRequest, type PushRelayEnv } from "../src/relay";
+import { handleRequest, resetSpendGuardsForTests, signPushRelayRequest, type PushRelayEnv } from "../src/relay";
 import { resetApnsJwtCache } from "../src/apns";
 
 type MachineRow = { machine_key: string; secret: string; created_at: string; last_seen_at: string };
@@ -50,6 +50,7 @@ class FakeD1Database {
   devices: DeviceRow[] = [];
   activityTokens: ActivityTokenRow[] = [];
   suppressions: SuppressionRow[] = [];
+  rateCounters = new Map<string, { window_start: number; count: number; updated_at: string }>();
 
   prepare(sql: string): FakeD1Statement {
     return new FakeD1Statement(sql, this);
@@ -66,6 +67,11 @@ class FakeD1Database {
         (entry) => entry.machine_key === machineKey && entry.suppression_key === suppressionKey,
       );
       return (row ? { content_hash: row.content_hash } : null) as T | null;
+    }
+    if (sql.includes("from rate_counters")) {
+      const [bucket] = values as string[];
+      const row = this.rateCounters.get(bucket);
+      return (row ? { window_start: row.window_start, count: row.count } : null) as T | null;
     }
     return null;
   }
@@ -85,6 +91,35 @@ class FakeD1Database {
   }
 
   run(sql: string, values: unknown[]): void {
+    if (sql.startsWith("insert into rate_counters")) {
+      const [bucket, windowStart, updatedAt] = values as [string, number, string];
+      const existing = this.rateCounters.get(bucket);
+      if (!existing) {
+        this.rateCounters.set(bucket, { window_start: windowStart, count: 1, updated_at: updatedAt });
+        return;
+      }
+      if (sql.includes("count = rate_counters.count + 1")) {
+        existing.count += 1;
+        existing.updated_at = updatedAt;
+      } else {
+        existing.window_start = windowStart;
+        existing.count = 1;
+        existing.updated_at = updatedAt;
+      }
+      return;
+    }
+    if (sql.startsWith("update rate_counters set count = count + 1")) {
+      const [updatedAt, bucket] = values as [string, string];
+      const existing = this.rateCounters.get(bucket);
+      if (existing) {
+        existing.count += 1;
+        existing.updated_at = updatedAt;
+      }
+      return;
+    }
+    if (sql.startsWith("delete from rate_counters")) {
+      return; // prune — not asserted in tests
+    }
     if (sql.startsWith("insert into machines")) {
       const [machineKey, secret, createdAt, lastSeenAt] = values as string[];
       // Mirror `on conflict(machine_key) do nothing`: the primary key is unique.
@@ -251,6 +286,13 @@ async function signedRequest(args: {
   });
 }
 
+function ipRequest(path: string, ip: string, init: RequestInit = {}): Request {
+  return new Request(`https://push.example${path}`, {
+    ...init,
+    headers: { ...(init.headers as Record<string, string> | undefined), "cf-connecting-ip": ip },
+  });
+}
+
 async function claimMachine(db: FakeD1Database, env: PushRelayEnv): Promise<void> {
   const response = await handleRequest(
     new Request(`https://push.example/machines/${MACHINE_KEY}/claim`, {
@@ -270,6 +312,7 @@ describe("push relay", () => {
     db = new FakeD1Database();
     apnsKey = P8_TEST_KEY || (await generateTestP8());
     resetApnsJwtCache();
+    resetSpendGuardsForTests();
   });
 
   afterEach(() => {
@@ -611,5 +654,53 @@ describe("push relay", () => {
       env,
     );
     expect(publish.status).toBe(503);
+  });
+
+  it("rate limits /claim per IP and stops writing new machine rows past the limit", async () => {
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), CLAIM_RATE_LIMIT_PER_MIN: "3", IP_RATE_LIMIT_PER_MIN: "1000" };
+    const statuses: number[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const key = "a".repeat(39) + i; // 40 hex chars, distinct machine per attempt
+      const res = await handleRequest(
+        ipRequest(`/machines/${key}/claim`, "9.9.9.9", { method: "POST", body: JSON.stringify({ secret: SECRET }) }),
+        env,
+      );
+      statuses.push(res.status);
+    }
+    // First 3 claims succeed (201, new machine each); the rest are rate-limited.
+    expect(statuses).toEqual([201, 201, 201, 429, 429]);
+    // The 429s never reached the DB insert — the machines table stopped growing.
+    expect(db.machines).toHaveLength(3);
+  });
+
+  it("rate limits a flooding IP without affecting a different IP", async () => {
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), IP_RATE_LIMIT_PER_MIN: "2", CLAIM_RATE_LIMIT_PER_MIN: "1000" };
+    const hit = (ip: string) =>
+      handleRequest(ipRequest(`/machines/${"c".repeat(40)}/devices`, ip, { method: "GET" }), env);
+    // Under the limit the IP gate passes; auth then rejects with 401 (not 429).
+    expect((await hit("1.1.1.1")).status).not.toBe(429);
+    expect((await hit("1.1.1.1")).status).not.toBe(429);
+    expect((await hit("1.1.1.1")).status).toBe(429); // 3rd from this IP is over limit 2
+    expect((await hit("2.2.2.2")).status).not.toBe(429); // a different IP is unaffected
+  });
+
+  it("enforces the daily request budget and then rejects every source", async () => {
+    const env: PushRelayEnv = {
+      ...makeEnv(db, undefined),
+      DAILY_REQUEST_BUDGET: "2",
+      IP_RATE_LIMIT_PER_MIN: "1000",
+      CLAIM_RATE_LIMIT_PER_MIN: "1000",
+    };
+    const ping = (ip: string) =>
+      handleRequest(ipRequest(`/machines/${"d".repeat(40)}/devices`, ip, { method: "GET" }), env);
+    expect((await ping("5.5.5.5")).status).not.toBe(429);
+    expect((await ping("6.6.6.6")).status).not.toBe(429);
+    // Budget of 2 is now exceeded — the 3rd request is rejected regardless of IP.
+    const blown = await ping("7.7.7.7");
+    expect(blown.status).toBe(429);
+    expect(await blown.json()).toMatchObject({ error: "relay daily budget reached" });
+    // /health always bypasses every gate so monitoring never trips the budget.
+    const health = await handleRequest(new Request("https://push.example/health"), env);
+    expect(health.status).toBe(200);
   });
 });

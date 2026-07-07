@@ -5,6 +5,9 @@
   "compatibility_date": "2026-06-30",
   "workers_dev": true,
   "preview_urls": false,
+  // Persistent, queryable logs in the dashboard (Workers → ade-tunnel-relay →
+  // Logs): host_registered / connect_rejected / auth_failed lifecycle events.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
   "durable_objects": {
     "bindings": [
       {
