@@ -101,7 +101,7 @@ import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowse
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
-import { getSharedPushPublisherService, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
+import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
@@ -1222,7 +1222,7 @@ export async function createAdeRuntime(args: {
   // push-identity file), so a run in one project doesn't clobber the phone's
   // single "agent-runs" Live Activity for another. Each scope wires its own
   // chat/pty/PR signals via attachSources; the aggregate merges runs across all.
-  const pushRelayFilePath = path.join(resolveMachineAdeLayout().secretsDir, "push-relay.json");
+  const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
   const pushPublisherService = getSharedPushPublisherService(pushRelayFilePath, () => {
     const store = createPushRegistrationStore({ filePath: pushRelayFilePath });
     return {
@@ -1281,24 +1281,33 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
-  // Cloud tunnel relay (phone → Cloudflare DO → this brain). Off by default;
-  // the Settings toggle flips the shared store and the client follows. The
-  // store instance is shared with the sync service so the relay candidate in
-  // pairingConnectInfo and the tunnel client always agree on one config file.
+  // Cloud tunnel relay (phone → Cloudflare DO → this brain). On by default —
+  // the Settings kill-switch flips the shared store and the client follows.
+  // The store instance is shared with the sync service so the relay candidate
+  // in pairingConnectInfo and the tunnel client always agree on one config file.
   const { createSyncCloudRelayStore } = await import("./services/sync/syncCloudRelayStore");
-  const { createSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
-  const cloudRelayStore = createSyncCloudRelayStore({
-    filePath: path.join(
-      resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
-      "sync-cloud-relay.json",
-    ),
-  });
-  const syncTunnelClientService = createSyncTunnelClientService({
-    logger,
-    configStore: cloudRelayStore,
-    getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
-  });
-  if (cloudRelayStore.isEnabled()) {
+  const { createSyncTunnelClientService, getSharedSyncTunnelClientService } = await import("./services/sync/syncTunnelClientService");
+  const cloudRelayFilePath = path.join(
+    resolvedArgs.syncRuntime?.phonePairingStateDir ?? resolveMachineAdeLayout().secretsDir,
+    "sync-cloud-relay.json",
+  );
+  const cloudRelayStore = createSyncCloudRelayStore({ filePath: cloudRelayFilePath });
+  // ONE tunnel client per machine (keyed by the config file): per-scope
+  // instances would re-register the same machineKey with the relay on every
+  // project open and churn the connection paired phones dial through.
+  const syncTunnelClientService = getSharedSyncTunnelClientService(cloudRelayFilePath, () =>
+    createSyncTunnelClientService({
+      logger,
+      configStore: cloudRelayStore,
+      getSyncPort: () => resolvedArgs.syncRuntime?.sharedSyncListener?.getPort() ?? null,
+    }));
+  // Only the runtime that actually hosts phone sync (owns the brain-level
+  // shared listener) may register the relay tunnel. The relay DO keeps ONE
+  // host socket per machineKey (last wins), so a headless one-shot CLI
+  // runtime or embedded fallback starting the tunnel would steal the relay
+  // from `ade serve` and then fail every phone /connect (no sync port).
+  const canHostRelayTunnel = resolvedArgs.syncRuntime?.sharedSyncListener != null;
+  if (canHostRelayTunnel && cloudRelayStore.isEnabled()) {
     void syncTunnelClientService.start().catch((error) => {
       logger.warn("sync.tunnel_start_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -1352,6 +1361,9 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
       onCloudRelayEnabledChanged: (enabled) => {
+        // Same gate as startup: only the sync-hosting runtime may register
+        // the relay tunnel (see canHostRelayTunnel above).
+        if (enabled && !canHostRelayTunnel) return;
         const action = enabled ? syncTunnelClientService.start() : syncTunnelClientService.stop();
         void action.catch((error) => {
           logger.warn("sync.tunnel_toggle_failed", {
@@ -1479,7 +1491,9 @@ export async function createAdeRuntime(args: {
       swallow(() => prPollingService.dispose());
       // Detach only this scope's signals; the shared publisher outlives the scope.
       swallow(() => detachPushSources());
-      void syncTunnelClientService.dispose().catch(() => {});
+      // The tunnel client is machine-level and shared across scopes — closing
+      // one project must not sever the relay for the others. The daemon's
+      // shutdown path (disposeServeResources) stops it.
       swallow(() => automationIngressService?.dispose());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
