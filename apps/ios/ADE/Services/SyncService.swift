@@ -1418,6 +1418,18 @@ enum TerminalStreamEvent {
   case exit(code: Int?)
 }
 
+struct WorkStartShellSessionRequest: Equatable {
+  var laneId: String
+  var provider = "shell"
+  var title = "Shell"
+  var cols = 48
+  var rows = 24
+}
+
+func workStartShellSessionRequest(laneId: String) -> WorkStartShellSessionRequest {
+  WorkStartShellSessionRequest(laneId: laneId)
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
@@ -5505,6 +5517,23 @@ final class SyncService: ObservableObject {
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       as: StartCliSessionResult.self
+    )
+  }
+
+  func startShellSession(
+    laneId: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> StartCliSessionResult {
+    let request = workStartShellSessionRequest(laneId: laneId)
+    return try await startCliSession(
+      laneId: request.laneId,
+      provider: request.provider,
+      title: request.title,
+      cols: request.cols,
+      rows: request.rows,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
     )
   }
 

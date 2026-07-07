@@ -502,6 +502,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workCliPermissionMode(provider: "claude", runtimeMode: "auto"), "auto")
   }
 
+  func testWorkStartShellSessionRequestUsesShellDefaults() {
+    let request = workStartShellSessionRequest(laneId: "lane-work")
+    XCTAssertEqual(request.laneId, "lane-work")
+    XCTAssertEqual(request.provider, "shell")
+    XCTAssertEqual(request.title, "Shell")
+    XCTAssertEqual(request.cols, 48)
+    XCTAssertEqual(request.rows, 24)
+  }
+
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
     XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
