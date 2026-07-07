@@ -4336,6 +4336,44 @@ export function AgentChatPane({
     }
     return null;
   }, [selectedEventsForDisplay, selectedCodexTokenUsage, selectedSession?.provider, sessionProvider, modelId]);
+
+  const [contextCompactionPulse, setContextCompactionPulse] = useState(false);
+  const compactionPulseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const seenCompactionCompletionRef = useRef<Set<string>>(new Set());
+  const lastScannedCompactionSessionRef = useRef<string | null>(null);
+  const lastScannedCompactionEventCountRef = useRef(0);
+  useEffect(() => {
+    if (!selectedSessionId) return;
+
+    if (lastScannedCompactionSessionRef.current !== selectedSessionId) {
+      seenCompactionCompletionRef.current.clear();
+      lastScannedCompactionEventCountRef.current = selectedEventsForDisplay.length;
+      lastScannedCompactionSessionRef.current = selectedSessionId;
+      return;
+    }
+
+    const startIndex = lastScannedCompactionEventCountRef.current;
+    if (startIndex >= selectedEventsForDisplay.length) return;
+
+    for (let index = startIndex; index < selectedEventsForDisplay.length; index += 1) {
+      const envelope = selectedEventsForDisplay[index]!;
+      const event = envelope.event;
+      if (event.type !== "context_compact" || event.state !== "completed") continue;
+      const key = `${envelope.timestamp}:${event.compactionId ?? event.turnId ?? ""}`;
+      if (seenCompactionCompletionRef.current.has(key)) continue;
+      seenCompactionCompletionRef.current.add(key);
+      setContextCompactionPulse(true);
+      if (compactionPulseTimerRef.current) clearTimeout(compactionPulseTimerRef.current);
+      compactionPulseTimerRef.current = setTimeout(() => {
+        setContextCompactionPulse(false);
+        compactionPulseTimerRef.current = null;
+      }, 1800);
+    }
+    lastScannedCompactionEventCountRef.current = selectedEventsForDisplay.length;
+  }, [selectedEventsForDisplay, selectedSessionId]);
+  useEffect(() => () => {
+    if (compactionPulseTimerRef.current) clearTimeout(compactionPulseTimerRef.current);
+  }, []);
   const effectiveCursorModeSnapshot = useMemo(() => {
     if (sessionProvider !== "cursor") return null;
     const base = selectedSession?.cursorModeSnapshot ?? buildFallbackCursorModeSnapshot(cursorModeId);
@@ -9887,6 +9925,7 @@ export function AgentChatPane({
             reasoningEffort={reasoningEffort}
             fastMode={fastMode}
             usageViewModel={selectedUsageViewModel}
+            compactionPulse={contextCompactionPulse}
             draft={draft}
             lastSentUserMessage={lastSentUserMessage}
             attachments={attachments}

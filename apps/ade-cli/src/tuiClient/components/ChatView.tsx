@@ -950,10 +950,21 @@ function reasoningRows(
 }
 
 function compactionRows(block: Extract<AggregatedBlock, { kind: "compaction" }>, brailleFrame: string): RenderedChatRow[] {
-  const preTokens = typeof block.preTokens === "number" ? ` · before ${block.preTokens.toLocaleString()} tokens` : "";
+  const trigger = block.trigger === "manual" ? "MANUAL" : "AUTO";
+  const pre = typeof block.preTokens === "number" ? formatCompactTokenCount(block.preTokens) : null;
+  const post = typeof block.postTokens === "number" ? formatCompactTokenCount(block.postTokens) : null;
+  const duration = typeof block.durationMs === "number" ? formatCompactDuration(block.durationMs) : null;
+  const countSuffix = typeof block.sessionCompactionCount === "number" && block.sessionCompactionCount >= 2
+    ? ` (${block.sessionCompactionCount}×)`
+    : "";
+  const metadata = [
+    trigger,
+    pre && post ? `${pre} → ${post}` : pre ? `before ${pre}` : null,
+    duration,
+  ].filter(Boolean).join(" · ");
   const text = block.live
-    ? `⟳ compacting context · ${block.trigger} ${brailleFrame}`
-    : `⟳ context compacted · ${block.trigger}${preTokens}`;
+    ? `        ◌ Compacting context… ${brailleFrame}`
+    : `        ✓ Context compacted${countSuffix}${metadata ? ` · ${metadata}` : ""}`;
   return [{
     id: block.id,
     tone: "work",
@@ -962,6 +973,22 @@ function compactionRows(block: Extract<AggregatedBlock, { kind: "compaction" }>,
     bold: block.live,
     rail: null,
   }];
+}
+
+function formatCompactTokenCount(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}k`;
+  return value.toLocaleString();
+}
+
+function formatCompactDuration(durationMs: number): string {
+  if (durationMs < 1000) return `${Math.max(1, Math.round(durationMs))}ms`;
+  const seconds = durationMs / 1000;
+  if (seconds < 60) return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = Math.round(seconds - minutes * 60);
+  return rem ? `${minutes}m ${rem}s` : `${minutes}m`;
 }
 
 function queuedSteerRows(block: Extract<AggregatedBlock, { kind: "queued-steer" }>, width: number): RenderedChatRow[] {

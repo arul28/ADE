@@ -1695,8 +1695,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["tokens", turnId, itemId ?? "", workUsageSummaryMergeKey(usage)].joined(separator: "|")
   case .promptSuggestion(let text, let turnId):
     return ["prompt_suggestion", turnId ?? "", text].joined(separator: "|")
-  case .contextCompact(let summary, let isInProgress, let turnId):
-    return ["context_compact", turnId ?? "", isInProgress ? "started" : "completed", summary].joined(separator: "|")
+  case .contextCompact(let summary, let isInProgress, let turnId, let compactionId):
+    return ["context_compact", compactionId ?? turnId ?? "", isInProgress ? "started" : "completed", summary].joined(separator: "|")
   case .autoApprovalReview(let summary, let turnId):
     return ["auto_approval_review", turnId ?? "", summary].joined(separator: "|")
   case .webSearch(let query, let action, let actions, let status, let itemId, let turnId):

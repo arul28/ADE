@@ -59,7 +59,7 @@ export type AggregatedBlock =
   | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
-  | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number }
+  | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
   | { kind: "approval"; id: string; line: RenderedChatLine }
@@ -822,6 +822,9 @@ export function aggregateChatBlocks(args: {
         existing.live = false;
         existing.trigger = event.trigger;
         if (event.preTokens !== undefined) existing.preTokens = event.preTokens;
+        if (event.postTokens !== undefined) existing.postTokens = event.postTokens;
+        if (event.durationMs !== undefined) existing.durationMs = event.durationMs;
+        if (event.sessionCompactionCount !== undefined) existing.sessionCompactionCount = event.sessionCompactionCount;
         continue;
       }
       blocks.push({
@@ -831,6 +834,9 @@ export function aggregateChatBlocks(args: {
         trigger: event.trigger,
         live: event.state === "started",
         preTokens: event.preTokens,
+        postTokens: event.postTokens,
+        durationMs: event.durationMs,
+        sessionCompactionCount: event.sessionCompactionCount,
       });
       continue;
     }

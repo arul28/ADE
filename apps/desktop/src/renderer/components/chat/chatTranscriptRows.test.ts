@@ -1451,4 +1451,84 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.text).toBe("Replacement answer");
     expect(rows[0]!.event.messageId).toBe("msg-new");
   });
+
+  it("collapses started and completed context_compact events into one divider row", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        event: {
+          type: "context_compact",
+          trigger: "auto",
+          state: "started",
+          turnId: "turn-1",
+          provider: "claude",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        event: {
+          type: "context_compact",
+          trigger: "auto",
+          state: "completed",
+          turnId: "turn-1",
+          preTokens: 120_000,
+          postTokens: 40_000,
+          durationMs: 2_000,
+          provider: "claude",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "context_compact",
+      state: "completed",
+      preTokens: 120_000,
+      postTokens: 40_000,
+      durationMs: 2_000,
+    });
+  });
+
+  it("merges cross-turn context_compact completion into the started divider row", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        event: {
+          type: "context_compact",
+          trigger: "auto",
+          state: "started",
+          turnId: "turn-1",
+          compactionId: "item-1",
+          provider: "codex",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        event: {
+          type: "context_compact",
+          trigger: "auto",
+          state: "completed",
+          turnId: "turn-2",
+          compactionId: "item-1",
+          preTokens: 120_000,
+          postTokens: 40_000,
+          provider: "codex",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "context_compact",
+      state: "completed",
+      turnId: "turn-2",
+      compactionId: "item-1",
+      preTokens: 120_000,
+      postTokens: 40_000,
+    });
+  });
 });

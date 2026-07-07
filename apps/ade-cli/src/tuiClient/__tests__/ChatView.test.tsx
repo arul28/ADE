@@ -197,7 +197,7 @@ describe("ChatView", () => {
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {
     const frame = renderEvents([]);
     // Hero card uses a bordered box
-    expect(frame).toMatch(/[╭╮╯╰┌┐└┘]/);
+    expect(frame).toMatch(/[╭╮╯╰┌┝└┘]/);
     expect(frame).toContain("AGENTIC DEVELOPMENT ENVIRONMENT");
     expect(frame).toContain("project");
     expect(frame).toContain("lane");
@@ -374,8 +374,7 @@ describe("ChatView", () => {
       },
     ], { width: 80 });
 
-    expect(frame).toContain("compacting context");
-    expect(frame).toContain("auto");
+    expect(frame.toLowerCase()).toContain("compacting context");
     expect(frame).not.toContain("model working");
     expect(frame).not.toContain("waiting for runtime events");
   });
@@ -390,7 +389,7 @@ describe("ChatView", () => {
       },
     ], { width: 80 });
 
-    expect(frame).toContain("compacting context");
+    expect(frame.toLowerCase()).toContain("compacting context");
     expect(frame).not.toContain("model working");
   });
 
@@ -1080,7 +1079,7 @@ describe("ChatView", () => {
     const frame = renderEvents([
       { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "text", text } },
     ], { width: 80 });
-    expect(frame).toMatch(/┌.*┬.*┐/);
+    expect(frame).toMatch(/┌.*┬.*┝/);
     expect(frame).toMatch(/└.*┴.*┘/);
     expect(frame).toMatch(/│/);
     expect(frame).toContain("tool");

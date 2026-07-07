@@ -1,4 +1,5 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
+import { detectCompactionSignalText } from "../../../shared/contextCompaction";
 import { isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
@@ -105,7 +106,41 @@ export type CursorSdkEventMapperMeta = {
   taskStatusMap: Map<string, string>;
   runtime?: AgentChatRuntime;
   runId?: string;
+  compactionActive?: boolean;
 };
+
+function compactionEventsFromSignal(
+  meta: CursorSdkEventMapperMeta,
+  signal: string | null,
+  turnId: string,
+): AgentChatEvent[] {
+  if (!signal) return [];
+  const compacting = detectCompactionSignalText(signal);
+  if (!compacting && !meta.compactionActive) return [];
+  if (compacting && !meta.compactionActive) {
+    meta.compactionActive = true;
+    return [{
+      type: "context_compact",
+      trigger: "auto",
+      state: "started",
+      turnId,
+      compactionId: turnId,
+      provider: "cursor",
+    }];
+  }
+  if (!compacting && meta.compactionActive) {
+    meta.compactionActive = false;
+    return [{
+      type: "context_compact",
+      trigger: "auto",
+      state: "completed",
+      turnId,
+      compactionId: turnId,
+      provider: "cursor",
+    }];
+  }
+  return [];
+}
 
 function tagRuntime<T>(event: T, runtime?: AgentChatRuntime): T {
   if (!runtime || runtime === "local") return event;
@@ -277,6 +312,8 @@ export function mapCursorSdkMessageToChatEvents(
     case "status": {
       const statusText = readString(record.status);
       const detail = readStatusDetail(record);
+      const compactionSignal = [statusText, detail].filter(Boolean).join(" · ");
+      const compactionEvents = compactionEventsFromSignal(meta, compactionSignal, turnId);
       if (runtime === "cloud") {
         const cloudStatus = normalizeCloudStatus(statusText);
         if (!cloudStatus) {
@@ -302,23 +339,29 @@ export function mapCursorSdkMessageToChatEvents(
           ...(gitBranch ? { gitBranch } : {}),
           ...(prUrl ? { prUrl } : {}),
         };
-        return [cloudEvent];
+        return [...compactionEvents, cloudEvent];
       }
       if (statusText === "RUNNING") {
-        return [tagRuntime({
+        return [
+          ...compactionEvents,
+          tagRuntime({
           type: "activity" as const,
           activity: "working" as const,
           detail: detail ?? CURSOR_WORKING_ACTIVITY_DETAIL,
           turnId,
-        }, runtime)];
+        }, runtime),
+        ];
       }
       if (statusText === "CREATING") {
-        return [tagRuntime({
+        return [
+          ...compactionEvents,
+          tagRuntime({
           type: "activity" as const,
           activity: "working" as const,
           detail: detail ?? CURSOR_WORKING_ACTIVITY_DETAIL,
           turnId,
-        }, runtime)];
+        }, runtime),
+        ];
       }
       if (statusText === "ERROR") {
         // The streamed ERROR status carries no reason; the worker injects the
@@ -328,14 +371,16 @@ export function mapCursorSdkMessageToChatEvents(
           ? `Cursor run failed: ${errorCode}`
           : detail ?? "Cursor SDK run failed.";
         const transport = isCursorSdkTransportErrorText(errorCode ?? detail);
-        return [{
+        return [
+          ...compactionEvents,
+          {
           type: "error" as const,
           message,
           turnId,
           ...(transport ? { errorInfo: { category: "network" as const } } : {}),
         }];
       }
-      return [];
+      return compactionEvents;
     }
     case "request": {
       const requestId = readString(record.request_id) ?? `cursor-sdk-request-${Date.now()}`;

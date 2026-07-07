@@ -13935,13 +13935,13 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-06-15T00:00:01.000Z",
         sequence: 1,
-        event: .contextCompact(summary: "Manual", isInProgress: true, turnId: "turn-compact")
+        event: .contextCompact(summary: "Manual", isInProgress: true, turnId: "turn-compact", compactionId: "turn-compact")
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
         timestamp: "2026-06-15T00:00:02.000Z",
         sequence: 2,
-        event: .contextCompact(summary: "Manual\nPre-compact tokens: 12000", isInProgress: false, turnId: "turn-compact")
+        event: .contextCompact(summary: "Manual\nPre-compact tokens: 12000", isInProgress: false, turnId: "turn-compact", compactionId: "turn-compact")
       ),
     ]
 
@@ -13952,6 +13952,77 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.title, "Context compacted")
     XCTAssertEqual(cards.first?.body, "Manual\nPre-compact tokens: 12000")
     XCTAssertEqual(cards.first?.isInProgress, false)
+  }
+
+  func testWorkContextCompactLifecycleMergesCrossTurnCompletionByCompactionId() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:01.000Z",
+        sequence: 1,
+        event: .contextCompact(summary: "Auto", isInProgress: true, turnId: "turn-1", compactionId: "item-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:02.000Z",
+        sequence: 2,
+        event: .contextCompact(
+          summary: "Auto\nprovider:codex\n142k → 38k\nduration:12000ms",
+          isInProgress: false,
+          turnId: "turn-2",
+          compactionId: "item-1"
+        )
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "contextCompact" }
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.id, "context-compact:chat-1:compaction:item-1")
+    XCTAssertEqual(cards.first?.title, "Context compacted")
+    XCTAssertEqual(cards.first?.isInProgress, false)
+  }
+
+  func testAgentChatEventContextCompactDecodesEnrichedLiveSyncFields() throws {
+    let json = """
+    {
+      "type": "context_compact",
+      "trigger": "auto",
+      "state": "completed",
+      "turnId": "turn-2",
+      "compactionId": "item-1",
+      "preTokens": 142000,
+      "postTokens": 38000,
+      "durationMs": 12000,
+      "provider": "codex",
+      "sessionCompactionCount": 2
+    }
+    """
+    let event = try JSONDecoder().decode(AgentChatEvent.self, from: Data(json.utf8))
+    guard case let .contextCompact(trigger, preTokens, postTokens, durationMs, provider, sessionCompactionCount, compactionId, state, turnId) = event else {
+      return XCTFail("Expected contextCompact event")
+    }
+    XCTAssertEqual(trigger, .auto)
+    XCTAssertEqual(preTokens, 142_000)
+    XCTAssertEqual(postTokens, 38_000)
+    XCTAssertEqual(durationMs, 12_000)
+    XCTAssertEqual(provider, "codex")
+    XCTAssertEqual(sessionCompactionCount, 2)
+    XCTAssertEqual(compactionId, "item-1")
+    XCTAssertEqual(state, .completed)
+    XCTAssertEqual(turnId, "turn-2")
+
+    let mapped = makeWorkChatEvent(from: event)
+    guard case let .contextCompact(summary, isInProgress, mappedTurnId, mappedCompactionId) = mapped else {
+      return XCTFail("Expected mapped contextCompact event")
+    }
+    XCTAssertFalse(isInProgress)
+    XCTAssertEqual(mappedTurnId, "turn-2")
+    XCTAssertEqual(mappedCompactionId, "item-1")
+    XCTAssertTrue(summary.contains("provider:codex"))
+    XCTAssertTrue(summary.contains("142k → 38k"))
+    XCTAssertTrue(summary.contains("duration:12000ms"))
+    XCTAssertTrue(summary.contains("sessionCount:2"))
   }
 
   // MARK: - Timeline dedup + ask_user regression tests
