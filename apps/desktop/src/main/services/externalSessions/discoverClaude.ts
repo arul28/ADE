@@ -4,6 +4,7 @@ import {
   cleanSessionTitle,
   countJsonlLinesCheap,
   firstUserTextFromRecords,
+  cwdIsInScope,
   isUuidLike,
   normalizeExternalSessionLimit,
   previewFromRecords,
@@ -12,6 +13,7 @@ import {
   resolveHomeDir,
   safeReadDir,
   sessionFileCandidate,
+  slugMatchesScopeRoots,
   sortFileCandidatesByMtime,
   sortDiscoveryRecords,
   asEpochMs,
@@ -61,6 +63,7 @@ export async function discoverClaudeSessions(
 
   for (const projectEntry of safeReadDir(projectsDir)) {
     if (!projectEntry.isDirectory()) continue;
+    if (!slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, claudeProjectSlugForCwd)) continue;
     const projectDir = path.join(projectsDir, projectEntry.name);
     for (const entry of safeReadDir(projectDir)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
@@ -84,6 +87,7 @@ export async function discoverClaudeSessions(
       createdAt = createdAt ?? asEpochMs(record.timestamp);
       if (cwd && createdAt) break;
     }
+    if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const firstUserText = firstUserTextFromRecords(jsonl);
     records.push(recordWithFile({
       provider: "claude",

@@ -168,12 +168,16 @@ function realish(filePath: string): string {
 
 function deriveProjectScopeRoots(projectRoot: string): string[] {
   const roots = new Set<string>();
+  const raw = path.resolve(projectRoot);
   const resolved = realish(projectRoot);
+  roots.add(raw);
   roots.add(resolved);
   const marker = `${path.sep}.ade${path.sep}worktrees${path.sep}`;
-  const markerIdx = resolved.indexOf(marker);
-  if (markerIdx >= 0) {
-    roots.add(resolved.slice(0, markerIdx));
+  for (const root of [raw, resolved]) {
+    const markerIdx = root.indexOf(marker);
+    if (markerIdx >= 0) {
+      roots.add(root.slice(0, markerIdx));
+    }
   }
   return Array.from(roots);
 }
@@ -420,12 +424,15 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const providers = providerSet(rawArgs.providers);
     const requestedLaneCwd = rawArgs.laneId ? resolveLaneCwd(args.laneService, rawArgs.laneId) : null;
     const requestedCwd = rawArgs.cwd?.trim() ? realish(rawArgs.cwd) : requestedLaneCwd;
+    const scopeRoots = projectScoped ? deriveProjectScopeRoots(args.projectRoot) : [];
     const discoveryArgs: ExternalSessionDiscoveryArgs = {
       homeDir: args.homeDir,
       env: args.env,
       cwd: requestedCwd,
       projectRoot: args.projectRoot,
       limit: discoveryLimit,
+      scopeRoots: projectScoped ? scopeRoots : null,
+      logger: args.logger,
     };
 
     const settled = await Promise.all(providers.map(async (provider) => {
@@ -440,7 +447,6 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
     }));
 
-    const scopeRoots = deriveProjectScopeRoots(args.projectRoot);
     const imported = await importedSessionRefs(args.sessionService, args.chatImportedRefsProvider, args.logger);
     const activeCutoffMs = Date.now() - 2 * 60_000;
     const discovered = sortDiscoveryRecords(settled.flat(), discoveryLimit * providers.length);

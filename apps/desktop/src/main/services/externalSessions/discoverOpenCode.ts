@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import path from "node:path";
+import { promisify } from "node:util";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
   asEpochMs,
@@ -15,6 +16,8 @@ import {
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
 
+const execFileAsync = promisify(execFile);
+
 export async function discoverOpenCodeSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
@@ -25,15 +28,24 @@ export async function discoverOpenCodeSessions(
   const env: NodeJS.ProcessEnv = { ...process.env, ...(args.env ?? {}), NO_COLOR: "1" };
   delete env.FORCE_COLOR;
 
-  const result = spawnSync(executable, ["session", "list", "--format", "json", "--max-count", String(limit)], {
-    cwd: path.resolve(cwd),
-    encoding: "utf8",
-    timeout: 4000,
-    maxBuffer: 2 * 1024 * 1024,
-    env,
-  });
-  if (result.error || result.status !== 0) return [];
-  const stdout = String(result.stdout ?? "");
+  let stdout: string;
+  try {
+    const result = await execFileAsync(
+      executable,
+      ["session", "list", "--format", "json", "--max-count", String(limit)],
+      {
+        cwd: path.resolve(cwd),
+        encoding: "utf8",
+        timeout: 4000,
+        killSignal: "SIGTERM",
+        maxBuffer: 2 * 1024 * 1024,
+        env,
+      },
+    );
+    stdout = String(result.stdout ?? "");
+  } catch {
+    return [];
+  }
   const jsonStart = stdout.indexOf("[");
   if (jsonStart < 0) return [];
 

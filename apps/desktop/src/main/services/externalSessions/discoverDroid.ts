@@ -5,6 +5,7 @@ import {
   asString,
   cleanSessionTitle,
   countJsonlLinesCheap,
+  cwdIsInScope,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
   previewFromRecords,
@@ -13,6 +14,8 @@ import {
   resolveHomeDir,
   safeReadDir,
   sessionFileCandidate,
+  slashEscapedCwd,
+  slugMatchesScopeRoots,
   sortFileCandidatesByMtime,
   sortDiscoveryRecords,
   type ExternalSessionDiscoveryArgs,
@@ -29,6 +32,12 @@ export async function discoverDroidSessions(
 
   for (const projectEntry of safeReadDir(sessionsDir)) {
     if (!projectEntry.isDirectory()) continue;
+    if (
+      projectEntry.name.startsWith("-")
+      && !slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, slashEscapedCwd)
+    ) {
+      continue;
+    }
     const projectDir = path.join(sessionsDir, projectEntry.name);
     for (const entry of safeReadDir(projectDir)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
@@ -45,11 +54,13 @@ export async function discoverDroidSessions(
     if (!first || asString(first.type) !== "session_start") continue;
     const id = asString(first.id) ?? path.basename(candidate.filePath, ".jsonl");
     if (!id) continue;
+    const cwd = asString(first.cwd);
+    if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const firstUserText = firstUserTextFromRecords(jsonl);
     records.push(recordWithFile({
       provider: "droid",
       id,
-      cwd: asString(first.cwd),
+      cwd,
       title: cleanSessionTitle(asString(first.title)) ?? cleanSessionTitle(asString(first.sessionTitle)),
       preview: firstUserText ?? previewFromRecords(jsonl),
       createdAt: asEpochMs(first.timestamp),

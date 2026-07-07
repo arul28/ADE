@@ -6,9 +6,11 @@ import {
   asString,
   cleanSessionTitle,
   countJsonlLinesCheap,
+  cwdIsInScope,
   firstUserTextFromRecords,
   normalizeExternalSessionLimit,
   previewFromRecords,
+  readFilePrefix,
   readFileSuffix,
   readJsonlRecords,
   recordWithFile,
@@ -28,6 +30,19 @@ type CodexIndexEntry = {
   title: string | null;
   updatedAt: number | null;
 };
+
+type CodexSessionMeta = {
+  id: string;
+  cwd: string | null;
+  createdAt: number | null;
+  title: string | null;
+  first: Record<string, unknown>;
+  payload: Record<string, unknown>;
+};
+
+type CodexSessionCandidate = ExternalSessionFileCandidate<{ meta?: CodexSessionMeta | null }>;
+
+const CODEX_PROJECT_SCOPE_SCAN_CEILING = 2000;
 
 function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
   const map = new Map<string, CodexIndexEntry>();
@@ -50,6 +65,34 @@ function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
   return map;
 }
 
+function titleFromCodexPayload(payload: Record<string, unknown>, indexed: CodexIndexEntry | undefined): string | null {
+  return cleanSessionTitle(asString(payload.thread_name))
+    ?? cleanSessionTitle(asString(payload.threadName))
+    ?? cleanSessionTitle(asString(payload.name))
+    ?? indexed?.title
+    ?? null;
+}
+
+function readCodexSessionMeta(filePath: string): CodexSessionMeta | null {
+  const text = readFilePrefix(filePath, 64 * 1024);
+  const line = text?.split(/\r?\n/u).find((entry) => entry.trim().length > 0);
+  if (!line) return null;
+  const first = asRecord(safeParseJson(line));
+  const payload = asRecord(first?.payload);
+  const type = asString(first?.type);
+  if (type !== "session_meta" || !payload || !first) return null;
+  const id = asString(payload.id) ?? asString(payload.session_id) ?? asString(payload.sessionId);
+  if (!id) return null;
+  return {
+    id,
+    cwd: asString(payload.cwd),
+    createdAt: asEpochMs(payload.timestamp) ?? asEpochMs(first.timestamp),
+    title: titleFromCodexPayload(payload, undefined),
+    first,
+    payload,
+  };
+}
+
 function sortedChildDirs(dir: string, pattern: RegExp): string[] {
   return safeReadDir(dir)
     .filter((entry) => entry.isDirectory() && pattern.test(entry.name))
@@ -57,8 +100,8 @@ function sortedChildDirs(dir: string, pattern: RegExp): string[] {
     .sort((left, right) => right.localeCompare(left));
 }
 
-function collectRecentCodexSessionCandidates(root: string, limit: number): ExternalSessionFileCandidate[] {
-  const candidates: ExternalSessionFileCandidate[] = [];
+function collectRecentCodexSessionCandidates(root: string, limit: number): CodexSessionCandidate[] {
+  const candidates: CodexSessionCandidate[] = [];
   const years = sortedChildDirs(root, /^\d{4}$/u);
   for (const year of years) {
     const yearDir = path.join(root, year);
@@ -80,6 +123,57 @@ function collectRecentCodexSessionCandidates(root: string, limit: number): Exter
   return sortFileCandidatesByMtime(candidates, limit);
 }
 
+function collectProjectScopedCodexSessionCandidates(
+  root: string,
+  limit: number,
+  scopeRoots: string[],
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): CodexSessionCandidate[] {
+  const candidates: CodexSessionCandidate[] = [];
+  let scanned = 0;
+  let ceilingHit = false;
+  const finish = (): CodexSessionCandidate[] => {
+    if (ceilingHit && candidates.length < limit) {
+      logger?.warn?.("external_sessions.codex_project_scope_scan_truncated", {
+        ceiling: CODEX_PROJECT_SCOPE_SCAN_CEILING,
+        scanned,
+        matched: candidates.length,
+        limit,
+      });
+    }
+    return sortFileCandidatesByMtime(candidates, limit);
+  };
+
+  const years = sortedChildDirs(root, /^\d{4}$/u);
+  for (const year of years) {
+    const yearDir = path.join(root, year);
+    for (const month of sortedChildDirs(yearDir, /^\d{2}$/u)) {
+      const monthDir = path.join(yearDir, month);
+      for (const day of sortedChildDirs(monthDir, /^\d{2}$/u)) {
+        const dayDir = path.join(monthDir, day);
+        for (const entry of safeReadDir(dayDir)) {
+          if (!entry.isFile() || (!entry.name.endsWith(".jsonl") && !entry.name.endsWith(".jsonl.zst"))) {
+            continue;
+          }
+          const candidate = sessionFileCandidate(path.join(dayDir, entry.name), {});
+          if (!candidate) continue;
+          if (scanned >= CODEX_PROJECT_SCOPE_SCAN_CEILING) {
+            ceilingHit = true;
+            return finish();
+          }
+          scanned += 1;
+          if (candidate.filePath.endsWith(".jsonl.zst")) continue;
+          const meta = readCodexSessionMeta(candidate.filePath);
+          if (!cwdIsInScope(meta?.cwd, scopeRoots)) continue;
+          candidates.push({ ...candidate, meta });
+          if (candidates.length >= limit) return finish();
+        }
+      }
+    }
+  }
+  return finish();
+}
+
 function idFromCodexFilename(filePath: string): string | null {
   const base = path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/u, "");
   const match = base.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu);
@@ -96,7 +190,11 @@ export async function discoverCodexSessions(
   const recordsById = new Map<string, ExternalSessionDiscoveryRecord>();
   if (!fs.existsSync(sessionsDir)) return [];
 
-  for (const candidate of collectRecentCodexSessionCandidates(sessionsDir, limit)) {
+  const candidates = args.scopeRoots?.length
+    ? collectProjectScopedCodexSessionCandidates(sessionsDir, limit, args.scopeRoots, args.logger)
+    : collectRecentCodexSessionCandidates(sessionsDir, limit);
+
+  for (const candidate of candidates) {
     const filePath = candidate.filePath;
     const compressed = filePath.endsWith(".jsonl.zst");
     if (compressed) {
@@ -117,26 +215,22 @@ export async function discoverCodexSessions(
     }
 
     const jsonl = readJsonlRecords(filePath);
-    const first = asRecord(jsonl[0]);
-    const payload = asRecord(first?.payload);
+    const first = candidate.meta?.first ?? asRecord(jsonl[0]);
+    const payload = candidate.meta?.payload ?? asRecord(first?.payload);
     const type = asString(first?.type);
     if (type !== "session_meta" || !payload) continue;
-    const id = asString(payload.id) ?? asString(payload.session_id) ?? asString(payload.sessionId);
+    const id = candidate.meta?.id ?? asString(payload.id) ?? asString(payload.session_id) ?? asString(payload.sessionId);
     if (!id || recordsById.has(id)) continue;
     const indexed = index.get(id);
     const firstUserText = firstUserTextFromRecords(jsonl);
-    const title = cleanSessionTitle(asString(payload.thread_name))
-      ?? cleanSessionTitle(asString(payload.threadName))
-      ?? cleanSessionTitle(asString(payload.name))
-      ?? indexed?.title
-      ?? null;
+    const title = candidate.meta?.title ?? titleFromCodexPayload(payload, indexed);
     recordsById.set(id, recordWithFile({
       provider: "codex",
       id,
-      cwd: asString(payload.cwd),
+      cwd: candidate.meta?.cwd ?? asString(payload.cwd),
       title,
       preview: firstUserText ?? previewFromRecords(jsonl),
-      createdAt: asEpochMs(payload.timestamp) ?? asEpochMs(first?.timestamp),
+      createdAt: candidate.meta?.createdAt ?? asEpochMs(payload.timestamp) ?? asEpochMs(first?.timestamp),
       updatedAt: indexed?.updatedAt ?? candidate.mtimeMs,
       messageCount: countJsonlLinesCheap(filePath),
       filePath,

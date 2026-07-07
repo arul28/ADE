@@ -184,7 +184,7 @@ describe("externalSessionsService", () => {
     });
   });
 
-  it("fills project-scoped results from in-project sessions after recent out-of-project sessions", async () => {
+  it("fills project-scoped Claude results from in-project sessions beyond the old global cap", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");
     const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
@@ -207,7 +207,7 @@ describe("externalSessionsService", () => {
       fs.utimesSync(filePath, mtime, mtime);
     };
 
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 225; index += 1) {
       writeSession(
         otherCwd,
         `10000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
@@ -240,6 +240,70 @@ describe("externalSessionsService", () => {
     });
 
     const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(sessions.map((session) => session.id)).toEqual(projectIds.slice().reverse());
+    expect(sessions.every((session) => session.cwd === laneCwd)).toBe(true);
+  });
+
+  it("fills project-scoped Codex results by filtering session metadata before the old global cap", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    const otherCwd = path.join(root, "other-repo");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    fs.mkdirSync(otherCwd, { recursive: true });
+
+    const writeCodexSession = (cwd: string, id: string, prompt: string, mtime: Date) => {
+      const stamp = mtime.toISOString().replace(/[:.]/gu, "-");
+      const filePath = path.join(homeDir, ".codex", "sessions", "2026", "07", "07", `rollout-${stamp}-${id}.jsonl`);
+      writeJsonl(filePath, [
+        {
+          timestamp: mtime.toISOString(),
+          type: "session_meta",
+          payload: { id, session_id: id, cwd, timestamp: mtime.toISOString() },
+        },
+        {
+          timestamp: mtime.toISOString(),
+          type: "event_msg",
+          payload: { type: "message", role: "user", message: { content: prompt } },
+        },
+      ]);
+      fs.utimesSync(filePath, mtime, mtime);
+    };
+
+    for (let index = 0; index < 225; index += 1) {
+      writeCodexSession(
+        otherCwd,
+        `30000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        `outside codex ${index}`,
+        new Date(Date.UTC(2026, 6, 7, 12, 0, index)),
+      );
+    }
+    const projectIds = [
+      "40000000-0000-4000-8000-000000000001",
+      "40000000-0000-4000-8000-000000000002",
+      "40000000-0000-4000-8000-000000000003",
+    ];
+    projectIds.forEach((id, index) => {
+      writeCodexSession(
+        laneCwd,
+        id,
+        `inside codex ${index}`,
+        new Date(Date.UTC(2026, 6, 7, 11, 0, index)),
+      );
+    });
+
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const sessions = await service.list({ providers: ["codex"], laneId: "lane-1", scope: "project", limit: 5 });
 
     expect(sessions.map((session) => session.id)).toEqual(projectIds.slice().reverse());
     expect(sessions.every((session) => session.cwd === laneCwd)).toBe(true);

@@ -20,6 +20,11 @@ export type ExternalSessionDiscoveryArgs = {
   cwd?: string | null;
   projectRoot?: string | null;
   limit?: number | null;
+  scopeRoots?: string[] | null;
+  logger?: {
+    warn?: (message: string, fields?: Record<string, unknown>) => void;
+    info?: (message: string, fields?: Record<string, unknown>) => void;
+  } | null;
 };
 
 export type ExternalSessionFileCandidate<T extends Record<string, unknown> = Record<string, unknown>> = T & {
@@ -470,4 +475,63 @@ export function resolveCursorCwdFromSlug(slug: string): string | null {
 export function isPathInside(parent: string, candidate: string): boolean {
   const relative = path.relative(parent, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+export function realishPath(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+export function normalizeScopeRoots(scopeRoots: readonly string[] | null | undefined): string[] {
+  const roots = new Set<string>();
+  for (const root of scopeRoots ?? []) {
+    const clean = root.trim();
+    if (clean) roots.add(realishPath(clean));
+  }
+  return Array.from(roots);
+}
+
+function scopeRootPathVariants(scopeRoots: readonly string[] | null | undefined): string[] {
+  const roots = new Set<string>();
+  for (const root of scopeRoots ?? []) {
+    const clean = root.trim();
+    if (!clean) continue;
+    roots.add(path.resolve(clean));
+    roots.add(realishPath(clean));
+  }
+  return Array.from(roots);
+}
+
+export function cwdIsInScope(cwd: string | null | undefined, scopeRoots: readonly string[] | null | undefined): boolean {
+  const roots = normalizeScopeRoots(scopeRoots);
+  if (!roots.length) return true;
+  const clean = cwd?.trim();
+  if (!clean) return false;
+  const resolved = realishPath(clean);
+  return roots.some((root) => isPathInside(root, resolved));
+}
+
+export function cwdCandidatesIncludeScope(
+  candidates: string[],
+  scopeRoots: readonly string[] | null | undefined,
+): boolean {
+  const roots = normalizeScopeRoots(scopeRoots);
+  if (!roots.length) return true;
+  return candidates.some((candidate) => cwdIsInScope(candidate, roots));
+}
+
+export function slugMatchesScopeRoots(
+  slug: string,
+  scopeRoots: readonly string[] | null | undefined,
+  slugForCwd: (cwd: string) => string,
+): boolean {
+  const roots = scopeRootPathVariants(scopeRoots);
+  if (!roots.length) return true;
+  return roots.some((root) => {
+    const rootSlug = slugForCwd(root);
+    return slug === rootSlug || slug.startsWith(`${rootSlug}-`);
+  });
 }
