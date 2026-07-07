@@ -47,6 +47,7 @@ final class DatabaseService {
 
   private struct LaneRow {
     let id: String
+    let projectId: String?
     let name: String
     let description: String?
     let laneType: String
@@ -469,7 +470,8 @@ final class DatabaseService {
              ps.ahead,
              ps.behind,
              ps.remote_behind,
-             ps.rebase_in_progress
+             ps.rebase_in_progress,
+             l.project_id
         from lanes l
         left join lane_state_snapshots s on s.lane_id = l.id
         left join lane_state_snapshots ps on ps.lane_id = l.parent_lane_id
@@ -486,6 +488,7 @@ final class DatabaseService {
     }) { statement in
       LaneRow(
         id: stringValue(statement, index: 0) ?? "",
+        projectId: stringValue(statement, index: 26),
         name: stringValue(statement, index: 1) ?? "",
         description: stringValue(statement, index: 2),
         laneType: stringValue(statement, index: 3) ?? "worktree",
@@ -545,6 +548,7 @@ final class DatabaseService {
         var visited = Set<String>()
         return LaneSummary(
           id: row.id,
+          projectId: row.projectId,
           name: row.name,
           description: row.description,
           laneType: row.laneType,

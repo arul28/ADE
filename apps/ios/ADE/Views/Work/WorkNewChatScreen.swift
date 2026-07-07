@@ -39,6 +39,45 @@ enum WorkAutoLaneNamingOutcome: Equatable {
   case renameFailed(String)
 }
 
+struct WorkProjectCommandScope: Equatable {
+  let projectId: String?
+  let projectRootPath: String?
+}
+
+private func workNonEmptyScopeValue(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func workPath(_ candidate: String, isEqualToOrInside root: String) -> Bool {
+  candidate == root || candidate.hasPrefix(root + "/")
+}
+
+func workShellProjectScope(
+  for lane: LaneSummary,
+  projects: [MobileProjectSummary],
+  fallbackProjectId: String?,
+  fallbackProjectRootPath: String?
+) -> WorkProjectCommandScope {
+  let laneProjectId = workNonEmptyScopeValue(lane.projectId)
+  let projectById = laneProjectId.flatMap { id in projects.first { $0.id == id } }
+  let laneRoots = [lane.attachedRootPath, lane.worktreePath]
+    .compactMap(syncNormalizedProjectRootScope)
+
+  let projectByLanePath = projects.first { project in
+    guard let root = syncNormalizedProjectRootScope(project.rootPath) else { return false }
+    return laneRoots.contains { workPath($0, isEqualToOrInside: root) }
+  }
+
+  let project = projectById ?? projectByLanePath
+  let projectId = project?.id ?? laneProjectId ?? workNonEmptyScopeValue(fallbackProjectId)
+  let shouldUseFallbackRoot = laneProjectId == nil && project == nil
+  let rootPath = syncNormalizedProjectRootScope(project?.rootPath)
+    ?? (shouldUseFallbackRoot ? syncNormalizedProjectRootScope(fallbackProjectRootPath) : nil)
+
+  return WorkProjectCommandScope(projectId: projectId, projectRootPath: rootPath)
+}
+
 @discardableResult
 @MainActor
 func workRunAutoLaneAiRename(
@@ -895,10 +934,16 @@ struct WorkNewChatScreen: View {
     defer { shellLaunchBusy = false }
 
     do {
+      let scope = workShellProjectScope(
+        for: lane,
+        projects: syncService.projects,
+        fallbackProjectId: activeProjectId,
+        fallbackProjectRootPath: activeProjectRootPath
+      )
       let result = try await syncService.startShellSession(
         laneId: lane.id,
-        targetProjectId: activeProjectId,
-        targetProjectRootPath: activeProjectRootPath
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.projectRootPath
       )
       if let session = result.session {
         await onCliStarted(session)

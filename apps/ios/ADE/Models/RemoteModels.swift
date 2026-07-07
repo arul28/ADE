@@ -397,6 +397,7 @@ enum LaneIcon: String, Codable, Equatable {
 
 struct LaneSummary: Codable, Identifiable, Equatable {
   var id: String
+  var projectId: String? = nil
   var name: String
   var description: String?
   var laneType: String

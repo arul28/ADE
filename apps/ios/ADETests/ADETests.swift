@@ -517,6 +517,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(request.targetProjectRootPath, "/tmp/project-one")
   }
 
+  func testWorkShellProjectScopePrefersSelectedLaneProject() {
+    var lane = makeLaneSummary(id: "lane-work", name: "Work", laneType: "worktree", branchRef: "ade/work")
+    lane.projectId = "project-lane"
+    lane.worktreePath = "/tmp/project-lane/.ade/worktrees/lane-work"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-active",
+          displayName: "Active",
+          rootPath: "/tmp/project-active",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+        MobileProjectSummary(
+          id: "project-lane",
+          displayName: "Lane",
+          rootPath: "/tmp/project-lane",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ],
+      fallbackProjectId: "project-active",
+      fallbackProjectRootPath: "/tmp/project-active"
+    )
+
+    XCTAssertEqual(scope.projectId, "project-lane")
+    XCTAssertEqual(scope.projectRootPath, "/tmp/project-lane")
+  }
+
+  func testWorkShellProjectScopeDoesNotMixForeignLaneIdWithActiveRoot() {
+    var lane = makeLaneSummary(id: "lane-foreign", name: "Foreign", laneType: "worktree", branchRef: "ade/foreign")
+    lane.projectId = "project-foreign"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [],
+      fallbackProjectId: "project-active",
+      fallbackProjectRootPath: "/tmp/project-active"
+    )
+
+    XCTAssertEqual(scope.projectId, "project-foreign")
+    XCTAssertNil(scope.projectRootPath)
+  }
+
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
     XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
