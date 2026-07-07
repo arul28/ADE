@@ -2837,12 +2837,14 @@ describe("adeRpcServer", () => {
       { provider: "claude", id: "other-lane-session", cwd: lane2Cwd, title: "Other lane", preview: "other" },
       { provider: "claude", id: "outside-session", cwd: outsideCwd, title: "Outside", preview: "outside" },
     ]);
-    const importExternalSession = vi.fn(async (args: { laneId: string }) => ({
-      kind: "cli",
-      sessionId: "terminal-import",
-      ptyId: "pty-import",
-      laneId: args.laneId,
-    }));
+    const importExternalSession = vi.fn(async (args: { laneId: string; target?: string }) => args.target === "chat"
+      ? { kind: "chat", chatSessionId: "chat-import", laneId: args.laneId }
+      : {
+          kind: "cli",
+          sessionId: "terminal-import",
+          ptyId: "pty-import",
+          laneId: args.laneId,
+        });
     (fixture.runtime as any).externalSessionsService = { list, importExternalSession };
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
@@ -2877,6 +2879,42 @@ describe("adeRpcServer", () => {
     expect(deniedOutsideImport.isError).toBe(true);
     expect(importExternalSession).not.toHaveBeenCalled();
 
+    const deniedOutsideChatImport = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "claude",
+        sessionId: "outside-session",
+        laneId: "lane-1",
+        target: "chat",
+        mode: "resume",
+      },
+    });
+    expect(deniedOutsideChatImport.isError).toBe(true);
+    expect(deniedOutsideChatImport.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
+    expect(importExternalSession).not.toHaveBeenCalled();
+
+    const importedOwnChat = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "claude",
+        sessionId: "own-session",
+        laneId: "lane-1",
+        target: "chat",
+        mode: "resume",
+      },
+    });
+    expect(importedOwnChat?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenCalledWith({
+      provider: "claude",
+      sessionId: "own-session",
+      laneId: "lane-1",
+      target: "chat",
+      mode: "resume",
+      enforceLaneScopeCwd: lane1Cwd,
+    });
+
     const deniedOtherLaneImport = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
       action: "import",
@@ -2889,7 +2927,7 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOtherLaneImport.isError).toBe(true);
-    expect(importExternalSession).not.toHaveBeenCalled();
+    expect(importExternalSession).toHaveBeenCalledTimes(1);
   });
 
   it("allows CTO callers to use unscoped external-sessions ADE actions", async () => {
@@ -2935,6 +2973,26 @@ describe("adeRpcServer", () => {
       sessionId: "outside-session",
       laneId: "lane-2",
       target: "cli",
+      mode: "resume",
+    });
+
+    const importedChat = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: {
+        provider: "claude",
+        sessionId: "outside-session",
+        laneId: "lane-2",
+        target: "chat",
+        mode: "resume",
+      },
+    });
+    expect(importedChat?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenLastCalledWith({
+      provider: "claude",
+      sessionId: "outside-session",
+      laneId: "lane-2",
+      target: "chat",
       mode: "resume",
     });
   });

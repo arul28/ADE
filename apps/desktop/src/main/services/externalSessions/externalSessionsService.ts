@@ -77,6 +77,10 @@ type ExternalSessionsServiceArgs = {
   droidForkSupported?: boolean;
 };
 
+type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
+  enforceLaneScopeCwd?: string | null;
+};
+
 const PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
 const UUIDISH_EXTERNAL_SESSION_ID = /^[0-9a-fA-F-]{8,64}$/u;
 const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
@@ -381,7 +385,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   };
 
   const importExternalSession = async (
-    importArgs: ExternalSessionImportArgs,
+    importArgs: LaneScopedExternalSessionImportArgs,
   ): Promise<ExternalSessionImportResult> => {
     const provider = importArgs.provider;
     if (!PROVIDERS.includes(provider)) throw new Error(`Unsupported external session provider '${provider}'.`);
@@ -392,6 +396,13 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const sourceCwd = summary?.cwd ?? null;
 
     if (importArgs.target === "chat") {
+      const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
+      if (enforceLaneScopeCwd) {
+        const scopeRoot = realish(enforceLaneScopeCwd);
+        if (!sourceCwd || !isPathInside(scopeRoot, realish(sourceCwd))) {
+          throw new Error("External session import is not permitted for this lane.");
+        }
+      }
       if (provider !== "claude" && provider !== "codex") {
         throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
       }

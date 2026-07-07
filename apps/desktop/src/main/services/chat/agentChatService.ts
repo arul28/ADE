@@ -20739,7 +20739,7 @@ export function createAgentChatService(args: {
     let targetTranscriptPath = source.transcriptPath;
     let targetLines = sourceRead.lines;
     let targetTranscriptTruncated = sourceRead.truncated;
-    if (!isSameCwd(sourceCwd, laneWorktreePath)) {
+    if (args.fork || !isSameCwd(sourceCwd, laneWorktreePath)) {
       const { transplantClaudeSession } = await loadClaudeSessionTransplant();
       const transplant = await transplantClaudeSession({
         sessionId: externalSessionId,

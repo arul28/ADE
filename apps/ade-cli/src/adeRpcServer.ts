@@ -2480,16 +2480,20 @@ async function scopeExternalSessionsImportArgs(
   const method = "run_ade_action:external-sessions.import";
   const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, importArgs);
   const scopedArgs: Record<string, unknown> = { ...importArgs, laneId };
+  delete scopedArgs.enforceLaneScopeCwd;
   const provider = asOptionalTrimmedString(scopedArgs.provider);
   const mode = asOptionalTrimmedString(scopedArgs.mode);
   const target = asOptionalTrimmedString(scopedArgs.target);
   const sessionId = asOptionalTrimmedString(scopedArgs.sessionId);
+  if (target === "chat") {
+    scopedArgs.enforceLaneScopeCwd = laneCwd;
+  }
   if (
-    target === "cli"
+    (target === "chat" || target === "cli")
     && isExternalSessionProviderName(provider)
     && mode
     && sessionId
-    && externalSessionImportUsesSourceRunCwd(provider, mode)
+    && (target === "chat" || externalSessionImportUsesSourceRunCwd(provider, mode))
   ) {
     const summary = await findExternalSessionSummaryForAuthorization(
       runtime,

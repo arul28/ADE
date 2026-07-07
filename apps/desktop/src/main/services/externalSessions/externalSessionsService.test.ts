@@ -341,6 +341,62 @@ describe("externalSessionsService", () => {
     })).rejects.toThrow(/chat import unavailable/i);
   });
 
+  it("enforces lane-scoped chat import source cwd before invoking the chat importer", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    const outsideCwd = path.join(root, "outside-project");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    fs.mkdirSync(outsideCwd, { recursive: true });
+    const insideId = "11111111-1111-4111-8111-111111111111";
+    const outsideId = "22222222-2222-4222-8222-222222222222";
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(laneCwd), `${insideId}.jsonl`), [
+      { type: "message", sessionId: insideId, cwd: laneCwd, message: { role: "user", content: "inside" } },
+    ]);
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(outsideCwd), `${outsideId}.jsonl`), [
+      { type: "message", sessionId: outsideId, cwd: outsideCwd, message: { role: "user", content: "outside" } },
+    ]);
+    const chatImporter = {
+      importExternalChatSession: vi.fn(async () => ({ chatSessionId: "chat-import" })),
+    };
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+      chatImporter,
+    });
+
+    await expect(service.importExternalSession({
+      provider: "claude",
+      sessionId: outsideId,
+      laneId: "lane-1",
+      target: "chat",
+      mode: "resume",
+      enforceLaneScopeCwd: laneCwd,
+    })).rejects.toThrow(/not permitted/i);
+    expect(chatImporter.importExternalChatSession).not.toHaveBeenCalled();
+
+    await expect(service.importExternalSession({
+      provider: "claude",
+      sessionId: insideId,
+      laneId: "lane-1",
+      target: "chat",
+      mode: "resume",
+      enforceLaneScopeCwd: laneCwd,
+    })).resolves.toEqual({ kind: "chat", chatSessionId: "chat-import", laneId: "lane-1" });
+    expect(chatImporter.importExternalChatSession).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "claude",
+      externalSessionId: insideId,
+      laneId: "lane-1",
+      cwd: laneCwd,
+      fork: false,
+    }));
+  });
+
   it("rejects invalid external session ids before import", async () => {
     const projectRoot = path.join(root, "repo");
     const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");

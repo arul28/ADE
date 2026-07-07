@@ -1863,6 +1863,84 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("forks a same-cwd Claude chat import into a new SDK session id", async () => {
+      const externalSessionId = "12121212-3434-4343-8343-565656565656";
+      const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      const claudeConfigRoot = path.join(tmpHomeRoot, ".claude");
+      process.env.CLAUDE_CONFIG_DIR = claudeConfigRoot;
+      try {
+        const sourcePath = path.join(
+          claudeConfigRoot,
+          "projects",
+          tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+          `${externalSessionId}.jsonl`,
+        );
+        fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+        fs.writeFileSync(
+          sourcePath,
+          [
+            JSON.stringify({
+              type: "user",
+              uuid: "user-1",
+              timestamp: "2026-07-06T10:00:00.000Z",
+              cwd: tmpRoot,
+              sessionId: externalSessionId,
+              message: { role: "user", content: [{ type: "text", text: "Fork this without mutating the source." }] },
+            }),
+          ].join("\n") + "\n",
+          "utf8",
+        );
+        const sourceBefore = fs.readFileSync(sourcePath, "utf8");
+        const readline = await import("node:readline");
+        const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
+          on: vi.fn(),
+          close: vi.fn(),
+          [Symbol.asyncIterator]: () => (async function* () {
+            const chunks: string[] = [];
+            for await (const chunk of options.input) chunks.push(String(chunk));
+            for (const line of chunks.join("").split(/\r?\n/u)) yield line;
+          })(),
+        });
+        vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
+        vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "claude",
+          externalSessionId,
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: true,
+        });
+
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(persisted.sdkSessionId).not.toBe(externalSessionId);
+        expect(persisted.claudeBackgroundResumeSessionId).toBe(persisted.sdkSessionId);
+        expect(fs.readFileSync(sourcePath, "utf8")).toBe(sourceBefore);
+        const projectsDir = path.join(claudeConfigRoot, "projects");
+        const forkedPath = fs.readdirSync(projectsDir)
+          .flatMap((entry) => {
+            const projectDir = path.join(projectsDir, entry);
+            return fs.statSync(projectDir).isDirectory()
+              ? fs.readdirSync(projectDir).map((fileName) => path.join(projectDir, fileName))
+              : [];
+          })
+          .find((candidate) => path.basename(candidate) === `${persisted.sdkSessionId}.jsonl`);
+        expect(forkedPath).toBeTruthy();
+        const forkedRows = fs.readFileSync(forkedPath!, "utf8").trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+        expect(forkedRows[0]).toMatchObject({
+          cwd: tmpRoot,
+          sessionId: persisted.sdkSessionId,
+        });
+      } finally {
+        if (previousClaudeConfigDir === undefined) {
+          delete process.env.CLAUDE_CONFIG_DIR;
+        } else {
+          process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+        }
+      }
+    });
+
     it("preserves the source Claude JSONL when a failed cross-cwd chat import follows transplant", async () => {
       const externalSessionId = "22222222-3333-4333-8333-666666666666";
       const sourceCwd = path.join(tmpHomeRoot, "source-project");
