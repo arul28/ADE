@@ -28906,6 +28906,11 @@ export function createAgentChatService(args: {
         continue;
       }
 
+      const listedAtBefore = await runGit(["ls-tree", "-z", "--name-only", file.beforeSha, "--", file.path], { cwd, timeoutMs: 10_000 });
+      if (listedAtBefore.exitCode !== 0 || listedAtBefore.stdout.length > 0) {
+        continue;
+      }
+
       const absolutePath = path.resolve(cwd, file.path);
       const relativeToCwd = path.relative(cwd, absolutePath);
       if (relativeToCwd.startsWith("..") || path.isAbsolute(relativeToCwd)) continue;

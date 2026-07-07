@@ -3734,6 +3734,74 @@ describe("createAgentChatService", () => {
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
     });
 
+    it("does not delete files during Codex rewind when git cannot prove the path was absent", async () => {
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      mockState.codexResponseOverrides.set("thread/rollback", () => ({
+        thread: { id: "source-thread-1" },
+      }));
+      const changedFile = path.join(tmpRoot, "src", "safe.ts");
+      fs.mkdirSync(path.dirname(changedFile), { recursive: true });
+      fs.writeFileSync(changedFile, "keep me", "utf8");
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      expect(transcriptPath).toBeTruthy();
+      const rewindEnvelopes: AgentChatEventEnvelope[] = [
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:00.000Z",
+          event: {
+            type: "user_message",
+            messageId: "user-1",
+            text: "change safe file",
+            turnId: "turn-1",
+          },
+        } as AgentChatEventEnvelope,
+        {
+          sessionId: source.id,
+          timestamp: "2026-07-07T20:00:01.000Z",
+          event: {
+            type: "turn_diff_summary",
+            turnId: "turn-1",
+            beforeSha: "before-sha",
+            afterSha: "after-sha",
+            files: [{ path: "src/safe.ts", additions: 1, deletions: 0 }],
+            totalAdditions: 1,
+            totalDeletions: 0,
+          },
+        } as AgentChatEventEnvelope,
+      ];
+      fs.writeFileSync(String(transcriptPath), `${rewindEnvelopes.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(rewindEnvelopes);
+      vi.mocked(runGit).mockImplementation(async (args) => {
+        if (args[0] === "cat-file") {
+          return { stdout: "", stderr: "fatal: transient cat-file failure", exitCode: 128 };
+        }
+        if (args[0] === "ls-tree") {
+          return { stdout: "", stderr: "fatal: transient ls-tree failure", exitCode: 128 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      });
+
+      const result = await service.rewindFiles({
+        sessionId: source.id,
+        userMessageId: "user-1",
+      });
+
+      expect(result.canRewind).toBe(true);
+      expect(result.conversationRollback).toBe(true);
+      expect(result.filesChanged).toEqual([]);
+      expect(fs.existsSync(changedFile)).toBe(true);
+      expect(fs.readFileSync(changedFile, "utf8")).toBe("keep me");
+      expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "checkout")).toBe(false);
+    });
+
     it("uses the selected Claude handoff permission instead of the source interaction mode", async () => {
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
