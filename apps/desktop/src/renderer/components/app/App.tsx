@@ -923,9 +923,16 @@ function AppNavigationBridge() {
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [inboundTarget, setInboundTarget] = React.useState<InboundDeeplinkTarget | null>(null);
+  // Refs keep async dispatch paths reading FRESH state: the switch-project
+  // modal re-dispatches after `switchToPath`, and a callback captured before
+  // the switch would otherwise close over the previous project's lanes/root.
+  const lanesRef = React.useRef(lanes);
+  lanesRef.current = lanes;
+  const projectRootRef = React.useRef<string | null>(project?.rootPath ?? null);
+  projectRootRef.current = project?.rootPath ?? null;
 
   const resolveActiveProjectRepo = React.useCallback(async (): Promise<GithubRepoSlug | null> => {
-    const lane = lanes[0];
+    const lane = lanesRef.current[0];
     if (!lane) return null;
     try {
       const remote = await window.ade?.git?.getOriginRemote?.({ laneId: lane.id });
@@ -933,7 +940,7 @@ function AppNavigationBridge() {
     } catch {
       return null;
     }
-  }, [lanes]);
+  }, []);
 
   const resolvePortableFallback = React.useCallback(async (
     entity: "chat" | "lane" | "commit",
@@ -969,20 +976,20 @@ function AppNavigationBridge() {
       repoOwner: envelope.repoOwner,
       repoName: envelope.repoName,
     }).catch(() => null);
-    if (match?.rootPath && match.rootPath !== project?.rootPath) {
+    if (match?.rootPath && match.rootPath !== projectRootRef.current) {
       setInboundTarget({ kind: "switch-project", entity, project: match, original });
       return true;
     }
     setInboundTarget({ kind: "foreign", entity, envelope, original });
     return true;
-  }, [project?.rootPath, resolveActiveProjectRepo]);
+  }, [resolveActiveProjectRepo]);
 
   const dispatchTarget = React.useCallback(async (
     target: AppNavigationTarget,
     options: InboundDeeplinkDispatchOptions = {},
   ): Promise<boolean> => {
     const laneById = (laneId: string | null | undefined) =>
-      laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null;
+      laneId ? lanesRef.current.find((lane) => lane.id === laneId) ?? null : null;
 
     if (target.kind === "chat" || target.kind === "work") {
       if (target.sessionId && !options.forceLocal) {
@@ -1006,8 +1013,24 @@ function AppNavigationBridge() {
       // app/navigate RPC path bypasses URL parsing — never compose a path
       // that could escape the resolved root.
       if (!isValidRepoRelativePath(target.path)) return true;
-      const lane = laneById(target.laneId);
-      const root = lane?.worktreePath || project?.rootPath || "";
+      let lane = laneById(target.laneId);
+      if (target.laneId && !lane) {
+        // An explicit lane must never silently degrade to the project root —
+        // the same relative path exists in every worktree. Lanes may still be
+        // loading (cold start, just-switched project): refresh and wait
+        // briefly before giving up.
+        void refreshLanes({ includeStatus: false }).catch(() => undefined);
+        for (let attempt = 0; attempt < 6 && !lane; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          lane = laneById(target.laneId);
+        }
+        if (!lane) {
+          if (options.suppressUnresolved) return false;
+          navigate("/files");
+          return true;
+        }
+      }
+      const root = lane?.worktreePath || projectRootRef.current || "";
       const localPath = root
         ? `${root.replace(/\/+$/, "")}/${target.path.replace(/^\/+/, "")}`
         : target.path;
@@ -1117,15 +1140,25 @@ function AppNavigationBridge() {
     }
 
     return false;
-  }, [lanes, navigate, project?.rootPath, resolvePortableFallback]);
+  }, [navigate, refreshLanes, resolvePortableFallback]);
+
+  // The modal's post-switch retry loop must always call the LATEST dispatcher
+  // (fresh lanes/project), not the instance captured when the card rendered.
+  const dispatchTargetRef = React.useRef(dispatchTarget);
+  dispatchTargetRef.current = dispatchTarget;
+  const dispatchLatest = React.useCallback(
+    (target: AppNavigationTarget, options?: InboundDeeplinkDispatchOptions) =>
+      dispatchTargetRef.current(target, options),
+    [],
+  );
 
   React.useEffect(() => {
     const onNavigate = window.ade?.app?.onNavigate;
     if (!onNavigate) return;
     return onNavigate((request: AppNavigationRequest) => {
-      void dispatchTarget(request.target);
+      void dispatchLatest(request.target);
     });
-  }, [dispatchTarget]);
+  }, [dispatchLatest]);
 
   if (!inboundTarget) return null;
   return (
@@ -1133,7 +1166,7 @@ function AppNavigationBridge() {
       target={inboundTarget}
       lanes={lanes}
       onClose={() => setInboundTarget(null)}
-      onDispatchTarget={dispatchTarget}
+      onDispatchTarget={dispatchLatest}
       projectOpen={Boolean(project?.rootPath)}
       onLaneOpened={(laneId) => {
         const params = new URLSearchParams({ laneId });
