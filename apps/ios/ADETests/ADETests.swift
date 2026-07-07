@@ -9904,12 +9904,18 @@ final class ADETests: XCTestCase {
       model: "opencode/openai/gpt-5.4",
       status: "idle"
     )
+    let openCodeLegacyOpus = makeAgentChatSessionSummary(
+      provider: "opencode",
+      model: "opencode/anthropic/claude-opus-4-7",
+      status: "idle"
+    )
 
     XCTAssertTrue(workChatComposerSupportsFastMode(codex))
     XCTAssertFalse(workChatComposerSupportsFastMode(codexMini))
     XCTAssertTrue(workChatComposerSupportsFastMode(claudeOpus))
     XCTAssertFalse(workChatComposerSupportsFastMode(claude))
     XCTAssertTrue(workChatComposerSupportsFastMode(openCode))
+    XCTAssertTrue(workChatComposerSupportsFastMode(openCodeLegacyOpus))
   }
 
   func testAgentChatModelInfoDetectsFastServiceTier() throws {

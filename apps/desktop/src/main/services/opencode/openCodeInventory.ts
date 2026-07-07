@@ -187,7 +187,7 @@ function normalizeOpenCodeProviderModel(
   }
   if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
     return {
-      modelId: hasCanonicalSonnet ? "claude-sonnet-5" : modelId,
+      modelId: "claude-sonnet-5",
       displayName: "Claude Sonnet 5",
       ...(hasCanonicalSonnet ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
       preferredDuplicateSource,
@@ -202,7 +202,7 @@ function normalizeOpenCodeProviderModel(
     || normalized === "opus"
   ) {
     return {
-      modelId: hasCanonicalOpus ? "claude-opus-4-8" : modelId,
+      modelId: "claude-opus-4-8",
       displayName: "Claude Opus 4.8 1M",
       ...(hasCanonicalOpus ? { contextWindow: 1_000_000, maxOutputTokens: 128_000 } : {}),
       preferredDuplicateSource,

@@ -181,9 +181,9 @@ describe("openCodeInventory", () => {
     });
 
     expect(result.catalogModelIds).toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-7");
+    expect(result.catalogModelIds).toContain("opencode/anthropic/claude-opus-4-8");
     expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
-    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.catalogModelIds).not.toContain("opencode/anthropic/claude-opus-4-7");
     expect(result.descriptors.find((descriptor) => descriptor.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
@@ -319,7 +319,7 @@ describe("openCodeInventory", () => {
     expect(opusDescriptor?.serviceTiers).toEqual(["fast"]);
   });
 
-  it("preserves legacy OpenCode runtime ids when canonical rows are not advertised", async () => {
+  it("normalizes retired-only Anthropic OpenCode rows to canonical launch ids", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({
       data: {
@@ -358,21 +358,21 @@ describe("openCodeInventory", () => {
       force: true,
     });
 
-    expect(result.modelIds).toContain("opencode/anthropic/claude-sonnet-4-6");
-    expect(result.modelIds).toContain("opencode/anthropic/opus");
-    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-8");
-    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-4-6")).toMatchObject({
+    expect(result.modelIds).toContain("opencode/anthropic/claude-sonnet-5");
+    expect(result.modelIds).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
+    expect(result.modelIds).not.toContain("opencode/anthropic/opus");
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
       displayName: "Claude Sonnet 5",
-      openCodeModelId: "claude-sonnet-4-6",
-      providerModelId: "anthropic/claude-sonnet-4-6",
+      openCodeModelId: "claude-sonnet-5",
+      providerModelId: "anthropic/claude-sonnet-5",
       contextWindow: 200_000,
       maxOutputTokens: 32_000,
     });
-    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/opus")).toMatchObject({
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toMatchObject({
       displayName: "Claude Opus 4.8 1M",
-      openCodeModelId: "opus",
-      providerModelId: "anthropic/opus",
+      openCodeModelId: "claude-opus-4-8",
+      providerModelId: "anthropic/claude-opus-4-8",
       contextWindow: 200_000,
       maxOutputTokens: 32_000,
     });
