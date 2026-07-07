@@ -15,9 +15,11 @@ import {
   resolveHomeDir,
   safeParseJson,
   safeReadDir,
-  safeStat,
+  sessionFileCandidate,
+  sortFileCandidatesByMtime,
   sortDiscoveryRecords,
   type ExternalSessionDiscoveryArgs,
+  type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
 
@@ -48,23 +50,34 @@ function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
   return map;
 }
 
-function walkCodexSessionFiles(root: string): string[] {
-  const out: string[] = [];
-  const stack = [root];
-  while (stack.length > 0 && out.length < 5000) {
-    const dir = stack.pop()!;
-    for (const entry of safeReadDir(dir)) {
-      const filePath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        stack.push(filePath);
-        continue;
-      }
-      if (entry.isFile() && (entry.name.endsWith(".jsonl") || entry.name.endsWith(".jsonl.zst"))) {
-        out.push(filePath);
+function sortedChildDirs(dir: string, pattern: RegExp): string[] {
+  return safeReadDir(dir)
+    .filter((entry) => entry.isDirectory() && pattern.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => right.localeCompare(left));
+}
+
+function collectRecentCodexSessionCandidates(root: string, limit: number): ExternalSessionFileCandidate[] {
+  const candidates: ExternalSessionFileCandidate[] = [];
+  const years = sortedChildDirs(root, /^\d{4}$/u);
+  for (const year of years) {
+    const yearDir = path.join(root, year);
+    for (const month of sortedChildDirs(yearDir, /^\d{2}$/u)) {
+      const monthDir = path.join(yearDir, month);
+      for (const day of sortedChildDirs(monthDir, /^\d{2}$/u)) {
+        const dayDir = path.join(monthDir, day);
+        for (const entry of safeReadDir(dayDir)) {
+          if (!entry.isFile() || (!entry.name.endsWith(".jsonl") && !entry.name.endsWith(".jsonl.zst"))) {
+            continue;
+          }
+          const candidate = sessionFileCandidate(path.join(dayDir, entry.name), {});
+          if (candidate) candidates.push(candidate);
+        }
+        if (candidates.length >= limit) return sortFileCandidatesByMtime(candidates, limit);
       }
     }
   }
-  return out.sort((left, right) => (safeStat(right)?.mtimeMs ?? 0) - (safeStat(left)?.mtimeMs ?? 0));
+  return sortFileCandidatesByMtime(candidates, limit);
 }
 
 function idFromCodexFilename(filePath: string): string | null {
@@ -83,9 +96,8 @@ export async function discoverCodexSessions(
   const recordsById = new Map<string, ExternalSessionDiscoveryRecord>();
   if (!fs.existsSync(sessionsDir)) return [];
 
-  for (const filePath of walkCodexSessionFiles(sessionsDir).slice(0, Math.max(limit * 8, 120))) {
-    const stat = safeStat(filePath);
-    if (!stat) continue;
+  for (const candidate of collectRecentCodexSessionCandidates(sessionsDir, limit)) {
+    const filePath = candidate.filePath;
     const compressed = filePath.endsWith(".jsonl.zst");
     if (compressed) {
       const id = idFromCodexFilename(filePath);
@@ -97,8 +109,9 @@ export async function discoverCodexSessions(
         cwd: null,
         title: indexed?.title ?? null,
         preview: null,
-        updatedAt: indexed?.updatedAt ?? Math.floor(stat.mtimeMs),
+        updatedAt: indexed?.updatedAt ?? candidate.mtimeMs,
         filePath,
+        sourceMtimeMs: candidate.mtimeMs,
       }));
       continue;
     }
@@ -124,9 +137,10 @@ export async function discoverCodexSessions(
       title,
       preview: firstUserText ?? previewFromRecords(jsonl),
       createdAt: asEpochMs(payload.timestamp) ?? asEpochMs(first?.timestamp),
-      updatedAt: indexed?.updatedAt ?? Math.floor(stat.mtimeMs),
+      updatedAt: indexed?.updatedAt ?? candidate.mtimeMs,
       messageCount: countJsonlLinesCheap(filePath),
       filePath,
+      sourceMtimeMs: candidate.mtimeMs,
     }));
   }
 

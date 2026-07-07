@@ -57,7 +57,10 @@ type LaneServiceLike = {
 
 type SessionServiceLike = {
   list: (args: { limit: number | null }) => TerminalSessionSummary[];
-  listClaudeSessionPointers?: (args?: { laneId?: string; limit?: number }) => Array<{ sessionId: string }>;
+  listClaudeSessionPointers?: (args?: { laneId?: string; limit?: number }) => Array<{
+    sessionId: string;
+    chatSessionId?: string | null;
+  }>;
 };
 
 type PtyServiceLike = {
@@ -123,6 +126,20 @@ const PROVIDER_CAPABILITIES: Record<ExternalSessionProvider, ExternalSessionCapa
   },
 };
 
+type ImportedSessionRef = NonNullable<ExternalSessionSummary["importedSessionRef"]>;
+
+const CHAT_SESSION_TOOL_TYPES = new Set<TerminalToolType>([
+  "codex-chat",
+  "claude-chat",
+  "opencode-chat",
+  "cursor",
+  "droid-chat",
+]);
+
+function isChatToolType(toolType: TerminalToolType | null | undefined): boolean {
+  return toolType != null && CHAT_SESSION_TOOL_TYPES.has(toolType);
+}
+
 function providerSet(raw: ExternalSessionProvider[] | undefined): ExternalSessionProvider[] {
   if (!Array.isArray(raw) || raw.length === 0) return PROVIDERS;
   const allowed = new Set(PROVIDERS);
@@ -170,23 +187,52 @@ function isInProjectScope(cwd: string | null, scopeRoots: string[]): boolean {
   return scopeRoots.some((root) => isPathInside(root, resolved));
 }
 
-function importedTargets(sessionService: SessionServiceLike): Set<string> {
-  const targets = new Set<string>();
+function refRank(ref: ImportedSessionRef | null): number {
+  if (ref?.kind === "chat") return 2;
+  if (ref?.kind === "cli") return 1;
+  return 0;
+}
+
+function putImportedRef(
+  refs: Map<string, ImportedSessionRef | null>,
+  key: string | null | undefined,
+  ref: ImportedSessionRef | null,
+): void {
+  const cleanKey = key?.trim();
+  if (!cleanKey) return;
+  if (!refs.has(cleanKey) || refRank(ref) > refRank(refs.get(cleanKey) ?? null)) {
+    refs.set(cleanKey, ref);
+  }
+}
+
+function importedSessionRefs(sessionService: SessionServiceLike): Map<string, ImportedSessionRef | null> {
+  const refs = new Map<string, ImportedSessionRef | null>();
   for (const session of sessionService.list({ limit: null })) {
     const metadata = session.resumeMetadata as (TerminalResumeMetadata & {
       importedFrom?: { provider?: ExternalSessionProvider; targetId?: string | null };
     }) | null | undefined;
+    const ref: ImportedSessionRef = {
+      kind: isChatToolType(session.toolType) ? "chat" : "cli",
+      sessionId: session.id,
+    };
     if (metadata?.provider && metadata.targetId) {
-      targets.add(`${metadata.provider}:${metadata.targetId}`);
+      putImportedRef(refs, `${metadata.provider}:${metadata.targetId}`, ref);
     }
     if (metadata?.importedFrom?.provider && metadata.importedFrom.targetId) {
-      targets.add(`${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`);
+      putImportedRef(refs, `${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`, ref);
     }
   }
   for (const pointer of sessionService.listClaudeSessionPointers?.({ limit: 5000 }) ?? []) {
-    if (pointer.sessionId) targets.add(`claude:${pointer.sessionId}`);
+    const sessionId = pointer.sessionId?.trim();
+    if (!sessionId) continue;
+    const chatSessionId = pointer.chatSessionId?.trim();
+    putImportedRef(
+      refs,
+      `claude:${sessionId}`,
+      chatSessionId ? { kind: "chat", sessionId: chatSessionId } : null,
+    );
   }
-  return targets;
+  return refs;
 }
 
 function toolTypeForProvider(provider: ExternalSessionProvider): TerminalToolType {
@@ -354,7 +400,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     }));
 
     const scopeRoots = deriveProjectScopeRoots(args.projectRoot);
-    const imported = importedTargets(args.sessionService);
+    const imported = importedSessionRefs(args.sessionService);
     const activeCutoffMs = Date.now() - 2 * 60_000;
     const discovered = sortDiscoveryRecords(settled.flat(), limit * providers.length);
     const scoped = rawArgs.scope === "all"
@@ -362,20 +408,24 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       : discovered.filter((session) => isInProjectScope(session.cwd, scopeRoots));
 
     return scoped
-      .map((session): ExternalSessionSummary => ({
-        provider: session.provider,
-        id: session.id,
-        cwd: session.cwd,
-        title: session.title,
-        preview: session.preview,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        messageCount: session.messageCount,
-        alreadyImported: imported.has(`${session.provider}:${session.id}`),
-        possiblyActive: typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
-        cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
-        capabilities: capabilitiesFor(session.provider),
-      }))
+      .map((session): ExternalSessionSummary => {
+        const importKey = `${session.provider}:${session.id}`;
+        return {
+          provider: session.provider,
+          id: session.id,
+          cwd: session.cwd,
+          title: session.title,
+          preview: session.preview,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt,
+          messageCount: session.messageCount,
+          alreadyImported: imported.has(importKey),
+          importedSessionRef: imported.get(importKey) ?? null,
+          possiblyActive: typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
+          cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
+          capabilities: capabilitiesFor(session.provider),
+        };
+      })
       .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
   };
 

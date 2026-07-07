@@ -2778,6 +2778,7 @@ export function AgentChatPane({
   onLaunchCliSession,
   onOpenShellSession,
   onImportedSession,
+  onOpenExistingImportedSession,
   availableLanes,
   onLaneChange,
   onToggleSessionsPane,
@@ -2841,6 +2842,8 @@ export function AgentChatPane({
     summary: ExternalSessionSummary,
     result: ExternalSessionImportResult,
   ) => void;
+  /** Work draft surface: focus an already-imported ADE session instead of re-importing. */
+  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
@@ -10894,6 +10897,7 @@ export function AgentChatPane({
             availableLanes?.find((lane) => lane.id === laneId)?.name ?? laneDisplayLabel ?? laneId
           }
           onImported={onImportedSession}
+          onOpenExisting={onOpenExistingImportedSession}
         />
       ) : null}
     </>

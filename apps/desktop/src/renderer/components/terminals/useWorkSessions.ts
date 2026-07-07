@@ -1594,6 +1594,22 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     [focusSession, lanes, openSessionTab, refresh, selectLane, setSelectedSessionId],
   );
 
+  /**
+   * Focus an already-imported session (chat or CLI) that lives in the Work
+   * surface, without re-importing. Mirrors the focus path of
+   * {@link adoptImportedSession}; the session already exists in the list, so we
+   * only select/open its tab. Lane selection is resolved from the session id by
+   * {@link openSessionTab}.
+   */
+  const openExistingImportedSession = useCallback(
+    (ref: { kind: "chat" | "cli"; sessionId: string }) => {
+      focusSession(ref.sessionId);
+      openSessionTab(ref.sessionId);
+      if (ref.kind === "chat") setSelectedSessionId(ref.sessionId);
+    },
+    [focusSession, openSessionTab, setSelectedSessionId],
+  );
+
   return {
     sessions,
     lanes,
@@ -1665,6 +1681,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     stopAllRuntimes,
     launchPtySession,
     adoptImportedSession,
+    openExistingImportedSession,
 
     navigate,
     selectLane,

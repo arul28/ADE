@@ -12,8 +12,11 @@ import {
   recordWithFile,
   resolveHomeDir,
   safeReadDir,
+  sessionFileCandidate,
+  sortFileCandidatesByMtime,
   sortDiscoveryRecords,
   type ExternalSessionDiscoveryArgs,
+  type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
 
@@ -22,7 +25,7 @@ export async function discoverDroidSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const sessionsDir = path.join(resolveHomeDir(args), ".factory", "sessions");
-  const records: ExternalSessionDiscoveryRecord[] = [];
+  const candidates: ExternalSessionFileCandidate[] = [];
 
   for (const projectEntry of safeReadDir(sessionsDir)) {
     if (!projectEntry.isDirectory()) continue;
@@ -30,23 +33,30 @@ export async function discoverDroidSessions(
     for (const entry of safeReadDir(projectDir)) {
       if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
       const filePath = path.join(projectDir, entry.name);
-      const jsonl = readJsonlRecords(filePath);
-      const first = asRecord(jsonl[0]);
-      if (!first || asString(first.type) !== "session_start") continue;
-      const id = asString(first.id) ?? entry.name.slice(0, -".jsonl".length);
-      if (!id) continue;
-      const firstUserText = firstUserTextFromRecords(jsonl);
-      records.push(recordWithFile({
-        provider: "droid",
-        id,
-        cwd: asString(first.cwd),
-        title: cleanSessionTitle(asString(first.title)) ?? cleanSessionTitle(asString(first.sessionTitle)),
-        preview: firstUserText ?? previewFromRecords(jsonl),
-        createdAt: asEpochMs(first.timestamp),
-        messageCount: countJsonlLinesCheap(filePath),
-        filePath,
-      }));
+      const candidate = sessionFileCandidate(filePath, {});
+      if (candidate) candidates.push(candidate);
     }
+  }
+
+  const records: ExternalSessionDiscoveryRecord[] = [];
+  for (const candidate of sortFileCandidatesByMtime(candidates, limit)) {
+    const jsonl = readJsonlRecords(candidate.filePath);
+    const first = asRecord(jsonl[0]);
+    if (!first || asString(first.type) !== "session_start") continue;
+    const id = asString(first.id) ?? path.basename(candidate.filePath, ".jsonl");
+    if (!id) continue;
+    const firstUserText = firstUserTextFromRecords(jsonl);
+    records.push(recordWithFile({
+      provider: "droid",
+      id,
+      cwd: asString(first.cwd),
+      title: cleanSessionTitle(asString(first.title)) ?? cleanSessionTitle(asString(first.sessionTitle)),
+      preview: firstUserText ?? previewFromRecords(jsonl),
+      createdAt: asEpochMs(first.timestamp),
+      messageCount: countJsonlLinesCheap(candidate.filePath),
+      filePath: candidate.filePath,
+      sourceMtimeMs: candidate.mtimeMs,
+    }));
   }
 
   return sortDiscoveryRecords(records, limit);

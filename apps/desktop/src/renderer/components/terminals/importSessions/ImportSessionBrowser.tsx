@@ -60,7 +60,39 @@ const PROVIDER_FILTERS: Array<{ id: ExternalSessionProvider | "all"; label: stri
   { id: "opencode", label: "OpenCode" },
 ];
 
+/** Every provider we scan when no specific filter is applied. */
+const ALL_PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
+
 type ProviderFilter = ExternalSessionProvider | "all";
+
+/**
+ * Reference to an already-imported ADE session, populated by the backend on
+ * summaries whose external session has been imported before. Read defensively:
+ * the field is being added to {@link ExternalSessionSummary} concurrently and
+ * may not be declared on the type yet.
+ */
+type ImportedSessionRef = { kind: "chat" | "cli"; sessionId: string };
+
+function readImportedSessionRef(summary: ExternalSessionSummary): ImportedSessionRef | null {
+  const raw = (summary as { importedSessionRef?: unknown }).importedSessionRef;
+  if (!raw || typeof raw !== "object") return null;
+  const kind = (raw as { kind?: unknown }).kind;
+  const sessionId = (raw as { sessionId?: unknown }).sessionId;
+  if ((kind !== "chat" && kind !== "cli") || typeof sessionId !== "string" || !sessionId) {
+    return null;
+  }
+  return { kind, sessionId };
+}
+
+/** Merge freshly-resolved rows into the running list, de-duped by provider+id. */
+function mergeSessions(
+  prev: ExternalSessionSummary[],
+  rows: ExternalSessionSummary[],
+): ExternalSessionSummary[] {
+  const byKey = new Map(prev.map((s) => [`${s.provider}:${s.id}`, s]));
+  for (const row of rows) byKey.set(`${row.provider}:${row.id}`, row);
+  return Array.from(byKey.values());
+}
 
 export type ImportSessionBrowserProps = {
   open: boolean;
@@ -68,6 +100,8 @@ export type ImportSessionBrowserProps = {
   laneId: string;
   laneName: string;
   onImported: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
+  /** Navigate to an already-imported ADE session instead of re-importing it. */
+  onOpenExisting?: (ref: ImportedSessionRef) => void;
 };
 
 export function ImportSessionBrowser({
@@ -75,9 +109,10 @@ export function ImportSessionBrowser({
   onOpenChange,
   laneId,
   onImported,
+  onOpenExisting,
 }: ImportSessionBrowserProps) {
   const [sessions, setSessions] = useState<ExternalSessionSummary[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [pendingProviders, setPendingProviders] = useState<ExternalSessionProvider[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
   const [query, setQuery] = useState("");
@@ -88,29 +123,49 @@ export function ImportSessionBrowser({
   const requestSeq = useRef(0);
 
   const scope: "project" | "all" = showAllFolders ? "all" : "project";
+  const loading = pendingProviders.length > 0;
 
+  // Progressive scan: fire one list() per provider in parallel and stream each
+  // provider's rows into the list as it resolves, so results appear as they
+  // come in instead of blocking on the slowest provider. A specific provider
+  // filter narrows the scan to just that provider.
   const load = useCallback(async () => {
     const api = getExternalSessionsApi();
     if (!api) {
       setLoadError("Importing sessions isn't available in this window.");
       setSessions([]);
+      setPendingProviders([]);
       return;
     }
     const seq = ++requestSeq.current;
-    setLoading(true);
+    const providers = providerFilter === "all" ? ALL_PROVIDERS : [providerFilter];
+    setSessions([]);
     setLoadError(null);
-    try {
-      const result = await api.list({ scope, laneId });
-      if (seq !== requestSeq.current) return;
-      setSessions(normalizeListResult(result));
-    } catch (err) {
-      if (seq !== requestSeq.current) return;
-      setLoadError(err instanceof Error ? err.message : "Couldn't load external sessions.");
-      setSessions([]);
-    } finally {
-      if (seq === requestSeq.current) setLoading(false);
+    setPendingProviders(providers);
+    let failures = 0;
+    await Promise.all(
+      providers.map(async (provider) => {
+        try {
+          const result = await api.list({ providers: [provider], scope, laneId });
+          if (seq !== requestSeq.current) return;
+          setSessions((prev) => mergeSessions(prev, normalizeListResult(result)));
+        } catch {
+          if (seq !== requestSeq.current) return;
+          failures += 1;
+        } finally {
+          if (seq === requestSeq.current) {
+            setPendingProviders((prev) => prev.filter((p) => p !== provider));
+          }
+        }
+      }),
+    );
+    if (seq !== requestSeq.current) return;
+    // Only surface a blocking error when the entire scan failed; a single
+    // provider throwing shouldn't hide the others' results.
+    if (failures === providers.length) {
+      setLoadError("Couldn't load external sessions.");
     }
-  }, [laneId, scope]);
+  }, [laneId, scope, providerFilter]);
 
   // One-shot load whenever the browser opens or the scope changes; no polling.
   useEffect(() => {
@@ -173,6 +228,14 @@ export function ImportSessionBrowser({
       }
     },
     [importing, laneId, onImported, onOpenChange],
+  );
+
+  const handleOpenExisting = useCallback(
+    (ref: ImportedSessionRef) => {
+      onOpenExisting?.(ref);
+      onOpenChange(false);
+    },
+    [onOpenExisting, onOpenChange],
   );
 
   const onListKeyDown = useCallback(
@@ -243,6 +306,12 @@ export function ImportSessionBrowser({
               );
             })}
             <div className="ml-auto flex items-center gap-2">
+              {loading && sessions.length ? (
+                <span className="inline-flex items-center gap-1.5 text-[10.5px] text-muted-fg/60">
+                  <CircleNotch size={11} className="animate-spin" />
+                  Scanning {pendingProviders.map(providerDisplayName).join(", ")}…
+                </span>
+              ) : null}
               <SmartTooltip content={{ label: "Refresh", description: "Re-scan external sessions." }}>
                 <button
                   type="button"
@@ -331,6 +400,7 @@ export function ImportSessionBrowser({
                   importingKey={importing}
                   onActivate={() => setActiveIndex(index)}
                   onImport={(aff) => void runImport(summary, aff)}
+                  onOpenExisting={onOpenExisting ? handleOpenExisting : undefined}
                 />
               ))}
             </ul>
@@ -368,23 +438,40 @@ function ImportSessionRow({
   importingKey,
   onActivate,
   onImport,
+  onOpenExisting,
 }: {
   summary: ExternalSessionSummary;
   active: boolean;
   importingKey: string | null;
   onActivate: () => void;
   onImport: (affordance: ImportAffordance) => void;
+  onOpenExisting?: (ref: ImportedSessionRef) => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const affordances = useMemo(() => importAffordancesFor(summary), [summary]);
+  // When the backend knows this external session was already imported, offer a
+  // single "Open in ADE" that jumps to the existing session rather than the
+  // per-target "Open as …" re-import actions; the fork actions still stand so
+  // the user can branch a fresh copy.
+  const importedRef =
+    summary.alreadyImported && onOpenExisting ? readImportedSessionRef(summary) : null;
   // One obvious default per row: the hero chat action if present, otherwise the
   // first runnable action (the most-likely CLI path for chat-less providers).
+  // For an imported row the "Open in ADE" button is the primary, so no import
+  // affordance should also render as primary.
   const primaryKind = useMemo(
-    () => (affordances.find((a) => a.hero) ?? affordances.find((a) => a.enabled))?.kind ?? null,
-    [affordances],
+    () =>
+      importedRef
+        ? null
+        : (affordances.find((a) => a.hero) ?? affordances.find((a) => a.enabled))?.kind ?? null,
+    [affordances, importedRef],
   );
   const chatActions = affordances.filter((a) => a.target === "chat");
   const cliActions = affordances.filter((a) => a.target === "cli");
+  // For imported rows we drop the "Open" (resume) actions in favor of the single
+  // "Open in ADE" and keep only the fork actions.
+  const forkChatActions = chatActions.filter((a) => a.mode === "fork");
+  const forkCliActions = cliActions.filter((a) => a.mode === "fork");
 
   // Real provider title when there is one; otherwise a path+time fallback so the
   // heading is always distinct from the preview snippet.
@@ -494,7 +581,7 @@ function ImportSessionRow({
                 Preview
               </button>
               {previewOpen ? (
-                <div className="mt-1 rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-muted-fg/70">
+                <div className="mt-1 max-h-52 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-muted-fg/70">
                   {preview}
                 </div>
               ) : null}
@@ -502,18 +589,43 @@ function ImportSessionRow({
           ) : null}
 
           {/* Actions — grouped "open as chat" vs "continue as terminal" so the
-              chat/terminal and continue/fork distinctions read at a glance. */}
-          <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-            {chatActions.length ? (
-              <div className="flex items-center gap-1.5">{chatActions.map(renderAction)}</div>
-            ) : null}
-            {chatActions.length && cliActions.length ? (
-              <span aria-hidden className="hidden h-4 w-px bg-white/[0.08] sm:block" />
-            ) : null}
-            {cliActions.length ? (
-              <div className="flex items-center gap-1.5">{cliActions.map(renderAction)}</div>
-            ) : null}
-          </div>
+              chat/terminal and continue/fork distinctions read at a glance. For
+              already-imported rows a single "Open in ADE" replaces the re-import
+              "Open" actions, with the fork actions still available alongside. */}
+          {importedRef ? (
+            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+              <button
+                type="button"
+                disabled={Boolean(importingKey)}
+                onClick={() => onOpenExisting?.(importedRef)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[11.5px] font-medium text-[#0F0D14] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ background: "#A78BFA" }}
+              >
+                Open in ADE
+              </button>
+              {forkChatActions.length || forkCliActions.length ? (
+                <span aria-hidden className="hidden h-4 w-px bg-white/[0.08] sm:block" />
+              ) : null}
+              {forkChatActions.length ? (
+                <div className="flex items-center gap-1.5">{forkChatActions.map(renderAction)}</div>
+              ) : null}
+              {forkCliActions.length ? (
+                <div className="flex items-center gap-1.5">{forkCliActions.map(renderAction)}</div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+              {chatActions.length ? (
+                <div className="flex items-center gap-1.5">{chatActions.map(renderAction)}</div>
+              ) : null}
+              {chatActions.length && cliActions.length ? (
+                <span aria-hidden className="hidden h-4 w-px bg-white/[0.08] sm:block" />
+              ) : null}
+              {cliActions.length ? (
+                <div className="flex items-center gap-1.5">{cliActions.map(renderAction)}</div>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
     </li>

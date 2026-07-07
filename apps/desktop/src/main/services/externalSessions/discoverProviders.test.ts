@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
@@ -76,6 +76,38 @@ describe("external session provider discovery", () => {
       createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
     });
     expect(sessions[0]?.messageCount).toBe(2);
+  });
+
+  it("limits Claude content reads to the newest stat candidates", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    fs.mkdirSync(cwd, { recursive: true });
+    const newerId = "11111111-1111-4111-8111-111111111111";
+    const olderId = "22222222-2222-4222-8222-222222222222";
+    const projectDir = path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(cwd));
+    const newerPath = path.join(projectDir, `${newerId}.jsonl`);
+    const olderPath = path.join(projectDir, `${olderId}.jsonl`);
+    writeJsonl(newerPath, [
+      { type: "message", sessionId: newerId, cwd, message: { role: "user", content: "newer request" } },
+    ]);
+    writeJsonl(olderPath, [
+      { type: "message", sessionId: olderId, cwd, message: { role: "user", content: "older request" } },
+    ]);
+    fs.utimesSync(olderPath, new Date("2026-07-05T10:00:00.000Z"), new Date("2026-07-05T10:00:00.000Z"));
+    fs.utimesSync(newerPath, new Date("2026-07-06T10:00:00.000Z"), new Date("2026-07-06T10:00:00.000Z"));
+
+    const openSync = vi.spyOn(fs, "openSync");
+    let openedPaths: string[] = [];
+    try {
+      const sessions = await discoverClaudeSessions({ homeDir, limit: 1 });
+      expect(sessions.map((session) => session.id)).toEqual([newerId]);
+      openedPaths = openSync.mock.calls.map((call) => String(call[0]));
+    } finally {
+      openSync.mockRestore();
+    }
+
+    expect(openedPaths).toContain(newerPath);
+    expect(openedPaths).not.toContain(olderPath);
   });
 
   it("discovers Codex rollout files and enriches titles from session_index.jsonl", async () => {

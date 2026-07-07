@@ -993,6 +993,7 @@ export function WorkViewArea({
   onOpenChatSession,
   onLaunchPtySession,
   onImportedSession,
+  onOpenExistingImportedSession,
   onDraftLaneChange,
   onShowDraftKind,
   closingPtyIds,
@@ -1033,6 +1034,7 @@ export function WorkViewArea({
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onImportedSession?: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
+  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
   onDraftLaneChange?: (laneId: string) => void;
   onShowDraftKind: (kind: WorkDraftKind) => void;
   closingPtyIds: Set<string>;
@@ -1171,6 +1173,7 @@ export function WorkViewArea({
             onOpenChatSession={onOpenChatSession}
             onLaunchPtySession={onLaunchPtySession}
             onImportedSession={onImportedSession}
+            onOpenExistingImportedSession={onOpenExistingImportedSession}
             onDraftLaneChange={onDraftLaneChange}
             initialLinearIssueContext={initialLinearIssueContext}
             initialLinearIssueContextSource={initialLinearIssueContextSource}

@@ -18,6 +18,7 @@ export interface ExternalSessionSummary {
   updatedAt: number | null;
   messageCount: number | null;
   alreadyImported: boolean;
+  importedSessionRef?: { kind: "chat" | "cli"; sessionId: string } | null;
   possiblyActive: boolean;
   cwdMatchesRequestedLane: boolean | null;
   capabilities: ExternalSessionCapabilities;

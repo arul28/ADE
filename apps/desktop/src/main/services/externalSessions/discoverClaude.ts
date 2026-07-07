@@ -11,11 +11,14 @@ import {
   recordWithFile,
   resolveHomeDir,
   safeReadDir,
+  sessionFileCandidate,
+  sortFileCandidatesByMtime,
   sortDiscoveryRecords,
   asEpochMs,
   asRecord,
   asString,
   type ExternalSessionDiscoveryArgs,
+  type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
 
@@ -53,7 +56,7 @@ export async function discoverClaudeSessions(
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const projectsDir = path.join(claudeConfigDir(args), "projects");
-  const records: ExternalSessionDiscoveryRecord[] = [];
+  const candidates: Array<ExternalSessionFileCandidate<{ id: string }>> = [];
 
   for (const projectEntry of safeReadDir(projectsDir)) {
     if (!projectEntry.isDirectory()) continue;
@@ -63,28 +66,35 @@ export async function discoverClaudeSessions(
       const id = entry.name.slice(0, -".jsonl".length);
       if (!isUuidLike(id)) continue;
       const filePath = path.join(projectDir, entry.name);
-      const jsonl = readJsonlRecords(filePath);
-      let cwd: string | null = null;
-      let createdAt: number | null = null;
-      for (const item of jsonl) {
-        const record = asRecord(item);
-        if (!record) continue;
-        cwd = cwd ?? asString(record.cwd);
-        createdAt = createdAt ?? asEpochMs(record.timestamp);
-        if (cwd && createdAt) break;
-      }
-      const firstUserText = firstUserTextFromRecords(jsonl);
-      records.push(recordWithFile({
-        provider: "claude",
-        id,
-        cwd,
-        title: explicitClaudeTitleFromRecords(jsonl),
-        preview: firstUserText ?? previewFromRecords(jsonl),
-        createdAt,
-        messageCount: countJsonlLinesCheap(filePath),
-        filePath,
-      }));
+      const candidate = sessionFileCandidate(filePath, { id });
+      if (candidate) candidates.push(candidate);
     }
+  }
+
+  const records: ExternalSessionDiscoveryRecord[] = [];
+  for (const candidate of sortFileCandidatesByMtime(candidates, limit)) {
+    const jsonl = readJsonlRecords(candidate.filePath);
+    let cwd: string | null = null;
+    let createdAt: number | null = null;
+    for (const item of jsonl) {
+      const record = asRecord(item);
+      if (!record) continue;
+      cwd = cwd ?? asString(record.cwd);
+      createdAt = createdAt ?? asEpochMs(record.timestamp);
+      if (cwd && createdAt) break;
+    }
+    const firstUserText = firstUserTextFromRecords(jsonl);
+    records.push(recordWithFile({
+      provider: "claude",
+      id: candidate.id,
+      cwd,
+      title: explicitClaudeTitleFromRecords(jsonl),
+      preview: firstUserText ?? previewFromRecords(jsonl),
+      createdAt,
+      messageCount: countJsonlLinesCheap(candidate.filePath),
+      filePath: candidate.filePath,
+      sourceMtimeMs: candidate.mtimeMs,
+    }));
   }
 
   return sortDiscoveryRecords(records, limit);

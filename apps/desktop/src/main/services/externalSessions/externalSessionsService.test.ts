@@ -80,6 +80,7 @@ describe("externalSessionsService", () => {
       id,
       cwd: laneCwd,
       alreadyImported: true,
+      importedSessionRef: { kind: "cli", sessionId: "ade-session" },
       possiblyActive: true,
       cwdMatchesRequestedLane: true,
       capabilities: {
@@ -89,6 +90,50 @@ describe("externalSessionsService", () => {
         forkIntoDifferentCwd: true,
         importToChat: true,
       },
+    });
+  });
+
+  it("returns the existing ADE session ref and prefers Claude chat pointers over CLI rows", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "11111111-1111-4111-8111-111111111111";
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(laneCwd), `${id}.jsonl`), [
+      {
+        type: "message",
+        sessionId: id,
+        cwd: laneCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+        message: { role: "user", content: "already imported" },
+      },
+    ]);
+
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: {
+        list: () => [
+          {
+            id: "cli-session",
+            toolType: "claude",
+            resumeMetadata: { provider: "claude", targetKind: "session", targetId: id, launch: {} },
+          } as TerminalSessionSummary,
+        ],
+        listClaudeSessionPointers: () => [{ sessionId: id, chatSessionId: "chat-session" }],
+      },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      alreadyImported: true,
+      importedSessionRef: { kind: "chat", sessionId: "chat-session" },
     });
   });
 

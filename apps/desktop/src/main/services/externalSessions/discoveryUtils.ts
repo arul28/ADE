@@ -22,6 +22,12 @@ export type ExternalSessionDiscoveryArgs = {
   limit?: number | null;
 };
 
+export type ExternalSessionFileCandidate<T extends Record<string, unknown> = Record<string, unknown>> = T & {
+  filePath: string;
+  mtimeMs: number;
+  size: number;
+};
+
 export const DEFAULT_EXTERNAL_SESSION_LIMIT = 50;
 export const MAX_EXTERNAL_SESSION_LIMIT = 500;
 export const JSONL_SCAN_LINE_LIMIT = 80;
@@ -63,6 +69,33 @@ export function safeReadDir(dirPath: string): fs.Dirent[] {
   } catch {
     return [];
   }
+}
+
+export function sessionFileCandidate<T extends Record<string, unknown>>(
+  filePath: string,
+  extra: T,
+): ExternalSessionFileCandidate<T> | null {
+  const stat = safeStat(filePath);
+  if (!stat?.isFile()) return null;
+  return {
+    ...extra,
+    filePath,
+    mtimeMs: Math.floor(stat.mtimeMs),
+    size: stat.size,
+  };
+}
+
+export function sortFileCandidatesByMtime<T extends ExternalSessionFileCandidate>(
+  candidates: T[],
+  limit: number,
+): T[] {
+  return candidates
+    .slice()
+    .sort((left, right) => {
+      if (right.mtimeMs !== left.mtimeMs) return right.mtimeMs - left.mtimeMs;
+      return left.filePath.localeCompare(right.filePath);
+    })
+    .slice(0, limit);
 }
 
 export function safeParseJson(line: string): unknown | null {
@@ -306,8 +339,12 @@ export function recordWithFile(args: {
   updatedAt?: number | null;
   messageCount?: number | null;
   filePath?: string | null;
+  sourceMtimeMs?: number | null;
 }): ExternalSessionDiscoveryRecord {
   const stat = args.filePath ? safeStat(args.filePath) : null;
+  const sourceMtimeMs = typeof args.sourceMtimeMs === "number" && Number.isFinite(args.sourceMtimeMs)
+    ? Math.floor(args.sourceMtimeMs)
+    : stat ? Math.floor(stat.mtimeMs) : null;
   return {
     provider: args.provider,
     id: args.id,
@@ -315,10 +352,10 @@ export function recordWithFile(args: {
     title: args.title ?? null,
     preview: args.preview ?? null,
     createdAt: args.createdAt ?? null,
-    updatedAt: args.updatedAt ?? (stat?.mtimeMs ? Math.floor(stat.mtimeMs) : null),
+    updatedAt: args.updatedAt ?? sourceMtimeMs,
     messageCount: args.messageCount ?? null,
     sourcePath: args.filePath ?? null,
-    sourceMtimeMs: stat?.mtimeMs ? Math.floor(stat.mtimeMs) : null,
+    sourceMtimeMs,
   };
 }
 
