@@ -111,6 +111,18 @@ Pipe pairs with no traffic for 10 minutes are closed by a Durable Object
 hibernation attachment, throttled to a 60s write granularity). The brain
 reconnects its control socket with jittered exponential backoff (1s → 60s cap).
 
+## Observability
+
+`observability` is enabled, so structured single-line JSON logs are queryable
+in the dashboard (Workers → **ade-tunnel-relay** → Logs) and stream live via
+`npx wrangler tail ade-tunnel-relay`. Only lifecycle/rejection events are
+logged — never per-frame, so a busy tunnel stays cheap: `host_registered`,
+`connect_rejected` (`reason: host_offline | too_many`), `auth_failed`
+(`role: host | pipe`). Cost is already gated by design (signed upgrades, one
+control socket per machine, the max-tunnels cap, and the idle sweep above), so
+no request-budget limiter is needed here — unlike `apps/push-relay`, whose
+request-driven surface carries the in-worker spend cap.
+
 ## Deploy
 
 ```bash

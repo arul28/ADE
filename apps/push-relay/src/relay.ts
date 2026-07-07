@@ -18,6 +18,17 @@ export type PushRelayEnv = {
   APNS_DEFAULT_TOPIC?: string;
   REGISTRATION_RETENTION_DAYS?: string;
   MAX_DEVICES_PER_MACHINE?: string;
+  /**
+   * Hard ceiling on total relay requests per UTC day — the spend backstop.
+   * Once exceeded, every request is rejected 429 until midnight UTC. Sized so a
+   * full month at the cap stays well under ~$10 of Cloudflare overage; see the
+   * `DEFAULT_DAILY_REQUEST_BUDGET` note. Override via `wrangler.jsonc` vars.
+   */
+  DAILY_REQUEST_BUDGET?: string;
+  /** Requests allowed per IP per 60s across all routes (general abuse gate). */
+  IP_RATE_LIMIT_PER_MIN?: string;
+  /** `/claim` requests allowed per IP per 60s (unauthenticated-write gate). */
+  CLAIM_RATE_LIMIT_PER_MIN?: string;
 };
 
 type MachineRow = {
@@ -108,6 +119,26 @@ const SIGNATURE_TIMESTAMP_SKEW_SECONDS = 5 * 60;
 const SUPPRESSION_RETENTION_HOURS = 48;
 const DEFAULT_REGISTRATION_RETENTION_DAYS = 120;
 const DEFAULT_MAX_DEVICES_PER_MACHINE = 16;
+
+// Spend backstop. Cloudflare has no native hard billing cap, so we enforce one
+// in code. The default accounts for the guards' OWN D1 writes, not just Worker
+// requests: every under-cap request does ~2 counter writes (daily budget + the
+// per-IP gate). 500,000 requests/day = ~15M/month → requests are ~5M over the
+// 10M included ($0.30/M ≈ $1.50), and ~30M counter writes stay under the 50M
+// D1 free tier ($0) — so a full month pinned at the cap is ≈ $1.50, safely
+// under a ~$10 ceiling with margin, while still ~100–500× realistic
+// single/small-team use. (At 1M/day the counter writes alone would cross the
+// D1 free tier and push the month toward ~$16.) Tunable via `DAILY_REQUEST_BUDGET`.
+const DEFAULT_DAILY_REQUEST_BUDGET = 500_000;
+// General per-IP gate: a busy brain makes maybe 10–30 relay calls/min, so 120
+// tolerates several machines behind one NAT yet crushes a flood.
+const DEFAULT_IP_RATE_LIMIT_PER_MIN = 120;
+// Tighter gate on the one unauthenticated *write* path. A machine claims once
+// (idempotent reclaims are rare), so 10/min/IP is generous for legit pairing
+// bursts and near-zero for a spammer trying to grow the machines table.
+const DEFAULT_CLAIM_RATE_LIMIT_PER_MIN = 10;
+const RATE_WINDOW_SECONDS = 60;
+const RATE_COUNTER_RETENTION_MINUTES = 15;
 
 // Phase-dependent APNs TTLs: a "running" transition is worthless a couple of
 // hours later, while "waiting for input" / terminal outcomes stay actionable
@@ -238,18 +269,22 @@ async function assertMachineAuthorized(
   machineKey: string,
   body: ArrayBuffer,
 ): Promise<{ machine: MachineRow } | { response: Response }> {
+  const keyPrefix = machineKey.slice(0, 8);
   const machine = await loadMachine(env, machineKey);
   if (!machine) {
+    logEvent("auth_failed", { reason: "unknown_machine", machineKey: keyPrefix, ip: clientIp(request) });
     return { response: json({ ok: false, error: "unknown machine" }, { status: 401 }) };
   }
   const timestamp = request.headers.get("x-ade-push-timestamp")?.trim() || "";
   const signature = request.headers.get("x-ade-push-signature")?.trim() || "";
   if (!timestamp || !signature) {
+    logEvent("auth_failed", { reason: "missing_signature", machineKey: keyPrefix, ip: clientIp(request) });
     return { response: json({ ok: false, error: "missing signature headers" }, { status: 401 }) };
   }
   const timestampSeconds = parseTimestampSeconds(timestamp);
   const nowSeconds = Math.floor(Date.now() / 1000);
   if (timestampSeconds == null || Math.abs(nowSeconds - timestampSeconds) > SIGNATURE_TIMESTAMP_SKEW_SECONDS) {
+    logEvent("auth_failed", { reason: "stale_timestamp", machineKey: keyPrefix, ip: clientIp(request) });
     return { response: json({ ok: false, error: "stale or invalid timestamp" }, { status: 401 }) };
   }
   const expected = await signPushRelayRequest(machine.secret, {
@@ -259,6 +294,7 @@ async function assertMachineAuthorized(
     body,
   });
   if (!constantTimeEqual(expected, signature)) {
+    logEvent("auth_failed", { reason: "bad_signature", machineKey: keyPrefix, ip: clientIp(request) });
     return { response: json({ ok: false, error: "unauthorized" }, { status: 401 }) };
   }
   await env.DB
@@ -449,7 +485,129 @@ async function deleteActivityToken(env: PushRelayEnv, machineKey: string, device
     .run();
 }
 
-async function pruneRelayState(env: PushRelayEnv): Promise<void> {
+/**
+ * Structured single-line log. View live with `wrangler tail ade-push-relay`, or
+ * enable Workers Logs (observability) in the dashboard for persistent, queryable
+ * history. Every abuse/limit/error event goes through here so "what's going
+ * wrong" is answerable from one filtered stream.
+ */
+function logEvent(kind: string, fields: Record<string, unknown> = {}): void {
+  try {
+    // `kind` is spread LAST so a caller field named `kind` can never clobber
+    // the event name that log filters key on.
+    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-push-relay", ...fields, kind }));
+  } catch {
+    console.log(`ade-push-relay ${kind}`);
+  }
+}
+
+/** Real client IP (Cloudflare sets and overrides this — clients cannot spoof it). */
+function clientIp(request: Request): string {
+  const ip = request.headers.get("cf-connecting-ip")?.trim();
+  return ip && ip.length > 0 ? ip : "unknown";
+}
+
+function positiveIntEnv(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : fallback;
+}
+
+function rateLimitedResponse(): Response {
+  return json({ ok: false, error: "rate limited" }, { status: 429, headers: { "retry-after": "60" } });
+}
+
+function budgetExceededResponse(): Response {
+  return json({ ok: false, error: "relay daily budget reached" }, { status: 429, headers: { "retry-after": "3600" } });
+}
+
+/**
+ * Fixed-window per-key limiter backed by the `rate_counters` D1 table. A single
+ * atomic `INSERT ... ON CONFLICT DO UPDATE ... WHERE ... RETURNING` both admits
+ * and counts:
+ *  - a `WHERE` guard on the DO UPDATE means an already-over-limit window is a
+ *    no-op — no write, and `RETURNING` yields no row, so a sustained flood costs
+ *    a read (not a write) per rejected hit and the limiter never amplifies the
+ *    spend it exists to bound;
+ *  - because it is one statement, a parallel burst at a window boundary cannot
+ *    all observe a below-limit count and all be admitted.
+ */
+async function checkRateLimit(
+  env: PushRelayEnv,
+  bucket: string,
+  limit: number,
+  windowSeconds: number,
+): Promise<{ allowed: boolean; count: number }> {
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const nowIso = new Date().toISOString();
+  const row = await env.DB
+    .prepare(
+      `insert into rate_counters(bucket, window_start, count, updated_at)
+       values (?1, ?2, 1, ?3)
+       on conflict(bucket) do update set
+         window_start = case when ?2 - window_start >= ?4 then ?2 else window_start end,
+         count        = case when ?2 - window_start >= ?4 then 1  else count + 1 end,
+         updated_at   = ?3
+         where (?2 - window_start >= ?4) or (count < ?5)
+       returning count`,
+    )
+    .bind(bucket, nowSeconds, nowIso, windowSeconds, limit)
+    .first<{ count: number }>();
+  // No returned row ⇒ the WHERE guard suppressed the update (window still open
+  // and already at the limit) ⇒ rejected, with no D1 write.
+  if (!row) return { allowed: false, count: limit };
+  return { allowed: true, count: row.count };
+}
+
+// Per-isolate memory: once this isolate has seen the daily budget blown, reject
+// every further request for free (no D1) until the UTC day rolls over.
+let budgetTrippedUntilMs = 0;
+
+/** Cheap memory check — true when this isolate already saw today's budget blown. */
+function budgetTrippedNow(): boolean {
+  return Date.now() < budgetTrippedUntilMs;
+}
+
+/** Test hook: clears the in-isolate budget latch so cases don't leak state. */
+export function resetSpendGuardsForTests(): void {
+  budgetTrippedUntilMs = 0;
+}
+
+/**
+ * Increments the global daily request counter and returns whether we are still
+ * under the configured budget. On the first over-budget request the isolate
+ * latches `budgetTrippedUntilMs` to end-of-day so subsequent checks short-circuit
+ * in memory (see `budgetTrippedNow`).
+ */
+async function recordDailyBudget(env: PushRelayEnv): Promise<{ allowed: boolean }> {
+  const nowMs = Date.now();
+  const budget = positiveIntEnv(env.DAILY_REQUEST_BUDGET, DEFAULT_DAILY_REQUEST_BUDGET);
+  const day = new Date(nowMs).toISOString().slice(0, 10);
+  const bucket = `budget:${day}`;
+  // Atomic increment-and-read in a single statement (`returning`), so a request
+  // never evaluates a count staler than its own increment. Cross-request
+  // boundary overshoot is still possible but bounded by in-flight concurrency
+  // (a handful of requests ≈ fractions of a cent against a 1M/day cap) — this
+  // is a coarse spend backstop, not an exact quota.
+  const row = await env.DB
+    .prepare(
+      `insert into rate_counters(bucket, window_start, count, updated_at)
+       values (?, ?, 1, ?)
+       on conflict(bucket) do update set count = rate_counters.count + 1,
+                                         updated_at = excluded.updated_at
+       returning count`,
+    )
+    .bind(bucket, Math.floor(nowMs / 1000), new Date(nowMs).toISOString())
+    .first<{ count: number }>();
+  const count = row?.count ?? 0;
+  if (count > budget) {
+    budgetTrippedUntilMs = Date.parse(`${day}T23:59:59.999Z`);
+    logEvent("budget_exceeded", { day, count, budget });
+    return { allowed: false };
+  }
+  return { allowed: true };
+}
+
+export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   const suppressionCutoff = new Date(Date.now() - SUPPRESSION_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
   await env.DB
     .prepare("delete from publish_suppression where published_at < ?")
@@ -461,6 +619,19 @@ async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   await env.DB
     .prepare("delete from device_registrations where updated_at < ?")
     .bind(registrationCutoff)
+    .run();
+  // Rate-limit windows are ephemeral; drop stale ones. Budget rows (bucket
+  // `budget:<day>`) are kept a couple of days so a quiet period mid-day can
+  // never prune away the running daily count and silently reset the cap.
+  const rateCutoff = new Date(Date.now() - RATE_COUNTER_RETENTION_MINUTES * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from rate_counters where bucket not like 'budget:%' and updated_at < ?")
+    .bind(rateCutoff)
+    .run();
+  const budgetCutoff = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from rate_counters where bucket like 'budget:%' and updated_at < ?")
+    .bind(budgetCutoff)
     .run();
 }
 
@@ -575,6 +746,9 @@ async function deliverAlertItem(
     if (result.tokenInvalid) {
       await clearInvalidToken(env, machineKey, device.device_id, "apns_token");
     }
+    if (!result.ok) {
+      logEvent("apns_error", { push: "alert", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+    }
     outcomes.push({
       deviceId: device.device_id,
       kind: "alert",
@@ -659,6 +833,9 @@ async function deliverLiveActivityItem(
       if (result.tokenInvalid) {
         await clearInvalidToken(env, machineKey, device.device_id, "push_to_start_token");
       }
+      if (!result.ok) {
+        logEvent("apns_error", { push: "la_start", device: device.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
+      }
       outcomes.push({
         deviceId: device.device_id,
         kind: "liveactivity",
@@ -694,6 +871,9 @@ async function deliverLiveActivityItem(
     });
     if (result.tokenInvalid || item.event === "end") {
       await deleteActivityToken(env, machineKey, tokenRow.device_id, item.activityId);
+    }
+    if (!result.ok) {
+      logEvent("apns_error", { push: `la_${item.event}`, device: tokenRow.device_id.slice(-6), status: result.status, reason: result.reason, tokenInvalid: result.tokenInvalid });
     }
     outcomes.push({
       deviceId: tokenRow.device_id,
@@ -738,6 +918,7 @@ async function handleMachineClaim(request: Request, env: PushRelayEnv, machineKe
     return json({ ok: false, error: "claim failed" }, { status: 500 });
   }
   if (!constantTimeEqual(stored.secret, secret)) {
+    logEvent("claim_conflict", { machineKey: machineKey.slice(0, 8), ip: clientIp(request) });
     return json({ ok: false, error: "machine key is already claimed" }, { status: 409 });
   }
   return existingBefore
@@ -959,11 +1140,46 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
     return json({ ok: false, error: "payload too large" }, { status: 413 });
   }
 
+  // Spend + abuse gates, cheapest first: (1) if the daily budget is already
+  // blown for this isolate, reject for free; (2) reject a per-IP flood on a
+  // cheap read before it can touch the budget counter; (3) otherwise account
+  // one request against the global daily budget.
+  if (budgetTrippedNow()) {
+    return budgetExceededResponse();
+  }
+  // Count EVERY billable request against the daily budget before any gate can
+  // reject it: a rejected request still ran the Worker (and a D1 read), so it
+  // must advance the spend cap — otherwise a single abusive IP could generate
+  // unbounded billable 429s the cap never sees.
+  const budget = await recordDailyBudget(env);
+  if (!budget.allowed) {
+    return budgetExceededResponse();
+  }
+  // Per-IP gates apply on every route. On the real Cloudflare edge
+  // cf-connecting-ip is always set; when it is absent (local `wrangler dev`,
+  // service bindings) callers share one `unknown` bucket — fail-closed, so the
+  // limits are never bypassed off-edge. A dev machine never approaches them.
+  const ip = clientIp(request);
+  const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
+  const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
+  if (!ipGate.allowed) {
+    logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
+    return rateLimitedResponse();
+  }
+
   const route = routeMachine(url.pathname);
   if (!route || !MACHINE_KEY_PATTERN.test(route.machineKey)) return text("not found", 404);
   const { machineKey, rest } = route;
 
   if (rest.length === 1 && rest[0] === "claim") {
+    // Tighter gate on the one unauthenticated write path — closes the
+    // machines-table-growth vector without touching the signed endpoints.
+    const claimLimit = positiveIntEnv(env.CLAIM_RATE_LIMIT_PER_MIN, DEFAULT_CLAIM_RATE_LIMIT_PER_MIN);
+    const claimGate = await checkRateLimit(env, `claim:${ip}`, claimLimit, RATE_WINDOW_SECONDS);
+    if (!claimGate.allowed) {
+      logEvent("rate_limited", { scope: "claim", ip, count: claimGate.count, limit: claimLimit });
+      return rateLimitedResponse();
+    }
     return await handleMachineClaim(request, env, machineKey);
   }
   if (rest.length === 1 && rest[0] === "devices" && request.method === "GET") {

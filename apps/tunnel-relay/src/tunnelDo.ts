@@ -29,6 +29,20 @@ const ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
 // none are dropped, bounded so a phone that never gets a pipe can't grow it.
 const MAX_BUFFERED_CLIENT_FRAMES = 64;
 
+/**
+ * Structured single-line log. View live with `wrangler tail ade-tunnel-relay`,
+ * or in the dashboard (observability enabled in wrangler.jsonc). Only lifecycle
+ * and rejection events are logged — never per-frame — so a busy tunnel stays
+ * cheap and the stream stays diagnosable.
+ */
+function logTunnel(kind: string, fields: Record<string, unknown> = {}): void {
+  try {
+    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-tunnel-relay", kind, ...fields }));
+  } catch {
+    console.log(`ade-tunnel-relay ${kind}`);
+  }
+}
+
 type SocketRole = "control" | "client" | "pipe";
 
 type SocketAttachment = {
@@ -105,7 +119,10 @@ export class TunnelDurableObject implements DurableObject {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
     const secret = await this.loadSecret();
-    if (!secret) return new Response("unknown machine", { status: 401 });
+    if (!secret) {
+      logTunnel("auth_failed", { role: "host", machineKey: machineKey.slice(0, 8), reason: "unknown_machine" });
+      return new Response("unknown machine", { status: 401 });
+    }
     const ts = url.searchParams.get("ts") ?? "";
     const sig = url.searchParams.get("sig") ?? "";
     const verified = await verifySignedQuery({
@@ -114,7 +131,10 @@ export class TunnelDurableObject implements DurableObject {
       timestamp: ts,
       signature: sig,
     });
-    if (!verified.ok) return new Response(verified.reason, { status: 401 });
+    if (!verified.ok) {
+      logTunnel("auth_failed", { role: "host", machineKey: machineKey.slice(0, 8), reason: verified.reason });
+      return new Response(verified.reason, { status: 401 });
+    }
 
     // Only one control socket per machine; a fresh host connection supersedes a
     // stale one (e.g. after the brain restarted before the old socket dropped).
@@ -125,6 +145,7 @@ export class TunnelDurableObject implements DurableObject {
         // already closing
       }
     }
+    logTunnel("host_registered", { machineKey: machineKey.slice(0, 8) });
     return this.acceptSocket({ role: "control" });
   }
 
@@ -132,7 +153,10 @@ export class TunnelDurableObject implements DurableObject {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
     const secret = await this.loadSecret();
-    if (!secret) return new Response("unknown machine", { status: 401 });
+    if (!secret) {
+      logTunnel("auth_failed", { role: "pipe", machineKey: machineKey.slice(0, 8), reason: "unknown_machine" });
+      return new Response("unknown machine", { status: 401 });
+    }
     const ts = url.searchParams.get("ts") ?? "";
     const sig = url.searchParams.get("sig") ?? "";
     const verified = await verifySignedQuery({
@@ -177,6 +201,7 @@ export class TunnelDurableObject implements DurableObject {
     if (!control) {
       // No host is registered — accept then close so the phone gets a clean,
       // distinguishable code rather than a bare handshake failure.
+      logTunnel("connect_rejected", { reason: "host_offline" });
       return this.acceptSocket({ role: "client" }, (server) => {
         try {
           server.close(CLOSE_HOST_OFFLINE, "host offline");
@@ -189,6 +214,7 @@ export class TunnelDurableObject implements DurableObject {
     const activeClients = this.state.getWebSockets("client").length;
     const maxTunnels = this.maxTunnels();
     if (activeClients >= maxTunnels) {
+      logTunnel("connect_rejected", { reason: "too_many", activeClients, maxTunnels });
       return this.acceptSocket({ role: "client" }, (server) => {
         try {
           server.close(CLOSE_TOO_MANY, "too many tunnels");

@@ -38,7 +38,18 @@ and the brain forwards registrations to the relay.
   `x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`.
 - D1 tables: `machines`, `device_registrations` (APNs token,
   push-to-start token, bundleId, apsEnvironment), `live_activity_tokens`
-  (per-activity update tokens), `publish_suppression` (dedupe hashes).
+  (per-activity update tokens), `publish_suppression` (dedupe hashes),
+  `rate_counters` (per-IP rate-limit + daily-budget windows).
+- Spend + abuse controls (Cloudflare has no native hard billing cap, so the
+  worker enforces its own): a per-IP limit on every route
+  (`IP_RATE_LIMIT_PER_MIN`, default 120), a tighter per-IP limit on the
+  unauthenticated `/claim` write (`CLAIM_RATE_LIMIT_PER_MIN`, default 10),
+  and a hard daily request budget (`DAILY_REQUEST_BUDGET`, default
+  500,000/day → `429` until midnight UTC once blown; sized — counting the
+  guards' own ~2 D1 counter writes/request — to keep a full month ≈ $1.50 of
+  overage, safely under ~$10). All three are wrangler vars. Structured JSON
+  logs (`rate_limited`/`budget_exceeded`/`auth_failed`/`apns_error`/
+  `claim_conflict`) via enabled observability — see `apps/push-relay/README.md`.
 - APNs: ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY`,
   `APNS_KEY_ID`, `APNS_TEAM_ID`), cached ~45 min per isolate. Pushes route
   to sandbox/production per registration and use the registration's

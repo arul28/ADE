@@ -5,6 +5,21 @@
   "compatibility_date": "2026-06-30",
   "workers_dev": true,
   "preview_urls": false,
+  // Persistent, queryable request logs in the dashboard (Workers → ade-push-relay
+  // → Logs). Every rate_limited / budget_exceeded / auth_failed / apns_error /
+  // claim_conflict event is a structured JSON line filterable there.
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // Hourly prune of expired suppression / registration / rate-limit rows,
+  // independent of request traffic (see the scheduled handler in index.ts).
+  "triggers": { "crons": ["17 * * * *"] },
+  // Spend + abuse controls. Change these without a code change; redeploy to apply.
+  // DAILY_REQUEST_BUDGET is the hard daily request ceiling (the ~$10-ceiling
+  // backstop — see DEFAULT_DAILY_REQUEST_BUDGET in relay.ts for the math).
+  "vars": {
+    "DAILY_REQUEST_BUDGET": "500000",
+    "IP_RATE_LIMIT_PER_MIN": "120",
+    "CLAIM_RATE_LIMIT_PER_MIN": "10"
+  },
   "d1_databases": [
     {
       "binding": "DB",

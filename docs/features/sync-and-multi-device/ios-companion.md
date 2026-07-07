@@ -452,7 +452,11 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
 3. Send local `db_version` plus the per-host-DB cursor map
    (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
    `serverDbSiteId` and the runtime's current project catalog when the
-   runtime supports project switching.
+   runtime supports project switching. The hello peer metadata
+   (`currentPeerMetadata`) also advertises the app's provenance —
+   `appVersion` (`CFBundleShortVersionString`), `appBuild`
+   (`CFBundleVersion`), and `bundleIdentifier` from `Bundle.main` — which
+   the runtime persists into the peer's device-registry `metadata_json`.
 4. If no active project is selected, show the Hub (all-projects roster
    home) instead of hydrating lane/file/PR surfaces against the wrong row.
    The Hub subscribes to the roster feed (`roster_subscribe`) to render
@@ -505,7 +509,7 @@ Implemented envelope types on iOS:
 | `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data` carries `offset` — the transcript's end byte offset after the chunk (null when the session has no transcript or hit the size cap) — so the phone can detect dropped chunks. `terminal_subscribe` accepts `sinceOffset`; when the runtime can serve exactly `sinceOffset → end` within the byte budget it replies with a `delta: true` snapshot (append, don't replace), giving exact back-fill after reconnects/gaps. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session (ended, or orphaned by a brain restart while status still says running) so the phone shows a resume bar instead of silently accepting keystrokes |
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
-| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. When the host advertises `crossProjectChat`, `chat_subscribe` / `chat_unsubscribe` also carry an optional `projectId` / `projectRootPath` override so the Hub can open a chat in a **foreign** project read-only (transcript streamed straight off that project's `.ade` JSONL) without switching the phone's active project — see the Hub and Lane-data-projection sections |
+| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. When the host advertises `crossProjectChat`, `chat_subscribe` / `chat_unsubscribe` also carry an optional `projectId` / `projectRootPath` override so the Hub can open a chat in a **foreign** project read-only (transcript streamed straight off that project's `.ade` JSONL) without switching the phone's active project — see the Hub and Lane-data-projection sections. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
 | `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended (`run-shell` infrastructure rows are excluded). Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
 | `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode. `SyncEnvelopeChunkAssembler` enforces a 32 MiB reassembly byte cap (`maxChunkedSyncEnvelopeBytes`) and drops chunk sets with inconsistent `total`s so a malformed or oversized stream cannot grow phone memory unbounded |
 | `heartbeat` | Bidirectional | Connection health (30s) |
@@ -1301,6 +1305,34 @@ reflected in the phone's UI on the next descriptor read.
   Approve / Deny / Reply buttons need to address a specific approval —
   the phone can decide an awaiting-input row at the source instead of
   forcing the user to open the session.
+- **The chat-summary cache merges, it never wholesale-replaces.**
+  `cacheChatSummaries` folds each incoming summary into
+  `chatSummaryCache` by session id rather than swapping the whole map.
+  A partial Work-list refresh (the reduced-sync-load `prefix(6)`, or a
+  lane whose `listChatSessions` throws and returns `[]`) hands off a set
+  that omits the currently-open session; replacing the cache would evict
+  that session's summary and blank the chat composer's model/permission
+  controls, which gate on `summary.isAvailable` (false for a nil
+  summary). Merging keeps prior summaries alive until explicitly
+  overwritten. A project switch or disconnect still clears the whole
+  cache — `resetChatEventState(clearHistory: true)` calls
+  `chatSummaryCache.removeAll()` — so another project's or a stale
+  connection's summaries never linger.
+- **Consolidated pending-input strip with optimistic removal.** The Work
+  chat session collapses all pending inputs into one strip pinned above
+  the composer (`consolidatedPendingStripSection` in
+  `WorkChatSessionView+Timeline.swift`), replacing the earlier split of
+  plan/approval composer strips plus inline question/permission/model-
+  selection transcript cards. Answering an item inserts its id into
+  `optimisticallyAnsweredInputIds` so it hides immediately and the strip
+  advances to the next request without waiting for the host round-trip;
+  the id is reconciled out once the item leaves the host-derived queue
+  (`canonicalPendingInputSignature` change) or rolled back if the command
+  set `errorMessage`. "Accept all" (`acceptAllPendingInputs`) is offered
+  only for approval/permission gates — never question, plan-approval, or
+  model-selection — and flips `acceptForSession` on the current gate then
+  accepts each remaining sweepable gate sequentially (stale itemIds no-op
+  on the host, so re-sends after auto-resolution are safe).
 - **`AttentionDrawerModel.clearVisibleItems()` persists dismissals
   scoped to the active id set.** Ids are stored under
   `ade.attention.dismissedItemIDs` and pruned on every rebuild

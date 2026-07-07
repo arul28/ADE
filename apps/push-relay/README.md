@@ -50,6 +50,33 @@ its own (single D1 database, no Durable Objects, no queues).
   `DeviceTokenNotForTopic` / `ExpiredToken`) are cleared automatically.
 - Registrations idle for `REGISTRATION_RETENTION_DAYS` (default 120) are pruned.
 
+## Abuse & spend controls
+
+Cloudflare has no native hard billing cap, so the worker enforces its own.
+All three limits are `wrangler.jsonc` `vars` — change them without a code
+change and redeploy to apply:
+
+| Var | Default | What it bounds |
+|---|---|---|
+| `DAILY_REQUEST_BUDGET` | `500000` | Hard ceiling on total requests per UTC day. Once exceeded, every request returns `429` until midnight UTC. Sized to keep a full month pinned at the cap ≈ $1.50 of Cloudflare overage — this accounts for the guards' own D1 counter writes (~2/request), which stay inside the 50M/month D1 free tier at this volume, plus request overage. Still ~100–500× realistic single/small-team use. |
+| `IP_RATE_LIMIT_PER_MIN` | `120` | Requests per client IP per 60 s across all routes. |
+| `CLAIM_RATE_LIMIT_PER_MIN` | `10` | Tighter per-IP limit on the unauthenticated `/claim` write path (bounds `machines`-table growth). |
+
+Backed by the `rate_counters` D1 table (migration `0002`, fixed-window). An
+over-limit window is rejected on a **read**, never a write, so the limiter
+never amplifies the spend it exists to bound; the daily budget latches in
+isolate memory once blown so further requests reject for free. `/health`
+bypasses every gate.
+
+## Observability
+
+`observability` is enabled, so structured single-line JSON logs are queryable
+in the dashboard (Workers → **ade-push-relay** → Logs) and stream live via
+`npx wrangler tail ade-push-relay`. Event kinds: `rate_limited`,
+`budget_exceeded`, `auth_failed` (with `reason`: unknown machine / bad
+signature / stale timestamp), `apns_error` (APNs `status` + `reason` — why a
+push failed), `claim_conflict`.
+
 ## Deploy
 
 ```bash
