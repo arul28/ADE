@@ -17680,9 +17680,9 @@ describe("createAgentChatService", () => {
       const compactionEvent = await waitForEvent(
         events,
         (event): event is AgentChatEventEnvelope & {
-          event: Extract<AgentChatEventEnvelope["event"], { type: "codex_context_compaction" }>;
+          event: Extract<AgentChatEventEnvelope["event"], { type: "context_compact" }>;
         } =>
-          event.event.type === "codex_context_compaction"
+          event.event.type === "context_compact"
           && event.event.state === "started",
       );
       expect(compactionEvent.event.trigger).toBe("auto");
