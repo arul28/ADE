@@ -569,18 +569,20 @@ async function recordDailyBudget(env: PushRelayEnv): Promise<{ allowed: boolean 
   const budget = positiveIntEnv(env.DAILY_REQUEST_BUDGET, DEFAULT_DAILY_REQUEST_BUDGET);
   const day = new Date(nowMs).toISOString().slice(0, 10);
   const bucket = `budget:${day}`;
-  await env.DB
+  // Atomic increment-and-read in a single statement (`returning`), so a request
+  // never evaluates a count staler than its own increment. Cross-request
+  // boundary overshoot is still possible but bounded by in-flight concurrency
+  // (a handful of requests ≈ fractions of a cent against a 1M/day cap) — this
+  // is a coarse spend backstop, not an exact quota.
+  const row = await env.DB
     .prepare(
       `insert into rate_counters(bucket, window_start, count, updated_at)
        values (?, ?, 1, ?)
        on conflict(bucket) do update set count = rate_counters.count + 1,
-                                         updated_at = excluded.updated_at`,
+                                         updated_at = excluded.updated_at
+       returning count`,
     )
     .bind(bucket, Math.floor(nowMs / 1000), new Date(nowMs).toISOString())
-    .run();
-  const row = await env.DB
-    .prepare("select count from rate_counters where bucket = ? limit 1")
-    .bind(bucket)
     .first<{ count: number }>();
   const count = row?.count ?? 0;
   if (count > budget) {
@@ -1126,12 +1128,20 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   if (budgetTrippedNow()) {
     return budgetExceededResponse();
   }
+  // Cloudflare sets and overwrites cf-connecting-ip on every edge request, so a
+  // missing IP only happens off-edge (local `wrangler dev`, service bindings)
+  // where one shared `unknown` bucket would just throttle callers against each
+  // other. Skip the per-IP gates there — the global daily budget still bounds
+  // spend, and a client cannot strip the header on the real edge to reach here.
   const ip = clientIp(request);
-  const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
-  const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
-  if (!ipGate.allowed) {
-    logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
-    return rateLimitedResponse();
+  const ipKnown = ip !== "unknown";
+  if (ipKnown) {
+    const ipLimit = positiveIntEnv(env.IP_RATE_LIMIT_PER_MIN, DEFAULT_IP_RATE_LIMIT_PER_MIN);
+    const ipGate = await checkRateLimit(env, `ip:${ip}`, ipLimit, RATE_WINDOW_SECONDS);
+    if (!ipGate.allowed) {
+      logEvent("rate_limited", { scope: "ip", ip, count: ipGate.count, limit: ipLimit, path: url.pathname });
+      return rateLimitedResponse();
+    }
   }
   const budget = await recordDailyBudget(env);
   if (!budget.allowed) {
@@ -1145,11 +1155,14 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
   if (rest.length === 1 && rest[0] === "claim") {
     // Tighter gate on the one unauthenticated write path — closes the
     // machines-table-growth vector without touching the signed endpoints.
-    const claimLimit = positiveIntEnv(env.CLAIM_RATE_LIMIT_PER_MIN, DEFAULT_CLAIM_RATE_LIMIT_PER_MIN);
-    const claimGate = await checkRateLimit(env, `claim:${ip}`, claimLimit, RATE_WINDOW_SECONDS);
-    if (!claimGate.allowed) {
-      logEvent("rate_limited", { scope: "claim", ip, count: claimGate.count, limit: claimLimit });
-      return rateLimitedResponse();
+    // (Skipped off-edge for the same reason as the general gate above.)
+    if (ipKnown) {
+      const claimLimit = positiveIntEnv(env.CLAIM_RATE_LIMIT_PER_MIN, DEFAULT_CLAIM_RATE_LIMIT_PER_MIN);
+      const claimGate = await checkRateLimit(env, `claim:${ip}`, claimLimit, RATE_WINDOW_SECONDS);
+      if (!claimGate.allowed) {
+        logEvent("rate_limited", { scope: "claim", ip, count: claimGate.count, limit: claimLimit });
+        return rateLimitedResponse();
+      }
     }
     return await handleMachineClaim(request, env, machineKey);
   }

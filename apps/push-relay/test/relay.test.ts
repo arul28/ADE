@@ -68,6 +68,18 @@ class FakeD1Database {
       );
       return (row ? { content_hash: row.content_hash } : null) as T | null;
     }
+    if (sql.startsWith("insert into rate_counters") && sql.includes("returning count")) {
+      // Budget path: atomic increment-and-read via INSERT ... RETURNING count.
+      const [bucket, windowStart, updatedAt] = values as [string, number, string];
+      const existing = this.rateCounters.get(bucket);
+      if (!existing) {
+        this.rateCounters.set(bucket, { window_start: windowStart, count: 1, updated_at: updatedAt });
+        return { count: 1 } as T;
+      }
+      existing.count += 1;
+      existing.updated_at = updatedAt;
+      return { count: existing.count } as T;
+    }
     if (sql.includes("from rate_counters")) {
       const [bucket] = values as string[];
       const row = this.rateCounters.get(bucket);
@@ -671,6 +683,23 @@ describe("push relay", () => {
     expect(statuses).toEqual([201, 201, 201, 429, 429]);
     // The 429s never reached the DB insert — the machines table stopped growing.
     expect(db.machines).toHaveLength(3);
+  });
+
+  it("skips per-IP gates when cf-connecting-ip is absent (off-edge) but still counts the budget", async () => {
+    const env: PushRelayEnv = { ...makeEnv(db, undefined), IP_RATE_LIMIT_PER_MIN: "2", CLAIM_RATE_LIMIT_PER_MIN: "2" };
+    const statuses: number[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const key = "b".repeat(39) + (i % 10);
+      const res = await handleRequest(
+        new Request(`https://push.example/machines/${key}/claim`, { method: "POST", body: JSON.stringify({ secret: "x" }) }),
+        env,
+      );
+      statuses.push(res.status);
+    }
+    // With no IP the per-IP/claim gates are skipped, so all 6 reach the handler
+    // (400 for the too-short secret) — a shared `unknown` bucket never throttles
+    // one off-edge caller against another.
+    expect(statuses.every((s) => s === 400)).toBe(true);
   });
 
   it("rate limits a flooding IP without affecting a different IP", async () => {

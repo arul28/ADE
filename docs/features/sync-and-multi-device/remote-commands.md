@@ -388,7 +388,11 @@ A handful have more logic:
   result; a missing `agentChatService`, a thrown error, or an empty name
   all fall back to the supplied `fallbackName` (or, when none was passed,
   a prompt-derived `deriveDeterministicLaneNameFromPrompt`), so naming
-  can never block or fail lane creation. The iOS callers
+  can never block or fail lane creation. Each outcome logs a distinct
+  structured line (`sync.lanes_suggest_name_succeeded` /
+  `_kept_fallback` / `_empty_result` / `_service_unavailable` /
+  `_failed`, all carrying `laneId` / `modelId` and the resolved name)
+  so a lane that lands on its deterministic slug is diagnosable. The iOS callers
   (`WorkNewChatScreen` and the hub composer) create the lane instantly
   with the deterministic name, then call `SyncService.suggestLaneName`
   fire-and-forget after the session launch and apply a differing

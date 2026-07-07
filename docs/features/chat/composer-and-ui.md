@@ -36,7 +36,7 @@ stream plus session metadata.
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. The PR action opens or toggles a linked PR when one exists, otherwise opens the PR creation handoff for the current lane targeting the primary branch. Opening the chat PR pane or compact PR menu performs a targeted, cooldown-bound refresh for that single linked PR. |
 | `ChatPrPane.tsx` | Left floating PR pane for Work chat. Shows cached lane PR details immediately, then refreshes the linked PR row with the same targeted refresh path so pane toggles surface current merged/closed/check state without a broad PR sync. |
 | `ChatProposedPlanCard.tsx` | Composer-level plan approval card shown while input is locked. Renders the plan description or question text as rich markdown (`ChatMarkdown`) inside a scrollable container (capped at `min(34vh, 360px)`). Transcript plan events render through `AgentChatMessageList` / `CodexPlanCard`. |
-| `apps/ios/ADE/Views/Work/WorkPlanComposerViews.swift` | iOS composer-level plan approval strip. The live `plan_approval` gate renders as a compact full-width strip above the prompt box, opens a large markdown sheet for review, and sends Approve/Reject decisions through `chat.approve` with optional rejection feedback as `responseText`. |
+| `apps/ios/ADE/Views/Work/WorkPlanComposerViews.swift` | iOS composer-level plan approval strip. The live `plan_approval` gate renders as a compact full-width strip above the prompt box, opens a large markdown sheet for review, and sends Approve/Reject decisions through `chat.approve` with optional rejection feedback as `responseText`. It is one body of the consolidated pending-input strip (see [Cross-surface parity](#cross-surface-parity)) — the strip in `WorkChatSessionView+Timeline.swift` renders the current request (plan / approval / permission / question / model-selection), a "Request 1 of N" header, and an "Accept all" sweep when more than one gate is queued. |
 | `ChatModelSelectionPendingCard.tsx` | Full agent-briefing model picker for orchestration pending inputs. Shows description, touched files, run-after dependencies, provider/model controls, and submitting/cancel states without a recommended default model. |
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
 | `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits/clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
@@ -644,7 +644,24 @@ The card's data contract (`PendingInputRequest` / `PendingInputQuestion`
 / `PendingInputOption` in `shared/types/chat.ts`) is the single source of
 truth: the TUI (`apps/ade-cli/src/tuiClient/components/ApprovalPrompt.tsx`)
 and iOS (`WorkStructuredQuestionCard` / `WorkPlanComposerStrip`) render the
-same header verb, dedup, monospace preview, and per-provider accent. The
+same header verb, dedup, monospace preview, and per-provider accent.
+
+On iOS the pending inputs collapse into a **single consolidated strip**
+pinned above the composer (`consolidatedPendingStripSection` in
+`WorkChatSessionView+Timeline.swift`), replacing the previous split of
+plan/approval composer strips plus inline question/permission/model-selection
+transcript cards. It renders the current (primary) request, shows a
+"Request 1 of N" header once more than one gate is queued, and advances to
+the next request as each is answered. Answers use an **optimistic-removal**
+path (`dispatchPendingInputAnswer` / `optimisticallyAnsweredInputIds`): the
+answered item is hidden the instant its decision is dispatched so the strip
+advances without waiting on the host round-trip, then reconciled out of the
+set once it leaves the host-derived queue (`canonicalPendingInputSignature`
+change) or rolled back if the command errored. An **"Accept all"** affordance
+appears when the current gate is an approval/permission kind (never question,
+plan-approval, or model-selection): it flips `acceptForSession` on the current
+gate, then accepts each remaining sweepable gate sequentially (stale itemIds
+no-op on the host, so re-sends after auto-resolution are safe). The
 verb/name helpers live in `shared/pendingInputLabels.ts` so desktop and
 TUI share them; iOS mirrors them in Swift. A blocking pending input also
 surfaces an "Awaiting you" badge on the Lanes row and the Work grid tile
@@ -816,6 +833,20 @@ These modules are pure and unit-testable:
   `codexSandbox`, `codexConfigSource`, `opencodePermissionMode`,
   `cursorModeId`, `cursorModeSnapshot`) so the chip state reflects the
   server's normalized values before the list refresh lands.
+- **Inbound mode changes re-seed composer state.** When another client
+  changes a session's mode, the service emits a `session_meta_updated`
+  event carrying the mode fields (see
+  [transcript-and-turns](transcript-and-turns.md)). `AgentChatPane`'s
+  event handler patches the session summary with any mode fields present
+  and — because the composer seeds its local mode state from the session
+  scope, not from summary content — also applies the authoritative fields
+  directly to composer state (`setInteractionMode`,
+  `setClaudePermissionMode`, `setCodexApprovalPolicy`/`setCodexSandbox`/
+  `setCodexConfigSource`, `setOpenCodePermissionMode`,
+  `setDroidPermissionMode`, and the Cursor mode/config setters derived
+  from `cursorModeSnapshot`) when the event targets the selected session,
+  mirroring the plan-mode transition special-case. A title-only emit
+  changes no mode key and is a no-op for composer state.
 
 ## Related docs
 
