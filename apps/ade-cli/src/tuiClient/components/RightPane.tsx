@@ -10,6 +10,14 @@ import type {
 } from "../types";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { theme } from "../theme";
+import {
+  externalSessionActionKey,
+  externalSessionProviderLabel,
+  importAffordancesFor,
+  shortenCwd,
+  visibleExternalSessions,
+} from "../externalSessionBrowser";
+import { formatRelativePastTime } from "../relativeTime";
 import { buildSubagentPaneRows, type SubagentPaneRow } from "../subagentPane";
 import { ModelPickerPane } from "./ModelPicker/ModelPickerPane";
 import { buildModelPickerLayout } from "./ModelPicker/modelPickerLayout";
@@ -75,6 +83,7 @@ function diffLineTone(kind: DiffLineKind): { color: string; dim: boolean; bold: 
 
 const DEFAULT_PANE_WIDTH = 38;
 const LANE_FILE_PREVIEW_ROWS = 5;
+const EXTERNAL_SESSION_ROW_WINDOW = 4;
 export const DETAILS_BODY_MAX_LINES = 26;
 
 // ---------------------------------------------------------------------------
@@ -1315,6 +1324,157 @@ function buildDiffRenderLines(
   return out;
 }
 
+function externalSessionAge(session: { updatedAt: number | null; createdAt: number | null }): string {
+  const timestamp = session.updatedAt ?? session.createdAt;
+  if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return "recently";
+  return formatRelativePastTime(new Date(timestamp).toISOString());
+}
+
+function ExternalSessionBrowserPane({
+  content,
+  width,
+}: {
+  content: Extract<RightPaneContent, { kind: "external-session-browser" }>;
+  width: number;
+}) {
+  const inner = Math.max(12, width - 4);
+  const visible = visibleExternalSessions(content.sessions, content.providerFilter, content.query);
+  const selectedIndex = visible.length
+    ? Math.min(Math.max(0, content.selectedIndex), visible.length - 1)
+    : 0;
+  const selectedSession = visible[selectedIndex] ?? null;
+  const actionRows = selectedSession ? importAffordancesFor(selectedSession) : [];
+  const selectedActionIndex = actionRows.length
+    ? Math.min(Math.max(0, content.actionIndex), actionRows.length - 1)
+    : 0;
+  const windowStart = Math.min(
+    Math.max(0, selectedIndex - Math.floor(EXTERNAL_SESSION_ROW_WINDOW / 2)),
+    Math.max(0, visible.length - EXTERNAL_SESSION_ROW_WINDOW),
+  );
+  const rowWindow = visible.slice(windowStart, windowStart + EXTERNAL_SESSION_ROW_WINDOW);
+  const providerFilter = externalSessionProviderLabel(content.providerFilter);
+  const queryText = content.query.trim();
+
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text color={theme.color.t4}>
+        <Text color={theme.color.t5}>filter </Text>
+        <Text color={theme.color.violet}>{providerFilter}</Text>
+        <Text color={theme.color.t5}>{` · ${visible.length}/${content.sessions.length}`}</Text>
+        {queryText ? (
+          <Text color={theme.color.t5}>{` · "${endTruncate(queryText, Math.max(4, inner - 18))}"`}</Text>
+        ) : null}
+      </Text>
+
+      {content.error ? (
+        <Box marginTop={1}>
+          <Text color={theme.color.error} wrap="truncate-end">{endTruncate(content.error, inner)}</Text>
+        </Box>
+      ) : null}
+      {content.importError ? (
+        <Box marginTop={1}>
+          <Text color={theme.color.error} wrap="truncate-end">{endTruncate(content.importError, inner)}</Text>
+        </Box>
+      ) : null}
+      {content.loading ? (
+        <Box marginTop={1}>
+          <Text color={theme.color.t3}>Scanning sessions...</Text>
+        </Box>
+      ) : null}
+
+      {!content.loading && !rowWindow.length ? (
+        <Box marginTop={1}>
+          <Text color={theme.color.t4} dimColor>
+            {content.sessions.length ? "No sessions match this filter." : "No external sessions found."}
+          </Text>
+        </Box>
+      ) : null}
+
+      {rowWindow.length ? (
+        <Box flexDirection="column" marginTop={1}>
+          {windowStart > 0 ? <Text color={theme.color.t5} dimColor>{`  ${windowStart} earlier`}</Text> : null}
+          {rowWindow.map((session, offset) => {
+            const absoluteIndex = windowStart + offset;
+            const selected = absoluteIndex === selectedIndex;
+            const brand = theme.provider(session.provider);
+            const title = session.title?.trim() || session.preview?.trim() || session.id;
+            const cwd = shortenCwd(session.cwd, 4);
+            const messageCount = typeof session.messageCount === "number" && Number.isFinite(session.messageCount)
+              ? `${compactNumber(session.messageCount)} msg${session.messageCount === 1 ? "" : "s"}`
+              : "messages ?";
+            const badges = [
+              session.alreadyImported ? "imported" : null,
+              session.possiblyActive ? "may be open elsewhere" : null,
+            ].filter((value): value is string => Boolean(value));
+            return (
+              <Box key={`${session.provider}:${session.id}`} flexDirection="column" marginBottom={1}>
+                <Text>
+                  <Text color={selected ? theme.color.violet : theme.color.t5}>{selected ? theme.rail : " "}</Text>
+                  <Text color={brand.color}>{`${brand.glyph} ${externalSessionProviderLabel(session.provider)} `}</Text>
+                  <Text color={selected ? theme.color.t1 : theme.color.t2} bold={selected} wrap="truncate-end">
+                    {endTruncate(title, Math.max(8, inner - 15))}
+                  </Text>
+                </Text>
+                <Text color={selected ? theme.color.t3 : theme.color.t4} dimColor={!selected} wrap="truncate-end">
+                  {`  ${externalSessionAge(session)} · ${messageCount} · ${endTruncate(cwd, Math.max(8, inner - 20))}`}
+                </Text>
+                {badges.length ? (
+                  <Text color={session.possiblyActive ? theme.color.warning : theme.color.t5} dimColor={!session.possiblyActive} wrap="truncate-end">
+                    {`  ${endTruncate(badges.join(" · "), Math.max(8, inner - 2))}`}
+                  </Text>
+                ) : null}
+              </Box>
+            );
+          })}
+          {windowStart + rowWindow.length < visible.length ? (
+            <Text color={theme.color.t5} dimColor>{`  ${visible.length - windowStart - rowWindow.length} more`}</Text>
+          ) : null}
+        </Box>
+      ) : null}
+
+      {selectedSession ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={theme.color.t5}>Actions</Text>
+          {actionRows.length ? actionRows.map((action, index) => {
+            const focused = index === selectedActionIndex;
+            const importing = content.importingKey === externalSessionActionKey(selectedSession, action);
+            const color = !action.enabled
+              ? theme.color.t5
+              : focused
+                ? theme.color.violet
+                : action.hero
+                  ? theme.color.t1
+                  : theme.color.t3;
+            const hint = action.disabledReason ?? action.hint ?? (action.foreignCwd ? `runs in ${shortenCwd(action.foreignCwd, 4)}` : null);
+            return (
+              <Box key={action.kind} flexDirection="column">
+                <Text color={color} dimColor={!action.enabled}>
+                  <Text color={focused ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
+                  {importing ? "◐ " : focused ? "↵ " : "  "}
+                  <Text bold={focused || action.hero}>{endTruncate(action.label, Math.max(8, inner - 4))}</Text>
+                </Text>
+                {hint ? (
+                  <Text color={theme.color.t5} dimColor wrap="truncate-end">
+                    {`   ${endTruncate(hint, Math.max(8, inner - 3))}`}
+                  </Text>
+                ) : null}
+              </Box>
+            );
+          }) : (
+            <Text color={theme.color.t4} dimColor>No import actions available.</Text>
+          )}
+        </Box>
+      ) : null}
+
+      <Box marginTop={1}>
+        <Text color={theme.color.t5} dimColor wrap="truncate-end">
+          {endTruncate("up/down rows · left/right actions · enter import · r refresh · p provider · type search", inner)}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
 export function rightPaneScrollableRowCount(content: RightPaneContent): number {
   switch (content.kind) {
     case "details":
@@ -1338,6 +1498,7 @@ export function rightPaneScrollableRowCount(content: RightPaneContent): number {
     case "form":
     case "chat-info":
     case "model-picker":
+    case "external-session-browser":
     case "help":
     case "lane-details":
       // These panes have their own internal navigation (help uses selectedIndex,
@@ -1826,6 +1987,8 @@ function paneTitle(content: RightPaneContent): { title: string; hint?: string; b
       return { title: `CHAT INFO · ${theme.provider(content.info.provider).label.toUpperCase()}` };
     case "model-picker":
       return { title: content.surface === "new-chat" ? "MODEL · NEW CHAT" : "MODEL" };
+    case "external-session-browser":
+      return { title: "IMPORT SESSION", hint: "r refresh · p provider" };
     case "help":
       return { title: "HELP" };
     case "status":
@@ -1969,6 +2132,10 @@ function RightPaneComponent({
 
       {content.kind === "context-usage" ? (
         <ContextUsagePane content={content} width={paneWidth} />
+      ) : null}
+
+      {content.kind === "external-session-browser" ? (
+        <ExternalSessionBrowserPane content={content} width={paneWidth} />
       ) : null}
 
       {content.kind === "usage" ? (

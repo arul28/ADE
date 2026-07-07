@@ -42,9 +42,16 @@ export function LaneDialogShell({
           className={`fixed left-1/2 top-1/2 z-50 flex ${maxHeight} ${height} ${width} -translate-x-1/2 -translate-y-1/2 overflow-hidden focus:outline-none`}
           onCloseAutoFocus={onCloseAutoFocus}
         >
-          <BorderBeam size="md" colorVariant="mono" duration={25} strength={0.85} borderRadius={12}>
+          <BorderBeam
+            className="w-full"
+            size="md"
+            colorVariant="mono"
+            duration={25}
+            strength={0.85}
+            borderRadius={12}
+          >
             <div
-              className={`relative flex ${maxHeight} ${height} min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.1] shadow-float`}
+              className={`relative flex w-full ${maxHeight} ${height} min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.1] shadow-float`}
               style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
             >
               <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent" />

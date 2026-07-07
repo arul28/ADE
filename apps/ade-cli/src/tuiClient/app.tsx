@@ -241,6 +241,16 @@ import {
   terminalDisplayWidth,
 } from "./displayWidth";
 import { flushAdeCodeStateWrites, loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
+import {
+  clampExternalSessionBrowserContent,
+  externalSessionActionKey,
+  externalSessionProviderLabel,
+  importAffordancesFor,
+  nextExternalSessionProviderFilter,
+  normalizeExternalSessionListResult,
+  visibleExternalSessions,
+  type ImportAffordance,
+} from "./externalSessionBrowser";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
 import {
@@ -329,6 +339,10 @@ import type {
   SubagentSnapshot,
   RuntimeMode,
 } from "./types";
+import type {
+  ExternalSessionImportResult,
+  ExternalSessionSummary,
+} from "../../../desktop/src/shared/types/externalSessions";
 
 export { isTerminalSessionResumable } from "./closedCliSessions";
 
@@ -2914,6 +2928,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Full right-pane mirror so async draft-commit paths (first send) can check
   // the CURRENT pane without stale-closure state (see showChatInfoAfterDraftCommit).
   const rightPaneRef = useRef<RightPaneContent>({ kind: "empty" });
+  const externalSessionListGenerationRef = useRef(0);
   const lastLocalSendAtRef = useRef<number>(0);
   const eventsRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventCountRef = useRef<number>(0);
@@ -3899,7 +3914,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     : null;
   const goalBannerRows = goalBannerText ? 1 : 0;
   const addModeRows = addMode ? 1 : 0;
-  const rightPaneMaxWidth = rightPane.kind === "model-picker"
+  const rightPaneMaxWidth = rightPane.kind === "model-picker" || rightPane.kind === "external-session-browser"
     ? MODEL_PICKER_RIGHT_PANE_MAX_WIDTH
     : RIGHT_PANE_MAX_WIDTH;
   const rightPaneWidth = resolveRightPaneWidth(columns, rightOpen, drawerOpen, rightPaneMaxWidth);
@@ -4569,19 +4584,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => buildProviderReadinessRows(aiStatus, storedApiKeyProviders, openCodeDiagnostics),
     [aiStatus, openCodeDiagnostics, storedApiKeyProviders],
   );
+  const newChatImportLaneId = drawerLaneId ?? activeLaneId;
+  const newChatImportEnabled = Boolean(newChatImportLaneId && !unavailableLaneIds.has(newChatImportLaneId));
+  const newChatImportDetail = !newChatImportLaneId
+    ? "Select a lane first — imports need a lane folder"
+    : unavailableLaneIds.has(newChatImportLaneId)
+      ? "Lane folder unavailable"
+      : "Browse external CLI sessions";
   const newChatSetupRows = useMemo(
     () => buildSetupRows({
       modelState,
       models,
       includeRefresh: false,
       includeApply: true,
+      includeImportSession: true,
+      importSessionEnabled: newChatImportEnabled,
+      importSessionDetail: newChatImportDetail,
       outputStyle: "default",
       outputStyleEditable: false,
       // Draft: the interface is the user's editable Chat/CLI choice.
       interfaceMode: modelState.interfaceMode,
       interfaceEditable: true,
     }),
-    [modelState, models],
+    [modelState, models, newChatImportDetail, newChatImportEnabled],
   );
   // Once a session exists the interface is fixed by its type (a CLI terminal is
   // active ⇒ CLI; an SDK chat ⇒ Chat). With no committed session yet (/model on a
@@ -5014,6 +5039,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // Form panes (rename, new-lane, pr-open) are user-driven; never overwrite.
     if (rightPane.kind === "form") return;
     if (rightPane.kind === "model-picker") return;
+    if (rightPane.kind === "external-session-browser") return;
     if (pendingQuestionStateRef.current) return;
     const next = resolveContextDefault({
       draftChatActive: draftChatActiveRef.current,
@@ -7973,6 +7999,191 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setTerminalSessions((current) => mergeOptimisticTerminalSessions(current, optimisticTerminalSessionsRef.current));
   }, [lanesById]);
 
+  const loadExternalSessionsForLane = useCallback(async (laneId: string) => {
+    const conn = connectionRef.current;
+    const generation = externalSessionListGenerationRef.current + 1;
+    externalSessionListGenerationRef.current = generation;
+    setRightPane((prev) => prev.kind === "external-session-browser" && prev.laneId === laneId
+      ? {
+          ...prev,
+          loading: true,
+          error: null,
+          importError: null,
+        }
+      : prev);
+    if (!conn) {
+      setRightPane((prev) => prev.kind === "external-session-browser" && prev.laneId === laneId
+        ? {
+            ...prev,
+            loading: false,
+            error: "Runtime unavailable.",
+          }
+        : prev);
+      return;
+    }
+    try {
+      const result = await conn.action<unknown>("external-sessions", "list", {
+        scope: "project",
+        laneId,
+      });
+      const sessions = normalizeExternalSessionListResult(result);
+      if (externalSessionListGenerationRef.current !== generation) return;
+      setRightPane((prev) => {
+        if (prev.kind !== "external-session-browser" || prev.laneId !== laneId) return prev;
+        return clampExternalSessionBrowserContent({
+          ...prev,
+          sessions,
+          loading: false,
+          error: null,
+          importError: null,
+          loadedAt: Date.now(),
+        });
+      });
+    } catch (err) {
+      if (externalSessionListGenerationRef.current !== generation) return;
+      const message = err instanceof Error ? err.message : String(err);
+      setRightPane((prev) => prev.kind === "external-session-browser" && prev.laneId === laneId
+        ? {
+            ...prev,
+            loading: false,
+            error: message,
+          }
+        : prev);
+    }
+  }, []);
+
+  const openExternalSessionBrowser = useCallback(() => {
+    const currentPane = rightPaneRef.current;
+    const laneId = currentPane.kind === "model-picker" && currentPane.surface === "new-chat" && currentPane.laneId
+      ? currentPane.laneId
+      : drawerLaneIdRef.current ?? activeLaneIdRef.current;
+    const lane = laneId ? lanesById[laneId] ?? null : null;
+    if (!laneId || !lane) {
+      addNotice("Select a lane first — imports need a lane folder.", "info");
+      return;
+    }
+    if (unavailableLaneIds.has(laneId)) {
+      addNotice("That lane folder is unavailable.", "error");
+      return;
+    }
+    setRightPane({
+      kind: "external-session-browser",
+      laneId,
+      laneLabel: lane.name,
+      providerFilter: "all",
+      query: "",
+      sessions: [],
+      loading: true,
+      error: null,
+      importError: null,
+      importingKey: null,
+      selectedIndex: 0,
+      actionIndex: 0,
+      loadedAt: null,
+    });
+    setRightPaneScrollOffsetRows(0);
+    setRightOpen(true);
+    setPaneFocus("details");
+    lastUserOpenedPaneRef.current = "external-session-browser";
+    userDismissedRightPaneRef.current = false;
+    void loadExternalSessionsForLane(laneId);
+  }, [addNotice, lanesById, loadExternalSessionsForLane, setPaneFocus, unavailableLaneIds]);
+
+  const adoptImportedExternalSession = useCallback(async (
+    summary: ExternalSessionSummary,
+    result: ExternalSessionImportResult,
+  ) => {
+    const laneId = result.laneId;
+    pendingNewChatTitleRef.current = null;
+    setDraftChatMode(false);
+    setGridView(false);
+    setAttachedTerminalId(null);
+    setDrawerSection("chats");
+    setSelectedDrawerLaneAction(null);
+    setSelectedDrawerLaneId(laneId);
+    setDrawerLaneId(laneId);
+    setSelectedDrawerChatAction(null);
+    selectActiveLaneId(laneId);
+    lastUserOpenedPaneRef.current = null;
+    userDismissedRightPaneRef.current = false;
+    setRightOpen(true);
+    setRightPane({ kind: "empty" });
+    focusChat();
+
+    if (result.kind === "cli") {
+      registerOptimisticTerminalSession({
+        sessionId: result.sessionId,
+        laneId,
+        title: summary.title?.trim() || summary.preview?.trim() || null,
+        provider: summary.provider as CliTerminalProvider,
+      });
+      setSelectedDrawerChatId(result.sessionId);
+      selectActiveSessionId(result.sessionId);
+      addNotice(`Imported ${externalSessionProviderLabel(summary.provider)} CLI session.`, "success");
+    } else {
+      setSelectedDrawerChatId(result.chatSessionId);
+      selectActiveSessionId(result.chatSessionId);
+      addNotice(`Imported ${externalSessionProviderLabel(summary.provider)} as ADE chat.`, "success");
+    }
+
+    await refreshState();
+  }, [
+    addNotice,
+    focusChat,
+    refreshState,
+    registerOptimisticTerminalSession,
+    selectActiveLaneId,
+    selectActiveSessionId,
+    setDraftChatMode,
+    setGridView,
+  ]);
+
+  const importExternalSessionFromBrowser = useCallback(async (
+    summary: ExternalSessionSummary,
+    affordance: ImportAffordance,
+  ) => {
+    const pane = rightPaneRef.current;
+    if (pane.kind !== "external-session-browser") return;
+    if (!affordance.enabled) {
+      const message = affordance.disabledReason ?? "This action is not available for that session.";
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? { ...prev, importError: message }
+        : prev);
+      return;
+    }
+    const conn = connectionRef.current;
+    if (!conn) {
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? { ...prev, importError: "Runtime unavailable." }
+        : prev);
+      return;
+    }
+    const importingKey = externalSessionActionKey(summary, affordance);
+    setRightPane((prev) => prev.kind === "external-session-browser"
+      ? { ...prev, importError: null, importingKey }
+      : prev);
+    try {
+      const result = await conn.action<ExternalSessionImportResult>("external-sessions", "import", {
+        provider: summary.provider,
+        sessionId: summary.id,
+        laneId: pane.laneId,
+        target: affordance.target,
+        mode: affordance.mode,
+      });
+      externalSessionListGenerationRef.current += 1;
+      await adoptImportedExternalSession(summary, result);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRightPane((prev) => prev.kind === "external-session-browser"
+        ? {
+            ...prev,
+            importError: message,
+            importingKey: prev.importingKey === importingKey ? null : prev.importingKey,
+          }
+        : prev);
+    }
+  }, [adoptImportedExternalSession]);
+
   const submitClaudePromptToTerminal = useCallback(async (terminal: ChatTerminalSession, text: string) => {
     const conn = connectionRef.current;
     const trimmed = text.trim();
@@ -10742,28 +10953,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cycleProvider(direction);
       return;
     }
-	    if (row.kind === "interface") {
-	      // Only two values, so any cycle direction toggles Chat ↔ CLI. Editable
-	      // rows only (disabled rows return above); a committed session's interface
-	      // is fixed by its type.
-		      const nextInterface = modelStateRef.current.interfaceMode === "cli" ? "chat" : "cli";
-		      const cursorModels = providerModelsCacheRef.current.get(providerModelsCacheKey("cursor", nextInterface))
-		        ?? (modelStateRef.current.provider === "cursor" ? models : registryModelsForProvider("cursor"));
-		      persistExplicitDraftKind(nextInterface);
-		      applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, cursorModels));
-	      if (modelStateRef.current.provider === "cursor") {
-	        void loadProviderModels("cursor", {
-	          applyDefault: false,
-	          force: true,
-	          interfaceMode: nextInterface,
-	        }).then((loaded) => {
-	          const current = modelStateRef.current;
-	          if (current.provider !== "cursor" || current.interfaceMode !== nextInterface) return;
-	          applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, loaded));
-	        }).catch(() => undefined);
-	      }
-	      return;
-	    }
+    if (row.kind === "interface") {
+      // Only two values, so any cycle direction toggles Chat ↔ CLI. Editable
+      // rows only (disabled rows return above); a committed session's interface
+      // is fixed by its type.
+      const nextInterface = modelStateRef.current.interfaceMode === "cli" ? "chat" : "cli";
+      const cursorModels = providerModelsCacheRef.current.get(providerModelsCacheKey("cursor", nextInterface))
+        ?? (modelStateRef.current.provider === "cursor" ? models : registryModelsForProvider("cursor"));
+      persistExplicitDraftKind(nextInterface);
+      applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, cursorModels));
+      if (modelStateRef.current.provider === "cursor") {
+        void loadProviderModels("cursor", {
+          applyDefault: false,
+          force: true,
+          interfaceMode: nextInterface,
+        }).then((loaded) => {
+          const current = modelStateRef.current;
+          if (current.provider !== "cursor" || current.interfaceMode !== nextInterface) return;
+          applyModelState((prev) => reconcileCursorModelStateForInterface(prev, nextInterface, loaded));
+        }).catch(() => undefined);
+      }
+      return;
+    }
+    if (row.kind === "import-session") {
+      openExternalSessionBrowser();
+      return;
+    }
     if (row.kind === "model") {
       cycleModel(direction);
       return;
@@ -10829,7 +11044,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       lastUserOpenedPaneRef.current = null;
       focusChat();
     }
-	  }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, loadProviderModels, models, persistExplicitDraftKind, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
+	  }, [addNotice, applyModelState, cycleModel, cyclePermission, cycleProvider, cycleReasoning, focusChat, loadProviderModels, models, openExternalSessionBrowser, persistExplicitDraftKind, refreshAiSetupStatus, refreshState, sendClaudeModelCommandToTerminal]);
 
   const recallPromptHistory = useCallback((direction: "previous" | "next"): boolean => {
     const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
@@ -12224,6 +12439,128 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setRightPane({ ...picker, providerTabKey: nextTabKey, focusedIndex: 0, footerFocus: null, railFocused: false });
       } else {
         setRightPane({ ...picker, railFocused: picker.railFocused !== true });
+      }
+      return;
+    }
+    if (pane === "details" && rightOpen && rightPane.kind === "external-session-browser") {
+      const browser = rightPane;
+      const visible = visibleExternalSessions(browser.sessions, browser.providerFilter, browser.query);
+      const selectedIndex = visible.length
+        ? Math.min(Math.max(0, browser.selectedIndex), visible.length - 1)
+        : 0;
+      const selectedSession = visible[selectedIndex] ?? null;
+      const actions = selectedSession ? importAffordancesFor(selectedSession) : [];
+      const actionIndex = actions.length
+        ? Math.min(Math.max(0, browser.actionIndex), actions.length - 1)
+        : 0;
+
+      if (key.escape) {
+        setRightPane({ kind: "empty" });
+        setRightOpen(false);
+        lastUserOpenedPaneRef.current = null;
+        userDismissedRightPaneRef.current = true;
+        focusAfterDetails();
+        return;
+      }
+      if (key.upArrow) {
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              selectedIndex: Math.max(0, selectedIndex - 1),
+              actionIndex: 0,
+              importError: null,
+            })
+          : prev);
+        return;
+      }
+      if (key.downArrow) {
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              selectedIndex: visible.length ? Math.min(visible.length - 1, selectedIndex + 1) : 0,
+              actionIndex: 0,
+              importError: null,
+            })
+          : prev);
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        const delta = key.leftArrow ? -1 : 1;
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              actionIndex: actions.length ? (actionIndex + delta + actions.length) % actions.length : 0,
+              importError: null,
+            })
+          : prev);
+        return;
+      }
+      if (key.return) {
+        if (!selectedSession) return;
+        const action = actions[actionIndex] ?? actions.find((entry) => entry.enabled) ?? actions[0];
+        if (!action) {
+          setRightPane((prev) => prev.kind === "external-session-browser"
+            ? { ...prev, importError: "No import action available for that session." }
+            : prev);
+          return;
+        }
+        void importExternalSessionFromBrowser(selectedSession, action);
+        return;
+      }
+      if ((input === "r" || input === "R") && !key.ctrl && !key.meta && !browser.query) {
+        void loadExternalSessionsForLane(browser.laneId);
+        return;
+      }
+      if ((input === "p" || input === "P") && !key.ctrl && !key.meta && !browser.query) {
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              providerFilter: nextExternalSessionProviderFilter(prev.providerFilter),
+              selectedIndex: 0,
+              actionIndex: 0,
+              importError: null,
+            })
+          : prev);
+        return;
+      }
+      if (isPromptLineBackspace(input, key)) {
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              query: "",
+              selectedIndex: 0,
+              actionIndex: 0,
+              importError: null,
+            })
+          : prev);
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setRightPane((prev) => prev.kind === "external-session-browser"
+          ? clampExternalSessionBrowserContent({
+              ...prev,
+              query: prev.query.slice(0, -1),
+              selectedIndex: 0,
+              actionIndex: 0,
+              importError: null,
+            })
+          : prev);
+        return;
+      }
+      if (!key.ctrl && !key.meta && !key.return) {
+        const suffix = printableInput(input);
+        if (suffix) {
+          setRightPane((prev) => prev.kind === "external-session-browser"
+            ? clampExternalSessionBrowserContent({
+                ...prev,
+                query: `${prev.query}${suffix}`,
+                selectedIndex: 0,
+                actionIndex: 0,
+                importError: null,
+              })
+            : prev);
+        }
+        return;
       }
       return;
     }

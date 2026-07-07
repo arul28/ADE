@@ -3464,6 +3464,175 @@ struct StartCliSessionResult: Codable, Equatable {
   var session: TerminalSessionSummary?
 }
 
+struct ExternalSessionCapabilities: Codable, Equatable {
+  var resumeInPlace: Bool
+  var resumeInDifferentCwd: Bool
+  var fork: Bool
+  var forkIntoDifferentCwd: Bool
+  var importToChat: Bool
+
+  init(
+    resumeInPlace: Bool = false,
+    resumeInDifferentCwd: Bool = false,
+    fork: Bool = false,
+    forkIntoDifferentCwd: Bool = false,
+    importToChat: Bool = false
+  ) {
+    self.resumeInPlace = resumeInPlace
+    self.resumeInDifferentCwd = resumeInDifferentCwd
+    self.fork = fork
+    self.forkIntoDifferentCwd = forkIntoDifferentCwd
+    self.importToChat = importToChat
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case resumeInPlace
+    case resumeInDifferentCwd
+    case fork
+    case forkIntoDifferentCwd
+    case importToChat
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    resumeInPlace = try container.decodeIfPresent(Bool.self, forKey: .resumeInPlace) ?? false
+    resumeInDifferentCwd = try container.decodeIfPresent(Bool.self, forKey: .resumeInDifferentCwd) ?? false
+    fork = try container.decodeIfPresent(Bool.self, forKey: .fork) ?? false
+    forkIntoDifferentCwd = try container.decodeIfPresent(Bool.self, forKey: .forkIntoDifferentCwd) ?? false
+    importToChat = try container.decodeIfPresent(Bool.self, forKey: .importToChat) ?? false
+  }
+}
+
+struct ExternalSessionImportedRef: Codable, Equatable {
+  var kind: String
+  var sessionId: String
+}
+
+struct ExternalSessionSummary: Codable, Identifiable, Equatable {
+  var provider: String
+  var id: String
+  var cwd: String?
+  var title: String?
+  var preview: String?
+  var createdAt: Double?
+  var updatedAt: Double?
+  var messageCount: Int?
+  var alreadyImported: Bool
+  var importedSessionRef: ExternalSessionImportedRef?
+  var possiblyActive: Bool
+  var cwdMatchesRequestedLane: Bool?
+  var capabilities: ExternalSessionCapabilities
+
+  private enum CodingKeys: String, CodingKey {
+    case provider
+    case id
+    case cwd
+    case title
+    case preview
+    case createdAt
+    case updatedAt
+    case messageCount
+    case alreadyImported
+    case importedSessionRef
+    case possiblyActive
+    case cwdMatchesRequestedLane
+    case capabilities
+  }
+
+  init(
+    provider: String,
+    id: String,
+    cwd: String? = nil,
+    title: String? = nil,
+    preview: String? = nil,
+    createdAt: Double? = nil,
+    updatedAt: Double? = nil,
+    messageCount: Int? = nil,
+    alreadyImported: Bool = false,
+    importedSessionRef: ExternalSessionImportedRef? = nil,
+    possiblyActive: Bool = false,
+    cwdMatchesRequestedLane: Bool? = nil,
+    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities()
+  ) {
+    self.provider = provider
+    self.id = id
+    self.cwd = cwd
+    self.title = title
+    self.preview = preview
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.messageCount = messageCount
+    self.alreadyImported = alreadyImported
+    self.importedSessionRef = importedSessionRef
+    self.possiblyActive = possiblyActive
+    self.cwdMatchesRequestedLane = cwdMatchesRequestedLane
+    self.capabilities = capabilities
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    provider = try container.decodeIfPresent(String.self, forKey: .provider) ?? "unknown"
+    id = try container.decode(String.self, forKey: .id)
+    cwd = try container.decodeIfPresent(String.self, forKey: .cwd)
+    title = try container.decodeIfPresent(String.self, forKey: .title)
+    preview = try container.decodeIfPresent(String.self, forKey: .preview)
+    createdAt = try container.decodeIfPresent(Double.self, forKey: .createdAt)
+    updatedAt = try container.decodeIfPresent(Double.self, forKey: .updatedAt)
+    messageCount = try container.decodeIfPresent(Int.self, forKey: .messageCount)
+    alreadyImported = try container.decodeIfPresent(Bool.self, forKey: .alreadyImported) ?? false
+    importedSessionRef = try? container.decodeIfPresent(
+      ExternalSessionImportedRef.self,
+      forKey: .importedSessionRef
+    )
+    possiblyActive = try container.decodeIfPresent(Bool.self, forKey: .possiblyActive) ?? false
+    cwdMatchesRequestedLane = try container.decodeIfPresent(Bool.self, forKey: .cwdMatchesRequestedLane)
+    capabilities = try container.decodeIfPresent(ExternalSessionCapabilities.self, forKey: .capabilities)
+      ?? ExternalSessionCapabilities()
+  }
+}
+
+struct ExternalSessionListResult: Decodable, Equatable {
+  var sessions: [ExternalSessionSummary]
+
+  private enum CodingKeys: String, CodingKey {
+    case sessions
+  }
+
+  init(sessions: [ExternalSessionSummary]) {
+    self.sessions = sessions
+  }
+
+  init(from decoder: Decoder) throws {
+    if var array = try? decoder.unkeyedContainer() {
+      var decoded: [ExternalSessionSummary] = []
+      while !array.isAtEnd {
+        if let session = try? array.decode(ExternalSessionSummary.self) {
+          decoded.append(session)
+        } else if (try? array.decode(RemoteJSONValue.self)) == nil {
+          break
+        }
+      }
+      sessions = decoded
+      return
+    }
+
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    if let lossy = try? container.decode(ADELossyArray<ExternalSessionSummary>.self, forKey: .sessions) {
+      sessions = lossy.wrappedValue
+    } else {
+      sessions = []
+    }
+  }
+}
+
+struct ExternalSessionImportResult: Codable, Equatable {
+  var kind: String
+  var sessionId: String?
+  var ptyId: String?
+  var laneId: String?
+  var chatSessionId: String?
+}
+
 struct SyncScalarBytes: Codable, Equatable {
   var type: String
   var base64: String

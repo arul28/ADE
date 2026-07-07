@@ -62,6 +62,7 @@ import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
 import { createProjectSearchService } from "./services/search/searchServiceWiring";
 import type { SearchService } from "./services/search/searchService";
+import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
@@ -3283,6 +3284,32 @@ app.whenReady().then(async () => {
       backfillDelayMs: 10_000,
     });
     searchServiceHolder.current = searchService;
+    const externalSessionsService = createExternalSessionsService({
+      projectRoot,
+      laneService,
+      sessionService,
+      ptyService,
+      logger,
+      chatImporter: agentChatService,
+      chatImportedRefsProvider: async () => {
+        const sessions = await agentChatService.listSessions(undefined, {
+          includeIdentity: true,
+          includeAutomation: true,
+          includeArchived: true,
+        });
+        return sessions.flatMap((session) => {
+          const importedFrom = session.importedFrom;
+          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
+          return [{
+            provider: importedFrom.provider,
+            externalId: importedFrom.sessionId,
+            chatSessionId: session.sessionId,
+          }];
+        });
+      },
+      homeDir: os.homedir(),
+      env: process.env,
+    });
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
@@ -3450,6 +3477,7 @@ app.whenReady().then(async () => {
       ctoStateService,
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
+      getExternalSessionsService: () => externalSessionsService,
       processService,
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
@@ -3815,6 +3843,7 @@ app.whenReady().then(async () => {
       queueLandingService,
       fileService,
       searchService,
+      externalSessionsService,
       ctoStateService,
       ctoMemoryService,
       linearCredentialService,
@@ -4077,6 +4106,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       reviewService,
       searchService,
+      externalSessionsService,
       jobEngine,
       transcriptionService: getSharedTranscriptionService(logger),
       automationService,

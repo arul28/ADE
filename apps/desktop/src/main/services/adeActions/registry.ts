@@ -116,6 +116,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "issue",
   "orchestration",
   "search",
+  "external-sessions",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -676,6 +677,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "unsubscribe",
   ],
   search: ["query", "indexStatus", "rebuildIndex"],
+  "external-sessions": ["list", "import"],
 };
 
 export type AdeActionInputContract = {
@@ -737,6 +739,18 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
       input: "object { mode?: \"cached\" | \"refresh-stale\" | \"force\", refreshProvider?: string, cursorSource?: string }",
       example: "ade actions run chat.modelCatalog --input-json '{\"mode\":\"cached\"}' --json",
+    },
+  },
+  "external-sessions": {
+    list: {
+      description: "List provider-native CLI sessions found outside ADE.",
+      input: "object { providers?, laneId?, cwd?, scope?: \"project\" | \"all\", limit? }",
+      example: "ade actions run external-sessions.list --input-json '{\"scope\":\"project\",\"limit\":20}' --text",
+    },
+    import: {
+      description: "Import an outside provider CLI session into an ADE lane as a CLI terminal or chat.",
+      input: "object { provider, sessionId, laneId, target: \"cli\" | \"chat\", mode: \"resume\" | \"fork\", model?, permissionMode? }",
+      example: "ade actions run external-sessions.import --input-json '{\"provider\":\"codex\",\"sessionId\":\"thread-id\",\"laneId\":\"lane-1\",\"target\":\"cli\",\"mode\":\"resume\"}' --text",
     },
   },
 };
@@ -2835,6 +2849,21 @@ function buildSearchDomainService(runtime: AdeRuntime): OpaqueService | null {
   } as OpaqueService;
 }
 
+function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const externalSessionsService = runtime.externalSessionsService;
+  if (!externalSessionsService) return null;
+  return {
+    list(args: unknown) {
+      return externalSessionsService.list((args ?? {}) as Parameters<typeof externalSessionsService.list>[0]);
+    },
+    import(args: unknown) {
+      return externalSessionsService.importExternalSession(
+        (args ?? {}) as Parameters<typeof externalSessionsService.importExternalSession>[0],
+      );
+    },
+  } as OpaqueService;
+}
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -2882,6 +2911,7 @@ export function getAdeActionDomainServices(
     issue: toService(buildIssueDomainService(runtime)),
     orchestration: toService(buildOrchestrationDomainService(runtime)),
     search: toService(buildSearchDomainService(runtime)),
+    "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
   };
 }
 

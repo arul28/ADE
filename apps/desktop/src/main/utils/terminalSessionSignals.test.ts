@@ -113,6 +113,9 @@ describe("terminalSessionSignals", () => {
       permissionMode: "plan",
       model: "auto",
     });
+    expect(parseTrackedCliLaunchConfig("cursor-agent --mode ask", "cursor-cli")).toEqual({
+      permissionMode: "plan",
+    });
     expect(parseTrackedCliLaunchConfig(
       "claude --permission-mode default --model claude-opus-4-8 --settings '{\"fastMode\":true}'",
       "claude",
@@ -192,7 +195,7 @@ describe("terminalSessionSignals", () => {
       targetKind: "session",
       targetId: "chat-1",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --mode ask --model auto --resume chat-1");
+    })).toBe("cursor-agent --model auto --resume chat-1");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",

@@ -3587,11 +3587,15 @@ export function createPtyService({
       const toolTypeHint = normalizeToolType(args.toolType ?? existingSession?.toolType ?? null);
       const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
       const requestedInitialInput = typeof args.initialInput === "string" ? args.initialInput : "";
-      let initialResumeCommand = existingSession?.resumeCommand ?? defaultResumeCommandForTool(toolTypeHint);
-      let initialResumeMetadata = existingSession?.resumeMetadata ?? buildInitialResumeMetadata({
-        toolType: toolTypeHint,
-        startupCommand: requestedStartupCommand,
-      });
+      const requestedResumeMetadata = args.resumeMetadata ?? null;
+      let initialResumeMetadata = existingSession?.resumeMetadata
+        ?? requestedResumeMetadata
+        ?? buildInitialResumeMetadata({
+          toolType: toolTypeHint,
+          startupCommand: requestedStartupCommand,
+        });
+      let initialResumeCommand = existingSession?.resumeCommand
+        ?? (requestedResumeMetadata ? buildTrackedCliResumeCommand(requestedResumeMetadata) : defaultResumeCommandForTool(toolTypeHint));
       const transcriptPath = tracked
         ? (existingSession?.transcriptPath?.trim() || safeTranscriptPathFor(sessionId))
         : "";

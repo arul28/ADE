@@ -689,6 +689,16 @@ struct WorkRootScreen: View {
               await reload(refreshRemote: true)
             }
           },
+          onChatImported: { chatSessionId in
+            selectedSessionTransitionId = nil
+            var fresh = NavigationPath()
+            fresh.append(WorkSessionRoute(sessionId: chatSessionId))
+            await Task.yield()
+            path = fresh
+            Task { @MainActor in
+              await reload(refreshRemote: true)
+            }
+          },
           onRefreshLanes: { await reload(refreshRemote: true) }
         )
         .environmentObject(syncService)

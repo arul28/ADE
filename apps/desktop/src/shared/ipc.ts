@@ -330,6 +330,8 @@ export const IPC = {
   terminalSignal: "ade.terminal.signal",
   terminalActiveForChat: "ade.terminal.activeForChat",
   terminalReattachChatCli: "ade.terminal.reattachChatCli",
+  externalSessionsList: "ade.externalSessions.list",
+  externalSessionsImport: "ade.externalSessions.import",
   diffGetChanges: "ade.diff.getChanges",
   diffGetFile: "ade.diff.getFile",
   diffGetFilePatch: "ade.diff.getFilePatch",

@@ -5198,6 +5198,63 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "work.resumeCliSession", args: args, as: StartCliSessionResult.self)
   }
 
+  func listExternalSessions(
+    providers: [String]? = nil,
+    laneId: String? = nil,
+    cwd: String? = nil,
+    scope: String = "project",
+    limit: Int? = nil
+  ) async throws -> [ExternalSessionSummary] {
+    var args: [String: Any] = ["scope": scope]
+    if let providers, !providers.isEmpty {
+      args["providers"] = providers
+    }
+    if let laneId, !laneId.isEmpty {
+      args["laneId"] = laneId
+    }
+    if let cwd, !cwd.isEmpty {
+      args["cwd"] = cwd
+    }
+    if let limit, limit > 0 {
+      args["limit"] = limit
+    }
+    let result = try await sendDecodableCommand(
+      action: "work.listExternalSessions",
+      args: args,
+      as: ExternalSessionListResult.self
+    )
+    return result.sessions
+  }
+
+  func importExternalSession(
+    provider: String,
+    sessionId: String,
+    laneId: String,
+    target: String,
+    mode: String,
+    model: String? = nil,
+    permissionMode: String? = nil
+  ) async throws -> ExternalSessionImportResult {
+    var args: [String: Any] = [
+      "provider": provider,
+      "sessionId": sessionId,
+      "laneId": laneId,
+      "target": target,
+      "mode": mode,
+    ]
+    if let model, !model.isEmpty {
+      args["model"] = model
+    }
+    if let permissionMode, !permissionMode.isEmpty {
+      args["permissionMode"] = permissionMode
+    }
+    return try await sendDecodableCommand(
+      action: "work.importExternalSession",
+      args: args,
+      as: ExternalSessionImportResult.self
+    )
+  }
+
   func unsubscribeTerminal(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }

@@ -488,6 +488,10 @@ import type {
   CursorCloudOpenChatResult,
   CursorCloudStreamRunResult,
   UpdateInstallImpact,
+  ExternalSessionListArgs,
+  ExternalSessionImportArgs,
+  ExternalSessionImportResult,
+  ExternalSessionSummary,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -532,6 +536,7 @@ import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
+import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
@@ -883,6 +888,7 @@ export type AppContext = {
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   reviewService: ReturnType<typeof createReviewService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
+  externalSessionsService?: ReturnType<typeof createExternalSessionsService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
   automationService: ReturnType<typeof createAutomationService> | null;
   automationPlannerService: ReturnType<typeof createAutomationPlannerService> | null;
@@ -4745,6 +4751,51 @@ export function registerIpc({
     }
     entries.sort((a, b) => a.domain.localeCompare(b.domain));
     return entries;
+  });
+
+  const normalizeExternalSessionListArgs = (arg: unknown): ExternalSessionListArgs => {
+    const record = isRecord(arg) ? arg as Record<string, unknown> : {};
+    return {
+      ...(Array.isArray(record.providers) ? { providers: record.providers as ExternalSessionListArgs["providers"] } : {}),
+      ...(typeof record.laneId === "string" || record.laneId === null ? { laneId: record.laneId } : {}),
+      ...(typeof record.cwd === "string" || record.cwd === null ? { cwd: record.cwd } : {}),
+      ...(record.scope === "all" || record.scope === "project" ? { scope: record.scope } : {}),
+      ...(typeof record.limit === "number" ? { limit: record.limit } : {}),
+    };
+  };
+
+  const normalizeExternalSessionImportArgs = (arg: unknown): ExternalSessionImportArgs => {
+    if (!isRecord(arg)) throw new Error("external session import expects an object payload.");
+    const record = arg as Record<string, unknown>;
+    const { provider, target, mode } = record;
+    if (provider !== "claude" && provider !== "codex" && provider !== "cursor" && provider !== "droid" && provider !== "opencode") {
+      throw new Error("external session import provider is invalid.");
+    }
+    if (target !== "cli" && target !== "chat") throw new Error("external session import target must be cli or chat.");
+    if (mode !== "resume" && mode !== "fork") throw new Error("external session import mode must be resume or fork.");
+    if (typeof record.sessionId !== "string") throw new Error("external session import sessionId must be a string.");
+    if (typeof record.laneId !== "string") throw new Error("external session import laneId must be a string.");
+    return {
+      provider,
+      sessionId: record.sessionId,
+      laneId: record.laneId,
+      target,
+      mode,
+      ...(typeof record.model === "string" ? { model: record.model } : {}),
+      ...(typeof record.permissionMode === "string" ? { permissionMode: record.permissionMode } : {}),
+    };
+  };
+
+  ipcMain.handle(IPC.externalSessionsList, async (_event, arg: unknown): Promise<ExternalSessionSummary[]> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["externalSessionsService"]);
+    return ctx.externalSessionsService.list(normalizeExternalSessionListArgs(arg));
+  });
+
+  ipcMain.handle(IPC.externalSessionsImport, async (_event, arg: unknown): Promise<ExternalSessionImportResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["externalSessionsService"]);
+    return ctx.externalSessionsService.importExternalSession(normalizeExternalSessionImportArgs(arg));
   });
 
 

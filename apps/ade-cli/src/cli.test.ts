@@ -838,6 +838,47 @@ describe("ADE CLI", () => {
     ]);
   });
 
+  it("formats external session action results as text", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "actions",
+      "run",
+      "external-sessions.list",
+      "--arg",
+      "limit=1",
+    ]));
+
+    const formatter = inferFormatter(plan);
+    expect(formatter).toBe("external-sessions");
+
+    const listText = formatOutput(
+      [
+        {
+          provider: "codex",
+          id: "thread-1",
+          cwd: "/repo",
+          title: "Investigate flaky test",
+          alreadyImported: false,
+          possiblyActive: true,
+        },
+      ],
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      formatter,
+    );
+    expect(listText).toContain("provider");
+    expect(listText).toContain("codex");
+    expect(listText).toContain("active");
+    expect(listText).toContain("Investigate flaky test");
+
+    const importText = formatOutput(
+      { kind: "cli", sessionId: "terminal-1", ptyId: "pty-1", laneId: "lane-1" },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      formatter,
+    );
+    expect(importText).toContain("ADE external session import");
+    expect(importText).toContain("terminal-1");
+    expect(importText).toContain("pty-1");
+  });
+
   it("builds typed ADE secret commands", () => {
     const list = expectExecutePlan(buildCliPlan(["secrets", "list"]));
     expect(list.formatter).toBe("project-secrets");

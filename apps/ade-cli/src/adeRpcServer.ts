@@ -32,6 +32,8 @@ import {
 import { isActionablePrIssueComment } from "../../desktop/src/shared/prIssueResolution";
 import {
   type ComputerUseBackendStyle,
+  type ExternalSessionProvider,
+  type ExternalSessionSummary,
   type ComputerUseArtifactOwner,
   type LaneLinearIssue,
   type LaneLinearIssueLink,
@@ -2062,6 +2064,10 @@ function chatAccessDenied(method: string): never {
   throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported chat method: ${method}`);
 }
 
+function externalSessionsAccessDenied(method: string): never {
+  throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported external sessions method: ${method}`);
+}
+
 function listPtySessionsForAuthorization(runtime: AdeRuntime): TerminalSessionSummary[] {
   try {
     const rows = runtime.ptyService.list({});
@@ -2357,6 +2363,149 @@ function scopeSearchAdeActionArgs(
   // transcripts.
   if (!callerChatSessionId) return searchArgs;
   return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
+}
+
+const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
+const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode"]);
+
+function isExternalSessionProviderName(value: string | null): value is ExternalSessionProvider {
+  return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
+}
+
+function realishPath(filePath: string): string {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+function isPathInsideOrEqual(parent: string, candidate: string): boolean {
+  const relative = path.relative(realishPath(parent), realishPath(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function authorizedExternalSessionsLaneId(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  externalArgs: Record<string, unknown>,
+): string {
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  const requestedLaneId = extractLaneId(externalArgs);
+  if (requestedLaneId) {
+    if (!laneIds.has(requestedLaneId)) externalSessionsAccessDenied(method);
+    return requestedLaneId;
+  }
+  if (laneIds.size === 1) return [...laneIds][0]!;
+  externalSessionsAccessDenied(method);
+}
+
+function resolveAuthorizedExternalSessionsLane(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  externalArgs: Record<string, unknown>,
+): { laneId: string; laneCwd: string } {
+  const laneId = authorizedExternalSessionsLaneId(runtime, session, method, externalArgs);
+  const laneCwd = resolveLaneWorktreePath(runtime, laneId);
+  if (!laneCwd) externalSessionsAccessDenied(method);
+  return { laneId, laneCwd: realishPath(laneCwd) };
+}
+
+function isExternalSessionSummaryLike(value: unknown): value is ExternalSessionSummary {
+  if (!isRecord(value)) return false;
+  const provider = asOptionalTrimmedString(value.provider);
+  return Boolean(isExternalSessionProviderName(provider) && asOptionalTrimmedString(value.id));
+}
+
+function filterExternalSessionSummariesForLane(result: unknown, laneCwd: string): unknown {
+  if (!Array.isArray(result)) return result;
+  return result.filter((session) => {
+    if (!isExternalSessionSummaryLike(session)) return false;
+    const cwd = asOptionalTrimmedString(session.cwd);
+    return Boolean(cwd && isPathInsideOrEqual(laneCwd, cwd));
+  });
+}
+
+function scopeExternalSessionsListArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  listArgs: Record<string, unknown>,
+): { scopedArgs: Record<string, unknown>; laneCwd: string } {
+  const method = "run_ade_action:external-sessions.list";
+  const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, listArgs);
+  return {
+    scopedArgs: {
+      ...listArgs,
+      laneId,
+      cwd: laneCwd,
+      scope: "project",
+    },
+    laneCwd,
+  };
+}
+
+function externalSessionImportUsesSourceRunCwd(provider: ExternalSessionProvider, mode: string): boolean {
+  if (mode === "resume") return provider !== "codex";
+  if (mode === "fork") return provider === "opencode";
+  return false;
+}
+
+async function findExternalSessionSummaryForAuthorization(
+  runtime: AdeRuntime,
+  method: string,
+  provider: ExternalSessionProvider,
+  sessionId: string,
+  laneId: string,
+  laneCwd: string,
+): Promise<ExternalSessionSummary | null> {
+  const externalSessionsService = runtime.externalSessionsService;
+  if (!externalSessionsService) externalSessionsAccessDenied(method);
+  const sessions = await externalSessionsService.list({
+    providers: [provider],
+    laneId,
+    cwd: laneCwd,
+    scope: "project",
+    limit: EXTERNAL_SESSION_AUTH_FIND_LIMIT,
+  });
+  return sessions.find((session) => session.id === sessionId) ?? null;
+}
+
+async function scopeExternalSessionsImportArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  importArgs: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const method = "run_ade_action:external-sessions.import";
+  const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, importArgs);
+  const scopedArgs: Record<string, unknown> = { ...importArgs, laneId };
+  delete scopedArgs.enforceLaneScopeCwd;
+  const provider = asOptionalTrimmedString(scopedArgs.provider);
+  const mode = asOptionalTrimmedString(scopedArgs.mode);
+  const target = asOptionalTrimmedString(scopedArgs.target);
+  const sessionId = asOptionalTrimmedString(scopedArgs.sessionId);
+  scopedArgs.enforceLaneScopeCwd = laneCwd;
+  const targetChatUsesSourceCwd = target === "chat" && (provider === "claude" || provider === "codex");
+  if (
+    (targetChatUsesSourceCwd || target === "cli")
+    && isExternalSessionProviderName(provider)
+    && mode
+    && sessionId
+    && (targetChatUsesSourceCwd || externalSessionImportUsesSourceRunCwd(provider, mode))
+  ) {
+    const summary = await findExternalSessionSummaryForAuthorization(
+      runtime,
+      method,
+      provider,
+      sessionId,
+      laneId,
+      laneCwd,
+    );
+    const runCwd = asOptionalTrimmedString(summary?.cwd);
+    if (!runCwd || !isPathInsideOrEqual(laneCwd, runCwd)) externalSessionsAccessDenied(method);
+  }
+  return scopedArgs;
 }
 
 async function runCtoOperatorBridgeTool(
@@ -3204,6 +3353,21 @@ async function runTool(args: {
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
+    } else if (!callerIsCto && domain === "external-sessions") {
+      const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      if (action === "list") {
+        const scoped = scopeExternalSessionsListArgs(runtime, session, externalArgs);
+        const rawResult = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+          service,
+          scoped.scopedArgs,
+        );
+        result = filterExternalSessionSummariesForLane(rawResult, scoped.laneCwd);
+        scopedResultHandled = true;
+      } else if (action === "import") {
+        scopedObjectArgs = await scopeExternalSessionsImportArgs(runtime, session, externalArgs);
+      } else {
+        externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
     }
     if (domain === "lane" && action === "create" && !argsList && !hasScalarArg) {
       // Same remote-first default as the `create_lane` tool and the sync

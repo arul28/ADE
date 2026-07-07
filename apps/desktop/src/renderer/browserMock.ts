@@ -4953,6 +4953,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
     },
+    externalSessions: {
+      list: async () => [],
+      import: async () => ({ kind: "cli" as const, sessionId: "mock-session", ptyId: "mock", laneId: "mock-lane" }),
+    },
     pty: {
       create: resolvedArg({
         ptyId: "mock",

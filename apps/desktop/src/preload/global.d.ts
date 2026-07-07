@@ -78,6 +78,10 @@ import type {
   FilesWatchArgs,
   FilesWorkspace,
   FilesWriteTextArgs,
+  ExternalSessionImportArgs,
+  ExternalSessionImportResult,
+  ExternalSessionListArgs,
+  ExternalSessionSummary,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -1576,6 +1580,10 @@ declare global {
         query: (args: SearchQueryArgs) => Promise<SearchQueryResult>;
         indexStatus: () => Promise<SearchIndexStatus | null>;
         rebuildIndex: () => Promise<SearchRebuildResult>;
+      };
+      externalSessions: {
+        list: (args?: ExternalSessionListArgs) => Promise<ExternalSessionSummary[]>;
+        import: (args: ExternalSessionImportArgs) => Promise<ExternalSessionImportResult>;
       };
       pty: {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;

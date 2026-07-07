@@ -166,6 +166,10 @@ import type {
   FilesWatchArgs,
   FilesWorkspace,
   FilesWriteTextArgs,
+  ExternalSessionImportArgs,
+  ExternalSessionImportResult,
+  ExternalSessionListArgs,
+  ExternalSessionSummary,
   GitActionResult,
   GitCherryPickArgs,
   GitCommitArgs,
@@ -6091,6 +6095,28 @@ contextBridge.exposeInMainWorld("ade", {
       const outcome = await callProjectRuntimeActionIfBound<SearchRebuildResult>("search", "rebuildIndex", {});
       if (outcome.handled && outcome.result) return outcome.result;
       return { started: false };
+    },
+  },
+  externalSessions: {
+    list: async (args: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<ExternalSessionSummary[]>(
+        "external-sessions",
+        "list",
+        { args: { ...args } },
+      );
+      return runtime.handled
+        ? runtime.result ?? []
+        : ipcRenderer.invoke(IPC.externalSessionsList, args);
+    },
+    import: async (args: ExternalSessionImportArgs): Promise<ExternalSessionImportResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<ExternalSessionImportResult>(
+        "external-sessions",
+        "import",
+        { args: { ...args } },
+      );
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.externalSessionsImport, args);
     },
   },
   pty: {

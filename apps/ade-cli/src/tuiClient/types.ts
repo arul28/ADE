@@ -20,6 +20,10 @@ import type {
   CodexThreadGoal,
   PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
+import type {
+  ExternalSessionProvider,
+  ExternalSessionSummary,
+} from "../../../desktop/src/shared/types/externalSessions";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { BufferedEvent } from "../eventBuffer";
 import type { HelpGroup } from "./helpIndex";
@@ -125,6 +129,7 @@ export type ProviderReadinessRow = {
 export type SetupPaneRowKind =
   | "provider"
   | "interface"
+  | "import-session"
   | "model"
   | "reasoning"
   | "permission"
@@ -266,6 +271,21 @@ export type RightPaneContent =
   | { kind: "context-usage"; title: string; usage: AgentChatContextUsage | null; error?: string | null }
   | { kind: "diff"; title: string; files: Array<{ path: string; additions?: number; deletions?: number; body?: string }> }
   | { kind: "chat-info"; info: ChatInfoSnapshot }
+  | {
+      kind: "external-session-browser";
+      laneId: string;
+      laneLabel: string;
+      providerFilter: ExternalSessionProvider | "all";
+      query: string;
+      sessions: ExternalSessionSummary[];
+      loading: boolean;
+      error?: string | null;
+      importError?: string | null;
+      importingKey?: string | null;
+      selectedIndex: number;
+      actionIndex: number;
+      loadedAt?: number | null;
+    }
   | {
       // /usage pane: provider quota window(s) + this session's tokens & cost.
       // `quotaWindows` undefined ⇒ no quota data in the snapshot (the daemon

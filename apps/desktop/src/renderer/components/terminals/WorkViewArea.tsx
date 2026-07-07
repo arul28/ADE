@@ -45,6 +45,7 @@ import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, format
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLaunchResult } from "./cliLaunch";
+import type { ExternalSessionImportResult, ExternalSessionSummary } from "./importSessions/contract";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 
@@ -991,6 +992,8 @@ export function WorkViewArea({
   onCloseItem: _onCloseItem,
   onOpenChatSession,
   onLaunchPtySession,
+  onImportedSession,
+  onOpenExistingImportedSession,
   onDraftLaneChange,
   onShowDraftKind,
   closingPtyIds,
@@ -1030,6 +1033,8 @@ export function WorkViewArea({
   onCloseItem: (sessionId: string) => void;
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
+  onImportedSession?: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
+  onOpenExistingImportedSession?: (ref: { kind: "chat" | "cli"; sessionId: string }) => void;
   onDraftLaneChange?: (laneId: string) => void;
   onShowDraftKind: (kind: WorkDraftKind) => void;
   closingPtyIds: Set<string>;
@@ -1167,6 +1172,8 @@ export function WorkViewArea({
             lanes={lanes}
             onOpenChatSession={onOpenChatSession}
             onLaunchPtySession={onLaunchPtySession}
+            onImportedSession={onImportedSession}
+            onOpenExistingImportedSession={onOpenExistingImportedSession}
             onDraftLaneChange={onDraftLaneChange}
             initialLinearIssueContext={initialLinearIssueContext}
             initialLinearIssueContextSource={initialLinearIssueContextSource}

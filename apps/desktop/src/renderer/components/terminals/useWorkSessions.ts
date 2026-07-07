@@ -2,6 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
+  PROVIDER_TOOL_TYPE,
+  type ExternalSessionImportResult,
+  type ExternalSessionSummary,
+} from "./importSessions/contract";
+import {
   selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
@@ -1531,6 +1536,80 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     setSessions((prev) => prev.filter((session) => session.id !== sessionId));
   }, []);
 
+  /**
+   * Route an imported external session into the Work surface. Mirrors the
+   * optimistic-inject + focus path of {@link launchPtySession} for the CLI
+   * case (the backend already created the session/pty, so we skip pty.create
+   * and adopt the returned ids) and the {@link upsertOptimisticChatSession}
+   * focus path for the chat case.
+   */
+  const adoptImportedSession = useCallback(
+    (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => {
+      invalidateSessionListCache();
+      if (result.kind === "cli") {
+        const startedAt = new Date().toISOString();
+        const optimisticSession: TerminalSessionSummary = {
+          id: result.sessionId,
+          laneId: result.laneId,
+          laneName: lanes.find((lane) => lane.id === result.laneId)?.name ?? result.laneId,
+          ptyId: result.ptyId,
+          tracked: true,
+          pinned: false,
+          manuallyNamed: false,
+          goal: null,
+          toolType: PROVIDER_TOOL_TYPE[summary.provider],
+          title: summary.title || "Imported session",
+          status: "running",
+          startedAt,
+          endedAt: null,
+          archivedAt: null,
+          exitCode: null,
+          transcriptPath: "",
+          headShaStart: null,
+          headShaEnd: null,
+          lastOutputPreview: null,
+          lastActivityAt: null,
+          summary: null,
+          runtimeState: "running",
+          resumeCommand: null,
+          resumeMetadata: null,
+          chatSessionId: null,
+        };
+        pendingOptimisticSessionsRef.current.set(result.sessionId, {
+          session: optimisticSession,
+          createdAtMs: Date.now(),
+        });
+        setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
+        selectLane(result.laneId);
+        focusSession(result.sessionId);
+        openSessionTab(result.sessionId);
+      } else {
+        selectLane(result.laneId);
+        focusSession(result.chatSessionId);
+        openSessionTab(result.chatSessionId);
+        setSelectedSessionId(result.chatSessionId);
+      }
+      void refresh({ showLoading: false, force: true }).catch(() => {});
+    },
+    [focusSession, lanes, openSessionTab, refresh, selectLane, setSelectedSessionId],
+  );
+
+  /**
+   * Focus an already-imported session (chat or CLI) that lives in the Work
+   * surface, without re-importing. Mirrors the focus path of
+   * {@link adoptImportedSession}; the session already exists in the list, so we
+   * only select/open its tab. Lane selection is resolved from the session id by
+   * {@link openSessionTab}.
+   */
+  const openExistingImportedSession = useCallback(
+    (ref: { kind: "chat" | "cli"; sessionId: string }) => {
+      focusSession(ref.sessionId);
+      openSessionTab(ref.sessionId);
+      if (ref.kind === "chat") setSelectedSessionId(ref.sessionId);
+    },
+    [focusSession, openSessionTab, setSelectedSessionId],
+  );
+
   return {
     sessions,
     lanes,
@@ -1601,6 +1680,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     stopRuntime,
     stopAllRuntimes,
     launchPtySession,
+    adoptImportedSession,
+    openExistingImportedSession,
 
     navigate,
     selectLane,

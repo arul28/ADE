@@ -1156,6 +1156,7 @@ function createMockLaneService() {
 
 function createMockSessionService() {
   const sessions = mockState.sessions;
+  const claudePointers = new Map<string, any>();
   return {
     create: vi.fn((args: any) => {
       sessions.set(args.sessionId, {
@@ -1245,6 +1246,12 @@ function createMockSessionService() {
         row.resumeCommand = resumeCommand;
       }
     }),
+    upsertClaudeSessionPointer: vi.fn((pointer: any) => {
+      claudePointers.set(pointer.chatSessionId, pointer);
+      return pointer;
+    }),
+    getClaudeSessionPointerByChatSessionId: vi.fn((chatSessionId: string) => claudePointers.get(chatSessionId) ?? null),
+    listClaudeSessionPointers: vi.fn(() => Array.from(claudePointers.values())),
   } as any;
 }
 
@@ -1675,6 +1682,7 @@ describe("createAgentChatService", () => {
   it("returns an object with all expected methods", () => {
     const { service } = createService();
     expect(service.createSession).toBeTypeOf("function");
+    expect(service.importExternalChatSession).toBeTypeOf("function");
     expect(service.handoffSession).toBeTypeOf("function");
     expect(service.sendMessage).toBeTypeOf("function");
     expect(service.steer).toBeTypeOf("function");
@@ -1773,6 +1781,289 @@ describe("createAgentChatService", () => {
       expect(session).toBeDefined();
       expect(session.provider).toBe("claude");
       expect(session.status).toBe("idle");
+    });
+
+    it("imports a same-cwd Claude external chat with persisted resume identity and visible history", async () => {
+      const externalSessionId = "11111111-2222-3333-4444-555555555555";
+      const claudeConfigRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
+      const claudeProjectDir = path.join(
+        claudeConfigRoot,
+        "projects",
+        tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+      );
+      fs.mkdirSync(claudeProjectDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(claudeProjectDir, `${externalSessionId}.jsonl`),
+        [
+          JSON.stringify({
+            type: "user",
+            uuid: "user-1",
+            timestamp: "2026-07-06T10:00:00.000Z",
+            cwd: tmpRoot,
+            sessionId: externalSessionId,
+            message: { role: "user", content: [{ type: "text", text: "Please inspect the failing test." }] },
+          }),
+          JSON.stringify({
+            type: "assistant",
+            uuid: "assistant-1",
+            timestamp: "2026-07-06T10:00:02.000Z",
+            cwd: tmpRoot,
+            sessionId: externalSessionId,
+            message: {
+              role: "assistant",
+              content: [
+                { type: "text", text: "I will check the focused test output." },
+                { type: "tool_use", id: "toolu_01", name: "Bash", input: { command: "npm test" } },
+              ],
+            },
+          }),
+        ].join("\n"),
+        "utf8",
+      );
+
+      const { service, sessionService } = createService();
+      const result = await service.importExternalChatSession({
+        provider: "claude",
+        externalSessionId,
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: false,
+      });
+
+      const persisted = readPersistedChatState(result.chatSessionId);
+      expect(persisted.sdkSessionId).toBe(externalSessionId);
+      expect(persisted.claudeBackgroundResumeSessionId).toBe(externalSessionId);
+      expect(persisted.importedFrom).toMatchObject({
+        provider: "claude",
+        sessionId: externalSessionId,
+      });
+      expect(typeof persisted.importedFrom.importedAt).toBe("number");
+      expect(sessionService.getClaudeSessionPointerByChatSessionId(result.chatSessionId)).toMatchObject({
+        sessionId: externalSessionId,
+        laneId: "lane-1",
+        chatSessionId: result.chatSessionId,
+      });
+      expect(sessionService.get(result.chatSessionId)?.title).toBe("Please inspect the failing test");
+
+      const history = service.getChatEventHistory(result.chatSessionId, { maxEvents: 10 });
+      expect(history.events.map((envelope) => envelope.event.type)).toEqual([
+        "system_notice",
+        "user_message",
+        "text",
+        "tool_call",
+      ]);
+      expect(history.events[0]!.event).toMatchObject({ type: "system_notice", message: "Session imported from claude CLI (11111111)" });
+      expect(history.events[1]!.event).toMatchObject({ type: "user_message", text: "Please inspect the failing test." });
+      expect(history.events[2]!.event).toMatchObject({ type: "text", text: "I will check the focused test output." });
+      await expect(service.getSessionSummary(result.chatSessionId)).resolves.toMatchObject({
+        importedFrom: {
+          provider: "claude",
+          sessionId: externalSessionId,
+        },
+      });
+    });
+
+    it("forks a same-cwd Claude chat import into a new SDK session id", async () => {
+      const externalSessionId = "12121212-3434-4343-8343-565656565656";
+      const previousClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      const claudeConfigRoot = path.join(tmpHomeRoot, ".claude");
+      process.env.CLAUDE_CONFIG_DIR = claudeConfigRoot;
+      try {
+        const sourcePath = path.join(
+          claudeConfigRoot,
+          "projects",
+          tmpRoot.replace(/[^A-Za-z0-9]/g, "-"),
+          `${externalSessionId}.jsonl`,
+        );
+        fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+        fs.writeFileSync(
+          sourcePath,
+          [
+            JSON.stringify({
+              type: "user",
+              uuid: "user-1",
+              timestamp: "2026-07-06T10:00:00.000Z",
+              cwd: tmpRoot,
+              sessionId: externalSessionId,
+              message: { role: "user", content: [{ type: "text", text: "Fork this without mutating the source." }] },
+            }),
+          ].join("\n") + "\n",
+          "utf8",
+        );
+        const sourceBefore = fs.readFileSync(sourcePath, "utf8");
+        const readline = await import("node:readline");
+        const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
+          on: vi.fn(),
+          close: vi.fn(),
+          [Symbol.asyncIterator]: () => (async function* () {
+            const chunks: string[] = [];
+            for await (const chunk of options.input) chunks.push(String(chunk));
+            for (const line of chunks.join("").split(/\r?\n/u)) yield line;
+          })(),
+        });
+        vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
+        vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+        const { service } = createService();
+
+        const result = await service.importExternalChatSession({
+          provider: "claude",
+          externalSessionId,
+          laneId: "lane-1",
+          cwd: tmpRoot,
+          fork: true,
+        });
+
+        const persisted = readPersistedChatState(result.chatSessionId);
+        expect(persisted.sdkSessionId).not.toBe(externalSessionId);
+        expect(persisted.claudeBackgroundResumeSessionId).toBe(persisted.sdkSessionId);
+        expect(fs.readFileSync(sourcePath, "utf8")).toBe(sourceBefore);
+        const projectsDir = path.join(claudeConfigRoot, "projects");
+        const forkedPath = fs.readdirSync(projectsDir)
+          .flatMap((entry) => {
+            const projectDir = path.join(projectsDir, entry);
+            return fs.statSync(projectDir).isDirectory()
+              ? fs.readdirSync(projectDir).map((fileName) => path.join(projectDir, fileName))
+              : [];
+          })
+          .find((candidate) => path.basename(candidate) === `${persisted.sdkSessionId}.jsonl`);
+        expect(forkedPath).toBeTruthy();
+        const forkedRows = fs.readFileSync(forkedPath!, "utf8").trim().split(/\r?\n/u).map((line) => JSON.parse(line));
+        expect(forkedRows[0]).toMatchObject({
+          cwd: tmpRoot,
+          sessionId: persisted.sdkSessionId,
+        });
+      } finally {
+        if (previousClaudeConfigDir === undefined) {
+          delete process.env.CLAUDE_CONFIG_DIR;
+        } else {
+          process.env.CLAUDE_CONFIG_DIR = previousClaudeConfigDir;
+        }
+      }
+    });
+
+    it("preserves the source Claude JSONL when a failed cross-cwd chat import follows transplant", async () => {
+      const externalSessionId = "22222222-3333-4333-8333-666666666666";
+      const sourceCwd = path.join(tmpHomeRoot, "source-project");
+      const claudeConfigRoot = process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(tmpHomeRoot, ".claude");
+      const sourcePath = path.join(
+        claudeConfigRoot,
+        "projects",
+        sourceCwd.replace(/[^A-Za-z0-9]/g, "-"),
+        `${externalSessionId}.jsonl`,
+      );
+      fs.mkdirSync(path.dirname(sourcePath), { recursive: true });
+      fs.writeFileSync(
+        sourcePath,
+        JSON.stringify({
+          type: "user",
+          uuid: "user-1",
+          timestamp: "2026-07-06T10:00:00.000Z",
+          cwd: sourceCwd,
+          sessionId: externalSessionId,
+          message: { role: "user", content: [{ type: "text", text: "Keep my original transcript." }] },
+        }) + "\n",
+        "utf8",
+      );
+      const failingSessionService = createMockSessionService();
+      vi.mocked(failingSessionService.create).mockImplementationOnce(() => {
+        throw new Error("create failed after transplant");
+      });
+      const readline = await import("node:readline");
+      const createLineReader = (options: { input: AsyncIterable<string | Buffer> }) => ({
+        on: vi.fn(),
+        close: vi.fn(),
+        [Symbol.asyncIterator]: () => (async function* () {
+          const chunks: string[] = [];
+          for await (const chunk of options.input) chunks.push(String(chunk));
+          for (const line of chunks.join("").split(/\r?\n/u)) yield line;
+        })(),
+      });
+      vi.mocked(readline.createInterface).mockImplementationOnce(createLineReader as any);
+      vi.mocked((readline as any).default.createInterface).mockImplementationOnce(createLineReader as any);
+      const { service } = createService({ sessionService: failingSessionService });
+
+      await expect(service.importExternalChatSession({
+        provider: "claude",
+        externalSessionId,
+        laneId: "lane-1",
+        cwd: sourceCwd,
+        fork: false,
+      })).rejects.toThrow("create failed after transplant");
+
+      expect(fs.existsSync(sourcePath)).toBe(true);
+    });
+
+    it("archives a forked Codex provider thread when a chat import fails after fork", async () => {
+      mockState.codexResponseOverrides.set("thread/fork", () => ({
+        thread: { id: "forked-thread-1" },
+      }));
+      mockState.codexResponseOverrides.set("thread/read", (payload) => {
+        const params = payload.params as { threadId?: unknown } | undefined;
+        if (params?.threadId === "source-thread-1") {
+          return { thread: { id: "source-thread-1", turns: [] } };
+        }
+        return {};
+      });
+      const { service, sessionService } = createService();
+
+      await expect(service.importExternalChatSession({
+        provider: "codex",
+        externalSessionId: "source-thread-1",
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: true,
+      })).rejects.toThrow(/was not found by thread\/read/i);
+
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "thread/archive",
+          params: { threadId: "forked-thread-1" },
+        }),
+      ]));
+      expect(sessionService.get("test-uuid-1")).toBeNull();
+    });
+
+    it("reacquires a Codex runtime to archive a forked provider thread when the import runtime cannot clean up", async () => {
+      let archiveAttempts = 0;
+      mockState.codexResponseOverrides.set("thread/fork", () => ({
+        thread: { id: "forked-thread-2" },
+      }));
+      mockState.codexResponseOverrides.set("thread/read", (payload) => {
+        const params = payload.params as { threadId?: unknown } | undefined;
+        if (params?.threadId === "source-thread-2") {
+          return { thread: { id: "source-thread-2", turns: [] } };
+        }
+        return {};
+      });
+      mockState.codexResponseOverrides.set("thread/archive", () => {
+        archiveAttempts += 1;
+        if (archiveAttempts === 1) {
+          return { error: { code: -32000, message: "dead runtime" } };
+        }
+        return {};
+      });
+      const { service, logger, sessionService } = createService();
+
+      await expect(service.importExternalChatSession({
+        provider: "codex",
+        externalSessionId: "source-thread-2",
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: true,
+      })).rejects.toThrow(/was not found by thread\/read/i);
+
+      const initializeRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "initialize");
+      const archiveRequests = mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/archive");
+      expect(initializeRequests).toHaveLength(2);
+      expect(archiveRequests).toEqual([
+        expect.objectContaining({ params: { threadId: "forked-thread-2" } }),
+        expect.objectContaining({ params: { threadId: "forked-thread-2" } }),
+      ]);
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "agent_chat.external_import_codex_fork_cleanup_leaked",
+        expect.anything(),
+      );
+      expect(sessionService.get("test-uuid-1")).toBeNull();
     });
 
     it("derives the runtime model from modelId when raw action callers omit model", async () => {
@@ -3818,8 +4109,14 @@ describe("createAgentChatService", () => {
       );
 
       const startPayload = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      const startParams = startPayload?.params as { effort?: unknown; reasoningEffort?: unknown; reasoning_effort?: unknown } | undefined;
-      expect(startParams?.effort).toBe("low");
+      const startParams = startPayload?.params as {
+        config?: { model_reasoning_effort?: unknown };
+        effort?: unknown;
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+      } | undefined;
+      expect(startParams?.config?.model_reasoning_effort).toBe("low");
+      expect(startParams?.effort).toBeUndefined();
       expect(startParams?.reasoningEffort).toBeUndefined();
       expect(startParams?.reasoning_effort).toBeUndefined();
     });
@@ -16562,10 +16859,12 @@ describe("createAgentChatService", () => {
         reasoningEffort?: unknown;
         reasoning_effort?: unknown;
         effort?: unknown;
+        config?: { model_reasoning_effort?: unknown };
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.effort).toBe("medium");
+      expect(params?.config?.model_reasoning_effort).toBe("medium");
+      expect(params?.effort).toBeUndefined();
       expect(params?.reasoningEffort).toBeUndefined();
       expect(params?.reasoning_effort).toBeUndefined();
 
@@ -16697,8 +16996,14 @@ describe("createAgentChatService", () => {
       });
 
       const threadStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/start");
-      const threadStartParams = threadStartRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined;
-      expect(threadStartParams?.effort).toBe("xhigh");
+      const threadStartParams = threadStartRequest?.params as {
+        config?: { model_reasoning_effort?: unknown };
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+        effort?: unknown;
+      } | undefined;
+      expect(threadStartParams?.config?.model_reasoning_effort).toBe("xhigh");
+      expect(threadStartParams?.effort).toBeUndefined();
       expect(threadStartParams?.reasoningEffort).toBeUndefined();
       expect(threadStartParams?.reasoning_effort).toBeUndefined();
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -16844,10 +17149,12 @@ describe("createAgentChatService", () => {
         sandbox?: unknown;
         reasoningEffort?: unknown;
         effort?: unknown;
+        config?: { model_reasoning_effort?: unknown };
       } | undefined;
       expect(params?.approvalPolicy).toBe("never");
       expect(params?.sandbox).toBe("danger-full-access");
-      expect(params?.effort).toBe("medium");
+      expect(params?.config?.model_reasoning_effort).toBe("medium");
+      expect(params?.effort).toBeUndefined();
       expect(params?.reasoningEffort).toBeUndefined();
 
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
@@ -17787,10 +18094,20 @@ describe("createAgentChatService", () => {
       const resumed = await service.resumeSession({ sessionId: session.id });
 
       const resumeRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "thread/resume");
-      const resumeParams = resumeRequest?.params as { reasoningEffort?: unknown; reasoning_effort?: unknown; effort?: unknown } | undefined;
-      expect(resumeParams?.effort).toBe("xhigh");
+      const resumeParams = resumeRequest?.params as {
+        config?: { model_reasoning_effort?: unknown };
+        reasoningEffort?: unknown;
+        reasoning_effort?: unknown;
+        effort?: unknown;
+        dynamicTools?: unknown;
+        persistExtendedHistory?: unknown;
+      } | undefined;
+      expect(resumeParams?.config?.model_reasoning_effort).toBe("xhigh");
+      expect(resumeParams?.effort).toBeUndefined();
       expect(resumeParams?.reasoningEffort).toBeUndefined();
       expect(resumeParams?.reasoning_effort).toBeUndefined();
+      expect(resumeParams?.dynamicTools).toBeUndefined();
+      expect(resumeParams?.persistExtendedHistory).toBeUndefined();
       expect(resumed.codexApprovalPolicy).toBe("never");
       expect(resumed.codexSandbox).toBe("danger-full-access");
       expect(resumed.permissionMode).toBe("full-auto");
