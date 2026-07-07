@@ -818,7 +818,13 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
   var opencodePermissionMode: String?
   var droidPermissionMode: String?
   var cursorModeId: String?
+  /// True when the event carried `cursorModeId: null` (an intentional clear the
+  /// host emits to drop a cursor mode) rather than omitting the key. Absent-key
+  /// still means "no change"; only an explicit null sets this so
+  /// `applyModeUpdate` assigns nil instead of skipping.
+  var cursorModeIdWasCleared: Bool = false
   var cursorModeSnapshot: RemoteJSONValue?
+  var cursorConfigValues: [String: RemoteJSONValue]?
 
   private enum CodingKeys: String, CodingKey {
     case permissionMode
@@ -832,6 +838,7 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     case droidPermissionMode
     case cursorModeId
     case cursorModeSnapshot
+    case cursorConfigValues
   }
 
   init(from decoder: Decoder) throws {
@@ -851,8 +858,18 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
     codexConfigSource = try c.decodeIfPresent(String.self, forKey: .codexConfigSource)
     opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
     droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
-    cursorModeId = try c.decodeIfPresent(String.self, forKey: .cursorModeId)
+    // Distinguish `cursorModeId: null` (an intentional clear) from an absent
+    // key. decodeIfPresent collapses both to nil, so gate on `contains`: a
+    // present-but-null key means the host cleared the cursor mode.
+    if c.contains(.cursorModeId) {
+      cursorModeId = try c.decodeIfPresent(String.self, forKey: .cursorModeId)
+      cursorModeIdWasCleared = cursorModeId == nil
+    } else {
+      cursorModeId = nil
+      cursorModeIdWasCleared = false
+    }
     cursorModeSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+    cursorConfigValues = try c.decodeIfPresent([String: RemoteJSONValue].self, forKey: .cursorConfigValues)
   }
 
   /// True when the event carries at least one mode field. A bare
@@ -867,7 +884,9 @@ struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
       || opencodePermissionMode != nil
       || droidPermissionMode != nil
       || cursorModeId != nil
+      || cursorModeIdWasCleared
       || cursorModeSnapshot != nil
+      || cursorConfigValues != nil
   }
 }
 
@@ -884,8 +903,15 @@ extension AgentChatSessionSummary {
     if let v = update.codexConfigSource { codexConfigSource = v }
     if let v = update.opencodePermissionMode { opencodePermissionMode = v }
     if let v = update.droidPermissionMode { droidPermissionMode = v }
-    if let v = update.cursorModeId { cursorModeId = v }
+    if let v = update.cursorModeId {
+      cursorModeId = v
+    } else if update.cursorModeIdWasCleared {
+      // Explicit `cursorModeId: null` from the host — drop the mode rather than
+      // leaving the stale one in place.
+      cursorModeId = nil
+    }
     if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
+    if let v = update.cursorConfigValues { cursorConfigValues = v }
   }
 
   /// Overlay the non-nil mode fields from another summary (used to fold a
@@ -902,6 +928,7 @@ extension AgentChatSessionSummary {
     if let v = other.droidPermissionMode { droidPermissionMode = v }
     if let v = other.cursorModeId { cursorModeId = v }
     if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
+    if let v = other.cursorConfigValues { cursorConfigValues = v }
   }
 }
 

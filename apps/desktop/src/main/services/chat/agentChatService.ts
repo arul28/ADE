@@ -26937,6 +26937,9 @@ export function createAgentChatService(args: {
           ? { cursorModeId: managed.session.cursorModeId ?? null }
           : {}),
         ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
+        ...(cursorConfigValues !== undefined || managed.session.cursorConfigValues != null
+          ? { cursorConfigValues: managed.session.cursorConfigValues ?? null }
+          : {}),
       });
     }
     if (

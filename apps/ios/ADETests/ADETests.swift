@@ -9586,6 +9586,69 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.requestedCwd, "apps/ios/ADE")
   }
 
+  func testAgentChatMetaModeUpdateAppliesCursorConfigAndExplicitClear() throws {
+    let summaryPayload: [String: Any] = [
+      "sessionId": "chat-1",
+      "laneId": "lane-1",
+      "provider": "cursor",
+      "model": "cursor-agent",
+      "modelId": "cursor-agent-1",
+      "cursorModeId": "ask",
+      "cursorConfigValues": ["voice": true],
+      "status": "running",
+      "startedAt": "2026-03-25T00:00:00.000Z",
+      "lastActivityAt": "2026-03-25T00:00:00.000Z",
+    ]
+    var summary = try JSONDecoder().decode(
+      AgentChatSessionSummary.self,
+      from: try JSONSerialization.data(withJSONObject: summaryPayload)
+    )
+    XCTAssertEqual(summary.cursorModeId, "ask")
+
+    // A config-only update carries new cursorConfigValues and, per the host
+    // emit, the current (non-null) cursorModeId. Both should be applied.
+    let configUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "cursorModeId": "ask",
+        "cursorConfigValues": ["voice": false, "temperature": 0.7],
+      ])
+    )
+    XCTAssertTrue(configUpdate.hasAnyField)
+    summary.applyModeUpdate(configUpdate)
+    XCTAssertEqual(summary.cursorModeId, "ask")
+    XCTAssertEqual(summary.cursorConfigValues?["voice"], .bool(false))
+    XCTAssertEqual(summary.cursorConfigValues?["temperature"], .number(0.7))
+
+    // An explicit `cursorModeId: null` is an intentional clear and must drop
+    // the mode rather than being ignored as if the key were absent.
+    let clearUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "cursorModeId": NSNull(),
+      ])
+    )
+    XCTAssertTrue(clearUpdate.cursorModeIdWasCleared)
+    XCTAssertTrue(clearUpdate.hasAnyField)
+    summary.applyModeUpdate(clearUpdate)
+    XCTAssertNil(summary.cursorModeId)
+
+    // A partial update that omits cursorModeId entirely must NOT clear it.
+    summary.cursorModeId = "agent"
+    let unrelatedUpdate = try JSONDecoder().decode(
+      AgentChatSessionMetaModeUpdate.self,
+      from: try JSONSerialization.data(withJSONObject: [
+        "type": "session_meta_updated",
+        "permissionMode": "edit",
+      ])
+    )
+    XCTAssertFalse(unrelatedUpdate.cursorModeIdWasCleared)
+    summary.applyModeUpdate(unrelatedUpdate)
+    XCTAssertEqual(summary.cursorModeId, "agent")
+  }
+
   func testAgentChatSessionDecodesCodexFastModeFlag() throws {
     let payload: [String: Any] = [
       "sessionId": "chat-fast",

@@ -5883,6 +5883,7 @@ export function AgentChatPane({
         if (meta.droidPermissionMode !== undefined) summaryPatch.droidPermissionMode = meta.droidPermissionMode;
         if (meta.cursorModeId !== undefined) summaryPatch.cursorModeId = meta.cursorModeId;
         if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
+        if (meta.cursorConfigValues !== undefined) summaryPatch.cursorConfigValues = meta.cursorConfigValues;
         if (Object.keys(summaryPatch).length > 0) {
           patchSessionSummary(envelope.sessionId, summaryPatch);
         }
@@ -5903,10 +5904,22 @@ export function AgentChatPane({
           if (meta.codexConfigSource !== undefined) setCodexConfigSource(meta.codexConfigSource);
           if (meta.opencodePermissionMode !== undefined) setOpenCodePermissionMode(meta.opencodePermissionMode);
           if (meta.droidPermissionMode !== undefined) setDroidPermissionMode(meta.droidPermissionMode);
-          if (meta.cursorModeId !== undefined || meta.cursorModeSnapshot !== undefined) {
+          if (
+            meta.cursorModeId !== undefined
+            || meta.cursorModeSnapshot !== undefined
+            || meta.cursorConfigValues !== undefined
+          ) {
             const snapshot = meta.cursorModeSnapshot;
-            setCursorModeId(meta.cursorModeId ?? snapshot?.currentModeId ?? initialNativeControls.cursorModeId);
-            if (snapshot) {
+            if (meta.cursorModeId !== undefined || snapshot !== undefined) {
+              setCursorModeId(meta.cursorModeId ?? snapshot?.currentModeId ?? initialNativeControls.cursorModeId);
+            }
+            // An explicit cursorConfigValues in the event is authoritative (it
+            // carries config-only changes the snapshot may not reflect, since
+            // the host only recomputes cursorModeSnapshot on mode changes);
+            // otherwise fall back to deriving values from the snapshot.
+            if (meta.cursorConfigValues !== undefined) {
+              setCursorConfigValues(meta.cursorConfigValues ?? {});
+            } else if (snapshot) {
               setCursorConfigValues(
                 Object.fromEntries(
                   (snapshot.configOptions ?? [])

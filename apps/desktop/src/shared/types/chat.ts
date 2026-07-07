@@ -818,6 +818,7 @@ export type AgentChatEvent =
       droidPermissionMode?: AgentChatDroidPermissionMode;
       cursorModeId?: string | null;
       cursorModeSnapshot?: AgentChatCursorModeSnapshot;
+      cursorConfigValues?: Record<string, AgentChatCursorConfigValue> | null;
       // Accept turnId for uniformity with other variants — ignored by handlers.
       turnId?: string;
     };
