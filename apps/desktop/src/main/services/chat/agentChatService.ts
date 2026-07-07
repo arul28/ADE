@@ -351,6 +351,11 @@ import {
   type DroidSdkEventMapperState,
 } from "./droidSdkEventMapper";
 import {
+  createCompactionEmitterState,
+  mapLegacyCompactionEvent,
+  type CompactionEmitterState,
+} from "./contextCompactionEmitter";
+import {
   allowCursorHook,
   approvalPolicyLabel,
   denyCursorHook,
@@ -1811,6 +1816,7 @@ type ManagedChatSession = {
   claudeBackgroundJobShort: string | null;
   claudeBackgroundResumeSessionId: string | null;
   claudeBackgroundLogText: string;
+  compactionEmitterState: CompactionEmitterState;
 };
 
 type AgentChatTranscriptEntry = {
@@ -9924,6 +9930,17 @@ export function createAgentChatService(args: {
     if (normalizedEvent.type === "todo_update") {
       managed.todoItems = normalizedEvent.items;
     }
+
+    const compactionEvent = mapLegacyCompactionEvent(
+      managed.compactionEmitterState,
+      managed.session,
+      normalizedEvent,
+    );
+    if (compactionEvent) {
+      commitChatEventWithCanonical(managed, compactionEvent, options);
+      return;
+    }
+
     commitChatEventWithCanonical(managed, normalizedEvent, options);
   };
 
@@ -11619,6 +11636,7 @@ export function createAgentChatService(args: {
       claudeBackgroundJobShort: persisted?.claudeBackgroundJobShort ?? null,
       claudeBackgroundResumeSessionId: persisted?.claudeBackgroundResumeSessionId ?? persisted?.sdkSessionId ?? null,
       claudeBackgroundLogText: persisted?.claudeBackgroundLogText ?? "",
+      compactionEmitterState: createCompactionEmitterState(),
     };
     managed.todoItems = readLatestTranscriptTodoItems(managed);
     if (!managed.session.interactionMode && managed.session.orchestrationRole) {
@@ -17910,6 +17928,7 @@ export function createAgentChatService(args: {
           state: "started",
           trigger,
           turnId: compactionTurnId,
+          compactionId: itemId,
         });
         return;
       }
@@ -17920,6 +17939,7 @@ export function createAgentChatService(args: {
           state: "completed",
           trigger,
           turnId: compactionTurnId,
+          compactionId: itemId,
         });
         runtime.manualCompactionItemIds.delete(itemId);
       }
@@ -21301,6 +21321,7 @@ export function createAgentChatService(args: {
       claudeBackgroundJobShort: null,
       claudeBackgroundResumeSessionId: null,
       claudeBackgroundLogText: "",
+      compactionEmitterState: createCompactionEmitterState(),
     };
 
     let runtime: CodexRuntime | null = null;
@@ -21883,6 +21904,7 @@ export function createAgentChatService(args: {
       claudeBackgroundJobShort: null,
       claudeBackgroundResumeSessionId: null,
       claudeBackgroundLogText: "",
+      compactionEmitterState: createCompactionEmitterState(),
     };
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     enforceOrchestrationLockedPermissionMode(managed.session);

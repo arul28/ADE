@@ -264,10 +264,11 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
   case .promptSuggestion(let text, let turnId):
     combineLongTextSignature(text, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .contextCompact(let summary, let isInProgress, let turnId):
+  case .contextCompact(let summary, let isInProgress, let turnId, let compactionId):
     combineLongTextSignature(summary, into: &hasher)
     hasher.combine(isInProgress)
     combineOptional(turnId, into: &hasher)
+    combineOptional(compactionId, into: &hasher)
   case .autoApprovalReview(let summary, let turnId):
     combineLongTextSignature(summary, into: &hasher)
     combineOptional(turnId, into: &hasher)
@@ -1462,16 +1463,22 @@ private func workReasoningCardId(
 }
 
 /// Stable identity for a context-compaction divider. Both the `started` and
-/// `completed` events for one compaction share this id (keyed on the turn) so
-/// `buildWorkEventCards` merges them into a single card that flips from the
-/// live "Compacting context…" state to "Context compacted" in place. Without a
-/// turnId — legacy end-only `context_compact` events — we fall back to the
+/// `completed` events for one compaction share this id (prefer `compactionId`,
+/// then turn) so `buildWorkEventCards` merges them into a single card that flips
+/// from the live "Compacting context…" state to "Context compacted" in place.
+/// Cross-turn Codex compactions reuse one `compactionId` across turns. Without
+/// either key — legacy end-only `context_compact` events — fall back to the
 /// envelope id, which preserves the prior one-card-per-event behavior.
 private func workContextCompactCardId(
   sessionId: String,
   turnId: String?,
+  compactionId: String?,
   fallback: String
 ) -> String {
+  let trimmedCompactionId = compactionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let trimmedCompactionId, !trimmedCompactionId.isEmpty {
+    return ["context-compact", sessionId, "compaction", trimmedCompactionId].joined(separator: ":")
+  }
   if let turnId, !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
     return ["context-compact", sessionId, "turn", turnId].joined(separator: ":")
   }
@@ -1815,13 +1822,16 @@ private func eventCard(
         bullets: [],
         metadata: []
       )
-    case .contextCompact(let summary, let isInProgress, let turnId):
+    case .contextCompact(let summary, let isInProgress, let turnId, let compactionId):
       return WorkEventCardModel(
-        // Use a turn-scoped merge key so the `started` card UPDATES in place to
-        // `completed` (the later event wins via `mergedWorkEventCard`) instead
-        // of stacking two dividers. Falls back to the envelope id when the host
-        // omits a turnId (legacy end-only events have nothing to merge against).
-        id: workContextCompactCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
+        // Prefer compactionId so started/completed pairs merge even when Codex
+        // finishes on a different turn. Falls back to turnId, then envelope id.
+        id: workContextCompactCardId(
+          sessionId: envelope.sessionId,
+          turnId: turnId,
+          compactionId: compactionId,
+          fallback: envelope.id
+        ),
         kind: "contextCompact",
         title: isInProgress ? "Compacting context…" : "Context compacted",
         icon: "rectangle.compress.vertical",
@@ -2128,7 +2138,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .systemNotice(_, _, _, let turnId, _),
        .error(_, _, _, let turnId),
        .promptSuggestion(_, let turnId),
-       .contextCompact(_, _, let turnId),
+       .contextCompact(_, _, let turnId, _),
        .autoApprovalReview(_, let turnId),
        .webSearch(_, _, _, _, _, let turnId),
        .codexState(_, _, _, let turnId),

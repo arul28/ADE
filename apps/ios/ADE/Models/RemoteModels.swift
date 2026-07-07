@@ -1854,8 +1854,23 @@ enum AgentChatEvent: Decodable, Equatable {
   case transcriptRetraction(messageIds: [String], reason: String?, replacementMessageId: String?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
-  case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, state: AgentChatContextCompactState?, turnId: String?)
-  case codexContextCompaction(state: AgentChatContextCompactState, trigger: AgentChatContextCompactTrigger, turnId: String)
+  case contextCompact(
+    trigger: AgentChatContextCompactTrigger,
+    preTokens: Int?,
+    postTokens: Int?,
+    durationMs: Int?,
+    provider: String?,
+    sessionCompactionCount: Int?,
+    compactionId: String?,
+    state: AgentChatContextCompactState?,
+    turnId: String?
+  )
+  case codexContextCompaction(
+    state: AgentChatContextCompactState,
+    trigger: AgentChatContextCompactTrigger,
+    turnId: String,
+    compactionId: String?
+  )
   case codexSafetyBuffering(state: CodexSafetyBufferingState, turnId: String?)
   case codexModerationMetadata(metadata: CodexModerationMetadata, turnId: String?)
   case codexSleep(itemId: String, turnId: String?, durationMs: Int?, status: String)
@@ -1947,6 +1962,11 @@ extension AgentChatEvent {
     case toolUseIds
     case trigger
     case preTokens
+    case postTokens
+    case durationMs
+    case provider
+    case sessionCompactionCount
+    case compactionId
     case state
     case reasons
     case recoveryOptions
@@ -2205,6 +2225,11 @@ extension AgentChatEvent {
       self = .contextCompact(
         trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
         preTokens: try container.decodeIfPresent(Int.self, forKey: .preTokens),
+        postTokens: try container.decodeIfPresent(Int.self, forKey: .postTokens),
+        durationMs: try container.decodeIfPresent(Int.self, forKey: .durationMs),
+        provider: try container.decodeIfPresent(String.self, forKey: .provider),
+        sessionCompactionCount: try container.decodeIfPresent(Int.self, forKey: .sessionCompactionCount),
+        compactionId: try container.decodeIfPresent(String.self, forKey: .compactionId),
         state: try container.decodeIfPresent(AgentChatContextCompactState.self, forKey: .state),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
@@ -2212,7 +2237,8 @@ extension AgentChatEvent {
       self = .codexContextCompaction(
         state: try container.decode(AgentChatContextCompactState.self, forKey: .state),
         trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
-        turnId: try container.decode(String.self, forKey: .turnId)
+        turnId: try container.decode(String.self, forKey: .turnId),
+        compactionId: try container.decodeIfPresent(String.self, forKey: .compactionId)
       )
     case "codex_safety_buffering":
       self = .codexSafetyBuffering(

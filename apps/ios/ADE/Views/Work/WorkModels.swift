@@ -831,7 +831,7 @@ enum WorkChatEvent: Equatable {
   case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?)
   case tokens(usage: WorkUsageSummary, turnId: String, itemId: String?)
   case promptSuggestion(text: String, turnId: String?)
-  case contextCompact(summary: String, isInProgress: Bool, turnId: String?)
+  case contextCompact(summary: String, isInProgress: Bool, turnId: String?, compactionId: String?)
   case autoApprovalReview(summary: String, turnId: String?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
   case codexState(title: String, message: String, icon: String, turnId: String?)

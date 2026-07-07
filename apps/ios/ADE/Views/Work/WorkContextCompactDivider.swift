@@ -13,9 +13,50 @@ struct WorkContextCompactDivider: View {
   /// "Compacting context…" chip with a spinner; flips to the static
   /// "Context compacted" chip once the completed event merges into this card.
   var isInProgress: Bool = false
+  var sessionCompactionCount: Int? = nil
+  var provider: String? = nil
 
   private var parsed: WorkContextCompactSummary {
     WorkContextCompactSummary.parse(summary)
+  }
+
+  private var providerFromSummary: String? {
+    guard let summary else { return provider }
+    for line in summary.split(separator: "\n") {
+      let text = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      if text.hasPrefix("provider:") {
+        return String(text.dropFirst("provider:".count))
+      }
+    }
+    return provider
+  }
+
+  private var sessionCountFromSummary: Int? {
+    guard let summary else { return sessionCompactionCount }
+    for line in summary.split(separator: "\n") {
+      let text = line.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      if text.hasPrefix("sessioncount:") {
+        return Int(text.dropFirst("sessioncount:".count))
+      }
+    }
+    return sessionCompactionCount
+  }
+
+  private var completedTitle: String {
+    if let count = sessionCountFromSummary, count >= 2 {
+      return "Context compacted (\(count)×)"
+    }
+    return "Context compacted"
+  }
+
+  private var providerTint: Color {
+    switch providerFromSummary?.lowercased() {
+    case "cursor": return ADEColor.accent
+    case "codex": return .white.opacity(0.85)
+    case "opencode": return .cyan
+    case "droid": return .orange
+    default: return ADEColor.warning
+    }
   }
 
   var body: some View {
@@ -28,7 +69,7 @@ struct WorkContextCompactDivider: View {
     }
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(isInProgress ? "Compacting context" : parsed.accessibilityLabel)
+    .accessibilityLabel(isInProgress ? "Compacting context" : parsed.accessibilityLabel(for: completedTitle))
   }
 
   @ViewBuilder
@@ -36,9 +77,9 @@ struct WorkContextCompactDivider: View {
     ViewThatFits(in: .horizontal) {
       chipContainer {
         chipContent(
-          title: isInProgress ? "Compacting context..." : "Context compacted",
-          showsTokenCount: true,
-          showsTrigger: true
+          title: isInProgress ? "Compacting context..." : completedTitle,
+          showsTokenCount: !isInProgress,
+          showsTrigger: !isInProgress
         )
       }
       chipContainer {
@@ -75,12 +116,12 @@ struct WorkContextCompactDivider: View {
 
   private func chipContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
     content()
-      .foregroundStyle(ADEColor.warning)
+      .foregroundStyle(providerTint)
       .padding(.horizontal, 10)
       .padding(.vertical, 5)
-      .background(ADEColor.warning.opacity(0.08), in: Capsule())
+      .background(providerTint.opacity(0.08), in: Capsule())
       .overlay(
-        Capsule().stroke(ADEColor.warning.opacity(0.2), lineWidth: 0.5)
+        Capsule().stroke(providerTint.opacity(0.2), lineWidth: 0.5)
       )
   }
 
@@ -90,7 +131,7 @@ struct WorkContextCompactDivider: View {
       if isInProgress {
         ProgressView()
           .controlSize(.mini)
-          .tint(ADEColor.warning)
+          .tint(providerTint)
         Text(title)
           .font(.caption2.weight(.semibold))
           .tracking(0.3)
@@ -102,13 +143,19 @@ struct WorkContextCompactDivider: View {
           .tracking(0.3)
       }
 
-      if showsTokenCount, let tokensFreedLabel = parsed.tokensFreedLabel {
+      if showsTokenCount, let tokensLabel = parsed.tokensLabel {
         Group {
-          Text("·").foregroundStyle(ADEColor.warning.opacity(0.4))
-          Text(tokensFreedLabel)
+          Text("·").foregroundStyle(providerTint.opacity(0.4))
+          Text(tokensLabel)
             .font(.caption2.monospaced())
-            .foregroundStyle(ADEColor.warning.opacity(0.7))
+            .foregroundStyle(providerTint.opacity(0.7))
         }
+      }
+
+      if showsTrigger, let durationLabel = parsed.durationLabel {
+        Text(durationLabel)
+          .font(.caption2.monospaced())
+          .foregroundStyle(providerTint.opacity(0.7))
       }
 
       if showsTrigger, let triggerLabel = parsed.triggerLabel {
@@ -119,7 +166,7 @@ struct WorkContextCompactDivider: View {
           .fixedSize(horizontal: true, vertical: false)
           .padding(.horizontal, 5)
           .padding(.vertical, 1)
-          .background(ADEColor.warning.opacity(0.14), in: Capsule())
+          .background(providerTint.opacity(0.14), in: Capsule())
       }
     }
     .lineLimit(1)
@@ -132,36 +179,64 @@ struct WorkContextCompactDivider: View {
 /// and an "auto" / "manual" trigger tag. Anything else falls back to just
 /// the base label.
 struct WorkContextCompactSummary: Equatable {
-  let tokensFreedLabel: String?
+  let tokensLabel: String?
+  let durationLabel: String?
   let triggerLabel: String?
 
-  var accessibilityLabel: String {
-    var parts = ["Context compacted"]
-    if let tokensFreedLabel { parts.append(tokensFreedLabel) }
+  func accessibilityLabel(for title: String) -> String {
+    var parts = [title]
+    if let tokensLabel { parts.append(tokensLabel) }
+    if let durationLabel { parts.append(durationLabel) }
     if let triggerLabel { parts.append(triggerLabel.lowercased()) }
     return parts.joined(separator: ", ")
   }
 
   static func parse(_ raw: String?) -> WorkContextCompactSummary {
-    guard let raw = raw?.lowercased() else {
-      return WorkContextCompactSummary(tokensFreedLabel: nil, triggerLabel: nil)
+    guard let raw else {
+      return WorkContextCompactSummary(tokensLabel: nil, durationLabel: nil, triggerLabel: nil)
     }
 
+    let contentLines = raw
+      .split(separator: "\n")
+      .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { line in
+        let lower = line.lowercased()
+        return !lower.hasPrefix("provider:") && !lower.hasPrefix("sessioncount:")
+      }
+    let normalized = contentLines.joined(separator: "\n").lowercased()
+
     let trigger: String?
-    if raw.range(of: #"\bauto\b"#, options: .regularExpression) != nil {
+    if normalized.range(of: #"\bauto\b"#, options: .regularExpression) != nil {
       trigger = "AUTO"
-    } else if raw.range(of: #"\bmanual\b"#, options: .regularExpression) != nil {
+    } else if normalized.range(of: #"\bmanual\b"#, options: .regularExpression) != nil {
       trigger = "MANUAL"
     } else {
       trigger = nil
     }
 
-    let tokens = extractTokenCount(raw).map { count -> String in
+    if let range = normalized.range(of: #"(\d[\d.,k]*) ?→ ?(\d[\d.,k]*)"#, options: .regularExpression) {
+      let tokens = String(normalized[range])
+      return WorkContextCompactSummary(tokensLabel: tokens, durationLabel: extractDuration(normalized), triggerLabel: trigger)
+    }
+
+    let tokens = extractTokenCount(normalized).map { count -> String in
       let rounded = formatCompactTokenCount(count)
       return "~\(rounded) freed"
     }
 
-    return WorkContextCompactSummary(tokensFreedLabel: tokens, triggerLabel: trigger)
+    return WorkContextCompactSummary(tokensLabel: tokens, durationLabel: extractDuration(normalized), triggerLabel: trigger)
+  }
+
+  private static func extractDuration(_ raw: String) -> String? {
+    if let match = raw.range(of: #"duration:\s*(\d+)ms"#, options: .regularExpression) {
+      let fragment = String(raw[match])
+      if let value = Int(fragment.replacingOccurrences(of: "duration:", with: "").replacingOccurrences(of: "ms", with: "").trimmingCharacters(in: .whitespaces)) {
+        if value < 1000 { return "\(max(1, value))ms" }
+        let seconds = Double(value) / 1000.0
+        return seconds < 60 ? String(format: "%.1fs", seconds) : "\(Int(seconds.rounded()))s"
+      }
+    }
+    return nil
   }
 
   private static func extractTokenCount(_ raw: String) -> Int? {

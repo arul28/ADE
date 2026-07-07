@@ -3,6 +3,7 @@ import type {
   AgentChatMissionFeature,
   AgentChatMissionProgressEntry,
 } from "../../../shared/types";
+import { detectCompactionSignalText } from "../../../shared/contextCompaction";
 
 type SdkRecord = Record<string, unknown>;
 
@@ -16,6 +17,7 @@ export type DroidSdkEventMapperState = {
     cacheReadTokens?: number;
     cacheCreationTokens?: number;
   } | null;
+  compactionActive?: boolean;
 };
 
 export function createDroidSdkEventMapperState(): DroidSdkEventMapperState {
@@ -250,13 +252,49 @@ export function mapDroidSdkMessageToChatEvents(
     }
     case "working_state_changed": {
       const state = readString(record.state);
-      if (!state || state.toLowerCase() === "idle") return [];
-      return [{
+      if (!state || state.toLowerCase() === "idle") {
+        if (meta.state.compactionActive) {
+          meta.state.compactionActive = false;
+          return [{
+            type: "context_compact",
+            trigger: "auto",
+            state: "completed",
+            turnId,
+            compactionId: turnId,
+            provider: "droid",
+          }];
+        }
+        return [];
+      }
+      const out: AgentChatEvent[] = [];
+      if (detectCompactionSignalText(state) && !meta.state.compactionActive) {
+        meta.state.compactionActive = true;
+        out.push({
+          type: "context_compact",
+          trigger: "auto",
+          state: "started",
+          turnId,
+          compactionId: turnId,
+          provider: "droid",
+        });
+      } else if (!detectCompactionSignalText(state) && meta.state.compactionActive) {
+        meta.state.compactionActive = false;
+        out.push({
+          type: "context_compact",
+          trigger: "auto",
+          state: "completed",
+          turnId,
+          compactionId: turnId,
+          provider: "droid",
+        });
+      }
+      out.push({
         type: "activity",
         activity: "working",
         detail: `Droid ${state}`,
         turnId,
-      }];
+      });
+      return out;
     }
     case "token_usage_update": {
       const usage = usageFrom(record);

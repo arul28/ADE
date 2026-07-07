@@ -268,17 +268,40 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     )
   case .promptSuggestion(let suggestion, let turnId):
     return .promptSuggestion(text: suggestion, turnId: turnId)
-  case .contextCompact(let trigger, let preTokens, let state, let turnId):
-    // A missing state is a legacy end-only event; treat it as completed so the
-    // existing "Context compacted" divider renders unchanged.
+  case .contextCompact(
+    let trigger,
+    let preTokens,
+    let postTokens,
+    let durationMs,
+    let provider,
+    let sessionCompactionCount,
+    let compactionId,
+    let state,
+    let turnId
+  ):
     let isInProgress = state == .started
-    let summary = [trigger.rawValue.capitalized, preTokens.map { "Pre-compact tokens: \($0)" }].compactMap { $0 }.joined(separator: "\n")
-    return .contextCompact(summary: summary, isInProgress: isInProgress, turnId: turnId)
-  case .codexContextCompaction(let state, let trigger, let turnId):
-    // Codex's compaction shares the generic divider: begin shows a live
-    // "Compacting context…" indicator, completed settles to "Context compacted".
-    let summary = trigger.rawValue.capitalized
-    return .contextCompact(summary: summary, isInProgress: state == .started, turnId: turnId)
+    let summary = workContextCompactSummary(
+      trigger: trigger.rawValue,
+      preTokens: preTokens,
+      postTokens: postTokens,
+      durationMs: durationMs,
+      provider: provider,
+      sessionCompactionCount: sessionCompactionCount
+    )
+    return .contextCompact(
+      summary: summary,
+      isInProgress: isInProgress,
+      turnId: turnId,
+      compactionId: compactionId ?? turnId
+    )
+  case .codexContextCompaction(let state, let trigger, let turnId, let compactionId):
+    let summary = workContextCompactSummary(trigger: trigger.rawValue)
+    return .contextCompact(
+      summary: summary,
+      isInProgress: state == .started,
+      turnId: turnId,
+      compactionId: compactionId ?? turnId
+    )
   case .autoApprovalReview(_, let reviewStatus, let action, let review, let turnId):
     let summary = [reviewStatus.rawValue.capitalized, action, review].compactMap { $0 }.joined(separator: "\n")
     return .autoApprovalReview(summary: summary, turnId: turnId)

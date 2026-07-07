@@ -374,8 +374,7 @@ describe("ChatView", () => {
       },
     ], { width: 80 });
 
-    expect(frame).toContain("compacting context");
-    expect(frame).toContain("auto");
+    expect(frame.toLowerCase()).toContain("compacting context");
     expect(frame).not.toContain("model working");
     expect(frame).not.toContain("waiting for runtime events");
   });
@@ -390,7 +389,7 @@ describe("ChatView", () => {
       },
     ], { width: 80 });
 
-    expect(frame).toContain("compacting context");
+    expect(frame.toLowerCase()).toContain("compacting context");
     expect(frame).not.toContain("model working");
   });
 
@@ -1081,6 +1080,7 @@ describe("ChatView", () => {
       { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "text", text } },
     ], { width: 80 });
     expect(frame).toMatch(/┌.*┬.*┐/);
+    expect(frame).toMatch(/├.*┼.*┤/);
     expect(frame).toMatch(/└.*┴.*┘/);
     expect(frame).toMatch(/│/);
     expect(frame).toContain("tool");

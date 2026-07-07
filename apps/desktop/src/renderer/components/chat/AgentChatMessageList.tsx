@@ -98,7 +98,7 @@ import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
-import { CodexContextCompactionChip } from "./codex/CodexContextCompactionChip";
+import { ContextCompactDivider } from "./ContextCompactDivider";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 
 /**
@@ -2770,9 +2770,18 @@ function renderEvent(
     );
   }
 
-  /* ── Context Compaction (new variant) ── */
-  if (event.type === "codex_context_compaction") {
-    return <CodexContextCompactionChip event={event} timestamp={envelope.timestamp} />;
+  /* ── Context Compaction ── */
+  if (event.type === "codex_context_compaction" || event.type === "context_compact") {
+    const compactEvent = event.type === "context_compact"
+      ? event
+      : {
+          type: "context_compact" as const,
+          trigger: event.trigger,
+          state: event.state,
+          turnId: event.turnId,
+          compactionId: event.compactionId ?? event.turnId,
+        };
+    return <ContextCompactDivider event={compactEvent} />;
   }
 
   if (event.type === "codex_safety_buffering") {
@@ -2853,23 +2862,6 @@ function renderEvent(
           </div>
         ) : null}
       </div>
-    );
-  }
-
-  /* ── Generic Context Compact (Claude/OpenCode; legacy pre-A.3 transcripts) ── */
-  if (event.type === "context_compact") {
-    // Honor the begin/end lifecycle when the runtime provides it so a live
-    // "compacting…" chip shows; sources without state render as completed.
-    return (
-      <CodexContextCompactionChip
-        event={{
-          type: "codex_context_compaction",
-          turnId: event.turnId ?? "",
-          state: event.state ?? "completed",
-          trigger: event.trigger,
-        }}
-        timestamp={envelope.timestamp}
-      />
     );
   }
 

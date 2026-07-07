@@ -1,4 +1,11 @@
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
+import {
+  contextCompactMergeKey,
+  isContextCompactionChatEvent,
+  mergeNormalizedContextCompact,
+  normalizeContextCompactEvent,
+  toContextCompactChatEvent,
+} from "../../../shared/contextCompaction";
 
 export type ChatWorkLogStatus = "running" | "completed" | "failed" | "interrupted";
 export type ChatWorkLogEntryKind = "tool" | "command" | "file_change" | "web_search" | "hook";
@@ -810,6 +817,40 @@ export function appendCollapsedChatTranscriptEvent(
 
   if (event.type === "web_search") {
     appendWorkLogRow(rows, envelope, sequence, buildWebSearchWorkLogEvent(event, envelope.timestamp));
+    return;
+  }
+
+  if (isContextCompactionChatEvent(event)) {
+    const incoming = normalizeContextCompactEvent(event);
+    if (!incoming) return;
+    const mergeKey = contextCompactMergeKey(incoming);
+    const matchIndex = [...rows]
+      .reverse()
+      .findIndex((candidate) => {
+        const candidateEvent = candidate.event;
+        if (!isContextCompactionChatEvent(candidateEvent as AgentChatEvent)) return false;
+        const existing = normalizeContextCompactEvent(candidateEvent as AgentChatEvent);
+        if (!existing) return false;
+        if (contextCompactMergeKey(existing) !== mergeKey) return false;
+        return existing.state === "started" || incoming.state === "completed";
+      });
+    if (matchIndex >= 0) {
+      const actualIndex = rows.length - 1 - matchIndex;
+      const previous = normalizeContextCompactEvent(rows[actualIndex]!.event as AgentChatEvent);
+      if (previous) {
+        rows[actualIndex] = {
+          ...rows[actualIndex]!,
+          timestamp: envelope.timestamp,
+          event: toContextCompactChatEvent(mergeNormalizedContextCompact(previous, incoming)),
+        };
+        return;
+      }
+    }
+    rows.push({
+      key: `context-compact:${mergeKey}:${sequence}`,
+      timestamp: envelope.timestamp,
+      event: toContextCompactChatEvent(incoming),
+    });
     return;
   }
 

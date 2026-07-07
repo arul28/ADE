@@ -63,11 +63,13 @@ function buildContent(usage: ContextUsageViewModel, modelLabel?: string): SmartT
 export function ContextUsageDial({
   usage,
   active,
+  compactionPulse,
   modelLabel,
   className,
 }: {
   usage: ContextUsageViewModel;
   active?: boolean;
+  compactionPulse?: boolean;
   modelLabel?: string;
   className?: string;
 }) {
@@ -96,7 +98,7 @@ export function ContextUsageDial({
             strokeDasharray={RING_CIRCUMFERENCE}
             strokeDashoffset={dashOffset}
             style={{ transition: "stroke-dashoffset 320ms ease, stroke 320ms ease" }}
-            className={active ? "motion-safe:animate-pulse" : undefined}
+            className={active || compactionPulse ? "motion-safe:animate-pulse" : undefined}
           />
         </svg>
         <span

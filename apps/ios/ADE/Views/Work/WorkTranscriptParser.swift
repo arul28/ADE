@@ -19,6 +19,59 @@ func optionalWorkInt(_ value: Any?) -> Int? {
   return nil
 }
 
+private func formatWorkCompactTokenCount(_ value: Int) -> String {
+  if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
+  if value >= 10_000 { return "\(Int((Double(value) / 1_000.0).rounded()))k" }
+  if value >= 1_000 { return String(format: "%.1fk", Double(value) / 1_000.0) }
+  return "\(value)"
+}
+
+func workContextCompactSummary(
+  trigger: String,
+  preTokens: Int? = nil,
+  postTokens: Int? = nil,
+  durationMs: Int? = nil,
+  provider: String? = nil,
+  sessionCompactionCount: Int? = nil
+) -> String {
+  var lines: [String] = []
+  if let provider {
+    lines.append("provider:\(provider)")
+  }
+  if let sessionCount = sessionCompactionCount, sessionCount >= 2 {
+    lines.append("sessionCount:\(sessionCount)")
+  }
+  let triggerLabel = trigger.replacingOccurrences(of: "_", with: " ").capitalized
+  lines.append(triggerLabel)
+  if let pre, let post {
+    lines.append("\(formatWorkCompactTokenCount(pre)) → \(formatWorkCompactTokenCount(post))")
+  } else if let pre {
+    lines.append("Pre-compact tokens: \(pre)")
+  }
+  if let durationMs {
+    lines.append("duration:\(durationMs)ms")
+  }
+  return lines.joined(separator: "\n")
+}
+
+func workContextCompactSummary(from eventDict: [String: Any]) -> String {
+  workContextCompactSummary(
+    trigger: stringValue(eventDict["trigger"]),
+    preTokens: optionalWorkInt(eventDict["preTokens"]),
+    postTokens: optionalWorkInt(eventDict["postTokens"]),
+    durationMs: optionalWorkInt(eventDict["durationMs"]),
+    provider: optionalString(eventDict["provider"]),
+    sessionCompactionCount: optionalWorkInt(eventDict["sessionCompactionCount"])
+  )
+}
+
+func workContextCompactMergeId(from eventDict: [String: Any], turnId: String?) -> String? {
+  if let compactionId = optionalString(eventDict["compactionId"]) {
+    return compactionId
+  }
+  return turnId
+}
+
 func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
   extractLooseJSONObjects(from: raw)
     .compactMap { chunk -> WorkChatEnvelope? in
@@ -369,15 +422,21 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "prompt_suggestion":
         event = .promptSuggestion(text: stringValue(eventDict["suggestion"]), turnId: turnId)
       case "context_compact":
-        let trigger = stringValue(eventDict["trigger"]).replacingOccurrences(of: "_", with: " ").capitalized
-        let preTokens = optionalString(eventDict["preTokens"])
-        // Missing state = legacy end-only event; render as completed.
         let isInProgress = optionalString(eventDict["state"]) == "started"
-        event = .contextCompact(summary: [trigger, preTokens.map { "Pre-compact tokens: \($0)" }].compactMap { $0 }.joined(separator: "\n"), isInProgress: isInProgress, turnId: turnId)
+        event = .contextCompact(
+          summary: workContextCompactSummary(from: eventDict),
+          isInProgress: isInProgress,
+          turnId: turnId,
+          compactionId: workContextCompactMergeId(from: eventDict, turnId: turnId)
+        )
       case "codex_context_compaction":
-        let trigger = stringValue(eventDict["trigger"]).replacingOccurrences(of: "_", with: " ").capitalized
         let isInProgress = optionalString(eventDict["state"]) == "started"
-        event = .contextCompact(summary: trigger, isInProgress: isInProgress, turnId: turnId)
+        event = .contextCompact(
+          summary: workContextCompactSummary(from: eventDict),
+          isInProgress: isInProgress,
+          turnId: turnId,
+          compactionId: workContextCompactMergeId(from: eventDict, turnId: turnId)
+        )
       case "auto_approval_review":
         let action = optionalString(eventDict["action"])
         let review = optionalString(eventDict["review"])

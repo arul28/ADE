@@ -772,6 +772,14 @@ export type AgentChatEvent =
       type: "context_compact";
       trigger: "manual" | "auto";
       preTokens?: number;
+      postTokens?: number;
+      tokensRemoved?: number;
+      durationMs?: number;
+      provider?: "claude" | "codex" | "opencode" | "cursor" | "droid";
+      /** Stable merge key for started→completed pairs that may land on different turns. */
+      compactionId?: string;
+      /** After the second compaction in a session, surfaces as "(N× this session)" in the pill. */
+      sessionCompactionCount?: number;
       // Lifecycle of the compaction. Runtimes that expose a begin signal (Claude's
       // `compacting` status, OpenCode's compaction part) emit a "started" event when
       // compaction begins and a "completed" event when it ends, so the UI can show a
@@ -785,6 +793,7 @@ export type AgentChatEvent =
       turnId: string;
       state: "started" | "completed";
       trigger: "manual" | "auto";
+      compactionId?: string;
     }
   | {
       type: "codex_safety_buffering";

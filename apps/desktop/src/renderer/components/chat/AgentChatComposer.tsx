@@ -816,6 +816,7 @@ export function AgentChatComposer({
   reasoningEffort,
   fastMode = false,
   usageViewModel = null,
+  compactionPulse = false,
   draft,
   lastSentUserMessage = null,
   attachments,
@@ -943,6 +944,7 @@ export function AgentChatComposer({
   reasoningEffort: string | null;
   fastMode?: boolean;
   usageViewModel?: ContextUsageViewModel | null;
+  compactionPulse?: boolean;
   draft: string;
   /** Last message the user sent in this chat — recalled by ArrowUp on line 1. */
   lastSentUserMessage?: string | null;
@@ -3910,6 +3912,7 @@ export function AgentChatComposer({
             <ContextUsageDial
               usage={usageViewModel}
               active={turnActive}
+              compactionPulse={compactionPulse}
               modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId)?.displayName ?? undefined}
             />
           ) : null}
