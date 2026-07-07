@@ -137,6 +137,53 @@ describe("externalSessionsService", () => {
     });
   });
 
+  it("marks chat-imported external sessions as already imported and prefers the chat ref", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "22222222-2222-4222-8222-222222222222";
+    writeJsonl(path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(laneCwd), `${id}.jsonl`), [
+      {
+        type: "message",
+        sessionId: id,
+        cwd: laneCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+        message: { role: "user", content: "imported as chat" },
+      },
+    ]);
+
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: {
+        list: () => [
+          {
+            id: "cli-session",
+            toolType: "claude",
+            resumeMetadata: { provider: "claude", targetKind: "session", targetId: id, launch: {} },
+          } as TerminalSessionSummary,
+        ],
+        listClaudeSessionPointers: () => [],
+      },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+      chatImportedRefsProvider: () => [
+        { provider: "claude", externalId: id, chatSessionId: "chat-import-session" },
+      ],
+    });
+
+    const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      alreadyImported: true,
+      importedSessionRef: { kind: "chat", sessionId: "chat-import-session" },
+    });
+  });
+
   it("reports droid fork disabled while the probe is pending and honors the override", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");

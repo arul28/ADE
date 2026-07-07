@@ -45,6 +45,16 @@ export interface ExternalChatImporter {
   }): Promise<{ chatSessionId: string }>;
 }
 
+export type ImportedChatSessionRef = {
+  provider: string;
+  externalId: string;
+  chatSessionId: string;
+};
+
+type ChatImportedRefsProvider = () =>
+  | ImportedChatSessionRef[]
+  | Promise<ImportedChatSessionRef[]>;
+
 type LoggerLike = {
   warn: (message: string, fields?: Record<string, unknown>) => void;
   info?: (message: string, fields?: Record<string, unknown>) => void;
@@ -74,6 +84,7 @@ type ExternalSessionsServiceArgs = {
   ptyService: PtyServiceLike;
   logger: LoggerLike;
   chatImporter?: ExternalChatImporter | null;
+  chatImportedRefsProvider?: ChatImportedRefsProvider | null;
   homeDir?: string;
   env?: NodeJS.ProcessEnv;
   /** Overrides the installed-droid `--fork` probe (tests / callers that already know). */
@@ -205,7 +216,11 @@ function putImportedRef(
   }
 }
 
-function importedSessionRefs(sessionService: SessionServiceLike): Map<string, ImportedSessionRef | null> {
+async function importedSessionRefs(
+  sessionService: SessionServiceLike,
+  chatImportedRefsProvider: ChatImportedRefsProvider | null | undefined,
+  logger: LoggerLike,
+): Promise<Map<string, ImportedSessionRef | null>> {
   const refs = new Map<string, ImportedSessionRef | null>();
   for (const session of sessionService.list({ limit: null })) {
     const metadata = session.resumeMetadata as (TerminalResumeMetadata & {
@@ -231,6 +246,21 @@ function importedSessionRefs(sessionService: SessionServiceLike): Map<string, Im
       `claude:${sessionId}`,
       chatSessionId ? { kind: "chat", sessionId: chatSessionId } : null,
     );
+  }
+  if (chatImportedRefsProvider) {
+    try {
+      for (const chatRef of await chatImportedRefsProvider()) {
+        const provider = chatRef.provider.trim();
+        const externalId = chatRef.externalId.trim();
+        const chatSessionId = chatRef.chatSessionId.trim();
+        if (!provider || !externalId || !chatSessionId) continue;
+        putImportedRef(refs, `${provider}:${externalId}`, { kind: "chat", sessionId: chatSessionId });
+      }
+    } catch (error) {
+      logger.warn("external_sessions.chat_import_refs_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return refs;
 }
@@ -406,7 +436,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     }));
 
     const scopeRoots = deriveProjectScopeRoots(args.projectRoot);
-    const imported = importedSessionRefs(args.sessionService);
+    const imported = await importedSessionRefs(args.sessionService, args.chatImportedRefsProvider, args.logger);
     const activeCutoffMs = Date.now() - 2 * 60_000;
     const discovered = sortDiscoveryRecords(settled.flat(), limit * providers.length);
     const scoped = rawArgs.scope === "all"

@@ -1425,6 +1425,25 @@ export async function createAdeRuntime(args: {
       for (const pr of event.prs) searchService.notifyPrChanged(pr.id);
     }
   });
+  const agentChatImportedRefsSource = agentChatService;
+  const chatImportedRefsProvider = agentChatImportedRefsSource
+    ? async () => {
+        const sessions = await agentChatImportedRefsSource.listSessions(undefined, {
+          includeIdentity: true,
+          includeAutomation: true,
+          includeArchived: true,
+        });
+        return sessions.flatMap((session) => {
+          const importedFrom = session.importedFrom;
+          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
+          return [{
+            provider: importedFrom.provider,
+            externalId: importedFrom.sessionId,
+            chatSessionId: session.sessionId,
+          }];
+        });
+      }
+    : undefined;
   externalSessionsService = createExternalSessionsService({
     projectRoot,
     laneService,
@@ -1432,6 +1451,7 @@ export async function createAdeRuntime(args: {
     ptyService,
     logger,
     chatImporter: agentChatService,
+    ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
   });
 
   const runtime: AdeRuntime = {

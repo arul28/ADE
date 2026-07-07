@@ -3291,6 +3291,22 @@ app.whenReady().then(async () => {
       ptyService,
       logger,
       chatImporter: agentChatService,
+      chatImportedRefsProvider: async () => {
+        const sessions = await agentChatService.listSessions(undefined, {
+          includeIdentity: true,
+          includeAutomation: true,
+          includeArchived: true,
+        });
+        return sessions.flatMap((session) => {
+          const importedFrom = session.importedFrom;
+          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
+          return [{
+            provider: importedFrom.provider,
+            externalId: importedFrom.sessionId,
+            chatSessionId: session.sessionId,
+          }];
+        });
+      },
       homeDir: os.homedir(),
       env: process.env,
     });
