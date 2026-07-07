@@ -249,7 +249,14 @@ function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHel
   if (id === "claude-sonnet-4-6" || id === "sonnet-4-6") {
     return { ...row, id: "claude-sonnet-5", displayName: "Sonnet 5 (1.2x)" };
   }
-  if (id === "claude-opus-4-7" || id === "opus-4-7" || id === "opus") {
+  if (
+    id === "claude-opus-4-7"
+    || id === "opus-4-7"
+    || id === "claude-opus-4-6"
+    || id === "opus-4-6"
+    || id === "opus-4.6"
+    || id === "opus"
+  ) {
     return { ...row, id: "claude-opus-4-8", displayName: "Opus 4.8 1M" };
   }
   return row;
@@ -374,18 +381,32 @@ export async function discoverDroidCliModelDescriptors(
   // models appear even when the CLI help output doesn't list them.
   const customRows = await readFactoryConfigCustomModels();
 
-  const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];
+  const descriptorIds = new Map<string, number>();
+  const descriptorPreferredDuplicateSources = new Map<string, boolean>();
   for (const rawRow of [...baseRows, ...customRows]) {
     const row = normalizeDroidDiscoveredModel(rawRow);
     const trimmed = String(row.id ?? "").trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
+    if (!trimmed) continue;
+    const descriptorKey = trimmed.toLowerCase();
+    const preferredDuplicateSource = rawRow.id.trim().toLowerCase() === trimmed.toLowerCase();
+    const descriptor = createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
       customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.capabilities ? { capabilities: row.capabilities } : {}),
-    }));
+    });
+    const existingIndex = descriptorIds.get(descriptorKey);
+    if (existingIndex !== undefined) {
+      const existingPreferred = descriptorPreferredDuplicateSources.get(descriptorKey) ?? false;
+      if (!existingPreferred && preferredDuplicateSource) {
+        descriptors[existingIndex] = descriptor;
+        descriptorPreferredDuplicateSources.set(descriptorKey, true);
+      }
+      continue;
+    }
+    descriptorIds.set(descriptorKey, descriptors.length);
+    descriptorPreferredDuplicateSources.set(descriptorKey, preferredDuplicateSource);
+    descriptors.push(descriptor);
   }
   return sortDroidCliDescriptorsForPicker(descriptors);
 }

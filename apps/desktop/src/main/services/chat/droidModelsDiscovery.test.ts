@@ -172,6 +172,8 @@ describe("discoverDroidCliModelDescriptors", () => {
       initResult: {
         availableModels: [
           { id: "sonnet-4-6", displayName: "Sonnet 4.6" },
+          { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
+          { id: "opus-4-6", displayName: "Opus 4.6" },
           { id: "opus", displayName: "Opus" },
         ],
       },
@@ -187,6 +189,39 @@ describe("discoverDroidCliModelDescriptors", () => {
     expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).toMatchObject({
       displayName: "Opus 4.8 1M",
       providerModelId: "claude-opus-4-8",
+    });
+  });
+
+  it("prefers canonical Droid rows over normalized retired aliases", async () => {
+    mockCreateSession.mockResolvedValueOnce({
+      initResult: {
+        availableModels: [
+          {
+            id: "sonnet-4-6",
+            displayName: "Sonnet 4.6",
+            noImageSupport: true,
+          },
+          {
+            id: "claude-sonnet-5",
+            displayName: "Claude Sonnet 5",
+            supportedReasoningEfforts: ["high", "max"],
+            defaultReasoningEffort: "high",
+          },
+        ],
+      },
+      close: vi.fn(async () => {}),
+    });
+
+    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+
+    expect(descriptors.filter((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toHaveLength(1);
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toMatchObject({
+      providerModelId: "claude-sonnet-5",
+      reasoningTiers: ["high", "max"],
+      capabilities: expect.objectContaining({
+        vision: true,
+        reasoning: true,
+      }),
     });
   });
 
