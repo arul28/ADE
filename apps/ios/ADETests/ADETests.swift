@@ -582,6 +582,36 @@ final class ADETests: XCTestCase {
     XCTAssertNil(scope.projectRootPath)
   }
 
+  func testWorkShellProjectScopePrefersMostSpecificPathMatch() {
+    var lane = makeLaneSummary(id: "lane-mobile", name: "Mobile", laneType: "worktree", branchRef: "ade/mobile")
+    lane.worktreePath = "/repo/mobile/.ade/worktrees/lane-mobile"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-parent",
+          displayName: "Parent",
+          rootPath: "/repo",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+        MobileProjectSummary(
+          id: "project-mobile",
+          displayName: "Mobile",
+          rootPath: "/repo/mobile",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertEqual(scope.projectId, "project-mobile")
+    XCTAssertEqual(scope.projectRootPath, "/repo/mobile")
+  }
+
   @MainActor
   func testQueuedShellStartUsesLaneProjectScopeWithoutActiveFallback() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"

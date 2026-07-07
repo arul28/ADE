@@ -62,10 +62,15 @@ func workShellProjectScope(
   let laneRoots = [lane.attachedRootPath, lane.worktreePath]
     .compactMap(syncNormalizedProjectRootScope)
 
-  let projectByLanePath = projects.first { project in
-    guard let root = syncNormalizedProjectRootScope(project.rootPath) else { return false }
-    return laneRoots.contains { workPath($0, isEqualToOrInside: root) }
+  let projectByLanePath = projects.compactMap { project -> (project: MobileProjectSummary, root: String)? in
+    guard let root = syncNormalizedProjectRootScope(project.rootPath),
+          laneRoots.contains(where: { workPath($0, isEqualToOrInside: root) })
+    else { return nil }
+    return (project, root)
   }
+  .max { left, right in
+    left.root.count < right.root.count
+  }?.project
 
   let project = projectById ?? projectByLanePath
   let projectId = project?.id ?? laneProjectId
