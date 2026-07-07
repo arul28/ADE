@@ -732,8 +732,8 @@ vi.mock("./droidSdkPool", () => ({
     const initialSettings = (args.settings ?? {}) as Record<string, unknown>;
     const availableModels = [
       { id: "claude-opus-4-6", displayName: "Claude Opus 4.6" },
-      { id: "custom:claude-sonnet-4-6-thinking-32000", displayName: "Custom Claude Sonnet 4.6 Thinking" },
-      { id: "custom:Claude-Sonnet-4.6-(High)-1", displayName: "Claude Sonnet 4.6 (High)" },
+      { id: "custom:claude-sonnet-5-thinking-32000", displayName: "Custom Claude Sonnet 5 Thinking" },
+      { id: "custom:Claude-Sonnet-5-(High)-1", displayName: "Claude Sonnet 5 (High)" },
     ];
     const pooled = {
       process: { exitCode: null, killed: false },
@@ -1737,7 +1737,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(session).toBeDefined();
@@ -2072,12 +2072,12 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "claude",
         model: undefined,
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       } as any);
 
       expect(session.provider).toBe("claude");
-      expect(session.modelId).toBe("anthropic/claude-sonnet-4-6");
-      expect(session.model).toBe("sonnet");
+      expect(session.modelId).toBe("anthropic/claude-sonnet-5");
+      expect(session.model).toBe("claude-sonnet-5");
     });
 
     it("keeps legacy bracketed 1M model aliases on Claude Opus 4.7 1M", async () => {
@@ -2093,11 +2093,12 @@ describe("createAgentChatService", () => {
     });
 
     it.each([
-      { reportedModel: "opus", usageModel: "claude-opus-4-8" },
-      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m" },
-    ])("preserves Claude Opus 4.8 in done events when the SDK reports $reportedModel", async ({
+      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "opus" },
+      { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m", expectedModel: "claude-opus-4-8" },
+    ])("preserves the Claude Opus 4.8 modelId in done events when the SDK reports $reportedModel", async ({
       reportedModel,
       usageModel,
+      expectedModel,
     }) => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
@@ -2169,8 +2170,83 @@ describe("createAgentChatService", () => {
 
       const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
       expect(doneEvent?.event.type).toBe("done");
-      expect((doneEvent!.event as any).model).toBe("claude-opus-4-8");
+      expect((doneEvent!.event as any).model).toBe(expectedModel);
       expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-8");
+    });
+
+    it("preserves selected Claude Opus 4.7 1M metadata when the SDK reports bare Opus 4.7", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          if (streamCall === 1) {
+            yield {
+              type: "system",
+              subtype: "init",
+              session_id: "sdk-opus-4-7-1m",
+              model: "claude-opus-4-7",
+              slash_commands: [],
+            };
+            yield {
+              type: "result",
+              subtype: "success",
+              is_error: false,
+              session_id: "sdk-opus-4-7-1m",
+              usage: { input_tokens: 1, output_tokens: 1 },
+              modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+            };
+            return;
+          }
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-opus-4-7-1m",
+            model: "claude-opus-4-7",
+            slash_commands: [],
+          };
+          yield {
+            type: "assistant",
+            message: {
+              model: "claude-opus-4-7",
+              content: [{ type: "text", text: "Done" }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            session_id: "sdk-opus-4-7-1m",
+            usage: { input_tokens: 1, output_tokens: 1 },
+            modelUsage: { "claude-opus-4-7": { input_tokens: 1, output_tokens: 1 } },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-opus-4-7-1m",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-7[1m]",
+        modelId: "anthropic/claude-opus-4-7-1m",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Report the selected model.",
+      });
+
+      const doneEvent = events.filter((event) => event.event.type === "done").at(-1);
+      expect(doneEvent?.event.type).toBe("done");
+      expect((doneEvent!.event as any).model).toBe("claude-opus-4-7[1m]");
+      expect((doneEvent!.event as any).modelId).toBe("anthropic/claude-opus-4-7-1m");
     });
 
     it("fast-fails a logged-out Claude turn into the inline re-login card", async () => {
@@ -2247,7 +2323,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         title: "  Pearl UI Audit  ",
       });
 
@@ -2564,10 +2640,10 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Opus 4.7 also supports fast mode, so the toggle should survive the switch.
+      // Opus 4.8 also supports fast mode, so the toggle should survive the switch.
       await service.updateSession({
         sessionId: session.id,
-        modelId: "anthropic/claude-opus-4-7",
+        modelId: "anthropic/claude-opus-4-8",
       });
 
       expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
@@ -2587,10 +2663,10 @@ describe("createAgentChatService", () => {
         fastMode: true,
       });
 
-      // Sonnet 4.6 has no "fast" service tier, so the toggle must be dropped.
+      // Sonnet 5 has no "fast" service tier, so the toggle must be dropped.
       await service.updateSession({
         sessionId: session.id,
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       });
 
       expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
@@ -2778,7 +2854,7 @@ describe("createAgentChatService", () => {
           laneId: "lane-1",
           provider: "claude",
           model: "sonnet",
-          modelId: "anthropic/claude-sonnet-4-6",
+          modelId: "anthropic/claude-sonnet-5",
           interactionMode: "orchestrator-lead",
           orchestrationRunId: created.runId,
           orchestrationRole: "lead",
@@ -2821,7 +2897,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
         interactionMode: "orchestrator-lead",
       });
 
@@ -2863,7 +2939,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
         orchestrationRole: "lead",
       });
 
@@ -3130,7 +3206,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(session.sessionProfile).toBe("workflow");
@@ -3142,7 +3218,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         sessionProfile: "light",
       });
 
@@ -3155,7 +3231,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         reasoningEffort: "  HIGH  ",
       });
 
@@ -3168,7 +3244,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         sessionProfile: "light",
       });
 
@@ -3181,7 +3257,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         surface: "automation",
       });
 
@@ -3205,7 +3281,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         identityKey: "cto",
       });
 
@@ -3218,7 +3294,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const chatSessionsDir = path.join(tmpRoot, ".ade", "cache", "chat-sessions");
@@ -3236,7 +3312,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         sessionProfile: "light",
       });
 
@@ -3263,7 +3339,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       })).rejects.toThrow(/worktree is unavailable/i);
     });
   });
@@ -3666,7 +3742,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
         interactionMode: "default",
         claudePermissionMode: "default",
         permissionMode: "default",
@@ -3674,7 +3750,7 @@ describe("createAgentChatService", () => {
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "anthropic/claude-sonnet-4-6",
+        targetModelId: "anthropic/claude-sonnet-5",
         claudePermissionMode: "plan",
         permissionMode: "plan",
       });
@@ -3722,7 +3798,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
         interactionMode: "default",
         claudePermissionMode: "default",
         permissionMode: "default",
@@ -3735,7 +3811,7 @@ describe("createAgentChatService", () => {
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "anthropic/claude-sonnet-4-6",
+        targetModelId: "anthropic/claude-sonnet-5",
         mode: "fork",
         claudePermissionMode: "plan",
         permissionMode: "plan",
@@ -4056,8 +4132,8 @@ describe("createAgentChatService", () => {
         const session = await service.createSession({
           laneId: "lane-1",
           provider: "droid",
-          model: "custom:claude-sonnet-4-6-thinking-32000",
-          modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+          model: "custom:claude-sonnet-5-thinking-32000",
+          modelId: "droid/custom:claude-sonnet-5-thinking-32000",
           interactionMode: "orchestrator-lead",
           orchestrationRunId: created.runId,
           orchestrationRole: "lead",
@@ -4233,7 +4309,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const sessions = await service.listSessions();
@@ -4276,7 +4352,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         identityKey: "cto",
       });
 
@@ -4294,7 +4370,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         surface: "automation",
       });
 
@@ -4312,7 +4388,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
       await service.archiveSession({ sessionId: session.id });
 
@@ -4411,7 +4487,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-2",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         identityKey: "cto",
       });
 
@@ -5313,7 +5389,7 @@ describe("createAgentChatService", () => {
             subtype: "model_refusal_fallback",
             session_id: "sdk-session-events",
             original_model: "claude-opus-4-8",
-            fallback_model: "claude-sonnet-4-6",
+            fallback_model: "claude-sonnet-5",
             api_refusal_category: "cyber",
             api_refusal_explanation: "The original model refused.",
             content: "Retrying on fallback model.",
@@ -5414,7 +5490,7 @@ describe("createAgentChatService", () => {
       )).toBe(true);
       expect(notices.some((event) =>
         event.status === "model_refusal_fallback"
-        && event.message === "Claude retried with claude-sonnet-4-6 after claude-opus-4-8 refused the request.",
+        && event.message === "Claude retried with claude-sonnet-5 after claude-opus-4-8 refused the request.",
       )).toBe(true);
       const refusalFallbackNotice = notices.find((event) => event.status === "model_refusal_fallback");
       expect(refusalFallbackNotice?.detail).toContain("retracted 2 SDK messages: refused-message-1, refused-tool-result-1");
@@ -6242,7 +6318,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const summary = await service.getSessionSummary(created.id);
@@ -6276,7 +6352,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const caps = service.getSessionCapabilities({ sessionId: session.id });
@@ -6333,7 +6409,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const subagents = service.listSubagents({ sessionId: session.id });
@@ -7049,7 +7125,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const commands = service.getSlashCommands({ sessionId: session.id });
@@ -7167,8 +7243,8 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "droid",
-        model: "custom:claude-sonnet-4-6-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
       });
 
       const commands = service.getSlashCommands({ sessionId: session.id });
@@ -7307,7 +7383,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const commands = service.getSlashCommands({ sessionId: session.id });
@@ -7584,8 +7660,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.sendMessage({
@@ -7619,8 +7695,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await expect(service.sendMessage({
@@ -7679,8 +7755,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.sendMessage({
@@ -7860,7 +7936,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.sendMessage({ sessionId: session.id, text: "Use runtime title." }, { awaitDispatch: true });
@@ -7877,8 +7953,8 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "droid",
-        model: "custom:claude-sonnet-4-6-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
       });
 
       await service.sendMessage({ sessionId: session.id, text: "Use SDK title." }, { awaitDispatch: true });
@@ -7908,7 +7984,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
       events.length = 0;
 
@@ -7934,7 +8010,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
       events.length = 0;
 
@@ -7959,7 +8035,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const updated = await service.updateSession({
@@ -7979,7 +8055,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.updateSession({
@@ -7998,7 +8074,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const updated = await service.updateSession({
@@ -8015,7 +8091,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const updated = await service.updateSession({
@@ -8032,7 +8108,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await expect(
@@ -8049,7 +8125,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await expect(
@@ -8066,7 +8142,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const updated = await service.updateSession({
@@ -8308,7 +8384,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       try {
@@ -8502,8 +8578,8 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "droid",
-        model: "custom:claude-sonnet-4-6-thinking-32000",
-        modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+        model: "custom:claude-sonnet-5-thinking-32000",
+        modelId: "droid/custom:claude-sonnet-5-thinking-32000",
       });
 
       try {
@@ -8615,7 +8691,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.runSessionTurn({
@@ -8639,7 +8715,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.dispose({ sessionId: session.id });
@@ -8655,7 +8731,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(service.getSlashCommands({ sessionId: session.id })).toEqual(
@@ -8718,7 +8794,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.runSessionTurn({
@@ -8758,14 +8834,14 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
       mockState.uuidCounter = 10; // avoid collision
       await service.createSession({
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       // Should not throw
@@ -8805,7 +8881,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const turn = service.runSessionTurn({
@@ -8882,7 +8958,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const metadataPath = path.join(tmpRoot, ".ade", "cache", "chat-sessions", `${session.id}.json`);
@@ -8912,7 +8988,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.deleteSession({ sessionId: session.id });
@@ -8971,7 +9047,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const mainTranscriptPath = sessionService.get(session.id)?.transcriptPath ?? "";
@@ -9033,7 +9109,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       mockState.uuidCounter = 100;
@@ -9041,7 +9117,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(s1.id).not.toBe(s2.id);
@@ -11937,7 +12013,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
         permissionMode: "edit",
         claudePermissionMode: "acceptEdits",
       });
@@ -12437,7 +12513,7 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       // Should not throw
       await expect(
-        service.warmupModel({ sessionId: "no-such-session", modelId: "opencode/anthropic/claude-sonnet-4-6" }),
+        service.warmupModel({ sessionId: "no-such-session", modelId: "opencode/anthropic/claude-sonnet-5" }),
       ).resolves.toBeUndefined();
     });
 
@@ -12447,12 +12523,12 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       // A non-anthropic-cli model should be a no-op
       await expect(
-        service.warmupModel({ sessionId: session.id, modelId: "opencode/anthropic/claude-sonnet-4-6" }),
+        service.warmupModel({ sessionId: session.id, modelId: "opencode/anthropic/claude-sonnet-5" }),
       ).resolves.toBeUndefined();
     });
 
@@ -12462,16 +12538,16 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await expect(
-        service.warmupModel({ sessionId: session.id, modelId: "anthropic/claude-sonnet-4-6" }),
+        service.warmupModel({ sessionId: session.id, modelId: "anthropic/claude-sonnet-5" }),
       ).resolves.toBeUndefined();
 
       const summary = await service.getSessionSummary(session.id);
       expect(summary?.provider).toBe("opencode");
-      expect(summary?.modelId).toBe("opencode/anthropic/claude-sonnet-4-6");
+      expect(summary?.modelId).toBe("opencode/anthropic/claude-sonnet-5");
     });
   });
 
@@ -12610,7 +12686,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       const transcript = await service.getChatTranscript({ sessionId: session.id });
@@ -13660,7 +13736,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         surface: "automation",
         automationId: "auto-1",
         automationRunId: "run-1",
@@ -13689,7 +13765,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
         capabilityMode: "cto",
       } as any);
 
@@ -13703,7 +13779,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       // executionMode defaults to null or undefined for new sessions
@@ -13809,7 +13885,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(session.status).toBe("idle");
@@ -13821,7 +13897,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(session.completion).toBeNull();
@@ -13839,7 +13915,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       expect(session.interactionMode == null).toBe(true);
@@ -16740,7 +16816,7 @@ describe("createAgentChatService", () => {
 
       const updated = await service.updateSession({
         sessionId: session.id,
-        modelId: "anthropic/claude-sonnet-4-6",
+        modelId: "anthropic/claude-sonnet-5",
       });
 
       expect(updated.provider).toBe("claude");
@@ -18054,7 +18130,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "opencode",
         model: "",
-        modelId: "opencode/anthropic/claude-sonnet-4-6",
+        modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
       await service.dispose({ sessionId: session.id });
@@ -20223,8 +20299,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     const sendPromise = service.sendMessage({
@@ -20323,8 +20399,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20413,8 +20489,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20482,8 +20558,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20566,8 +20642,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20652,8 +20728,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20729,8 +20805,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20808,8 +20884,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
 
     await service.runSessionTurn({
@@ -20934,8 +21010,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
     });
     sessionId = session.id;
 
@@ -21045,8 +21121,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "claude",
-      model: "claude-sonnet-4-6",
-      modelId: "anthropic/claude-sonnet-4-6",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
       permissionMode: "plan",
     });
 
@@ -21988,8 +22064,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "droid",
-      model: "custom:claude-sonnet-4-6-thinking-32000",
-      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
     });
 
     await service.sendMessage({
@@ -22006,14 +22082,14 @@ describe("createAgentChatService", () => {
     const updated = await service.getSessionSummary(session.id);
 
     expect(mockState.droidAcquireCalls[0]?.settings).toMatchObject({
-      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "custom:claude-sonnet-5-thinking-32000",
     });
     expect(mockState.droidSettingsUpdates.at(-1)).toMatchObject({
-      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "custom:claude-sonnet-5-thinking-32000",
       interactionMode: "auto",
     });
     expect(mockState.droidPromptCalls[0]?.settings).toMatchObject({
-      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "custom:claude-sonnet-5-thinking-32000",
     });
     expect(vi.mocked(buildCodingAgentSystemPrompt)).toHaveBeenCalledWith(expect.objectContaining({
       runtime: "droid-sdk",
@@ -22025,10 +22101,10 @@ describe("createAgentChatService", () => {
     expect(settingsOrder).toBeDefined();
     expect(firstPromptOrder).toBeDefined();
     expect(settingsOrder).toBeLessThan(firstPromptOrder!);
-    expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
-    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
-    expect(doneEvent.event.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
-    expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+    expect(updated?.model).toBe("custom:claude-sonnet-5-thinking-32000");
+    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
+    expect(doneEvent.event.model).toBe("custom:claude-sonnet-5-thinking-32000");
+    expect(doneEvent.event.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
   });
 
   it("uses Droid spec mode for ADE plan mode", async () => {
@@ -22040,8 +22116,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "droid",
-      model: "custom:claude-sonnet-4-6-thinking-32000",
-      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
       interactionMode: "plan",
     });
 
@@ -22056,14 +22132,14 @@ describe("createAgentChatService", () => {
     );
 
     expect(mockState.droidAcquireCalls[0]?.settings).toMatchObject({
-      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "custom:claude-sonnet-5-thinking-32000",
       interactionMode: "spec",
-      specModeModelId: "custom:claude-sonnet-4-6-thinking-32000",
+      specModeModelId: "custom:claude-sonnet-5-thinking-32000",
     });
     expect(mockState.droidSettingsUpdates.at(-1)).toMatchObject({
-      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "custom:claude-sonnet-5-thinking-32000",
       interactionMode: "spec",
-      specModeModelId: "custom:claude-sonnet-4-6-thinking-32000",
+      specModeModelId: "custom:claude-sonnet-5-thinking-32000",
     });
   });
 
@@ -22073,8 +22149,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "droid",
-      model: "custom:claude-sonnet-4-6-thinking-32000",
-      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
     });
 
     const persisted = readPersistedChatState(session.id);
@@ -22085,7 +22161,7 @@ describe("createAgentChatService", () => {
 
     await service.warmupModel({
       sessionId: session.id,
-      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
     });
 
     const updated = await service.getSessionSummary(session.id);
@@ -22095,11 +22171,11 @@ describe("createAgentChatService", () => {
       workspacePath: fs.realpathSync(tmpRoot),
     });
     expect(mockState.droidSettingsUpdates.at(-1)).toMatchObject({
-      modelId: "custom:claude-sonnet-4-6-thinking-32000",
+      modelId: "custom:claude-sonnet-5-thinking-32000",
     });
     expect(mockState.droidNewSessionCalls).toHaveLength(0);
-    expect(updated?.model).toBe("custom:claude-sonnet-4-6-thinking-32000");
-    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-4-6-thinking-32000");
+    expect(updated?.model).toBe("custom:claude-sonnet-5-thinking-32000");
+    expect(updated?.modelId).toBe("droid/custom:claude-sonnet-5-thinking-32000");
   });
 
   it("surfaces structured Droid SDK failures without collapsing them to [object Object]", async () => {
@@ -22117,8 +22193,8 @@ describe("createAgentChatService", () => {
     const session = await service.createSession({
       laneId: "lane-1",
       provider: "droid",
-      model: "custom:claude-sonnet-4-6-thinking-32000",
-      modelId: "droid/custom:claude-sonnet-4-6-thinking-32000",
+      model: "custom:claude-sonnet-5-thinking-32000",
+      modelId: "droid/custom:claude-sonnet-5-thinking-32000",
     });
 
     await service.sendMessage({

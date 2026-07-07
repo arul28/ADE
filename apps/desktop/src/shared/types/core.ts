@@ -423,7 +423,7 @@ export type ProjectIcon = {
 
 export type ProviderMode = "guest" | "subscription";
 
-/** Universal model identifier, e.g. "anthropic/claude-sonnet-4-6" or "openai/gpt-5.3-codex" */
+/** Universal model identifier, e.g. "anthropic/claude-sonnet-5" or "openai/gpt-5.3-codex" */
 export type ModelId = string;
 
 // react-resizable-panels uses a map of panel id -> percentage (0..100)

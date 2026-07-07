@@ -197,7 +197,10 @@ apps/ios/
 │   │   │                            # PrDetailOverviewPreviews (preview fixtures)
 │   │   ├── Settings/                # ConnectionSettingsView, SettingsPairingSection,
 │   │   │                            # SettingsPairingScannerSheet (camera QR
-│   │   │                            #   scanner), SettingsConnectionHeader,
+│   │   │                            #   scanner), SettingsWebClientPairSheet
+│   │   │                            #   (pair a browser: QR + link + PIN via
+│   │   │                            #   sync.getWebPairingInfo),
+│   │   │                            # SettingsConnectionHeader,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
 │   │   │                            # SettingsVoiceInputSection
@@ -638,6 +641,33 @@ yet arrived in the catchup batch.
 `SettingsPinSheet` on iOS mirrors the desktop PIN sheet and handles
 the entry UX. If the user misreads the digits, the runtime applies
 per-IP rate limiting (5 failures → 10-minute cooldown).
+
+### Pair a browser
+
+Settings > Pairing also carries a **Pair a browser** row
+(`SettingsPairingSection` → `SettingsPairSheetRoute.webClient`) that lets the
+phone hand the hosted browser web client
+(`../web-client/README.md`) everything it needs to pair with the same machine —
+without the operator having to open ADE on the computer.
+
+`SettingsWebClientPairSheet` fetches the machine's pairing details over the
+runtime-scoped `sync.getWebPairingInfo` remote command (gated on
+`supportsRemoteAction("sync.getWebPairingInfo")`, so it stays hidden against
+older hosts). The runtime returns a `WebPairingInfo`: the web-client pairing URL
+(`https://app.ade-app.dev/pair#<payload>`, built host-side with
+`buildWebClientPairUrl(buildPairingQrPayload(...))`), the current 6-digit PIN
+(`code` / `pinConfigured`), the machine name, and relay reachability
+(`relayEnabled` / `hasRelayCandidate`). The sheet renders a QR of the pairing
+URL, a copyable/shareable link, and the pairing code as three separate panels —
+the payload carries machine identity, port, address candidates, and the relay
+URL, never the PIN, so the code is shown apart from the link.
+
+Because the browser is a hosted HTTPS page, it can only reach the machine over a
+`wss://` route: when the machine advertises no relay candidate the sheet warns
+that the browser may only work on the same network (or that no relay route is
+available yet), and when no PIN is set it tells the user to set one in ADE on the
+computer. This is the phone-side mirror of the desktop's Settings > Sync web
+client card.
 
 ### Background App Refresh
 
@@ -1285,11 +1315,14 @@ reflected in the phone's UI on the next descriptor read.
   (`WorkModelCatalog.swift`, mirroring desktop's
   `resolveCliProviderForModel`), so adding a provider means updating
   both the runtime registry and the phone's model-catalog grouping
-  together; `shell` remains valid runtime-side but the phone no longer
-  offers a plain-shell launch. `SyncStartCliSessionArgs` also
-  carries an optional `reasoningEffort` field that the runtime forwards
-  to `buildTrackedCliLaunchCommand`, so the phone can launch a Codex
-  / Claude CLI session at a non-default effort tier without going
+  together; the Claude picker order mirrors desktop (Fable 5, Opus
+  4.8 1M, Sonnet 5, Haiku 4.5, Opus 4.7 1M) and legacy Sonnet 4.6 /
+  basic Opus 4.7 selections normalize forward instead of appearing as
+  rows. `shell` remains valid runtime-side but the phone no longer
+  offers a plain-shell launch. `SyncStartCliSessionArgs` also carries
+  an optional `reasoningEffort` field that the runtime forwards to
+  `buildTrackedCliLaunchCommand`, so the phone can launch a Codex /
+  Claude CLI session at a non-default effort tier without going
   through the desktop.
 - **Codex CLI launches receive the initial prompt as argv, not PTY
   echo.** Other providers still receive `initialInput` as bytes typed

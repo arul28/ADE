@@ -4,12 +4,14 @@ enum SettingsPairSheetRoute: Identifiable {
   case discover
   case manual
   case scan
+  case webClient
 
   var id: String {
     switch self {
     case .discover: return "discover"
     case .manual: return "manual"
     case .scan: return "scan"
+    case .webClient: return "webClient"
     }
   }
 }

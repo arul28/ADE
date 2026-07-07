@@ -16,6 +16,9 @@ export type DroidExecHelpModelRow = {
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
   reasoningTiers?: string[];
+  serviceTiers?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
   capabilities?: Partial<ModelCapabilities>;
 };
 type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
@@ -28,6 +31,13 @@ const TTL_MS = 120_000;
 // Serve last-known-good rows well past the freshness window (revalidating in
 // the background) so passive consumers never lose models between probes.
 const POSITIVE_TTL_MS = 6 * 60 * 60_000;
+
+const CANONICAL_DROID_ANTHROPIC_CAPABILITIES: Partial<ModelCapabilities> = {
+  tools: true,
+  vision: true,
+  reasoning: true,
+  streaming: true,
+};
 
 export function parseDroidExecHelpModels(stdout: string): DroidExecHelpModelRow[] {
   const lines = stdout.split(/\r?\n/);
@@ -244,6 +254,62 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   return rows;
 }
 
+function canonicalDroidReplacementForAlias(
+  id: string,
+  options?: { customProxy?: boolean },
+): DroidExecHelpModelRow | null {
+  const normalized = id.trim().toLowerCase();
+  const idPrefix = options?.customProxy ? "custom:" : "";
+  const customProxy = options?.customProxy ? { customProxy: true } : {};
+  if (
+    normalized === "claude-sonnet-4-6"
+    || normalized === "sonnet-4-6"
+    || (options?.customProxy && normalized === "claude-sonnet-5")
+  ) {
+    return {
+      id: `${idPrefix}claude-sonnet-5`,
+      displayName: "Sonnet 5 (1.2x)",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "max"],
+    };
+  }
+  if (
+    normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "opus-4.7"
+    || normalized === "claude-opus-4-6"
+    || normalized === "claude-opus-4-6-fast"
+    || normalized === "opus-4-6"
+    || normalized === "opus-4.6"
+    || normalized === "opus"
+    || (options?.customProxy && normalized === "claude-opus-4-8")
+  ) {
+    return {
+      id: `${idPrefix}claude-opus-4-8`,
+      displayName: "Opus 4.8 1M",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+    };
+  }
+  return null;
+}
+
+function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
+  const id = row.id.trim().toLowerCase();
+  const customProxy = row.customProxy === true && id.startsWith("custom:");
+  const normalizedCustomId = customProxy ? id.slice("custom:".length) : id;
+  const replacement = canonicalDroidReplacementForAlias(normalizedCustomId, { customProxy });
+  if (replacement) return replacement;
+  return row;
+}
+
 async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
   const now = Date.now();
   const controller = new AbortController();
@@ -363,17 +429,35 @@ export async function discoverDroidCliModelDescriptors(
   // models appear even when the CLI help output doesn't list them.
   const customRows = await readFactoryConfigCustomModels();
 
-  const seen = new Set<string>();
   const descriptors: ModelDescriptor[] = [];
-  for (const row of [...baseRows, ...customRows]) {
+  const descriptorIds = new Map<string, number>();
+  const descriptorPreferredDuplicateSources = new Map<string, boolean>();
+  for (const rawRow of [...baseRows, ...customRows]) {
+    const row = normalizeDroidDiscoveredModel(rawRow);
     const trimmed = String(row.id ?? "").trim();
-    if (!trimmed || seen.has(trimmed)) continue;
-    seen.add(trimmed);
-    descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
+    if (!trimmed) continue;
+    const descriptorKey = trimmed.toLowerCase();
+    const preferredDuplicateSource = rawRow.id.trim().toLowerCase() === trimmed.toLowerCase();
+    const descriptor = createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
       customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
+      ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+      ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
+      ...(row.maxOutputTokens ? { maxOutputTokens: row.maxOutputTokens } : {}),
       ...(row.capabilities ? { capabilities: row.capabilities } : {}),
-    }));
+    });
+    const existingIndex = descriptorIds.get(descriptorKey);
+    if (existingIndex !== undefined) {
+      const existingPreferred = descriptorPreferredDuplicateSources.get(descriptorKey) ?? false;
+      if (!existingPreferred && preferredDuplicateSource) {
+        descriptors[existingIndex] = descriptor;
+        descriptorPreferredDuplicateSources.set(descriptorKey, true);
+      }
+      continue;
+    }
+    descriptorIds.set(descriptorKey, descriptors.length);
+    descriptorPreferredDuplicateSources.set(descriptorKey, preferredDuplicateSource);
+    descriptors.push(descriptor);
   }
   return sortDroidCliDescriptorsForPicker(descriptors);
 }

@@ -298,7 +298,7 @@ describe("aiIntegrationService", () => {
       taskType: "planning",
       prompt: "Plan this task",
       cwd: "/tmp",
-      model: "anthropic/claude-sonnet-4-6"
+      model: "anthropic/claude-sonnet-5"
     });
 
     expect(mockState.runProviderTask).toHaveBeenCalledTimes(1);

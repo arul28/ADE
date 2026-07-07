@@ -5,6 +5,7 @@ import type { StateCreator } from "zustand";
 import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProviderMode } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { extractError } from "../lib/format";
+import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
@@ -576,9 +577,12 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
     return {
       theme: coerceTheme(parsed.theme) ?? "dark",
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
-      smartTooltipsEnabled: parsed.smartTooltipsEnabled !== false,
-      onboardingEnabled: parsed.onboardingEnabled !== false,
-      didYouKnowEnabled: parsed.didYouKnowEnabled !== false,
+      // The help chips / detailed tooltips / did-you-know hints are onboarding
+      // aids that default OFF in the browser web client (clutter for an already
+      // oriented user), and ON on desktop. An explicit toggle is still honored.
+      smartTooltipsEnabled: parsed.smartTooltipsEnabled ?? !isWebClientMode(),
+      onboardingEnabled: parsed.onboardingEnabled ?? !isWebClientMode(),
+      didYouKnowEnabled: parsed.didYouKnowEnabled ?? !isWebClientMode(),
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
       voiceInputEnabled: parsed.voiceInputEnabled !== false,
@@ -612,7 +616,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
   } catch {
     // ignore
   }
-  let smartTooltipsEnabled = true;
+  let smartTooltipsEnabled = !isWebClientMode();
   try {
     if (window.localStorage.getItem("ade.smartTooltips") === "false") smartTooltipsEnabled = false;
   } catch {
@@ -622,8 +626,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     theme,
     terminalPreferences,
     smartTooltipsEnabled,
-    onboardingEnabled: true,
-    didYouKnowEnabled: true,
+    onboardingEnabled: !isWebClientMode(),
+    didYouKnowEnabled: !isWebClientMode(),
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
     voiceInputEnabled: true,

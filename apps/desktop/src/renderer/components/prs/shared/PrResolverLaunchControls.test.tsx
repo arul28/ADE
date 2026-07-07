@@ -16,7 +16,7 @@ type ReasoningPickerProps = React.ComponentProps<typeof ReasoningEffortPicker>;
 vi.mock("../../shared/ModelPicker/ModelPicker", () => ({
   ModelPicker: (props: ModelPickerProps) => (
     <div>
-      <button type="button" onClick={() => props.onChange("anthropic/claude-sonnet-4-6")}>
+      <button type="button" onClick={() => props.onChange("anthropic/claude-sonnet-5")}>
         Pick Sonnet
       </button>
     </div>
@@ -110,7 +110,7 @@ describe("PrResolverLaunchControls", () => {
 
     await user.click(screen.getByRole("button", { name: "Pick Sonnet" }));
 
-    expect(props.onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-4-6");
+    expect(props.onModelChange).toHaveBeenCalledWith("anthropic/claude-sonnet-5");
     expect(props.onReasoningEffortChange).toHaveBeenCalledWith("medium");
     expect(props.onPermissionModeChange).toHaveBeenCalledWith("default");
   });

@@ -334,7 +334,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description:
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
       "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
-      "(e.g. 'anthropic/claude-opus-4-7' for Opus, 'anthropic/claude-sonnet-4-6' for Sonnet, " +
+      "(e.g. 'anthropic/claude-opus-4-8' for Opus, 'anthropic/claude-sonnet-5' for Sonnet, " +
       "'anthropic/claude-haiku-4-5' for Haiku, 'openai/gpt-5.5' for GPT-5.5). " +
       "If no modelId is passed, the CTO's default model preference is used. " +
       "Set initialPrompt to seed the chat with a task description — the agent will begin working immediately. " +
@@ -342,7 +342,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
     inputSchema: z.object({
       laneId: z.string().optional().describe("Lane to run in. Defaults to the primary lane. A new lane is auto-created if needed."),
-      modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-4-6'). MUST be set when user specifies a model."),
+      modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). MUST be set when user specifies a model."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort: 'low', 'medium', 'high', 'max' (opus), 'xhigh' (openai)."),
       title: z.string().optional().describe("Display title for the chat session."),
       initialPrompt: z.string().optional().describe("Task description to seed the chat. The agent starts working immediately."),
@@ -350,7 +350,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     }),
     execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, openInUi }) => {
       try {
-        // Resolve model: supports full IDs (anthropic/claude-sonnet-4-6), short IDs (sonnet), and aliases (opus)
+        // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
         const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
         const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;

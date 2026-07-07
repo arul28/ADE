@@ -38,6 +38,7 @@ const SUPPORTED_ACTION_VALUES = [
   "app:clear",
   "app:quit",
   "app:copyAdeDeeplink",
+  "app:copyAdeWebLink",
   "app:openCommandPalette",
   "history:search",
   "history:previous",

@@ -63,7 +63,7 @@ let tailscaleStatusCache:
 
 function normalizeDeviceType(value: unknown): SyncPeerDeviceType {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "desktop" || raw === "phone" || raw === "vps") return raw;
+  if (raw === "desktop" || raw === "phone" || raw === "vps" || raw === "browser") return raw;
   return "unknown";
 }
 

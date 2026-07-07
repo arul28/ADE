@@ -5,6 +5,7 @@ import {
   createDynamicOpenCodeModelDescriptor,
   isLocalProviderFamily,
   replaceDynamicOpenCodeModelDescriptors,
+  type ModelCapabilities,
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { stableStringify } from "../shared/utils";
@@ -98,6 +99,13 @@ const OPENCODE_SERVICE_VARIANT_ALIASES: Record<string, string> = {
   fast: "fast",
 };
 
+const CANONICAL_ANTHROPIC_MODEL_CAPABILITIES: ModelCapabilities = {
+  tools: true,
+  vision: true,
+  reasoning: true,
+  streaming: true,
+};
+
 function addUnique(out: string[], value: string): void {
   if (!out.some((entry) => entry.trim().toLowerCase() === value)) out.push(value);
 }
@@ -152,6 +160,77 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
     reasoning: model.reasoning !== false && capabilities?.reasoning !== false,
     streaming: true,
   };
+}
+
+function normalizeOpenCodeProviderModel(
+  providerId: string,
+  modelId: string,
+  _availableProviderModelIds: Set<string>,
+  displayName?: string,
+): {
+  modelId: string;
+  displayName?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
+  reasoningTiers?: string[];
+  serviceTiers?: string[];
+  capabilities?: ModelCapabilities;
+  preferredDuplicateSource: boolean;
+} {
+  if (providerId.trim().toLowerCase() !== "anthropic") {
+    return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource: true };
+  }
+  const normalized = modelId.trim().toLowerCase();
+  const preferredDuplicateSource = normalized === "claude-sonnet-5" || normalized === "claude-opus-4-8";
+  if (normalized === "claude-sonnet-5") {
+    return {
+      modelId: "claude-sonnet-5",
+      displayName: displayName ?? "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      preferredDuplicateSource,
+    };
+  }
+  if (normalized === "claude-opus-4-8") {
+    return {
+      modelId: "claude-opus-4-8",
+      displayName: displayName ?? "Claude Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      preferredDuplicateSource,
+    };
+  }
+  if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
+    return {
+      modelId: "claude-sonnet-5",
+      displayName: "Claude Sonnet 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "max"],
+      preferredDuplicateSource,
+    };
+  }
+  if (
+    normalized === "claude-opus-4-7"
+    || normalized === "opus-4-7"
+    || normalized === "claude-opus-4-6"
+    || normalized === "opus-4-6"
+    || normalized === "opus-4.6"
+    || normalized === "opus"
+  ) {
+    return {
+      modelId: "claude-opus-4-8",
+      displayName: "Claude Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+      preferredDuplicateSource,
+    };
+  }
+  return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource };
 }
 
 function openCodeSdkErrorMessage(error: unknown): string | null {
@@ -243,6 +322,8 @@ export async function probeOpenCodeProviderInventory(args: {
         }
         const connected = new Set(data.connected);
         const descriptors: ModelDescriptor[] = [];
+        const descriptorIds = new Map<string, number>();
+        const descriptorPreferredDuplicateSources = new Map<string, boolean>();
         const availableProviderModelCounts = new Map<string, number>();
 
         // Build a set of loaded local model IDs so we can filter out unloaded models
@@ -270,6 +351,14 @@ export async function probeOpenCodeProviderInventory(args: {
           // local-provider catalog; only show models ADE just discovered as loaded.
           if (isLocal && !discoveryExists) continue;
           const models = provider.models ?? {};
+          const availableProviderModelIds = new Set(
+            Object.values(models)
+              .map((model) => {
+                const record = model as Record<string, unknown>;
+                return typeof record.id === "string" ? record.id.trim().toLowerCase() : "";
+              })
+              .filter(Boolean),
+          );
           for (const model of Object.values(models)) {
             const modelRecord = model as Record<string, unknown>;
             const mid = typeof modelRecord.id === "string" ? modelRecord.id.trim() : "";
@@ -277,7 +366,8 @@ export async function probeOpenCodeProviderInventory(args: {
             // For local providers, only include models that are actively loaded.
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
             const variants = classifyOpenCodeVariants(modelRecord);
-            const displayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
+            const rawDisplayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
+            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, availableProviderModelIds, rawDisplayName);
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
               ? modelRecord.limit as { context?: number; output?: number }
               : null;
@@ -287,18 +377,36 @@ export async function probeOpenCodeProviderInventory(args: {
             const out = typeof limit?.output === "number"
               ? Number(limit.output)
               : undefined;
-            descriptors.push(
-              createDynamicOpenCodeModelDescriptor("", {
-                openCodeProviderId: provider.id,
-                openCodeModelId: mid,
-                ...(displayName ? { displayName } : {}),
-                ...(Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
-                ...(Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
-                ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
-                ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
-                capabilities: readOpenCodeModelCapabilities(modelRecord),
-              }),
-            );
+            const descriptor = createDynamicOpenCodeModelDescriptor("", {
+              openCodeProviderId: provider.id,
+              openCodeModelId: normalizedModel.modelId,
+              ...(normalizedModel.displayName ? { displayName: normalizedModel.displayName } : {}),
+              ...(normalizedModel.contextWindow
+                ? { contextWindow: normalizedModel.contextWindow }
+                : Number.isFinite(ctx) && (ctx as number) > 0 ? { contextWindow: ctx as number } : {}),
+              ...(normalizedModel.maxOutputTokens
+                ? { maxOutputTokens: normalizedModel.maxOutputTokens }
+                : Number.isFinite(out) && (out as number) > 0 ? { maxOutputTokens: out as number } : {}),
+              ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
+              ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
+              ...(normalizedModel.reasoningTiers?.length ? { reasoningTiers: normalizedModel.reasoningTiers } : {}),
+              ...(normalizedModel.serviceTiers?.length ? { serviceTiers: normalizedModel.serviceTiers } : {}),
+              capabilities: normalizedModel.capabilities ?? readOpenCodeModelCapabilities(modelRecord),
+            });
+            const existingIndex = descriptorIds.get(descriptor.id);
+            if (existingIndex !== undefined) {
+              if (
+                normalizedModel.preferredDuplicateSource
+                && descriptorPreferredDuplicateSources.get(descriptor.id) !== true
+              ) {
+                descriptors[existingIndex] = descriptor;
+                descriptorPreferredDuplicateSources.set(descriptor.id, true);
+              }
+              continue;
+            }
+            descriptorIds.set(descriptor.id, descriptors.length);
+            descriptorPreferredDuplicateSources.set(descriptor.id, normalizedModel.preferredDuplicateSource);
+            descriptors.push(descriptor);
             if (connected.has(provider.id)) {
               availableProviderModelCounts.set(
                 provider.id,

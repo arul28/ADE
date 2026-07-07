@@ -627,7 +627,7 @@ describe("right pane context defaults", () => {
   function chatInfoForContext(): ChatInfoSnapshot {
     return {
       provider: "claude",
-      modelLabel: "Claude Sonnet 4.6",
+      modelLabel: "Claude Sonnet 5",
       laneLabel: "Lane one",
       contextPercent: null,
       tokenSummary: null,
@@ -662,7 +662,7 @@ describe("right pane context defaults", () => {
       newChatSetup: {
         laneId: lane.id,
         laneLabel: lane.name,
-        rows: [{ kind: "model", label: "Model", value: "Claude Sonnet 4.6", cyclable: true }],
+        rows: [{ kind: "model", label: "Model", value: "Claude Sonnet 5", cyclable: true }],
       },
       unavailableLaneIds: new Set(),
     });

@@ -28,6 +28,7 @@ import { useAppStore } from "../../state/appStore";
 import { isRunOwnedSession } from "../../lib/sessions";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { openExternalUrl } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
@@ -873,6 +874,9 @@ export function TopBar() {
     Record<string, string | null>
   >({});
   const [relocatingPath, setRelocatingPath] = useState<string | null>(null);
+  // In the browser web client there are no OS windows to open/close and no
+  // desktop auto-updater; hide those controls so web shows no dead buttons.
+  const webMode = isWebClientMode();
   const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(
     null,
@@ -2249,6 +2253,7 @@ export function TopBar() {
         ) : null}
 
         {/* Add project button */}
+        {!webMode ? (
         <button
           type="button"
           data-tour="project.addProject"
@@ -2280,6 +2285,8 @@ export function TopBar() {
         >
           <Plus size={12} weight="regular" />
         </button>
+        ) : null}
+        {!webMode ? (
         <button
           type="button"
           className={cn(
@@ -2294,6 +2301,7 @@ export function TopBar() {
         >
           <ArrowSquareOut size={12} weight="regular" />
         </button>
+        ) : null}
       </div>
 
       {showPublishPill ? (
@@ -2391,7 +2399,7 @@ export function TopBar() {
           {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
         </HeaderStatusMenu>
 
-        <AutoUpdateControl />
+        {!webMode ? <AutoUpdateControl /> : null}
 
         <div
           className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"

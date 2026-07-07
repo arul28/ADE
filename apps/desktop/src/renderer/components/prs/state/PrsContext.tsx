@@ -303,7 +303,7 @@ function readPersistedModel(): string {
   } catch {
     /* ignore */
   }
-  return "anthropic/claude-sonnet-4-6";
+  return "anthropic/claude-sonnet-5";
 }
 
 function readPersistedReasoningLevel(): string {

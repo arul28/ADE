@@ -55,7 +55,7 @@ const resolvedArg2 =
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.5";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
-  getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-4-6";
+  getDefaultModelDescriptor("claude")?.id ?? "anthropic/claude-sonnet-5";
 const BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED = {
   platform: "darwin",
   supported: false,
@@ -336,10 +336,10 @@ const MOCK_ORCH_MANIFEST: any = {
     { id: "wrapup", title: "Wrap-up", status: "pending" },
   ],
   agents: [
-    { sessionId: MOCK_ORCH_LEAD_SESSION, role: "lead", goalSummary: "Coordinate auth + dashboard implementation", status: "running", lastHeartbeatAt: fiveMinAgo, spawnedAt: oneHourAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-4-6", resolvedAt: oneHourAgo, routingKey: "default" } },
-    { sessionId: MOCK_ORCH_WORKER_1, role: "worker", tag: "auth", displayName: "Auth flow worker", goalSummary: "Build OAuth login with Google + GitHub providers", status: "running", currentStepId: "T-auth-oauth", lastHeartbeatAt: fiveMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-4-6", resolvedAt: thirtyMinAgo, routingKey: "byTag" } },
+    { sessionId: MOCK_ORCH_LEAD_SESSION, role: "lead", goalSummary: "Coordinate auth + dashboard implementation", status: "running", lastHeartbeatAt: fiveMinAgo, spawnedAt: oneHourAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-5", resolvedAt: oneHourAgo, routingKey: "default" } },
+    { sessionId: MOCK_ORCH_WORKER_1, role: "worker", tag: "auth", displayName: "Auth flow worker", goalSummary: "Build OAuth login with Google + GitHub providers", status: "running", currentStepId: "T-auth-oauth", lastHeartbeatAt: fiveMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-5", resolvedAt: thirtyMinAgo, routingKey: "byTag" } },
     { sessionId: MOCK_ORCH_WORKER_2, role: "worker", tag: "dashboard", displayName: "Dashboard worker", goalSummary: "Build post-login dashboard with activity feed and quick actions", status: "running", currentStepId: "T-dash-layout", lastHeartbeatAt: tenMinAgo, spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "codex", modelId: "openai/o3", resolvedAt: thirtyMinAgo, routingKey: "byRoleTag" } },
-    { sessionId: MOCK_ORCH_VALIDATOR, role: "validator", tag: "quality", displayName: "Quality validator", goalSummary: "Verify test coverage, type safety, and security review", status: "pending", spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-4-6", resolvedAt: thirtyMinAgo, routingKey: "byRole" } },
+    { sessionId: MOCK_ORCH_VALIDATOR, role: "validator", tag: "quality", displayName: "Quality validator", goalSummary: "Verify test coverage, type safety, and security review", status: "pending", spawnedAt: thirtyMinAgo, spawnFingerprint: { provider: "claude", modelId: "claude-sonnet-5", resolvedAt: thirtyMinAgo, routingKey: "byRole" } },
   ],
   tasks: [
     { id: "T-auth-oauth", phaseId: "developing", title: "OAuth provider integration", description: "Implement Google and GitHub OAuth flows with passport.js", status: "in_progress", tag: "auth", labels: ["backend", "security"], priority: "high", estimatedComplexity: "medium", filesHint: ["src/auth/oauth.ts", "src/auth/providers/google.ts", "src/auth/providers/github.ts"], assigneeSessionId: MOCK_ORCH_WORKER_1, claimedAt: thirtyMinAgo, validationGate: { required: true, stepIds: ["VS-auth-security"] }, attempts: [{ id: "att-1", sessionId: MOCK_ORCH_WORKER_1, startedAt: thirtyMinAgo, outcome: "succeeded" }] },
@@ -357,9 +357,9 @@ const MOCK_ORCH_MANIFEST: any = {
     checklist: [],
   },
   modelRouting: {
-    default: { provider: "claude", modelId: "claude-sonnet-4-6" },
-    byRole: { validator: { provider: "claude", modelId: "claude-sonnet-4-6", reasoningEffort: "high" } },
-    byTag: { auth: { provider: "claude", modelId: "claude-sonnet-4-6" } },
+    default: { provider: "claude", modelId: "claude-sonnet-5" },
+    byRole: { validator: { provider: "claude", modelId: "claude-sonnet-5", reasoningEffort: "high" } },
+    byTag: { auth: { provider: "claude", modelId: "claude-sonnet-5" } },
     byRoleTag: { "worker:dashboard": { provider: "codex", modelId: "openai/o3" } },
   },
   assets: [
@@ -427,7 +427,7 @@ const MOCK_ORCH_SESSIONS: any[] = [
     goal: "Coordinate auth + dashboard implementation", toolType: "claude-chat", title: "Orchestrator Lead", status: "running",
     startedAt: oneHourAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
     lastOutputPreview: "Workers spawned. Auth and dashboard streams running in parallel.", summary: null, runtimeState: "running", resumeCommand: null,
-    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_LEAD_SESSION, modelId: "claude-sonnet-4-6", model: "Sonnet 4.6", interactionMode: "orchestrator-lead", launch: {} },
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_LEAD_SESSION, modelId: "claude-sonnet-5", model: "Sonnet 5", interactionMode: "orchestrator-lead", launch: {} },
     orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "lead", orchestrationBundlePath: MOCK_ORCH_BUNDLE,
   },
   {
@@ -435,7 +435,7 @@ const MOCK_ORCH_SESSIONS: any[] = [
     goal: "Build OAuth login with Google + GitHub providers", toolType: "claude-chat", title: "Auth flow worker", status: "running",
     startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
     lastOutputPreview: "Implementing Google OAuth callback handler…", summary: null, runtimeState: "running", resumeCommand: null,
-    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_WORKER_1, modelId: "claude-sonnet-4-6", model: "Sonnet 4.6", interactionMode: "orchestrator-worker", launch: {} },
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_WORKER_1, modelId: "claude-sonnet-5", model: "Sonnet 5", interactionMode: "orchestrator-worker", launch: {} },
     orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "worker", orchestrationTag: "auth", orchestrationStepId: "T-auth-oauth", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
   },
   {
@@ -451,7 +451,7 @@ const MOCK_ORCH_SESSIONS: any[] = [
     goal: "Verify test coverage and security review", toolType: "claude-chat", title: "Quality validator", status: "idle",
     startedAt: thirtyMinAgo, endedAt: null, archivedAt: null, exitCode: null, transcriptPath: null, headShaStart: null, headShaEnd: null,
     lastOutputPreview: "Waiting for development phase to complete…", summary: null, runtimeState: "idle", resumeCommand: null,
-    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_VALIDATOR, modelId: "claude-sonnet-4-6", model: "Sonnet 4.6", interactionMode: "orchestrator-validator", launch: {} },
+    resumeMetadata: { provider: "claude", targetKind: "session", targetId: MOCK_ORCH_VALIDATOR, modelId: "claude-sonnet-5", model: "Sonnet 5", interactionMode: "orchestrator-validator", launch: {} },
     orchestrationRunId: MOCK_ORCH_RUN_ID, orchestrationRole: "validator", orchestrationTag: "quality", orchestrationParentSessionId: MOCK_ORCH_LEAD_SESSION, orchestrationBundlePath: MOCK_ORCH_BUNDLE,
   },
 ];
@@ -2323,7 +2323,7 @@ const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
       autoResolve: true,
       ciGating: true,
       resolverProvider: "claude",
-      resolverModel: "anthropic/claude-sonnet-4-6",
+      resolverModel: "anthropic/claude-sonnet-5",
       reasoningEffort: "medium",
       permissionMode: "guarded_edit",
       confidenceThreshold: null,
@@ -2364,7 +2364,7 @@ const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
       autoResolve: false,
       ciGating: true,
       resolverProvider: null,
-      resolverModel: "anthropic/claude-sonnet-4-6",
+      resolverModel: "anthropic/claude-sonnet-5",
       reasoningEffort: "medium",
       permissionMode: "guarded_edit",
       confidenceThreshold: null,
@@ -2856,7 +2856,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     models: { claude: [], codex: [], cursor: [], droid: [] },
     availableModelIds: [
-      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-5",
       "anthropic/claude-haiku-4-5",
       "openai/gpt-5-codex",
     ],
@@ -3060,7 +3060,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       laneCleanup: {},
       ai: {
         orchestrator: {
-          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
+          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-5" },
           teammatePlanMode: "auto",
         },
         permissions: {
@@ -3085,9 +3085,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       laneOverlayPolicies: [],
       git: { autoRebaseOnHeadChange: false },
       ai: {
-        featureModelOverrides: { pr_descriptions: "anthropic/claude-sonnet-4-6" },
+        featureModelOverrides: { pr_descriptions: "anthropic/claude-sonnet-5" },
         orchestrator: {
-          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-4-6" },
+          defaultOrchestratorModel: { modelId: "anthropic/claude-sonnet-5" },
           teammatePlanMode: "auto",
         },
         permissions: {
@@ -3603,7 +3603,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                 },
                 executor: { mode: "automation-bot" },
                 modelConfig: {
-                    modelId: "anthropic/claude-sonnet-4-6",
+                    modelId: "anthropic/claude-sonnet-5",
                     thinkingLevel: "medium",
                   },
                 permissionConfig: {
@@ -3720,8 +3720,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           sessionId: "chat-auto-1",
           laneId: "lane-1",
           provider: "claude",
-          model: "Claude Sonnet 4.6",
-          modelId: "anthropic/claude-sonnet-4-6",
+          model: "Claude Sonnet 5",
+          modelId: "anthropic/claude-sonnet-5",
           title: "PR follow-up thread",
           surface: "automation",
           automationId: "auto-session-review",

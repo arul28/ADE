@@ -182,7 +182,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  - spawnChat: Creates a native ADE chat session with AI, streaming, tool approval, and service integration. Use when the user wants an AI agent, a chat, or AI-powered work.",
   "  - createTerminal: Opens a shell (PTY) for raw CLI commands. Use when the user wants a terminal, shell, or to run a specific CLI tool.",
   "  - spawnChat creates ADE-managed agent chats. createTerminal opens a raw shell for CLI commands. When the user says 'start a chat' or 'launch an agent', prefer spawnChat unless they explicitly ask for a terminal.",
-  "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-7', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
+  "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-8', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
   "",
   "Tool calling convention:",
   "  - Use the `ade` CLI per the ADE CLI operating guidance in your doctrine.",

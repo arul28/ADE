@@ -90,6 +90,18 @@ describe("pairingQr codec", () => {
     expect(parsed?.hostIdentity.deviceId).toBe("device-123");
   });
 
+  it("preserves browser host device types", () => {
+    const parsed = parsePairingQrUrl(encodePairingQrUrl({
+      ...buildPairingQrPayload({ connectInfo }),
+      hostIdentity: {
+        ...connectInfo.hostIdentity,
+        deviceType: "browser",
+      },
+    }));
+
+    expect(parsed?.hostIdentity.deviceType).toBe("browser");
+  });
+
   it("returns null for garbage, wrong host, and missing identity", () => {
     expect(parsePairingQrUrl("")).toBeNull();
     expect(parsePairingQrUrl("not a url")).toBeNull();

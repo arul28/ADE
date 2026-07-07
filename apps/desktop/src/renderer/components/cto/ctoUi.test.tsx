@@ -18,7 +18,7 @@ vi.mock("../chat/AgentChatPane", () => ({
  * plain button and the id resolves without the real registry. */
 vi.mock("./useCtoModelOptions", () => ({
   useCtoModelOptions: () => ({
-    availableModelIds: ["anthropic/claude-sonnet-4-6"],
+    availableModelIds: ["anthropic/claude-sonnet-5"],
     loadingModels: false,
     openProviderSettings: vi.fn(),
   }),
@@ -50,8 +50,8 @@ const IDENTITY = {
   customPersonality: null,
   modelPreferences: {
     provider: "anthropic",
-    model: "claude-sonnet-4-6",
-    modelId: "anthropic/claude-sonnet-4-6",
+    model: "claude-sonnet-5",
+    modelId: "anthropic/claude-sonnet-5",
     reasoningEffort: null,
   },
 } as const;
@@ -60,8 +60,8 @@ const SESSION = {
   id: "cto-session",
   laneId: "lane-primary",
   provider: "anthropic",
-  model: "claude-sonnet-4-6",
-  modelId: "anthropic/claude-sonnet-4-6",
+  model: "claude-sonnet-5",
+  modelId: "anthropic/claude-sonnet-5",
   sessionProfile: "persistent_identity",
   reasoningEffort: null,
   executionMode: null,

@@ -35,6 +35,14 @@ export function Masthead() {
             GitHub
           </a>
           <a
+            href={LINKS.webClient}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[color:var(--color-violet-bright)] transition-colors hover:text-[color:var(--color-cream)]"
+          >
+            Web client <span aria-hidden>&nearr;</span>
+          </a>
+          <a
             href={LINKS.releasesLatest}
             target="_blank"
             rel="noreferrer"

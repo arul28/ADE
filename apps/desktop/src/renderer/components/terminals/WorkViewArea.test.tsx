@@ -183,7 +183,7 @@ beforeEach(() => {
       ]);
     }
     return Promise.resolve([
-      { id: "sonnet", displayName: "Claude Sonnet 4.6", isDefault: true },
+      { id: "sonnet", displayName: "Claude Sonnet 5", isDefault: true },
       { id: "haiku", displayName: "Claude Haiku 4.5", isDefault: false },
     ]);
   });

@@ -15,6 +15,7 @@ import {
 } from "./cursorCloud";
 import {
   CliDeeplinkUsageError,
+  openUrlViaOs,
   runDeeplinkCommandAsync,
   type LinkEnvelopeContext,
 } from "./commands/deeplinks";
@@ -23,6 +24,8 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
+import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
+import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { deriveDeterministicLaneNameFromPrompt } from "../../desktop/src/shared/laneNameFallback";
 import {
@@ -66,11 +69,13 @@ import {
 } from "../../desktop/src/shared/cliLaunch";
 import type {
   SyncMobileProjectSummary,
+  SyncPairingConnectInfo,
   SyncProjectForgetRequestPayload,
   SyncProjectForgetResultPayload,
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  SyncRoleSnapshot,
 } from "../../desktop/src/shared/types/sync";
 import {
   isCurrentProcessDescendantOfPid,
@@ -85,8 +90,17 @@ import {
   runAdeCodeRemote,
   takeAdeCodeRemoteArgs,
 } from "./tuiClient/remoteLauncher";
+import { copyToClipboard } from "./lib/clipboard";
 
 type JsonObject = Record<string, unknown>;
+
+type SyncWebPairingCliOutput = {
+  pairingUrl: string | null;
+  code: string | null;
+  pinConfigured: boolean;
+  machineName: string;
+  relayEnabled: boolean;
+};
 
 type GlobalOptions = {
   projectRoot: string | null;
@@ -181,7 +195,8 @@ type FormatterId =
   | "automation-ingress"
   | "search-results"
   | "search-status"
-  | "external-sessions";
+  | "external-sessions"
+  | "sync-web";
 
 type CliPlan =
   | { kind: "help"; text: string }
@@ -202,6 +217,8 @@ type CliPlan =
         status?: string;
       };
       writeResultPath?: string;
+      syncWebOpen?: boolean;
+      syncWebNoClipboard?: boolean;
       /**
        * Derive a nonzero exit code from the executed result (e.g. `ade search`
        * exits 1 when a query returns no results, so scripts can branch on it).
@@ -478,6 +495,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1086,6 +1104,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --ade           Emit the custom "ade://" form. Defaults to the https mirror.
     --no-envelope   Skip best-effort repo/branch/PR envelope lookup.
+    --web           Emit the hosted web client URL (app.ade-app.dev).
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
 `,
   skill: `${ADE_BANNER}
@@ -11854,6 +11873,7 @@ function buildSyncPlan(args: string[]): CliPlan {
       text: `${ADE_BANNER}
 Usage:
   ade sync status [--include-transfer-readiness]
+  ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
   ade sync refresh
   ade sync devices
   ade sync pin get
@@ -11869,6 +11889,18 @@ Usage:
   ade sync security status          Machine sync security posture (require-DPoP)
   ade sync security require-dpop <on|off>
 `,
+    };
+  }
+  if (sub === "web" || sub === "web-pair" || sub === "webclient") {
+    const open = readFlag(args, ["--open"]);
+    const noClipboard = readFlag(args, ["--no-clipboard"]);
+    return {
+      kind: "execute",
+      label: "sync web",
+      formatter: "sync-web",
+      syncWebOpen: open,
+      syncWebNoClipboard: noClipboard,
+      steps: [{ key: "result", method: "sync.getStatus" }],
     };
   }
   if (sub === "status") {
@@ -14210,6 +14242,96 @@ function summarizePrCreateResult(value: unknown): unknown {
   };
 }
 
+function buildSyncWebPairingOutput(value: unknown): SyncWebPairingCliOutput {
+  const status = isRecord(value) ? value as Partial<SyncRoleSnapshot> : {};
+  const connectInfo = isRecord(status.pairingConnectInfo)
+    ? status.pairingConnectInfo
+    : null;
+  const rawCandidates = Array.isArray(connectInfo?.addressCandidates)
+    ? connectInfo.addressCandidates
+    : [];
+  const addressCandidates = rawCandidates
+    .filter((candidate): candidate is NonNullable<SyncRoleSnapshot["pairingConnectInfo"]>["addressCandidates"][number] =>
+      isRecord(candidate) && Boolean(asString(candidate.host)))
+    .map((candidate) => ({
+      host: asString(candidate.host) ?? "",
+      kind: candidate.kind,
+    }));
+  const hostIdentity = isRecord(connectInfo?.hostIdentity)
+    ? connectInfo.hostIdentity
+    : null;
+  const machineName =
+    asString(hostIdentity?.name) ??
+    asString(status.localDevice?.name) ??
+    asString(status.currentRuntime?.name) ??
+    "this machine";
+  const port =
+    typeof connectInfo?.port === "number"
+      ? connectInfo.port
+      : Number(connectInfo?.port);
+  const pinConfigured = status.pairingPinConfigured === true;
+  const code = pinConfigured ? asString(status.pairingPin) : null;
+  const relayEnabled =
+    addressCandidates.some((candidate) =>
+      candidate.kind === "relay" && candidate.host.trim().length > 0) ||
+    Boolean(connectInfo && asString((connectInfo as JsonObject).relayUrl));
+
+  if (!connectInfo || addressCandidates.length === 0 || !hostIdentity || !Number.isFinite(port)) {
+    return {
+      pairingUrl: null,
+      code,
+      pinConfigured,
+      machineName,
+      relayEnabled,
+    };
+  }
+
+  const normalizedConnectInfo: SyncPairingConnectInfo = {
+    hostIdentity: hostIdentity as SyncPairingConnectInfo["hostIdentity"],
+    port,
+    addressCandidates,
+  };
+
+  return {
+    pairingUrl: buildWebClientPairUrl(buildPairingQrPayload({ connectInfo: normalizedConnectInfo })),
+    code,
+    pinConfigured,
+    machineName,
+    relayEnabled,
+  };
+}
+
+function isSyncWebPairingCliOutput(value: unknown): value is SyncWebPairingCliOutput {
+  return (
+    isRecord(value) &&
+    Object.prototype.hasOwnProperty.call(value, "pairingUrl") &&
+    Object.prototype.hasOwnProperty.call(value, "pinConfigured") &&
+    Object.prototype.hasOwnProperty.call(value, "machineName") &&
+    Object.prototype.hasOwnProperty.call(value, "relayEnabled")
+  );
+}
+
+function formatSyncWebPairing(value: unknown): string {
+  const info = isSyncWebPairingCliOutput(value)
+    ? value
+    : buildSyncWebPairingOutput(value);
+  if (!info.pairingUrl) {
+    return "No machine addresses are published yet — is the sync host running? (ade sync status)";
+  }
+  return [
+    "Web client pairing",
+    "",
+    `  Link   ${info.pairingUrl}`,
+    info.pinConfigured && info.code
+      ? `  Code   ${info.code}`
+      : "  Code   (no PIN set — run: ade sync pin generate)",
+    "",
+    "Open the link in any browser and enter the code to pair.",
+    "Off your LAN or tailnet? Turn on the relay so the browser can reach this machine:",
+    "  ade sync relay enable",
+  ].join("\n");
+}
+
 function formatAutomationRunDetail(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const run = isRecord(value.run) ? value.run : value;
@@ -15758,6 +15880,8 @@ function formatTextOutput(
       return formatSearchStatus(value);
     case "external-sessions":
       return formatExternalSessions(value);
+    case "sync-web":
+      return formatSyncWebPairing(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -16025,6 +16149,10 @@ function summarizeExecution(args: {
       };
     }
     return rows;
+  }
+
+  if (plan.label === "sync web") {
+    return buildSyncWebPairingOutput(values.result);
   }
 
   const result = values.result ?? values;
@@ -16375,6 +16503,50 @@ function formatOutput(
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
 }
 
+function appendOutputSuffix(output: string, suffix: string): string {
+  if (!suffix) return output;
+  if (output.endsWith("\n")) return `${output.slice(0, -1)}${suffix}\n`;
+  return `${output}${suffix}\n`;
+}
+
+function applySyncWebPairingFlags(
+  plan: CliPlan & { kind: "execute" },
+  options: GlobalOptions,
+  result: unknown,
+  deps: {
+    copy?: (text: string) => boolean;
+    open?: (url: string) => { failed: boolean; message: string };
+  } = {},
+): { outputSuffix: string; exitCode: number | null } {
+  if (plan.label !== "sync web" || !isSyncWebPairingCliOutput(result)) {
+    return { outputSuffix: "", exitCode: null };
+  }
+  if (!result.pairingUrl) {
+    return { outputSuffix: "", exitCode: null };
+  }
+
+  let outputSuffix = "";
+  if (options.text && !plan.syncWebNoClipboard) {
+    const copy = deps.copy ?? copyToClipboard;
+    if (copy(result.pairingUrl)) {
+      outputSuffix += "\n(copied to clipboard)";
+    }
+  }
+
+  if (plan.syncWebOpen) {
+    const open = deps.open ?? openUrlViaOs;
+    const openResult = open(result.pairingUrl);
+    if (openResult.failed) {
+      if (options.text) {
+        outputSuffix += `\nCould not invoke OS opener: ${openResult.message}`;
+      }
+      return { outputSuffix, exitCode: 1 };
+    }
+  }
+
+  return { outputSuffix, exitCode: null };
+}
+
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
@@ -16537,9 +16709,16 @@ async function runCli(
         exitCode: 0,
       };
     }
+    const formatter = inferFormatter(plan);
+    const flagEffects = applySyncWebPairingFlags(plan, parsed.options, result);
     return {
-      output: formatOutput(result, parsed.options, inferFormatter(plan)),
-      exitCode: plan.exitCodeFromResult ? plan.exitCodeFromResult(result) : 0,
+      output: appendOutputSuffix(
+        formatOutput(result, parsed.options, formatter),
+        flagEffects.outputSuffix,
+      ),
+      exitCode:
+        flagEffects.exitCode ??
+        (plan.exitCodeFromResult ? plan.exitCodeFromResult(result) : 0),
     };
   } finally {
     console.log = originalConsole.log;
@@ -16629,6 +16808,7 @@ export {
   formatOutput,
   graphWaitState,
   inferFormatter,
+  applySyncWebPairingFlags,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,

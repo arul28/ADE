@@ -160,9 +160,9 @@ import {
 import { resetRuntimeCatalogDescriptorCacheForTests } from "./modelCatalog";
 
 const SONNET: ModelDescriptor = {
-  id: "anthropic/claude-sonnet-4-6",
+  id: "anthropic/claude-sonnet-5",
   shortId: "sonnet",
-  displayName: "Claude Sonnet 4.6",
+  displayName: "Claude Sonnet 5",
   family: "anthropic",
   authTypes: ["cli-subscription"],
   contextWindow: 200_000,
@@ -211,9 +211,9 @@ const GPT: ModelDescriptor = {
 };
 
 const OPENCODE_MODEL: ModelDescriptor = {
-  id: "opencode/anthropic/claude-sonnet-4-6",
-  shortId: "claude-sonnet-4-6",
-  displayName: "Claude Sonnet 4.6 via OpenCode",
+  id: "opencode/anthropic/claude-sonnet-5",
+  shortId: "claude-sonnet-5",
+  displayName: "Claude Sonnet 5 via OpenCode",
   family: "opencode",
   authTypes: ["api-key"],
   contextWindow: 200_000,
@@ -222,9 +222,9 @@ const OPENCODE_MODEL: ModelDescriptor = {
   reasoningTiers: ["low", "medium", "high"],
   color: "#D97706",
   providerRoute: "opencode",
-  providerModelId: "anthropic/claude-sonnet-4-6",
+  providerModelId: "anthropic/claude-sonnet-5",
   openCodeProviderId: "anthropic",
-  openCodeModelId: "claude-sonnet-4-6",
+  openCodeModelId: "claude-sonnet-5",
   isCliWrapped: false,
 };
 
@@ -897,7 +897,7 @@ describe("ModelPicker", () => {
                     models: [
                       {
                         id: OPENCODE_MODEL.id,
-                        runtimeModelId: "claude-sonnet-4-6",
+                        runtimeModelId: "claude-sonnet-5",
                         provider: "opencode" as const,
                         providerKey: "opencode",
                         groupKey: "opencode" as const,

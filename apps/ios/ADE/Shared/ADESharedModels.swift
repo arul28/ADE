@@ -13,7 +13,7 @@ public struct AgentSnapshot: Codable, Hashable, Identifiable, Sendable {
     /// Provider slug: "claude", "codex", "cursor", "opencode", "google",
     /// "mistral", "deepseek", "xai", "groq". Keyed into `ADESharedTheme`.
     public let provider: String
-    /// Specific model id (e.g. "claude-sonnet-4-6"). Rendered as the LA
+    /// Specific model id (e.g. "claude-sonnet-5"). Rendered as the LA
     /// subtitle in place of the generic provider slug when present.
     public let modelId: String?
     /// Lane name for this session ("Primary", "feature/x"). Used by the

@@ -21,6 +21,7 @@ type SessionContextMenuProps = {
   onCopySessionId: (id: string) => void;
   onRename: (session: TerminalSessionSummary, newTitle: string) => void;
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
+  onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
@@ -40,6 +41,7 @@ export function SessionContextMenu({
   onCopySessionId,
   onRename,
   onCopySessionDeepLink,
+  onOpenSessionInWeb,
   onTogglePinned,
   pinnedSessionIds,
   gridSessionIds,
@@ -190,6 +192,15 @@ export function SessionContextMenu({
             onClick={() => { onCopySessionDeepLink(session); onClose(); }}
           >
             Copy session deep link
+          </button>
+        ) : null}
+
+        {onOpenSessionInWeb ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            onClick={() => { onOpenSessionInWeb(session); onClose(); }}
+          >
+            Open in web
           </button>
         ) : null}
 

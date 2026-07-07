@@ -352,14 +352,14 @@ describe("spawnAgent tool", () => {
     expect(createArgs.orchestrationRole).toBe("worker");
     expect(createArgs.orchestrationStepId).toBe("T-1");
     expect(createArgs.provider).toBe("claude");
-    expect(createArgs.model).toBe("claude-sonnet-4-6");
+    expect(createArgs.model).toBe("claude-sonnet-5");
     expect(createArgs.claudePermissionMode).toBe("bypassPermissions");
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.agents.some((a) => a.sessionId === "S-spawned-1")).toBe(true);
     const spawned = manifest.agents.find((a) => a.sessionId === "S-spawned-1")!;
     expect(spawned.spawnFingerprint).toMatchObject({
       provider: "claude",
-      modelId: "claude-sonnet-4-6",
+      modelId: "claude-sonnet-5",
       routingKey: "fallback",
     });
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);

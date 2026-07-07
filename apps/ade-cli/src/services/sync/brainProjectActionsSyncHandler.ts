@@ -163,7 +163,7 @@ function normalizePeerMetadata(value: unknown): SyncPeerMetadata | null {
     platform: record.platform === "iOS" || record.platform === "macOS" || record.platform === "linux" || record.platform === "windows"
       ? record.platform
       : "unknown",
-    deviceType: record.deviceType === "phone" || record.deviceType === "desktop" || record.deviceType === "vps"
+    deviceType: record.deviceType === "phone" || record.deviceType === "desktop" || record.deviceType === "vps" || record.deviceType === "browser"
       ? record.deviceType
       : "unknown",
     siteId,

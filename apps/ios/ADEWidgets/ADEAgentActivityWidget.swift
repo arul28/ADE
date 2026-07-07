@@ -346,7 +346,7 @@ private extension ADEAgentRunsAttributes.ContentState {
             activeCount: 2,
             runs: [
                 .init(id: "a", title: "Refactor sync transport", phase: "running", model: "gpt-5-codex", lane: "Primary", detail: "editing SyncService.swift"),
-                .init(id: "b", title: "Audit pairing", phase: "running", model: "claude-sonnet-4-6", lane: "feat/pair"),
+                .init(id: "b", title: "Audit pairing", phase: "running", model: "claude-sonnet-5", lane: "feat/pair"),
             ]
         )
     }

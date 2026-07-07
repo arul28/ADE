@@ -13,11 +13,19 @@ does and does not travel, and the layers that implement it. Deep-dives:
   semantics, and the iOS pure-SQL emulation layer.
 - `ios-companion.md` — the iPhone controller path: SwiftUI app, native
   SQLite, pairing, tab structure, command routing from phone to runtime.
+- `../web-client/README.md` — the hosted browser controller path: static
+  Cloudflare Pages SPA, PIN pairing, WebCrypto DPoP, browser-safe sync
+  transports, no local DB, and the `window.ade` adapter over remote commands.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
   turns client actions into runtime-executed mutations.
 - `push-notifications.md` — the APNs push + Live Activity pipeline:
   Cloudflare push relay, brain publisher, per-device prefs, and the
   Live Activity content-state contract.
+
+Web client: the browser client is another controller of the same machine
+runtime. It pairs through the sync service like iOS, but does not keep a local
+SQLite replica; it uses changeset batches as invalidation signals and refreshes
+state through remote commands, file requests, and chat/terminal streams.
 
 ## Where the sync authority runs
 
@@ -54,6 +62,12 @@ path unless explicitly noted.
 - **iOS app** — client/controller-only, always. Connects to a runtime over
   WebSocket using the same `SyncEnvelope` protocol the desktop uses
   internally.
+- **Browser web client** — client/controller-only, hosted static SPA
+  (`device_type: "browser"`). Pairs over the same sync WebSocket with
+  PIN + per-device secret + WebCrypto DPoP, but keeps **no** local SQLite
+  replica: it treats changeset batches as invalidation signals and reads
+  through remote commands, file requests, and chat/terminal streams. See
+  `../web-client/README.md`.
 - **Cluster state** — a singleton `sync_cluster_state` row with
   the legacy columns `brain_device_id` and `brain_epoch` tracks which
   device currently owns execution within a cluster.
@@ -574,7 +588,7 @@ metadata. Fields (see `SyncDeviceRecord`):
 | `site_id` | Stable cr-sqlite site id |
 | `name` | User-assigned device name |
 | `platform` | `macOS`, `iOS`, `linux`, `windows`, `unknown` |
-| `device_type` | `desktop`, `phone`, `vps`, `unknown` |
+| `device_type` | `desktop`, `phone`, `vps`, `browser`, `unknown` (`browser` is the hosted web client — see `../web-client/README.md`) |
 | `created_at` / `updated_at` / `last_seen_at` | Timestamps |
 | `last_host` / `last_port` | Last manual-connect address |
 | `tailscale_ip` | Tailscale IP if available |

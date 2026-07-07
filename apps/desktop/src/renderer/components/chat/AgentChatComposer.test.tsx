@@ -500,8 +500,8 @@ describe("AgentChatComposer", () => {
   it("renders Claude mode dropdown without a Chat toggle", () => {
     renderComposer({
       sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-4-6",
-      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
     });
 
     expect(screen.queryByRole("button", { name: "Chat" })).toBeNull();
@@ -523,8 +523,8 @@ describe("AgentChatComposer", () => {
     const onClaudePermissionModeChange = vi.fn();
     renderComposer({
       sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-4-6",
-      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
       onInteractionModeChange,
       onClaudePermissionModeChange,
     });
@@ -541,8 +541,8 @@ describe("AgentChatComposer", () => {
     const onClaudePermissionModeChange = vi.fn();
     renderComposer({
       sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-4-6",
-      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
       onInteractionModeChange,
       onClaudePermissionModeChange,
     });
@@ -560,8 +560,8 @@ describe("AgentChatComposer", () => {
     const onClaudePermissionModeChange = vi.fn();
     renderComposer({
       sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-4-6",
-      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
       onClaudeModeChange,
       onInteractionModeChange,
       onClaudePermissionModeChange,
@@ -967,8 +967,8 @@ describe("AgentChatComposer", () => {
     renderComposer({
       turnActive: true,
       sessionProvider: "claude",
-      modelId: "anthropic/claude-sonnet-4-6",
-      availableModelIds: ["anthropic/claude-sonnet-4-6"],
+      modelId: "anthropic/claude-sonnet-5",
+      availableModelIds: ["anthropic/claude-sonnet-5"],
     });
 
     expect((screen.getByLabelText("Upload file from disk") as HTMLButtonElement).disabled).toBe(false);
@@ -1610,7 +1610,7 @@ describe("AgentChatComposer", () => {
       parallelLaunchStatus: "Creating child lanes…",
       parallelModelSlots: [
         { modelId: "openai/gpt-5.4", reasoningEffort: "high" },
-        { modelId: "anthropic/claude-sonnet-4-6", reasoningEffort: "medium" },
+        { modelId: "anthropic/claude-sonnet-5", reasoningEffort: "medium" },
         { modelId: "openai/gpt-5.4-mini", reasoningEffort: "low" },
       ],
     });

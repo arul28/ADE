@@ -84,7 +84,9 @@ type SyncRemoteCommandPolicy = {
 
 The scope label matters because the brain serves **multiple projects**
 at once. `runtime`-scoped commands (machine-wide diagnostics, project
-catalog reads, settings) run without a project binding. `project`-scoped
+catalog reads, settings, and `sync.getWebPairingInfo` — the browser
+pairing URL / PIN / relay-availability read the iOS "Pair a browser"
+sheet calls) run without a project binding. `project`-scoped
 commands (everything that mutates lane / chat / PR state inside a
 project) require the brain to have an active project AND the caller to
 have bundled a matching `projectId` on the envelope. The brain enforces
@@ -125,10 +127,17 @@ runtime-scoped registrations are explicit.
 
 ### Action categories
 
-Listed in order of appearance in the registry:
+Listed in order of appearance in the registry. The hosted browser web
+client (`../web-client/README.md`) is a controller of this same registry,
+so read-heavy Work/chat/git/PR/history surfaces plus whole families
+(`terminal.*`, `rebase.*`, `history.*`, `github.*`, `projectConfig.*`,
+`ai.*`, `orchestration.*`) exist to back the desktop renderer's namespaces
+over the wire. A controller only invokes an action the host advertises in
+`hello_ok.features.commandRouting.actions`.
 
 **Lanes** (`lanes.*`)
-- `list`, `refreshSnapshots`, `getDetail`, `listUnregisteredWorktrees`
+- `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`,
+  `listUnregisteredWorktrees`
 - `create`, `createChild`, `createFromUnstaged`, `importBranch`,
   `attach`, `adoptAttached`
 - `rename`, `reparent`, `updateAppearance`
@@ -175,11 +184,15 @@ payload is still computed either way (the signature derives from it),
 so the win is transport and decode, not host compute.
 
 **Work** (`work.*`)
-- `listSessions`, `updateSessionMeta`, `runQuickCommand`,
+- `listSessions`, `getSession`, `getSessionDelta`, `deleteSession`,
+  `updateSessionMeta`, `runQuickCommand`,
   `startCliSession`, `sendToSession`, `stopRuntime`
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
+- `launch`, `getSlashCommands`, `getContextUsage`, `warmupModel`,
+  `getParallelLaunchState`, `setParallelLaunchState`, `handoff`,
+  `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `getImageDataUrl`
 
 `chat.getTranscript` supports cursor pagination: responses carry an
 opaque index-based `nextCursor`, and requests can pass `cursor` to
@@ -211,7 +224,7 @@ both via `SyncService.dispatchChatSteer` /
 `cancelDispatchedChatSteer`.
 
 **Git** (`git.*`)
-- `getChanges`, `getFile`
+- `getChanges`, `getFile`, `getFilePatch`, `getUserIdentity`
 - `stageFile`, `stageAll`, `unstageFile`, `unstageAll`,
   `discardFile`, `restoreStagedFile`
 - `commit`, `generateCommitMessage`, `listRecentCommits`,
@@ -221,7 +234,8 @@ both via `SyncService.dispatchChatSteer` /
   reachable from the lane's current HEAD; used by controllers before
   surfacing destructive operations on commits that may belong to a
   different branch
-- `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`
+- `stashPush`, `stashList`, `stashApply`, `stashPop`, `stashDrop`,
+  `stashClear`
 - `fetch`, `pull`, `sync`, `push`, `getSyncStatus`
 - `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
   actions that re-read HEAD before acting and refuse when the lane
@@ -247,12 +261,42 @@ a boolean.
 **Files**
 - `files.writeTextAtomic`
 
+**Terminal** (`terminal.*`)
+- `list`, `activeForChat` — session-list and per-chat active-terminal
+  reads that back the web/mobile terminal surfaces (the live IO itself
+  still rides the `terminal_*` sub-protocol, not command routing).
+
 **Conflicts** (`conflicts.*`)
 - `getLaneStatus`, `listOverlaps`, `getBatchAssessment`
 
+**Rebase** (`rebase.*`)
+- `scanNeeds`, `execute`
+
+**History** (`history.*`)
+- `listOperations` — the undo/redo operations log.
+
+**GitHub** (`github.*`)
+- `getStatus`, `getRemoteStatus`, `publishCurrentProject`
+
+**Project config** (`projectConfig.*`)
+- `get`, `save`
+
+**AI** (`ai.*`)
+- `getStatus` — provider/auth status for the settings surfaces.
+
+**Orchestration** (`orchestration.*`)
+- `runCreate`
+
 **PRs** (`prs.*`)
-- `list`, `refresh`, `getDetail`, `getStatus`
+- `list`, `listOpenForRepo`, `refresh`, `getDetail`, `getStatus`
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
+- `postReviewComment`, `getAiSummary`, `regenerateAiSummary`, `delete`,
+  `cleanupBranch`
+- `getIntegrationResolutionState`, `aiResolutionGetSession`,
+  `aiResolutionStart`
+- `listProposals`, `getMergeContext`, `getMergeContexts`,
+  `listWithConflicts`, `listSnapshots`
+- `getQueueState`, `listQueueStates`
 - `createFromLane`, `createQueue`, `draftDescription`, `land`,
   `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
 - `simulateIntegration`, `commitIntegration`,

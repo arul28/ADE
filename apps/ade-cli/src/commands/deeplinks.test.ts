@@ -26,6 +26,17 @@ describe("ade link", () => {
     expect(r.output).toContain(`ade://lane/${UUID}`);
   });
 
+  it("emits the hosted web client form when --web is set", () => {
+    const r = runLinkCommand(["lane", UUID, "--web", "--no-clipboard"]);
+    expect(r.output).toContain(`https://app.ade-app.dev/open?type=lane&id=${UUID}`);
+  });
+
+  it("rejects mutually exclusive link forms", () => {
+    expect(() => runLinkCommand(["lane", UUID, "--web", "--ade", "--no-clipboard"])).toThrow(
+      CliDeeplinkUsageError,
+    );
+  });
+
   it("emits a session link with an optional lane hint", () => {
     const r = runLinkCommand(["session", "session-123", "--lane", UUID, "--no-clipboard"]);
     expect(r.exitCode).toBe(0);
@@ -117,6 +128,11 @@ describe("ade link", () => {
   it("round-trips an existing URL", () => {
     const r = runLinkCommand([`ade://lane/${UUID}`, "--no-clipboard"]);
     expect(r.output).toContain(`https://ade-app.dev/open?type=lane&id=${UUID}`);
+  });
+
+  it("round-trips an existing URL to the hosted web client form", () => {
+    const r = runLinkCommand([`ade://lane/${UUID}`, "--web", "--no-clipboard"]);
+    expect(r.output).toContain(`https://app.ade-app.dev/open?type=lane&id=${UUID}`);
   });
 
   it("emits a linear-issue link", () => {

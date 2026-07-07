@@ -148,6 +148,10 @@ struct ConnectionSettingsView: View {
         presentedSheet = nil
         routePairingQr(payload)
       }
+
+    case .webClient:
+      SettingsWebClientPairSheet(syncService: syncService)
+        .presentationDetents([.large])
     }
   }
 

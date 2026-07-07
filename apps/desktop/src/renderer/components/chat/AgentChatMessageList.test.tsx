@@ -625,14 +625,14 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "done",
           turnId: "turn-1",
           status: "interrupted",
-          modelId: "anthropic/claude-sonnet-4-6",
+          modelId: "anthropic/claude-sonnet-5",
         },
       },
     ]);
 
     // The end-of-turn divider shows the model attribution (styled span) plus the
     // non-completed status for interrupted/failed turns.
-    expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThan(0);
     expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
@@ -674,7 +674,7 @@ describe("AgentChatMessageList transcript rendering", () => {
         timestamp: "2026-03-17T10:00:00.000Z",
         event: {
           type: "error",
-          message: "Authentication failed for Claude Sonnet 4.6.",
+          message: "Authentication failed for Claude Sonnet 5.",
           detail: "API Error: 401 Invalid authentication credentials",
           errorInfo: {
             category: "agent_cli_auth",
@@ -2158,13 +2158,13 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "done",
           turnId: "turn-claude-runtime",
           status: "failed",
-          model: "claude-haiku-4-5",
+          model: "claude-haiku-4-5-20260707",
           modelId: "anthropic/claude-haiku-4-5",
         },
       },
     ]);
 
-    expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Claude Haiku 4.5 (claude-haiku-4-5-20260707)").length).toBeGreaterThan(0);
   });
 
   it("surfaces the latest turn task rollup and inline file changes", () => {
@@ -2262,7 +2262,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           type: "done",
           turnId: "turn-9",
           status: "interrupted",
-          modelId: "anthropic/claude-sonnet-4-6",
+          modelId: "anthropic/claude-sonnet-5",
         },
       },
     ]);
@@ -2270,7 +2270,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(rendered.container.textContent).toMatch(/Task list/);
     expect(rendered.container.textContent).toMatch(/1\/1 complete/);
     // Model attribution surfaces on the end-of-turn divider for non-completed turns.
-    expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThanOrEqual(1);
   });
 
   // "keeps reasoning blocks separated" and "keeps live thinking collapsed"

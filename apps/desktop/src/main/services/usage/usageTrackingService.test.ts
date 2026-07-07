@@ -473,6 +473,14 @@ describe("resolveTokenPrice", () => {
     expect(price.input).toBe(3 / 1_000_000);
   });
 
+  it("uses Sonnet 5 introductory pricing for the static fallback", () => {
+    const price = resolveTokenPrice("claude-sonnet-5");
+    expect(price.input).toBe(2 / 1_000_000);
+    expect(price.output).toBe(10 / 1_000_000);
+    expect(price.cacheRead).toBe(0.2 / 1_000_000);
+    expect(price.cacheWrite).toBe(2.5 / 1_000_000);
+  });
+
   it("returns haiku pricing for haiku models", () => {
     const price = resolveTokenPrice("claude-haiku-3");
     expect(price.input).toBe(1 / 1_000_000);
@@ -521,7 +529,7 @@ describe("resolveTokenPrice", () => {
     const price = resolveTokenPrice("cursor-auto");
     expect(price.input).toBe(3 / 1_000_000);
     expect(price.output).toBe(15 / 1_000_000);
-    expect(resolveTokenPrice("composer-2.5").input).toBe(3 / 1_000_000);
+    expect(resolveTokenPrice("composer-2.5").input).toBe(2 / 1_000_000);
   });
 
   it("prices every ADE Claude and Codex registry id and alias without dynamic pricing", () => {
@@ -1605,7 +1613,7 @@ describe("scanDroidLogs", () => {
       fs.writeFileSync(
         sessionPath.replace(/\.jsonl$/, ".settings.json"),
         JSON.stringify({
-          model: "custom:[anthropic]-claude-sonnet-4-6-20260501",
+          model: "custom:[anthropic]-claude-sonnet-5-20260501",
           tokenUsage: {
             inputTokens: 101,
             outputTokens: 41,
@@ -1620,7 +1628,7 @@ describe("scanDroidLogs", () => {
 
       expect(entries).toHaveLength(2);
       expect(entries[0]).toMatchObject({
-        model: "claude-sonnet-4-6",
+        model: "claude-sonnet-5",
         inputTokens: 50,
         outputTokens: 21,
         cachedTokens: 4,
@@ -1634,7 +1642,7 @@ describe("scanDroidLogs", () => {
         billableCachedTokens: 5,
         cacheWriteTokens: 3,
       });
-      expect(aggregateCosts(entries, "droid").tokenBreakdownByPreset?.all?.["claude-sonnet-4-6"]?.costUsd).toBeGreaterThan(0);
+      expect(aggregateCosts(entries, "droid").tokenBreakdownByPreset?.all?.["claude-sonnet-5"]?.costUsd).toBeGreaterThan(0);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

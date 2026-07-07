@@ -93,14 +93,14 @@ defaults to `guarded` unless explicitly whitelisted.
 Claude's global quick-pick vocabulary is `low | medium | high | max`
 (`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while Opus
 registry rows can advertise the richer `low|medium|high|xhigh|max`
-set for model-specific pickers. The Claude registry now lists the
-new Opus 4.8 1M entry first (`anthropic/claude-opus-4-8`, display
-name `Claude Opus 4.8 1M`, provider model `claude-opus-4-8`,
-1,000,000-token context, 128 k output, tier `very_high`) and keeps
-the existing Opus 4.7 and Opus 4.7 1M entries intact (`opus` still
-targets 4.7; `opus[1m]` / `opus-1m` still target 4.7 1M). Passthrough
-to the provider config is unchanged (the tier string is forwarded
-directly to the CLI / SDK — no synthesized token budgets).
+set for model-specific pickers. The Claude registry is ordered as
+Fable 5, Opus 4.8 1M, Sonnet 5, Haiku 4.5, then Opus 4.7 1M.
+Sonnet 5 selects provider model `claude-sonnet-5`; retired Sonnet 4.6
+ids resolve forward for compatibility and no longer appear as picker
+rows. The basic Opus 4.7 row is also removed; its old aliases resolve
+to Opus 4.8, while `opus[1m]` / `opus-1m` still target Opus 4.7 1M.
+Passthrough to the provider config is unchanged (the tier string is
+forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
 ## Auth and credentials
 

@@ -889,7 +889,7 @@ describe("projectConfigService - automation execution", () => {
               mission: { title: "Run mission" },
             },
             modelConfig: {
-              orchestratorModel: { modelId: "anthropic/claude-sonnet-4-6", thinkingLevel: "medium" },
+              orchestratorModel: { modelId: "anthropic/claude-sonnet-5", thinkingLevel: "medium" },
               profileId: "legacy-profile",
             },
           },
@@ -984,7 +984,7 @@ describe("projectConfigService - automation execution", () => {
     });
     expect(customRule.prompt).toBe("Run mission");
     expect(customRule.modelConfig).toMatchObject({
-      modelId: "anthropic/claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-5",
       thinkingLevel: "medium",
     });
     expect(presetRule.execution).toMatchObject({

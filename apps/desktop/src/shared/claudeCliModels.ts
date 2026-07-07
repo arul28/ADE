@@ -1,11 +1,16 @@
-export type ClaudeCliModelAlias = "fable" | "opus" | "opus[1m]" | "claude-opus-4-8" | "sonnet" | "haiku";
+export type ClaudeCliModelAlias =
+  | "claude-fable-5"
+  | "claude-opus-4-8"
+  | "claude-sonnet-5"
+  | "claude-haiku-4-5"
+  | "claude-opus-4-7[1m]";
 
 export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelAlias>> = {
-  fable: "fable",
-  "claude-fable-5": "fable",
-  "anthropic/claude-fable-5": "fable",
-  "anthropic/claude-fable-5-api": "fable",
-  opus: "opus",
+  fable: "claude-fable-5",
+  "claude-fable-5": "claude-fable-5",
+  "anthropic/claude-fable-5": "claude-fable-5",
+  "anthropic/claude-fable-5-api": "claude-fable-5",
+  opus: "claude-opus-4-8",
   "opus-4.8": "claude-opus-4-8",
   "opus-4-8": "claude-opus-4-8",
   "opus-4.8-1m": "claude-opus-4-8",
@@ -17,30 +22,34 @@ export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelA
   "anthropic/claude-opus-4-8": "claude-opus-4-8",
   "anthropic/claude-opus-4-8-1m": "claude-opus-4-8",
   "anthropic/claude-opus-4-8-api": "claude-opus-4-8",
-  "opus-4-7": "opus",
-  "claude-opus-4-7": "opus",
-  "anthropic/claude-opus-4-7": "opus",
-  "anthropic/claude-opus-4-7-api": "opus",
-  "opus[1m]": "opus[1m]",
-  "opus-1m": "opus[1m]",
-  "opus-4-7-1m": "opus[1m]",
-  "claude-opus-4-7[1m]": "opus[1m]",
-  "claude-opus-4-7-1m": "opus[1m]",
-  "anthropic/claude-opus-4-7-1m": "opus[1m]",
-  sonnet: "sonnet",
-  "sonnet-4-6": "sonnet",
-  "sonnet-4-5": "sonnet",
-  "claude-sonnet-4-6": "sonnet",
-  "claude-sonnet-4-5": "sonnet",
-  "claude-sonnet-4-5-20241022": "sonnet",
-  "anthropic/claude-sonnet-4-6": "sonnet",
-  "anthropic/claude-sonnet-4-6-api": "sonnet",
-  haiku: "haiku",
-  "haiku-4-5": "haiku",
-  "claude-haiku-4-5": "haiku",
-  "claude-haiku-4-5-20251001": "haiku",
-  "anthropic/claude-haiku-4-5": "haiku",
-  "anthropic/claude-haiku-4-5-api": "haiku",
+  "opus-4-7": "claude-opus-4-8",
+  "claude-opus-4-7": "claude-opus-4-8",
+  "anthropic/claude-opus-4-7": "claude-opus-4-8",
+  "anthropic/claude-opus-4-7-api": "claude-opus-4-8",
+  "opus[1m]": "claude-opus-4-7[1m]",
+  "opus-1m": "claude-opus-4-7[1m]",
+  "opus-4-7-1m": "claude-opus-4-7[1m]",
+  "claude-opus-4-7[1m]": "claude-opus-4-7[1m]",
+  "claude-opus-4-7-1m": "claude-opus-4-7[1m]",
+  "anthropic/claude-opus-4-7-1m": "claude-opus-4-7[1m]",
+  sonnet: "claude-sonnet-5",
+  "sonnet-5": "claude-sonnet-5",
+  "claude-sonnet-5": "claude-sonnet-5",
+  "anthropic/claude-sonnet-5": "claude-sonnet-5",
+  "anthropic/claude-sonnet-5-api": "claude-sonnet-5",
+  "sonnet-4-6": "claude-sonnet-5",
+  "sonnet-4-5": "claude-sonnet-5",
+  "claude-sonnet-4-6": "claude-sonnet-5",
+  "claude-sonnet-4-5": "claude-sonnet-5",
+  "claude-sonnet-4-5-20241022": "claude-sonnet-5",
+  "anthropic/claude-sonnet-4-6": "claude-sonnet-5",
+  "anthropic/claude-sonnet-4-6-api": "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+  "haiku-4-5": "claude-haiku-4-5",
+  "claude-haiku-4-5": "claude-haiku-4-5",
+  "claude-haiku-4-5-20251001": "claude-haiku-4-5",
+  "anthropic/claude-haiku-4-5": "claude-haiku-4-5",
+  "anthropic/claude-haiku-4-5-api": "claude-haiku-4-5",
 };
 
 export function resolveClaudeCliModelAlias(
@@ -57,12 +66,12 @@ export function resolveClaudeCliModelAlias(
   const hasOpus1mToken =
     normalized.includes("[1m]") || /(^|[^0-9])1m($|[^0-9])/.test(normalized);
   if (normalized.includes("opus") && hasOpus1mToken) {
-    return /4[-.]8/.test(normalized) ? "claude-opus-4-8" : "opus[1m]";
+    return /4[-.]8/.test(normalized) ? "claude-opus-4-8" : "claude-opus-4-7[1m]";
   }
-  if (normalized.includes("fable")) return "fable";
-  if (normalized.includes("sonnet")) return "sonnet";
-  if (normalized.includes("opus")) return "opus";
-  if (normalized.includes("haiku")) return "haiku";
+  if (normalized.includes("fable")) return "claude-fable-5";
+  if (normalized.includes("sonnet")) return "claude-sonnet-5";
+  if (normalized.includes("opus")) return "claude-opus-4-8";
+  if (normalized.includes("haiku")) return "claude-haiku-4-5";
 
   // Preserve custom IDs for forward compatibility.
   return raw;

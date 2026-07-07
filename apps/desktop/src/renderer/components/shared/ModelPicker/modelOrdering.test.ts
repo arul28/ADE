@@ -7,12 +7,12 @@ describe("sortModelItems", () => {
     const items = [
       { modelId: "anthropic/claude-opus-4-8", label: "opus" },
       { modelId: "openai/gpt-5", label: "gpt" },
-      { modelId: "anthropic/claude-sonnet-4-6", label: "sonnet" },
+      { modelId: "anthropic/claude-sonnet-5", label: "sonnet" },
     ];
     expect(sortModelItems(items).map((i) => i.modelId)).toEqual([
       "anthropic/claude-opus-4-8",
       "openai/gpt-5",
-      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-5",
     ]);
   });
 
@@ -20,7 +20,7 @@ describe("sortModelItems", () => {
     const items = [
       { modelId: "openai/gpt-5" },
       { modelId: "anthropic/claude-opus-4-8" },
-      { modelId: "anthropic/claude-sonnet-4-6" },
+      { modelId: "anthropic/claude-sonnet-5" },
     ];
     const sorted = sortModelItems(items, {
       favoriteModelIds: ["anthropic/claude-opus-4-8"],
@@ -29,7 +29,7 @@ describe("sortModelItems", () => {
     expect(sorted.map((i) => i.modelId)).toEqual([
       "anthropic/claude-opus-4-8",
       "openai/gpt-5",
-      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-5",
     ]);
   });
 

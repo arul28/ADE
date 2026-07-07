@@ -66,7 +66,7 @@ describe("parseCursorCliModelsStdout", () => {
       "",
       "auto - Auto  (current)",
       "composer-2 - Composer 2",
-      "claude-4.6-sonnet-medium - Sonnet 4.6 1M",
+      "claude-4.6-sonnet-medium - Sonnet 5 1M",
     ].join("\n");
 
     const rows = parseCursorCliModelsStdout(raw);
@@ -94,7 +94,7 @@ describe("parseCursorCliModelsStdout", () => {
     });
 
     resolveModels([
-      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 4.6 Medium" },
+      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 5 Medium" },
       { id: "auto", displayName: "Auto" },
     ]);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -123,7 +123,7 @@ describe("parseCursorCliModelsStdout", () => {
       expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
     });
     resolveModels([
-      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 4.6 Medium" },
+      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 5 Medium" },
       { id: "auto", displayName: "Auto" },
     ]);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -137,7 +137,7 @@ describe("parseCursorCliModelsStdout", () => {
 
   it("probes exact Cursor SDK models when requested", async () => {
     cursorModelsListMock.mockResolvedValue([
-      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 4.6 Medium" },
+      { id: "claude-4.6-sonnet-medium", displayName: "Sonnet 5 Medium" },
       { id: "composer-2", displayName: "Composer 2", aliases: ["composer-latest"] },
       { id: "auto", displayName: "Auto" },
     ]);

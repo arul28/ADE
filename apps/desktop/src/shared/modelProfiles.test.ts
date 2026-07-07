@@ -68,7 +68,7 @@ describe("model catalogs", () => {
 
 describe("findModel", () => {
   it("returns a ModelEntry for a known model", () => {
-    const entry = findModel("anthropic/claude-sonnet-4-6");
+    const entry = findModel("anthropic/claude-sonnet-5");
     expect(entry).toBeDefined();
     expect(entry!.provider).toBe("claude");
     expect(entry!.displayName).toContain("Sonnet");
@@ -148,7 +148,7 @@ describe("thinking levels", () => {
 
 describe("modelConfigToServiceModel", () => {
   it("returns the modelId when it is a non-empty string", () => {
-    expect(modelConfigToServiceModel({ modelId: "anthropic/claude-opus-4-7" })).toBe("anthropic/claude-opus-4-7");
+    expect(modelConfigToServiceModel({ modelId: "anthropic/claude-opus-4-8" })).toBe("anthropic/claude-opus-4-8");
   });
 
   it("falls back to default codex model when modelId is empty and provider is codex", () => {
@@ -156,16 +156,16 @@ describe("modelConfigToServiceModel", () => {
     expect(result).toMatch(/^openai\//);
   });
 
-  it("falls back to claude-sonnet-4-6 when modelId is empty and provider is claude", () => {
-    expect(modelConfigToServiceModel({ provider: "claude", modelId: "" })).toBe("anthropic/claude-sonnet-4-6");
+  it("falls back to the default Claude model when modelId is empty and provider is claude", () => {
+    expect(modelConfigToServiceModel({ provider: "claude", modelId: "" })).toBe("anthropic/claude-fable-5");
   });
 
-  it("falls back to claude-sonnet-4-6 when modelId is whitespace only", () => {
-    expect(modelConfigToServiceModel({ provider: "claude", modelId: "   " })).toBe("anthropic/claude-sonnet-4-6");
+  it("falls back to the default Claude model when modelId is whitespace only", () => {
+    expect(modelConfigToServiceModel({ provider: "claude", modelId: "   " })).toBe("anthropic/claude-fable-5");
   });
 
-  it("falls back to claude-sonnet-4-6 when provider is unknown and modelId is empty", () => {
-    expect(modelConfigToServiceModel({ provider: "unknown", modelId: "" })).toBe("anthropic/claude-sonnet-4-6");
+  it("falls back to the default Claude model when provider is unknown and modelId is empty", () => {
+    expect(modelConfigToServiceModel({ provider: "unknown", modelId: "" })).toBe("anthropic/claude-fable-5");
   });
 });
 
@@ -221,7 +221,7 @@ describe("thinkingLevelToReasoningEffort", () => {
 
 describe("MODEL_PRICING", () => {
   it("returns pricing for a known providerModelId via proxy get", () => {
-    const pricing = MODEL_PRICING["sonnet"];
+    const pricing = MODEL_PRICING["claude-sonnet-5"];
     expect(pricing).toBeDefined();
     expect(typeof pricing.input).toBe("number");
     expect(typeof pricing.output).toBe("number");
@@ -232,12 +232,12 @@ describe("MODEL_PRICING", () => {
   });
 
   it("supports 'in' operator via has trap", () => {
-    expect("sonnet" in MODEL_PRICING).toBe(true);
+    expect("claude-sonnet-5" in MODEL_PRICING).toBe(true);
     expect("nonexistent-model-xyz" in MODEL_PRICING).toBe(false);
   });
 
   it("getOwnPropertyDescriptor returns pricing for known models", () => {
-    const desc = Object.getOwnPropertyDescriptor(MODEL_PRICING, "sonnet");
+    const desc = Object.getOwnPropertyDescriptor(MODEL_PRICING, "claude-sonnet-5");
     expect(desc).toBeDefined();
     expect(desc!.value).toEqual(expect.objectContaining({ input: expect.any(Number), output: expect.any(Number) }));
   });

@@ -26,7 +26,7 @@ export function resolveOrchestrationModel(
   if (r.default) return { ...r.default, routingKey: "default" };
   return {
     provider: "claude",
-    modelId: "claude-sonnet-4-6",
+    modelId: "claude-sonnet-5",
     reasoningEffort: null,
     fastMode: false,
     routingKey: "fallback",

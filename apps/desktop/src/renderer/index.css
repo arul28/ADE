@@ -4018,14 +4018,14 @@ button:active, [role="button"]:active {
 .ade-welcome-card__body {
   display: grid;
   grid-template-columns: 1.55fr 1fr;
-  gap: 24px;
+  gap: 28px;
   align-items: stretch;
 }
 
 .ade-welcome-card__surfaces {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 16px;
+  gap: 20px;
 }
 
 .ade-welcome-card__tile {
