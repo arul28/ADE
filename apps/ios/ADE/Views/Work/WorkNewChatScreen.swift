@@ -72,8 +72,8 @@ func workShellProjectScope(
     left.root.count < right.root.count
   }?.project
 
-  let project = projectById ?? projectByLanePath
-  let projectId = project?.id ?? laneProjectId
+  let project = laneProjectId == nil ? projectByLanePath : projectById
+  let projectId = laneProjectId ?? project?.id
   let rootPath = syncNormalizedProjectRootScope(project?.rootPath)
 
   return WorkProjectCommandScope(projectId: projectId, projectRootPath: rootPath)

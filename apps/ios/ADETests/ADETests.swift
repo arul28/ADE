@@ -561,6 +561,29 @@ final class ADETests: XCTestCase {
     XCTAssertNil(scope.projectRootPath)
   }
 
+  func testWorkShellProjectScopeKeepsKnownLaneProjectWhenCatalogIsStale() {
+    var lane = makeLaneSummary(id: "lane-mobile", name: "Mobile", laneType: "worktree", branchRef: "ade/mobile")
+    lane.projectId = "project-mobile"
+    lane.worktreePath = "/repo/mobile/.ade/worktrees/lane-mobile"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-parent",
+          displayName: "Parent",
+          rootPath: "/repo",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertEqual(scope.projectId, "project-mobile")
+    XCTAssertNil(scope.projectRootPath)
+  }
+
   func testWorkShellProjectScopeDoesNotFallbackToActiveProjectWhenLaneScopeIsMissing() {
     let lane = makeLaneSummary(id: "lane-missing", name: "Missing", laneType: "worktree", branchRef: "ade/missing")
 
