@@ -6,7 +6,6 @@ import {
   MagnifyingGlass,
   Warning,
 } from "@phosphor-icons/react";
-import { PROVIDER_CHAT_ACCENTS } from "../../chat/chatSurfaceTheme";
 import { relativeWhen } from "../../../lib/format";
 import { cn } from "../../ui/cn";
 
@@ -17,7 +16,7 @@ function formatUpdatedAt(ms: number | null | undefined): string {
 }
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import { SmartTooltip } from "../../ui/SmartTooltip";
-import { ToolLogo } from "../ToolLogos";
+import { ProviderChip } from "../ProviderChip";
 import {
   getExternalSessionsApi,
   normalizeListResult,
@@ -196,22 +195,31 @@ export function ImportSessionBrowser({
           <div className="flex flex-wrap items-center gap-1.5">
             {PROVIDER_FILTERS.map((filter) => {
               const selected = providerFilter === filter.id;
-              const accent =
-                filter.id === "all" ? null : PROVIDER_CHAT_ACCENTS[filter.id] ?? null;
+              const isAll = filter.id === "all";
               return (
                 <button
                   key={filter.id}
                   type="button"
+                  aria-pressed={selected}
                   onClick={() => setProviderFilter(filter.id)}
                   className={cn(
-                    "inline-flex h-7 items-center gap-1.5 rounded-full border px-3 text-[11px] font-medium transition-colors",
+                    "inline-flex h-7 items-center gap-1.5 rounded-full border text-[11px] font-medium transition-colors",
+                    isAll ? "px-3" : "pl-1.5 pr-3",
                     selected
                       ? "border-white/[0.14] bg-white/[0.08] text-fg"
                       : "border-white/[0.06] bg-white/[0.02] text-muted-fg/80 hover:text-fg",
                   )}
                 >
-                  {accent ? (
-                    <span className="h-1.5 w-1.5 rounded-full" style={{ background: accent }} />
+                  {filter.id !== "all" ? (
+                    <ProviderChip
+                      provider={filter.id}
+                      toolType={PROVIDER_TOOL_TYPE[filter.id]}
+                      size="sm"
+                      className={cn(
+                        "transition-opacity",
+                        selected ? "opacity-100" : "opacity-80",
+                      )}
+                    />
                   ) : null}
                   {filter.label}
                 </button>
@@ -351,7 +359,6 @@ function ImportSessionRow({
   onImport: (affordance: ImportAffordance) => void;
 }) {
   const affordances = useMemo(() => importAffordancesFor(summary), [summary]);
-  const accent = PROVIDER_CHAT_ACCENTS[summary.provider] ?? "#71717A";
   const hint = affordances.find((a) => a.hint)?.hint;
 
   return (
@@ -365,12 +372,12 @@ function ImportSessionRow({
       )}
     >
       <div className="flex items-start gap-2.5">
-        <span
-          className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.06]"
-          style={{ background: `color-mix(in srgb, ${accent} 12%, transparent)` }}
-        >
-          <ToolLogo toolType={PROVIDER_TOOL_TYPE[summary.provider]} size={15} />
-        </span>
+        <ProviderChip
+          provider={summary.provider}
+          toolType={PROVIDER_TOOL_TYPE[summary.provider]}
+          size="md"
+          className="mt-0.5"
+        />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-[12.5px] font-medium text-fg">

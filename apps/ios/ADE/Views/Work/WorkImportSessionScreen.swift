@@ -374,9 +374,9 @@ private struct WorkImportProviderChip: View {
   var body: some View {
     Button(action: action) {
       HStack(spacing: 6) {
-        Circle()
-          .fill(provider == "all" ? ADEColor.textMuted : ADEColor.providerChatAccent(for: provider))
-          .frame(width: 7, height: 7)
+        if provider != "all" {
+          providerLogo
+        }
         Text(provider == "all" ? "All" : providerDisplayName(provider))
           .font(.caption.weight(.semibold))
       }
@@ -391,6 +391,21 @@ private struct WorkImportProviderChip: View {
     }
     .buttonStyle(.plain)
   }
+
+  @ViewBuilder
+  private var providerLogo: some View {
+    if let assetName = providerAssetName(provider) {
+      Image(assetName)
+        .resizable()
+        .aspectRatio(contentMode: .fit)
+        .frame(width: 15, height: 15)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+    } else {
+      Circle()
+        .fill(ADEColor.providerChatAccent(for: provider))
+        .frame(width: 7, height: 7)
+    }
+  }
 }
 
 private struct WorkImportSessionRow: View {
@@ -400,10 +415,7 @@ private struct WorkImportSessionRow: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 9) {
       HStack(alignment: .top, spacing: 10) {
-        Circle()
-          .fill(ADEColor.providerChatAccent(for: session.provider))
-          .frame(width: 10, height: 10)
-          .padding(.top, 5)
+        providerMark
 
         VStack(alignment: .leading, spacing: 5) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -468,6 +480,24 @@ private struct WorkImportSessionRow: View {
     }
     .contentShape(Rectangle())
   }
+
+  @ViewBuilder
+  private var providerMark: some View {
+    if providerAssetName(session.provider) != nil {
+      WorkProviderLogo(
+        provider: session.provider,
+        fallbackSymbol: providerIcon(session.provider),
+        tint: ADEColor.providerChatAccent(for: session.provider),
+        size: 24
+      )
+      .padding(.top, 1)
+    } else {
+      Circle()
+        .fill(ADEColor.providerChatAccent(for: session.provider))
+        .frame(width: 10, height: 10)
+        .padding(.top, 5)
+    }
+  }
 }
 
 private struct WorkImportBadge: View {
@@ -497,9 +527,7 @@ private struct WorkImportSessionActionSheet: View {
       VStack(alignment: .leading, spacing: 16) {
         VStack(alignment: .leading, spacing: 6) {
           HStack(spacing: 8) {
-            Circle()
-              .fill(ADEColor.providerChatAccent(for: session.provider))
-              .frame(width: 9, height: 9)
+            providerMark
             Text(providerDisplayName(session.provider))
               .font(.caption.weight(.semibold))
               .foregroundStyle(ADEColor.textSecondary)
@@ -564,6 +592,22 @@ private struct WorkImportSessionActionSheet: View {
           Button("Close") { dismiss() }
         }
       }
+    }
+  }
+
+  @ViewBuilder
+  private var providerMark: some View {
+    if providerAssetName(session.provider) != nil {
+      WorkProviderBareLogo(
+        provider: session.provider,
+        fallbackSymbol: providerIcon(session.provider),
+        tint: ADEColor.providerChatAccent(for: session.provider),
+        size: 14
+      )
+    } else {
+      Circle()
+        .fill(ADEColor.providerChatAccent(for: session.provider))
+        .frame(width: 9, height: 9)
     }
   }
 }

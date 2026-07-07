@@ -10781,7 +10781,7 @@ export function AgentChatPane({
                                 aria-label="Select lane"
                               />
                               {onOpenShellSession || onImportedSession ? (
-                                <div className="flex w-full min-w-[240px] items-stretch gap-1.5">
+                                <div className="flex flex-wrap justify-center gap-2">
                                   {onOpenShellSession ? (
                                     <SmartTooltip
                                       content={{
@@ -10793,7 +10793,7 @@ export function AgentChatPane({
                                     >
                                       <button
                                         type="button"
-                                        className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
                                         aria-label="Open shell in selected lane"
                                         onClick={() => void launchShellForDraftLane()}
@@ -10814,7 +10814,7 @@ export function AgentChatPane({
                                     >
                                       <button
                                         type="button"
-                                        className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate}
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
