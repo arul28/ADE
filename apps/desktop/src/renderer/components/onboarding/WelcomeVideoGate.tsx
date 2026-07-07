@@ -194,8 +194,8 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
             left: "50%",
             top: "50%",
             zIndex: 10021,
-            width: "min(940px, calc(100vw - 32px))",
-            maxHeight: "min(92dvh, 860px)",
+            width: "min(1080px, calc(100vw - 32px))",
+            maxHeight: "min(94dvh, 920px)",
             overflow: "auto",
             transform: "translate(-50%, -50%)",
             borderRadius: 16,
@@ -394,7 +394,14 @@ function VideoPanel({
             border: 0,
             padding: 0,
             cursor: "pointer",
-            backgroundImage: `linear-gradient(180deg, rgba(8,6,18,0) 40%, rgba(8,6,18,0.5)), url("${publicAssetUrl("welcome/video-poster.jpg")}")`,
+            backgroundImage: [
+              // Soft radial vignette centered behind the play button so it pops
+              // cleanly off a busy poster instead of reading as clutter.
+              "radial-gradient(circle at 50% 47%, rgba(6,5,16,0.66) 0%, rgba(6,5,16,0.34) 22%, rgba(6,5,16,0) 52%)",
+              // Top/bottom darkening keeps the caption legible and frames the video.
+              "linear-gradient(180deg, rgba(8,6,18,0.30) 0%, rgba(8,6,18,0) 34%, rgba(8,6,18,0.12) 64%, rgba(8,6,18,0.68) 100%)",
+              `url("${publicAssetUrl("welcome/video-poster.jpg")}")`,
+            ].join(", "),
             backgroundSize: "cover",
             backgroundPosition: "center",
           }}
@@ -409,15 +416,16 @@ function VideoPanel({
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              width: 64,
-              height: 64,
+              width: 68,
+              height: 68,
               borderRadius: "999px",
               background: "var(--color-accent, #A78BFA)",
               color: "var(--color-accent-fg, #0B0A14)",
-              boxShadow: "0 12px 30px -8px rgba(124,58,237,0.7)",
+              boxShadow:
+                "0 14px 34px -10px rgba(124,58,237,0.78), 0 0 0 6px rgba(255,255,255,0.10)",
             }}
           >
-            <Play size={26} weight="fill" />
+            <Play size={28} weight="fill" />
           </span>
           <span
             style={{
@@ -582,7 +590,7 @@ function SurfaceTile({
       <div
         style={{
           width: "100%",
-          height: 200,
+          height: 250,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -613,7 +621,7 @@ function MacBookFrame({ src }: { src: string }) {
     <div
       style={{
         width: "100%",
-        maxWidth: 262,
+        maxWidth: 300,
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -683,11 +691,11 @@ function PhoneFrame({ src }: { src: string }) {
   return (
     <div
       style={{
-        width: 96,
+        width: 110,
         margin: "0 auto",
         background: "#0a0a10",
         border: "3px solid #3a3a45",
-        borderRadius: 20,
+        borderRadius: 22,
         padding: 3,
         position: "relative",
         boxShadow: "0 10px 24px -10px rgba(0,0,0,0.75)",
@@ -697,17 +705,17 @@ function PhoneFrame({ src }: { src: string }) {
       <div
         style={{
           position: "absolute",
-          top: 9,
+          top: 10,
           left: "50%",
           transform: "translateX(-50%)",
-          width: 30,
-          height: 7,
+          width: 34,
+          height: 8,
           background: "#000",
-          borderRadius: 5,
+          borderRadius: 6,
           zIndex: 2,
         }}
       />
-      <div style={{ borderRadius: 16, overflow: "hidden", background: "#000" }}>
+      <div style={{ borderRadius: 18, overflow: "hidden", background: "#000" }}>
         <img
           src={src}
           alt=""
@@ -724,7 +732,7 @@ function TerminalFrame({ src }: { src: string }) {
     <div
       style={{
         width: "100%",
-        maxWidth: 262,
+        maxWidth: 300,
         borderRadius: 9,
         overflow: "hidden",
         border: "1px solid #2c2c36",
