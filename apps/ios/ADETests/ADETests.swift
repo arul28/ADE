@@ -502,6 +502,242 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workCliPermissionMode(provider: "claude", runtimeMode: "auto"), "auto")
   }
 
+  func testWorkStartShellSessionRequestUsesShellDefaultsAndScope() {
+    let request = workStartShellSessionRequest(
+      laneId: "lane-work",
+      targetProjectId: "project-1",
+      targetProjectRootPath: "/tmp/project-one"
+    )
+    XCTAssertEqual(request.laneId, "lane-work")
+    XCTAssertEqual(request.provider, "shell")
+    XCTAssertEqual(request.title, "Shell")
+    XCTAssertEqual(request.cols, 48)
+    XCTAssertEqual(request.rows, 24)
+    XCTAssertEqual(request.targetProjectId, "project-1")
+    XCTAssertEqual(request.targetProjectRootPath, "/tmp/project-one")
+  }
+
+  func testWorkShellProjectScopePrefersSelectedLaneProject() {
+    var lane = makeLaneSummary(id: "lane-work", name: "Work", laneType: "worktree", branchRef: "ade/work")
+    lane.projectId = "project-lane"
+    lane.worktreePath = "/tmp/project-lane/.ade/worktrees/lane-work"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-active",
+          displayName: "Active",
+          rootPath: "/tmp/project-active",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+        MobileProjectSummary(
+          id: "project-lane",
+          displayName: "Lane",
+          rootPath: "/tmp/project-lane",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertEqual(scope.projectId, "project-lane")
+    XCTAssertEqual(scope.projectRootPath, "/tmp/project-lane")
+  }
+
+  func testWorkShellProjectScopeDoesNotMixForeignLaneIdWithActiveRoot() {
+    var lane = makeLaneSummary(id: "lane-foreign", name: "Foreign", laneType: "worktree", branchRef: "ade/foreign")
+    lane.projectId = "project-foreign"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: []
+    )
+
+    XCTAssertEqual(scope.projectId, "project-foreign")
+    XCTAssertNil(scope.projectRootPath)
+  }
+
+  func testWorkShellProjectScopeKeepsKnownLaneProjectWhenCatalogIsStale() {
+    var lane = makeLaneSummary(id: "lane-mobile", name: "Mobile", laneType: "worktree", branchRef: "ade/mobile")
+    lane.projectId = "project-mobile"
+    lane.worktreePath = "/repo/mobile/.ade/worktrees/lane-mobile"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-parent",
+          displayName: "Parent",
+          rootPath: "/repo",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertEqual(scope.projectId, "project-mobile")
+    XCTAssertNil(scope.projectRootPath)
+  }
+
+  func testWorkShellProjectScopeDoesNotFallbackToActiveProjectWhenLaneScopeIsMissing() {
+    let lane = makeLaneSummary(id: "lane-missing", name: "Missing", laneType: "worktree", branchRef: "ade/missing")
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-active",
+          displayName: "Active",
+          rootPath: "/tmp/project-active",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertNil(scope.projectId)
+    XCTAssertNil(scope.projectRootPath)
+  }
+
+  func testWorkShellProjectScopePrefersMostSpecificPathMatch() {
+    var lane = makeLaneSummary(id: "lane-mobile", name: "Mobile", laneType: "worktree", branchRef: "ade/mobile")
+    lane.worktreePath = "/repo/mobile/.ade/worktrees/lane-mobile"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-parent",
+          displayName: "Parent",
+          rootPath: "/repo",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+        MobileProjectSummary(
+          id: "project-mobile",
+          displayName: "Mobile",
+          rootPath: "/repo/mobile",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertEqual(scope.projectId, "project-mobile")
+    XCTAssertEqual(scope.projectRootPath, "/repo/mobile")
+  }
+
+  func testWorkShellProjectScopeDoesNotUseParentProjectForNestedLanePath() {
+    var lane = makeLaneSummary(id: "lane-mobile", name: "Mobile", laneType: "worktree", branchRef: "ade/mobile")
+    lane.worktreePath = "/repo/mobile/.ade/worktrees/lane-mobile"
+
+    let scope = workShellProjectScope(
+      for: lane,
+      projects: [
+        MobileProjectSummary(
+          id: "project-parent",
+          displayName: "Parent",
+          rootPath: "/repo",
+          laneCount: 1,
+          isAvailable: true,
+          isCached: true
+        ),
+      ]
+    )
+
+    XCTAssertNil(scope.projectId)
+    XCTAssertNil(scope.projectRootPath)
+  }
+
+  @MainActor
+  func testQueuedShellStartUsesLaneProjectScopeWithoutActiveFallback() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "work.startCliSession",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-active", rootPath: "/tmp/project-active")
+    service.disconnect()
+
+    do {
+      _ = try await service.startShellSession(
+        laneId: "lane-scoped",
+        targetProjectId: "project-lane",
+        targetProjectRootPath: "/tmp/project-lane"
+      )
+      XCTFail("Expected queued shell start to throw after persisting the operation.")
+    } catch is QueuedRemoteCommandError {
+      // Expected: the shell command was queued for replay.
+    }
+
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.kind, "command")
+    XCTAssertEqual(queued.first?.action, "work.startCliSession")
+    XCTAssertEqual(queued.first?.projectId, "project-lane")
+    XCTAssertEqual(queued.first?.projectRootPath, "/tmp/project-lane")
+    XCTAssertEqual(queued.first?.fallbackToActiveProjectScope, false)
+  }
+
+  @MainActor
+  func testShellStartWithoutLaneProjectScopeDoesNotQueueAgainstActiveProject() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "work.startCliSession",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-active", rootPath: "/tmp/project-active")
+    service.disconnect()
+
+    do {
+      _ = try await service.startShellSession(laneId: "lane-missing")
+      XCTFail("Expected missing shell project scope to fail before queueing.")
+    } catch {
+      XCTAssertTrue(error.localizedDescription.contains("project scope"))
+    }
+
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty)
+    XCTAssertEqual(service.pendingOperationCount, 0)
+  }
+
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
     XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])

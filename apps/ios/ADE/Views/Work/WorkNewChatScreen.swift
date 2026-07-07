@@ -39,6 +39,56 @@ enum WorkAutoLaneNamingOutcome: Equatable {
   case renameFailed(String)
 }
 
+struct WorkProjectCommandScope: Equatable {
+  let projectId: String?
+  let projectRootPath: String?
+}
+
+private func workNonEmptyScopeValue(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func workShellProjectRootCandidate(from path: String?) -> String? {
+  guard let normalized = syncNormalizedProjectRootScope(path) else { return nil }
+  if let range = normalized.range(of: "/.ade/worktrees/") {
+    return String(normalized[..<range.lowerBound])
+  }
+  return normalized
+}
+
+private func workUniqueRoots(_ roots: [String?]) -> [String] {
+  var seen = Set<String>()
+  return roots.compactMap { root in
+    guard let root, !seen.contains(root) else { return nil }
+    seen.insert(root)
+    return root
+  }
+}
+
+func workShellProjectScope(
+  for lane: LaneSummary,
+  projects: [MobileProjectSummary]
+) -> WorkProjectCommandScope {
+  let laneProjectId = workNonEmptyScopeValue(lane.projectId)
+  let projectById = laneProjectId.flatMap { id in projects.first { $0.id == id } }
+  let expectedRoots = workUniqueRoots([
+    workShellProjectRootCandidate(from: lane.attachedRootPath),
+    workShellProjectRootCandidate(from: lane.worktreePath),
+  ])
+
+  let projectByLanePath = projects.first { project in
+    guard let root = syncNormalizedProjectRootScope(project.rootPath) else { return false }
+    return expectedRoots.contains(root)
+  }
+
+  let project = laneProjectId == nil ? projectByLanePath : projectById
+  let projectId = laneProjectId ?? project?.id
+  let rootPath = syncNormalizedProjectRootScope(project?.rootPath)
+
+  return WorkProjectCommandScope(projectId: projectId, projectRootPath: rootPath)
+}
+
 @discardableResult
 @MainActor
 func workRunAutoLaneAiRename(
@@ -486,6 +536,7 @@ struct WorkNewChatScreen: View {
   /// construction (the screen is pushed for the active project) so it is stable
   /// while shown.
   let activeProjectId: String?
+  let activeProjectRootPath: String?
   let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onChatImported: @MainActor (String) async -> Void
@@ -506,6 +557,8 @@ struct WorkNewChatScreen: View {
   /// advertised fast model and wrongly hide the toggle.
   @State private var selectedModelOption: WorkModelOption?
   @State private var sessionMode: WorkNewSessionMode = .chat
+  @State private var shellLaunchBusy: Bool = false
+  @State private var queuedShellLaneIds = Set<String>()
   /// Status banner shown above the composer while an auto-created lane is being
   /// minted before the chat/CLI session starts.
   @State private var autoCreateStatus: String?
@@ -514,6 +567,7 @@ struct WorkNewChatScreen: View {
     lanes: [LaneSummary],
     preferredLaneId: String?,
     activeProjectId: String?,
+    activeProjectRootPath: String?,
     onStarted: @escaping @MainActor (AgentChatSessionSummary, String) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (String) async -> Void = { _ in },
@@ -522,6 +576,7 @@ struct WorkNewChatScreen: View {
     self.lanes = lanes
     self.preferredLaneId = preferredLaneId
     self.activeProjectId = activeProjectId
+    self.activeProjectRootPath = activeProjectRootPath
     self.onStarted = onStarted
     self.onCliStarted = onCliStarted
     self.onChatImported = onChatImported
@@ -651,7 +706,7 @@ struct WorkNewChatScreen: View {
           .padding(.bottom, 6)
       }
 
-      importSessionChip
+      sessionActionChips
 
       composerBar
     }
@@ -768,10 +823,21 @@ struct WorkNewChatScreen: View {
 
   // Sits just above the composer, like the context chips in a chat.
   @ViewBuilder
-  private var importSessionChip: some View {
+  private var sessionActionChips: some View {
     if let lane = selectedConcreteLane {
-      HStack {
+      let chipsDisabled = busy || shellLaunchBusy
+      let shellQueued = queuedShellLaneIds.contains(lane.id)
+      let shellDisabled = chipsDisabled || shellQueued
+      HStack(spacing: 8) {
         Spacer(minLength: 0)
+        Button {
+          Task { await launchShell(in: lane) }
+        } label: {
+          shellSessionAffordance(isBusy: shellLaunchBusy, isQueued: shellQueued, disabled: shellDisabled)
+        }
+        .buttonStyle(.plain)
+        .disabled(shellDisabled)
+
         NavigationLink {
           WorkImportSessionScreen(
             lane: lane,
@@ -780,14 +846,42 @@ struct WorkNewChatScreen: View {
           )
           .environmentObject(syncService)
         } label: {
-          importSessionAffordance(disabled: false)
+          importSessionAffordance(disabled: chipsDisabled)
         }
         .buttonStyle(.plain)
+        .disabled(chipsDisabled)
         Spacer(minLength: 0)
       }
       .padding(.horizontal, 20)
       .padding(.bottom, 8)
     }
+  }
+
+  private func shellSessionAffordance(isBusy: Bool, isQueued: Bool, disabled: Bool) -> some View {
+    HStack(spacing: 6) {
+      if isBusy {
+        ProgressView()
+          .controlSize(.mini)
+          .tint(ADEColor.accent)
+      } else if isQueued {
+        Image(systemName: "clock.badge.checkmark")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      } else {
+        Image(systemName: "terminal")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.accent)
+      }
+      Text(isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Shell"))
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.textPrimary)
+    }
+    .padding(.horizontal, 14)
+    .frame(height: 34)
+    .background(ADEColor.surfaceBackground.opacity(disabled ? 0.36 : 0.7), in: Capsule(style: .continuous))
+    .overlay { Capsule(style: .continuous).stroke(ADEColor.glassBorder.opacity(disabled ? 0.5 : 1), lineWidth: 0.6) }
+    .opacity(disabled && !isBusy ? 0.5 : 1)
+    .accessibilityLabel(isBusy ? "Starting shell" : (isQueued ? "Shell queued" : "Open shell"))
   }
 
   private func importSessionAffordance(disabled: Bool) -> some View {
@@ -814,7 +908,7 @@ struct WorkNewChatScreen: View {
       modelId: modelId,
       modelName: prettyNewChatModelName(modelId),
       busy: busy,
-      canStart: !busy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
+      canStart: !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
       fastModeSupported: fastModeSupported,
@@ -844,9 +938,65 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
+  private func launchShell(in lane: LaneSummary) async {
+    guard !busy && !shellLaunchBusy else { return }
+    shellLaunchBusy = true
+    errorMessage = nil
+    defer { shellLaunchBusy = false }
+
+    do {
+      let scope = workShellProjectScope(
+        for: lane,
+        projects: syncService.projects
+      )
+      let result = try await syncService.startShellSession(
+        laneId: lane.id,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.projectRootPath
+      )
+      if let session = result.session {
+        await onCliStarted(session)
+      } else {
+        await onCliStarted(TerminalSessionSummary(
+          id: result.sessionId,
+          laneId: lane.id,
+          laneName: lane.name,
+          ptyId: result.ptyId,
+          tracked: true,
+          pinned: false,
+          manuallyNamed: nil,
+          goal: nil,
+          toolType: "shell",
+          title: "Shell",
+          status: "running",
+          startedAt: workDateFormatter.string(from: Date()),
+          endedAt: nil,
+          exitCode: nil,
+          transcriptPath: "",
+          headShaStart: nil,
+          headShaEnd: nil,
+          lastOutputPreview: nil,
+          summary: nil,
+          runtimeState: "running",
+          resumeCommand: nil,
+          resumeMetadata: nil,
+          chatIdleSinceAt: nil
+        ))
+      }
+    } catch is QueuedRemoteCommandError {
+      ADEHaptics.medium()
+      queuedShellLaneIds.insert(lane.id)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
   private func submit(openingMessage: String) async -> Bool {
     let opener = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !busy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
+    guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
@@ -1114,6 +1264,7 @@ private func workCliToolType(provider: String) -> String {
   case "cursor": return "cursor-cli"
   case "opencode": return "opencode"
   case "droid": return "droid"
+  case "shell": return "shell"
   default: return "opencode"
   }
 }
