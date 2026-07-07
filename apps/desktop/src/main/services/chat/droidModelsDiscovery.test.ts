@@ -307,7 +307,7 @@ describe("discoverDroidCliModelDescriptors", () => {
     });
   });
 
-  it("normalizes retired Factory config custom aliases before surfacing them", async () => {
+  it("normalizes retired Factory config custom aliases while preserving the custom proxy", async () => {
     fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
     fs.writeFileSync(
       path.join(tmpHome, ".factory", "config.json"),
@@ -338,24 +338,28 @@ describe("discoverDroidCliModelDescriptors", () => {
 
     const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
 
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
-      "droid/claude-opus-4-8",
-      "droid/claude-sonnet-5",
+    expect(new Set(descriptors.map((descriptor) => descriptor.id))).toEqual(new Set([
+      "droid/custom:claude-opus-4-8",
+      "droid/custom:claude-sonnet-5",
       "droid/custom:custom-real-model",
-    ]);
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).toMatchObject({
-      providerModelId: "claude-sonnet-5",
+    ]));
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-sonnet-5")).toMatchObject({
+      providerModelId: "custom:claude-sonnet-5",
       displayName: "Sonnet 5 (1.2x)",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).toMatchObject({
-      providerModelId: "claude-opus-4-8",
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-4-8")).toMatchObject({
+      providerModelId: "custom:claude-opus-4-8",
       displayName: "Opus 4.8 1M",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       serviceTiers: ["fast"],
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-sonnet-5")).not.toHaveProperty("customProxy");
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).not.toHaveProperty("customProxy");
     expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:custom-real-model")).toMatchObject({
       displayName: "Custom Real Model",
       customProxy: true,

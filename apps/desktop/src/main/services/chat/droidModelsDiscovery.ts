@@ -17,6 +17,8 @@ export type DroidExecHelpModelRow = {
   customProxy?: boolean;
   reasoningTiers?: string[];
   serviceTiers?: string[];
+  contextWindow?: number;
+  maxOutputTokens?: number;
   capabilities?: Partial<ModelCapabilities>;
 };
 type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
@@ -252,12 +254,20 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   return rows;
 }
 
-function canonicalDroidReplacementForAlias(id: string): DroidExecHelpModelRow | null {
+function canonicalDroidReplacementForAlias(
+  id: string,
+  options?: { customProxy?: boolean },
+): DroidExecHelpModelRow | null {
   const normalized = id.trim().toLowerCase();
+  const idPrefix = options?.customProxy ? "custom:" : "";
+  const customProxy = options?.customProxy ? { customProxy: true } : {};
   if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
     return {
-      id: "claude-sonnet-5",
+      id: `${idPrefix}claude-sonnet-5`,
       displayName: "Sonnet 5 (1.2x)",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "max"],
     };
@@ -273,8 +283,11 @@ function canonicalDroidReplacementForAlias(id: string): DroidExecHelpModelRow | 
     || normalized === "opus"
   ) {
     return {
-      id: "claude-opus-4-8",
+      id: `${idPrefix}claude-opus-4-8`,
       displayName: "Opus 4.8 1M",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
       serviceTiers: ["fast"],
@@ -285,8 +298,9 @@ function canonicalDroidReplacementForAlias(id: string): DroidExecHelpModelRow | 
 
 function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
   const id = row.id.trim().toLowerCase();
-  const normalizedCustomId = id.startsWith("custom:") ? id.slice("custom:".length) : id;
-  const replacement = canonicalDroidReplacementForAlias(normalizedCustomId);
+  const customProxy = row.customProxy === true && id.startsWith("custom:");
+  const normalizedCustomId = customProxy ? id.slice("custom:".length) : id;
+  const replacement = canonicalDroidReplacementForAlias(normalizedCustomId, { customProxy });
   if (replacement) return replacement;
   return row;
 }
@@ -423,6 +437,8 @@ export async function discoverDroidCliModelDescriptors(
       customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
+      ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
+      ...(row.maxOutputTokens ? { maxOutputTokens: row.maxOutputTokens } : {}),
       ...(row.capabilities ? { capabilities: row.capabilities } : {}),
     });
     const existingIndex = descriptorIds.get(descriptorKey);

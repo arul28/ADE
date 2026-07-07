@@ -319,8 +319,8 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerModelId: "claude-sonnet-5",
     cliCommand: "claude",
     isCliWrapped: true,
-    inputPricePer1M: 3,
-    outputPricePer1M: 15,
+    inputPricePer1M: 2,
+    outputPricePer1M: 10,
     costTier: "medium",
   },
   {
@@ -1211,6 +1211,8 @@ export function createDynamicDroidCliModelDescriptor(
     customProxy?: boolean;
     reasoningTiers?: string[];
     serviceTiers?: string[];
+    contextWindow?: number;
+    maxOutputTokens?: number;
     capabilities?: Partial<ModelCapabilities>;
   },
 ): ModelDescriptor {
@@ -1227,24 +1229,31 @@ export function createDynamicDroidCliModelDescriptor(
       : typeof cliDisplayName === "string" && cliDisplayName.trim().length
       ? cliDisplayName.trim()
       : formatDroidCliFallbackDisplayName(trimmedProviderModelId);
+  const reasoningTiers = options?.reasoningTiers?.length
+    ? options.reasoningTiers
+    : canonicalDroid?.reasoningTiers;
+  const serviceTiers = options?.serviceTiers?.length
+    ? options.serviceTiers
+    : canonicalDroid?.serviceTiers;
   return {
     id,
     shortId: trimmedProviderModelId,
     displayName: display,
     family: "factory",
     authTypes: ["cli-subscription"],
-    contextWindow: 200_000,
-    maxOutputTokens: 32_000,
+    contextWindow: options?.contextWindow ?? canonicalDroid?.contextWindow ?? 200_000,
+    maxOutputTokens: options?.maxOutputTokens ?? canonicalDroid?.maxOutputTokens ?? 32_000,
     capabilities: {
       ...ALL_CAPS,
+      ...(canonicalDroid?.capabilities ?? {}),
       ...(options?.capabilities ?? {}),
     },
     color: colorForDroidModelId(trimmedProviderModelId),
     providerRoute: "droid-cli",
     providerModelId: trimmedProviderModelId,
     cliCommand: "droid",
-    ...(options?.reasoningTiers?.length ? { reasoningTiers: [...options.reasoningTiers] } : {}),
-    ...(options?.serviceTiers?.length ? { serviceTiers: [...options.serviceTiers] } : {}),
+    ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     isCliWrapped: true,
     ...(options?.customProxy ? { customProxy: true } : {}),
   };

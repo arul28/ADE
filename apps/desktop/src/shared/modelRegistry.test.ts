@@ -399,11 +399,18 @@ describe("modelRegistry", () => {
       id: "droid/claude-sonnet-5",
       providerModelId: "claude-sonnet-5",
       displayName: "Sonnet 5 (1.2x)",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "max"],
     });
     expect(opus).toMatchObject({
       id: "droid/claude-opus-4-8",
       providerModelId: "claude-opus-4-8",
       displayName: "Opus 4.8 1M",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
     });
     expect(getModelById("droid/claude-opus-4-6-fast")).toMatchObject({
       id: "droid/claude-opus-4-8",
@@ -423,6 +430,13 @@ describe("modelRegistry", () => {
     const descriptor = getModelById("droid/claude-sonnet-5");
     expect(descriptor).toBeTruthy();
     expect(descriptor?.displayName).toBe("Sonnet 5 (1.2x)");
+  });
+
+  it("keeps Sonnet 5 registry pricing aligned with current intro pricing", () => {
+    expect(getModelById("anthropic/claude-sonnet-5")).toMatchObject({
+      inputPricePer1M: 2,
+      outputPricePer1M: 10,
+    });
   });
 
   describe("ensureOpenCodeBaseURL", () => {
