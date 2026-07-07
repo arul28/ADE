@@ -886,6 +886,7 @@ function WebClientCard({
               Scan the QR, or open the pairing link in a browser to pair.
             </div>
             <WebPairLink connectInfo={connectInfo as SyncPairingConnectInfo} />
+            <WebPairCode pin={pin} pinConfigured={pinConfigured} />
           </div>
         </div>
       ) : (
@@ -895,10 +896,40 @@ function WebClientCard({
       <div style={helperTextStyle}>
         {pinMissing
           ? "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section above."
-          : pin
-            ? "Open the link, then enter this PIN in the browser to pair."
-            : "Open the link, then enter the saved PIN in the browser to pair."}
+          : "Open the link, enter the pairing code in the browser, and the browser pairs to this machine."}
       </div>
+    </div>
+  );
+}
+
+function WebPairCode({ pin, pinConfigured }: { pin: string | null; pinConfigured: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(async () => {
+    if (!pin) return;
+    try {
+      await window.ade?.app?.writeClipboardText?.(pin);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable; the code stays visible to copy manually.
+    }
+  }, [pin]);
+
+  return (
+    <div style={{ ...panelStyle, gap: 8 }}>
+      <div style={LABEL_STYLE}>Pairing code</div>
+      <div style={{ ...codeValueStyle, fontSize: 18, letterSpacing: "0.32em", fontVariantNumeric: "tabular-nums" }}>
+        {pin ? pin : pinConfigured ? "••••••" : "Not set"}
+      </div>
+      <button
+        type="button"
+        style={outlineButton({ justifySelf: "start", height: 30 })}
+        onClick={() => void handleCopy()}
+        disabled={!pin}
+        title={pin ? undefined : "The PIN is hidden; reveal or set it in the phone pairing section above."}
+      >
+        {copied ? "Copied" : "Copy code"}
+      </button>
     </div>
   );
 }
