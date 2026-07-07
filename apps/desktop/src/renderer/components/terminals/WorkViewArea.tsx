@@ -461,7 +461,6 @@ function WorkCliContinuationComposer({
             argumentHint: command.argumentHint,
             source: command.source,
           }))}
-          sessionId={null}
           anchor={commandMenuAnchor}
           onSelect={handleCommandSelect}
           onClose={() => setCommandMenuTrigger(null)}

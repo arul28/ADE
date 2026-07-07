@@ -275,17 +275,13 @@ describe("AgentChatComposer", () => {
   });
 
   it("shows file matches when typing an at-command", async () => {
-    const fileSearch = vi.fn().mockResolvedValue([{ path: "src/App.tsx" }]);
-    (window as any).ade = {
-      agentChat: {
-        fileSearch,
-      },
-    };
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/App.tsx", type: "file" }]);
 
     renderComposer({
       turnActive: false,
       draft: "",
       sessionId: "session-1",
+      onSearchAttachments,
     });
 
     fireEvent.change(screen.getByRole("textbox"), {
@@ -293,9 +289,86 @@ describe("AgentChatComposer", () => {
     });
 
     await waitFor(() => {
-      expect(fileSearch).toHaveBeenCalledWith({ sessionId: "session-1", query: "src" });
+      expect(onSearchAttachments).toHaveBeenCalledWith("src");
     });
     expect(await screen.findByText("App.tsx")).toBeTruthy();
+  });
+
+  it("uses lane attachment search for at-command suggestions before a session exists", async () => {
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "docs/README.md", type: "file" }]);
+
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      sessionId: null,
+      onSearchAttachments,
+    });
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "@read", selectionStart: 5 },
+    });
+
+    await waitFor(() => {
+      expect(onSearchAttachments).toHaveBeenCalledWith("read");
+    });
+    expect(screen.queryByText("File search unavailable for this session")).toBeNull();
+    expect(await screen.findByText("README.md")).toBeTruthy();
+  });
+
+  it("does not reuse cached at-command suggestions when attachment search changes", async () => {
+    const laneSearch = vi.fn().mockResolvedValue([{ path: "lane-a/AOnly.tsx", type: "file" }]);
+    const sessionSearch = vi.fn().mockResolvedValue([{ path: "lane-b/BOnly.tsx", type: "file" }]);
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sessionId: null,
+      onSearchAttachments: laneSearch,
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "@src", selectionStart: 4 },
+    });
+
+    expect(await screen.findByText("AOnly.tsx")).toBeTruthy();
+
+    view.rerender(
+      <AgentChatComposer
+        {...props}
+        draft="@src"
+        sessionId="session-1"
+        onSearchAttachments={sessionSearch}
+      />,
+    );
+
+    expect(screen.queryByText("AOnly.tsx")).toBeNull();
+    await waitFor(() => {
+      expect(sessionSearch).toHaveBeenCalledWith("src");
+    });
+    expect(await screen.findByText("BOnly.tsx")).toBeTruthy();
+  });
+
+  it("keeps the caret visible when the plain composer renders a slash command badge", async () => {
+    const props = buildComposerProps({
+      turnActive: false,
+      draft: "",
+      sdkSlashCommands: [{
+        name: "status",
+        description: "Summarize current state",
+        source: "sdk",
+      }],
+    });
+    const view = render(<AgentChatComposer {...props} />);
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "/", selectionStart: 1 },
+    });
+    fireEvent.click(await screen.findByText("/status"));
+    view.rerender(<AgentChatComposer {...props} draft="/status " />);
+
+    const textbox = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textbox.style.caretColor).toBe("var(--color-fg)");
+    expect(textbox.className).toContain("text-left");
   });
 
   it("opens the slash menu mid-sentence and splices only the trigger span", async () => {
@@ -346,12 +419,12 @@ describe("AgentChatComposer", () => {
   });
 
   it("replaces a mid-sentence @query with the selected file and attaches it", async () => {
-    const fileSearch = vi.fn().mockResolvedValue([{ path: "src/App.tsx" }]);
-    (window as any).ade = { agentChat: { fileSearch } };
+    const onSearchAttachments = vi.fn().mockResolvedValue([{ path: "src/App.tsx", type: "file" }]);
     const props = buildComposerProps({
       turnActive: false,
       draft: "",
       sessionId: "session-1",
+      onSearchAttachments,
     });
     const view = render(<AgentChatComposer {...props} />);
 
