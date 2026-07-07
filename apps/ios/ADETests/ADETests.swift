@@ -15334,6 +15334,27 @@ final class LinearPaneTests: XCTestCase {
     XCTAssertEqual(deleted, ["lane1"], "A post-lane launch failure must roll back the lane")
   }
 
+  func testRunLinearLaunchKeepsLaneWhenAgentLaunchQueues() async {
+    let spy = LinearLaunchSpy()
+    let deps = makeDeps(spy: spy, chat: { throw QueuedRemoteCommandError(action: "chat.create") })
+    do {
+      _ = try await runLinearLaunch(issue: makeIssue(), config: makeConfig(.chat), deps: deps)
+      XCTFail("Expected the queued launch to throw")
+    } catch is QueuedRemoteCommandError {
+      // Expected — the queued chat needs the lane to exist when it drains.
+    } catch {
+      XCTFail("Expected a queued command error, got \(error)")
+    }
+    let deleted = await spy.deletedLaneIds
+    XCTAssertTrue(deleted.isEmpty, "Queued launches must keep the lane for reconnect drain")
+  }
+
+  func testLinearIssueFallbackSearchWidensBeyondAssignedIssues() {
+    let fallback = linearIssueFallbackSearch(identifier: "ENG-123")
+    XCTAssertEqual(fallback.query, "ENG-123")
+    XCTAssertFalse(fallback.assignedToMe)
+  }
+
   // Brand mark renders a real (non-empty) path filling its box.
 
   func testLinearMarkPathFillsBox() {

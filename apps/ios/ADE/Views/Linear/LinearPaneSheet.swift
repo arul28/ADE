@@ -82,9 +82,8 @@ struct LinearPaneSheet: View {
     syncService.requestedLinearIssueNavigation = nil
     guard let issue = await store.fetchIssue(identifier: request.identifier) else {
       // Fall back to a filtered list so the user still sees the identifier's
-      // results rather than a dead-end.
-      store.query = request.identifier
-      store.scheduleReload()
+      // results rather than a dead-end, widening beyond "assigned to me".
+      store.showFallbackSearch(identifier: request.identifier)
       return
     }
     if path.last != .issue(issue) {

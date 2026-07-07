@@ -8,6 +8,15 @@ struct LinearIssueGroup: Identifiable {
   let issues: [NormalizedLinearIssue]
 }
 
+struct LinearIssueFallbackSearch: Equatable {
+  let query: String
+  let assignedToMe: Bool
+}
+
+func linearIssueFallbackSearch(identifier: String) -> LinearIssueFallbackSearch {
+  LinearIssueFallbackSearch(query: identifier, assignedToMe: false)
+}
+
 /// Backing store for the global Linear pane: holds the filter selection, drives
 /// the `cto.searchLinearIssues` / picker / quick-view reads, and exposes issues
 /// grouped by workflow state. Active-project scoped (mirrors desktop).
@@ -167,6 +176,13 @@ final class LinearPaneStore: ObservableObject {
       // Keep what we have; the row-level "Load more" affordance can retry.
     }
     loadingMore = false
+  }
+
+  func showFallbackSearch(identifier: String) {
+    let fallback = linearIssueFallbackSearch(identifier: identifier)
+    query = fallback.query
+    assignedToMe = fallback.assignedToMe
+    scheduleReload()
   }
 
   private func currentArgs(after: String?) -> LinearIssueSearchArgs {

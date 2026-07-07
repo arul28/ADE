@@ -106,9 +106,11 @@ func runLinearLaunch(
       sessionId = try await deps.launchChat(laneId, config)
     }
     return .session(laneId: laneId, sessionId: sessionId)
+  } catch let queuedError as QueuedRemoteCommandError {
+    throw queuedError
   } catch {
-    // The agent never launched into the lane we just minted — tear it back down
-    // so a launch failure doesn't leave an orphaned empty lane.
+    // The agent never launched into the lane we just minted, so roll back the
+    // empty lane. Queued offline launches keep the lane so the queue can drain.
     try? await deps.deleteLane(laneId)
     throw error
   }
