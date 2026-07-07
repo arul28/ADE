@@ -7602,6 +7602,60 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("updateSession", () => {
+    it("broadcasts a session_meta_updated event with mode fields on a mode change", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+      events.length = 0;
+
+      await service.updateSession({
+        sessionId: session.id,
+        opencodePermissionMode: "plan",
+      });
+
+      const metaEvent = events
+        .map((envelope) => envelope.event)
+        .find((event): event is Extract<typeof event, { type: "session_meta_updated" }> =>
+          event.type === "session_meta_updated");
+      expect(metaEvent).toBeDefined();
+      expect(metaEvent?.opencodePermissionMode).toBe("plan");
+    });
+
+    it("does not broadcast mode fields when no mode field is updated", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-4-6",
+      });
+      events.length = 0;
+
+      await service.updateSession({
+        sessionId: session.id,
+        reasoningEffort: "high",
+      });
+
+      const metaEventsWithMode = events
+        .map((envelope) => envelope.event)
+        .filter((event) => event.type === "session_meta_updated")
+        .filter((event) => "opencodePermissionMode" in event
+          || "permissionMode" in event
+          || "codexApprovalPolicy" in event
+          || "cursorModeId" in event);
+      expect(metaEventsWithMode).toHaveLength(0);
+    });
+
     it("updates the session title", async () => {
       const { service, sessionService } = createService();
       const session = await service.createSession({
@@ -22192,18 +22246,16 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(result).toBe("login-bug-fix");
   });
 
-  it("retries the configured title model when the requested Codex model cannot name the lane", async () => {
+  it("prefers the configured title model over the requested composer model", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
     const { service, aiIntegrationService } = createSuggestService({ titleModelId: "openai/gpt-5.4-mini" });
-    vi.mocked(aiIntegrationService.summarizeTerminal)
-      .mockRejectedValueOnce(new Error("GPT-5.5 unavailable for title task"))
-      .mockResolvedValueOnce({
-        text: "Auto Create Lane Fix",
-        inputTokens: 10,
-        outputTokens: 5,
-      } as any);
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: "Auto Create Lane Fix",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
 
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Fix auto create lane routing and naming",
@@ -22214,13 +22266,10 @@ describe("suggestLaneNameFromPrompt", () => {
 
     expect(result).toBe("auto-create-lane-fix");
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
-      model: "openai/gpt-5.5",
-      taskType: "session_title",
-    }));
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
       model: "openai/gpt-5.4-mini",
       taskType: "session_title",
     }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("does not fall back to a legacy title model when session intelligence model is explicitly cleared", async () => {

@@ -216,6 +216,12 @@ struct WorkChatSessionView: View {
   /// Last blocking pending-input id we reacted to, so re-renders that keep the
   /// same gate open don't re-fire the haptic or re-scroll.
   @State var lastBlockingPendingInputId: String?
+  /// Item ids of pending inputs the user just answered. They are hidden from the
+  /// consolidated strip immediately (optimistic removal) so it advances to the
+  /// next request without waiting for the host, and reconciled back out once the
+  /// item leaves the derived queue (or rolled back if the command errored). See
+  /// `dispatchPendingInputAnswer` / `reconcileOptimisticallyAnsweredInputs`.
+  @State var optimisticallyAnsweredInputIds: Set<String> = []
 
   var sessionStatus: String {
     resolvedSessionStatus ?? session.normalizedStatus
@@ -277,8 +283,33 @@ struct WorkChatSessionView: View {
     isStreamingTurn && timelineSnapshot.transcriptHasInterruptibleActivity
   }
 
+  /// Canonical open pending inputs minus the ones the user just answered.
+  /// `optimisticallyAnsweredInputIds` hides an item the instant a decision is
+  /// dispatched so the consolidated strip advances to the next request without
+  /// waiting for the host round-trip (iOS had no optimistic removal before, so
+  /// the card visibly flickered). Entries are reconciled back out once the item
+  /// leaves the derived queue, or rolled back if the command errored.
   var pendingInputs: [WorkPendingInputItem] {
-    timelineSnapshot.pendingInputs
+    guard !optimisticallyAnsweredInputIds.isEmpty else {
+      return timelineSnapshot.pendingInputs
+    }
+    return timelineSnapshot.pendingInputs.filter {
+      !optimisticallyAnsweredInputIds.contains($0.itemId)
+    }
+  }
+
+  /// Number of still-open requests in the consolidated strip; drives the
+  /// "Request 1 of N" header and whether "Accept all" is offered.
+  var pendingInputCount: Int {
+    pendingInputs.count
+  }
+
+  /// Order-sensitive fingerprint of the CANONICAL (host-derived) pending queue,
+  /// ignoring optimistic hides. Changes only when the host adds/removes/reorders
+  /// a request, which is exactly when `reconcileOptimisticallyAnsweredInputs`
+  /// should prune resolved optimistic entries.
+  var canonicalPendingInputSignature: String {
+    timelineSnapshot.pendingInputs.map(\.itemId).joined(separator: "\u{1F}")
   }
 
   var pendingSteers: [WorkPendingSteerModel] {
@@ -292,24 +323,29 @@ struct WorkChatSessionView: View {
     pendingInputs.first
   }
 
-  var pendingPlanApproval: WorkPendingPlanApprovalModel? {
-    pendingInputs.compactMap { item -> WorkPendingPlanApprovalModel? in
-      if case .planApproval(let model) = item {
-        return model
+  /// Open approval / permission gates that "Accept all" can sweep. Question,
+  /// plan-approval, and model-selection kinds are never auto-answered.
+  var acceptAllSweepableInputs: [WorkPendingInputItem] {
+    pendingInputs.filter { item in
+      switch item {
+      case .approval, .permission: return true
+      case .question, .planApproval, .modelSelection: return false
       }
-      return nil
-    }.first
+    }
   }
 
-  /// First open generic / file-change approval gate (Codex `approval` kind).
-  /// Rendered as a pinned badge above the composer, like the plan-ready badge.
-  var pendingApproval: WorkPendingApprovalModel? {
-    pendingInputs.compactMap { item -> WorkPendingApprovalModel? in
-      if case .approval(let model) = item {
-        return model
-      }
-      return nil
-    }.first
+  /// "Accept all" is only offered when more than one request is queued and the
+  /// current (primary) request is itself an approval/permission gate — matching
+  /// desktop, where accepting-all flips session auto-approve for the current
+  /// item then accepts the remaining approval/permission requests.
+  var canAcceptAllPendingInputs: Bool {
+    guard pendingInputCount > 1, let primary = primaryPendingInput else { return false }
+    switch primary {
+    case .approval, .permission:
+      return acceptAllSweepableInputs.count > 1
+    case .question, .planApproval, .modelSelection:
+      return false
+    }
   }
 
   var hasPendingInputGate: Bool {
@@ -329,31 +365,16 @@ struct WorkChatSessionView: View {
     return primaryPendingInput?.id
   }
 
-  /// Scroll anchor for the first blocking inline pending card. Plan approvals
-  /// live in the composer strip, so they stay visible without transcript scroll.
-  private var blockingPendingScrollAnchor: String? {
-    switch primaryPendingInput {
-    case .question(let model): return "pending-question-\(model.id)"
-    case .permission, .modelSelection, .approval, .planApproval, .none: return nil
-    }
-  }
-
-  /// React to a newly-arrived blocking pending input: fire one light haptic and
-  /// elevate the card into view. No-ops when the same gate is already open.
+  /// React to a newly-arrived blocking pending input: fire one light haptic.
+  /// All pending inputs now render in the consolidated strip pinned above the
+  /// composer, so none require a transcript scroll. No-ops when the same gate is
+  /// already open.
   @MainActor
-  func handleBlockingPendingInputChange(_ id: String?, proxy: ScrollViewProxy) {
+  func handleBlockingPendingInputChange(_ id: String?) {
     guard id != lastBlockingPendingInputId else { return }
     lastBlockingPendingInputId = id
     guard id != nil else { return }
     blockingPendingHapticToken &+= 1
-    guard let anchor = blockingPendingScrollAnchor else { return }
-    Task { @MainActor in
-      // Let the card land in the timeline before elevating it into view.
-      try? await Task.sleep(nanoseconds: 250_000_000)
-      withAnimation(.easeInOut(duration: 0.28)) {
-        proxy.scrollTo(anchor, anchor: .center)
-      }
-    }
   }
 
   @MainActor
@@ -477,12 +498,14 @@ struct WorkChatSessionView: View {
     if !canSendMessages {
       return "Reconnect to send messages."
     }
-    if pendingInputs.count == 1, pendingPlanApproval != nil || pendingApproval != nil {
-      // The plan-ready / approval badge (Approve · Decline) sits directly above
-      // the composer and is self-explanatory, so it carries no guidance banner.
+    if pendingInputs.count == 1 {
+      // The single request renders in the consolidated strip directly above the
+      // composer with its own actions, so it carries no guidance banner.
       return nil
     }
     if !pendingInputs.isEmpty {
+      // Multiple queued requests: the strip shows "Request 1 of N" and advances
+      // as each is answered, so point the user at it.
       return "Answer the waiting prompt above, or decline it before sending another message."
     }
     return nil
@@ -669,33 +692,7 @@ struct WorkChatSessionView: View {
           )
       }
 
-      if let planApproval = pendingPlanApproval {
-        WorkPlanComposerStrip(
-          plan: planApproval,
-          busy: actionInFlight || !isLive,
-          fallbackProvider: chatSummaryContext.provider,
-          onDecision: { decision, feedback in
-            await runSessionAction {
-              await onApproveRequest(planApproval.id, decision, feedback)
-            }
-          }
-        )
-        .id(planApproval.id)
-      }
-
-      if let approval = pendingApproval {
-        WorkApprovalComposerStrip(
-          approval: approval,
-          busy: actionInFlight || !isLive,
-          fallbackProvider: chatSummaryContext.provider,
-          onDecision: { decision in
-            await runSessionAction {
-              await onApproveRequest(approval.id, decision, nil)
-            }
-          }
-        )
-        .id(approval.id)
-      }
+      consolidatedPendingStripSection
 
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
@@ -961,6 +958,7 @@ struct WorkChatSessionView: View {
           pendingCodexFastMode = nil
           lastBlockingPendingInputId = nil
           blockingPendingHapticToken = 0
+          optimisticallyAnsweredInputIds.removeAll()
           assistantLineBudgets.removeAll()
           composerSettingMutationInFlight = false
           composerSettingMutationGeneration &+= 1
@@ -996,7 +994,7 @@ struct WorkChatSessionView: View {
           scheduleTimelineSnapshotRebuild()
         }
         .onChange(of: blockingPendingInputId) { _, newId in
-          handleBlockingPendingInputChange(newId, proxy: proxy)
+          handleBlockingPendingInputChange(newId)
         }
         .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
         .sheet(isPresented: $artifactDrawerPresented) {

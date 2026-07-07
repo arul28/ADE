@@ -470,6 +470,9 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       lastPort: extras.lastPort ?? ("remotePort" in peer ? peer.remotePort : null),
       metadata: {
         dbVersion: peer.dbVersion,
+        ...(peer.appVersion ? { appVersion: peer.appVersion } : {}),
+        ...(peer.appBuild ? { appBuild: peer.appBuild } : {}),
+        ...(peer.bundleIdentifier ? { bundleIdentifier: peer.bundleIdentifier } : {}),
         ...(extras.metadata ?? {}),
       },
     });

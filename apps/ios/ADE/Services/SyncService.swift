@@ -8410,6 +8410,7 @@ final class SyncService: ObservableObject {
   }
 
   private func currentPeerMetadata() -> [String: Any] {
+    let info = Bundle.main.infoDictionary ?? [:]
     var metadata: [String: Any] = [
       "deviceId": deviceId,
       "deviceName": UIDevice.current.name,
@@ -8419,6 +8420,21 @@ final class SyncService: ObservableObject {
       "dbVersion": latestRemoteDbVersion,
       "capabilities": ["changesetAck", "chunkedEnvelopes"],
     ]
+    if let appVersion = (info["CFBundleShortVersionString"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !appVersion.isEmpty {
+      metadata["appVersion"] = appVersion
+    }
+    if let appBuild = (info["CFBundleVersion"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !appBuild.isEmpty {
+      metadata["appBuild"] = appBuild
+    }
+    if let bundleIdentifier = Bundle.main.bundleIdentifier?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !bundleIdentifier.isEmpty {
+      metadata["bundleIdentifier"] = bundleIdentifier
+    }
     // Per-project-DB cursors: the host picks the entry for the DB it serves,
     // so a brain that switched hosted projects pumps the right backlog
     // instead of trusting the single legacy cursor from a different DB.
@@ -9155,6 +9171,12 @@ final class SyncService: ObservableObject {
           chatEventLastSeqBySession[envelope.sessionId] = seq
         }
         recordChatEventEnvelope(envelope)
+        // A `session_meta_updated` event carries a client-side mode change
+        // (permission / interaction / codex-sandbox / cursor mode, …). Patch the
+        // cached summary so the open composer's mode pill updates live without a
+        // refetch. Decodes to `.unknown` for transcript purposes (older switches
+        // stay valid); the mode payload is read from the raw event dict here.
+        applyChatSessionMetaModeUpdateIfNeeded(envelope: envelope, rawPayload: dict)
         syncChatLog.debug(
           "chat_event_applied session=\(envelope.sessionId, privacy: .public) seq=\(envelope.sequence ?? -1, privacy: .public) type=\(envelope.event.typeName, privacy: .public) history=\(self.chatEventEnvelopesBySession[envelope.sessionId]?.count ?? 0, privacy: .public) revision=\(self.chatEventRevisionsBySession[envelope.sessionId] ?? 0, privacy: .public)"
         )
@@ -10533,6 +10555,11 @@ final class SyncService: ObservableObject {
       // Watermarks are only meaningful while the applied history is retained;
       // resuming from a seq after dropping history would skip those events.
       chatEventLastSeqBySession.removeAll()
+      // The summary cache is project-scoped. `cacheChatSummaries` merges rather
+      // than replaces (so partial Work-list refreshes never evict the open
+      // session), which means a full reset must clear it explicitly — otherwise
+      // another project's / a stale connection's summaries would linger.
+      chatSummaryCache.removeAll()
     } else {
       pruneChatEventHistoryCacheIfNeeded()
     }
@@ -10842,7 +10869,17 @@ extension SyncService {
   /// already have so the LA can read `modelId` and a real `lastActivityAt`
   /// without re-fetching per running session.
   func cacheChatSummaries(_ summaries: [String: AgentChatSessionSummary]) {
-    chatSummaryCache = summaries
+    // Merge, don't replace. A partial Work-list refresh (reduced-sync-load
+    // prefix(6), or a lane whose `listChatSessions` throws and returns []) hands
+    // off a summary set that omits the currently-open session. Replacing the
+    // whole cache would evict that session's summary, blanking the chat
+    // composer's model/permission controls (they gate on `summary.isAvailable`,
+    // which is false for a nil summary). Merging keeps prior summaries alive
+    // until they are explicitly overwritten. Project-switch / disconnect resets
+    // still evict the whole cache via `resetChatEventState(clearHistory: true)`.
+    for (sessionId, summary) in summaries {
+      chatSummaryCache[sessionId] = summary
+    }
     // Chat summaries feed `lastActivityAt` / `modelId` into the LA roster, so
     // a refreshed cache must trigger a snapshot recompute. Otherwise widgets
     // and live activities keep showing the stale model id / elapsed timer
@@ -10852,6 +10889,28 @@ extension SyncService {
 
   func cacheChatSummary(_ summary: AgentChatSessionSummary) {
     chatSummaryCache[summary.sessionId] = summary
+    refreshActiveSessionsAndSnapshot()
+  }
+
+  /// Fold a `session_meta_updated` event's mode fields into the cached summary
+  /// for its session. The open `WorkSessionDestinationView` reconciles its live
+  /// `chatSummary` from this cache on the revision bump the event already
+  /// triggers, so the composer's mode pill updates live without a refetch.
+  /// No-op for the bare title/manuallyNamed events older hosts send, or when
+  /// the session isn't cached (a later refresh will hydrate it).
+  private func applyChatSessionMetaModeUpdateIfNeeded(
+    envelope: AgentChatEventEnvelope,
+    rawPayload: [String: Any]
+  ) {
+    guard envelope.event.typeName == "session_meta_updated",
+          let eventObject = rawPayload["event"],
+          let update = try? decode(eventObject, as: AgentChatSessionMetaModeUpdate.self),
+          update.hasAnyField,
+          var summary = chatSummaryCache[envelope.sessionId]
+    else { return }
+    summary.applyModeUpdate(update)
+    guard summary != chatSummaryCache[envelope.sessionId] else { return }
+    chatSummaryCache[envelope.sessionId] = summary
     refreshActiveSessionsAndSnapshot()
   }
 

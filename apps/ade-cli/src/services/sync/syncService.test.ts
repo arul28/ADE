@@ -136,4 +136,35 @@ describe("createSyncService", () => {
       db.close();
     }
   });
+
+  it("persists peer app provenance in device metadata", async () => {
+    const projectRoot = makeTempRoot("ade-sync-service-device-provenance-");
+    cleanupRoots.push(projectRoot);
+    const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+    (db.sync as { isAvailable?: () => boolean }).isAvailable = () => true;
+    const service = createService(db, projectRoot);
+    const registry = service.getDeviceRegistryService();
+
+    registry.upsertPeerMetadata({
+      deviceId: "phone-1",
+      deviceName: "Arul iPhone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "phone-site",
+      dbVersion: 14,
+      appVersion: "1.1.10",
+      appBuild: "4",
+      bundleIdentifier: "com.ade.ios",
+    });
+
+    expect(registry.getDevice("phone-1")?.metadata).toMatchObject({
+      dbVersion: 14,
+      appVersion: "1.1.10",
+      appBuild: "4",
+      bundleIdentifier: "com.ade.ios",
+    });
+
+    await service.dispose();
+    db.close();
+  });
 });

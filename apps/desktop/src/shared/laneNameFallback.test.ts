@@ -26,6 +26,14 @@ describe("lane name fallback", () => {
     );
   });
 
+  it("does not treat login history as a provider auth task", () => {
+    expect(
+      deriveDeterministicLaneNameFromPrompt(
+        "Debug cursor SDK chat mobile sync issues. Look at the full login history, then follow the Claude MD guidance.",
+      ),
+    ).toBe("debug-cursor-sdk-mobile-sync");
+  });
+
   it("turns a URL-heavy 'take a look at' prompt into clean tokens, not url noise", () => {
     // Regression for "take-look-at-https-github".
     expect(

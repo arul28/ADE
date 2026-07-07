@@ -974,6 +974,9 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
           .map((capability) => capability.trim())
           .filter(Boolean)
         : [],
+      ...(toOptionalString(peer.appVersion) ? { appVersion: toOptionalString(peer.appVersion)! } : {}),
+      ...(toOptionalString(peer.appBuild) ? { appBuild: toOptionalString(peer.appBuild)! } : {}),
+      ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
     },
     auth: normalizedAuth,
   };

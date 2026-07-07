@@ -7284,6 +7284,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           };
         });
       }
+      // A cross-client mode change (iOS/desktop re-moding the session the TUI is
+      // viewing) arrives as a transient session_meta_updated carrying the new
+      // permission/interaction fields. The composer footer reads modelState, not
+      // the summary, so re-seed it directly for the active chat — mirroring the
+      // desktop AgentChatPane handler. Apply via raw setModelState (NOT
+      // applyModelState) so we don't schedule a commit and echo back to the
+      // server. Skip while a local commit is pending: the user's own pick wins
+      // and the server will echo it back momentarily.
+      if (
+        envelope.event.type === "session_meta_updated"
+        && isActiveSessionEvent
+        && !pendingModelCommitStateRef.current
+      ) {
+        const meta = envelope.event;
+        setModelState((prev) => {
+          const next: AdeCodeModelState = {
+            ...prev,
+            ...(meta.permissionMode !== undefined ? { permissionMode: meta.permissionMode } : {}),
+            ...(meta.interactionMode !== undefined ? { interactionMode: meta.interactionMode ?? prev.interactionMode } : {}),
+            ...(meta.claudePermissionMode !== undefined ? { claudePermissionMode: meta.claudePermissionMode } : {}),
+            ...(meta.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: meta.codexApprovalPolicy } : {}),
+            ...(meta.codexSandbox !== undefined ? { codexSandbox: meta.codexSandbox } : {}),
+            ...(meta.codexConfigSource !== undefined ? { codexConfigSource: meta.codexConfigSource } : {}),
+            ...(meta.opencodePermissionMode !== undefined ? { opencodePermissionMode: meta.opencodePermissionMode } : {}),
+            ...(meta.droidPermissionMode !== undefined ? { droidPermissionMode: meta.droidPermissionMode } : {}),
+            ...(meta.cursorModeId !== undefined || meta.cursorModeSnapshot !== undefined
+              ? {
+                  cursorModeId: meta.cursorModeId ?? meta.cursorModeSnapshot?.currentModeId ?? prev.cursorModeId,
+                  cursorAvailableModeIds: meta.cursorModeSnapshot?.availableModeIds ?? prev.cursorAvailableModeIds,
+                }
+              : {}),
+          };
+          modelStateRef.current = next;
+          return next;
+        });
+      }
     });
     return () => {
       unsubscribe();

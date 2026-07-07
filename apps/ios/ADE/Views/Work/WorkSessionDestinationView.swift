@@ -322,6 +322,13 @@ struct WorkSessionDestinationView: View {
 
   @State var session: TerminalSessionSummary?
   @State var chatSummary: AgentChatSessionSummary?
+  // Last non-nil summary this mounted instance ever observed. The composer's
+  // model-picker + permission-mode row is gated on `summary.isAvailable`, so a
+  // momentary nil summary would blank those controls mid-session. This latch
+  // (plus the sync cache) backstops the coalesce in `composerChatSummary` so
+  // once the controls have rendered they never disappear while the view stays
+  // mounted.
+  @State var lastKnownChatSummary: AgentChatSessionSummary?
   @State var transcript: [WorkChatEnvelope] = []
   @State var transcriptRenderSignature = 0
   @State var mainChatRenderEpoch = 0
@@ -504,6 +511,21 @@ struct WorkSessionDestinationView: View {
       return navigationTitleOverride
     }
     return chatSummary?.title ?? session?.title ?? "Session"
+  }
+
+  /// Summary the composer's model/permission controls render from. Every other
+  /// status read coalesces `chatSummary ?? initialChatSummary`, but the composer
+  /// context was the lone consumer reading bare `chatSummary` — so a
+  /// push/deeplink rebuild (new `.id`, @State reset) that re-seeds from a nil
+  /// `initialChatSummary` (the open session can be evicted from the summary
+  /// cache by a partial Work-list refresh) blanked the controls. Coalesce
+  /// through the seed, the in-view latch, and finally the durable sync cache so
+  /// the controls survive both the rebuild and any transient nil.
+  var composerChatSummary: AgentChatSessionSummary? {
+    chatSummary
+      ?? initialChatSummary
+      ?? lastKnownChatSummary
+      ?? syncService.chatSummaryCache[sessionId]
   }
 
   var subagentProvider: String? {
@@ -826,6 +848,7 @@ struct WorkSessionDestinationView: View {
         }
       }
       .task(id: liveChatObservationKey) {
+        reconcileChatSummaryModeFromCacheIfNeeded()
         syncTranscriptFromLiveEvents()
         await reconcileIdleCanonicalTranscriptIfNeeded()
       }
@@ -878,6 +901,13 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: selectedSubagentPollingKey) {
         await pollSelectedSubagentTranscriptIfNeeded()
+      }
+      .onChange(of: chatSummary) { _, newValue in
+        // Latch the last non-nil summary so the composer's model/permission
+        // controls survive a transient nil while this view stays mounted.
+        if let newValue {
+          lastKnownChatSummary = newValue
+        }
       }
       .onChange(of: transcript) { _, _ in
         refreshSubagentSnapshots()
@@ -981,7 +1011,7 @@ struct WorkSessionDestinationView: View {
     }
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
-      chatSummaryContext: WorkChatSummaryRenderContext(chatSummary),
+      chatSummaryContext: WorkChatSummaryRenderContext(composerChatSummary),
       transcript: transcriptForView,
       transcriptRenderSignature: viewingSubagent ? subagentTranscriptRenderSignature : transcriptRenderSignature,
       fallbackEntries: fallbackEntriesForView,
@@ -1143,6 +1173,26 @@ struct WorkSessionDestinationView: View {
           isChatSession(currentSession)
     else { return false }
     return true
+  }
+
+  /// Fold a cache-side mode patch (applied by SyncService when a
+  /// `session_meta_updated` event arrives from another client) into the live
+  /// `chatSummary` so the composer's model/permission pill reflects the change
+  /// without a refetch. Runs on the chat-event revision bump the meta event
+  /// already triggers. Only non-nil cache mode fields are merged and the
+  /// assignment is gated on a real change to avoid needless re-renders. When
+  /// `chatSummary` is nil the composer already reads the patched cache via
+  /// `composerChatSummary`, so nothing to do here.
+  @MainActor
+  func reconcileChatSummaryModeFromCacheIfNeeded() {
+    guard var current = chatSummary,
+          let cached = syncService.chatSummaryCache[sessionId],
+          cached.sessionId == current.sessionId
+    else { return }
+    current.mergeModeFields(from: cached)
+    if current != chatSummary {
+      chatSummary = current
+    }
   }
 
   @MainActor

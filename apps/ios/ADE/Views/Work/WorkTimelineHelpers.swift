@@ -815,44 +815,13 @@ func buildWorkTimeline(
     WorkTimelineEntry(id: "event-\(card.id)", timestamp: card.timestamp, rank: 1_500 + index, payload: .eventCard(card))
   })
 
-  // Resolve a chronological timestamp for each pending-input itemId by looking
-  // up its originating approval_request / structured_question / question-tool
-  // tool_call envelope. Falling back to the latest transcript timestamp keeps
-  // the pending card in place when the source envelope was dropped upstream.
-  let pendingTimestamps = workPendingInputTimestamps(from: transcript)
-  let fallbackPendingTimestamp = transcript.last?.timestamp ?? ""
-  entries.append(contentsOf: pendingInputs.enumerated().compactMap { index, input -> WorkTimelineEntry? in
-    switch input {
-    case .question(let model):
-      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
-      return WorkTimelineEntry(
-        id: "pending-question-\(model.id)",
-        timestamp: ts,
-        rank: 1_600 + index,
-        payload: .pendingQuestion(model)
-      )
-    case .permission(let model):
-      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
-      return WorkTimelineEntry(
-        id: "pending-permission-\(model.id)",
-        timestamp: ts,
-        rank: 1_600 + index,
-        payload: .pendingPermission(model)
-      )
-    case .planApproval:
-      return nil
-    case .modelSelection(let model):
-      let ts = pendingTimestamps[model.id] ?? fallbackPendingTimestamp
-      return WorkTimelineEntry(
-        id: "pending-model-selection-\(model.id)",
-        timestamp: ts,
-        rank: 1_600 + index,
-        payload: .pendingModelSelection(model)
-      )
-    case .approval:
-      return nil
-    }
-  })
+  // Pending inputs (approval / question / permission / plan-approval /
+  // model-selection) are no longer emitted as inline transcript entries. They
+  // render in the single consolidated pending-input strip pinned above the
+  // composer (`WorkChatSessionView.consolidatedPendingInputStrip`), matching the
+  // desktop approval card. `pendingInputs` still drives `suppressedItemIds`
+  // above so the originating tool/approval envelopes stay hidden from the
+  // transcript.
 
   let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
     guard case .done(_, _, let usage, _, _, _) = envelope.event, let usage else { return nil }
@@ -1540,27 +1509,6 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
     )
   }
   return incoming
-}
-
-/// Map pending-input itemIds to the timestamp of their originating envelope so
-/// inline timeline entries sort into the chronological slot where the host
-/// first requested input, not the current "now".
-func workPendingInputTimestamps(from transcript: [WorkChatEnvelope]) -> [String: String] {
-  var result: [String: String] = [:]
-  for envelope in transcript {
-    switch envelope.event {
-    case .approvalRequest(_, _, let itemId, _),
-         .structuredQuestion(_, _, let itemId, _):
-      if result[itemId] == nil { result[itemId] = envelope.timestamp }
-    case .toolCall(let tool, _, let itemId, _, _):
-      if isQuestionInputToolName(tool), result[itemId] == nil {
-        result[itemId] = envelope.timestamp
-      }
-    default:
-      continue
-    }
-  }
-  return result
 }
 
 private func eventCard(

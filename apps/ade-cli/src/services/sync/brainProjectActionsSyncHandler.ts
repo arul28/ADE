@@ -142,6 +142,9 @@ function normalizePeerMetadata(value: unknown): SyncPeerMetadata | null {
       .map((capability) => capability.trim())
       .filter(Boolean)
     : [];
+  const appVersion = optionalString(record.appVersion);
+  const appBuild = optionalString(record.appBuild);
+  const bundleIdentifier = optionalString(record.bundleIdentifier);
   const dbVersionBySite: Record<string, number> = {};
   if (record.dbVersionBySite && typeof record.dbVersionBySite === "object" && !Array.isArray(record.dbVersionBySite)) {
     for (const [site, version] of Object.entries(record.dbVersionBySite as Record<string, unknown>)) {
@@ -165,6 +168,9 @@ function normalizePeerMetadata(value: unknown): SyncPeerMetadata | null {
     dbVersion: Math.max(0, Math.floor(Number(record.dbVersion ?? 0) || 0)),
     ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
     capabilities,
+    ...(appVersion ? { appVersion } : {}),
+    ...(appBuild ? { appBuild } : {}),
+    ...(bundleIdentifier ? { bundleIdentifier } : {}),
   };
 }
 

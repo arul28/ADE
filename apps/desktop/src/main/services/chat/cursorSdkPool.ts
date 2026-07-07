@@ -29,6 +29,8 @@ export type CursorSdkRuntimeMeta = {
   runId?: string;
   agentId?: string;
   requestId?: string;
+  /** Terminal run store errorCode, present on run_result when a run errored. */
+  errorCode?: string;
 };
 
 export type CursorSdkBridge = {
@@ -602,6 +604,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         runId: message.runId,
         agentId: message.agentId,
         requestId: message.requestId,
+        ...(message.errorCode ? { errorCode: message.errorCode } : {}),
       });
       return;
     }

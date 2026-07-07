@@ -1,4 +1,5 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
+import { isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
 
@@ -320,7 +321,19 @@ export function mapCursorSdkMessageToChatEvents(
         }, runtime)];
       }
       if (statusText === "ERROR") {
-        return [{ type: "error", message: detail ?? "Cursor SDK run failed.", turnId }];
+        // The streamed ERROR status carries no reason; the worker injects the
+        // run store's real errorCode as `adeErrorCode` after the run settles.
+        const errorCode = readString(record.adeErrorCode);
+        const message = errorCode
+          ? `Cursor run failed: ${errorCode}`
+          : detail ?? "Cursor SDK run failed.";
+        const transport = isCursorSdkTransportErrorText(errorCode ?? detail);
+        return [{
+          type: "error" as const,
+          message,
+          turnId,
+          ...(transport ? { errorInfo: { category: "network" as const } } : {}),
+        }];
       }
       return [];
     }

@@ -804,6 +804,20 @@ export type AgentChatEvent =
       type: "session_meta_updated";
       title?: string;
       manuallyNamed?: boolean;
+      // Permission/interaction mode fields — emitted when a client (e.g. iOS)
+      // changes the mode via updateSession so other renderers patch their
+      // composer state without waiting for a turn-lifecycle event. All optional
+      // and backward-compatible; a title-only emit carries none of them.
+      permissionMode?: AgentChatPermissionMode;
+      interactionMode?: AgentChatInteractionMode | null;
+      claudePermissionMode?: AgentChatClaudePermissionMode;
+      codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
+      codexSandbox?: AgentChatCodexSandbox;
+      codexConfigSource?: AgentChatCodexConfigSource;
+      opencodePermissionMode?: AgentChatOpenCodePermissionMode;
+      droidPermissionMode?: AgentChatDroidPermissionMode;
+      cursorModeId?: string | null;
+      cursorModeSnapshot?: AgentChatCursorModeSnapshot;
       // Accept turnId for uniformity with other variants — ignored by handlers.
       turnId?: string;
     };

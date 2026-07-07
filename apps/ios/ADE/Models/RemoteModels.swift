@@ -801,6 +801,110 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   }
 }
 
+/// Composer mode fields carried by a `session_meta_updated` chat event when a
+/// client (e.g. desktop) changes the session's permission / interaction mode.
+/// Every field is optional so the decode never fails and older hosts — which
+/// send only `title` / `manuallyNamed` — degrade to a no-op. Values are plain
+/// strings (the summary stores these as `String?`, not failable enums), so an
+/// unrecognized wire value patches through harmlessly instead of dropping the
+/// whole event.
+struct AgentChatSessionMetaModeUpdate: Decodable, Equatable {
+  var permissionMode: String?
+  var interactionMode: String?
+  var claudePermissionMode: String?
+  var codexApprovalPolicy: String?
+  var codexSandbox: String?
+  var codexConfigSource: String?
+  var opencodePermissionMode: String?
+  var droidPermissionMode: String?
+  var cursorModeId: String?
+  var cursorModeSnapshot: RemoteJSONValue?
+
+  private enum CodingKeys: String, CodingKey {
+    case permissionMode
+    case interactionMode
+    case claudePermissionMode
+    case codexApprovalPolicy
+    case codexSandbox
+    case codexSandboxMode
+    case codexConfigSource
+    case opencodePermissionMode
+    case droidPermissionMode
+    case cursorModeId
+    case cursorModeSnapshot
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    permissionMode = try c.decodeIfPresent(String.self, forKey: .permissionMode)
+    interactionMode = try c.decodeIfPresent(String.self, forKey: .interactionMode)
+    claudePermissionMode = try c.decodeIfPresent(String.self, forKey: .claudePermissionMode)
+    codexApprovalPolicy = try c.decodeIfPresent(String.self, forKey: .codexApprovalPolicy)
+    // Canonical key is `codexSandbox` (matches the summary + updateSession args).
+    // Accept `codexSandboxMode` as a defensive fallback in case the host emits
+    // that alternate spelling.
+    if let sandbox = try c.decodeIfPresent(String.self, forKey: .codexSandbox) {
+      codexSandbox = sandbox
+    } else {
+      codexSandbox = try c.decodeIfPresent(String.self, forKey: .codexSandboxMode)
+    }
+    codexConfigSource = try c.decodeIfPresent(String.self, forKey: .codexConfigSource)
+    opencodePermissionMode = try c.decodeIfPresent(String.self, forKey: .opencodePermissionMode)
+    droidPermissionMode = try c.decodeIfPresent(String.self, forKey: .droidPermissionMode)
+    cursorModeId = try c.decodeIfPresent(String.self, forKey: .cursorModeId)
+    cursorModeSnapshot = try c.decodeIfPresent(RemoteJSONValue.self, forKey: .cursorModeSnapshot)
+  }
+
+  /// True when the event carries at least one mode field. A bare
+  /// title/manuallyNamed update decodes to all-nil here and is skipped.
+  var hasAnyField: Bool {
+    permissionMode != nil
+      || interactionMode != nil
+      || claudePermissionMode != nil
+      || codexApprovalPolicy != nil
+      || codexSandbox != nil
+      || codexConfigSource != nil
+      || opencodePermissionMode != nil
+      || droidPermissionMode != nil
+      || cursorModeId != nil
+      || cursorModeSnapshot != nil
+  }
+}
+
+extension AgentChatSessionSummary {
+  /// Overlay the non-nil mode fields from an incoming `session_meta_updated`
+  /// event. Absent fields leave the current value intact so a partial update
+  /// (a change touched only one mode) never clears the others.
+  mutating func applyModeUpdate(_ update: AgentChatSessionMetaModeUpdate) {
+    if let v = update.permissionMode { permissionMode = v }
+    if let v = update.interactionMode { interactionMode = v }
+    if let v = update.claudePermissionMode { claudePermissionMode = v }
+    if let v = update.codexApprovalPolicy { codexApprovalPolicy = v }
+    if let v = update.codexSandbox { codexSandbox = v }
+    if let v = update.codexConfigSource { codexConfigSource = v }
+    if let v = update.opencodePermissionMode { opencodePermissionMode = v }
+    if let v = update.droidPermissionMode { droidPermissionMode = v }
+    if let v = update.cursorModeId { cursorModeId = v }
+    if let v = update.cursorModeSnapshot { cursorModeSnapshot = v }
+  }
+
+  /// Overlay the non-nil mode fields from another summary (used to fold a
+  /// cache-side mode patch into an open view's live summary). Only non-nil
+  /// source values win, so it never blanks a field the source didn't populate.
+  mutating func mergeModeFields(from other: AgentChatSessionSummary) {
+    if let v = other.permissionMode { permissionMode = v }
+    if let v = other.interactionMode { interactionMode = v }
+    if let v = other.claudePermissionMode { claudePermissionMode = v }
+    if let v = other.codexApprovalPolicy { codexApprovalPolicy = v }
+    if let v = other.codexSandbox { codexSandbox = v }
+    if let v = other.codexConfigSource { codexConfigSource = v }
+    if let v = other.opencodePermissionMode { opencodePermissionMode = v }
+    if let v = other.droidPermissionMode { droidPermissionMode = v }
+    if let v = other.cursorModeId { cursorModeId = v }
+    if let v = other.cursorModeSnapshot { cursorModeSnapshot = v }
+  }
+}
+
 // MARK: - CTO Models (sync wire types)
 //
 // Field names mirror the desktop canonical types defined in

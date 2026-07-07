@@ -941,4 +941,82 @@ extension WorkChatSessionView {
     defer { actionInFlight = false }
     await action()
   }
+
+  // MARK: - Consolidated pending-input answering
+
+  /// Optimistically hide a pending input the moment its decision is dispatched
+  /// (so the consolidated strip advances to the next request without waiting for
+  /// the host), run the action, then reconcile: if the command errored, roll the
+  /// hide back so the card re-shows. Successful resolutions are cleared later by
+  /// `reconcileOptimisticallyAnsweredInputs` once the item leaves the derived
+  /// queue.
+  @MainActor
+  func dispatchPendingInputAnswer(
+    itemId: String,
+    _ op: @escaping @MainActor () async -> Void
+  ) async {
+    optimisticallyAnsweredInputIds.insert(itemId)
+    await runSessionAction(op)
+    // Every answer handler (`approveRequest`, `respondToPermission`,
+    // `submitQuestionAnswers`, `respondToQuestion`, `declineQuestion`) resets
+    // `errorMessage` to nil on success and sets a message on failure, so a
+    // non-nil value here means THIS command failed — roll the hide back.
+    if errorMessage != nil {
+      optimisticallyAnsweredInputIds.remove(itemId)
+    }
+  }
+
+  /// Drop optimistically-answered ids that are no longer in the canonical queue
+  /// (confirmed resolved by the host). Keeps the set from masking a future
+  /// request that reuses an id and bounds its growth. Invoked whenever the
+  /// canonical pending queue changes.
+  @MainActor
+  func reconcileOptimisticallyAnsweredInputs() {
+    guard !optimisticallyAnsweredInputIds.isEmpty else { return }
+    let canonical = Set(timelineSnapshot.pendingInputs.map(\.itemId))
+    optimisticallyAnsweredInputIds.formIntersection(canonical)
+  }
+
+  /// "Accept all": flip session auto-approve for the current approval/permission
+  /// gate (`acceptForSession`), then accept every remaining approval/permission
+  /// request SEQUENTIALLY (never parallel). Question / plan-approval /
+  /// model-selection kinds are never swept. Stale itemIds no-op on the host, so
+  /// re-sends after `acceptForSession` auto-resolves the rest are safe.
+  @MainActor
+  func acceptAllPendingInputs() async {
+    guard let primary = primaryPendingInput else { return }
+    // Snapshot the sweep set before mutating optimistic-hide state.
+    let sweepable = acceptAllSweepableInputs
+    guard sweepable.contains(where: { $0.itemId == primary.itemId }) else { return }
+
+    // 1. Current item first with acceptForSession.
+    await sendPendingInputDecision(primary, decision: .acceptForSession)
+
+    // 2. Remaining approval/permission items, one await at a time.
+    for item in sweepable where item.itemId != primary.itemId {
+      guard !optimisticallyAnsweredInputIds.contains(item.itemId) else { continue }
+      await sendPendingInputDecision(item, decision: .accept)
+    }
+  }
+
+  /// Route a single approval/permission decision through the optimistic path.
+  /// No-ops for kinds that must not be auto-answered.
+  @MainActor
+  private func sendPendingInputDecision(
+    _ item: WorkPendingInputItem,
+    decision: AgentChatApprovalDecision
+  ) async {
+    switch item {
+    case .approval(let model):
+      await dispatchPendingInputAnswer(itemId: model.id) {
+        await onApproveRequest(model.id, decision, nil)
+      }
+    case .permission(let model):
+      await dispatchPendingInputAnswer(itemId: model.id) {
+        await onRespondToPermission(model.id, decision)
+      }
+    case .question, .planApproval, .modelSelection:
+      break
+    }
+  }
 }

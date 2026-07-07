@@ -5871,8 +5871,51 @@ export function AgentChatPane({
       // chat event since it doesn't represent transcript content.
       if (envelope.event.type === "session_meta_updated") {
         const meta = envelope.event;
-        if (typeof meta.title === "string" && meta.title.length > 0) {
-          patchSessionSummary(envelope.sessionId, { title: meta.title });
+        const summaryPatch: Partial<AgentChatSessionSummary> = {};
+        if (typeof meta.title === "string" && meta.title.length > 0) summaryPatch.title = meta.title;
+        if (meta.permissionMode !== undefined) summaryPatch.permissionMode = meta.permissionMode;
+        if (meta.interactionMode !== undefined) summaryPatch.interactionMode = meta.interactionMode;
+        if (meta.claudePermissionMode !== undefined) summaryPatch.claudePermissionMode = meta.claudePermissionMode;
+        if (meta.codexApprovalPolicy !== undefined) summaryPatch.codexApprovalPolicy = meta.codexApprovalPolicy;
+        if (meta.codexSandbox !== undefined) summaryPatch.codexSandbox = meta.codexSandbox;
+        if (meta.codexConfigSource !== undefined) summaryPatch.codexConfigSource = meta.codexConfigSource;
+        if (meta.opencodePermissionMode !== undefined) summaryPatch.opencodePermissionMode = meta.opencodePermissionMode;
+        if (meta.droidPermissionMode !== undefined) summaryPatch.droidPermissionMode = meta.droidPermissionMode;
+        if (meta.cursorModeId !== undefined) summaryPatch.cursorModeId = meta.cursorModeId;
+        if (meta.cursorModeSnapshot !== undefined) summaryPatch.cursorModeSnapshot = meta.cursorModeSnapshot;
+        if (Object.keys(summaryPatch).length > 0) {
+          patchSessionSummary(envelope.sessionId, summaryPatch);
+        }
+        // The composer seeds its local mode state from the session scope, not
+        // summary content, so a summary patch alone won't re-seed the selected
+        // chat. Apply the authoritative mode fields directly to composer state
+        // (mirrors the plan-mode transition special-case below). summaryPatch's
+        // keys are exactly `title` plus the mode fields (each gated on the same
+        // `meta.X !== undefined` check), so any non-title key means a mode changed.
+        const modeChanged = Object.keys(summaryPatch).some((key) => key !== "title");
+        if (modeChanged && envelope.sessionId === selectedSessionIdRef.current) {
+          if (meta.interactionMode !== undefined) {
+            setInteractionMode(meta.interactionMode ?? initialNativeControls.interactionMode);
+          }
+          if (meta.claudePermissionMode !== undefined) setClaudePermissionMode(meta.claudePermissionMode);
+          if (meta.codexApprovalPolicy !== undefined) setCodexApprovalPolicy(meta.codexApprovalPolicy);
+          if (meta.codexSandbox !== undefined) setCodexSandbox(meta.codexSandbox);
+          if (meta.codexConfigSource !== undefined) setCodexConfigSource(meta.codexConfigSource);
+          if (meta.opencodePermissionMode !== undefined) setOpenCodePermissionMode(meta.opencodePermissionMode);
+          if (meta.droidPermissionMode !== undefined) setDroidPermissionMode(meta.droidPermissionMode);
+          if (meta.cursorModeId !== undefined || meta.cursorModeSnapshot !== undefined) {
+            const snapshot = meta.cursorModeSnapshot;
+            setCursorModeId(meta.cursorModeId ?? snapshot?.currentModeId ?? initialNativeControls.cursorModeId);
+            if (snapshot) {
+              setCursorConfigValues(
+                Object.fromEntries(
+                  (snapshot.configOptions ?? [])
+                    .filter((option) => option.id !== snapshot.modeConfigId)
+                    .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
+                ),
+              );
+            }
+          }
         }
         return;
       }

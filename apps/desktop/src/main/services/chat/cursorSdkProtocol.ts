@@ -234,6 +234,12 @@ export type CursorSdkWorkerResponse =
       runId?: string;
       agentId?: string;
       requestId?: string;
+      /**
+       * Terminal run error detail read from the SDK run store when a local run
+       * ends in ERROR. The public RunResult drops the store's `errorCode`, so
+       * the worker surfaces it here for logging + classification.
+       */
+      errorCode?: string;
     }
   | {
       type: "run_status";
@@ -245,3 +251,22 @@ export type CursorSdkWorkerResponse =
     }
   | { type: "hook_request"; requestId: string; request: CursorSdkHookRequest }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; detail?: unknown };
+
+/**
+ * True when an error string looks like a transport/network failure (HTTP/2
+ * stream resets, dropped sockets, connection refused/timeouts) rather than a
+ * model- or policy-level error. Callers use this to mark an error as
+ * potentially retryable. Matches on substrings so it works against both thrown
+ * Error messages and the SDK run store's `errorCode` text (e.g.
+ * "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR").
+ */
+export function isCursorSdkTransportErrorText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return lower.includes("nghttp2")
+    || lower.includes("econnreset")
+    || lower.includes("econnrefused")
+    || lower.includes("etimedout")
+    || lower.includes("socket hang up")
+    || lower.includes("stream closed with error");
+}

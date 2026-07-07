@@ -61,6 +61,9 @@ export type SyncPeerMetadata = {
    */
   dbVersionBySite?: Record<string, number>;
   capabilities?: string[];
+  appVersion?: string;
+  appBuild?: string;
+  bundleIdentifier?: string;
 };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {

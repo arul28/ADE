@@ -305,12 +305,13 @@ describe("lanes.suggestName", () => {
 
   it("returns the model-suggested name on success", async () => {
     const suggestLaneNameFromPrompt = vi.fn().mockResolvedValue("refactor-auth-flow");
-    const { service } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
+    const { service, logger } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
 
     const result = await service.execute(makePayload("lanes.suggestName", {
       laneId: "lane-1",
       prompt: "please refactor the auth flow",
       modelId: "anthropic/claude-haiku-4-5",
+      fallbackName: "fallback-auth-flow",
     }));
 
     expect(result).toEqual({ name: "refactor-auth-flow" });
@@ -318,6 +319,12 @@ describe("lanes.suggestName", () => {
       laneId: "lane-1",
       prompt: "please refactor the auth flow",
       modelId: "anthropic/claude-haiku-4-5",
+      fallbackName: "fallback-auth-flow",
+    });
+    expect(logger.info).toHaveBeenCalledWith("sync.lanes_suggest_name_succeeded", {
+      laneId: "lane-1",
+      modelId: "anthropic/claude-haiku-4-5",
+      name: "refactor-auth-flow",
     });
   });
 

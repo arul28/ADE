@@ -368,3 +368,153 @@ struct WorkAssistantMessageControlsView: View, Equatable {
     .accessibilityLabel("Assistant response preview. \(controls.visibleLineCount) of \(controls.totalLineCount) lines shown.")
   }
 }
+
+// MARK: - Consolidated pending-input strip
+
+extension WorkChatSessionView {
+  /// Single consolidated pending-input strip pinned above the composer, matching
+  /// the desktop approval card. Replaces the previous split of plan/approval
+  /// composer strips plus inline question/permission/model-selection transcript
+  /// cards: it renders the current (primary) request, shows a "Request 1 of N"
+  /// header and an "Accept all" affordance once more than one request is queued,
+  /// and advances to the next request as each is answered (via the optimistic
+  /// removal path). Plan-approval keeps its existing compact strip body inside
+  /// the switch; only its placement changes.
+  /// Composer-anchored section wrapper. Type-erasing the optional pending strip
+  /// at a property boundary keeps `composerInset` / `body` under the Swift
+  /// type-inference budget (the inline `if let` version tipped `body` over).
+  /// The optimistic-answer reconcile also lives here rather than on the giant
+  /// `body` VStack — this section is always mounted (it renders empty content
+  /// when no request is pending), so the `onChange` stays active while keeping
+  /// `body`'s modifier chain small enough to type-check.
+  var consolidatedPendingStripSection: some View {
+    Group {
+      if let primaryPendingInput {
+        consolidatedPendingInputStrip(primaryPendingInput)
+          .id("pending-strip-\(primaryPendingInput.id)")
+      }
+    }
+    .onChange(of: canonicalPendingInputSignature) { _, _ in
+      reconcileOptimisticallyAnsweredInputs()
+    }
+  }
+
+  @ViewBuilder
+  func consolidatedPendingInputStrip(_ item: WorkPendingInputItem) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if pendingInputCount > 1 {
+        pendingInputQueueHeader
+      }
+      consolidatedPendingInputBody(item)
+    }
+  }
+
+  /// "Request 1 of N" + optional "Accept all". The primary request is always the
+  /// first in the queue, so the leading index is fixed at 1.
+  @ViewBuilder
+  private var pendingInputQueueHeader: some View {
+    HStack(spacing: 8) {
+      Text("Request 1 of \(pendingInputCount)")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityLabel("Request 1 of \(pendingInputCount) pending.")
+      Spacer(minLength: 0)
+      if canAcceptAllPendingInputs {
+        Button {
+          Task { await acceptAllPendingInputs() }
+        } label: {
+          Text("Accept all")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+        .buttonStyle(.plain)
+        .disabled(actionInFlight || !isLive)
+        .accessibilityLabel("Accept all \(acceptAllSweepableInputs.count) pending approvals")
+      }
+    }
+    .padding(.horizontal, 4)
+  }
+
+  @ViewBuilder
+  private func consolidatedPendingInputBody(_ item: WorkPendingInputItem) -> some View {
+    switch item {
+    case .planApproval(let model):
+      WorkPlanComposerStrip(
+        plan: model,
+        busy: actionInFlight || !isLive,
+        fallbackProvider: chatSummaryContext.provider,
+        onDecision: { decision, feedback in
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onApproveRequest(model.id, decision, feedback)
+          }
+        }
+      )
+    case .approval(let model):
+      WorkApprovalComposerStrip(
+        approval: model,
+        busy: actionInFlight || !isLive,
+        fallbackProvider: chatSummaryContext.provider,
+        onDecision: { decision in
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onApproveRequest(model.id, decision, nil)
+          }
+        }
+      )
+    case .permission(let model):
+      WorkPermissionCard(
+        permission: model,
+        busy: actionInFlight || !isLive,
+        onDecision: { decision in
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onRespondToPermission(model.id, decision)
+          }
+        }
+      )
+    case .question(let model):
+      WorkStructuredQuestionCard(
+        question: model,
+        busy: actionInFlight || !isLive,
+        onSelectOption: { option, freeform in
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onRespondToQuestion(
+              model.id,
+              model.questionId,
+              .string(option.value),
+              freeform
+            )
+          }
+        },
+        onSubmitAll: { answers, freeform in
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onSubmitQuestionAnswers(model.id, answers, freeform)
+          }
+        },
+        onDecline: {
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onDeclineQuestion(model.id)
+          }
+        },
+        fallbackProvider: chatSummaryContext.provider
+      )
+    case .modelSelection(let model):
+      WorkModelSelectionPendingCard(
+        request: model,
+        busy: actionInFlight || !isLive,
+        onConfirm: { selectionJSON in
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onSubmitQuestionAnswers(
+              model.id,
+              ["selection": .string(selectionJSON)],
+              nil
+            )
+          }
+        },
+        onCancel: {
+          await dispatchPendingInputAnswer(itemId: model.id) {
+            await onDeclineQuestion(model.id)
+          }
+        }
+      )
+    }
+  }
+}

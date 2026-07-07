@@ -1,4 +1,135 @@
 import SwiftUI
+import os
+
+private let workAutoLaneNamingLog = Logger(subsystem: "com.ade.ios", category: "AutoLaneNaming")
+
+@MainActor
+protocol WorkAutoLaneNamingClient: AnyObject {
+  func supportsRemoteAction(_ action: String) -> Bool
+
+  func suggestLaneName(
+    laneId: String,
+    prompt: String,
+    modelId: String,
+    fallbackName: String,
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) async throws -> String
+
+  func renameLane(
+    _ laneId: String,
+    name: String,
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) async throws
+}
+
+extension SyncService: WorkAutoLaneNamingClient {}
+
+enum WorkAutoLaneNamingSurface: String {
+  case workNewChat = "work_new_chat"
+  case hubComposer = "hub_composer"
+}
+
+enum WorkAutoLaneNamingOutcome: Equatable {
+  case missingModel
+  case keptFallback
+  case renamed(String)
+  case suggestFailed(String)
+  case renameFailed(String)
+}
+
+@discardableResult
+@MainActor
+func workRunAutoLaneAiRename(
+  laneId: String,
+  opener: String,
+  fallbackName: String,
+  modelId: String,
+  syncService: WorkAutoLaneNamingClient,
+  surface: WorkAutoLaneNamingSurface,
+  targetProjectId: String? = nil,
+  targetProjectRootPath: String? = nil,
+  maxAttempts: Int = 2,
+  retryDelayNanoseconds: UInt64 = 750_000_000,
+  refreshLanes: (@MainActor () async -> Void)? = nil
+) async -> WorkAutoLaneNamingOutcome {
+  let trimmedModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !trimmedModelId.isEmpty else {
+    workAutoLaneNamingLog.error(
+      "auto_lane_naming_skipped_missing_model surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public)"
+    )
+    return .missingModel
+  }
+
+  let actionAdvertised = syncService.supportsRemoteAction("lanes.suggestName")
+  workAutoLaneNamingLog.notice(
+    "auto_lane_naming_start surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) model=\(trimmedModelId, privacy: .public) targetProject=\(targetProjectId ?? "active", privacy: .public) advertised=\(actionAdvertised, privacy: .public)"
+  )
+
+  let attempts = max(1, maxAttempts)
+  for attempt in 1...attempts {
+    do {
+      workAutoLaneNamingLog.notice(
+        "auto_lane_naming_suggest_attempt surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempt=\(attempt, privacy: .public)"
+      )
+      let suggested = try await syncService.suggestLaneName(
+        laneId: laneId,
+        prompt: opener,
+        modelId: trimmedModelId,
+        fallbackName: fallbackName,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+      guard !suggested.isEmpty, suggested != fallbackName else {
+        workAutoLaneNamingLog.notice(
+          "auto_lane_naming_kept_fallback surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempt=\(attempt, privacy: .public)"
+        )
+        return .keptFallback
+      }
+
+      do {
+        try await syncService.renameLane(
+          laneId,
+          name: suggested,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        )
+        workAutoLaneNamingLog.notice(
+          "auto_lane_naming_renamed surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) name=\(suggested, privacy: .public)"
+        )
+        if let refreshLanes {
+          await refreshLanes()
+        }
+        return .renamed(suggested)
+      } catch {
+        let message = error.localizedDescription
+        workAutoLaneNamingLog.error(
+          "auto_lane_naming_rename_failed surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) error=\(message, privacy: .public)"
+        )
+        return .renameFailed(message)
+      }
+    } catch {
+      let message = error.localizedDescription
+      if attempt < attempts {
+        workAutoLaneNamingLog.warning(
+          "auto_lane_naming_suggest_retrying surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempt=\(attempt, privacy: .public) error=\(message, privacy: .public)"
+        )
+        if retryDelayNanoseconds > 0 {
+          try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
+        }
+        continue
+      }
+      workAutoLaneNamingLog.error(
+        "auto_lane_naming_suggest_failed surface=\(surface.rawValue, privacy: .public) lane=\(laneId, privacy: .public) attempts=\(attempts, privacy: .public) error=\(message, privacy: .public)"
+      )
+      return .suggestFailed(message)
+    }
+  }
+
+  return .suggestFailed("Auto lane naming did not complete.")
+}
 
 enum WorkNewSessionMode: String, CaseIterable, Identifiable {
   case chat
@@ -260,7 +391,7 @@ private func workPriorityLaneNamingWords(cleanedPrompt: String) -> [String] {
     normalized,
     pattern: #"\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b"#
   )
-  let mentionsLogin = workRegexContains(normalized, pattern: #"\b(log\s*in|login|signin|sign\s*in)\b"#)
+  let mentionsLogin = workRegexContains(normalized, pattern: #"\b(log\s+in|login(?!\s+history)|signin|sign\s*in)\b"#)
   let mentionsUiControl = workRegexContains(normalized, pattern: #"\b(button|cta|call to action|chip|banner)\b"#)
   guard mentionsAuth || mentionsLogin else { return [] }
   guard mentionsLogin || mentionsUiControl else { return [] }
@@ -834,32 +965,24 @@ struct WorkNewChatScreen: View {
     workDeterministicAutoLaneName(from: opener, genericSuffix: workAutoLaneGenericSuffix())
   }
 
-  /// Desktop-parity background lane naming (`startBackgroundLaneNaming` in
-  /// AgentChatPane): the lane was already created with the deterministic
-  /// fallback name, so this runs fire-and-forget after the session launch and
-  /// any failure/timeout/offline is a no-op. `lanes.suggestName` honors the
-  /// host's own titleGenerationEnabled setting and clamps the name; the rename
-  /// applies only when the suggestion differs from the fallback.
+  /// Desktop-parity background lane naming. The lane is created immediately
+  /// with the deterministic fallback; then the host AI gets two chances to
+  /// replace it, and every failure is logged with the lane id so mobile
+  /// auto-naming cannot silently disappear again.
   private func startBackgroundLaneNaming(laneId: String, opener: String, fallbackName: String) {
     let syncService = syncService
     let modelId = modelId
     let onRefreshLanes = onRefreshLanes
     Task {
-      guard
-        let suggested = try? await syncService.suggestLaneName(
-          laneId: laneId,
-          prompt: opener,
-          modelId: modelId,
-          fallbackName: fallbackName
-        ),
-        suggested != fallbackName
-      else { return }
-      do {
-        try await syncService.renameLane(laneId, name: suggested)
-      } catch {
-        return
-      }
-      await onRefreshLanes()
+      await workRunAutoLaneAiRename(
+        laneId: laneId,
+        opener: opener,
+        fallbackName: fallbackName,
+        modelId: modelId,
+        syncService: syncService,
+        surface: .workNewChat,
+        refreshLanes: onRefreshLanes
+      )
     }
   }
 
