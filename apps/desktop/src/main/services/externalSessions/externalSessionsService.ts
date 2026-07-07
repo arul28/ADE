@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -285,19 +285,22 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   // Factory's docs describe `droid --fork`, but installed CLIs predating it only
   // expose `--resume`; offering fork against such a binary launches a failing command.
   let droidForkProbe: boolean | null = typeof args.droidForkSupported === "boolean" ? args.droidForkSupported : null;
+  let droidForkProbeStarted = droidForkProbe !== null;
+  const startDroidForkProbe = (): void => {
+    if (droidForkProbeStarted) return;
+    droidForkProbeStarted = true;
+    execFile("droid", ["--help"], {
+      timeout: 1500,
+      encoding: "utf8",
+      env: args.env ?? process.env,
+    }, (_error, stdout, stderr) => {
+      droidForkProbe = /(^|\s)--fork\b/u.test(`${stdout ?? ""}\n${stderr ?? ""}`);
+    });
+  };
   const droidForkAvailable = (): boolean => {
     if (droidForkProbe !== null) return droidForkProbe;
-    try {
-      const result = spawnSync("droid", ["--help"], {
-        timeout: 3000,
-        encoding: "utf8",
-        env: args.env ?? process.env,
-      });
-      droidForkProbe = /(^|\s)--fork\b/u.test(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-    } catch {
-      droidForkProbe = false;
-    }
-    return droidForkProbe;
+    startDroidForkProbe();
+    return PROVIDER_CAPABILITIES.droid.fork;
   };
   const capabilitiesFor = (provider: ExternalSessionProvider): ExternalSessionCapabilities => {
     if (provider !== "droid") return PROVIDER_CAPABILITIES[provider];

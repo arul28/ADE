@@ -1915,6 +1915,30 @@ describe("createAgentChatService", () => {
       expect(fs.existsSync(sourcePath)).toBe(true);
     });
 
+    it("archives a forked Codex provider thread when a chat import fails after fork", async () => {
+      mockState.codexResponseOverrides.set("thread/fork", () => ({
+        thread: { id: "forked-thread-1" },
+      }));
+      mockState.codexResponseOverrides.set("thread/read", () => ({}));
+      const { service, sessionService } = createService();
+
+      await expect(service.importExternalChatSession({
+        provider: "codex",
+        externalSessionId: "source-thread-1",
+        laneId: "lane-1",
+        cwd: tmpRoot,
+        fork: true,
+      })).rejects.toThrow(/was not found by thread\/read/i);
+
+      expect(mockState.codexRequestPayloads).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "thread/archive",
+          params: { threadId: "forked-thread-1" },
+        }),
+      ]));
+      expect(sessionService.get("test-uuid-1")).toBeNull();
+    });
+
     it("derives the runtime model from modelId when raw action callers omit model", async () => {
       const { service } = createService();
       const session = await service.createSession({

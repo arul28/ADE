@@ -4773,10 +4773,12 @@ export function registerIpc({
     }
     if (target !== "cli" && target !== "chat") throw new Error("external session import target must be cli or chat.");
     if (mode !== "resume" && mode !== "fork") throw new Error("external session import mode must be resume or fork.");
+    if (typeof record.sessionId !== "string") throw new Error("external session import sessionId must be a string.");
+    if (typeof record.laneId !== "string") throw new Error("external session import laneId must be a string.");
     return {
       provider,
-      sessionId: typeof record.sessionId === "string" ? record.sessionId : "",
-      laneId: typeof record.laneId === "string" ? record.laneId : "",
+      sessionId: record.sessionId,
+      laneId: record.laneId,
       target,
       mode,
       ...(typeof record.model === "string" ? { model: record.model } : {}),

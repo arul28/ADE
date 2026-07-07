@@ -12507,11 +12507,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         void importExternalSessionFromBrowser(selectedSession, action);
         return;
       }
-      if ((input === "r" || input === "R") && !key.ctrl && !key.meta) {
+      if ((input === "r" || input === "R") && !key.ctrl && !key.meta && !browser.query) {
         void loadExternalSessionsForLane(browser.laneId);
         return;
       }
-      if ((input === "p" || input === "P") && !key.ctrl && !key.meta) {
+      if ((input === "p" || input === "P") && !key.ctrl && !key.meta && !browser.query) {
         setRightPane((prev) => prev.kind === "external-session-browser"
           ? clampExternalSessionBrowserContent({
               ...prev,
@@ -12549,7 +12549,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (!key.ctrl && !key.meta && !key.return) {
         const suffix = printableInput(input);
-        if (suffix && suffix !== "r" && suffix !== "R" && suffix !== "p" && suffix !== "P") {
+        if (suffix) {
           setRightPane((prev) => prev.kind === "external-session-browser"
             ? clampExternalSessionBrowserContent({
                 ...prev,

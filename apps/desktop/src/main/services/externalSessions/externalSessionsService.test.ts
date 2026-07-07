@@ -320,4 +320,23 @@ describe("transplantClaudeSession", () => {
     expect(fs.existsSync(result.targetPath)).toBe(true);
     expect(result.targetPath).toContain(claudeProjectSlugForCwd(targetCwd));
   });
+
+  it("rejects adopt-moving onto an existing Claude target without clobbering it", async () => {
+    const configDir = path.join(root, "claude");
+    const sourceCwd = path.join(root, "source");
+    const targetCwd = path.join(root, "target");
+    const sessionId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const sourcePath = path.join(configDir, "projects", claudeProjectSlugForCwd(sourceCwd), `${sessionId}.jsonl`);
+    const targetPath = path.join(configDir, "projects", claudeProjectSlugForCwd(targetCwd), `${sessionId}.jsonl`);
+    writeJsonl(sourcePath, [{ type: "message", sessionId, text: "source transcript" }]);
+    writeJsonl(targetPath, [{ type: "message", sessionId, text: "existing transcript" }]);
+    const sourceBefore = fs.readFileSync(sourcePath, "utf8");
+    const targetBefore = fs.readFileSync(targetPath, "utf8");
+
+    await expect(transplantClaudeSession({ sessionId, sourceCwd, targetCwd, fork: false, configDir }))
+      .rejects.toThrow(`Claude target session already exists at ${targetPath}.`);
+
+    expect(fs.readFileSync(sourcePath, "utf8")).toBe(sourceBefore);
+    expect(fs.readFileSync(targetPath, "utf8")).toBe(targetBefore);
+  });
 });

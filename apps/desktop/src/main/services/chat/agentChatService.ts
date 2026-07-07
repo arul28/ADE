@@ -20845,6 +20845,8 @@ export function createAgentChatService(args: {
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalThreadId = args.externalSessionId.trim();
     let createdSessionId: string | null = null;
+    let forkedProviderThreadId: string | null = null;
+    let forkedProviderRuntime: CodexRuntime | null = null;
     try {
       const created = await createSession({
         laneId: args.laneId,
@@ -20855,6 +20857,7 @@ export function createAgentChatService(args: {
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
       const runtime = await ensureCodexSessionRuntime(managed);
+      forkedProviderRuntime = runtime;
       let targetThreadId = externalThreadId;
       if (args.fork) {
         const forkResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
@@ -20868,6 +20871,7 @@ export function createAgentChatService(args: {
             `Codex thread/fork did not return a new thread id for '${externalThreadId}'.`,
           );
         }
+        forkedProviderThreadId = forkedThreadId;
         targetThreadId = forkedThreadId;
       }
 
@@ -20900,6 +20904,18 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       return { chatSessionId: managed.session.id };
     } catch (error) {
+      if (forkedProviderRuntime && forkedProviderThreadId) {
+        try {
+          await forkedProviderRuntime.request("thread/archive", {
+            threadId: forkedProviderThreadId,
+          }, { timeoutMs: CODEX_ARCHIVE_REQUEST_TIMEOUT_MS });
+        } catch (cleanupError) {
+          logger.warn("agent_chat.external_import_codex_fork_cleanup_failed", {
+            threadId: forkedProviderThreadId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        }
+      }
       if (createdSessionId) {
         await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
           logger.warn("agent_chat.external_import_cleanup_failed", {

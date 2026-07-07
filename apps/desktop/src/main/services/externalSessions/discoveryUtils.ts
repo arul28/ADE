@@ -198,16 +198,19 @@ export function firstUserTextFromRecords(records: unknown[]): string | null {
   for (const record of records) {
     const obj = asRecord(record);
     if (!obj) continue;
-    const role = asString(obj.role)
+    const role = (asString(obj.role)
       ?? asString(asRecord(obj.message)?.role)
       ?? asString(asRecord(obj.payload)?.role)
-      ?? asString(asRecord(asRecord(obj.payload)?.message)?.role);
-    const type = asString(obj.type) ?? asString(asRecord(obj.payload)?.type);
+      ?? asString(asRecord(asRecord(obj.payload)?.message)?.role))?.toLowerCase();
+    const type = (asString(obj.type) ?? asString(asRecord(obj.payload)?.type))?.toLowerCase();
+    const explicitNonUserRole = role === "assistant" || role === "system" || role === "tool";
     const isUser =
       role === "user"
-      || type === "user"
-      || type === "user_message"
-      || type === "message";
+      || (!explicitNonUserRole && (
+        type === "user"
+        || type === "user_message"
+        || (!role && type === "message")
+      ));
     if (!isUser) continue;
     const payload = asRecord(obj.payload) ?? obj;
     const text =

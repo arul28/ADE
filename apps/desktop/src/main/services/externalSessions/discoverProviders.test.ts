@@ -108,10 +108,14 @@ describe("external session provider discovery", () => {
 
   it("discovers Cursor transcripts and resolves cwd from the project slug when possible", async () => {
     const homeDir = path.join(root, "home");
-    const cwd = "/private/tmp/adecursorfixture";
-    fs.mkdirSync(cwd, { recursive: true });
+    // Cursor discovery de-slugs a project dir back to a real path via `/<slug with - → />`,
+    // so the fixture cwd must actually exist AND be dash-free (a `-` would round-trip to `/`).
+    // Use a writable temp dir (CI can't mkdir under /private/tmp) and derive the slug from it.
+    const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "adecursorcwd")));
+    expect(cwd.includes("-"), "temp cwd must be dash-free for the cursor slug round-trip").toBe(false);
+    const slug = cwd.replace(/^\/+/u, "").replace(/\//gu, "-");
     const agentId = "agent-33333333-3333-4333-8333-333333333333";
-    writeJsonl(path.join(homeDir, ".cursor", "projects", "private-tmp-adecursorfixture", "agent-transcripts", agentId, `${agentId}.jsonl`), [
+    writeJsonl(path.join(homeDir, ".cursor", "projects", slug, "agent-transcripts", agentId, `${agentId}.jsonl`), [
       { role: "user", message: { content: [{ type: "text", text: "Port this session into ADE" }] } },
     ]);
 

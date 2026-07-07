@@ -18,6 +18,23 @@ function ensureInside(root: string, target: string, label: string): string {
   return resolvedTarget;
 }
 
+function isErrno(error: unknown, code: string): boolean {
+  return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === code);
+}
+
+function targetExistsError(targetPath: string): Error {
+  return new Error(`Claude target session already exists at ${targetPath}.`);
+}
+
+async function linkWithoutClobber(sourcePath: string, targetPath: string): Promise<void> {
+  try {
+    await fs.promises.link(sourcePath, targetPath);
+  } catch (error) {
+    if (isErrno(error, "EEXIST")) throw targetExistsError(targetPath);
+    throw error;
+  }
+}
+
 async function rewriteClaudeSessionFile(args: {
   sourcePath: string;
   targetPath: string;
@@ -79,7 +96,8 @@ async function rewriteClaudeSessionFile(args: {
       outputError,
     ]);
 
-    await fs.promises.rename(tempPath, args.targetPath);
+    await linkWithoutClobber(tempPath, args.targetPath);
+    await fs.promises.unlink(tempPath);
   } catch (error) {
     input?.destroy();
     output?.destroy();
@@ -126,12 +144,7 @@ export async function transplantClaudeSession(args: {
   if (path.resolve(sourcePath) === path.resolve(targetPath)) {
     return { newSessionId, targetPath };
   }
-  try {
-    await fs.promises.access(targetPath, fs.constants.F_OK);
-    throw new Error(`Claude target session already exists at ${targetPath}.`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  await fs.promises.rename(sourcePath, targetPath);
+  await linkWithoutClobber(sourcePath, targetPath);
+  await fs.promises.unlink(sourcePath);
   return { newSessionId, targetPath };
 }
