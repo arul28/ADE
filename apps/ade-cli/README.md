@@ -354,6 +354,9 @@ ade --role cto github app-auth clear              # remove the stored GitHub App
 ade open ade://lane/<lane-uuid>
 ade open --linear-issue ADE-123 --branch arul/ade-123-fix
 ade link lane <lane-uuid>
+ade link file src/index.ts --line 42 --lane <lane-uuid>
+ade link commit abc1234 --lane <lane-uuid> --no-envelope
+ade link artifact proof-artifact-id
 ade link branch owner/repo my-branch --pr 42
 ade link pr owner/repo 42 --ade
 ade link linear-issue ADE-123 --branch arul/ade-123-fix

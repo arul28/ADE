@@ -181,6 +181,15 @@ describe("searchService", () => {
     const hit = (await service.query({ query: "portable envelope" })).results.find((item) => item.kind === "chat");
     expect(hit?.deepLink).toContain("repo=owner%2Frepo");
     expect(hit?.deepLink).toContain("branch=ade%2Funiversal-search");
+
+    // Delegated lane results carry the same portable envelope.
+    const laneHit = (await service.query({ query: "universal-search kind:lane" })).results.find(
+      (item) => item.kind === "lane"
+    );
+    expect(laneHit).toBeTruthy();
+    expect(laneHit!.deepLink).toContain("ade://lane/lane-1");
+    expect(laneHit!.deepLink).toContain("repo=owner%2Frepo");
+    expect(laneHit!.deepLink).toContain("branch=ade%2Funiversal-search");
   });
 
   it("indexes only new lines on subsequent appends (incremental cursor)", async () => {

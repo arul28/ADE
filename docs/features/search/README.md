@@ -4,9 +4,11 @@ One deterministic full-text index over everything ADE knows about a project —
 chat transcripts, terminal/CLI-session scrollback, PRs, commits, and branches —
 unioned at query time with cheap or fast-changing sources (lanes, workspace
 files, proof artifacts, Linear issues) that are delegated to their owning
-service instead of being indexed. Every hit carries an `ade://` deep link back
-to the exact surface (a chat message offset, a scrollback byte offset, a PR, a
-commit, a lane, a file line).
+service instead of being indexed. Every hit carries a canonical `ade://` deep
+link back to the exact surface (a chat message sequence, a scrollback byte
+offset, a PR, a commit, a lane, a file line, or a proof artifact). Session,
+lane, and commit links include the portable deeplink envelope when the owning
+lane can resolve repo / branch / PR / Linear context.
 
 The index is a **machine-local, disposable cache** at
 `.ade/cache/search-index.db` (SQLite + FTS5). It never lives inside `ade.db`,
@@ -32,7 +34,7 @@ Main-process service (`apps/desktop/src/main/services/search/`):
   `notifyLaneActivity`), `processPendingNow` (tests/rebuild), `dispose`.
 - `searchIndexDb.ts` — opens/creates the disposable index DB. Owns the DDL
   (`docs`, `docs_fts` FTS5 virtual table, `sources`, `meta`), the
-  `SEARCH_INDEX_SCHEMA_VERSION` constant and the drop-and-recreate on schema
+  `SEARCH_INDEX_SCHEMA_VERSION = 4` constant and the drop-and-recreate on schema
   mismatch or corruption, WAL + `busy_timeout` pragmas, `clearSearchIndex`
   (wipe rows, keep schema), and the `createRequire`-anchored `node:sqlite`
   resolver (same pattern as `kvDb.ts`).
@@ -243,7 +245,9 @@ duplicate IO and occasional `SQLITE_BUSY` retry noise in logs.
 - [Pull requests](../pull-requests/README.md) — PR title/body/comments are the
   `pr` source.
 - [Deeplinks](../deeplinks/README.md) — every result carries an `ade://` deep
-  link built through the shared deeplink contract.
+  link built through the shared deeplink contract; session results carry
+  `event` / `offset` anchors, and file / commit / artifact results use the
+  canonical shared URL builders.
 - [Files and Editor](../files-and-editor/README.md) — the file quick-open /
   content-search index backs the delegated `file` kind.
 - [System overview](../../ARCHITECTURE.md) — the `search` ADE action domain and

@@ -71,6 +71,14 @@ describe("ade link", () => {
     expect(r.output).not.toContain("repo=");
   });
 
+  it("refuses to mint links the shared parser rejects", () => {
+    // Traversal file paths, absolute paths, and malformed shas must fail the
+    // round-trip gate instead of printing an unopenable link.
+    expect(() => runLinkCommand(["file", "../secret", "--no-clipboard"])).toThrow(/invalid link/);
+    expect(() => runLinkCommand(["file", "/etc/passwd", "--no-clipboard"])).toThrow(/invalid link/);
+    expect(() => runLinkCommand(["commit", "not-a-sha", "--no-clipboard"])).toThrow(/invalid link|sha/);
+  });
+
   it("emits a branch link", () => {
     const r = runLinkCommand(["branch", "a/b", "feat", "--no-clipboard"]);
     expect(r.output).toContain("https://ade-app.dev/open?type=branch");
