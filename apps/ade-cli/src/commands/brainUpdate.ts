@@ -22,6 +22,7 @@ const DEFAULT_RELEASE_REPO = "arul28/ADE";
 const CHECKSUMS_ASSET = "SHA256SUMS";
 const UPDATE_STATUS_FILE = "update-status.json";
 const UPDATE_USER_AGENT = "ADE brain updater";
+const UPDATE_DOWNLOAD_TIMEOUT_MS = 30_000;
 const SUPPORTED_TARGETS = new Set([
   "darwin-arm64",
   "darwin-x64",
@@ -320,13 +321,17 @@ async function defaultDownloadFile(url: string, outPath: string, redirects = 0):
   await new Promise<void>((resolve, reject) => {
     const request = resolveDownload(url).get(
       url,
-      { headers: { "user-agent": UPDATE_USER_AGENT } },
+      { headers: { "user-agent": UPDATE_USER_AGENT }, timeout: UPDATE_DOWNLOAD_TIMEOUT_MS },
       (response) => {
         const status = response.statusCode ?? 0;
         const location = response.headers.location;
         if (status >= 300 && status < 400 && location) {
           response.resume();
           const redirected = new URL(location, url).toString();
+          if (url.startsWith("https://") && !redirected.startsWith("https://")) {
+            reject(new Error(`Refusing insecure redirect from ${url} to ${redirected}`));
+            return;
+          }
           defaultDownloadFile(redirected, outPath, redirects + 1).then(resolve, reject);
           return;
         }
@@ -340,6 +345,9 @@ async function defaultDownloadFile(url: string, outPath: string, redirects = 0):
           .then(resolve, reject);
       },
     );
+    request.on("timeout", () => {
+      request.destroy(new Error(`Timed out downloading ${url}`));
+    });
     request.on("error", reject);
   }).catch(async (error) => {
     await fsp.rm(tmp, { force: true }).catch(() => undefined);
@@ -494,6 +502,7 @@ async function applyStagedBrainUpdate(
   deps: BrainUpdateDeps,
 ): Promise<Record<string, unknown>> {
   const manifest = readManifest(manifestPath);
+  const stagingDir = path.dirname(manifestPath);
   const runtimeDir = path.dirname(manifest.runtimeTargetDir);
   const statusBase = {
     version: manifest.version,
@@ -510,6 +519,9 @@ async function applyStagedBrainUpdate(
       message,
       error,
     });
+  const cleanupStagingDir = async () => {
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+  };
 
   try {
     await writeStatus("applying", "Applying staged ADE brain runtime update.");
@@ -540,6 +552,7 @@ async function applyStagedBrainUpdate(
 
     if (!manifest.restartService) {
       await writeStatus("succeeded", "ADE brain runtime updated. Service restart was skipped.");
+      await cleanupStagingDir();
       return {
         ok: true,
         action: "update",
@@ -581,6 +594,7 @@ async function applyStagedBrainUpdate(
     }
 
     await writeStatus("succeeded", "ADE brain updated and service restart requested.");
+    await cleanupStagingDir();
     return {
       ok: true,
       action: "update",
@@ -746,6 +760,7 @@ export async function runBrainUpdateCommand(
     const helperEnv = {
       ...runtimeSidecarEnv(env, stagedRuntimeRoot),
       ADE_HOME: layout.adeDir,
+      ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
       ADE_BRAIN_UPDATE_APPLY: "1",
     };
     (deps.spawnDetached ?? spawnDetached)(

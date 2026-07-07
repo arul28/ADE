@@ -136,6 +136,7 @@ describe("brain update command", () => {
         args: ["brain", "update", "--apply-staged", path.join(stagingDir, "manifest.json")],
         env: expect.objectContaining({
           ADE_HOME: root,
+          ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
           ADE_RUNTIME_ROOT: path.join(stagingDir, "runtime", "linux-x64"),
           ADE_RUNTIME_NODE_MODULES: path.join(stagingDir, "runtime", "linux-x64", "node_modules"),
           NODE_PATH: path.join(stagingDir, "runtime", "linux-x64", "node_modules"),
@@ -218,6 +219,7 @@ describe("brain update command", () => {
       state: "succeeded",
       version: "1.2.13",
     });
+    expect(fs.existsSync(tmp)).toBe(false);
   });
 
   it("keeps the installed binary when staged native dependencies are incomplete", async () => {

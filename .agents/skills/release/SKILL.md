@@ -581,7 +581,7 @@ grep -oE 'ADE-[^ ]+\.(zip|dmg)' /tmp/latest-mac.yml | sort -u | while read f; do
 done
 ```
 
-If a referenced file is missing, or the 14-asset set is incomplete → the build
+If a referenced file is missing, or the 15-asset set is incomplete → the build
 or upload broke; re-inspect the `build-mac-release` matrix jobs and the runtime
 artifact download/publish step.
 

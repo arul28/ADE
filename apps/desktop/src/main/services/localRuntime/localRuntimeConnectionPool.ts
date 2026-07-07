@@ -1699,7 +1699,7 @@ export class LocalRuntimeConnectionPool {
       throw new LocalRuntimeCompatibilityError(
         `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
         runtimeInfo,
-        comparison == null
+        comparison == null || comparison === 0
           ? "unknown"
           : comparison > 0
             ? "runtime_newer"

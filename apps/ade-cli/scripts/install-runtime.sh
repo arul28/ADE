@@ -144,8 +144,30 @@ chmod 755 "$tmp_dir/ade"
 cp "$tmp_dir/ade" "$dest_dir/ade"
 chmod 755 "$dest_dir/ade"
 
-rm -rf "$runtime_dir/node_modules"
-tar -xzf "$tmp_dir/native.tar.gz" -C "$runtime_dir"
+staged_runtime_dir="$tmp_dir/runtime"
+staged_node_modules="$staged_runtime_dir/node_modules"
+runtime_node_modules="$runtime_dir/node_modules"
+backup_node_modules="$tmp_dir/node_modules.previous"
+
+rm -rf "$staged_runtime_dir" "$backup_node_modules"
+mkdir -p "$staged_runtime_dir"
+tar -xzf "$tmp_dir/native.tar.gz" -C "$staged_runtime_dir"
+[ -d "$staged_node_modules" ] || die "native dependency archive is missing node_modules"
+
+if [ -e "$runtime_node_modules" ]; then
+  mv "$runtime_node_modules" "$backup_node_modules"
+fi
+
+if mv "$staged_node_modules" "$runtime_node_modules"; then
+  rm -rf "$backup_node_modules"
+else
+  if [ -e "$backup_node_modules" ]; then
+    rm -rf "$runtime_node_modules"
+    mv "$backup_node_modules" "$runtime_node_modules"
+  fi
+  die "failed to install ADE native runtime dependencies"
+fi
+
 export ADE_RUNTIME_ROOT="$runtime_dir"
 export ADE_RUNTIME_NODE_MODULES="$runtime_dir/node_modules"
 export NODE_PATH="$runtime_dir/node_modules${NODE_PATH:+:$NODE_PATH}"

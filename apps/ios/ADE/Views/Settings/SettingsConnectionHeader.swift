@@ -161,7 +161,10 @@ struct SettingsConnectionHeader: View {
       return "This machine is running an older ADE brain. Update ADE on the machine to enable mobile actions."
     }
     if missingCount > 0 {
-      return "\(missingCount) mobile action\(missingCount == 1 ? "" : "s") need a newer ADE brain on this machine."
+      if missingCount == 1 {
+        return "1 mobile action needs a newer ADE brain on this machine."
+      }
+      return "\(missingCount) mobile actions need a newer ADE brain on this machine."
     }
     return "Update ADE on this machine for full mobile support."
   }

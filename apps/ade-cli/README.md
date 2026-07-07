@@ -326,8 +326,6 @@ ade --socket browser open http://localhost:5173 --new-tab --text
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
-ade sync web --text                                # print + copy the web client pairing link + code (open app.ade-app.dev in a browser and enter the code)
-ade sync web --open                                # also launch the pairing link in the default browser (--no-clipboard to skip the copy)
 ade sync relay status --text                       # cloud relay: wss URL phones dial + on/off state (on by default)
 ade sync relay enable                              # re-enable after a disable (relay is on by default; headless brains have no Settings UI)
 ade sync relay disable                             # kill-switch: never route sync through the relay
