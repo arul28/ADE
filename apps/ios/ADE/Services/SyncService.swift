@@ -10261,6 +10261,9 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
+    if !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
+      throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
+    }
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
     }
@@ -10304,6 +10307,9 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
+    if !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
+      throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
+    }
     let commandId = makeRequestId()
     if canSendLiveRequests() {
       do {

@@ -583,7 +583,52 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testQueuedShellStartDoesNotFallbackToActiveProjectWhenLaneScopeIsMissing() async throws {
+  func testQueuedShellStartUsesLaneProjectScopeWithoutActiveFallback() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    let pendingOperationsKey = "ade.sync.pendingOperations"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+      UserDefaults.standard.removeObject(forKey: pendingOperationsKey)
+    }
+
+    let descriptors = [
+      SyncRemoteCommandDescriptor(
+        action: "work.startCliSession",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+    ]
+    UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-active", rootPath: "/tmp/project-active")
+    service.disconnect()
+
+    do {
+      _ = try await service.startShellSession(
+        laneId: "lane-scoped",
+        targetProjectId: "project-lane",
+        targetProjectRootPath: "/tmp/project-lane"
+      )
+      XCTFail("Expected queued shell start to throw after persisting the operation.")
+    } catch is QueuedRemoteCommandError {
+      // Expected: the shell command was queued for replay.
+    }
+
+    let queued = service.pendingOperationsForTesting()
+    XCTAssertEqual(queued.count, 1)
+    XCTAssertEqual(queued.first?.kind, "command")
+    XCTAssertEqual(queued.first?.action, "work.startCliSession")
+    XCTAssertEqual(queued.first?.projectId, "project-lane")
+    XCTAssertEqual(queued.first?.projectRootPath, "/tmp/project-lane")
+    XCTAssertEqual(queued.first?.fallbackToActiveProjectScope, false)
+  }
+
+  @MainActor
+  func testShellStartWithoutLaneProjectScopeDoesNotQueueAgainstActiveProject() async throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     let pendingOperationsKey = "ade.sync.pendingOperations"
     UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
@@ -609,18 +654,13 @@ final class ADETests: XCTestCase {
 
     do {
       _ = try await service.startShellSession(laneId: "lane-missing")
-      XCTFail("Expected queued shell start to throw after persisting the operation.")
-    } catch is QueuedRemoteCommandError {
-      // Expected: the shell command was queued for replay.
+      XCTFail("Expected missing shell project scope to fail before queueing.")
+    } catch {
+      XCTAssertTrue(error.localizedDescription.contains("project scope"))
     }
 
-    let queued = service.pendingOperationsForTesting()
-    XCTAssertEqual(queued.count, 1)
-    XCTAssertEqual(queued.first?.kind, "command")
-    XCTAssertEqual(queued.first?.action, "work.startCliSession")
-    XCTAssertNil(queued.first?.projectId)
-    XCTAssertNil(queued.first?.projectRootPath)
-    XCTAssertEqual(queued.first?.fallbackToActiveProjectScope, false)
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty)
+    XCTAssertEqual(service.pendingOperationCount, 0)
   }
 
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
