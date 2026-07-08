@@ -47,6 +47,16 @@ export type RuntimeActivityEntry = {
   status: WorkToolStatus | "info";
 };
 
+export type ActivityBundleKind = "task" | "agent" | "workflow" | "schedule";
+
+export type ActivityBundleEntry = {
+  id: string;
+  kind: ActivityBundleKind;
+  label: string;
+  detail?: string;
+  status: WorkToolStatus | "info";
+};
+
 export type PlanStep = {
   text: string;
   status: "pending" | "in_progress" | "completed" | "failed";
@@ -64,6 +74,7 @@ export type AggregatedBlock =
   | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
+  | { kind: "activity-bundle"; id: string; turnId: string | null; entries: ActivityBundleEntry[]; live: boolean }
   | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
@@ -359,10 +370,11 @@ function findCompactionBlockForCompletion(
 
 function isLiveTurnBlock(
   block: AggregatedBlock,
-): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" | "reasoning" }> {
+): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "activity-bundle" | "plan" | "compaction" | "reasoning" }> {
   return block.kind === "tool-calls-group"
     || block.kind === "files-changed-group"
     || block.kind === "runtime-activity"
+    || block.kind === "activity-bundle"
     || block.kind === "plan"
     || block.kind === "compaction"
     || block.kind === "reasoning";
@@ -459,6 +471,110 @@ function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeAct
   return null;
 }
 
+function activityStatusFromRawStatus(status: string | null | undefined): WorkToolStatus | "info" {
+  const normalized = (status ?? "").trim().toLowerCase();
+  if (normalized === "failed" || normalized === "error") return "failed";
+  if (normalized === "completed" || normalized === "complete" || normalized === "done") return "ok";
+  if (
+    normalized === "running"
+    || normalized === "started"
+    || normalized === "fired"
+    || normalized === "in_progress"
+  ) return "running";
+  return "info";
+}
+
+function activityBundleEntryFromEvent(id: string, event: AgentChatEvent): ActivityBundleEntry | null {
+  const eventType = String((event as { type?: unknown }).type ?? "");
+  if (event.type === "todo_update") {
+    const completed = event.items.filter((task) => task.status === "completed").length;
+    const active = event.items.find((task) => task.status === "in_progress")
+      ?? event.items.find((task) => task.status !== "completed")
+      ?? event.items.at(-1);
+    const detail = event.items.length > 0 ? `${completed}/${event.items.length} complete` : "updated";
+    return {
+      id,
+      kind: "task",
+      label: active?.description?.trim() || "Task list updated",
+      detail,
+      status: event.items.length > 0 && completed === event.items.length ? "ok" : "running",
+    };
+  }
+  if (event.type === "scheduled_work_update") {
+    return {
+      id,
+      kind: "schedule",
+      label: event.title?.trim() || event.reason?.trim() || event.prompt?.trim() || (event.kind === "cron" ? "Cron schedule" : "Scheduled work"),
+      detail: compactActivityDetail(event.summary) ?? compactActivityDetail(event.error) ?? compactActivityDetail(event.cron) ?? compactActivityDetail(event.nextRunAt),
+      status: activityStatusFromRawStatus(event.status),
+    };
+  }
+  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
+    const isWorkflow = Boolean(event.workflowName) || event.taskType === "local_workflow";
+    const description = "description" in event ? stringField(event.description) : null;
+    const summary = "summary" in event ? stringField(event.summary) : null;
+    const status = event.type === "subagent_started" || event.type === "subagent_progress"
+      ? "running"
+      : activityStatusFromRawStatus(event.status);
+    return {
+      id,
+      kind: isWorkflow ? "workflow" : "agent",
+      label: stringField(event.label)
+        ?? stringField(event.workflowName)
+        ?? stringField(event.agentType)
+        ?? description
+        ?? summary
+        ?? event.agentId
+        ?? event.taskId,
+      detail: event.type === "subagent_progress"
+        ? compactActivityDetail(event.summary) ?? compactActivityDetail(event.lastToolName)
+        : event.type === "subagent_result"
+          ? compactActivityDetail(event.finalSummary) ?? compactActivityDetail(event.summary)
+          : description ?? undefined,
+      status,
+    };
+  }
+  if (eventType === "subagent.started" || eventType === "subagent.progress" || eventType === "subagent.completed") {
+    const record = event as Record<string, unknown>;
+    const status = eventType === "subagent.completed"
+      ? activityStatusFromRawStatus(stringField(record.status) ?? "completed")
+      : "running";
+    return {
+      id,
+      kind: "agent",
+      label: stringField(record.label)
+        ?? stringField(record.agentType)
+        ?? stringField(record.description)
+        ?? stringField(record.summary)
+        ?? stringField(record.agentId)
+        ?? "Subagent",
+      detail: compactActivityDetail(record.summary) ?? compactActivityDetail(record.description),
+      status,
+    };
+  }
+  if (eventType === "task.completed") {
+    const record = event as Record<string, unknown>;
+    return {
+      id,
+      kind: "task",
+      label: stringField(record.name) ?? stringField(record.title) ?? stringField(record.summary) ?? "Task completed",
+      detail: compactActivityDetail(record.summary),
+      status: "ok",
+    };
+  }
+  if (eventType === "teammate.idle") {
+    const record = event as Record<string, unknown>;
+    return {
+      id,
+      kind: "agent",
+      label: stringField(record.name) ?? stringField(record.agentId) ?? "Agent idle",
+      detail: compactActivityDetail(record.reason),
+      status: "info",
+    };
+  }
+  return null;
+}
+
 function summarizePreToolUseHookError(event: AgentChatEvent): string | null {
   if (event.type !== "system_notice") return null;
   if ((event as { noticeKind?: string }).noticeKind !== "hook") return null;
@@ -487,6 +603,34 @@ function appendRuntimeActivityBlock(
   }
   block.entries.push(entry);
   if (block.entries.length > 8) block.entries.splice(0, block.entries.length - 8);
+}
+
+function appendActivityBundleBlock(
+  blocks: AggregatedBlock[],
+  id: string,
+  turnId: string | null,
+  entry: ActivityBundleEntry,
+): void {
+  const last = blocks[blocks.length - 1];
+  let block: Extract<AggregatedBlock, { kind: "activity-bundle" }>;
+  if (last && last.kind === "activity-bundle" && last.turnId === turnId) {
+    block = last;
+  } else {
+    block = { kind: "activity-bundle", id, turnId, entries: [], live: true };
+    blocks.push(block);
+  }
+  const previous = block.entries[block.entries.length - 1];
+  if (
+    previous
+    && previous.kind === entry.kind
+    && previous.label === entry.label
+    && previous.detail === entry.detail
+    && previous.status === entry.status
+  ) {
+    return;
+  }
+  block.entries.push(entry);
+  if (block.entries.length > 12) block.entries.splice(0, block.entries.length - 12);
 }
 
 function subagentParentItemId(event: AgentChatEvent): string | null {
@@ -632,9 +776,12 @@ export function aggregateChatBlocks(args: {
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
 
-    // Subagent lifecycle (started/progress/result, teammate idle, task done)
-    // never reaches the transcript — the subagent roster in the chat-info pane
-    // is its surface, matching the desktop transcript which hides these too.
+    const activityEntry = activityBundleEntryFromEvent(id, event);
+    if (activityEntry) {
+      appendActivityBundleBlock(blocks, id, turnId, activityEntry);
+      continue;
+    }
+
     if (isSubagentTimelineEvent(event)) {
       continue;
     }

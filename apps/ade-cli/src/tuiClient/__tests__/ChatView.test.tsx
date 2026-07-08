@@ -798,7 +798,7 @@ describe("ChatView", () => {
     expect(frame).toContain("+2 −1");
   });
 
-  it("keeps subagent lifecycle and child tool chatter out of the center transcript", () => {
+  it("shows compact subagent lifecycle while keeping child tool chatter out of the center transcript", () => {
     const turnId = "turn-subagents";
     const frame = renderEvents([
       {
@@ -883,12 +883,12 @@ describe("ChatView", () => {
     expect(frame).toContain("Tool calls");
     expect(frame).toContain("spawn_agent");
     expect(frame).toContain("Explore renderer");
-    expect(frame).not.toContain("child launch spam");
+    expect(frame).toContain("Activity");
+    expect(frame).toContain("child result spam");
+    expect(frame).toContain("agent");
     expect(frame).not.toContain("read_file");
     expect(frame).not.toContain("noisy-child");
     expect(frame).not.toContain("child tool result spam");
-    expect(frame).not.toContain("child progress spam");
-    expect(frame).not.toContain("child result spam");
   });
 
   it("renders a selected subagent transcript with the same ChatView format", () => {

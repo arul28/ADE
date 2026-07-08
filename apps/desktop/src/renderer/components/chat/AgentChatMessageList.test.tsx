@@ -1931,10 +1931,10 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    // The turn surfaces the task-list rollup with completed/in-progress items.
-    expect(rendered.container.textContent).toMatch(/Task list/);
+    // The turn surfaces task progress as a compact activity row.
+    expect(rendered.container.textContent).toMatch(/task: Refine summary card/);
     expect(rendered.container.textContent).toMatch(/1\/2 complete/);
-    expect(screen.getByText("Inspect chat renderer")).toBeTruthy();
+    expect(rendered.container.textContent).toMatch(/Inspect chat renderer/);
     expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
 
     // Files now live in the inline FilesChangedPanel — diff stats appear next to the path.
@@ -2231,9 +2231,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/task: Implement calmer transcript rows/);
     expect(rendered.container.textContent).toMatch(/1\/2 complete/);
-    expect(screen.getByText("Inspect shared renderer")).toBeTruthy();
+    expect(rendered.container.textContent).toMatch(/Inspect shared renderer/);
     expect(rendered.container.textContent).toMatch(/1 file changed/);
 
     fireEvent.click(screen.getByRole("button", { name: /Undo/i }));
@@ -2267,7 +2267,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/task: Investigate Claude turn status/);
     expect(rendered.container.textContent).toMatch(/1\/1 complete/);
     // Model attribution surfaces on the end-of-turn divider for non-completed turns.
     expect(screen.getAllByText(/Claude Sonnet 5/).length).toBeGreaterThanOrEqual(1);

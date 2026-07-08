@@ -1050,7 +1050,9 @@ func buildWorkTimeline(
       deduped.append(entry)
     }
   }
-  return collapseActivityPhaseTimelineEntries(collapseConsecutiveWorkToolEntries(deduped))
+  return collapseActivityPhaseTimelineEntries(
+    collapseConsecutiveWorkActivityEntries(collapseConsecutiveWorkToolEntries(deduped))
+  )
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
@@ -1270,7 +1272,7 @@ private func extractCodeChangeFilePath(fromArgsText argsText: String?) -> String
 private func workToolGroupSoftBreak(_ entry: WorkTimelineEntry) -> Bool {
   guard case .eventCard(let card) = entry.payload else { return false }
   switch card.kind {
-  case "reasoning", "status", "activity", "todo", "notice",
+  case "reasoning", "status", "activity", "activityBundle", "todo", "notice",
        "autoApproval", "pendingInputResolved",
        "promptSuggestion", "toolUseSummary":
     return true
@@ -1319,8 +1321,8 @@ private func mergeReasoningTimelineEntries(_ entries: [WorkTimelineEntry]) -> Wo
     guard case .eventCard(let card) = entry.payload, card.kind == "reasoning" else { return nil }
     return card
   }
-  let first = entries[0]!
-  let last = entries[entries.count - 1]!
+  let first = entries[0]
+  let last = entries[entries.count - 1]
   let mergedBody = cards
     .compactMap { $0.body?.trimmingCharacters(in: .whitespacesAndNewlines) }
     .filter { !$0.isEmpty }
@@ -1365,7 +1367,7 @@ private func mergeToolGroupTimelineEntries(_ entries: [WorkTimelineEntry]) -> Wo
     guard case .toolGroup(let group) = entry.payload else { return nil }
     return group
   }
-  let first = entries[0]!
+  let first = entries[0]
   let merged = WorkToolGroupModel(
     id: "activity-phase-tools:\(first.id)",
     members: groups.flatMap(\.members)
@@ -1383,7 +1385,7 @@ private func mergeChangedFilesTimelineEntries(_ entries: [WorkTimelineEntry]) ->
     guard case .changedFiles(let group) = entry.payload else { return nil }
     return group
   }
-  let first = entries[0]!
+  let first = entries[0]
   let merged = WorkChangedFilesGroupModel(
     id: "activity-phase-files:\(first.id)",
     files: groups.flatMap(\.files)
@@ -1473,6 +1475,94 @@ func collapseActivityPhaseTimelineEntries(_ entries: [WorkTimelineEntry]) -> [Wo
   }
 
   return result
+}
+
+private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var cluster: [WorkTimelineEntry] = []
+  var clusterTurnId: String?
+
+  func flushCluster() {
+    defer {
+      cluster.removeAll(keepingCapacity: true)
+      clusterTurnId = nil
+    }
+    guard cluster.count > 1 else {
+      result.append(contentsOf: cluster)
+      return
+    }
+    let cards = cluster.compactMap(workActivityCard(from:))
+    guard cards.count == cluster.count, let anchor = cluster.first, let latest = cards.last else {
+      result.append(contentsOf: cluster)
+      return
+    }
+    let summaries = cards.map(workActivityCardSummary).filter { !$0.isEmpty }
+    let latestSummary = nonEmptyWorkTimelineText(latest.body) ?? summaries.last ?? latest.title
+    let body = "\(cards.count) activity updates · \(truncatedWorkTimelineText(latestSummary, limit: 90))"
+    let bundle = WorkEventCardModel(
+      id: "activity-bundle:\(anchor.id)",
+      kind: "activityBundle",
+      title: "Activity",
+      icon: "sparkles",
+      tint: .accent,
+      timestamp: latest.timestamp,
+      body: body,
+      bullets: Array(summaries.prefix(6)),
+      metadata: []
+    )
+    result.append(WorkTimelineEntry(
+      id: "activity-bundle:\(anchor.id)",
+      timestamp: anchor.timestamp,
+      rank: anchor.rank,
+      payload: .eventCard(bundle)
+    ))
+  }
+
+  for entry in entries {
+    if let card = workActivityCard(from: entry) {
+      let turnId = workActivityCardTurnId(from: card)
+      if !cluster.isEmpty && (clusterTurnId == nil || turnId == nil || clusterTurnId != turnId) {
+        flushCluster()
+      }
+      if cluster.isEmpty {
+        clusterTurnId = turnId
+      }
+      cluster.append(entry)
+    } else {
+      flushCluster()
+      result.append(entry)
+    }
+  }
+  flushCluster()
+  return result
+}
+
+private func workActivityCard(from entry: WorkTimelineEntry) -> WorkEventCardModel? {
+  guard case .eventCard(let card) = entry.payload else { return nil }
+  switch card.kind {
+  case "activity", "todo": return card
+  default: return nil
+  }
+}
+
+private func workActivityCardId(sessionId: String, turnId: String?, fallback: String) -> String {
+  guard let turnId = normalizedWorkTurnId(turnId) else { return fallback }
+  return "\(fallback):activityTurn:\(sessionId):\(turnId)"
+}
+
+private func workActivityCardTurnId(from card: WorkEventCardModel) -> String? {
+  let parts = card.id.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+  guard let markerIndex = parts.firstIndex(of: "activityTurn"), markerIndex + 2 < parts.count else {
+    return nil
+  }
+  return normalizedWorkTurnId(parts[markerIndex + 2])
+}
+
+private func workActivityCardSummary(_ card: WorkEventCardModel) -> String {
+  let pieces = [card.metadata.first, card.body, card.title]
+    .compactMap { nonEmptyWorkTimelineText($0) }
+  return pieces.first ?? card.title
 }
 
 func normalizedWorkLocalEchoText(_ text: String) -> String {
@@ -1818,6 +1908,14 @@ private func nonEmptyWorkTimelineText(_ value: String?) -> String? {
   return trimmed.isEmpty ? nil : trimmed
 }
 
+private func strippedWorkActivityStatusPrefix(_ value: String) -> String {
+  let prefixes = ["In Progress: ", "Completed: ", "Pending: "]
+  for prefix in prefixes where value.hasPrefix(prefix) {
+    return String(value.dropFirst(prefix.count))
+  }
+  return value
+}
+
 private func truncatedWorkTimelineText(_ value: String, limit: Int) -> String {
   guard value.count > limit, limit > 3 else { return value }
   return "\(value.prefix(limit - 3))..."
@@ -1957,17 +2055,87 @@ private func eventCard(
         questionModel: questionModel,
         resolution: resolutionByItemId[itemId]
       )
-    case .todoUpdate(let items, _):
+    case .todoUpdate(let items, let turnId):
+      let completed = items.filter { $0.lowercased().hasPrefix("completed:") }.count
+      let active = items.first { $0.lowercased().hasPrefix("in progress:") }
+        ?? items.first { !$0.lowercased().hasPrefix("completed:") }
+        ?? items.last
+      let progressLabel = items.isEmpty ? "updated" : "\(completed)/\(items.count) complete"
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "todo",
-        title: "Todo update",
+        title: "Task update",
         icon: "checklist",
         tint: .accent,
         timestamp: envelope.timestamp,
-        body: nil,
+        body: active.map { strippedWorkActivityStatusPrefix($0) },
         bullets: items,
-        metadata: []
+        metadata: ["Tasks · \(progressLabel)"]
+      )
+    case .subagentStarted(_, _, let agentType, _, let description, let background, let label, _, _, let turnId):
+      let title = background ? "Background agent started" : "Subagent started"
+      return WorkEventCardModel(
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
+        kind: "activity",
+        title: title,
+        icon: "person.2",
+        tint: .accent,
+        timestamp: envelope.timestamp,
+        body: nonEmptyWorkTimelineText(label)
+          ?? nonEmptyWorkTimelineText(agentType)
+          ?? nonEmptyWorkTimelineText(description),
+        bullets: [],
+        metadata: ["Agent started"]
+      )
+    case .subagentProgress(_, _, let agentType, _, let description, let summary, let toolName, let label, _, _, let turnId):
+      return WorkEventCardModel(
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
+        kind: "activity",
+        title: "Subagent running",
+        icon: "person.2.wave.2",
+        tint: .accent,
+        timestamp: envelope.timestamp,
+        body: nonEmptyWorkTimelineText(label)
+          ?? nonEmptyWorkTimelineText(agentType)
+          ?? nonEmptyWorkTimelineText(summary)
+          ?? nonEmptyWorkTimelineText(description)
+          ?? nonEmptyWorkTimelineText(toolName),
+        bullets: [],
+        metadata: ["Agent running"]
+      )
+    case .subagentResult(_, _, let agentType, _, let status, let summary, let label, _, _, let turnId):
+      let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
+      return WorkEventCardModel(
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
+        kind: "activity",
+        title: "Subagent \(normalized.lowercased())",
+        icon: status == "failed" ? "xmark.circle" : status == "stopped" ? "pause.circle" : "checkmark.circle",
+        tint: status == "failed" ? .danger : status == "stopped" ? .warning : .success,
+        timestamp: envelope.timestamp,
+        body: nonEmptyWorkTimelineText(label)
+          ?? nonEmptyWorkTimelineText(agentType)
+          ?? nonEmptyWorkTimelineText(summary),
+        bullets: [],
+        metadata: ["Agent \(normalized.lowercased())"]
+      )
+    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, let turnId, let error):
+      let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
+      return WorkEventCardModel(
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
+        kind: "activity",
+        title: kind == "cron" ? "Cron \(normalized.lowercased())" : "Scheduled work \(normalized.lowercased())",
+        icon: kind == "cron" ? "calendar.badge.clock" : "clock.arrow.circlepath",
+        tint: status == "failed" || status == "cancelled" ? .danger : status == "running" || status == "fired" ? .accent : .warning,
+        timestamp: envelope.timestamp,
+        body: nonEmptyWorkTimelineText(summary)
+          ?? nonEmptyWorkTimelineText(error)
+          ?? nonEmptyWorkTimelineText(title)
+          ?? nonEmptyWorkTimelineText(reason)
+          ?? nonEmptyWorkTimelineText(prompt)
+          ?? nonEmptyWorkTimelineText(cron)
+          ?? nonEmptyWorkTimelineText(nextRunAt),
+        bullets: [],
+        metadata: [kind == "cron" ? "Cron \(normalized.lowercased())" : "Schedule \(normalized.lowercased())"]
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }

@@ -142,9 +142,7 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroup!.entries.map((e) => e.itemId)).toEqual(["kept-1"]);
   });
 
-  it("drops tool-derived activity, spawning_agent, and subagent lifecycle from the transcript", () => {
-    // Desktop parity: the subagent roster (chat-info pane) is the surface for
-    // lifecycle + spawn chatter; the transcript shows none of it.
+  it("bundles subagent lifecycle while still dropping tool-derived activity", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "thinking", detail: "Thinking through the answer", turnId: "turn-1" }),
       env("2026-01-01T12:00:01.000Z", { type: "activity", activity: "reading", detail: "apps/ade-cli/src/tuiClient/app.tsx", turnId: "turn-1" }),
@@ -158,6 +156,35 @@ describe("aggregateChatBlocks typed groups", () => {
 
     const blocks = aggregate(events);
     expect(blocks.some((b) => b.kind === "runtime-activity")).toBe(false);
+    const activity = blocks.find((b) => b.kind === "activity-bundle") as Extract<AggregatedBlock, { kind: "activity-bundle" }> | undefined;
+    expect(activity).toBeDefined();
+    expect(activity!.entries.map((entry) => entry.status)).toEqual(["running", "running", "ok"]);
+    expect(activity!.entries.map((entry) => entry.label)).toEqual(["child launch spam", "child progress", "child done"]);
+  });
+
+  it("bundles adjacent task and scheduled work updates in the TUI transcript", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "todo_update",
+        turnId: "turn-1",
+        items: [{ id: "task-1", description: "Review UI parity", status: "in_progress" }],
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "scheduled_work_update",
+        id: "cron-1",
+        kind: "cron",
+        status: "scheduled",
+        title: "CI follow-up",
+        turnId: "turn-1",
+      } as unknown as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    expect(blocks).toHaveLength(1);
+    const activity = blocks[0] as Extract<AggregatedBlock, { kind: "activity-bundle" }>;
+    expect(activity.kind).toBe("activity-bundle");
+    expect(activity.entries.map((entry) => entry.kind)).toEqual(["task", "schedule"]);
+    expect(activity.entries.map((entry) => entry.label)).toEqual(["Review UI parity", "CI follow-up"]);
   });
 
   it("still surfaces unrecognized activity events as runtime activity", () => {

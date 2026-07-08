@@ -1963,7 +1963,6 @@ extension AgentChatEvent {
     case trigger
     case preTokens
     case postTokens
-    case durationMs
     case provider
     case sessionCompactionCount
     case compactionId

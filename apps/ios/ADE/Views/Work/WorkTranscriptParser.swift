@@ -43,9 +43,9 @@ func workContextCompactSummary(
   }
   let triggerLabel = trigger.replacingOccurrences(of: "_", with: " ").capitalized
   lines.append(triggerLabel)
-  if let pre, let post {
+  if let pre = preTokens, let post = postTokens {
     lines.append("\(formatWorkCompactTokenCount(pre)) → \(formatWorkCompactTokenCount(post))")
-  } else if let pre {
+  } else if let pre = preTokens {
     lines.append("Pre-compact tokens: \(pre)")
   }
   if let durationMs {
