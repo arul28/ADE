@@ -9,8 +9,8 @@ type CursorSdkRunLike = {
 };
 
 type CursorSdkRunStoreLike = {
-  runs: {
-    get(args: { agentId: string; runId: string }): Promise<{
+  runs?: {
+    get?(args: { agentId: string; runId: string }): Promise<{
       error?: string | null;
       requestId?: string | null;
     } | null | undefined>;
@@ -174,9 +174,10 @@ export async function readCursorSdkRunFailureDetail(args: {
   const resultDetail = runResultErrorDetail(result);
   const runErrorDetail = sdkErrorDetail(run?.error);
   let storeDetail: CursorSdkErrorDetail | undefined;
-  if (run && store) {
+  const readRun = store?.runs?.get;
+  if (run && readRun) {
     try {
-      const record = await store.runs.get({ agentId: run.agentId, runId: run.id });
+      const record = await readRun.call(store.runs, { agentId: run.agentId, runId: run.id });
       if (record) {
         storeDetail = {
           ...(record.error?.trim() ? { message: record.error.trim() } : {}),

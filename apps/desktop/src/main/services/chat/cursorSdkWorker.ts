@@ -46,11 +46,13 @@ type SdkRun = Awaited<ReturnType<SdkAgent["send"]>>;
 type SdkRunResult = Awaited<ReturnType<SdkRun["wait"]>>;
 type CursorSdkRunStoreLike = Parameters<typeof readCursorSdkRunFailureDetail>[0]["store"];
 type CursorSdkLocalPlatform = Awaited<ReturnType<CursorSdkModule["createAgentPlatform"]>>;
+type CursorSdkPlatformOptions = Parameters<CursorSdkModule["createAgentPlatform"]>[0];
 type AgentOptionsWithAdeMode = AgentOptions & {
   mode?: CursorSdkAgentMode;
   local?: NonNullable<AgentOptions["local"]> & {
     enableAgentRetries?: boolean;
   };
+  platform?: CursorSdkPlatformOptions;
 };
 type SendOptionsWithAdeMode = SendOptions & {
   mode?: CursorSdkAgentMode;
@@ -407,7 +409,7 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   await startHookServer(init);
   const sdk = await getSdk();
   const { Agent } = sdk;
-  const platformOptions: NonNullable<AgentOptions["platform"]> = {
+  const platformOptions: CursorSdkPlatformOptions = {
     workspaceRef: init.laneRoot,
     stateRoot: init.stateRoot,
   };
