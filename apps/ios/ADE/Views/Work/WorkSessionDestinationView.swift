@@ -1114,7 +1114,7 @@ struct WorkSessionDestinationView: View {
   }
 
   var emptyTranscriptHydrationKey: String {
-    "\(session?.id ?? sessionId)-empty:\(transcript.isEmpty)-fallback:\(fallbackEntries.isEmpty)-host:\(hostReachable)-local:\(syncService.localStateRevision)"
+    "\(session?.id ?? sessionId)-empty:\(transcript.isEmpty)-fallback:\(fallbackEntries.isEmpty)-host:\(hostReachable)-opening:\(openingLoadInFlight)-local:\(syncService.localStateRevision)"
   }
 
   var selectedSubagentPollingKey: String {
@@ -1641,6 +1641,13 @@ struct WorkSessionDestinationView: View {
   func refreshChatStateAfterAction(forceRemote: Bool = true) async {
     let preferLightweight = syncService.prefersReducedSyncLoad
     await loadTranscript(forceRemote: forceRemote, preferLightweight: preferLightweight)
+    if preferLightweight,
+       forceRemote,
+       transcript.isEmpty,
+       fallbackEntries.isEmpty,
+       shouldHydrateTranscriptFromHost {
+      await hydrateEmptyTranscriptFromHostIfNeeded(force: true)
+    }
     if !preferLightweight {
       await refreshArtifacts(force: true)
     }
@@ -1759,6 +1766,7 @@ struct WorkSessionDestinationView: View {
       case .sent:
         updateLocalEchoDeliveryState(echoId: echo.id, deliveryState: nil)
         await refreshChatStateAfterAction(forceRemote: true)
+        reconcileLocalEchoMessages()
       }
       errorMessage = nil
     } catch {

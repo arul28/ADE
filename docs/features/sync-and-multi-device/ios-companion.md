@@ -316,8 +316,11 @@ With a saved machine the primary action is **Reconnect** (calls
 
 Connection surfaces show an "iPhone isn't on Tailscale" warning card
 (`ADETailscaleOffHintCard` in `ADEDesignSystem.swift`) when the one
-user action that can fix the connection is turning Tailscale on. Gating
-is the pure helper `syncShouldShowTailscaleOffHint(...)`, exposed as
+user action that can fix the connection is turning Tailscale on. The
+card is not shown when the phone has a saved ADE relay route, because
+relay is a valid automatic fallback and Tailscale is then only a
+performance recommendation. Gating is the pure helper
+`syncShouldShowTailscaleOffHint(...)`, exposed as
 `SyncService.tailscaleOffHintVisible`; all of the following must hold:
 
 - a pairing credential exists and the saved profile carries a Tailscale
@@ -329,6 +332,7 @@ is the pure helper `syncShouldShowTailscaleOffHint(...)`, exposed as
   unscoped scan would false-positive on LTE),
 - no live discovery hit matches the profile (Bonjour ⇒ same LAN; the
   tailnet probe only resolves when the tunnel is up),
+- no saved full-URL relay candidate exists for the profile,
 - transport is connecting / disconnected / unreachable — never while
   connected, so a working VPN-to-LAN setup is left alone.
 
@@ -458,19 +462,24 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    plus `SyncTailnetDiscovery.probePortCandidates` (default port + 8) —
    never the full 8787–8999 stale-port range, which belongs to the
    connect path's recovery sweep. Cloud-relay candidates (full
-   `wss://…/connect/<machineKey>` URLs) are appended **last**, as the
-   lowest-priority transport — a full-URL relay route cannot be
-   host:port TCP-probed, so it is dialed only after every direct route
-   fails. There is no user toggle: relay candidates always race
-   (LAN → Tailscale → relay, zero config). They arrive from the pairing
-   QR and — for already-paired phones — from `hello_ok` /
+   `wss://…/connect/<machineKey>` URLs) are zero-config and carry their
+   own path/port, so they are never mixed into the host:port TCP probe
+   or fallback-port sweep. When the phone has a Tailscale tunnel,
+   direct routes stay preferred. When the phone has no Tailscale tunnel
+   and a saved relay route exists, reconnect probes only currently live
+   same-LAN routes, then dials the relay before stale saved LAN/Tailscale
+   routes; this prevents "Tailscale off" from waiting behind a dead
+   tailnet sweep. Pairing uses the same endpoint ordering, so a phone
+   without Tailscale can pair through relay without extra user setup.
+   Relay routes arrive from the pairing QR and — for already-paired
+   phones — from `hello_ok` /
    `brain_status`'s `cloudRelayWssUrl`, persisted into the host
    profile's `savedRelayCandidates` (an explicit `cloudRelayWssUrl:
    null` in `brain_status` means the operator flipped the machine's
    relay kill-switch, and the phone clears its saved relay routes).
    When the ACTIVE connection is a relay route, the Settings connection
-   header shows one quiet line — "Using ADE relay — Tailscale gives a
-   faster, private connection" — and nothing else changes. `reconnectIfPossible` is guarded so overlapping
+   header shows one quiet line: "Using ADE relay. For faster, more
+   stable sync, connect both devices with Tailscale." `reconnectIfPossible` is guarded so overlapping
    wake-ups never stack TCP/WebSocket attempts, and a reconnect never
    tears down an already-live connection. The socket declares the
    `chunkedEnvelopes` capability and sets a 32 MiB
@@ -1196,7 +1205,7 @@ reflected in the phone's UI on the next descriptor read.
 | PIN pairing flow | Implemented |
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
-| Cloud relay (lowest-priority `relay` transport, always races, no toggle) | Implemented |
+| Cloud relay (automatic `relay` transport, promoted when the phone has no Tailscale tunnel, no user setup) | Implemented |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |

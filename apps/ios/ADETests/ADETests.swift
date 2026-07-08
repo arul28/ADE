@@ -1695,6 +1695,97 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testSyncRelayAwareAttemptsPreferTailscaleWhenPhoneIsOnTailnet() {
+    let relay = "wss://relay.ade-app.dev/connect/machinekey123"
+    let addresses = ["100.75.20.63"]
+    let ports = syncConnectPortCandidates(primaryPort: 8787, addresses: addresses)
+
+    let attempts = syncRelayAwareEndpointAttempts(
+      directAddresses: addresses,
+      ports: ports,
+      relayRoutes: [relay],
+      relayPort: 8787,
+      phoneHasTailnetInterface: true
+    )
+
+    XCTAssertEqual(attempts.first, SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8787))
+    XCTAssertEqual(attempts.last, SyncConnectionEndpointAttempt(address: relay, port: 8787))
+  }
+
+  func testSyncRelayAwareAttemptsPromoteRelayWhenPhoneIsNotOnTailnet() {
+    let relay = "wss://relay.ade-app.dev/connect/machinekey123"
+    let addresses = ["100.75.20.63"]
+    let ports = syncConnectPortCandidates(primaryPort: 8787, addresses: addresses)
+
+    let attempts = syncRelayAwareEndpointAttempts(
+      directAddresses: addresses,
+      ports: ports,
+      relayRoutes: [relay],
+      relayPort: 8787,
+      phoneHasTailnetInterface: false
+    )
+
+    XCTAssertEqual(attempts.first, SyncConnectionEndpointAttempt(address: relay, port: 8787))
+    XCTAssertEqual(attempts.dropFirst().first, SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8787))
+  }
+
+  func testSyncRelayAwareAttemptsGiveLiveLanOneShotBeforeRelayWithoutTailnet() {
+    let relay = "wss://relay.ade-app.dev/connect/machinekey123"
+    let addresses = ["192.168.1.240", "100.75.20.63"]
+    let ports = syncConnectPortCandidates(primaryPort: 8787, addresses: addresses)
+
+    let attempts = syncRelayAwareEndpointAttempts(
+      directAddresses: addresses,
+      ports: ports,
+      relayRoutes: [relay],
+      relayPort: 8787,
+      phoneHasTailnetInterface: false,
+      liveDirectAddresses: ["192.168.1.240"]
+    )
+
+    XCTAssertEqual(Array(attempts.prefix(3)), [
+      SyncConnectionEndpointAttempt(address: "192.168.1.240", port: 8787),
+      SyncConnectionEndpointAttempt(address: relay, port: 8787),
+      SyncConnectionEndpointAttempt(address: "100.75.20.63", port: 8787),
+    ])
+  }
+
+  func testSyncReconnectProbeAddressesSkipStaleDirectRoutesBeforeRelayWithoutTailnet() {
+    let relay = "wss://relay.ade-app.dev/connect/machinekey123"
+    let addresses = ["192.168.1.240", "100.75.20.63"]
+
+    XCTAssertEqual(
+      syncReconnectProbeAddresses(
+        directAddresses: addresses,
+        relayRoutes: [relay],
+        phoneHasTailnetInterface: false
+      ),
+      [],
+      "Relay should not wait behind TCP probes for stale saved LAN/Tailscale routes."
+    )
+
+    XCTAssertEqual(
+      syncReconnectProbeAddresses(
+        directAddresses: addresses,
+        relayRoutes: [relay],
+        phoneHasTailnetInterface: false,
+        liveDirectAddresses: ["192.168.1.240"]
+      ),
+      ["192.168.1.240"],
+      "Only a live same-LAN direct route gets probed before relay."
+    )
+
+    XCTAssertEqual(
+      syncReconnectProbeAddresses(
+        directAddresses: addresses,
+        relayRoutes: [relay],
+        phoneHasTailnetInterface: true
+      ),
+      addresses,
+      "When the phone is on Tailscale, direct route probing remains preferred."
+    )
+  }
+
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
     XCTAssertTrue(
       syncShouldRoamToTailnet(
@@ -2067,14 +2158,16 @@ final class ADETests: XCTestCase {
       hasSavedMachine: Bool = true,
       tailnetRoute: Bool = true,
       phoneOnTailnet: Bool = false,
-      nearby: Bool = false
+      nearby: Bool = false,
+      hasRelayCandidate: Bool = false
     ) -> Bool {
       syncShouldShowTailscaleOffHint(
         transport: transport,
         hasSavedMachine: hasSavedMachine,
         savedMachineHasTailnetRoute: tailnetRoute,
         phoneHasTailnetInterface: phoneOnTailnet,
-        machineDiscoveredNearby: nearby
+        machineDiscoveredNearby: nearby,
+        hasRelayCandidate: hasRelayCandidate
       )
     }
 
@@ -2086,6 +2179,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(hint(transport: .unreachable, tailnetRoute: false))
     XCTAssertFalse(hint(transport: .unreachable, phoneOnTailnet: true))
     XCTAssertFalse(hint(transport: .unreachable, nearby: true))
+    XCTAssertFalse(hint(transport: .unreachable, hasRelayCandidate: true))
   }
 
   @MainActor

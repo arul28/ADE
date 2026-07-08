@@ -466,6 +466,55 @@ func syncConnectionEndpointAttempts(
   return primaryAttempts + fallbackAttempts
 }
 
+func syncDeduplicatedEndpointAttempts(
+  _ attempts: [SyncConnectionEndpointAttempt]
+) -> [SyncConnectionEndpointAttempt] {
+  var seen = Set<SyncConnectionEndpointAttempt>()
+  return attempts.filter { seen.insert($0).inserted }
+}
+
+func syncRelayAwareEndpointAttempts(
+  directAddresses: [String],
+  ports: [Int],
+  relayRoutes: [String],
+  relayPort: Int,
+  phoneHasTailnetInterface: Bool,
+  liveDirectAddresses: Set<String> = []
+) -> [SyncConnectionEndpointAttempt] {
+  var seenRelayRoutes = Set<String>()
+  let relayAttempts = relayRoutes.filter { route in
+    syncIsFullWebSocketRoute(route) && seenRelayRoutes.insert(route).inserted
+  }.map { route in
+    SyncConnectionEndpointAttempt(address: route, port: relayPort)
+  }
+  let directAttempts = syncConnectionEndpointAttempts(addresses: directAddresses, ports: ports)
+  guard !relayAttempts.isEmpty else { return directAttempts }
+  guard !phoneHasTailnetInterface else {
+    return syncDeduplicatedEndpointAttempts(directAttempts + relayAttempts)
+  }
+
+  let primaryPorts = Array(ports.prefix(1))
+  let liveDirectAttempts = syncConnectionEndpointAttempts(
+    addresses: directAddresses.filter { address in
+      liveDirectAddresses.contains(address) && !syncIsTailscaleRoute(address)
+    },
+    ports: primaryPorts
+  )
+  return syncDeduplicatedEndpointAttempts(liveDirectAttempts + relayAttempts + directAttempts)
+}
+
+func syncReconnectProbeAddresses(
+  directAddresses: [String],
+  relayRoutes: [String],
+  phoneHasTailnetInterface: Bool,
+  liveDirectAddresses: Set<String> = []
+) -> [String] {
+  guard !relayRoutes.isEmpty, !phoneHasTailnetInterface else { return directAddresses }
+  return directAddresses.filter { address in
+    liveDirectAddresses.contains(address) && !syncIsTailscaleRoute(address)
+  }
+}
+
 func syncStalePortRecoveryEndpointAttempts(
   addresses: [String],
   ports: [Int]
@@ -593,18 +642,21 @@ func syncCopyNetworkInterfaceAddresses() -> [SyncNetworkInterfaceAddress] {
 }
 
 /// The saved machine advertises a Tailscale route, it is not discoverable on
-/// the current network, and this phone holds no tailnet address — the one
-/// user action that fixes the connection is turning Tailscale on (or moving
-/// back onto the machine's Wi-Fi). Never shown while connected: a user on a
-/// working VPN-to-LAN route (LAN probes succeed) simply connects.
+/// the current network, this phone holds no tailnet address, and the profile
+/// has no saved ADE relay route. Never shown while connected: a user on a
+/// working VPN-to-LAN route (LAN probes succeed) simply connects. When relay
+/// is available, relay is the fallback path; the hard "open Tailscale" card
+/// would incorrectly imply Tailscale is required.
 func syncShouldShowTailscaleOffHint(
   transport: SyncTransportHealth,
   hasSavedMachine: Bool,
   savedMachineHasTailnetRoute: Bool,
   phoneHasTailnetInterface: Bool,
-  machineDiscoveredNearby: Bool
+  machineDiscoveredNearby: Bool,
+  hasRelayCandidate: Bool = false
 ) -> Bool {
   guard hasSavedMachine, savedMachineHasTailnetRoute else { return false }
+  guard !hasRelayCandidate else { return false }
   guard !phoneHasTailnetInterface, !machineDiscoveredNearby else { return false }
   switch transport {
   case .connecting, .unreachable, .disconnected:
@@ -2590,7 +2642,8 @@ final class SyncService: ObservableObject {
         guard host != "127.0.0.1" else { return false }
         return !syncIsTailscaleRoute(host)
       },
-      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute)
+      tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute),
+      savedRelayCandidates: previousProfile?.savedRelayCandidates
     )
 
     let connectAttemptGeneration = beginConnectAttempt()
@@ -3699,6 +3752,7 @@ final class SyncService: ObservableObject {
       syncConnectLog.info("reconnect skipped: paused by user")
       return
     }
+    refreshPhoneTailnetInterfaceState()
     allowAutoReconnect = true
     guard let profile = loadProfile(), let token = tokenForProfile(profile) else { return }
     if preferTailnet || (userInitiated && shouldPreferTailnetForUserReconnect(profile)) {
@@ -3867,7 +3921,8 @@ final class SyncService: ObservableObject {
       hasSavedMachine: true,
       savedMachineHasTailnetRoute: profileHasTailnetRoute(profile),
       phoneHasTailnetInterface: phoneHasTailnetInterface,
-      machineDiscoveredNearby: machineDiscoveredNearby
+      machineDiscoveredNearby: machineDiscoveredNearby,
+      hasRelayCandidate: !relayFallbackCandidates(for: profile).isEmpty
     )
   }
 
@@ -3994,6 +4049,7 @@ final class SyncService: ObservableObject {
     lastPairingErrorCode = nil
     let connectAttemptGeneration: UInt64
     do {
+      refreshPhoneTailnetInterfaceState()
       cancelReconnectLoop()
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(false)
@@ -4040,9 +4096,10 @@ final class SyncService: ObservableObject {
         normalizedCandidateAddresses
       ))
       let portCandidates = syncConnectPortCandidates(primaryPort: requestedPort, addresses: addressCandidates)
-      // Relay URLs (full wss://) are attempted LAST, always. They ride their own
-      // path/port, so they're kept out of the direct port sweep and appended as
-      // single attempts after every direct route.
+      // Relay URLs (full wss://) ride their own path/port, so they're kept out
+      // of the direct port sweep. When this phone is not on Tailscale, the relay
+      // is promoted ahead of stale saved direct routes instead of waiting behind
+      // a dead tailnet sweep.
       let normalizedRelayCandidates = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
       let relayWalkCandidates = normalizedRelayCandidates
       syncConnectLog.info(
@@ -4058,9 +4115,15 @@ final class SyncService: ObservableObject {
       guard !addressCandidates.isEmpty || !relayWalkCandidates.isEmpty else {
         throw noConnectableAddressError()
       }
-      let directAttempts = syncConnectionEndpointAttempts(addresses: addressCandidates, ports: portCandidates)
-      let relayAttempts = relayWalkCandidates.map { SyncConnectionEndpointAttempt(address: $0, port: requestedPort) }
-      for attempt in directAttempts + relayAttempts {
+      let endpointAttempts = syncRelayAwareEndpointAttempts(
+        directAddresses: addressCandidates,
+        ports: portCandidates,
+        relayRoutes: relayWalkCandidates,
+        relayPort: requestedPort,
+        phoneHasTailnetInterface: phoneHasTailnetInterface,
+        liveDirectAddresses: Set(discoveryAddresses + discoveryTailscaleAddresses)
+      )
+      for attempt in endpointAttempts {
         guard isCurrentConnectAttempt(connectAttemptGeneration) else {
           throw CancellationError()
         }
@@ -4135,7 +4198,8 @@ final class SyncService: ObservableObject {
           return !syncIsTailscaleRoute(host)
         },
         tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute),
-        // Persist relay candidates so later reconnects can race them last.
+        // Persist relay candidates so later reconnects can promote them when
+        // this phone has no Tailscale interface.
         savedRelayCandidates: normalizedRelayCandidates.isEmpty ? nil : normalizedRelayCandidates
       )
       currentAddress = preferredAddress
@@ -8204,8 +8268,9 @@ final class SyncService: ObservableObject {
     return false
   }
 
-  /// Relay `wss://` candidates for a profile. Relay always races, strictly LAST
-  /// (after every LAN and Tailscale route) — zero config, no user toggle.
+  /// Relay `wss://` candidates for a profile. Relay is zero-config: when this
+  /// phone has no Tailscale interface, connection attempts promote the relay
+  /// ahead of stale saved direct routes.
   private func relayFallbackCandidates(for profile: HostConnectionProfile) -> [String] {
     return deduplicatedAddresses((profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute))
   }
@@ -8253,7 +8318,8 @@ final class SyncService: ObservableObject {
         + savedProfileTailnet
         + savedTailnet
     }
-    // Relay is the last-resort route: only tried when no direct path opened.
+    // The endpoint walker promotes relay ahead of stale direct routes when this
+    // phone is not on Tailscale, while keeping direct routes first otherwise.
     return deduplicatedAddresses(prioritizedLive + fallbackSaved + relayFallbackCandidates(for: profile))
   }
 
@@ -8318,8 +8384,9 @@ final class SyncService: ObservableObject {
       : prioritizedAddresses(for: profile)
     // Relay routes (full wss:// URLs) carry their own path and port: keep them
     // out of the TCP probe race and the port sweep — crossing one with the
-    // fallback port list would retry the identical URL once per port. Each is
-    // a single attempt, strictly after every direct address × port pair.
+    // fallback port list would retry the identical URL once per port. When the
+    // phone is not on Tailscale, the route walker tries the relay before stale
+    // saved direct routes.
     let relayRoutes = rawAddresses.filter(syncIsFullWebSocketRoute)
     let addresses = connectableAddresses(from: rawAddresses.filter { !syncIsFullWebSocketRoute($0) })
     let portCandidates = syncConnectPortCandidates(
@@ -8337,26 +8404,42 @@ final class SyncService: ObservableObject {
       throw noConnectableAddressError()
     }
 
-    let racedAddresses = await syncRaceAddressCandidates(
-      addresses: addresses,
+    let liveDirectAddressSet = Set(matchingDiscovery.flatMap(\.addresses) + matchingDiscovery.compactMap(\.tailscaleAddress))
+    let probeAddresses = syncReconnectProbeAddresses(
+      directAddresses: addresses,
+      relayRoutes: relayRoutes,
+      phoneHasTailnetInterface: phoneHasTailnetInterface,
+      liveDirectAddresses: liveDirectAddressSet
+    )
+    let racedProbeAddresses = await syncRaceAddressCandidates(
+      addresses: probeAddresses,
       port: portCandidates.first ?? profile.port
     )
+    let racedAddresses = probeAddresses == addresses
+      ? racedProbeAddresses
+      : deduplicatedAddresses(racedProbeAddresses + addresses.filter { !Set(probeAddresses).contains($0) })
     if racedAddresses != addresses {
       syncConnectLog.info(
         "ADE_SYNC_TRACE reconnect probe reorder raced=[\(syncLogAddressList(racedAddresses), privacy: .public)]"
       )
     }
 
-    let directAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
+    let racedDirectAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
       ? syncStalePortRecoveryEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
       : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
-    // Relay routes: one attempt each, after the whole direct sweep. openSocket
-    // uses the full URL verbatim; the port field is informational.
-    let endpointAttempts = directAttempts + relayRoutes.map { route in
-      SyncConnectionEndpointAttempt(address: route, port: portCandidates.first ?? profile.port)
-    }
+    let endpointAttempts = syncRelayAwareEndpointAttempts(
+      directAddresses: racedAddresses,
+      ports: portCandidates,
+      relayRoutes: relayRoutes,
+      relayPort: portCandidates.first ?? profile.port,
+      phoneHasTailnetInterface: phoneHasTailnetInterface,
+      liveDirectAddresses: liveDirectAddressSet
+    )
+    let orderedEndpointAttempts = phoneHasTailnetInterface || relayRoutes.isEmpty
+      ? racedDirectAttempts + endpointAttempts.filter { syncIsFullWebSocketRoute($0.address) }
+      : endpointAttempts
 
-    for attempt in endpointAttempts {
+    for attempt in orderedEndpointAttempts {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }

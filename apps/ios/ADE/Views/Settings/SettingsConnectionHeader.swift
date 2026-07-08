@@ -48,9 +48,9 @@ struct SettingsConnectionHeader: View {
         VStack(alignment: .leading, spacing: 4) {
           SettingsConnectedHostDetails(routeLine: snapshot.routeLine)
           if snapshot.usingRelay {
-            // Quiet nudge: we're reachable over the relay, but a direct tailnet
-            // path would be faster and stays private. Nothing modal.
-            Text("Using ADE relay — Tailscale gives a faster, private connection")
+            // Quiet nudge: relay is a valid automatic path; Tailscale is only a
+            // recommendation for faster, steadier direct sync.
+            Text("Using ADE relay. For faster, more stable sync, connect both devices with Tailscale.")
               .font(.caption)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)
