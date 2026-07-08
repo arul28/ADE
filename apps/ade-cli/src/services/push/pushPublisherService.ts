@@ -1041,7 +1041,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
-  const prActivityId = (scopeKey: string, prNumber: number): string => `pr:${scopeKey}:${prNumber}`;
+  const prActivityId = (scopeKey: string, notification: PushPrNotification): string => {
+    const owner = notification.repoOwner?.trim().toLowerCase();
+    const repo = notification.repoName?.trim().toLowerCase();
+    const repoScope = owner && repo
+      ? `repo:${encodeURIComponent(owner)}:${encodeURIComponent(repo)}`
+      : "number";
+    return `pr:${scopeKey}:${repoScope}:${notification.prNumber}`;
+  };
   const prDeepLink = (notification: PushPrNotification): string => {
     const owner = notification.repoOwner?.trim();
     const repo = notification.repoName?.trim();
@@ -1070,7 +1077,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const lane = notification.laneId
       ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
       : null;
-    const activityId = prActivityId(scopeKey, notification.prNumber);
+    const activityId = prActivityId(scopeKey, notification);
     prActivities.set(activityId, {
       id: activityId,
       prNumber: notification.prNumber,
@@ -1086,7 +1093,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const copy = prNotificationCopy(notification);
     enqueueAlert({
       sessionId: null,
-      dedupeKey: `alert:pr:${scopeKey}:${notification.prNumber}:${notification.kind}`,
+      dedupeKey: `alert:${activityId}:${notification.kind}`,
       render: () => ({ title: copy.title, body: copy.body }),
       deepLink: prDeepLink(notification),
       threadId: activityId,

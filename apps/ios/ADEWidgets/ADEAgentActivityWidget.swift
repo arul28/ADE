@@ -149,6 +149,9 @@ struct AgentRunsPresentation {
 
     var destinationURL: URL {
         let workspace = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
+        if let prUrl = prs.first(where: { $0.resolvedPhase.needsAttention })?.deepLinkURL {
+            return prUrl
+        }
         let target = runs.first(where: { $0.resolvedPhase.needsAttention }) ?? primary
         guard let id = target?.id.trimmingCharacters(in: .whitespacesAndNewlines),
               !id.isEmpty else {

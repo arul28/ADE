@@ -266,10 +266,10 @@ describe("createPushPublisherService flush", () => {
       title: "PR #42 merged",
       body: "Ship mobile PR view",
       deepLink: "ade://pr/arul28/ADE/42",
-      threadId: "pr:project-a:42",
+      threadId: "pr:project-a:repo:arul28:ade:42",
     });
     expect(payload.liveActivity[0].contentState.prs[0]).toMatchObject({
-      id: "pr:project-a:42",
+      id: "pr:project-a:repo:arul28:ade:42",
       prNumber: 42,
       title: "Ship mobile PR view",
       phase: "merged",
@@ -292,7 +292,7 @@ describe("createPushPublisherService flush", () => {
     const updatePayload = publish.mock.calls.at(-1)?.[0];
     expect(updatePayload?.liveActivity[0].contentState.prs).toMatchObject([
       {
-        id: "pr:project-b:42",
+        id: "pr:project-b:repo:other-org:other-repo:42",
         prNumber: 42,
         title: "Same number, other repo",
         phase: "checks_failing",
@@ -301,7 +301,7 @@ describe("createPushPublisherService flush", () => {
         repoName: "other-repo",
       },
       {
-        id: "pr:project-a:42",
+        id: "pr:project-a:repo:arul28:ade:42",
         prNumber: 42,
         title: "Ship mobile PR view",
         phase: "merged",
@@ -316,7 +316,7 @@ describe("createPushPublisherService flush", () => {
     const detachPayload = publish.mock.calls.at(-1)?.[0];
     expect(detachPayload?.liveActivity[0].contentState.prs).toHaveLength(1);
     expect(detachPayload?.liveActivity[0].contentState.prs[0]).toMatchObject({
-      id: "pr:project-a:42",
+      id: "pr:project-a:repo:arul28:ade:42",
       title: "Ship mobile PR view",
     });
 
@@ -327,6 +327,59 @@ describe("createPushPublisherService flush", () => {
       phase: "terminal",
     });
     expect(endPayload.liveActivity[0].contentState.prs).toEqual([]);
+
+    publisher.dispose();
+  });
+
+  it("separates duplicate PR numbers inside one project scope by repo", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-a", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "API PR",
+      laneId: null,
+      repoOwner: "Org-A",
+      repoName: "api",
+    });
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "Web PR",
+      laneId: null,
+      repoOwner: "Org-B",
+      repoName: "web",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications.map((item: { threadId: string; dedupeKey: string }) => ({
+      threadId: item.threadId,
+      dedupeKey: item.dedupeKey,
+    }))).toEqual([
+      {
+        threadId: "pr:project-a:repo:org-a:api:42",
+        dedupeKey: "alert:pr:project-a:repo:org-a:api:42:opened",
+      },
+      {
+        threadId: "pr:project-a:repo:org-b:web:42",
+        dedupeKey: "alert:pr:project-a:repo:org-b:web:42:opened",
+      },
+    ]);
+    expect(payload.liveActivity[0].contentState.prs).toMatchObject([
+      { id: "pr:project-a:repo:org-a:api:42", title: "API PR" },
+      { id: "pr:project-a:repo:org-b:web:42", title: "Web PR" },
+    ]);
 
     publisher.dispose();
   });
