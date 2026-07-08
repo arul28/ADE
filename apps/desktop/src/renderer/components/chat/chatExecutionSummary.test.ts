@@ -59,6 +59,62 @@ describe("deriveChatSubagentSnapshots", () => {
     ]);
   });
 
+  it("normalizes canonical dotted subagent lifecycle events into info-pane snapshots", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:00.000Z",
+        event: {
+          type: "subagent.started",
+          agentId: "agent-canonical",
+          parentToolUseId: "call-spawn",
+          agentType: "explorer",
+          description: "Inspect canonical runtime events",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:01.000Z",
+        event: {
+          type: "subagent.progress",
+          agentId: "agent-canonical",
+          parentToolUseId: "call-spawn",
+          text: "Reading provider event maps",
+          tokens: 42,
+          lastToolName: "rg",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-10T12:00:02.000Z",
+        event: {
+          type: "subagent.completed",
+          agentId: "agent-canonical",
+          parentToolUseId: "call-spawn",
+          summary: "Mapped the provider path.",
+          status: "completed",
+          usage: { totalTokens: 84 },
+          turnId: "turn-1",
+        },
+      },
+    ];
+
+    expect(deriveChatSubagentSnapshots(events)).toEqual([
+      expect.objectContaining({
+        taskId: "agent-canonical",
+        agentId: "agent-canonical",
+        parentToolUseId: "call-spawn",
+        description: "Inspect canonical runtime events",
+        status: "completed",
+        summary: "Mapped the provider path.",
+        lastToolName: "rg",
+        usage: expect.objectContaining({ totalTokens: 84 }),
+      }),
+    ]);
+  });
+
   it("coalesces Codex spawn placeholders with later agent-thread snapshots", () => {
     const events: AgentChatEventEnvelope[] = [
       {

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { ArrowBendUpRight, Cube, ListChecks, Play, Rocket, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowBendUpRight, Cube, Play, Rocket, TreeStructure, X } from "@phosphor-icons/react";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 
-export type ChatActionsTab = "agents" | "proof" | "handoff" | "plan" | "run" | "missions";
+export type ChatActionsTab = "agents" | "proof" | "handoff" | "run" | "missions";
 
 // The drawer tabs use GlowMenu's `neutral` mode, which renders every tab with
 // the same muted-grey-→-bright-fg treatment plus one shared violet indicator.
@@ -19,16 +19,6 @@ const CHAT_ACTIONS_TABS: Array<GlowMenuItem<ChatActionsTab>> = [
   { id: "proof", label: "Proof", icon: Cube, ...NEUTRAL_INDICATOR },
   { id: "handoff", label: "Handoff", icon: ArrowBendUpRight, ...NEUTRAL_INDICATOR },
 ];
-
-// Plan tab is surfaced only when the active chat has a plan to show — it leads
-// the tab strip so a freshly proposed plan is one glance away (the runtime's
-// native plan instructions are untouched; we only re-present the markdown here).
-const PLAN_TAB: GlowMenuItem<ChatActionsTab> = {
-  id: "plan",
-  label: "Plan",
-  icon: ListChecks,
-  ...NEUTRAL_INDICATOR,
-};
 
 // Run tab (moved off the header) — surfaced only when the chat has a lane that
 // can run process groups.
@@ -56,7 +46,6 @@ export function ChatActionsDrawerPanel({
   agentsContent,
   proofContent,
   handoffContent,
-  planContent,
   runContent,
   missionsContent,
 }: {
@@ -66,25 +55,21 @@ export function ChatActionsDrawerPanel({
   agentsContent: ReactNode;
   proofContent: ReactNode;
   handoffContent: ReactNode;
-  planContent?: ReactNode;
   runContent?: ReactNode;
   missionsContent?: ReactNode;
 }) {
   const tabs = [
     ...(missionsContent ? [MISSIONS_TAB] : []),
-    ...(planContent ? [PLAN_TAB] : []),
     ...CHAT_ACTIONS_TABS,
     ...(runContent ? [RUN_TAB] : []),
   ];
   // Fall back off tabs that aren't currently available.
   const activeTab: ChatActionsTab =
-    (tab === "plan" && !planContent)
-    || (tab === "run" && !runContent)
+    (tab === "run" && !runContent)
     || (tab === "missions" && !missionsContent)
       ? "agents"
       : tab;
   const bodyByTab: Record<ChatActionsTab, ReactNode> = {
-    plan: planContent,
     run: runContent,
     missions: missionsContent,
     agents: agentsContent,

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -876,6 +876,40 @@ describe("sendChatMessage", () => {
     ]);
     expect(JSON.stringify(calls)).not.toContain("control plane for ADE state");
     expect(JSON.stringify(calls)).not.toContain("ade actions list --text");
+  });
+});
+
+describe("messageChatSession", () => {
+  it("routes through chat.messageSession with the requested delivery kind", async () => {
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return {
+          sessionId: "chat-1",
+          kind: "queue",
+          routedAction: "steer",
+          statusBefore: "active",
+          awaitingInputBefore: false,
+          delivery: "queued",
+          steerId: "steer-1",
+          queued: true,
+        };
+      },
+    } as unknown as AdeCodeConnection;
+
+    await expect(messageChatSession(connection, "chat-1", "hold this", "queue")).resolves.toMatchObject({
+      routedAction: "steer",
+      delivery: "queued",
+    });
+
+    expect(calls).toEqual([
+      {
+        domain: "chat",
+        action: "messageSession",
+        args: { sessionId: "chat-1", text: "hold this", kind: "queue" },
+      },
+    ]);
   });
 });
 

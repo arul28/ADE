@@ -1,4 +1,3 @@
-import type { LocalAgentStore } from "@cursor/sdk";
 import type { CursorSdkErrorDetail } from "./cursorSdkProtocol";
 import { classifyCursorSdkErrorText } from "./cursorSdkProtocol";
 
@@ -7,6 +6,15 @@ type CursorSdkRunLike = {
   id: string;
   requestId?: unknown;
   error?: unknown;
+};
+
+type CursorSdkRunStoreLike = {
+  runs: {
+    get(args: { agentId: string; runId: string }): Promise<{
+      error?: string | null;
+      requestId?: string | null;
+    } | null | undefined>;
+  };
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -159,7 +167,7 @@ export async function readCursorSdkRunFailureDetail(args: {
   run: CursorSdkRunLike | null;
   result?: unknown;
   extraDetail?: CursorSdkErrorDetail;
-  store?: LocalAgentStore | null;
+  store?: CursorSdkRunStoreLike | null;
   onStoreReadError?: (error: unknown, run: CursorSdkRunLike) => void;
 }): Promise<{ errorCode?: string; errorDetail?: CursorSdkErrorDetail }> {
   const { run, result, extraDetail, store, onStoreReadError } = args;

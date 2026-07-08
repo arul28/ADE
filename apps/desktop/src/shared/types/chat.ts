@@ -1215,6 +1215,7 @@ export type AgentChatSubagentSnapshot = {
   taskId: string;
   agentId?: string;
   agentType?: string;
+  label?: string | null;
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";

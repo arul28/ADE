@@ -98,6 +98,18 @@ type HeadlessTranscriptEntry = {
   timestamp: string;
 };
 
+type HeadlessAgentChatMessageKind =
+  | "auto"
+  | "queue"
+  | "wake"
+  | "interrupt-replace";
+
+type HeadlessAgentChatMessageArgs = {
+  sessionId: string;
+  text: string;
+  kind?: HeadlessAgentChatMessageKind;
+};
+
 type HeadlessLinearDeps = {
   projectRoot: string;
   adeDir: string;
@@ -152,6 +164,20 @@ type HeadlessLinearServices = {
       title?: string | null;
     }) => Promise<HeadlessAgentChatSession>;
     sendMessage: (args: { sessionId: string; text: string }) => Promise<void>;
+    messageSession: (args: HeadlessAgentChatMessageArgs) => Promise<{
+      sessionId: string;
+      kind: HeadlessAgentChatMessageKind;
+      routedAction: "sendMessage" | "steer" | "interrupt-replace";
+      statusBefore: HeadlessAgentChatSession["status"];
+      awaitingInputBefore: false;
+      delivery: "sent" | "delivered" | "queued";
+      steerId?: string;
+      queued?: boolean;
+    }>;
+    steer: (args: { sessionId: string; text: string }) => Promise<{
+      steerId: string;
+      queued: boolean;
+    }>;
     interrupt: (args: { sessionId: string }) => Promise<void>;
     resumeSession: (args: {
       sessionId: string;
@@ -1668,6 +1694,55 @@ function createHeadlessAgentChatService(
     return created;
   };
 
+  const appendUserMessage = (args: {
+    sessionId: string;
+    text: string;
+  }): HeadlessAgentChatSession | null => {
+    const sessionId = args.sessionId.trim();
+    const existing = sessions.get(sessionId);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    ensureTranscript(sessionId).push({
+      role: "user",
+      text: args.text,
+      timestamp: now,
+    });
+    const updated = {
+      ...existing,
+      lastActivityAt: now,
+    };
+    sessions.set(sessionId, updated);
+    return updated;
+  };
+
+  const touchSession = (sessionId: string): void => {
+    const trimmedSessionId = sessionId.trim();
+    const existing = sessions.get(trimmedSessionId);
+    if (!existing) return;
+    sessions.set(trimmedSessionId, {
+      ...existing,
+      lastActivityAt: new Date().toISOString(),
+    });
+  };
+
+  const normalizeMessageKind = (
+    kind: HeadlessAgentChatMessageKind | undefined,
+  ): HeadlessAgentChatMessageKind => {
+    if (kind == null || kind === "auto") return "auto";
+    if (kind === "queue" || kind === "wake" || kind === "interrupt-replace") {
+      return kind;
+    }
+    throw new Error(`Unsupported chat message kind: ${String(kind)}`);
+  };
+
+  const steerMessage = (args: { sessionId: string; text: string }) => {
+    appendUserMessage(args);
+    return {
+      steerId: `steer-${randomUUID()}`,
+      queued: false,
+    };
+  };
+
   return {
     async listSessions() {
       return Array.from(sessions.values()).sort(
@@ -1723,27 +1798,52 @@ function createHeadlessAgentChatService(
       });
     },
     async sendMessage(args: { sessionId: string; text: string }) {
+      appendUserMessage(args);
+    },
+    async messageSession(args: HeadlessAgentChatMessageArgs) {
       const sessionId = args.sessionId.trim();
-      const existing = sessions.get(sessionId);
-      if (existing) {
-        ensureTranscript(sessionId).push({
-          role: "user",
-          text: args.text,
-          timestamp: new Date().toISOString(),
-        });
-        sessions.set(sessionId, {
-          ...existing,
-          lastActivityAt: new Date().toISOString(),
-        });
+      const statusBefore = sessions.get(sessionId)?.status ?? "idle";
+      const kind = normalizeMessageKind(args.kind);
+      if (kind === "queue") {
+        const result = steerMessage({ sessionId, text: args.text });
+        return {
+          sessionId,
+          kind,
+          routedAction: "steer",
+          statusBefore,
+          awaitingInputBefore: false,
+          delivery: "queued",
+          steerId: result.steerId,
+          queued: true,
+        };
       }
+      if (kind === "interrupt-replace") {
+        touchSession(sessionId);
+        appendUserMessage({ sessionId, text: args.text });
+        return {
+          sessionId,
+          kind,
+          routedAction: "interrupt-replace",
+          statusBefore,
+          awaitingInputBefore: false,
+          delivery: "sent",
+        };
+      }
+      appendUserMessage({ sessionId, text: args.text });
+      return {
+        sessionId,
+        kind,
+        routedAction: "sendMessage",
+        statusBefore,
+        awaitingInputBefore: false,
+        delivery: "sent",
+      };
+    },
+    async steer(args: { sessionId: string; text: string }) {
+      return steerMessage(args);
     },
     async interrupt(args: { sessionId: string }) {
-      const existing = sessions.get(args.sessionId);
-      if (existing)
-        sessions.set(args.sessionId, {
-          ...existing,
-          lastActivityAt: new Date().toISOString(),
-        });
+      touchSession(args.sessionId);
     },
     async resumeSession(args: { sessionId: string }) {
       return ensureSession({

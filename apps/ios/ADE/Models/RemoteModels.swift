@@ -1927,6 +1927,7 @@ extension AgentChatEvent {
     case label
     case reasoningEffort
     case usage
+    case tokens
     case costUsd
     case inputTokens
     case outputTokens
@@ -1986,6 +1987,13 @@ extension AgentChatEvent {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     let type = try container.decode(String.self, forKey: .type)
+
+    func decodeNonEmptyString(forKey key: CodingKeys) throws -> String? {
+      let value = try container.decodeIfPresent(String.self, forKey: key)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard let value, !value.isEmpty else { return nil }
+      return value
+    }
 
     switch type {
     case "user_message":
@@ -2150,6 +2158,21 @@ extension AgentChatEvent {
         reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
+    case "subagent.started":
+      let agentId = try container.decode(String.self, forKey: .agentId)
+      self = .subagentStarted(
+        taskId: agentId,
+        agentId: agentId,
+        agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentAgentId: nil,
+        parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
+        description: try decodeNonEmptyString(forKey: .description) ?? "Subagent task",
+        background: try container.decodeIfPresent(Bool.self, forKey: .background),
+        label: try container.decodeIfPresent(String.self, forKey: .label),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
     case "subagent_progress":
       self = .subagentProgress(
         taskId: try container.decode(String.self, forKey: .taskId),
@@ -2166,6 +2189,26 @@ extension AgentChatEvent {
         reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
+    case "subagent.progress":
+      let agentId = try container.decode(String.self, forKey: .agentId)
+      let tokens = try container.decodeIfPresent(Int.self, forKey: .tokens)
+      self = .subagentProgress(
+        taskId: agentId,
+        agentId: agentId,
+        agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentAgentId: nil,
+        parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
+        description: nil,
+        summary: try decodeNonEmptyString(forKey: .text)
+          ?? decodeNonEmptyString(forKey: .lastToolName)
+          ?? "Running",
+        usage: tokens.map { AgentChatSubagentUsage(totalTokens: $0, toolUses: nil, durationMs: nil, costUsd: nil) },
+        lastToolName: try container.decodeIfPresent(String.self, forKey: .lastToolName),
+        label: try container.decodeIfPresent(String.self, forKey: .label),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
     case "subagent_result":
       self = .subagentResult(
         taskId: try container.decode(String.self, forKey: .taskId),
@@ -2175,6 +2218,22 @@ extension AgentChatEvent {
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         status: try container.decode(AgentChatSubagentStatus.self, forKey: .status),
         summary: try container.decode(String.self, forKey: .summary),
+        usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
+        label: try container.decodeIfPresent(String.self, forKey: .label),
+        model: try container.decodeIfPresent(String.self, forKey: .model),
+        reasoningEffort: try container.decodeIfPresent(String.self, forKey: .reasoningEffort),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "subagent.completed":
+      let agentId = try container.decode(String.self, forKey: .agentId)
+      self = .subagentResult(
+        taskId: agentId,
+        agentId: agentId,
+        agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        parentAgentId: nil,
+        parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
+        status: try container.decodeIfPresent(AgentChatSubagentStatus.self, forKey: .status) ?? .completed,
+        summary: try decodeNonEmptyString(forKey: .summary) ?? "Completed",
         usage: try container.decodeIfPresent(AgentChatSubagentUsage.self, forKey: .usage),
         label: try container.decodeIfPresent(String.self, forKey: .label),
         model: try container.decodeIfPresent(String.self, forKey: .model),

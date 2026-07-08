@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
@@ -17,6 +17,7 @@ import type { AgentChatEventEnvelope, CodexThreadGoal } from "../../../shared/ty
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { CodexGoalCard } from "./codex/CodexGoalCard";
+import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 
 /* ── Formatting helpers ── */
 
@@ -26,122 +27,9 @@ function formatDurationMs(value: number | null | undefined): string | null {
   return `${Math.max(1, Math.round(value / 1000))}s`;
 }
 
-// Deterministic per-agent identity color. Real persona names/colors are not on
-// any provider wire, so we derive a stable hue from the agent id purely for
-// visual distinction (à la the Codex desktop colored agent glyphs).
-const AGENT_IDENTITY_COLORS = [
-  "#e9a6a6", "#a6cfe9", "#b6e0aa", "#e6cba0", "#c8b0e6", "#eebfdc", "#9fe0d6", "#e0d79f",
-];
-function agentColor(id: string): string {
-  let hash = 0;
-  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
-  return AGENT_IDENTITY_COLORS[hash % AGENT_IDENTITY_COLORS.length]!;
-}
-
-/* ── Per-agent identity glyph ──
- *
- * Codex's Environment > Subagents list gives every agent a tiny distinct
- * logo/glyph. There are no real persona logos on any provider wire, so we
- * synthesise a deterministic 3×3 geometric identicon from the agent id — a
- * mirrored-grid "mini robot face" that is stable per agent and visually
- * distinct from its neighbours, tinted with the same agentColor() hash.
- *
- * Status is layered on top: a small badge in the corner (check / cross /
- * halted) and, while running, a subtle animated ring around the glyph — so the
- * spinner survives but never takes over the whole row.
- */
-
 const GLYPH_SIZE = 16;
 
 type GlyphCategory = "subagent" | "background";
-
-// Cheap stable hash; independent from the color hash so shape ≠ hue lockstep.
-function glyphHash(id: string): number {
-  let hash = 2166136261;
-  for (let i = 0; i < id.length; i++) {
-    hash ^= id.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-// Deterministic mirrored 3×3 identicon (5 unique cells, left+center+mirrored
-// right) → a small symmetric "face". Distinct per id, always legible at 16 px.
-function identiconCells(id: string): boolean[] {
-  const hash = glyphHash(id);
-  // Force at least one lit cell so empty glyphs never happen.
-  const left = [0, 1, 2].map((i) => Boolean((hash >> i) & 1));
-  const center = [3, 4, 5].map((i) => Boolean((hash >> i) & 1));
-  if (!left.some(Boolean) && !center.some(Boolean)) center[1] = true;
-  // grid order: row-major 3×3, columns [left, center, mirror-of-left]
-  return [
-    left[0]!, center[0]!, left[0]!,
-    left[1]!, center[1]!, left[1]!,
-    left[2]!, center[2]!, left[2]!,
-  ];
-}
-
-function AgentGlyph({
-  id,
-  color,
-  status,
-}: {
-  id: string;
-  color: string;
-  status: ChatSubagentSnapshot["status"];
-}) {
-  const cells = identiconCells(id);
-  const isRunning = status === "running";
-  const dimmed = status === "completed" || status === "stopped";
-  // 3×3 cells inside an 18px circle with a 1px gutter.
-  const cell = 4;
-  const gap = 1;
-  const pad = 2;
-
-  return (
-    <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-      {/* Running indicator: a slow ring around the round glyph. */}
-      {isRunning ? (
-        <span
-          aria-hidden
-          className="absolute -inset-[2px] rounded-full border motion-safe:animate-spin [animation-duration:5s]"
-          style={{ borderColor: "transparent", borderTopColor: color, opacity: 0.7 }}
-        />
-      ) : null}
-      <svg
-        aria-hidden
-        width={18}
-        height={18}
-        viewBox="0 0 18 18"
-        className={cn("rounded-full", dimmed && "opacity-55")}
-        style={{ backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)` }}
-      >
-        {cells.map((lit, i) => {
-          if (!lit) return null;
-          const col = i % 3;
-          const row = Math.floor(i / 3);
-          return (
-            <rect
-              key={i}
-              x={pad + col * (cell + gap)}
-              y={pad + row * (cell + gap)}
-              width={cell}
-              height={cell}
-              rx={1}
-              fill={color}
-            />
-          );
-        })}
-      </svg>
-      {status === "completed" ? (
-        <Check aria-hidden size={9} weight="bold" className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[color:var(--work-sidebar-bg,#1a1a1e)] text-emerald-300/90" />
-      ) : null}
-      {status === "failed" ? (
-        <X aria-hidden size={9} weight="bold" className="absolute -bottom-0.5 -right-0.5 rounded-full bg-[color:var(--work-sidebar-bg,#1a1a1e)] text-rose-300/90" />
-      ) : null}
-    </span>
-  );
-}
 
 function PlanGlyph({ status }: { status: ChatInfoPlanStep["status"] }) {
   if (status === "completed") {
@@ -231,19 +119,6 @@ function ProgressBar({ percent }: { percent: number }) {
  * violet ring/tint, nothing more.
  */
 
-// Some runtimes stamp a placeholder agentType on the wire (e.g. legacy OpenCode
-// envelopes emitted before the description-first fix). Treat those as absent
-// so the more meaningful description takes the row label.
-const GENERIC_AGENT_TYPES = new Set(["opencode-subagent", "subagent"]);
-
-function meaningfulName(snapshot: ChatSubagentSnapshot): string {
-  const type = snapshot.agentType?.trim() ?? "";
-  if (type.length && !GENERIC_AGENT_TYPES.has(type.toLowerCase())) return type;
-  const description = snapshot.description?.trim();
-  if (description) return description;
-  return snapshot.agentId ?? snapshot.taskId;
-}
-
 const STATUS_LABEL: Record<ChatSubagentSnapshot["status"], string> = {
   running: "running",
   completed: "done",
@@ -253,9 +128,15 @@ const STATUS_LABEL: Record<ChatSubagentSnapshot["status"], string> = {
 
 // Elapsed-time chip for the right rail — duration only (no tool/token noise),
 // so the compact row stays scannable.
-function elapsedText(snapshot: ChatSubagentSnapshot): string | null {
+function elapsedText(snapshot: ChatSubagentSnapshot, nowMs?: number): string | null {
+  const startedAt = Date.parse(snapshot.startedAt);
+  const updatedAt = Date.parse(snapshot.updatedAt);
+  const liveElapsedMs = snapshot.status === "running" && Number.isFinite(startedAt) && typeof nowMs === "number"
+    ? Math.max(0, nowMs - startedAt)
+    : null;
   const elapsedMs = snapshot.usage?.durationMs
-    ?? Math.max(0, Date.parse(snapshot.updatedAt) - Date.parse(snapshot.startedAt));
+    ?? liveElapsedMs
+    ?? Math.max(0, updatedAt - startedAt);
   return formatDurationMs(elapsedMs);
 }
 
@@ -396,14 +277,20 @@ function SubagentRow({
   canViewFullTranscript: boolean;
   onClick: () => void;
 }) {
-  const name = meaningfulName(snapshot);
+  const name = chatSubagentDisplayName(snapshot);
   const kindLabel = kindBadge(snapshot);
-  const color = agentColor(snapshot.agentId ?? snapshot.taskId);
+  const color = chatSubagentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
   const isCompleted = snapshot.status === "completed";
   const isStopped = snapshot.status === "stopped";
   const isFailed = snapshot.status === "failed";
-  const time = elapsedText(snapshot);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!isRunning) return;
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [isRunning]);
+  const time = elapsedText(snapshot, nowMs);
   const statusLabel = STATUS_LABEL[snapshot.status];
   const runningLabelTint = category === "background"
     ? "text-cyan-100/90"
@@ -435,7 +322,7 @@ function SubagentRow({
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
       >
-        <AgentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
+        <ChatSubagentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
 
         <span
           className={cn(

@@ -93,6 +93,70 @@ function eventParentToolUseId(event: AgentChatEvent): string | null {
     ?? textField((event as { parentAgentId?: unknown }).parentAgentId);
 }
 
+export type NormalizedSubagentLifecycleEvent = Extract<
+  AgentChatEvent,
+  { type: "subagent_started" | "subagent_progress" | "subagent_result" }
+>;
+
+export function normalizeSubagentLifecycleEvent(event: AgentChatEvent): NormalizedSubagentLifecycleEvent | null {
+  if (
+    event.type === "subagent_started"
+    || event.type === "subagent_progress"
+    || event.type === "subagent_result"
+  ) {
+    return event;
+  }
+
+  if (event.type === "subagent.started") {
+    const agentId = textField(event.agentId);
+    if (!agentId) return null;
+    return {
+      type: "subagent_started",
+      taskId: agentId,
+      agentId,
+      parentToolUseId: textField(event.parentToolUseId),
+      agentType: event.agentType,
+      description: textField(event.description) ?? "Subagent task",
+      background: event.background,
+      turnId: event.turnId,
+    };
+  }
+
+  if (event.type === "subagent.progress") {
+    const agentId = textField(event.agentId);
+    if (!agentId) return null;
+    return {
+      type: "subagent_progress",
+      taskId: agentId,
+      agentId,
+      parentToolUseId: textField(event.parentToolUseId),
+      agentType: event.agentType,
+      summary: textField(event.text) ?? textField(event.lastToolName) ?? "Running",
+      ...(typeof event.tokens === "number" ? { usage: { totalTokens: event.tokens } } : {}),
+      lastToolName: event.lastToolName,
+      turnId: event.turnId,
+    };
+  }
+
+  if (event.type === "subagent.completed") {
+    const agentId = textField(event.agentId);
+    if (!agentId) return null;
+    return {
+      type: "subagent_result",
+      taskId: agentId,
+      agentId,
+      parentToolUseId: textField(event.parentToolUseId),
+      agentType: event.agentType,
+      status: event.status ?? "completed",
+      summary: textField(event.summary) ?? "Completed",
+      usage: event.usage,
+      turnId: event.turnId,
+    };
+  }
+
+  return null;
+}
+
 export function workEventItemId(event: AgentChatEvent): string | null {
   if (event.type !== "tool_call" && event.type !== "tool_result" && event.type !== "command" && event.type !== "file_change") {
     return null;

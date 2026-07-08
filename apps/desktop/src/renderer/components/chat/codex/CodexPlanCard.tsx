@@ -8,6 +8,7 @@ type PlanEvent = Extract<AgentChatEvent, { type: "plan" }>;
 
 type CodexPlanCardProps = {
   event: PlanEvent;
+  onOpenInfo?: () => void;
 };
 
 const VIOLET = "#A78BFA";
@@ -43,7 +44,7 @@ function PlanGlyph({ status }: { status: AgentChatPlanStep["status"] }) {
   );
 }
 
-export function CodexPlanCard({ event }: CodexPlanCardProps) {
+export function CodexPlanCard({ event, onOpenInfo }: CodexPlanCardProps) {
   const [liveOpen, setLiveOpen] = useState(false);
   const steps = Array.isArray(event.steps) ? event.steps : [];
   const hasStreaming = Boolean(event.streamingText && event.streamingText.trim().length);
@@ -60,11 +61,23 @@ export function CodexPlanCard({ event }: CodexPlanCardProps) {
 
   return (
     <motion.div
+      role={onOpenInfo ? "button" : undefined}
+      tabIndex={onOpenInfo ? 0 : undefined}
+      onClick={onOpenInfo}
+      onKeyDown={(keyboardEvent) => {
+        if (!onOpenInfo) return;
+        if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+          keyboardEvent.preventDefault();
+          onOpenInfo();
+        }
+      }}
       initial={{ opacity: 0, y: 2 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.14, ease: "easeOut" }}
-      className="relative overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.025]"
-      style={{ boxShadow: "inset 3px 0 0 0 rgba(167,139,250,0.55)" }}
+      className={cn(
+        "relative overflow-hidden rounded-xl border border-violet-400/15 bg-violet-500/[0.025]",
+        onOpenInfo && "cursor-pointer transition-colors hover:border-violet-300/25 hover:bg-violet-500/[0.04] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-violet-300/45",
+      )}
     >
       <div className="flex items-baseline justify-between gap-3 px-4 pb-1 pt-3">
         <h3 className="text-[length:calc(var(--chat-font-size)*13/14)] font-semibold tracking-[-0.005em] text-violet-100">
@@ -122,7 +135,10 @@ export function CodexPlanCard({ event }: CodexPlanCardProps) {
         <div className="flex items-center justify-end gap-2 border-t border-violet-400/10 px-4 py-1.5">
           <button
             type="button"
-            onClick={() => setLiveOpen((v) => !v)}
+            onClick={(clickEvent) => {
+              clickEvent.stopPropagation();
+              setLiveOpen((v) => !v);
+            }}
             className="inline-flex items-center gap-1 rounded text-[length:calc(var(--chat-font-size)*10/14)] text-violet-200/55 transition-colors hover:text-violet-100"
             aria-expanded={liveOpen}
           >

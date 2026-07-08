@@ -23,6 +23,8 @@ import type {
   AgentChatFileRef,
   AgentChatInteractionMode,
   AgentChatKillDroidWorkerArgs,
+  AgentChatMessageSessionKind,
+  AgentChatMessageSessionResult,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelInfo,
@@ -555,6 +557,21 @@ export async function sendChatMessage(
     },
     { awaitDispatch: true },
   ]);
+}
+
+export async function messageChatSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  text: string,
+  kind: AgentChatMessageSessionKind = "auto",
+  attachments: AgentChatFileRef[] = [],
+): Promise<AgentChatMessageSessionResult> {
+  return await connection.action<AgentChatMessageSessionResult>("chat", "messageSession", {
+    sessionId,
+    text,
+    kind,
+    ...(attachments.length ? { attachments } : {}),
+  });
 }
 
 export async function steerChatMessage(

@@ -158,8 +158,85 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(blocks.some((b) => b.kind === "runtime-activity")).toBe(false);
     const activity = blocks.find((b) => b.kind === "activity-bundle") as Extract<AggregatedBlock, { kind: "activity-bundle" }> | undefined;
     expect(activity).toBeDefined();
-    expect(activity!.entries.map((entry) => entry.status)).toEqual(["running", "running", "ok"]);
-    expect(activity!.entries.map((entry) => entry.label)).toEqual(["child launch spam", "child progress", "child done"]);
+    expect(activity!.entries).toHaveLength(1);
+    expect(activity!.entries[0]).toMatchObject({
+      kind: "agent",
+      label: "child done",
+      detail: "child done",
+      status: "ok",
+    });
+  });
+
+  it("normalizes dotted subagent lifecycle events before activity bundling", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "subagent.started",
+        agentId: "agent-canonical",
+        parentToolUseId: "call-spawn",
+        agentType: "explorer",
+        description: "Inspect canonical lifecycle events",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "subagent.progress",
+        agentId: "agent-canonical",
+        parentToolUseId: "call-spawn",
+        text: "Reading provider event maps",
+        lastToolName: "rg",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:02.000Z", {
+        type: "subagent.completed",
+        agentId: "agent-canonical",
+        parentToolUseId: "call-spawn",
+        summary: "Canonical lifecycle mapped.",
+        status: "completed",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activity = blocks.find((b) => b.kind === "activity-bundle") as Extract<AggregatedBlock, { kind: "activity-bundle" }> | undefined;
+
+    expect(activity).toBeDefined();
+    expect(activity!.entries).toHaveLength(1);
+    expect(activity!.entries[0]).toMatchObject({
+      kind: "agent",
+      label: "Canonical lifecycle mapped.",
+      detail: "Canonical lifecycle mapped.",
+      status: "ok",
+    });
+  });
+
+  it("folds Codex parent placeholders into the resolved subagent activity row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "subagent_started",
+        taskId: "call-spawn-1",
+        parentToolUseId: "call-spawn-1",
+        description: "Inspect the placeholder path",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "subagent_started",
+        taskId: "agent-thread-1",
+        agentId: "agent-thread-1",
+        parentToolUseId: "call-spawn-1",
+        label: "Sagan",
+        description: "Inspect the placeholder path",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+    ];
+
+    const blocks = aggregate(events);
+    const activity = blocks.find((b) => b.kind === "activity-bundle") as Extract<AggregatedBlock, { kind: "activity-bundle" }> | undefined;
+
+    expect(activity).toBeDefined();
+    expect(activity!.entries).toHaveLength(1);
+    expect(activity!.entries[0]).toMatchObject({
+      label: "Sagan",
+      status: "running",
+    });
   });
 
   it("bundles adjacent task and scheduled work updates in the TUI transcript", () => {

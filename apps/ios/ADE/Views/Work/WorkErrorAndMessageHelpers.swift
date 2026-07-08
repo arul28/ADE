@@ -515,8 +515,14 @@ func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId:
 }
 
 func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChatEnvelope] {
-  entries.map { entry in
-    WorkChatEnvelope(
+  let parentItemIds = workSubagentParentItemIds(from: entries)
+  let childItemIds = workSubagentChildItemIds(from: entries, parentItemIds: parentItemIds)
+  return entries.compactMap { entry in
+    guard !isSubagentTranscriptEnvelope(entry) else { return nil }
+    guard !isSubagentChildWorkEvent(entry.event, parentItemIds: parentItemIds, childItemIds: childItemIds) else {
+      return nil
+    }
+    return WorkChatEnvelope(
       sessionId: entry.sessionId,
       timestamp: entry.timestamp,
       sequence: entry.sequence,
@@ -529,6 +535,85 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
     }
     return lhs.timestamp < rhs.timestamp
   }
+}
+
+private func isSubagentTranscriptEnvelope(_ entry: AgentChatEventEnvelope) -> Bool {
+  let target = entry.provenance?.targetKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return target == "codex_subagent" || target == "subagent"
+}
+
+private func normalizedWorkEventId(_ value: String?) -> String? {
+  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return trimmed.isEmpty ? nil : trimmed
+}
+
+private func workSubagentParentItemId(_ event: AgentChatEvent) -> String? {
+  switch event {
+  case .subagentStarted(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _),
+       .subagentProgress(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _),
+       .subagentResult(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _):
+    return normalizedWorkEventId(parentToolUseId) ?? normalizedWorkEventId(parentAgentId)
+  default:
+    return nil
+  }
+}
+
+private func workSubagentParentItemIds(from entries: [AgentChatEventEnvelope]) -> Set<String> {
+  Set(entries.compactMap { entry in
+    guard !isSubagentTranscriptEnvelope(entry) else { return nil }
+    return workSubagentParentItemId(entry.event)
+  })
+}
+
+private func workEventItemAndParentIds(_ event: AgentChatEvent) -> (itemId: String?, parentItemId: String?) {
+  switch event {
+  case .toolCall(_, _, let itemId, _, let parentItemId, _),
+       .toolResult(_, _, let itemId, _, let parentItemId, _, _):
+    return (normalizedWorkEventId(itemId), normalizedWorkEventId(parentItemId))
+  case .command(_, _, _, let itemId, _, _, _, _, _),
+       .fileChange(_, _, _, let itemId, _, _, _),
+       .webSearch(_, _, _, let itemId, _, _, _):
+    return (normalizedWorkEventId(itemId), nil)
+  case .approvalRequest(let itemId, let logicalItemId, _, _, _, _):
+    return (normalizedWorkEventId(itemId) ?? normalizedWorkEventId(logicalItemId), nil)
+  case .structuredQuestion(_, _, let itemId, _),
+       .pendingInputResolved(let itemId, _, _):
+    return (normalizedWorkEventId(itemId), nil)
+  default:
+    return (nil, nil)
+  }
+}
+
+private func workSubagentChildItemIds(
+  from entries: [AgentChatEventEnvelope],
+  parentItemIds: Set<String>
+) -> Set<String> {
+  guard !parentItemIds.isEmpty else { return [] }
+  var childIds = Set<String>()
+  for entry in entries where !isSubagentTranscriptEnvelope(entry) {
+    let ids = workEventItemAndParentIds(entry.event)
+    if let parentItemId = ids.parentItemId,
+       let itemId = ids.itemId,
+       parentItemIds.contains(parentItemId) {
+      childIds.insert(itemId)
+    }
+  }
+  return childIds
+}
+
+private func isSubagentChildWorkEvent(
+  _ event: AgentChatEvent,
+  parentItemIds: Set<String>,
+  childItemIds: Set<String>
+) -> Bool {
+  let ids = workEventItemAndParentIds(event)
+  if let parentItemId = ids.parentItemId, parentItemIds.contains(parentItemId) {
+    return true
+  }
+  if let itemId = ids.itemId, childItemIds.contains(itemId) {
+    return true
+  }
+  return false
 }
 
 func isFallbackOnlyWorkTranscript(_ transcript: [WorkChatEnvelope]) -> Bool {

@@ -2387,12 +2387,12 @@ struct WorkSubagentActivePopup: View {
     WorkComposerBadgeCapsule(
       tint: ADEColor.accent,
       spacing: 8,
-      accessibilityLabel: "\(count) active subagent\(count == 1 ? "" : "s")",
+      accessibilityLabel: "\(count) subagent\(count == 1 ? "" : "s")",
       onOpen: onOpen
     ) {
       Image(systemName: "person.2.fill")
         .font(.system(size: 12, weight: .semibold))
-      Text("\(count) active")
+      Text("\(count) subagent\(count == 1 ? "" : "s")")
         .font(.caption.weight(.semibold))
     }
   }

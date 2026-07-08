@@ -8,6 +8,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
+import { normalizeSubagentLifecycleEvent } from "../../../desktop/src/shared/chatSubagents";
 import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
 import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
 import type { LocalNotice } from "./types";
@@ -55,6 +56,7 @@ export type ActivityBundleEntry = {
   label: string;
   detail?: string;
   status: WorkToolStatus | "info";
+  foldKey?: string;
 };
 
 export type PlanStep = {
@@ -418,12 +420,7 @@ const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
 
 function isSubagentTimelineEvent(event: AgentChatEvent): boolean {
   const type = String((event as { type?: unknown }).type ?? "");
-  return type === "subagent_started"
-    || type === "subagent_progress"
-    || type === "subagent_result"
-    || type === "subagent.started"
-    || type === "subagent.progress"
-    || type === "subagent.completed"
+  return normalizeSubagentLifecycleEvent(event) != null
     || type === "teammate.idle"
     || type === "task.completed";
 }
@@ -484,7 +481,64 @@ function activityStatusFromRawStatus(status: string | null | undefined): WorkToo
   return "info";
 }
 
-function activityBundleEntryFromEvent(id: string, event: AgentChatEvent): ActivityBundleEntry | null {
+function subagentParentKey(event: AgentChatEvent): string | null {
+  const normalized = normalizeSubagentLifecycleEvent(event);
+  const source = normalized ?? event;
+  return stringField((source as { parentToolUseId?: unknown }).parentToolUseId)
+    ?? stringField((source as { parentAgentId?: unknown }).parentAgentId);
+}
+
+function subagentIdentityKey(event: AgentChatEvent): string | null {
+  const normalized = normalizeSubagentLifecycleEvent(event);
+  if (!normalized) return null;
+  return stringField(normalized.agentId) ?? stringField(normalized.taskId);
+}
+
+function buildResolvedSubagentKeysByParent(events: AgentChatEventEnvelope[]): Map<string, Set<string>> {
+  const keysByParent = new Map<string, Set<string>>();
+  for (const envelope of events) {
+    const parentKey = subagentParentKey(envelope.event);
+    const identityKey = subagentIdentityKey(envelope.event);
+    if (!parentKey || !identityKey || identityKey === parentKey) continue;
+    const keys = keysByParent.get(parentKey) ?? new Set<string>();
+    keys.add(identityKey);
+    keysByParent.set(parentKey, keys);
+  }
+  return keysByParent;
+}
+
+function isParentSubagentPlaceholder(event: AgentChatEvent, parentKey: string): boolean {
+  const normalized = normalizeSubagentLifecycleEvent(event);
+  return Boolean(
+    normalized
+      && normalized.type === "subagent_started"
+      && !normalized.agentId
+      && normalized.taskId === parentKey
+      && subagentParentKey(normalized) === parentKey,
+  );
+}
+
+function subagentFoldKey(
+  event: AgentChatEvent,
+  resolvedKeysByParent: ReadonlyMap<string, Set<string>>,
+): string | null {
+  const identityKey = subagentIdentityKey(event);
+  if (!identityKey) return null;
+  const parentKey = subagentParentKey(event);
+  if (parentKey && isParentSubagentPlaceholder(event, parentKey)) {
+    const resolvedKeys = resolvedKeysByParent.get(parentKey);
+    if (!resolvedKeys?.size) return `subagent:${identityKey}`;
+    if (resolvedKeys.size > 1) return null;
+    return `subagent:${Array.from(resolvedKeys)[0]!}`;
+  }
+  return `subagent:${identityKey}`;
+}
+
+function activityBundleEntryFromEvent(
+  id: string,
+  event: AgentChatEvent,
+  resolvedSubagentKeysByParent: ReadonlyMap<string, Set<string>>,
+): ActivityBundleEntry | null {
   const eventType = String((event as { type?: unknown }).type ?? "");
   if (event.type === "todo_update") {
     const completed = event.items.filter((task) => task.status === "completed").length;
@@ -509,46 +563,32 @@ function activityBundleEntryFromEvent(id: string, event: AgentChatEvent): Activi
       status: activityStatusFromRawStatus(event.status),
     };
   }
-  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
-    const isWorkflow = Boolean(event.workflowName) || event.taskType === "local_workflow";
-    const description = "description" in event ? stringField(event.description) : null;
-    const summary = "summary" in event ? stringField(event.summary) : null;
-    const status = event.type === "subagent_started" || event.type === "subagent_progress"
+  const subagentEvent = normalizeSubagentLifecycleEvent(event);
+  if (subagentEvent) {
+    const isWorkflow = Boolean(subagentEvent.workflowName) || subagentEvent.taskType === "local_workflow";
+    const description = "description" in subagentEvent ? stringField(subagentEvent.description) : null;
+    const summary = "summary" in subagentEvent ? stringField(subagentEvent.summary) : null;
+    const status = subagentEvent.type === "subagent_started" || subagentEvent.type === "subagent_progress"
       ? "running"
-      : activityStatusFromRawStatus(event.status);
+      : activityStatusFromRawStatus(subagentEvent.status);
+    const foldKey = subagentFoldKey(subagentEvent, resolvedSubagentKeysByParent);
+    if (!foldKey) return null;
     return {
       id,
+      foldKey,
       kind: isWorkflow ? "workflow" : "agent",
-      label: stringField(event.label)
-        ?? stringField(event.workflowName)
-        ?? stringField(event.agentType)
+      label: stringField(subagentEvent.label)
+        ?? stringField(subagentEvent.workflowName)
+        ?? stringField(subagentEvent.agentType)
         ?? description
         ?? summary
-        ?? event.agentId
-        ?? event.taskId,
-      detail: event.type === "subagent_progress"
-        ? compactActivityDetail(event.summary) ?? compactActivityDetail(event.lastToolName)
-        : event.type === "subagent_result"
-          ? compactActivityDetail(event.finalSummary) ?? compactActivityDetail(event.summary)
+        ?? subagentEvent.agentId
+        ?? subagentEvent.taskId,
+      detail: subagentEvent.type === "subagent_progress"
+        ? compactActivityDetail(subagentEvent.summary) ?? compactActivityDetail(subagentEvent.lastToolName)
+        : subagentEvent.type === "subagent_result"
+          ? compactActivityDetail(subagentEvent.finalSummary) ?? compactActivityDetail(subagentEvent.summary)
           : description ?? undefined,
-      status,
-    };
-  }
-  if (eventType === "subagent.started" || eventType === "subagent.progress" || eventType === "subagent.completed") {
-    const record = event as Record<string, unknown>;
-    const status = eventType === "subagent.completed"
-      ? activityStatusFromRawStatus(stringField(record.status) ?? "completed")
-      : "running";
-    return {
-      id,
-      kind: "agent",
-      label: stringField(record.label)
-        ?? stringField(record.agentType)
-        ?? stringField(record.description)
-        ?? stringField(record.summary)
-        ?? stringField(record.agentId)
-        ?? "Subagent",
-      detail: compactActivityDetail(record.summary) ?? compactActivityDetail(record.description),
       status,
     };
   }
@@ -629,13 +669,20 @@ function appendActivityBundleBlock(
   ) {
     return;
   }
+  if (entry.foldKey) {
+    const existingIndex = block.entries.findIndex((candidate) => candidate.foldKey === entry.foldKey);
+    if (existingIndex >= 0) {
+      block.entries[existingIndex] = entry;
+      return;
+    }
+  }
   block.entries.push(entry);
   if (block.entries.length > 12) block.entries.splice(0, block.entries.length - 12);
 }
 
 function subagentParentItemId(event: AgentChatEvent): string | null {
   if (!isSubagentTimelineEvent(event)) return null;
-  return stringField((event as { parentToolUseId?: unknown }).parentToolUseId);
+  return subagentParentKey(event);
 }
 
 function isSubagentChildWorkEvent(
@@ -709,6 +756,7 @@ export function aggregateChatBlocks(args: {
 
   const blocks: AggregatedBlock[] = [];
   const pendingSteerIds = new Set((args.pendingSteers ?? derivePendingSteers(args.events)).map((steer) => steer.steerId));
+  const resolvedSubagentKeysByParent = buildResolvedSubagentKeysByParent(args.events);
   const subagentParentItemIds = new Set<string>();
   for (const envelope of args.events) {
     const parentItemId = subagentParentItemId(envelope.event);
@@ -776,7 +824,7 @@ export function aggregateChatBlocks(args: {
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
 
-    const activityEntry = activityBundleEntryFromEvent(id, event);
+    const activityEntry = activityBundleEntryFromEvent(id, event, resolvedSubagentKeysByParent);
     if (activityEntry) {
       appendActivityBundleBlock(blocks, id, turnId, activityEntry);
       continue;

@@ -281,6 +281,56 @@ describe("headlessLinearServices", () => {
     services.dispose();
   });
 
+  it("supports normalized chat message routing in the headless fallback", async () => {
+    const services = createHeadlessLinearServices(createDeps());
+
+    const session = await services.agentChatService.createSession({ laneId: "lane-1" });
+    const sent = await services.agentChatService.messageSession({
+      sessionId: session.id,
+      kind: "auto",
+      text: "normal follow-up",
+    });
+    const steer = await services.agentChatService.steer({
+      sessionId: session.id,
+      text: "active-turn context",
+    });
+    const queued = await services.agentChatService.messageSession({
+      sessionId: session.id,
+      kind: "queue",
+      text: "queue this context",
+    });
+
+    expect(sent).toEqual(expect.objectContaining({
+      sessionId: session.id,
+      kind: "auto",
+      routedAction: "sendMessage",
+      statusBefore: "idle",
+      awaitingInputBefore: false,
+      delivery: "sent",
+    }));
+    expect(steer).toEqual({
+      steerId: expect.stringMatching(/^steer-/),
+      queued: false,
+    });
+    expect(queued).toEqual(expect.objectContaining({
+      sessionId: session.id,
+      kind: "queue",
+      routedAction: "steer",
+      delivery: "queued",
+      queued: true,
+      steerId: expect.stringMatching(/^steer-/),
+    }));
+
+    const transcript = await services.agentChatService.getChatTranscript({ sessionId: session.id });
+    expect(transcript.entries.map((entry) => entry.text)).toEqual([
+      "normal follow-up",
+      "active-turn context",
+      "queue this context",
+    ]);
+
+    services.dispose();
+  });
+
   it("dispose removes session and transcript data", async () => {
     const services = createHeadlessLinearServices(createDeps());
 

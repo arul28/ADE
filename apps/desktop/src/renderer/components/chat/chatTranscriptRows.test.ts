@@ -1393,7 +1393,7 @@ describe("chatTranscriptRows edge cases", () => {
     ]);
   });
 
-  it("collapses todo_update events within the same turn", () => {
+  it("renders todo_update deltas within the same turn", () => {
     const rows = collapseChatTranscriptEvents([
       {
         sessionId: "session-1",
@@ -1417,9 +1417,16 @@ describe("chatTranscriptRows edge cases", () => {
         },
       },
     ]);
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     if (rows[0]!.event.type !== "todo_update") throw new Error("Expected todo_update");
-    expect(rows[0]!.event.items).toHaveLength(2);
+    if (rows[1]!.event.type !== "todo_update") throw new Error("Expected todo_update");
+    expect(rows[0]!.event.items).toEqual([
+      { id: "t-1", description: "Task 1", status: "in_progress" },
+    ]);
+    expect(rows[1]!.event.items).toEqual([
+      { id: "t-1", description: "Task 1", status: "completed" },
+      { id: "t-2", description: "Task 2", status: "in_progress" },
+    ]);
   });
 
   it("bundles adjacent task, subagent, scheduled work, and workflow status updates by turn", () => {
@@ -1479,6 +1486,45 @@ describe("chatTranscriptRows edge cases", () => {
       "scheduled_work_update",
       "subagent_result",
     ]);
+  });
+
+  it("normalizes canonical dotted subagent lifecycle events before activity bundling", () => {
+    const rows = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent.started",
+          agentId: "agent-canonical",
+          parentToolUseId: "call-spawn",
+          description: "Inspect canonical lifecycle events",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent.completed",
+          agentId: "agent-canonical",
+          parentToolUseId: "call-spawn",
+          summary: "Canonical lifecycle mapped.",
+          status: "completed",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
+    expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
+      "subagent_started",
+      "subagent_result",
+    ]);
+    expect(rows[0]!.event.items[0]!.event).toMatchObject({
+      taskId: "agent-canonical",
+      parentToolUseId: "call-spawn",
+    });
   });
 
   it("keeps activity bundles separated when turn ids change", () => {
