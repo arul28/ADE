@@ -1565,37 +1565,16 @@ struct CreateIntegrationRequest: Equatable {
 struct PrMarkdownRenderer: View {
   let markdown: String
 
-  private var attributed: AttributedString? {
-    if let cached = PrMarkdownRenderingCache.shared.attributedString(for: markdown) {
-      return cached
-    }
-
-    guard let parsed = try? AttributedString(
-      markdown: markdown,
-      options: AttributedString.MarkdownParsingOptions(
-        interpretedSyntax: .full,
-        failurePolicy: .returnPartiallyParsedIfPossible
-      )
-    ) else {
-      return nil
-    }
-
-    PrMarkdownRenderingCache.shared.store(parsed, for: markdown)
-    return parsed
+  private var normalizedMarkdown: String {
+    normalizePrMarkdownText(markdown)
   }
 
   var body: some View {
-    Group {
-      if let attributed {
-        Text(attributed)
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .textSelection(.enabled)
-      } else {
-        Text(markdown)
-          .foregroundStyle(ADEColor.textPrimary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-    }
+    WorkMarkdownRenderer(markdown: normalizedMarkdown)
+      .font(.system(.footnote))
+      .foregroundStyle(ADEColor.textPrimary)
+      .tint(ADEColor.accent)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .textSelection(.enabled)
   }
 }

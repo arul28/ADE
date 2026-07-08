@@ -15,6 +15,7 @@ import {
   parseHhMm,
   shouldDeliverAlertForPrefs,
   type AgentRunState,
+  type PushPrNotification,
 } from "./pushPublisherService";
 
 function run(overrides: Partial<AgentRunState>): AgentRunState {
@@ -222,6 +223,50 @@ describe("createPushPublisherService flush", () => {
     emit(approval);
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalledTimes(1);
+
+    publisher.dispose();
+  });
+
+  it("publishes PR lifecycle alerts into the aggregate Live Activity", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("scope-pr", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+      resolveLaneName: (laneId: string) => laneId === "lane-42" ? "Mobile PR lane" : laneId,
+    });
+    await publisher.start();
+
+    prCb?.({ kind: "merged", prNumber: 42, prTitle: "Ship mobile PR view", laneId: "lane-42" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications[0]).toMatchObject({
+      title: "PR #42 merged",
+      body: "Ship mobile PR view",
+      deepLink: "ade://pr/42",
+      threadId: "pr-42",
+    });
+    expect(payload.liveActivity[0].contentState.prs[0]).toMatchObject({
+      id: "pr-42",
+      prNumber: 42,
+      title: "Ship mobile PR view",
+      phase: "merged",
+      lane: "Mobile PR lane",
+    });
+    expect(payload.liveActivity[0].phase).toBe("running");
+
+    await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1_000);
+    const endPayload = publish.mock.calls.at(-1)?.[0];
+    expect(endPayload.liveActivity[0]).toMatchObject({
+      event: "end",
+      phase: "terminal",
+    });
+    expect(endPayload.liveActivity[0].contentState.prs).toEqual([]);
 
     publisher.dispose();
   });

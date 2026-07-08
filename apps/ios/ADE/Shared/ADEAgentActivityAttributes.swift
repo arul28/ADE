@@ -9,7 +9,7 @@ import SwiftUI
 ///   attributesType: "ADEAgentRunsAttributes"
 ///   attributes:     { "machineName": String }
 ///   activityId:     "agent-runs"
-///   contentState:   { updatedAt, activeCount, runs: [Run] }  (runs capped at 3)
+///   contentState:   { updatedAt, activeCount, runs: [Run], prs: [PullRequest] }
 ///
 /// Decoding is deliberately lenient — a run row with an unrecognised `phase`
 /// still renders (as `.running`), and a missing optional collapses to `nil`
@@ -23,15 +23,17 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         /// because the roster is capped at three for the glance.
         public var activeCount: Int
         public var runs: [Run]
+        public var prs: [PullRequest]
 
-        public init(updatedAt: Double, activeCount: Int, runs: [Run]) {
+        public init(updatedAt: Double, activeCount: Int, runs: [Run], prs: [PullRequest] = []) {
             self.updatedAt = updatedAt
             self.activeCount = activeCount
             self.runs = runs
+            self.prs = prs
         }
 
         private enum CodingKeys: String, CodingKey {
-            case updatedAt, activeCount, runs
+            case updatedAt, activeCount, runs, prs
         }
 
         public init(from decoder: Decoder) throws {
@@ -41,11 +43,61 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.activeCount = (try? c.decode(Int.self, forKey: .activeCount)) ?? 0
             let decodedRuns = (try? c.decode([Run].self, forKey: .runs)) ?? []
             self.runs = Array(decodedRuns.prefix(3))
+            let decodedPrs = (try? c.decode([PullRequest].self, forKey: .prs)) ?? []
+            self.prs = Array(decodedPrs.prefix(2))
         }
 
         /// `Date` view over the unix-seconds marker for relative formatting.
         public var updatedAtDate: Date {
             Date(timeIntervalSince1970: updatedAt)
+        }
+    }
+
+    public struct PullRequest: Codable, Hashable, Identifiable {
+        public let id: String
+        public let prNumber: Int
+        public let title: String
+        public let phase: String
+        public let lane: String?
+        public let updatedAt: Double
+
+        public init(
+            id: String,
+            prNumber: Int,
+            title: String,
+            phase: String,
+            lane: String? = nil,
+            updatedAt: Double = 0
+        ) {
+            self.id = id
+            self.prNumber = prNumber
+            self.title = title
+            self.phase = phase
+            self.lane = lane
+            self.updatedAt = updatedAt
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, prNumber, title, phase, lane, updatedAt
+        }
+
+        public init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+            self.prNumber = (try? c.decode(Int.self, forKey: .prNumber)) ?? 0
+            self.title = (try? c.decode(String.self, forKey: .title)) ?? "Pull request"
+            self.phase = (try? c.decode(String.self, forKey: .phase)) ?? PullRequestPhase.opened.rawValue
+            self.lane = try? c.decodeIfPresent(String.self, forKey: .lane)
+            self.updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
+        }
+
+        public var resolvedPhase: PullRequestPhase {
+            PullRequestPhase(rawValue: phase.lowercased()) ?? .opened
+        }
+
+        public var subtitle: String? {
+            let lane = lane?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return lane?.isEmpty == false ? lane : nil
         }
     }
 
@@ -116,6 +168,68 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
 
     public init(machineName: String) {
         self.machineName = machineName
+    }
+}
+
+public enum PullRequestPhase: String, CaseIterable, Sendable {
+    case opened
+    case reopened
+    case closed
+    case merged
+    case checksFailing = "checks_failing"
+    case reviewRequested = "review_requested"
+    case changesRequested = "changes_requested"
+    case mergeReady = "merge_ready"
+
+    public var tint: Color {
+        switch self {
+        case .opened, .reopened:
+            return ADESharedTheme.statusSuccess
+        case .merged, .mergeReady:
+            return ADESharedTheme.statusSuccess
+        case .checksFailing, .changesRequested:
+            return ADESharedTheme.statusFailed
+        case .reviewRequested:
+            return ADESharedTheme.warningAmber
+        case .closed:
+            return ADESharedTheme.statusIdle
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .opened, .reopened:
+            return "arrow.triangle.pull"
+        case .closed:
+            return "xmark.circle.fill"
+        case .merged:
+            return "arrow.triangle.merge"
+        case .checksFailing:
+            return "xmark.octagon.fill"
+        case .reviewRequested:
+            return "person.crop.circle.badge.clock"
+        case .changesRequested:
+            return "exclamationmark.bubble.fill"
+        case .mergeReady:
+            return "checkmark.seal.fill"
+        }
+    }
+
+    public var label: String {
+        switch self {
+        case .opened: return "Opened"
+        case .reopened: return "Reopened"
+        case .closed: return "Closed"
+        case .merged: return "Merged"
+        case .checksFailing: return "Checks"
+        case .reviewRequested: return "Review"
+        case .changesRequested: return "Changes"
+        case .mergeReady: return "Ready"
+        }
+    }
+
+    public var needsAttention: Bool {
+        self == .checksFailing || self == .changesRequested || self == .reviewRequested || self == .mergeReady
     }
 }
 

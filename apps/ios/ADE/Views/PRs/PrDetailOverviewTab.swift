@@ -60,11 +60,260 @@ struct PrThreadDescriptionCard: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       }
-      PrInlineCodeText(text: text)
+      PrMarkdownRenderer(markdown: text)
     }
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
     .prGlassCard(cornerRadius: 16)
+  }
+}
+
+/// Compact mobile summary that replaces the old PR hero card. It keeps the
+/// state/actions context above the thread without forcing a large title card at
+/// the top of every detail screen.
+struct PrDetailSummarySection: View {
+  let pr: PullRequestListItem
+  let snapshot: PullRequestSnapshot?
+  let mergeGate: PrMergeGateInfo
+  @Binding var commitsExpanded: Bool
+  let onStatusTap: () -> Void
+  let onChecksTap: () -> Void
+  let onFilesTap: () -> Void
+  let onCommitTap: (PrCommit) -> Void
+
+  private var state: String { snapshot?.status?.state ?? pr.state }
+  private var stateTint: Color { prStateTint(state) }
+  private var checksStatus: String { snapshot?.status?.checksStatus ?? pr.checksStatus }
+  private var files: [PrFile] { snapshot?.files ?? [] }
+  private var commits: [PrCommit] { snapshot?.commits ?? [] }
+
+  private var additions: Int {
+    files.isEmpty ? pr.additions : files.reduce(0) { $0 + $1.additions }
+  }
+
+  private var deletions: Int {
+    files.isEmpty ? pr.deletions : files.reduce(0) { $0 + $1.deletions }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .center, spacing: 8) {
+        PrTagChip(label: state.isEmpty ? "unknown" : state, color: stateTint)
+        Text(mergeGate.subline)
+          .font(.system(size: 11.5, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 14)
+      .padding(.top, 13)
+      .padding(.bottom, 10)
+
+      Divider().overlay(PrGlassPalette.cardBorder)
+
+      LazyVGrid(
+        columns: [
+          GridItem(.flexible(), spacing: 0),
+          GridItem(.flexible(), spacing: 0),
+        ],
+        spacing: 0
+      ) {
+        PrSummaryMetricButton(
+          title: "Status",
+          value: titleCase(state),
+          icon: "arrow.triangle.pull",
+          tint: stateTint,
+          action: onStatusTap
+        )
+        PrSummaryMetricButton(
+          title: "Checks",
+          value: prChecksLabel(checksStatus),
+          icon: "checklist.checked",
+          tint: prChecksTint(checksStatus),
+          action: onChecksTap
+        )
+        PrSummaryMetricButton(
+          title: "Diff",
+          value: "\(files.count) file\(files.count == 1 ? "" : "s")",
+          detail: "+\(additions) / -\(deletions)",
+          icon: "doc.text.magnifyingglass",
+          tint: ADEColor.info,
+          action: onFilesTap
+        )
+        PrSummaryMetricButton(
+          title: "Commits",
+          value: "\(commits.count)",
+          detail: commits.count == 1 ? "commit" : "commits",
+          icon: "point.topleft.down.curvedto.point.bottomright.up",
+          tint: ADEColor.accent,
+          action: {
+            withAnimation(.easeInOut(duration: 0.18)) {
+              commitsExpanded.toggle()
+            }
+          }
+        )
+      }
+
+      if !commits.isEmpty {
+        Divider().overlay(PrGlassPalette.cardBorder)
+        Button {
+          withAnimation(.easeInOut(duration: 0.18)) {
+            commitsExpanded.toggle()
+          }
+        } label: {
+          HStack(spacing: 8) {
+            Text("Commits")
+              .font(.system(size: 12, weight: .semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Spacer(minLength: 0)
+            Text(commitsExpanded ? "Hide" : "Show")
+              .font(.system(size: 11, weight: .semibold, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+            Image(systemName: "chevron.right")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
+              .rotationEffect(.degrees(commitsExpanded ? 90 : 0))
+          }
+          .padding(.horizontal, 14)
+          .padding(.vertical, 11)
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+
+        if commitsExpanded {
+          VStack(spacing: 0) {
+            ForEach(Array(commits.prefix(25).enumerated()), id: \.element.id) { index, commit in
+              PrSummaryCommitRow(commit: commit) {
+                onCommitTap(commit)
+              }
+              if index < min(commits.count, 25) - 1 {
+                Divider()
+                  .padding(.leading, 14)
+                  .overlay(PrGlassPalette.cardBorder)
+              }
+            }
+            if commits.count > 25 {
+              Divider()
+                .padding(.leading, 14)
+                .overlay(PrGlassPalette.cardBorder)
+              Text("+ \(commits.count - 25) older commits")
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+          }
+          .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .prGlassCard(cornerRadius: 16)
+  }
+}
+
+private struct PrSummaryMetricButton: View {
+  let title: String
+  let value: String
+  var detail: String?
+  let icon: String
+  let tint: Color
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .top, spacing: 9) {
+        Image(systemName: icon)
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(tint)
+          .frame(width: 17, height: 18)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+          Text(value)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+          if let detail, !detail.isEmpty {
+            Text(detail)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+          }
+        }
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 12)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+}
+
+private struct PrSummaryCommitRow: View {
+  let commit: PrCommit
+  let action: () -> Void
+
+  private var author: String? {
+    commit.authorLogin ?? commit.authorName
+  }
+
+  private var message: String {
+    commit.message
+      .split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+      .first
+      .map(String.init)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      ?? "Commit"
+  }
+
+  private var shortSha: String {
+    commit.shortSha.isEmpty ? String(commit.sha.prefix(7)) : commit.shortSha
+  }
+
+  var body: some View {
+    Button(action: action) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: "smallcircle.filled.circle")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(prChecksTint(commit.checkStatus ?? "none"))
+          .frame(width: 15, height: 18)
+        VStack(alignment: .leading, spacing: 3) {
+          Text(message)
+            .font(.system(size: 12.5, weight: .medium))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(2)
+          HStack(spacing: 7) {
+            Text(shortSha)
+              .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+              .foregroundStyle(ADEColor.accent)
+            if let author, !author.isEmpty {
+              Text(author)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(ADEColor.textMuted)
+                .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Text(prCompactRelativeTime(commit.committedDate))
+              .font(.system(size: 10.5, design: .monospaced))
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
+        Image(systemName: "arrow.down.to.line.compact")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.top, 2)
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 10)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
   }
 }
 

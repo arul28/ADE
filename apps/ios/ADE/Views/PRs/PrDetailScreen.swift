@@ -33,6 +33,8 @@ struct PrDetailView: View {
   @State private var hasLoadedLiveSidecars = false
   @State private var hasAttemptedInitialLoad = false
   @State private var hasSeededFromWarmCache = false
+  @State private var summaryCommitsExpanded = false
+  @State private var pendingTimelineScrollId: String?
 
   // MARK: - Derived models (computed off the render path)
   //
@@ -171,6 +173,19 @@ struct PrDetailView: View {
       return "Pull request \(displayedPrNumber), \(currentPr.title)"
     }
     return "Pull request, \(currentPr.title)"
+  }
+
+  private var detailHeaderMetaText: String {
+    let number = displayedPrNumber.map { "#\($0)" }
+    let lane = currentPr.laneName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let laneLabel = lane?.isEmpty == false
+      ? lane
+      : (currentPr.laneId.isEmpty ? "Unmapped" : currentPr.laneId)
+    let branchLabel = currentPr.headBranch.isEmpty ? nil : currentPr.headBranch
+    return [number, laneLabel, branchLabel]
+      .compactMap { $0 }
+      .filter { !$0.isEmpty }
+      .joined(separator: " · ")
   }
 
   private var currentPr: PullRequestListItem {
@@ -428,7 +443,8 @@ struct PrDetailView: View {
   }
 
   var body: some View {
-    List {
+    ScrollViewReader { scrollProxy in
+      List {
       // Durable in-flight banner: reads the label from the service registry so
       // a merge/close/comment started here keeps showing a spinner even if the
       // user switches tabs and returns.
@@ -485,18 +501,16 @@ struct PrDetailView: View {
         )
         .prListRow()
       } else {
-        heroCard
-          .prListRow()
-
-        PrMergeGateCard(info: mergeGateInfo) {
-          switch mergeGateInfo.target {
-          case .checks: selectedTab = .checks
-          // Reviews now live inside the unified Overview thread (Activity folded
-          // in), so the merge-gate "reviews" target lands on Overview.
-          case .reviews: selectedTab = .overview
-          case .overview: selectedTab = .overview
-          }
-        }
+        PrDetailSummarySection(
+          pr: currentPr,
+          snapshot: snapshot,
+          mergeGate: mergeGateInfo,
+          commitsExpanded: $summaryCommitsExpanded,
+          onStatusTap: { selectedTab = .overview },
+          onChecksTap: { selectedTab = .checks },
+          onFilesTap: { selectedTab = .files },
+          onCommitTap: focusCommitInTimeline
+        )
         .prListRow()
 
         subTabPicker
@@ -528,10 +542,10 @@ struct PrDetailView: View {
           onRerun: rerunChecks
         )
         .prListRow()
+        }
       }
       }
-    }
-    .listStyle(.plain)
+      .listStyle(.plain)
     .listRowSpacing(12)
     .scrollContentBackground(.hidden)
     .background(prLiquidGlassBackdrop().ignoresSafeArea())
@@ -571,6 +585,13 @@ struct PrDetailView: View {
         refreshRemote: false
       ) || !syncService.prDetailWarmEntryIsFresh(for: prId, within: Self.detailFreshnessWindow)
       await reload(includeLiveSidecars: needLiveSidecars)
+    }
+    .onChange(of: pendingTimelineScrollId) { _, anchorId in
+      guard let anchorId else { return }
+      withAnimation(.easeInOut(duration: 0.25)) {
+        scrollProxy.scrollTo(anchorId, anchor: .center)
+      }
+      pendingTimelineScrollId = nil
     }
     .sheet(isPresented: $cleanupConfirmationPresented) {
       PrCleanupConfirmationSheet(
@@ -675,48 +696,53 @@ struct PrDetailView: View {
         }
       }
     }
+    }
   }
 
   private var detailNavigationHeader: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: 8) {
       Button {
         dismiss()
       } label: {
         Image(systemName: "chevron.left")
-          .font(.system(size: 17, weight: .semibold))
-          .frame(width: 38, height: 38)
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(width: 40, height: 40)
+          .contentShape(Rectangle())
       }
-      .buttonStyle(.glass)
+      .buttonStyle(.plain)
       .accessibilityLabel("Back to PRs")
 
-      VStack(alignment: .leading, spacing: 2) {
-        if let displayedPrNumber {
-          Text("#\(displayedPrNumber)")
-            .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(prStateTint(currentPr.state))
-        }
+      VStack(alignment: .center, spacing: 2) {
         Text(currentPr.title)
-          .font(.headline.weight(.semibold))
+          .font(.system(size: 15, weight: .semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.tail)
+        Text(detailHeaderMetaText)
+          .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
       }
+      .frame(maxWidth: .infinity)
       .accessibilityElement(children: .combine)
       .accessibilityLabel(detailHeaderAccessibilityLabel)
-
-      Spacer(minLength: 0)
 
       Button {
         actionsSheetPresented = true
       } label: {
-        Image(systemName: "ellipsis.circle")
-          .font(.system(size: 17, weight: .semibold))
-          .frame(width: 38, height: 38)
+        Image(systemName: "ellipsis")
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(width: 40, height: 40)
+          .contentShape(Rectangle())
       }
-      .buttonStyle(.glass)
+      .buttonStyle(.plain)
       .accessibilityLabel("Pull request actions")
     }
     .padding(.horizontal, 16)
+    .padding(.top, 2)
     .padding(.bottom, 8)
     .background {
       ADEColor.pageBackground
@@ -790,75 +816,6 @@ struct PrDetailView: View {
         Task { await reload(refreshRemote: true) }
       }
     )
-  }
-
-  // MARK: - Hero
-
-  private var heroCard: some View {
-    let state = snapshot?.status?.state ?? currentPr.state
-    let stateTint = prStateTint(state)
-    let author = snapshot?.detail?.author.login ?? githubItem?.author ?? "unknown"
-    let baseLabel = currentPr.baseBranch.isEmpty ? "base" : currentPr.baseBranch
-    let headLabel = currentPr.headBranch.isEmpty ? "head" : currentPr.headBranch
-
-    return HStack(alignment: .top, spacing: 12) {
-      // 44pt state tile on the left
-      ZStack {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(stateTint.opacity(0.14))
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder(stateTint.opacity(0.48), lineWidth: 0.75)
-        Image(systemName: "arrow.triangle.pull")
-          .font(.system(size: 17, weight: .semibold))
-          .foregroundStyle(stateTint)
-      }
-      .frame(width: 44, height: 44)
-      .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-status-\(currentPr.id)", in: transitionNamespace)
-
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(spacing: 6) {
-          Text("#\(currentPr.githubPrNumber)")
-            .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(stateTint)
-          PrTagChip(label: state, color: stateTint)
-          if let kindLabel = prAdeKindLabel(currentPr.adeKind) {
-            PrTagChip(label: kindLabel, color: ADEColor.tintPRs)
-          }
-          Spacer(minLength: 0)
-        }
-
-        Text(currentPr.title)
-          .font(.system(size: 15, weight: .semibold))
-          .tracking(-0.2)
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineSpacing(1)
-          .lineLimit(3)
-          .fixedSize(horizontal: false, vertical: true)
-          .adeMatchedGeometry(id: transitionNamespace == nil ? nil : "pr-title-\(currentPr.id)", in: transitionNamespace)
-
-        // Single mono meta line: branch → base · opened … by @author
-        (
-          Text(headLabel)
-            .foregroundColor(ADEColor.textSecondary)
-          + Text(" → ")
-            .foregroundColor(ADEColor.textMuted)
-          + Text(baseLabel)
-            .foregroundColor(ADEColor.textSecondary)
-          + Text("  ·  opened \(prRelativeTime(currentPr.createdAt)) by @\(author)")
-            .foregroundColor(ADEColor.textMuted)
-        )
-        .font(.system(size: 11, design: .monospaced))
-        .lineLimit(1)
-        .truncationMode(.middle)
-      }
-
-      Spacer(minLength: 0)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 14)
-    .padding(.vertical, 14)
-    .prGlassCard(cornerRadius: 20, tint: stateTint)
-    .padding(.horizontal, 2)
   }
 
   // MARK: - Sub-tab picker
@@ -979,6 +936,7 @@ struct PrDetailView: View {
     // Chronological event feed — one row per event / folded commit group.
     ForEach(timelineDisplayItems) { item in
       PrTimelineDisplayRow(item: item)
+        .id(timelineAnchorId(for: item))
         .prListRow()
     }
 
@@ -1098,6 +1056,49 @@ struct PrDetailView: View {
       .frame(height: 88)
       .accessibilityHidden(true)
       .prListRow()
+  }
+
+  private func timelineAnchorId(for item: PrTimelineDisplayItem) -> String {
+    "pr-timeline-\(item.id)"
+  }
+
+  private func focusCommitInTimeline(_ commit: PrCommit) {
+    selectedTab = .overview
+    guard let anchorId = timelineAnchorId(for: commit) else {
+      errorMessage = "That commit is not in the loaded conversation timeline yet."
+      return
+    }
+    ADEHaptics.light()
+    pendingTimelineScrollId = anchorId
+  }
+
+  private func timelineAnchorId(for commit: PrCommit) -> String? {
+    for item in timelineDisplayItems {
+      switch item {
+      case .event(let event):
+        if eventMatches(commit: commit, event: event) {
+          return timelineAnchorId(for: item)
+        }
+      case .commitGroup(_, _, let events):
+        if events.contains(where: { eventMatches(commit: commit, event: $0) }) {
+          return timelineAnchorId(for: item)
+        }
+      }
+    }
+    return nil
+  }
+
+  private func eventMatches(commit: PrCommit, event: PrTimelineEvent) -> Bool {
+    guard event.kind == .commit else { return false }
+    let shortSha = commit.shortSha.isEmpty ? String(commit.sha.prefix(7)) : commit.shortSha
+    let fullSha = commit.sha
+    let haystack = [
+      event.id,
+      event.title,
+      event.metadata ?? "",
+    ].joined(separator: " ")
+    return haystack.localizedCaseInsensitiveContains(shortSha)
+      || (!fullSha.isEmpty && haystack.localizedCaseInsensitiveContains(fullSha))
   }
 
   // MARK: - Sticky action bar

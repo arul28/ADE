@@ -17,7 +17,15 @@ export type PrState = "draft" | "open" | "merged" | "closed";
 export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
 export type PrReviewStatus = "none" | "requested" | "approved" | "changes_requested";
 export type MergeMethod = "merge" | "squash" | "rebase";
-export type PrNotificationKind = "checks_failing" | "review_requested" | "changes_requested" | "merge_ready";
+export type PrNotificationKind =
+  | "opened"
+  | "reopened"
+  | "closed"
+  | "merged"
+  | "checks_failing"
+  | "review_requested"
+  | "changes_requested"
+  | "merge_ready";
 
 /**
  * GitHub's merge-box state, mirrored from the GraphQL `mergeStateStatus` enum

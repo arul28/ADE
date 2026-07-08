@@ -6325,6 +6325,25 @@ final class ADETests: XCTestCase {
     XCTAssertNil(state.runs[1].itemId, "runs without an itemId key decode to nil")
   }
 
+  func testAgentRunsContentStateDecodesPullRequestRows() throws {
+    let json = Data("""
+    {
+      "updatedAt": 1720000000,
+      "activeCount": 0,
+      "runs": [],
+      "prs": [
+        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "updatedAt": 1720000000 }
+      ]
+    }
+    """.utf8)
+
+    let state = try JSONDecoder().decode(ADEAgentRunsAttributes.ContentState.self, from: json)
+    XCTAssertEqual(state.prs.count, 1)
+    XCTAssertEqual(state.prs[0].prNumber, 42)
+    XCTAssertEqual(state.prs[0].resolvedPhase, .mergeReady)
+    XCTAssertEqual(state.prs[0].subtitle, "Mobile PR lane")
+  }
+
   @MainActor
   func testSyncMergedRelayCandidatesFoldsAdvertisedFreshestFirst() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -8822,6 +8841,9 @@ final class ADETests: XCTestCase {
         parentToolUseId: "call-old",
         description: "Old helper",
         background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
         status: .stopped,
         lastToolName: nil,
         latestSummary: "Finished earlier",
@@ -8836,6 +8858,9 @@ final class ADETests: XCTestCase {
         parentToolUseId: "call-new",
         description: "Throwaway ADE mobile subagent UI test",
         background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
         status: .running,
         lastToolName: nil,
         latestSummary: nil,
@@ -8852,6 +8877,9 @@ final class ADETests: XCTestCase {
         parentToolUseId: "call-new",
         description: "Local detail",
         background: false,
+        label: nil,
+        model: nil,
+        reasoningEffort: nil,
         status: .stopped,
         lastToolName: "Read",
         latestSummary: "Parent turn completed before ADE received a final subagent status",

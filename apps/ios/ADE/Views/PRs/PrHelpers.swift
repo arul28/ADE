@@ -872,6 +872,22 @@ final class PrMarkdownRenderingCache {
   }
 }
 
+func normalizePrMarkdownText(_ text: String) -> String {
+  var normalized = text
+    .replacingOccurrences(of: "\r\n", with: "\n")
+    .replacingOccurrences(of: "\r", with: "\n")
+
+  if normalized.contains("\\n") || normalized.contains("\\r") || normalized.contains("\\t") {
+    normalized = normalized
+      .replacingOccurrences(of: "\\r\\n", with: "\n")
+      .replacingOccurrences(of: "\\n", with: "\n")
+      .replacingOccurrences(of: "\\r", with: "\n")
+      .replacingOccurrences(of: "\\t", with: "\t")
+  }
+
+  return normalized
+}
+
 private final class PrMarkdownAttributedStringBox: NSObject {
   let value: AttributedString
 
