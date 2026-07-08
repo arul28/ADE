@@ -331,6 +331,38 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("uses the uncapped PR count in the aggregate Live Activity start alert", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-prs", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    for (const prNumber of [101, 102, 103]) {
+      prCb({
+        kind: "opened",
+        prNumber,
+        prTitle: `PR ${prNumber}`,
+        laneId: null,
+        repoOwner: "arul28",
+        repoName: "ADE",
+      });
+    }
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const liveActivity = publish.mock.calls[0][0].liveActivity[0];
+    expect(liveActivity.contentState.prs).toHaveLength(2);
+    expect(liveActivity.alert.title).toBe("3 pull requests updated");
+
+    publisher.dispose();
+  });
+
   it("carries actionable fields: category + sessionId/itemId on the alert, itemId on the waiting LA row, badge count", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();

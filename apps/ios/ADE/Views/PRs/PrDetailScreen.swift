@@ -35,6 +35,7 @@ struct PrDetailView: View {
   @State private var hasSeededFromWarmCache = false
   @State private var summaryCommitsExpanded = false
   @State private var pendingTimelineScrollId: String?
+  @State private var timelineSectionMounted = false
 
   // MARK: - Derived models (computed off the render path)
   //
@@ -522,7 +523,7 @@ struct PrDetailView: View {
         // is routed here too so any persisted/legacy selection still renders.
         // Emitted as SIBLING List rows (not one nested mega-row) so the List
         // actually virtualizes offscreen thread content.
-        overviewThreadRows
+        overviewThreadRows(scrollProxy: scrollProxy)
       case .files:
         PrFilesTab(
           snapshot: snapshot,
@@ -588,15 +589,7 @@ struct PrDetailView: View {
     }
     .onChange(of: pendingTimelineScrollId) { _, anchorId in
       guard let anchorId else { return }
-      Task { @MainActor in
-        await Task.yield()
-        withAnimation(.easeInOut(duration: 0.25)) {
-          scrollProxy.scrollTo(anchorId, anchor: .center)
-        }
-        if pendingTimelineScrollId == anchorId {
-          pendingTimelineScrollId = nil
-        }
-      }
+      scrollPendingTimelineAnchorIfReady(anchorId: anchorId, scrollProxy: scrollProxy)
     }
     .sheet(isPresented: $cleanupConfirmationPresented) {
       PrCleanupConfirmationSheet(
@@ -900,7 +893,7 @@ struct PrDetailView: View {
   // metadata cards (checks / commits / files / people / stack). Every card is
   // its own List row.
   @ViewBuilder
-  private var overviewThreadRows: some View {
+  private func overviewThreadRows(scrollProxy: ScrollViewProxy) -> some View {
     if !isCurrentPrMapped {
       PrUnmappedThreadBanner(
         canAutoMap: canAutoMapCurrentPr,
@@ -940,8 +933,18 @@ struct PrDetailView: View {
 
     // Chronological event feed — one row per event / folded commit group.
     ForEach(timelineDisplayItems) { item in
+      let anchorId = timelineAnchorId(for: item)
       PrTimelineDisplayRow(item: item)
-        .id(timelineAnchorId(for: item))
+        .id(anchorId)
+        .onAppear {
+          timelineSectionMounted = true
+          scrollPendingTimelineAnchorIfReady(anchorId: pendingTimelineScrollId, scrollProxy: scrollProxy)
+        }
+        .onDisappear {
+          if selectedTab != .overview && selectedTab != .activity {
+            timelineSectionMounted = false
+          }
+        }
         .prListRow()
     }
 
@@ -1068,6 +1071,10 @@ struct PrDetailView: View {
   }
 
   private func focusCommitInTimeline(_ commit: PrCommit) {
+    let timelineWasMounted = selectedTab == .overview || selectedTab == .activity
+    if !timelineWasMounted {
+      timelineSectionMounted = false
+    }
     selectedTab = .overview
     guard let anchorId = timelineAnchorId(for: commit) else {
       errorMessage = "That commit is not in the loaded conversation timeline yet."
@@ -1097,13 +1104,35 @@ struct PrDetailView: View {
     guard event.kind == .commit else { return false }
     let shortSha = commit.shortSha.isEmpty ? String(commit.sha.prefix(7)) : commit.shortSha
     let fullSha = commit.sha
+    guard !shortSha.isEmpty || !fullSha.isEmpty else { return false }
     let haystack = [
       event.id,
       event.title,
       event.metadata ?? "",
     ].joined(separator: " ")
-    return haystack.localizedCaseInsensitiveContains(shortSha)
+    return (!shortSha.isEmpty && haystack.localizedCaseInsensitiveContains(shortSha))
       || (!fullSha.isEmpty && haystack.localizedCaseInsensitiveContains(fullSha))
+  }
+
+  private func scrollPendingTimelineAnchorIfReady(anchorId: String?, scrollProxy: ScrollViewProxy) {
+    guard let anchorId, timelineSectionMounted else { return }
+    Task { @MainActor in
+      let retryDelays: [UInt64] = [0, 80_000_000, 220_000_000]
+      for (index, delay) in retryDelays.enumerated() {
+        if delay == 0 {
+          await Task.yield()
+        } else {
+          try? await Task.sleep(nanoseconds: delay)
+        }
+        guard pendingTimelineScrollId == anchorId, timelineSectionMounted else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+          scrollProxy.scrollTo(anchorId, anchor: .center)
+        }
+        if index == retryDelays.count - 1 {
+          pendingTimelineScrollId = nil
+        }
+      }
+    }
   }
 
   // MARK: - Sticky action bar

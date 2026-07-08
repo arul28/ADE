@@ -586,7 +586,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const allPrActivities = [...prActivities.values()];
     const contentState = buildAgentRunsContentState(allRuns, nowMs, allPrActivities);
     const activeCount = contentState.activeCount;
-    const prActivityCount = contentState.prs.length;
+    const prActivityCount = allPrActivities.length;
     // Stale rows (quiet CLIs) don't count as active but must not END the
     // activity either — a 12s-quiet CLI that resumes output would otherwise
     // churn end→push-to-start cycles. Only an all-completed/failed (or empty)

@@ -447,7 +447,9 @@ func prDetailRouteListItem(
   from items: [PullRequestListItem],
   prId: String,
   requestedPrNumber: Int?,
-  githubItem: GitHubPrListItem?
+  githubItem: GitHubPrListItem?,
+  requestedRepoOwner: String? = nil,
+  requestedRepoName: String? = nil
 ) -> PullRequestListItem? {
   guard let requestedPrNumber else {
     return items.first { $0.id == prId }
@@ -476,6 +478,20 @@ func prDetailRouteListItem(
     }
   }
 
+  if let requestedRepoOwner,
+     let requestedRepoName,
+     !requestedRepoOwner.isEmpty,
+     !requestedRepoName.isEmpty {
+    let repoMatches = candidates.filter {
+      $0.repoOwner.caseInsensitiveCompare(requestedRepoOwner) == .orderedSame
+        && $0.repoName.caseInsensitiveCompare(requestedRepoName) == .orderedSame
+    }
+    if repoMatches.count == 1 {
+      return repoMatches[0]
+    }
+    return nil
+  }
+
   return candidates.count == 1 ? candidates[0] : nil
 }
 
@@ -493,15 +509,21 @@ func prNavigationTarget(
   let prId: String
   let requestLaneId: String?
   let explicitPrNumber: Int?
+  let requestedRepoOwner: String?
+  let requestedRepoName: String?
   switch request.target {
   case .detail(let rawPrId, let prNumber, let laneId):
     prId = rawPrId.trimmingCharacters(in: .whitespacesAndNewlines)
     requestLaneId = laneId
     explicitPrNumber = prNumber
-  case .githubNumber(let prNumber):
+    requestedRepoOwner = nil
+    requestedRepoName = nil
+  case .githubNumber(let prNumber, let repoOwner, let repoName):
     prId = "github-pr-number:\(prNumber)"
     requestLaneId = nil
     explicitPrNumber = prNumber
+    requestedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
+    requestedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
   case .create:
     return .unresolved
   }
@@ -514,13 +536,23 @@ func prNavigationTarget(
 
   let requestedPrNumber = explicitPrNumber ?? syntheticPrNumber(from: prId)
   guard let requestedPrNumber else { return .unresolved }
-  let githubItem = githubItems.first { $0.githubPrNumber == requestedPrNumber }
+  let githubItem = githubItems.first {
+    guard $0.githubPrNumber == requestedPrNumber else { return false }
+    guard let requestedRepoOwner,
+          let requestedRepoName,
+          !requestedRepoOwner.isEmpty,
+          !requestedRepoName.isEmpty else { return true }
+    return $0.repoOwner.caseInsensitiveCompare(requestedRepoOwner) == .orderedSame
+      && $0.repoName.caseInsensitiveCompare(requestedRepoName) == .orderedSame
+  }
 
   if let match = prDetailRouteListItem(
     from: pullRequests,
     prId: prId,
     requestedPrNumber: requestedPrNumber,
-    githubItem: githubItem
+    githubItem: githubItem,
+    requestedRepoOwner: requestedRepoOwner,
+    requestedRepoName: requestedRepoName
   ) {
     return .detail(prId: match.id, laneId: requestLaneId ?? match.laneId)
   }

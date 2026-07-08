@@ -201,6 +201,44 @@ describe("prPollingService", () => {
     expect(events.filter((event) => event.type === "prs-updated")).toHaveLength(1);
   });
 
+  it("does not re-emit opened notifications after a transient empty poll", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const summary = createSummary({ title: "Tracked PR", state: "open" });
+    let rows: PrSummary[] = [summary];
+    const events: any[] = [];
+
+    const prService = {
+      listAll: () => rows,
+      discoverLanePullRequests: vi.fn(async () => rows),
+      refresh: vi.fn(async () => rows),
+      getHotRefreshDelayMs: () => null,
+      getHotRefreshPrIds: () => [],
+    } as any;
+
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      onEvent: (event) => events.push(event),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    rows = [];
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    rows = [summary];
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(events.filter((event) => event.type === "pr-notification" && event.kind === "opened")).toHaveLength(0);
+  });
+
   it("keeps rate-limit backoff ahead of hot wakeups", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

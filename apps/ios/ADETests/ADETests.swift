@@ -372,7 +372,28 @@ final class ADETests: XCTestCase {
 
     DeepLinkRouter.shared.handleNotificationUserInfo(["prNumber": 9876])
 
-    XCTAssertEqual(service.requestedPrNavigation?.target, .githubNumber(9876))
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(9876, repoOwner: nil, repoName: nil)
+    )
+  }
+
+  @MainActor
+  func testDeepLinkRouterRoutesScopedPrLinksLocally() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://pr/arul28/ADE/729")))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(729, repoOwner: "arul28", repoName: "ADE")
+    )
   }
 
   @MainActor
@@ -6686,6 +6707,20 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertNil(match)
+
+    let scopedMatch = prDetailRouteListItem(
+      from: [
+        item(id: "first", owner: "arul", repo: "ade"),
+        item(id: "second", owner: "elsewhere", repo: "other"),
+      ],
+      prId: "github-pr-number:42",
+      requestedPrNumber: 42,
+      githubItem: nil,
+      requestedRepoOwner: "ARUL",
+      requestedRepoName: "ADE"
+    )
+
+    XCTAssertEqual(scopedMatch?.id, "first")
   }
 
   func testPrNavigationTargetResolvesNumberRouteToLocalPrId() {

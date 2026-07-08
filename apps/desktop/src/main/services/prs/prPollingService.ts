@@ -224,9 +224,11 @@ export function createPrPollingService({
       }
       if (existing.length === 0) {
         consecutiveFailures = 0;
-        initialized = true;
-        lastByPrId.clear();
-        lastFingerprintByPrId.clear();
+        if (!initialized) {
+          initialized = true;
+          lastByPrId.clear();
+          lastFingerprintByPrId.clear();
+        }
         if (lastPrFingerprint !== "[]") {
           onEvent({ type: "prs-updated", polledAt, prs: [] });
           lastPrFingerprint = "[]";

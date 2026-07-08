@@ -1264,7 +1264,7 @@ struct PairingQrNavigationRequest: Equatable, Identifiable {
 
 enum PrNavigationRequestTarget: Equatable {
   case detail(prId: String, prNumber: Int?, laneId: String?)
-  case githubNumber(Int)
+  case githubNumber(Int, repoOwner: String?, repoName: String?)
   case create(laneId: String)
 }
 
@@ -1277,9 +1277,9 @@ struct PrNavigationRequest: Equatable, Identifiable {
     self.target = .detail(prId: prId, prNumber: prNumber, laneId: laneId)
   }
 
-  init(prNumber: Int) {
+  init(prNumber: Int, repoOwner: String? = nil, repoName: String? = nil) {
     self.id = UUID().uuidString
-    self.target = .githubNumber(prNumber)
+    self.target = .githubNumber(prNumber, repoOwner: repoOwner, repoName: repoName)
   }
 
   init(createLaneId: String) {
