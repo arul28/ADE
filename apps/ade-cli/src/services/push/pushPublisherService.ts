@@ -1033,15 +1033,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  const prActivityId = (scopeKey: string, prNumber: number): string => `pr:${scopeKey}:${prNumber}`;
+
   const onPrNotification = (
+    scopeKey: string,
     notification: PushPrNotification,
     resolveLaneName?: (laneId: string) => string | null | undefined,
   ): void => {
     const lane = notification.laneId
       ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
       : null;
-    prActivities.set(`pr-${notification.prNumber}`, {
-      id: `pr-${notification.prNumber}`,
+    const activityId = prActivityId(scopeKey, notification.prNumber);
+    prActivities.set(activityId, {
+      id: activityId,
       prNumber: notification.prNumber,
       title: notification.prTitle?.trim() || `Pull request #${notification.prNumber}`,
       phase: notification.kind,
@@ -1053,10 +1057,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const copy = prNotificationCopy(notification);
     enqueueAlert({
       sessionId: null,
-      dedupeKey: `alert:pr:${notification.prNumber}:${notification.kind}`,
+      dedupeKey: `alert:pr:${scopeKey}:${notification.prNumber}:${notification.kind}`,
       render: () => ({ title: copy.title, body: copy.body }),
       deepLink: `ade://pr/${notification.prNumber}`,
-      threadId: `pr-${notification.prNumber}`,
+      threadId: activityId,
       phase: copy.interruptionLevel === "passive" ? "terminal" : "waiting",
       interruptionLevel: copy.interruptionLevel,
     });
@@ -1160,7 +1164,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       if (sources.subscribePrNotifications) {
         scopeUnsubscribes.push(sources.subscribePrNotifications((notification) => {
-          onPrNotification(notification, sources.resolveLaneName);
+          onPrNotification(scopeKey, notification, sources.resolveLaneName);
         }));
       }
       scopes.set(scopeKey, {

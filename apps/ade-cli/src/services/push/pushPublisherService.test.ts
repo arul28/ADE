@@ -229,19 +229,29 @@ describe("createPushPublisherService flush", () => {
 
   it("publishes PR lifecycle alerts into the aggregate Live Activity", async () => {
     const { publisher, publish } = makeHarness();
-    let prCb: (event: PushPrNotification) => void = () => {
-      throw new Error("PR notification source was not attached");
+    let firstPrCb: (event: PushPrNotification) => void = () => {
+      throw new Error("first PR notification source was not attached");
     };
-    publisher.attachSources("scope-pr", {
+    let secondPrCb: (event: PushPrNotification) => void = () => {
+      throw new Error("second PR notification source was not attached");
+    };
+    publisher.attachSources("project-a", {
       subscribePrNotifications: (cb) => {
-        prCb = cb;
+        firstPrCb = cb;
         return () => {};
       },
       resolveLaneName: (laneId: string) => laneId === "lane-42" ? "Mobile PR lane" : laneId,
     });
+    publisher.attachSources("project-b", {
+      subscribePrNotifications: (cb) => {
+        secondPrCb = cb;
+        return () => {};
+      },
+      resolveLaneName: (laneId: string) => laneId === "lane-other" ? "Other repo lane" : laneId,
+    });
     await publisher.start();
 
-    prCb?.({ kind: "merged", prNumber: 42, prTitle: "Ship mobile PR view", laneId: "lane-42" });
+    firstPrCb({ kind: "merged", prNumber: 42, prTitle: "Ship mobile PR view", laneId: "lane-42" });
     await vi.advanceTimersByTimeAsync(2_500);
 
     const payload = publish.mock.calls[0][0];
@@ -249,16 +259,37 @@ describe("createPushPublisherService flush", () => {
       title: "PR #42 merged",
       body: "Ship mobile PR view",
       deepLink: "ade://pr/42",
-      threadId: "pr-42",
+      threadId: "pr:project-a:42",
     });
     expect(payload.liveActivity[0].contentState.prs[0]).toMatchObject({
-      id: "pr-42",
+      id: "pr:project-a:42",
       prNumber: 42,
       title: "Ship mobile PR view",
       phase: "merged",
       lane: "Mobile PR lane",
     });
     expect(payload.liveActivity[0].phase).toBe("running");
+
+    secondPrCb({ kind: "checks_failing", prNumber: 42, prTitle: "Same number, other repo", laneId: "lane-other" });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const updatePayload = publish.mock.calls.at(-1)?.[0];
+    expect(updatePayload?.liveActivity[0].contentState.prs).toMatchObject([
+      {
+        id: "pr:project-b:42",
+        prNumber: 42,
+        title: "Same number, other repo",
+        phase: "checks_failing",
+        lane: "Other repo lane",
+      },
+      {
+        id: "pr:project-a:42",
+        prNumber: 42,
+        title: "Ship mobile PR view",
+        phase: "merged",
+        lane: "Mobile PR lane",
+      },
+    ]);
 
     await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1_000);
     const endPayload = publish.mock.calls.at(-1)?.[0];

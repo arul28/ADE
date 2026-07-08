@@ -588,10 +588,15 @@ struct PrDetailView: View {
     }
     .onChange(of: pendingTimelineScrollId) { _, anchorId in
       guard let anchorId else { return }
-      withAnimation(.easeInOut(duration: 0.25)) {
-        scrollProxy.scrollTo(anchorId, anchor: .center)
+      Task { @MainActor in
+        await Task.yield()
+        withAnimation(.easeInOut(duration: 0.25)) {
+          scrollProxy.scrollTo(anchorId, anchor: .center)
+        }
+        if pendingTimelineScrollId == anchorId {
+          pendingTimelineScrollId = nil
+        }
       }
-      pendingTimelineScrollId = nil
     }
     .sheet(isPresented: $cleanupConfirmationPresented) {
       PrCleanupConfirmationSheet(
