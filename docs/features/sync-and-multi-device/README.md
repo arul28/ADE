@@ -681,11 +681,12 @@ is not supported.
   `127.0.0.1`, and — unless the relay kill-switch is off — a
   `relay`-kind candidate carrying a full
   `wss://…/connect/<machineKey>` URL. `SyncAddressCandidateKind` is
-  `lan | saved | tailscale | loopback | relay`; the relay candidate is
-  the lowest-priority transport (see the transport race in
-  `ios-companion.md`). Already-paired phones also learn the relay URL
-  from `hello_ok` / `brain_status` (`cloudRelayWssUrl`) and persist it
-  with the host profile for reconnects.
+  `lan | saved | tailscale | loopback | relay`; iOS treats relay as an
+  automatic fallback and promotes it when the phone has no Tailscale
+  tunnel (see the transport race in `ios-companion.md`). Already-paired
+  phones also learn the relay URL from `hello_ok` / `brain_status`
+  (`cloudRelayWssUrl`) and persist it with the host profile for
+  reconnects.
 - **mDNS**: `publishLanDiscovery` builds a TXT record whose
   `addresses` CSV includes the Tailscale IP alongside LAN IPs. It also
   advertises `runtimeKind`, `runtimeVersion`, `projects`, and
@@ -942,10 +943,12 @@ feature is merged or because a deliberately isolated-port host is running.
   kill-switch)**: the brain keeps an outbound HMAC-authenticated tunnel
   to the `apps/tunnel-relay` Cloudflare Worker so a phone off the
   LAN/tailnet can dial the machine over TLS with zero configuration.
-  Phones always try direct routes first — the relay candidate is
-  strictly the lowest-priority transport. The relay only pipes bytes:
-  the normal ADE hello / PIN / paired-secret / DPoP handshake still runs
-  end-to-end, so the relay never sees pairing credentials in the clear.
+  Phones prefer direct routes when they are currently usable; when an
+  iPhone has no Tailscale tunnel and holds a saved relay URL, reconnect
+  dials the relay ahead of stale saved LAN/Tailscale sweeps. The relay
+  only pipes bytes: the normal ADE hello / PIN / paired-secret / DPoP
+  handshake still runs end-to-end, so the relay never sees pairing
+  credentials in the clear.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
   upgrades are HMAC-signed with a per-machine secret. Operators who
   never want traffic relayed flip the single "ADE relay" control in

@@ -35,9 +35,9 @@ struct HostConnectionProfile: Codable, Equatable {
   var tailscaleAddress: String?
   /// Full `wss://…/connect/<machineKey>` cloud-relay URLs learned from a pairing
   /// QR or advertised live by the host in `hello_ok`/`brain_status`. Optional so
-  /// profiles persisted before the relay feature decode cleanly. Always raced
-  /// LAST (after every LAN and Tailscale route) — unconditionally, no user
-  /// toggle; the relay is a zero-config fallback.
+  /// profiles persisted before the relay feature decode cleanly. The relay is a
+  /// zero-config fallback: Tailscale/direct routes are preferred when currently
+  /// usable, and the relay is promoted when this phone has no Tailscale tunnel.
   var savedRelayCandidates: [String]?
   var updatedAt: String
 

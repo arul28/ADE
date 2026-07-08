@@ -485,9 +485,10 @@ struct ADENoticeCard: View {
 }
 
 /// Warning card shown on connection surfaces when the saved machine expects a
-/// Tailscale route but this iPhone has no tailnet interface (see
-/// `SyncService.tailscaleOffHintVisible`). The action opens the Tailscale app
-/// when installed, falling back to its App Store page.
+/// Tailscale route, this iPhone has no tailnet interface, and no saved ADE
+/// relay route is available (see `SyncService.tailscaleOffHintVisible`). The
+/// action opens the Tailscale app when installed, falling back to its App Store
+/// page.
 struct ADETailscaleOffHintCard: View {
   @Environment(\.openURL) private var openURL
 
