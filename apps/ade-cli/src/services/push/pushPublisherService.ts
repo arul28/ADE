@@ -110,6 +110,8 @@ type PendingAlert = {
   threadId?: string | null;
   phase: "running" | "waiting" | "terminal";
   interruptionLevel?: "passive" | "active" | "time-sensitive" | null;
+  /** Keeps same-copy lifecycle events publishable without disabling queue coalescing. */
+  fingerprintSalt?: string | number | null;
   /** Approval item id — rides the payload so iOS can act without opening the app. */
   itemId?: string | null;
   /** UNNotificationCategory identifier binding actionable buttons on iOS. */
@@ -694,6 +696,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         phase: alert.phase,
         itemId: alert.itemId ?? null,
         category: alert.category ?? null,
+        salt: alert.fingerprintSalt ?? null,
       });
       if (lastAlertFingerprintByKey.get(alert.dedupeKey) === fingerprint) continue;
       alertCommits.push([alert.dedupeKey, fingerprint]);
@@ -1079,6 +1082,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     notification: PushPrNotification,
     resolveLaneName?: (laneId: string) => string | null | undefined,
   ): void => {
+    const eventStamp = now();
     const lane = notification.laneId
       ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
       : null;
@@ -1091,9 +1095,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       lane,
       repoOwner: notification.repoOwner?.trim() || null,
       repoName: notification.repoName?.trim() || null,
-      updatedAt: now(),
+      updatedAt: eventStamp,
     });
-    schedulePrActivityExpiry(now());
+    schedulePrActivityExpiry(eventStamp);
 
     const copy = prNotificationCopy(notification);
     enqueueAlert({
@@ -1104,6 +1108,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       threadId: activityId,
       phase: copy.interruptionLevel === "passive" ? "terminal" : "waiting",
       interruptionLevel: copy.interruptionLevel,
+      fingerprintSalt: eventStamp,
     });
     scheduleFlush(false);
   };

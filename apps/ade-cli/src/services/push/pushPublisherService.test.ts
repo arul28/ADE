@@ -384,6 +384,55 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("publishes repeated PR transition alerts after an intervening state change", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-a", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    const pr = {
+      prNumber: 42,
+      prTitle: "Repeatable PR lifecycle",
+      laneId: null,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    };
+
+    prCb({ ...pr, kind: "closed" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
+      title: "PR #42 closed",
+      body: "Repeatable PR lifecycle",
+      dedupeKey: "alert:pr:project-a:repo:arul28:ade:42:closed",
+    });
+
+    publish.mockClear();
+    prCb({ ...pr, kind: "reopened" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
+      title: "PR #42 reopened",
+      body: "Repeatable PR lifecycle",
+    });
+
+    publish.mockClear();
+    prCb({ ...pr, kind: "closed" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
+      title: "PR #42 closed",
+      body: "Repeatable PR lifecycle",
+      dedupeKey: "alert:pr:project-a:repo:arul28:ade:42:closed",
+    });
+
+    publisher.dispose();
+  });
+
   it("uses the uncapped PR count in the aggregate Live Activity start alert", async () => {
     const { publisher, publish } = makeHarness();
     let prCb: (event: PushPrNotification) => void = () => {
