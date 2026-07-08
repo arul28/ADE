@@ -642,6 +642,10 @@ struct WorkNewChatScreen: View {
     return lanes.first(where: { $0.id == selectedLaneId })
   }
 
+  private var canUploadAttachments: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
   /// Fast mode only applies to in-app chat sessions on fast-tier models — the
   /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
   /// value we send) is gated on both. The picker's option can only *add* support
@@ -907,6 +911,7 @@ struct WorkNewChatScreen: View {
       modelName: prettyNewChatModelName(modelId),
       busy: busy,
       canStart: !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
+      canUploadAttachments: canUploadAttachments,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
       fastModeSupported: fastModeSupported,
@@ -997,6 +1002,10 @@ struct WorkNewChatScreen: View {
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
+    guard readyAttachments.isEmpty || canUploadAttachments else {
+      errorMessage = "Reconnect to attach images."
+      return false
+    }
     // Anchor the "last time you sent a message" choice — covers the case where
     // the user sent with the restored/default selection without changing it.
     WorkComposerPreferences.save(composerSelection)
@@ -1307,6 +1316,7 @@ private struct WorkNewChatComposerBar: View {
   let modelName: String
   let busy: Bool
   let canStart: Bool
+  let canUploadAttachments: Bool
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
   let fastModeSupported: Bool
@@ -1334,8 +1344,10 @@ private struct WorkNewChatComposerBar: View {
     if sessionMode != .chat {
       return !trimmedDraft.isEmpty
     }
+    let readyAttachments = workChatInputReadyAttachments(attachments)
     return !workChatInputHasLoadingAttachments(attachments)
-      && (!trimmedDraft.isEmpty || !workChatInputReadyAttachments(attachments).isEmpty)
+      && (!trimmedDraft.isEmpty || !readyAttachments.isEmpty)
+      && (readyAttachments.isEmpty || canUploadAttachments)
   }
 
   private var runtimeOptions: [WorkRuntimeModeOption] {
@@ -1391,7 +1403,7 @@ private struct WorkNewChatComposerBar: View {
         if !isDictating {
           WorkChatAttachmentAddButton(
             attachments: $attachments,
-            disabled: busy || sessionMode != .chat
+            disabled: busy || sessionMode != .chat || !canUploadAttachments
           )
 
           ScrollView(.horizontal, showsIndicators: false) {

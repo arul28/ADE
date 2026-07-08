@@ -1577,7 +1577,7 @@ func normalizedWorkLocalEchoText(_ text: String) -> String {
     .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
 }
 
-private func workLocalEchoDedupeKey(text: String, attachments: [AgentChatFileRef]?) -> String? {
+func workLocalEchoDedupeKey(text: String, attachments: [AgentChatFileRef]?) -> String? {
   let normalized = normalizedWorkLocalEchoText(text)
   guard !normalized.isEmpty else { return nil }
   let attachmentKey = (attachments ?? [])

@@ -1907,19 +1907,21 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func reconcileLocalEchoMessages() {
     guard !localEchoMessages.isEmpty else { return }
-    let pendingSteerTexts = Set(
-      derivePendingWorkSteers(from: transcript).map { normalizedWorkLocalEchoText($0.text) }
+    let pendingSteerKeys = Set(
+      derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: nil) }
     )
     localEchoMessages.removeAll { echo in
-      let normalizedEcho = normalizedWorkLocalEchoText(echo.text)
-      if pendingSteerTexts.contains(normalizedEcho) {
+      guard let echoKey = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else {
+        return false
+      }
+      if pendingSteerKeys.contains(echoKey) {
         return true
       }
       return transcript.contains { envelope in
-        guard case .userMessage(let text, _, _, let steerId, let deliveryState, _) = envelope.event else {
+        guard case .userMessage(let text, let attachments, _, let steerId, let deliveryState, _) = envelope.event else {
           return false
         }
-        guard normalizedWorkLocalEchoText(text) == normalizedEcho else { return false }
+        guard workLocalEchoDedupeKey(text: text, attachments: attachments) == echoKey else { return false }
         if deliveryState == "queued", steerId != nil {
           return false
         }

@@ -282,6 +282,10 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   func testImageOnlyLocalEchoDedupeIncludesAttachmentIdentity() {
     let first = AgentChatFileRef(path: "/project/.ade/attachments/first.jpg", type: "image", url: nil)
     let second = AgentChatFileRef(path: "/project/.ade/attachments/second.jpg", type: "image", url: nil)
+    XCTAssertNotEqual(
+      workLocalEchoDedupeKey(text: "Attached image.", attachments: [first]),
+      workLocalEchoDedupeKey(text: "Attached image.", attachments: [second])
+    )
     let snapshot = buildWorkChatTimelineSnapshot(
       transcript: [
         WorkChatEnvelope(

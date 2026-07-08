@@ -204,6 +204,10 @@ struct HubInlineComposer: View {
       && !modelId.isEmpty
   }
 
+  private var canUploadAttachments: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
   private var trimmedDraft: String {
     draft.trimmingCharacters(in: .whitespacesAndNewlines)
   }
@@ -213,8 +217,10 @@ struct HubInlineComposer: View {
     if sessionMode != .chat {
       return !trimmedDraft.isEmpty
     }
+    let readyAttachments = workChatInputReadyAttachments(attachments)
     return !workChatInputHasLoadingAttachments(attachments)
-      && (!trimmedDraft.isEmpty || !workChatInputReadyAttachments(attachments).isEmpty)
+      && (!trimmedDraft.isEmpty || !readyAttachments.isEmpty)
+      && (readyAttachments.isEmpty || canUploadAttachments)
   }
 
   private var isControlsCollapsed: Bool {
@@ -656,7 +662,7 @@ struct HubInlineComposer: View {
           if !isDictating {
             WorkChatAttachmentAddButton(
               attachments: $attachments,
-              disabled: busy || sessionMode != .chat
+              disabled: busy || sessionMode != .chat || !canUploadAttachments
             )
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -768,6 +774,10 @@ struct HubInlineComposer: View {
     let readyAttachments = workChatInputReadyAttachments(inputAttachments)
     let opener = workChatOutgoingText(rawOpener, attachmentCount: readyAttachments.count)
     guard canStart, !opener.isEmpty, !modelId.isEmpty else { return false }
+    guard readyAttachments.isEmpty || canUploadAttachments else {
+      errorMessage = "Reconnect to attach images."
+      return false
+    }
     guard let project = pickedProject else {
       errorMessage = "Pick a project first."
       return false
