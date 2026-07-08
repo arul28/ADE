@@ -1,5 +1,6 @@
 import XCTest
 import UIKit
+import SwiftUI
 @testable import ADE
 
 /// Pure-logic coverage for the cursor-relative trigger detector that mirrors the
@@ -126,5 +127,61 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertTrue(workChatInputAttachmentDataURL(attachment)?.hasPrefix("data:image/jpeg;base64,") == true)
     XCTAssertEqual(workChatOutgoingText("", attachmentCount: 1), "Attached image.")
     XCTAssertEqual(workChatOutgoingText("  hello  ", attachmentCount: 1), "hello")
+  }
+
+  @MainActor
+  func testPlainComposerIgnoresInitialFalseFocusUpdate() {
+    var text = ""
+    var isFocused = false
+    var measuredHeight: CGFloat = 28
+    let parent = WorkPlainComposerTextView(
+      text: Binding(get: { text }, set: { text = $0 }),
+      isFocused: Binding(get: { isFocused }, set: { isFocused = $0 }),
+      measuredHeight: Binding(get: { measuredHeight }, set: { measuredHeight = $0 }),
+      placeholder: "Type to vibecode..."
+    )
+    let coordinator = WorkPlainComposerTextView.Coordinator(parent)
+    let textView = FocusRecordingTextView()
+    textView.resetRecording()
+
+    textView.fakeIsFirstResponder = true
+    coordinator.applyFocusRequest(false, to: textView)
+    XCTAssertEqual(textView.resignCount, 0)
+    XCTAssertTrue(textView.fakeIsFirstResponder)
+
+    textView.fakeIsFirstResponder = false
+    coordinator.applyFocusRequest(true, to: textView)
+    coordinator.applyFocusRequest(false, to: textView)
+    XCTAssertEqual(textView.becomeCount, 1)
+    XCTAssertEqual(textView.resignCount, 1)
+    XCTAssertFalse(textView.fakeIsFirstResponder)
+  }
+}
+
+private final class FocusRecordingTextView: UITextView {
+  var fakeIsFirstResponder = false
+  var becomeCount = 0
+  var resignCount = 0
+
+  override var isFirstResponder: Bool {
+    fakeIsFirstResponder
+  }
+
+  override func becomeFirstResponder() -> Bool {
+    becomeCount += 1
+    fakeIsFirstResponder = true
+    return true
+  }
+
+  override func resignFirstResponder() -> Bool {
+    resignCount += 1
+    fakeIsFirstResponder = false
+    return true
+  }
+
+  func resetRecording() {
+    becomeCount = 0
+    resignCount = 0
+    fakeIsFirstResponder = false
   }
 }

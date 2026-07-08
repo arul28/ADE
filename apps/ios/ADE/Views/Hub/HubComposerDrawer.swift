@@ -88,7 +88,7 @@ struct HubInlineComposer: View {
   // Global top edge of the destination control, so the picker popover can size
   // itself to the room above it (and never overflow the top of the screen).
   @State private var destinationControlTopY: CGFloat = 0
-  @FocusState private var composerFocused: Bool
+  @State private var composerFocused: Bool = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
 
   private let dictationTargetId = "hub-new-chat-drawer"
