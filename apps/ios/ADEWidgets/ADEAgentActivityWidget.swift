@@ -27,7 +27,7 @@ struct ADEAgentActivityWidget: Widget {
             )
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Image(systemName: presentation.primary?.resolvedPhase.symbol ?? "circle.dotted")
+                    Image(systemName: presentation.primarySymbol)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(presentation.tint)
                 }
@@ -38,6 +38,11 @@ struct ADEAgentActivityWidget: Widget {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(presentation.runs.prefix(2)) { run in
                             AgentRunRow(run: run, compact: true)
+                        }
+                        if presentation.runs.isEmpty {
+                            ForEach(presentation.prs.prefix(2)) { pr in
+                                PullRequestActivityRow(pr: pr, compact: true)
+                            }
                         }
                         if presentation.isStale {
                             AgentRunsStaleHint()
@@ -54,7 +59,7 @@ struct ADEAgentActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                Image(systemName: presentation.primary?.resolvedPhase.symbol ?? "circle.dotted")
+                Image(systemName: presentation.primarySymbol)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(presentation.tint)
             } compactTrailing: {
@@ -63,7 +68,7 @@ struct ADEAgentActivityWidget: Widget {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(ADESharedTheme.warningAmber)
                 } else {
-                    Text("\(presentation.activeCount)")
+                    Text("\(presentation.glanceCount)")
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(presentation.tint)
                 }
@@ -82,9 +87,11 @@ struct ADEAgentActivityWidget: Widget {
 
 struct AgentRunsPresentation {
     let runs: [ADEAgentRunsAttributes.Run]
+    let prs: [ADEAgentRunsAttributes.PullRequest]
     let activeCount: Int
     let waitingCount: Int
     let primary: ADEAgentRunsAttributes.Run?
+    let primaryPr: ADEAgentRunsAttributes.PullRequest?
     let isStale: Bool
     let machineName: String
 
@@ -96,9 +103,18 @@ struct AgentRunsPresentation {
             return l < r
         }
         self.runs = Array(sorted.prefix(3))
+        let sortedPrs = Array(state.prs.sorted { lhs, rhs in
+            let l = lhs.resolvedPhase.needsAttention ? 0 : 1
+            let r = rhs.resolvedPhase.needsAttention ? 0 : 1
+            if l != r { return l < r }
+            return lhs.updatedAt > rhs.updatedAt
+        }.prefix(2))
+        self.prs = sortedPrs
         self.activeCount = max(state.activeCount, state.runs.count)
         self.waitingCount = state.runs.filter { $0.resolvedPhase.needsAttention }.count
+            + state.prs.filter { $0.resolvedPhase.needsAttention }.count
         self.primary = sorted.first
+        self.primaryPr = sortedPrs.first
         self.isStale = isStale || state.runs.contains { $0.resolvedPhase == .stale }
         self.machineName = attributes.machineName
     }
@@ -108,7 +124,16 @@ struct AgentRunsPresentation {
     var tint: Color {
         if isStale { return ADESharedTheme.statusIdle }
         if waitingCount > 0 { return ADESharedTheme.warningAmber }
+        if let primaryPr, primary == nil { return primaryPr.resolvedPhase.tint }
         return primary?.resolvedPhase.tint ?? ADESharedTheme.statusIdle
+    }
+
+    var primarySymbol: String {
+        primary?.resolvedPhase.symbol ?? primaryPr?.resolvedPhase.symbol ?? "circle.dotted"
+    }
+
+    var glanceCount: Int {
+        max(activeCount, prs.count)
     }
 
     /// Footer only earns its space when there's more than one run or a machine
@@ -124,14 +149,32 @@ struct AgentRunsPresentation {
 
     var destinationURL: URL {
         let workspace = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
-        let target = runs.first(where: { $0.resolvedPhase.needsAttention }) ?? primary
+        let attentionRun = runs.first(where: { $0.resolvedPhase.needsAttention })
+        if let id = attentionRun?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+           !id.isEmpty,
+           let url = sessionURL(for: id) {
+            return url
+        }
+        if let prUrl = prs.first(where: { $0.resolvedPhase.needsAttention })?.deepLinkURL {
+            return prUrl
+        }
+        let target = primary
         guard let id = target?.id.trimmingCharacters(in: .whitespacesAndNewlines),
-              !id.isEmpty else { return workspace }
+              !id.isEmpty else {
+            if let prUrl = primaryPr?.deepLinkURL {
+                return prUrl
+            }
+            return workspace
+        }
+        return sessionURL(for: id) ?? workspace
+    }
+
+    private func sessionURL(for id: String) -> URL? {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         guard let encoded = id.addingPercentEncoding(withAllowedCharacters: allowed),
               let url = URL(string: "ade://session/\(encoded)") else {
-            return workspace
+            return nil
         }
         return url
     }
@@ -162,7 +205,7 @@ private struct AgentRunsLockScreenView: View {
                 }
             }
 
-            if presentation.runs.isEmpty {
+            if presentation.runs.isEmpty && presentation.prs.isEmpty {
                 Text("No active runs")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
@@ -170,6 +213,9 @@ private struct AgentRunsLockScreenView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(presentation.runs) { run in
                         AgentRunRow(run: run, compact: false)
+                    }
+                    ForEach(presentation.prs) { pr in
+                        PullRequestActivityRow(pr: pr, compact: false)
                     }
                 }
             }
@@ -185,7 +231,10 @@ private struct AgentRunsLockScreenView: View {
 
     private var headline: String {
         if presentation.waitingCount > 0 {
-            return presentation.waitingCount == 1 ? "1 run needs you" : "\(presentation.waitingCount) runs need you"
+            return presentation.waitingCount == 1 ? "1 item needs you" : "\(presentation.waitingCount) items need you"
+        }
+        if presentation.runs.isEmpty && !presentation.prs.isEmpty {
+            return presentation.prs.count == 1 ? "1 pull request updated" : "\(presentation.prs.count) pull requests updated"
         }
         let count = presentation.activeCount
         return count == 1 ? "1 agent running" : "\(count) agents running"
@@ -302,6 +351,51 @@ private struct AgentRunRow: View {
     }
 }
 
+private struct PullRequestActivityRow: View {
+    let pr: ADEAgentRunsAttributes.PullRequest
+    let compact: Bool
+
+    private var phase: PullRequestPhase { pr.resolvedPhase }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: phase.symbol)
+                .font(.system(size: compact ? 10 : 11, weight: .semibold))
+                .foregroundStyle(phase.tint)
+                .frame(width: 14, alignment: .center)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("#\(pr.prNumber) \(pr.title)")
+                    .font(.system(size: compact ? 11 : 12.5, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                if let subtitle = pr.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: compact ? 9 : 10, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Text(phase.label)
+                .font(.system(size: compact ? 9 : 9.5, weight: .semibold))
+                .foregroundStyle(phase.needsAttention ? phase.tint : .secondary)
+                .lineLimit(1)
+        }
+        .padding(.vertical, phase.needsAttention && !compact ? 3 : 0)
+        .padding(.horizontal, phase.needsAttention && !compact ? 6 : 0)
+        .background(
+            phase.needsAttention && !compact
+                ? RoundedRectangle(cornerRadius: 7, style: .continuous).fill(phase.tint.opacity(0.14))
+                : nil
+        )
+    }
+}
+
 private struct AgentRunsCountBadge: View {
     let presentation: AgentRunsPresentation
 
@@ -312,7 +406,7 @@ private struct AgentRunsCountBadge: View {
                 .labelStyle(.titleAndIcon)
                 .foregroundStyle(ADESharedTheme.warningAmber)
         } else {
-            Text("\(presentation.activeCount)")
+            Text("\(presentation.glanceCount)")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(presentation.tint)
         }

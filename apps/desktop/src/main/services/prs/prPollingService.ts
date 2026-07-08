@@ -20,6 +20,26 @@ function jitterMs(value: number): number {
 
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
   switch (kind) {
+    case "opened":
+      return {
+        title: "Pull request opened",
+        message: "A pull request opened and is now tracked by ADE.",
+      };
+    case "reopened":
+      return {
+        title: "Pull request reopened",
+        message: "This pull request moved back to an open state.",
+      };
+    case "closed":
+      return {
+        title: "Pull request closed",
+        message: "This pull request was closed without being merged.",
+      };
+    case "merged":
+      return {
+        title: "Pull request merged",
+        message: "This pull request was merged and closed.",
+      };
     case "checks_failing":
       return {
         title: "Checks failing",
@@ -41,6 +61,25 @@ function summarizeNotification(kind: PrNotificationKind): { title: string; messa
         message: "Required checks are passing and the pull request has approval. Other merge requirements (e.g. base branch currency) may still apply.",
       };
   }
+}
+
+function lifecycleNotificationKind(
+  previousState: PrSummary["state"] | null,
+  currentState: PrSummary["state"],
+): PrNotificationKind | null {
+  if (previousState == null) {
+    return currentState === "open" || currentState === "draft" ? "opened" : null;
+  }
+  if ((previousState === "closed" || previousState === "merged") && (currentState === "open" || currentState === "draft")) {
+    return "reopened";
+  }
+  if (previousState !== "merged" && currentState === "merged") {
+    return "merged";
+  }
+  if (previousState !== "closed" && currentState === "closed") {
+    return "closed";
+  }
+  return null;
 }
 
 /**
@@ -185,9 +224,11 @@ export function createPrPollingService({
       }
       if (existing.length === 0) {
         consecutiveFailures = 0;
-        initialized = true;
-        lastByPrId.clear();
-        lastFingerprintByPrId.clear();
+        if (!initialized) {
+          initialized = true;
+          lastByPrId.clear();
+          lastFingerprintByPrId.clear();
+        }
         if (lastPrFingerprint !== "[]") {
           onEvent({ type: "prs-updated", polledAt, prs: [] });
           lastPrFingerprint = "[]";
@@ -257,7 +298,7 @@ export function createPrPollingService({
           });
         }
 
-        const shouldNotify = (kind: PrNotificationKind): boolean => {
+        const shouldNotifyStatusKind = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
           if (!prev) return false;
           if (kind === "checks_failing") return prev.checksStatus !== "failing" && pr.checksStatus === "failing";
@@ -267,9 +308,16 @@ export function createPrPollingService({
           return false;
         };
 
-        const kinds: PrNotificationKind[] = ["checks_failing", "review_requested", "changes_requested", "merge_ready"];
+        const lifecycleKind = lifecycleNotificationKind(prev?.state ?? null, pr.state);
+        const kinds: PrNotificationKind[] = [
+          ...(lifecycleKind ? [lifecycleKind] : []),
+          "checks_failing",
+          "review_requested",
+          "changes_requested",
+          "merge_ready",
+        ];
         for (const kind of kinds) {
-          if (!shouldNotify(kind)) continue;
+          if (kind !== lifecycleKind && !shouldNotifyStatusKind(kind)) continue;
           const summary = summarizeNotification(kind);
           onEvent({
             type: "pr-notification",

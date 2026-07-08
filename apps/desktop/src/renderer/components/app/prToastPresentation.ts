@@ -12,7 +12,7 @@ function compactLabel(value: string | null | undefined): string | null {
 export function getPrToastTone(kind: PrNotificationEvent["kind"]): PrToastTone {
   if (kind === "checks_failing" || kind === "changes_requested") return "danger";
   if (kind === "review_requested") return "warning";
-  if (kind === "merge_ready") return "success";
+  if (kind === "merge_ready" || kind === "merged" || kind === "opened" || kind === "reopened") return "success";
   return "info";
 }
 

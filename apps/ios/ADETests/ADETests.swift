@@ -372,7 +372,28 @@ final class ADETests: XCTestCase {
 
     DeepLinkRouter.shared.handleNotificationUserInfo(["prNumber": 9876])
 
-    XCTAssertEqual(service.requestedPrNavigation?.target, .githubNumber(9876))
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(9876, repoOwner: nil, repoName: nil)
+    )
+  }
+
+  @MainActor
+  func testDeepLinkRouterRoutesScopedPrLinksLocally() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://pr/arul28/ADE/729")))
+
+    XCTAssertEqual(
+      service.requestedPrNavigation?.target,
+      .githubNumber(729, repoOwner: "arul28", repoName: "ADE")
+    )
   }
 
   @MainActor
@@ -6427,6 +6448,28 @@ final class ADETests: XCTestCase {
     XCTAssertNil(state.runs[1].itemId, "runs without an itemId key decode to nil")
   }
 
+  func testAgentRunsContentStateDecodesPullRequestRows() throws {
+    let json = Data("""
+    {
+      "updatedAt": 1720000000,
+      "activeCount": 0,
+      "runs": [],
+      "prs": [
+        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "repoOwner": "arul28", "repoName": "ADE", "updatedAt": 1720000000 }
+      ]
+    }
+    """.utf8)
+
+    let state = try JSONDecoder().decode(ADEAgentRunsAttributes.ContentState.self, from: json)
+    XCTAssertEqual(state.prs.count, 1)
+    XCTAssertEqual(state.prs[0].prNumber, 42)
+    XCTAssertEqual(state.prs[0].resolvedPhase, .mergeReady)
+    XCTAssertEqual(state.prs[0].subtitle, "Mobile PR lane")
+    XCTAssertEqual(state.prs[0].repoOwner, "arul28")
+    XCTAssertEqual(state.prs[0].repoName, "ADE")
+    XCTAssertEqual(state.prs[0].deepLinkURL?.absoluteString, "ade://pr/arul28/ADE/42")
+  }
+
   @MainActor
   func testSyncMergedRelayCandidatesFoldsAdvertisedFreshestFirst() {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -6766,6 +6809,20 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertNil(match)
+
+    let scopedMatch = prDetailRouteListItem(
+      from: [
+        item(id: "first", owner: "arul", repo: "ade"),
+        item(id: "second", owner: "elsewhere", repo: "other"),
+      ],
+      prId: "github-pr-number:42",
+      requestedPrNumber: 42,
+      githubItem: nil,
+      requestedRepoOwner: "ARUL",
+      requestedRepoName: "ADE"
+    )
+
+    XCTAssertEqual(scopedMatch?.id, "first")
   }
 
   func testPrNavigationTargetResolvesNumberRouteToLocalPrId() {
@@ -6807,7 +6864,118 @@ final class ADETests: XCTestCase {
       githubItems: []
     )
 
-    XCTAssertEqual(target, .detail(prId: "pr_42", laneId: "lane-pr_42"))
+    XCTAssertEqual(target, .detail(prId: "pr_42", laneId: "lane-pr_42", repoScope: nil))
+  }
+
+  func testPrNavigationTargetPreservesRepoScopeForDetailRoute() {
+    func item(id: String, owner: String, repo: String) -> PullRequestListItem {
+      PullRequestListItem(
+        id: id,
+        laneId: "lane-\(id)",
+        laneName: nil,
+        projectId: "project-1",
+        repoOwner: owner,
+        repoName: repo,
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/\(owner)/\(repo)/pull/42",
+        title: "\(owner)/\(repo) PR 42",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/42",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 1,
+        deletions: 0,
+        lastSyncedAt: nil,
+        createdAt: "2026-05-14T00:00:00.000Z",
+        updatedAt: "2026-05-14T00:00:00.000Z",
+        adeKind: nil,
+        linkedGroupId: nil,
+        linkedGroupType: nil,
+        linkedGroupName: nil,
+        linkedGroupPosition: nil,
+        linkedGroupCount: 0,
+        workflowDisplayState: nil,
+        cleanupState: nil
+      )
+    }
+
+    let target = prNavigationTarget(
+      for: PrNavigationRequest(prNumber: 42, repoOwner: "ARUL", repoName: "ade"),
+      pullRequests: [
+        item(id: "api-pr", owner: "elsewhere", repo: "api"),
+        item(id: "ade-pr", owner: "arul", repo: "ADE"),
+      ],
+      githubItems: []
+    )
+
+    XCTAssertEqual(
+      target,
+      .detail(
+        prId: "ade-pr",
+        laneId: "lane-ade-pr",
+        repoScope: PrDetailRouteScope(repoOwner: "ARUL", repoName: "ade")
+      )
+    )
+  }
+
+  func testPrWarmEntryMatchesRequestedRepoScope() {
+    let pr = PullRequestListItem(
+      id: "ade-pr",
+      laneId: "lane-ade-pr",
+      laneName: nil,
+      projectId: "project-1",
+      repoOwner: "arul",
+      repoName: "ADE",
+      githubPrNumber: 42,
+      githubUrl: "https://github.com/arul/ADE/pull/42",
+      title: "arul/ADE PR 42",
+      state: "open",
+      baseBranch: "main",
+      headBranch: "feature/42",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 1,
+      deletions: 0,
+      lastSyncedAt: nil,
+      createdAt: "2026-05-14T00:00:00.000Z",
+      updatedAt: "2026-05-14T00:00:00.000Z",
+      adeKind: nil,
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+    let entry = PrDetailWarmEntry(
+      pr: pr,
+      githubItem: nil,
+      snapshot: nil,
+      reviewThreads: [],
+      actionRuns: [],
+      activityEvents: [],
+      deployments: [],
+      aiSummary: nil,
+      groupMembers: [],
+      capabilities: nil,
+      loadedAt: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertTrue(prDetailWarmEntryMatchesRequestedScope(entry, requestedRepoScope: nil))
+    XCTAssertTrue(
+      prDetailWarmEntryMatchesRequestedScope(
+        entry,
+        requestedRepoScope: PrDetailRouteScope(repoOwner: "ARUL", repoName: "ade")
+      )
+    )
+    XCTAssertFalse(
+      prDetailWarmEntryMatchesRequestedScope(
+        entry,
+        requestedRepoScope: PrDetailRouteScope(repoOwner: "elsewhere", repoName: "ADE")
+      )
+    )
   }
 
   func testPrNavigationTargetUsesGitHubItemWhenNumberRouteHasNoLocalPr() {
@@ -6854,6 +7022,17 @@ final class ADETests: XCTestCase {
     XCTAssertNotNil(fractional)
     XCTAssertNotNil(fallback)
     XCTAssertEqual(fallback, prParsedDate("2026-05-14T00:00:00Z"))
+  }
+
+  func testPrMarkdownNormalizationOnlyUnescapesDoubleEscapedBodies() {
+    XCTAssertEqual(
+      normalizePrMarkdownText("Summary\\n\\n- item one\\n- item two"),
+      "Summary\n\n- item one\n- item two"
+    )
+    XCTAssertEqual(
+      normalizePrMarkdownText("Inline code `foo\\nbar` should stay literal"),
+      "Inline code `foo\\nbar` should stay literal"
+    )
   }
 
   func testPrDetailSidecarFetchPolicySkipsLocalRevisionAfterInitialLoad() {

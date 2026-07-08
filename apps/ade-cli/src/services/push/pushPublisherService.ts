@@ -33,12 +33,14 @@ export function resolvePushRelayStateFile(secretsDir: string): string {
 export const APPROVAL_NOTIFICATION_CATEGORY = "ADE_APPROVAL";
 const SHUTDOWN_PUBLISH_TIMEOUT_MS = 2_500;
 const AGENT_RUNS_MAX = 3;
+const PR_LIVE_ACTIVITY_MAX = 2;
 const DETAIL_MAX_CHARS = 160;
 /** Fixed lock-screen copy for failed runs — never leak error text to the widget. */
 const FAILED_DETAIL = "Run failed";
 
 const RUNNING_TTL_MS = 2 * 60 * 60 * 1000; // 2h for running/starting
 const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
+const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
 const DEFAULT_FLUSH_DEBOUNCE_MS = 2_000;
 const DEFAULT_PROMPT_FLUSH_MS = 150;
 const PUBLISH_RETRY_MS = 30_000;
@@ -84,6 +86,19 @@ export type PushPrNotification = {
   prNumber: number;
   prTitle: string | null;
   laneId: string | null;
+  repoOwner?: string | null;
+  repoName?: string | null;
+};
+
+export type PrLiveActivityState = {
+  id: string;
+  prNumber: number;
+  title: string;
+  phase: PrNotificationKind;
+  lane: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
+  updatedAt: number;
 };
 
 type PendingAlert = {
@@ -95,6 +110,8 @@ type PendingAlert = {
   threadId?: string | null;
   phase: "running" | "waiting" | "terminal";
   interruptionLevel?: "passive" | "active" | "time-sensitive" | null;
+  /** Keeps same-copy lifecycle events publishable without disabling queue coalescing. */
+  fingerprintSalt?: string | number | null;
   /** Approval item id — rides the payload so iOS can act without opening the app. */
   itemId?: string | null;
   /** UNNotificationCategory identifier binding actionable buttons on iOS. */
@@ -243,6 +260,7 @@ function capDetail(detail: string | null | undefined): string | null {
 export function buildAgentRunsContentState(
   runs: AgentRunState[],
   nowMs: number,
+  prs: PrLiveActivityState[] = [],
 ): {
   updatedAt: number;
   activeCount: number;
@@ -255,9 +273,20 @@ export function buildAgentRunsContentState(
     detail: string | null;
     itemId?: string;
   }>;
+  prs: Array<{
+    id: string;
+    prNumber: number;
+    title: string;
+    phase: PrNotificationKind;
+    lane: string | null;
+    repoOwner: string | null;
+    repoName: string | null;
+    updatedAt: number;
+  }>;
 } {
   const activeCount = runs.filter((run) => isActivePhase(run.phase)).length;
   const ordered = [...runs].sort((left, right) => right.lastActiveAt - left.lastActiveAt).slice(0, AGENT_RUNS_MAX);
+  const orderedPrs = [...prs].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, PR_LIVE_ACTIVITY_MAX);
   return {
     updatedAt: Math.floor(nowMs / 1000),
     activeCount,
@@ -271,6 +300,16 @@ export function buildAgentRunsContentState(
       // Additive optional field (older widgets ignore it): lets the lock
       // screen render Approve/Deny intents against the pending item.
       ...(run.phase === "waiting_for_approval" && run.itemId ? { itemId: run.itemId } : {}),
+    })),
+    prs: orderedPrs.map((pr) => ({
+      id: pr.id,
+      prNumber: pr.prNumber,
+      title: pr.title,
+      phase: pr.phase,
+      lane: pr.lane,
+      repoOwner: pr.repoOwner,
+      repoName: pr.repoName,
+      updatedAt: Math.floor(pr.updatedAt / 1000),
     })),
   };
 }
@@ -358,6 +397,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const promptFlushMs = deps.promptFlushMs ?? DEFAULT_PROMPT_FLUSH_MS;
 
   const runs = new Map<string, AgentRunState>();
+  const prActivities = new Map<string, PrLiveActivityState>();
   let pendingAlerts: PendingAlert[] = [];
   const lastAlertFingerprintByKey = new Map<string, string>();
   let lastLiveActivityFingerprint: string | null = null;
@@ -371,6 +411,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const lastSentBadgeByDevice = new Map<string, number>();
 
   let flushTimer: NodeJS.Timeout | null = null;
+  let prExpiryTimer: NodeJS.Timeout | null = null;
   let flushFireAt = 0;
   let flushing = false;
   let disposed = false;
@@ -469,6 +510,37 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  const prunePrActivities = (nowMs: number): void => {
+    for (const [id, pr] of prActivities) {
+      if (nowMs - pr.updatedAt > PR_LIVE_ACTIVITY_TTL_MS) {
+        prActivities.delete(id);
+      }
+    }
+  };
+
+  const dropTerminalRuns = (): void => {
+    for (const [sessionId, run] of runs) {
+      if (isTerminalPhase(run.phase)) runs.delete(sessionId);
+    }
+  };
+
+  const schedulePrActivityExpiry = (nowMs: number): void => {
+    if (prExpiryTimer) {
+      clearTimeout(prExpiryTimer);
+      prExpiryTimer = null;
+    }
+    let nextExpiryMs = Number.POSITIVE_INFINITY;
+    for (const pr of prActivities.values()) {
+      nextExpiryMs = Math.min(nextExpiryMs, pr.updatedAt + PR_LIVE_ACTIVITY_TTL_MS);
+    }
+    if (!Number.isFinite(nextExpiryMs)) return;
+    const delayMs = Math.max(250, nextExpiryMs - nowMs + 250);
+    prExpiryTimer = setTimeout(() => {
+      prExpiryTimer = null;
+      scheduleFlush(true);
+    }, delayMs);
+  };
+
   const resolveMissingMeta = async (): Promise<void> => {
     for (const run of runs.values()) {
       if (run.metaResolved) continue;
@@ -516,9 +588,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     nowMs: number,
   ): { item: PushRelayLiveActivityItem; commit: () => void } | null => {
     if (deviceIds.length === 0) return null;
+    prunePrActivities(nowMs);
+    schedulePrActivityExpiry(nowMs);
+    if (prActivities.size > 0) dropTerminalRuns();
     const allRuns = [...runs.values()];
-    const contentState = buildAgentRunsContentState(allRuns, nowMs);
+    const allPrActivities = [...prActivities.values()];
+    const contentState = buildAgentRunsContentState(allRuns, nowMs, allPrActivities);
     const activeCount = contentState.activeCount;
+    const prActivityCount = allPrActivities.length;
     // Stale rows (quiet CLIs) don't count as active but must not END the
     // activity either — a 12s-quiet CLI that resumes output would otherwise
     // churn end→push-to-start cycles. Only an all-completed/failed (or empty)
@@ -526,8 +603,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const dormantCount = allRuns.filter((run) => run.phase === "stale").length;
 
     let event: "start" | "update" | "end";
-    if (activeCount > 0 && !liveActivityStarted) event = "start";
-    else if (activeCount === 0 && dormantCount === 0 && liveActivityStarted) event = "end";
+    if ((activeCount > 0 || prActivityCount > 0) && !liveActivityStarted) event = "start";
+    else if (activeCount === 0 && dormantCount === 0 && prActivityCount === 0 && liveActivityStarted) event = "end";
     else if (!liveActivityStarted) return null; // nothing live to report (stale-only never starts)
     else event = "update";
 
@@ -536,10 +613,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     const anyWaiting = allRuns.some(
       (run) => run.phase === "waiting_for_approval" || run.phase === "waiting_for_input",
-    );
+    ) || allPrActivities.some((pr) =>
+      pr.phase === "checks_failing"
+      || pr.phase === "changes_requested"
+      || pr.phase === "review_requested"
+      || pr.phase === "merge_ready");
     const phase: "running" | "waiting" | "terminal" = anyWaiting
       ? "waiting"
-      : activeCount > 0
+      : (activeCount > 0 || prActivityCount > 0)
         ? "running"
         : "terminal";
 
@@ -556,9 +637,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       item.attributesType = AGENT_RUNS_ATTRIBUTES_TYPE;
       item.attributes = { machineName: deps.machineName };
       const mostRecent = allRuns.sort((left, right) => right.lastActiveAt - left.lastActiveAt)[0];
+      const mostRecentPr = allPrActivities.sort((left, right) => right.updatedAt - left.updatedAt)[0];
       item.alert = {
-        title: activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is running` : `${activeCount} agent runs active`,
-        body: mostRecent ? laneTitleLine(mostRecent) : null,
+        title: activeCount > 0
+          ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is running` : `${activeCount} agent runs active`)
+          : (prActivityCount === 1 && mostRecentPr ? `PR #${mostRecentPr.prNumber} updated` : `${prActivityCount} pull requests updated`),
+        body: activeCount > 0 ? (mostRecent ? laneTitleLine(mostRecent) : null) : mostRecentPr?.title ?? null,
       };
     }
     if (event === "end") {
@@ -572,9 +656,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         liveActivityStarted = false;
         lastLiveActivityFingerprint = null;
         // Once the aggregate ends, drop terminal rows so the next run starts fresh.
-        for (const [sessionId, run] of runs) {
-          if (isTerminalPhase(run.phase)) runs.delete(sessionId);
-        }
+        dropTerminalRuns();
       }
     };
 
@@ -614,6 +696,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         phase: alert.phase,
         itemId: alert.itemId ?? null,
         category: alert.category ?? null,
+        salt: alert.fingerprintSalt ?? null,
       });
       if (lastAlertFingerprintByKey.get(alert.dedupeKey) === fingerprint) continue;
       alertCommits.push([alert.dedupeKey, fingerprint]);
@@ -944,37 +1027,90 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     scheduleFlush(false);
   };
 
-  const onPrNotification = (notification: PushPrNotification): void => {
-    if (notification.kind === "merge_ready") {
-      enqueueAlert({
-        sessionId: null,
-        dedupeKey: `alert:pr:${notification.prNumber}:merge_ready`,
-        render: () => ({
-          title: `PR #${notification.prNumber} is ready to merge`,
-          body: notification.prTitle ?? "Required checks passed and it has approval.",
-        }),
-        deepLink: `ade://pr/${notification.prNumber}`,
-        threadId: `pr-${notification.prNumber}`,
-        phase: "terminal",
-        interruptionLevel: "active",
-      });
-      scheduleFlush(false);
-    } else if (notification.kind === "checks_failing") {
-      enqueueAlert({
-        sessionId: null,
-        dedupeKey: `alert:pr:${notification.prNumber}:checks_failing`,
-        render: () => ({
-          title: `PR #${notification.prNumber} checks are failing`,
-          body: notification.prTitle ?? "One or more required checks failed.",
-        }),
-        deepLink: `ade://pr/${notification.prNumber}`,
-        threadId: `pr-${notification.prNumber}`,
-        phase: "terminal",
-        interruptionLevel: "active",
-      });
-      scheduleFlush(false);
+  const prNotificationCopy = (notification: PushPrNotification): { title: string; body: string; interruptionLevel: PendingAlert["interruptionLevel"] } => {
+    const fallbackTitle = notification.prTitle?.trim() || `Pull request #${notification.prNumber}`;
+    switch (notification.kind) {
+      case "opened":
+        return { title: `PR #${notification.prNumber} opened`, body: fallbackTitle, interruptionLevel: "passive" };
+      case "reopened":
+        return { title: `PR #${notification.prNumber} reopened`, body: fallbackTitle, interruptionLevel: "passive" };
+      case "closed":
+        return { title: `PR #${notification.prNumber} closed`, body: fallbackTitle, interruptionLevel: "passive" };
+      case "merged":
+        return { title: `PR #${notification.prNumber} merged`, body: fallbackTitle, interruptionLevel: "active" };
+      case "merge_ready":
+        return { title: `PR #${notification.prNumber} is ready to merge`, body: notification.prTitle ?? "Required checks passed and it has approval.", interruptionLevel: "active" };
+      case "checks_failing":
+        return { title: `PR #${notification.prNumber} checks are failing`, body: notification.prTitle ?? "One or more required checks failed.", interruptionLevel: "active" };
+      case "changes_requested":
+        return { title: `Changes requested on PR #${notification.prNumber}`, body: fallbackTitle, interruptionLevel: "active" };
+      case "review_requested":
+        return { title: `Review requested on PR #${notification.prNumber}`, body: fallbackTitle, interruptionLevel: "active" };
     }
-    // review_requested / changes_requested are intentionally not pushed.
+  };
+
+  const prActivityId = (scopeKey: string, notification: PushPrNotification): string => {
+    const owner = notification.repoOwner?.trim().toLowerCase();
+    const repo = notification.repoName?.trim().toLowerCase();
+    const repoScope = owner && repo
+      ? `repo:${encodeURIComponent(owner)}:${encodeURIComponent(repo)}`
+      : "number";
+    return `pr:${scopeKey}:${repoScope}:${notification.prNumber}`;
+  };
+  const prDeepLink = (notification: PushPrNotification): string => {
+    const owner = notification.repoOwner?.trim();
+    const repo = notification.repoName?.trim();
+    if (owner && repo) {
+      return `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${notification.prNumber}`;
+    }
+    return `ade://pr/${notification.prNumber}`;
+  };
+  const removePrActivitiesForScope = (scopeKey: string): boolean => {
+    const prefix = `pr:${scopeKey}:`;
+    let removed = false;
+    for (const id of prActivities.keys()) {
+      if (id.startsWith(prefix)) {
+        prActivities.delete(id);
+        removed = true;
+      }
+    }
+    return removed;
+  };
+
+  const onPrNotification = (
+    scopeKey: string,
+    notification: PushPrNotification,
+    resolveLaneName?: (laneId: string) => string | null | undefined,
+  ): void => {
+    const eventStamp = now();
+    const lane = notification.laneId
+      ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
+      : null;
+    const activityId = prActivityId(scopeKey, notification);
+    prActivities.set(activityId, {
+      id: activityId,
+      prNumber: notification.prNumber,
+      title: notification.prTitle?.trim() || `Pull request #${notification.prNumber}`,
+      phase: notification.kind,
+      lane,
+      repoOwner: notification.repoOwner?.trim() || null,
+      repoName: notification.repoName?.trim() || null,
+      updatedAt: eventStamp,
+    });
+    schedulePrActivityExpiry(eventStamp);
+
+    const copy = prNotificationCopy(notification);
+    enqueueAlert({
+      sessionId: null,
+      dedupeKey: `alert:${activityId}:${notification.kind}`,
+      render: () => ({ title: copy.title, body: copy.body }),
+      deepLink: prDeepLink(notification),
+      threadId: activityId,
+      phase: copy.interruptionLevel === "passive" ? "terminal" : "waiting",
+      interruptionLevel: copy.interruptionLevel,
+      fingerprintSalt: eventStamp,
+    });
+    scheduleFlush(false);
   };
 
   const relayApnsConfigured = async (): Promise<boolean | null> => {
@@ -1027,13 +1163,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     for (const [sessionId, run] of runs) {
       if (run.scopeKey === scopeKey) runs.delete(sessionId);
     }
+    const removedPrActivities = removePrActivitiesForScope(scopeKey);
     if (scopes.size === 0) {
       // Nothing attached — stop the flush loop so no timer lingers. The shared
       // instance stays memoized and resumes when a project re-attaches.
       if (flushTimer) clearTimeout(flushTimer);
       flushTimer = null;
       flushFireAt = 0;
+      if (prExpiryTimer) clearTimeout(prExpiryTimer);
+      prExpiryTimer = null;
+      prActivities.clear();
       pendingAlerts = [];
+    } else if (removedPrActivities) {
+      scheduleFlush(false);
     }
   };
 
@@ -1041,7 +1183,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     disposed = true;
     for (const scopeKey of [...scopes.keys()]) detachScope(scopeKey);
     if (flushTimer) clearTimeout(flushTimer);
+    if (prExpiryTimer) clearTimeout(prExpiryTimer);
     flushTimer = null;
+    prExpiryTimer = null;
   };
 
   return {
@@ -1068,7 +1212,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         scopeUnsubscribes.push(sources.ptyService.onExit((event) => onPtyExit(scopeKey, event)));
       }
       if (sources.subscribePrNotifications) {
-        scopeUnsubscribes.push(sources.subscribePrNotifications(onPrNotification));
+        scopeUnsubscribes.push(sources.subscribePrNotifications((notification) => {
+          onPrNotification(scopeKey, notification, sources.resolveLaneName);
+        }));
       }
       scopes.set(scopeKey, {
         agentChatService: sources.agentChatService ?? null,

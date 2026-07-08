@@ -5,7 +5,8 @@ import Foundation
 /// `.adeDeepLinkRequested` and flip their selection when fired; new
 /// cross-machine shapes (lane / repo / extended pr / linear-issue) instead
 /// post `.adeSendToMacRequested` so the parent view can show a "Send to your
-/// Mac" confirmation card.
+/// Mac" confirmation card. Repo-scoped PR URLs are also accepted locally
+/// because push notifications use them to disambiguate duplicate PR numbers.
 ///
 /// Kept intentionally tiny — the heavy lifting lives in the individual tabs.
 @MainActor
@@ -47,13 +48,15 @@ final class DeepLinkRouter {
     case "pr":
       // Two accepted shapes today:
       //   `ade://pr/<n>`                       (compact local link)
-      //   `ade://pr/<owner>/<repo>/<number>`   (desktop cross-machine form)
+      //   `ade://pr/<owner>/<repo>/<number>`   (repo-scoped local link)
       // Anything else is ignored so a malformed link can't crash navigation.
       if pathComponents.count >= 3 {
-        guard !pathComponents[0].isEmpty,
-              !pathComponents[1].isEmpty,
-              !pathComponents[2].isEmpty else { return }
-        postSendToMac(url: url)
+        let owner = pathComponents[0]
+        let repo = pathComponents[1]
+        guard ADEDeepLinkURLParsing.splitRepo("\(owner)/\(repo)") != nil,
+              let number = Int(pathComponents[2]),
+              number > 0 else { return }
+        post(kind: "pr", identifier: "\(number)", prNumber: number, repoOwner: owner, repoName: repo)
         return
       }
       guard let raw = pathComponents.first, !raw.isEmpty else { return }
@@ -206,14 +209,32 @@ final class DeepLinkRouter {
     if let pr = userInfo["prNumber"] {
       let identifier = "\(pr)"
       guard !identifier.isEmpty else { return }
-      post(kind: "pr", identifier: identifier)
+      post(
+        kind: "pr",
+        identifier: identifier,
+        prNumber: prNumberValue(from: userInfo["prNumber"]),
+        repoOwner: stringValue(from: userInfo["repoOwner"]),
+        repoName: stringValue(from: userInfo["repoName"])
+      )
     }
   }
 
-  private func post(kind: String, identifier: String, prNumber: Int? = nil, event: Int? = nil, offset: Int? = nil) {
+  private func post(
+    kind: String,
+    identifier: String,
+    prNumber: Int? = nil,
+    repoOwner: String? = nil,
+    repoName: String? = nil,
+    event: Int? = nil,
+    offset: Int? = nil
+  ) {
     var userInfo: [String: Any] = ["kind": kind, "identifier": identifier]
     if let event { userInfo["event"] = event }
     if let offset { userInfo["offset"] = offset }
+    let scopedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let scopedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let scopedRepoOwner, !scopedRepoOwner.isEmpty { userInfo["repoOwner"] = scopedRepoOwner }
+    if let scopedRepoName, !scopedRepoName.isEmpty { userInfo["repoName"] = scopedRepoName }
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
       object: nil,
@@ -228,7 +249,17 @@ final class DeepLinkRouter {
     }
     if kind == "pr" {
       let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let prId = resolvePrId(from: trimmed) {
+      if let number = prNumber ?? Int(trimmed),
+         let scopedRepoOwner,
+         let scopedRepoName,
+         !scopedRepoOwner.isEmpty,
+         !scopedRepoName.isEmpty {
+        SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
+          prNumber: number,
+          repoOwner: scopedRepoOwner,
+          repoName: scopedRepoName
+        )
+      } else if let prId = resolvePrId(from: trimmed) {
         SyncService.shared?.requestedPrNavigation = PrNavigationRequest(
           prId: prId,
           prNumber: prNumber ?? Int(trimmed)
@@ -327,6 +358,12 @@ final class DeepLinkRouter {
       if let number = Int(trimmed), number > 0 { return number }
     }
     return nil
+  }
+
+  private func stringValue(from value: Any?) -> String? {
+    guard let string = value as? String else { return nil }
+    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
   }
 
   /// PR deep links carry either a numeric PR number (from `ade://pr/<n>`

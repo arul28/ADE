@@ -772,13 +772,17 @@ contract) is documented in
   on every foreground transition (`PushNotificationService.clearAppBadge`,
   called from `ADEApp`'s scene-phase handler) so a lingering count never
   reads as stale.
-- **Live Activity** mirrors up to three active agent runs on the Lock
-  Screen and Dynamic Island. `LiveActivityService` starts one aggregate
-  activity per machine (`activityId: "agent-runs"`), applies brain-pushed
-  content-state updates, and ends it when all runs reach a terminal
-  phase. `NSSupportsLiveActivities` / `FrequentUpdates` are declared in
-  `Info.plist` and the `aps-environment` entitlement + `remote-notification`
-  background mode are in `ADE.entitlements`.
+- **Live Activity** mirrors up to three active agent runs plus up to two
+  recent PR lifecycle/status rows on the Lock Screen and Dynamic Island.
+  `LiveActivityService` starts one aggregate activity per machine
+  (`activityId: "agent-runs"`), applies brain-pushed content-state updates,
+  and ends it when all runs are terminal and the short-lived PR rows expire.
+  PR rows are sourced from the same `pr-notification` fan-out as desktop
+  toasts and cover opened, reopened, closed, merged, checks failing, changes
+  requested, review requested, and merge-ready states. `NSSupportsLiveActivities`
+  / `FrequentUpdates` are declared in `Info.plist` and the
+  `aps-environment` entitlement + `remote-notification` background mode are
+  in `ADE.entitlements`.
 - **Settings > Push delivery** (`SettingsPushDeliverySection`, wired from
   `ConnectionSettingsView` via `SettingsConnectionPresentationModel`)
   shows registration state, token suffix, APNs environment, last push
@@ -1108,25 +1112,32 @@ The detail screen is a single-column adaptation of the desktop
 Timeline+Rails PR view. Its Overview is emitted as sibling `List` rows
 (`overviewThreadRows`) rather than a single nested card, so the `List`
 virtualizes offscreen thread content instead of laying out the whole PR on
-every scroll frame. Reading order (desktop parity, folded to one column):
+every scroll frame. The navigation header uses a plain back chevron, centered
+PR title with `#number · lane · branch`, and a plain ellipsis actions button.
+Reading order (desktop parity, folded to one column):
 
-1. an unmapped-PR banner (`PrUnmappedThreadBanner`) when the PR has no ADE
+1. a compact summary section (`PrDetailSummarySection`) with state, merge/check
+   status, diff totals, and an expandable commit list whose rows jump to the
+   matching timeline anchor;
+2. an unmapped-PR banner (`PrUnmappedThreadBanner`) when the PR has no ADE
    lane, offering auto-map (`prs.createLaneFromPrBranch`) or Open in GitHub;
-2. the AI summary card (`PrAiSummaryCard`, +/- totals from the file list);
-3. the PR description (`PrThreadDescriptionCard`);
-4. a chronological event feed — one row per timeline event or folded
+3. the AI summary card (`PrAiSummaryCard`, +/- totals from the file list);
+4. the PR description (`PrThreadDescriptionCard`);
+5. a chronological event feed — one row per timeline event or folded
    commit group, ascending oldest → newest, built by
    `buildPullRequestTimeline` and folded via `buildPrTimelineDisplayItems`
    (`PrDetailActivityTab.swift`) so runs of same-author commits collapse
    into a single group row;
-5. review threads (unresolved first, resolved folded into a collapsible
-   section);
-6. the comment composer (locked for unmapped PRs);
-7. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
+6. review threads (unresolved first, resolved folded into a collapsible
+   section). Individual thread/comment cards are also collapsible on mobile:
+   folded rows use cheap inline preview text, while expanded rows render the
+   full normalized markdown body through `WorkMarkdownRenderer`;
+7. the comment composer (locked for unmapped PRs);
+8. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
    GitHub-style requirement checklist (`PrMergeChecklist` —
    conflicts / behind-base / checks / review), the merge-method sheet, and
    admin-bypass gating;
-8. metadata cards — checks, commits, files, people, and the stack card,
+9. metadata cards — checks, commits, files, people, and the stack card,
    plus a post-merge cleanup banner.
 
 There is no separate Activity sub-tab — the activity feed lives inside

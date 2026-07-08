@@ -12,6 +12,7 @@ struct PrReviewThreadCard: View {
   let onResolve: (Bool) -> Void
 
   @State private var showReplyField = false
+  @State private var expanded = false
 
   private var firstComment: PrReviewThreadComment? { thread.comments.first }
 
@@ -50,118 +51,158 @@ struct PrReviewThreadCard: View {
     return PrReviewSuggestion.extract(from: body)
   }
 
+  private var isExpanded: Bool {
+    expanded || isFocused || showReplyField
+  }
+
+  private var strippedBody: String? {
+    guard let body = firstComment?.body else { return nil }
+    let stripped = PrReviewSuggestion.stripSuggestion(from: body)
+    return stripped.isEmpty ? nil : stripped
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack(alignment: .center, spacing: 9) {
-        threadAvatar
-        VStack(alignment: .leading, spacing: 2) {
-          HStack(spacing: 5) {
-            Text(displayName)
-              .font(.subheadline.weight(.bold))
-              .foregroundStyle(ADEColor.textPrimary)
-            if botProvider != nil {
-              PrTagChip(label: "bot", color: ADEColor.tintPRs)
-            }
-            Spacer(minLength: 0)
-          }
-          HStack(spacing: 0) {
-            if let path = thread.path {
-              Text(path)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
-            }
-            if let line = lineLabel {
-              Text(" · ")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(ADEColor.textMuted)
-              Text(line)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(ADEColor.tintPRs)
-            }
-            Text(" · \(ago)")
-              .font(.system(size: 10, design: .monospaced))
-              .foregroundStyle(ADEColor.textMuted)
-          }
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) {
+          expanded.toggle()
         }
-        if !thread.isResolved {
-          PrTagChip(label: "unresolved", color: ADEColor.warning)
-        }
+      } label: {
+        threadHeader
       }
-      .padding(.horizontal, 14)
-      .padding(.top, 12)
-      .padding(.bottom, 8)
+      .buttonStyle(.plain)
 
-      VStack(alignment: .leading, spacing: 10) {
-        if let body = firstComment?.body, !body.isEmpty {
-          let stripped = PrReviewSuggestion.stripSuggestion(from: body)
-          if !stripped.isEmpty {
-            PrInlineCodeText(text: stripped)
-          }
-        }
-
-        if let suggestion {
-          PrDiffPreview(lines: suggestion.diffLines(startLine: thread.line ?? thread.originalLine))
-        }
-
-        // Subsequent replies (collapsed behind "N more replies" affordance)
-        if thread.comments.count > 1 {
-          PrThreadRepliesSection(comments: Array(thread.comments.dropFirst()))
-        }
-
-        HStack(spacing: 6) {
-          if suggestion != nil {
-            ThreadButton(label: "Apply suggestion", isProminent: true, isEnabled: isLive) {
-              onFocus()
-              onReply("✅ applying suggestion")
-            }
-          }
-          ThreadButton(label: "Reply", isEnabled: true) {
-            onFocus()
-            withAnimation(.snappy) { showReplyField = true }
-          }
-          ThreadButton(label: thread.isResolved ? "Reopen" : "Resolve", isEnabled: isLive) {
-            onResolve(!thread.isResolved)
-          }
-          Spacer(minLength: 0)
-        }
-
-        if showReplyField {
-          VStack(alignment: .trailing, spacing: 6) {
-            TextEditor(text: $replyDraft)
-              .frame(minHeight: 70)
-              .adeInsetField(cornerRadius: 10, padding: 8)
-              .font(.footnote)
-            HStack(spacing: 8) {
-              Button("Cancel") {
-                withAnimation(.snappy) { showReplyField = false }
-                replyDraft = ""
-              }
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-
-              Button("Send") {
-                let trimmed = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                onReply(trimmed)
-                withAnimation(.snappy) { showReplyField = false }
-              }
-              .buttonStyle(.borderedProminent)
-              .tint(ADEColor.tintPRs)
-              .controlSize(.small)
-              .disabled(!isLive || replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-          }
-        }
+      if isExpanded {
+        expandedContent
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      } else if let strippedBody {
+        PrInlineCodeText(text: strippedBody)
+          .lineLimit(2)
+          .padding(.horizontal, 14)
+          .padding(.bottom, 12)
       }
-      .padding(.horizontal, 14)
-      .padding(.bottom, 12)
     }
     .prGlassCard(
       cornerRadius: 18,
       tint: isFocused ? ADEColor.accent : nil,
       strokeOpacity: isFocused ? 0.45 : 0.10
     )
+  }
+
+  private var threadHeader: some View {
+    HStack(alignment: .center, spacing: 9) {
+      threadAvatar
+      VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 5) {
+          Text(displayName)
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+          if botProvider != nil {
+            PrTagChip(label: "bot", color: ADEColor.tintPRs)
+          }
+          if !thread.isResolved {
+            PrTagChip(label: "unresolved", color: ADEColor.warning)
+          }
+          Spacer(minLength: 0)
+        }
+        HStack(spacing: 0) {
+          if let path = thread.path {
+            Text(path)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+          }
+          if let line = lineLabel {
+            Text(" · ")
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(ADEColor.textMuted)
+            Text(line)
+              .font(.system(size: 10, design: .monospaced))
+              .foregroundStyle(ADEColor.tintPRs)
+          }
+          Text(" · \(ago)")
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      Image(systemName: "chevron.right")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+    }
+    .padding(.horizontal, 14)
+    .padding(.top, 12)
+    .padding(.bottom, isExpanded ? 8 : 10)
+    .contentShape(Rectangle())
+  }
+
+  private var expandedContent: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if let strippedBody {
+        PrMarkdownRenderer(markdown: strippedBody)
+      }
+
+      if let suggestion {
+        PrDiffPreview(lines: suggestion.diffLines(startLine: thread.line ?? thread.originalLine))
+      }
+
+      // Subsequent replies (collapsed behind "N more replies" affordance).
+      if thread.comments.count > 1 {
+        PrThreadRepliesSection(comments: Array(thread.comments.dropFirst()))
+      }
+
+      HStack(spacing: 6) {
+        if suggestion != nil {
+          ThreadButton(label: "Apply suggestion", isProminent: true, isEnabled: isLive) {
+            expanded = true
+            onFocus()
+            onReply("✅ applying suggestion")
+          }
+        }
+        ThreadButton(label: "Reply", isEnabled: true) {
+          onFocus()
+          withAnimation(.snappy) {
+            expanded = true
+            showReplyField = true
+          }
+        }
+        ThreadButton(label: thread.isResolved ? "Reopen" : "Resolve", isEnabled: isLive) {
+          onResolve(!thread.isResolved)
+        }
+        Spacer(minLength: 0)
+      }
+
+      if showReplyField {
+        VStack(alignment: .trailing, spacing: 6) {
+          TextEditor(text: $replyDraft)
+            .frame(minHeight: 70)
+            .adeInsetField(cornerRadius: 10, padding: 8)
+            .font(.footnote)
+          HStack(spacing: 8) {
+            Button("Cancel") {
+              withAnimation(.snappy) { showReplyField = false }
+              replyDraft = ""
+            }
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+
+            Button("Send") {
+              let trimmed = replyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+              guard !trimmed.isEmpty else { return }
+              onReply(trimmed)
+              withAnimation(.snappy) { showReplyField = false }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(ADEColor.tintPRs)
+            .controlSize(.small)
+            .disabled(!isLive || replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          }
+        }
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.bottom, 12)
   }
 
   private var threadAvatar: some View {
@@ -245,11 +286,9 @@ private struct PrThreadReplyBubble: View {
             .font(.system(size: 9, design: .monospaced))
             .foregroundStyle(ADEColor.textMuted)
         }
-        Text(comment.body ?? "")
+        PrMarkdownRenderer(markdown: comment.body ?? "")
           .font(.system(size: 11))
           .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .lineLimit(8)
       }
     }
     .padding(.horizontal, 2)
@@ -306,11 +345,12 @@ struct PrInlineCodeText: View {
     // Namespaced key: the shared cache is also used by the full-markdown
     // renderer, and both key by content — an unprefixed key would let the two
     // renderings clobber each other for identical source strings.
-    let cacheKey = "inline:\(text)"
+    let normalized = normalizePrMarkdownText(text)
+    let cacheKey = "inline:\(normalized)"
     if let cached = PrMarkdownRenderingCache.shared.attributedString(for: cacheKey) {
       return cached
     }
-    let rendered = render(text)
+    let rendered = render(normalized)
     PrMarkdownRenderingCache.shared.store(rendered, for: cacheKey)
     return rendered
   }
@@ -771,6 +811,14 @@ private struct PrTimelineCommentCard: View {
     botProvider != nil ? ADEColor.tintPRs : ADEColor.accent
   }
 
+  private var normalizedBody: String {
+    normalizePrMarkdownText(bodyText)
+  }
+
+  private var shouldOfferExpansion: Bool {
+    normalizedBody.count > 280 || normalizedBody.filter({ $0 == "\n" }).count >= Self.collapsedLineLimit
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .center, spacing: 9) {
@@ -801,17 +849,23 @@ private struct PrTimelineCommentCard: View {
         Spacer(minLength: 0)
       }
 
-      PrInlineCodeText(text: bodyText)
-        .lineLimit(expanded ? nil : Self.collapsedLineLimit)
+      if expanded {
+        PrMarkdownRenderer(markdown: normalizedBody)
+      } else {
+        PrInlineCodeText(text: normalizedBody)
+          .lineLimit(Self.collapsedLineLimit)
+      }
 
       // Offer expansion whenever the clamp could plausibly truncate: at
       // footnote size a phone renders ~35+ chars/line, so <280 chars with
       // fewer than 10 hard newlines cannot exceed the 10-line clamp.
-      if !expanded, bodyText.count > 280 || bodyText.filter({ $0 == "\n" }).count >= Self.collapsedLineLimit {
+      if shouldOfferExpansion {
         Button {
-          expanded = true
+          withAnimation(.easeInOut(duration: 0.18)) {
+            expanded.toggle()
+          }
         } label: {
-          Text("Show more")
+          Text(expanded ? "Show less" : "Show more")
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(ADEColor.accent)
         }

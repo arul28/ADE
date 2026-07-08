@@ -447,7 +447,9 @@ func prDetailRouteListItem(
   from items: [PullRequestListItem],
   prId: String,
   requestedPrNumber: Int?,
-  githubItem: GitHubPrListItem?
+  githubItem: GitHubPrListItem?,
+  requestedRepoOwner: String? = nil,
+  requestedRepoName: String? = nil
 ) -> PullRequestListItem? {
   guard let requestedPrNumber else {
     return items.first { $0.id == prId }
@@ -476,11 +478,56 @@ func prDetailRouteListItem(
     }
   }
 
+  if let requestedRepoOwner,
+     let requestedRepoName,
+     !requestedRepoOwner.isEmpty,
+     !requestedRepoName.isEmpty {
+    let repoMatches = candidates.filter {
+      $0.repoOwner.caseInsensitiveCompare(requestedRepoOwner) == .orderedSame
+        && $0.repoName.caseInsensitiveCompare(requestedRepoName) == .orderedSame
+    }
+    if repoMatches.count == 1 {
+      return repoMatches[0]
+    }
+    return nil
+  }
+
   return candidates.count == 1 ? candidates[0] : nil
 }
 
+struct PrDetailRouteScope: Equatable {
+  let repoOwner: String
+  let repoName: String
+
+  init?(repoOwner: String?, repoName: String?) {
+    let owner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let name = repoName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !owner.isEmpty, !name.isEmpty else { return nil }
+    self.repoOwner = owner
+    self.repoName = name
+  }
+}
+
+func prDetailWarmEntryMatchesRequestedScope(
+  _ entry: PrDetailWarmEntry,
+  requestedRepoScope: PrDetailRouteScope?
+) -> Bool {
+  guard let requestedRepoScope else { return true }
+  let repoOwner = firstNonEmptyPrRepoValue(entry.pr?.repoOwner, entry.githubItem?.repoOwner)
+  let repoName = firstNonEmptyPrRepoValue(entry.pr?.repoName, entry.githubItem?.repoName)
+  guard let repoOwner, let repoName else { return false }
+  return repoOwner.caseInsensitiveCompare(requestedRepoScope.repoOwner) == .orderedSame
+    && repoName.caseInsensitiveCompare(requestedRepoScope.repoName) == .orderedSame
+}
+
+private func firstNonEmptyPrRepoValue(_ values: String?...) -> String? {
+  values
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .first { !$0.isEmpty }
+}
+
 enum PrNavigationTarget: Equatable {
-  case detail(prId: String, laneId: String?)
+  case detail(prId: String, laneId: String?, repoScope: PrDetailRouteScope?)
   case github(GitHubPrListItem)
   case unresolved
 }
@@ -493,41 +540,60 @@ func prNavigationTarget(
   let prId: String
   let requestLaneId: String?
   let explicitPrNumber: Int?
+  let requestedRepoOwner: String?
+  let requestedRepoName: String?
   switch request.target {
   case .detail(let rawPrId, let prNumber, let laneId):
     prId = rawPrId.trimmingCharacters(in: .whitespacesAndNewlines)
     requestLaneId = laneId
     explicitPrNumber = prNumber
-  case .githubNumber(let prNumber):
+    requestedRepoOwner = nil
+    requestedRepoName = nil
+  case .githubNumber(let prNumber, let repoOwner, let repoName):
     prId = "github-pr-number:\(prNumber)"
     requestLaneId = nil
     explicitPrNumber = prNumber
+    requestedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
+    requestedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
   case .create:
     return .unresolved
   }
+  let requestedRepoScope = PrDetailRouteScope(repoOwner: requestedRepoOwner, repoName: requestedRepoName)
   guard !prId.isEmpty else { return .unresolved }
 
   guard prId.hasPrefix("github-pr-number:") else {
     let match = pullRequests.first { $0.id == prId }
-    return .detail(prId: prId, laneId: requestLaneId ?? match?.laneId)
+    return .detail(prId: prId, laneId: requestLaneId ?? match?.laneId, repoScope: nil)
   }
 
   let requestedPrNumber = explicitPrNumber ?? syntheticPrNumber(from: prId)
   guard let requestedPrNumber else { return .unresolved }
-  let githubItem = githubItems.first { $0.githubPrNumber == requestedPrNumber }
+  let githubItem = githubItems.first {
+    guard $0.githubPrNumber == requestedPrNumber else { return false }
+    guard let requestedRepoOwner,
+          let requestedRepoName,
+          !requestedRepoOwner.isEmpty,
+          !requestedRepoName.isEmpty else { return true }
+    return $0.repoOwner.caseInsensitiveCompare(requestedRepoOwner) == .orderedSame
+      && $0.repoName.caseInsensitiveCompare(requestedRepoName) == .orderedSame
+  }
 
   if let match = prDetailRouteListItem(
     from: pullRequests,
     prId: prId,
     requestedPrNumber: requestedPrNumber,
-    githubItem: githubItem
+    githubItem: githubItem,
+    requestedRepoOwner: requestedRepoOwner,
+    requestedRepoName: requestedRepoName
   ) {
-    return .detail(prId: match.id, laneId: requestLaneId ?? match.laneId)
+    let repoScope = requestedRepoScope ?? PrDetailRouteScope(repoOwner: githubItem?.repoOwner, repoName: githubItem?.repoName)
+    return .detail(prId: match.id, laneId: requestLaneId ?? match.laneId, repoScope: repoScope)
   }
 
   if let linkedPrId = githubItem?.linkedPrId?.trimmingCharacters(in: .whitespacesAndNewlines),
      !linkedPrId.isEmpty {
-    return .detail(prId: linkedPrId, laneId: requestLaneId ?? githubItem?.linkedLaneId)
+    let repoScope = requestedRepoScope ?? PrDetailRouteScope(repoOwner: githubItem?.repoOwner, repoName: githubItem?.repoName)
+    return .detail(prId: linkedPrId, laneId: requestLaneId ?? githubItem?.linkedLaneId, repoScope: repoScope)
   }
 
   if let githubItem {
@@ -870,6 +936,39 @@ final class PrMarkdownRenderingCache {
   func store(_ attributed: AttributedString, for markdown: String) {
     cache.setObject(PrMarkdownAttributedStringBox(value: attributed), forKey: markdown as NSString)
   }
+}
+
+func normalizePrMarkdownText(_ text: String) -> String {
+  var normalized = text
+    .replacingOccurrences(of: "\r\n", with: "\n")
+    .replacingOccurrences(of: "\r", with: "\n")
+
+  if prMarkdownLooksDoubleEscaped(normalized) {
+    normalized = normalized
+      .replacingOccurrences(of: "\\r\\n", with: "\n")
+      .replacingOccurrences(of: "\\n", with: "\n")
+      .replacingOccurrences(of: "\\r", with: "\n")
+      .replacingOccurrences(of: "\\t", with: "\t")
+  }
+
+  return normalized
+}
+
+private func prMarkdownLooksDoubleEscaped(_ text: String) -> Bool {
+  guard !text.contains("\n"), !text.contains("\r") else { return false }
+  let escapedBreakCount = text.components(separatedBy: "\\n").count - 1
+    + text.components(separatedBy: "\\r").count - 1
+  guard escapedBreakCount >= 2 else { return false }
+  return [
+    "\\n\\n",
+    "\\n#",
+    "\\n- ",
+    "\\n* ",
+    "\\n> ",
+    "\\n```",
+    "\\n1. ",
+    "\\n|",
+  ].contains { text.contains($0) }
 }
 
 private final class PrMarkdownAttributedStringBox: NSObject {

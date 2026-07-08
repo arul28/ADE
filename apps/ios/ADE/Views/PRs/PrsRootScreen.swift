@@ -33,6 +33,7 @@ struct PRsTabView: View {
   @State private var lastPrsLiveSnapshotAttempt = Date.distantPast
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
+  @State private var prDetailRouteScopes: [String: PrDetailRouteScope] = [:]
   /// Memoized GitHub-list derivations (filter/sort/counts). Recomputed only
   /// when the snapshot or a filter input changes — see `recomputeGitHubDerived`
   /// — instead of on every `body` pass.
@@ -474,9 +475,12 @@ struct PRsTabView: View {
       // Root PR actions now run at the service level (`runDurablePrAction`), so
       // switching tabs must not abort in-flight queue / integration / link work.
       .navigationDestination(for: String.self) { prId in
+        let routeScope = prDetailRouteScopes[prId]
         PrDetailView(
           prId: prId,
-          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil
+          transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
+          requestedRepoOwner: routeScope?.repoOwner,
+          requestedRepoName: routeScope?.repoName
         )
           .environmentObject(syncService)
       }
@@ -908,6 +912,9 @@ struct PRsTabView: View {
   private func githubRowNavigation(for item: GitHubPrListItem) -> some View {
     if let prId = item.linkedPrId {
       Button {
+        if let routeScope = PrDetailRouteScope(repoOwner: item.repoOwner, repoName: item.repoName) {
+          prDetailRouteScopes[prId] = routeScope
+        }
         path.append(prId)
       } label: {
         PrRowCard(
@@ -1376,9 +1383,14 @@ struct PRsTabView: View {
     laneContextLaneId = nil
 
     switch target {
-    case .detail(let prId, let laneId):
+    case .detail(let prId, let laneId, let repoScope):
       selectedPrTransitionId = prId
       laneContextLaneId = laneId
+      if let repoScope {
+        prDetailRouteScopes[prId] = repoScope
+      } else {
+        prDetailRouteScopes.removeValue(forKey: prId)
+      }
       path.append(prId)
     case .github(let item):
       if item.scope == "external" {

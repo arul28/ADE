@@ -15,6 +15,7 @@ import {
   parseHhMm,
   shouldDeliverAlertForPrefs,
   type AgentRunState,
+  type PushPrNotification,
 } from "./pushPublisherService";
 
 function run(overrides: Partial<AgentRunState>): AgentRunState {
@@ -222,6 +223,319 @@ describe("createPushPublisherService flush", () => {
     emit(approval);
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalledTimes(1);
+
+    publisher.dispose();
+  });
+
+  it("publishes PR lifecycle alerts into the aggregate Live Activity", async () => {
+    const { publisher, publish } = makeHarness();
+    let firstPrCb: (event: PushPrNotification) => void = () => {
+      throw new Error("first PR notification source was not attached");
+    };
+    let secondPrCb: (event: PushPrNotification) => void = () => {
+      throw new Error("second PR notification source was not attached");
+    };
+    publisher.attachSources("project-a", {
+      subscribePrNotifications: (cb) => {
+        firstPrCb = cb;
+        return () => {};
+      },
+      resolveLaneName: (laneId: string) => laneId === "lane-42" ? "Mobile PR lane" : laneId,
+    });
+    const detachProjectB = publisher.attachSources("project-b", {
+      subscribePrNotifications: (cb) => {
+        secondPrCb = cb;
+        return () => {};
+      },
+      resolveLaneName: (laneId: string) => laneId === "lane-other" ? "Other repo lane" : laneId,
+    });
+    await publisher.start();
+
+    firstPrCb({
+      kind: "merged",
+      prNumber: 42,
+      prTitle: "Ship mobile PR view",
+      laneId: "lane-42",
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications[0]).toMatchObject({
+      title: "PR #42 merged",
+      body: "Ship mobile PR view",
+      deepLink: "ade://pr/arul28/ADE/42",
+      threadId: "pr:project-a:repo:arul28:ade:42",
+    });
+    expect(payload.liveActivity[0].contentState.prs[0]).toMatchObject({
+      id: "pr:project-a:repo:arul28:ade:42",
+      prNumber: 42,
+      title: "Ship mobile PR view",
+      phase: "merged",
+      lane: "Mobile PR lane",
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
+    expect(payload.liveActivity[0].phase).toBe("running");
+
+    secondPrCb({
+      kind: "checks_failing",
+      prNumber: 42,
+      prTitle: "Same number, other repo",
+      laneId: "lane-other",
+      repoOwner: "other-org",
+      repoName: "other-repo",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const updatePayload = publish.mock.calls.at(-1)?.[0];
+    expect(updatePayload?.liveActivity[0].contentState.prs).toMatchObject([
+      {
+        id: "pr:project-b:repo:other-org:other-repo:42",
+        prNumber: 42,
+        title: "Same number, other repo",
+        phase: "checks_failing",
+        lane: "Other repo lane",
+        repoOwner: "other-org",
+        repoName: "other-repo",
+      },
+      {
+        id: "pr:project-a:repo:arul28:ade:42",
+        prNumber: 42,
+        title: "Ship mobile PR view",
+        phase: "merged",
+        lane: "Mobile PR lane",
+        repoOwner: "arul28",
+        repoName: "ADE",
+      },
+    ]);
+
+    detachProjectB();
+    await vi.advanceTimersByTimeAsync(2_500);
+    const detachPayload = publish.mock.calls.at(-1)?.[0];
+    expect(detachPayload?.liveActivity[0].contentState.prs).toHaveLength(1);
+    expect(detachPayload?.liveActivity[0].contentState.prs[0]).toMatchObject({
+      id: "pr:project-a:repo:arul28:ade:42",
+      title: "Ship mobile PR view",
+    });
+
+    await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1_000);
+    const endPayload = publish.mock.calls.at(-1)?.[0];
+    expect(endPayload.liveActivity[0]).toMatchObject({
+      event: "end",
+      phase: "terminal",
+    });
+    expect(endPayload.liveActivity[0].contentState.prs).toEqual([]);
+
+    publisher.dispose();
+  });
+
+  it("separates duplicate PR numbers inside one project scope by repo", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-a", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "API PR",
+      laneId: null,
+      repoOwner: "Org-A",
+      repoName: "api",
+    });
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "Web PR",
+      laneId: null,
+      repoOwner: "Org-B",
+      repoName: "web",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications.map((item: { threadId: string; dedupeKey: string }) => ({
+      threadId: item.threadId,
+      dedupeKey: item.dedupeKey,
+    }))).toEqual([
+      {
+        threadId: "pr:project-a:repo:org-a:api:42",
+        dedupeKey: "alert:pr:project-a:repo:org-a:api:42:opened",
+      },
+      {
+        threadId: "pr:project-a:repo:org-b:web:42",
+        dedupeKey: "alert:pr:project-a:repo:org-b:web:42:opened",
+      },
+    ]);
+    expect(payload.liveActivity[0].contentState.prs).toMatchObject([
+      { id: "pr:project-a:repo:org-a:api:42", title: "API PR" },
+      { id: "pr:project-a:repo:org-b:web:42", title: "Web PR" },
+    ]);
+
+    publisher.dispose();
+  });
+
+  it("publishes repeated PR transition alerts after an intervening state change", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-a", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    const pr = {
+      prNumber: 42,
+      prTitle: "Repeatable PR lifecycle",
+      laneId: null,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    };
+
+    prCb({ ...pr, kind: "closed" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
+      title: "PR #42 closed",
+      body: "Repeatable PR lifecycle",
+      dedupeKey: "alert:pr:project-a:repo:arul28:ade:42:closed",
+    });
+
+    publish.mockClear();
+    prCb({ ...pr, kind: "reopened" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
+      title: "PR #42 reopened",
+      body: "Repeatable PR lifecycle",
+    });
+
+    publish.mockClear();
+    prCb({ ...pr, kind: "closed" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.at(-1)?.[0].notifications[0]).toMatchObject({
+      title: "PR #42 closed",
+      body: "Repeatable PR lifecycle",
+      dedupeKey: "alert:pr:project-a:repo:arul28:ade:42:closed",
+    });
+
+    publisher.dispose();
+  });
+
+  it("uses the uncapped PR count in the aggregate Live Activity start alert", async () => {
+    const { publisher, publish } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-prs", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    for (const prNumber of [101, 102, 103]) {
+      prCb({
+        kind: "opened",
+        prNumber,
+        prTitle: `PR ${prNumber}`,
+        laneId: null,
+        repoOwner: "arul28",
+        repoName: "ADE",
+      });
+    }
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const liveActivity = publish.mock.calls[0][0].liveActivity[0];
+    expect(liveActivity.contentState.prs).toHaveLength(2);
+    expect(liveActivity.alert.title).toBe("3 pull requests updated");
+
+    publisher.dispose();
+  });
+
+  it("uses the PR title for a PR-only aggregate start when stale CLI rows exist", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-prs", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    cliSessions.set("cli-1", { title: "stale CLI title", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.every(([payload]) => !payload.liveActivity)).toBe(true);
+    publish.mockClear();
+
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "Actual PR title",
+      laneId: null,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const liveActivity = publish.mock.calls[0][0].liveActivity[0];
+    expect(liveActivity.event).toBe("start");
+    expect(liveActivity.alert.title).toBe("PR #42 updated");
+    expect(liveActivity.alert.body).toBe("Actual PR title");
+
+    publisher.dispose();
+  });
+
+  it("drops terminal run rows before PR-backed Live Activity updates", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-prs", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0][0].liveActivity[0].contentState.runs[0].id).toBe("s-1");
+    publish.mockClear();
+
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "status", turnStatus: "completed" } });
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "Actual PR title",
+      laneId: null,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const liveActivity = publish.mock.calls.at(-1)![0].liveActivity[0];
+    expect(liveActivity.event).toBe("update");
+    expect(liveActivity.contentState.prs[0].prNumber).toBe(42);
+    expect(liveActivity.contentState.runs.find((run: { id: string }) => run.id === "s-1")).toBeUndefined();
+    expect(publisher._debug.runs.has("s-1")).toBe(false);
 
     publisher.dispose();
   });

@@ -1138,8 +1138,8 @@ export async function createAdeRuntime(args: {
   // `pr.listQueueStates` call over the local runtime fails with "is not
   // callable". Mirror the desktop main-process wiring (see main.ts) so the PRs
   // tab loads against the local runtime.
-  // Fan-out for the push publisher: PR merge-ready / checks-failing notifications
-  // are bridged here so the publisher never has to poll GitHub itself. Populated
+  // Fan-out for the push publisher: PR lifecycle/status notifications are
+  // bridged here so the publisher never has to poll GitHub itself. Populated
   // by pushPublisherService.start() (declared below), so it stays empty and inert
   // when push publishing is not running.
   const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
@@ -1151,6 +1151,8 @@ export async function createAdeRuntime(args: {
         prNumber: event.prNumber,
         prTitle: event.prTitle ?? null,
         laneId: event.laneId ?? null,
+        repoOwner: event.repoOwner ?? null,
+        repoName: event.repoName ?? null,
       };
       for (const subscriber of pushPrNotificationSubscribers) {
         try {

@@ -362,8 +362,9 @@ desktop main process for local-bound windows (see
    `lastSyncedAt`, `createdAt`, `updatedAt`, `projectId`).
 3. Diffs against last seen fingerprints; only changed PRs trigger
    events/UI updates.
-4. Emits `PrEventPayload` for state transitions (checks failing,
-   review requested, changes requested, merge ready).
+4. Emits `PrEventPayload` for lifecycle and status transitions
+   (opened, reopened, closed, merged, checks failing, review requested,
+   changes requested, merge ready).
 
 When `prService` reports zero tracked PRs, the tick can force a full
 repo-snapshot discovery (`discoverLanePullRequests`). Because that is
@@ -733,6 +734,16 @@ projection revision: webhook-driven host updates rewrite the replicated
 snapshot rows, the changeset pump bumps the projection, and the detail
 screen re-fetches the sidecars at most once every 25 s. See
 [iOS companion → PR detail screen](../sync-and-multi-device/ios-companion.md#pr-detail-screen).
+
+The mobile detail header is intentionally compact: a plain back chevron,
+centered PR title with `#number · lane · branch`, and a plain ellipsis
+actions button. The old large PR hero is replaced by a small summary section
+showing state, merge/check status, diff totals, and commit count. Commit rows
+expand inline and tap into the same timeline anchors that desktop uses for
+commit-focused navigation. Markdown bodies are normalized for escaped GitHub
+newlines and rendered through the shared mobile Work markdown renderer;
+collapsed comment/thread previews stay cheap text so large PRs do not pay
+markdown layout cost for offscreen or folded content.
 
 ## Gotchas
 
