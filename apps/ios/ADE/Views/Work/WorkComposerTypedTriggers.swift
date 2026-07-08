@@ -368,11 +368,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
       context.coordinator.updatePlaceholderVisibility()
     }
     context.coordinator.applyPlaceholder(placeholder)
-    if isFocused, !textView.isFirstResponder {
-      textView.becomeFirstResponder()
-    } else if !isFocused, textView.isFirstResponder {
-      textView.resignFirstResponder()
-    }
+    context.coordinator.applyFocusRequest(isFocused, to: textView)
     context.coordinator.updateHeight()
   }
 
@@ -381,6 +377,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     var parent: WorkPlainComposerTextView
     weak var textView: UITextView?
     private var placeholderLabel: UILabel?
+    private var lastFocusRequest: Bool?
 
     init(_ parent: WorkPlainComposerTextView) {
       self.parent = parent
@@ -400,6 +397,15 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
       }
       updatePlaceholderVisibility()
       updateHeight()
+    }
+
+    func applyFocusRequest(_ isFocused: Bool, to textView: UITextView) {
+      if isFocused, !textView.isFirstResponder {
+        textView.becomeFirstResponder()
+      } else if !isFocused, lastFocusRequest == true, textView.isFirstResponder {
+        textView.resignFirstResponder()
+      }
+      lastFocusRequest = isFocused
     }
 
     func handlePasteImages(_ images: [UIImage]) -> Bool {

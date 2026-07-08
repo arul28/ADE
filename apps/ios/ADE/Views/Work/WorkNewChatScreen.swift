@@ -1327,7 +1327,7 @@ private struct WorkNewChatComposerBar: View {
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
   @State private var composerTextHeight: CGFloat = 28
-  @FocusState private var composerFocused: Bool
+  @State private var composerFocused: Bool = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   /// Live viewport width of the controls scroll area, so the access control
