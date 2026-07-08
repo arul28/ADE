@@ -1,17 +1,21 @@
 import SwiftUI
 
 /// Inline recording pill shown in place of the composer's trailing controls
-/// while dictation is active. Renders a live timer, a real-amplitude waveform
-/// driven by the dictation service's `audioLevel`, and cancel (✕) / done (✓)
-/// controls. Sized to occupy the trailing cluster so swapping it in for the
-/// idle mic + send buttons does not jump the composer layout.
+/// while dictation is active. Renders startup/finalizing feedback, a live timer,
+/// a real-amplitude waveform driven by the dictation service's `audioLevel`,
+/// and cancel (✕) / done (✓) controls. Sized to occupy the trailing cluster so
+/// swapping it in for the idle mic + send buttons does not jump the composer
+/// layout.
 struct RecordingPill: View {
   /// Elapsed recording time in seconds.
   let elapsedTime: TimeInterval
   /// Current normalized input amplitude (0...1).
   let audioLevel: Float
+  /// True while microphone / speech assets are warming up before capture starts.
+  let isStarting: Bool
   /// True while the analyzer is finalizing after the user taps done.
   let isFinishing: Bool
+  let startupLabel: String
   let onCancel: () -> Void
   let onDone: () -> Void
   var opaque = false
@@ -25,9 +29,23 @@ struct RecordingPill: View {
         .foregroundStyle(ADEColor.textPrimary)
         .accessibilityHidden(true)
 
-      DictationWaveform(level: audioLevel, reduceMotion: reduceMotion)
-        .frame(maxWidth: .infinity)
-        .accessibilityHidden(true)
+      if isStarting {
+        HStack(spacing: 6) {
+          ProgressView()
+            .controlSize(.mini)
+            .tint(ADEColor.danger)
+          Text(startupLabel)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+        .accessibilityLabel(startupLabel)
+      } else {
+        DictationWaveform(level: audioLevel, reduceMotion: reduceMotion)
+          .frame(maxWidth: .infinity)
+          .accessibilityHidden(true)
+      }
 
       Button(action: onCancel) {
         Image(systemName: "xmark")
@@ -42,7 +60,7 @@ struct RecordingPill: View {
 
       Button(action: onDone) {
         ZStack {
-          if isFinishing {
+          if isFinishing || isStarting {
             ProgressView()
               .controlSize(.mini)
               .tint(Color(red: 0.12, green: 0.12, blue: 0.14))
@@ -56,8 +74,8 @@ struct RecordingPill: View {
         .background(Circle().fill(Color.white.opacity(0.9)))
       }
       .buttonStyle(.plain)
-      .disabled(isFinishing)
-      .accessibilityLabel(isFinishing ? "Finishing dictation" : "Insert dictated text")
+      .disabled(isFinishing || isStarting)
+      .accessibilityLabel(isStarting ? startupLabel : (isFinishing ? "Finishing dictation" : "Insert dictated text"))
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
@@ -76,7 +94,7 @@ struct RecordingPill: View {
         .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
     )
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Recording, \(accessibilityTime)")
+    .accessibilityLabel(isStarting ? startupLabel : "Recording, \(accessibilityTime)")
   }
 
   private var timeString: String {
