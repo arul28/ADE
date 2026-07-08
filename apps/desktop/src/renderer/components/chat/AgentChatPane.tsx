@@ -3782,6 +3782,38 @@ export function AgentChatPane({
     }
   }, [chatActionsOpen, subagentView]);
 
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        sessionId?: string | null;
+        taskId?: string | null;
+      }>).detail ?? {};
+      if (detail.sessionId && selectedSessionId && detail.sessionId !== selectedSessionId) return;
+      setChatActionsTab("agents");
+      setIosSimulatorOpen(false);
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+      setChatActionsOpen(true);
+
+      const taskId = typeof detail.taskId === "string" ? detail.taskId : null;
+      if (!taskId) return;
+      const snapshot = selectedSubagentSnapshots.find((candidate) =>
+        candidate.taskId === taskId
+        || candidate.agentId === taskId
+      );
+      if (!snapshot) return;
+      setSubagentView({
+        taskId: snapshot.taskId,
+        agentId: snapshot.agentId ?? null,
+        agentType: snapshot.agentType ?? null,
+        status: snapshot.status,
+        background: snapshot.background ?? false,
+      });
+    };
+    window.addEventListener("ade:chat:open-info", handler);
+    return () => window.removeEventListener("ade:chat:open-info", handler);
+  }, [selectedSessionId, selectedSubagentSnapshots]);
+
   // Cheap probe for the subagents panel: does this agent actually have a
   // pullable transcript? It runs the EXACT same fetch the takeover view uses
   // (just limit:1), so it can never disagree with what the takeover would

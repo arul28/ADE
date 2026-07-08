@@ -8898,6 +8898,35 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.durable, true)
   }
 
+  func testWorkTimelineBundlesTaskSubagentAndScheduledActivity() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-1","description":"Inspect iOS transcript","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
+    """
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+      return card
+    }
+
+    XCTAssertEqual(activityBundles.count, 1)
+    XCTAssertEqual(activityBundles.first?.title, "Activity")
+    XCTAssertTrue(activityBundles.first?.body?.contains("3 activity updates") == true)
+    XCTAssertTrue(activityBundles.first?.body?.contains("CI follow-up") == true)
+    XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(3) ?? []), [
+      "Tasks · 0/1 complete",
+      "Agent started",
+      "Cron scheduled",
+    ])
+  }
+
   func testParseWorkChatTranscriptAppliesTranscriptRetractionsByMessageId() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Superseded answer","messageId":"provider-message-1","turnId":"turn-1"}}
@@ -14044,19 +14073,19 @@ final class ADETests: XCTestCase {
   func testWorkContextCompactSummaryParsesAutoAndTokens() {
     let parsed = WorkContextCompactSummary.parse("auto compact freed ~12,400 tokens")
     XCTAssertEqual(parsed.triggerLabel, "AUTO")
-    XCTAssertEqual(parsed.tokensFreedLabel, "~12k tokens freed")
+    XCTAssertEqual(parsed.tokensLabel, "~12k tokens freed")
   }
 
   func testWorkContextCompactSummaryParsesManualTriggerWithoutTokens() {
     let parsed = WorkContextCompactSummary.parse("Manual compaction ran")
     XCTAssertEqual(parsed.triggerLabel, "MANUAL")
-    XCTAssertNil(parsed.tokensFreedLabel)
+    XCTAssertNil(parsed.tokensLabel)
   }
 
   func testWorkContextCompactSummaryEmptyInputReturnsDefaults() {
     let parsed = WorkContextCompactSummary.parse(nil)
     XCTAssertNil(parsed.triggerLabel)
-    XCTAssertNil(parsed.tokensFreedLabel)
+    XCTAssertNil(parsed.tokensLabel)
   }
 
   func testWorkContextCompactLifecycleMergesStartedAndCompletedCard() {

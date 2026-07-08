@@ -13,6 +13,7 @@ import {
 } from "../format";
 import {
   aggregateChatBlocks,
+  type ActivityBundleEntry,
   type AggregatedBlock,
   type FileChangeEntry,
   type PlanStep,
@@ -919,6 +920,66 @@ function runtimeActivityRows(
   return out;
 }
 
+function activityKindLabel(kind: ActivityBundleEntry["kind"]): string {
+  if (kind === "task") return "task";
+  if (kind === "schedule") return "schedule";
+  if (kind === "workflow") return "workflow";
+  return "agent";
+}
+
+function activityBundleRows(
+  block: Extract<AggregatedBlock, { kind: "activity-bundle" }>,
+  spinFrame: string,
+  expandedGroupIds: Set<string>,
+): RenderedChatRow[] {
+  if (!block.entries.length) return [];
+  const expandKey = workGroupExpandKey(block.id);
+  const expanded = expandedGroupIds.has(expandKey);
+  const latest = block.entries[block.entries.length - 1]!;
+  const glyph = activityStatusGlyph(latest.status, spinFrame);
+  const headerRuns: InlineRun[] = [
+    { text: expanded ? "▾ " : "▸ ", color: theme.color.t3 },
+    { text: "Activity", color: theme.color.t2, bold: true },
+    { text: ` (${block.entries.length})`, color: theme.color.t4 },
+  ];
+  if (!expanded) {
+    headerRuns.push({ text: "  " });
+    headerRuns.push({ text: glyph, color: ACTIVITY_STATUS_COLOR[latest.status] });
+    headerRuns.push({ text: ` ${activityKindLabel(latest.kind)}`, color: theme.color.t1 });
+    headerRuns.push({ text: `  ${truncateLongLine(latest.label)}`, color: theme.color.t3 });
+    if (latest.detail) headerRuns.push({ text: `  ${truncateLongLine(latest.detail)}`, color: theme.color.t4 });
+  }
+  const out: RenderedChatRow[] = [{
+    id: block.id,
+    tone: "work",
+    text: runsPlainText(headerRuns),
+    runs: headerRuns,
+    rail: null,
+    expandableGroupId: expandKey,
+  }];
+  if (!expanded) return out;
+  const { shown, remaining } = visibleEntries(block.entries);
+  for (const entry of shown) {
+    const entryGlyph = activityStatusGlyph(entry.status, spinFrame);
+    const runs: InlineRun[] = [
+      { text: "    " },
+      { text: entryGlyph, color: ACTIVITY_STATUS_COLOR[entry.status] },
+      { text: ` ${activityKindLabel(entry.kind)}`, color: theme.color.t1 },
+      { text: `  ${truncateLongLine(entry.label)}`, color: theme.color.t3 },
+    ];
+    if (entry.detail) runs.push({ text: `  ${truncateLongLine(entry.detail)}`, color: theme.color.t4 });
+    out.push({
+      id: `${block.id}:${entry.id}`,
+      tone: "work",
+      text: runsPlainText(runs),
+      runs,
+      rail: null,
+    });
+  }
+  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
+  return out;
+}
+
 /**
  * Collapsed reasoning row — mirrors the desktop MinimalThought line:
  * `▸ Thinking… <preview>` while live, `▸ Thought · <preview>` once done.
@@ -1158,6 +1219,8 @@ function rowsForBlock(
       return filesChangedGroupRows(block, width, spinFrame, expandedGroupIds);
     case "runtime-activity":
       return runtimeActivityRows(block, spinFrame);
+    case "activity-bundle":
+      return activityBundleRows(block, spinFrame, expandedGroupIds);
     case "reasoning":
       return reasoningRows(block, spinFrame);
     case "compaction":

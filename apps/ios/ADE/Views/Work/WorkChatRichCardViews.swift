@@ -1068,7 +1068,7 @@ struct WorkEventCardView: View {
   /// reads like prose.
   private func isRibbonKind(_ kind: String) -> Bool {
     switch kind {
-    case "status", "activity", "notice", "todo", "autoApproval",
+    case "status", "activity", "activityBundle", "notice", "todo", "autoApproval",
          "pendingInputResolved", "webSearch", "promptSuggestion",
          "toolUseSummary":
       return true

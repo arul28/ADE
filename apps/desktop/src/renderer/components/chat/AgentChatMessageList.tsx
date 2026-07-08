@@ -76,6 +76,8 @@ import {
   readRecord,
   summarizeDiffStats,
   summarizeInlineText,
+  type ChatActivityBundleEvent,
+  type ChatActivityBundleItem,
   type ChatTranscriptGroupedEnvelope as TranscriptGroupedEnvelope,
   type ChatTranscriptRenderEnvelope as TranscriptRenderEnvelope,
 } from "./chatTranscriptRows";
@@ -850,6 +852,203 @@ function InlineDisclosureRow({
       {expandable && open ? (
         <div className="ml-5 mt-1 space-y-2 border-l border-violet-400/10 pl-3">
           {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function activityBundleTaskId(item: ChatActivityBundleItem): string | null {
+  const event = item.event;
+  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
+    return event.agentId ?? event.taskId;
+  }
+  if (event.type === "scheduled_work_update") return event.sourceTaskId ?? event.id;
+  return null;
+}
+
+function activityBundleKind(item: ChatActivityBundleItem): "task" | "agent" | "workflow" | "schedule" {
+  const event = item.event;
+  if (event.type === "todo_update") return "task";
+  if (event.type === "scheduled_work_update") return "schedule";
+  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
+    return event.workflowName || event.taskType === "local_workflow" ? "workflow" : "agent";
+  }
+  return "agent";
+}
+
+function activityBundleStatus(item: ChatActivityBundleItem): string {
+  const event = item.event;
+  if (event.type === "todo_update") {
+    const completed = event.items.filter((task) => task.status === "completed").length;
+    return event.items.length ? `${completed}/${event.items.length} complete` : "updated";
+  }
+  if (event.type === "scheduled_work_update") return event.status.replace(/_/g, " ");
+  if (event.type === "subagent_started") return event.background ? "background started" : "started";
+  if (event.type === "subagent_progress") return "running";
+  return event.status === "stopped" ? "stopped" : event.status;
+}
+
+function activityBundleTitle(item: ChatActivityBundleItem): string {
+  const event = item.event;
+  if (event.type === "todo_update") {
+    const active = event.items.find((task) => task.status === "in_progress") ?? event.items.find((task) => task.status !== "completed") ?? event.items.at(-1);
+    return active?.description?.trim() || "Task list updated";
+  }
+  if (event.type === "scheduled_work_update") {
+    return event.title?.trim()
+      || event.reason?.trim()
+      || event.prompt?.trim()
+      || (event.kind === "cron" ? "Cron schedule" : "Scheduled work");
+  }
+  const description = "description" in event ? event.description?.trim() : "";
+  const name = event.label?.trim()
+    || event.workflowName?.trim()
+    || event.agentType?.trim()
+    || description
+    || event.agentId
+    || event.taskId;
+  return event.type === "subagent_result" && event.status === "stopped"
+    ? `${name} stopped`
+    : name;
+}
+
+function activityBundleDetail(item: ChatActivityBundleItem): string | null {
+  const event = item.event;
+  if (event.type === "todo_update") {
+    const changed = event.items.filter((task) => task.status !== "pending");
+    return changed.slice(0, 3).map((task) => `${task.status.replace("_", " ")}: ${task.description}`).join(" · ") || null;
+  }
+  if (event.type === "scheduled_work_update") {
+    return event.summary?.trim()
+      || event.error?.trim()
+      || event.cron?.trim()
+      || event.nextRunAt?.trim()
+      || null;
+  }
+  if (event.type === "subagent_progress") return event.summary?.trim() || event.lastToolName?.trim() || null;
+  if (event.type === "subagent_result") return event.summary?.trim() || event.finalSummary?.trim() || null;
+  return event.description?.trim() || null;
+}
+
+function activityKindLabel(kind: ReturnType<typeof activityBundleKind>): string {
+  if (kind === "task") return "tasks";
+  if (kind === "schedule") return "schedule";
+  if (kind === "workflow") return "workflows";
+  return "agents";
+}
+
+function activityKindTone(kind: ReturnType<typeof activityBundleKind>): string {
+  if (kind === "task") return "border-cyan-300/14 bg-cyan-300/[0.055] text-cyan-100/72";
+  if (kind === "schedule") return "border-amber-300/14 bg-amber-300/[0.055] text-amber-100/72";
+  if (kind === "workflow") return "border-violet-300/14 bg-violet-300/[0.055] text-violet-100/72";
+  return "border-violet-300/12 bg-violet-300/[0.05] text-violet-100/72";
+}
+
+function activityStatusIcon(item: ChatActivityBundleItem): React.ReactNode {
+  const status = activityBundleStatus(item);
+  if (status.includes("failed")) return <XCircle size={12} weight="bold" className="text-red-300/80" />;
+  if (status.includes("stopped") || status.includes("cancelled")) return <Warning size={12} weight="fill" className="text-amber-300/80" />;
+  if (status.includes("complete")) return <CheckCircle size={12} weight="bold" className="text-emerald-300/80" />;
+  return <Circle size={10} weight="fill" className="text-sky-300/75" />;
+}
+
+function openChatInfoFromActivity(sessionId: string | null | undefined, taskId: string | null): void {
+  try {
+    window.dispatchEvent(
+      new CustomEvent("ade:chat:open-info", {
+        detail: {
+          ...(sessionId ? { sessionId } : {}),
+          ...(taskId ? { taskId } : {}),
+        },
+      }),
+    );
+  } catch {
+    /* no-op */
+  }
+}
+
+function ChatActivityBundle({
+  event,
+  sessionId,
+}: {
+  event: ChatActivityBundleEvent;
+  sessionId?: string | null;
+}) {
+  const [open, setOpen] = useState(event.items.length <= 3);
+  const kinds = Array.from(new Set(event.items.map(activityBundleKind)));
+  const primaryKind = kinds[0] ?? "agent";
+  const uniqueAgents = new Set(event.items.map(activityBundleTaskId).filter((id): id is string => Boolean(id)));
+  const summary = event.items.length === 1
+    ? `${activityKindLabel(primaryKind).replace(/s$/, "")}: ${activityBundleTitle(event.items[0]!)}`
+    : `${event.items.length} activity updates`;
+  const taskId = event.items.length === 1 ? activityBundleTaskId(event.items[0]!) : null;
+
+  return (
+    <div className="w-fit min-w-0 max-w-[min(100%,70ch)] rounded-lg border border-white/[0.055] bg-white/[0.028] px-2.5 py-2 shadow-[0_10px_30px_rgba(0,0,0,0.10)]">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-fg/34 transition-colors hover:bg-white/[0.045] hover:text-fg/60"
+          title={open ? "Collapse activity" : "Expand activity"}
+        >
+          {open ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />}
+        </button>
+        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-violet-300/[0.075] text-violet-100/70">
+          {primaryKind === "task" ? <ListChecks size={13} weight="regular" /> : primaryKind === "schedule" ? <Target size={13} weight="duotone" /> : <Robot size={13} weight="duotone" />}
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span className="truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/76">{summary}</span>
+            {uniqueAgents.size > 1 ? (
+              <span className="rounded-md border border-violet-300/12 bg-violet-300/[0.05] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-violet-100/55">
+                {uniqueAgents.size} agents
+              </span>
+            ) : null}
+            {kinds.map((kind) => (
+              <span key={kind} className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em]", activityKindTone(kind))}>
+                {activityKindLabel(kind)}
+              </span>
+            ))}
+          </div>
+        </div>
+        <button
+          type="button"
+          className="shrink-0 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.14em] text-fg/45 transition-colors hover:border-white/[0.14] hover:text-fg/72"
+          onClick={() => openChatInfoFromActivity(sessionId, taskId)}
+        >
+          Open
+        </button>
+      </div>
+      {open ? (
+        <div className="ml-8 mt-2 space-y-1.5 border-l border-white/[0.06] pl-3">
+          {event.items.map((item) => {
+            const kind = activityBundleKind(item);
+            const detail = activityBundleDetail(item);
+            return (
+              <button
+                key={item.key}
+                type="button"
+                className="group flex w-full min-w-0 items-start gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-white/[0.035]"
+                onClick={() => openChatInfoFromActivity(sessionId, activityBundleTaskId(item))}
+              >
+                <span className="mt-0.5 shrink-0">{activityStatusIcon(item)}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+                    <span className="truncate font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/72">{activityBundleTitle(item)}</span>
+                    <span className={cn("rounded-md border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*7.5/14)] font-bold uppercase tracking-[0.14em]", activityKindTone(kind))}>
+                      {activityBundleStatus(item)}
+                    </span>
+                  </span>
+                  {detail ? (
+                    <span className="mt-0.5 block truncate text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/38">{summarizeInlineText(detail, 140)}</span>
+                  ) : null}
+                </span>
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>
@@ -3856,6 +4055,9 @@ function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): stri
   if (envelope.event.type === "work_log_group") {
     return envelope.event.turnId ?? envelope.event.entries[0]?.turnId ?? null;
   }
+  if (envelope.event.type === "activity_bundle") {
+    return envelope.event.turnId ?? envelope.event.items.find((item) => item.event.turnId)?.event.turnId ?? null;
+  }
   return "turnId" in envelope.event ? envelope.event.turnId ?? null : null;
 }
 
@@ -3956,6 +4158,8 @@ const EventRow = React.memo(function EventRow({
             />
           </div>
         )
+        : envelope.event.type === "activity_bundle"
+          ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
             turnModel,

@@ -13219,6 +13219,9 @@ export function createAgentChatService(args: {
             || runtime.query !== sessionQuery
             || runtime.idleReaderGeneration !== generation
           ) {
+            if (handoffToForegroundIfActive(nextMessage, next)) {
+              return;
+            }
             return;
           }
           if (handoffToForegroundIfActive(nextMessage, next)) {

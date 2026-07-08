@@ -89,6 +89,25 @@ export type ChatWorkLogGroupEvent = {
   turnId?: string | null;
 };
 
+export type ChatActivityBundleItem = {
+  key: string;
+  timestamp: string;
+  event: Extract<AgentChatEvent, {
+    type:
+      | "todo_update"
+      | "subagent_started"
+      | "subagent_progress"
+      | "subagent_result"
+      | "scheduled_work_update";
+  }>;
+};
+
+export type ChatActivityBundleEvent = {
+  type: "activity_bundle";
+  items: ChatActivityBundleItem[];
+  turnId?: string | null;
+};
+
 export type ChatTranscriptRenderEvent =
   | ChatTranscriptVisibleEvent
   | RenderReasoningEvent
@@ -103,7 +122,7 @@ export type ChatTranscriptRenderEnvelope = {
 export type ChatTranscriptGroupedEnvelope = {
   key: string;
   timestamp: string;
-  event: ChatTranscriptRenderEvent | ChatWorkLogGroupEvent;
+  event: ChatTranscriptRenderEvent | ChatWorkLogGroupEvent | ChatActivityBundleEvent;
 };
 
 type PlanTranscriptEvent = Extract<AgentChatEvent, { type: "plan" }>;
@@ -707,10 +726,6 @@ export function appendCollapsedChatTranscriptEvent(
     }
   }
 
-  if (event.type === "subagent_started" || event.type === "subagent_progress" || event.type === "subagent_result") {
-    return;
-  }
-
   if (event.type === "transcript_retraction") {
     const retractedIds = new Set(event.messageIds.map((messageId) => messageId.trim()).filter(Boolean));
     if (!retractedIds.size) return;
@@ -972,6 +987,36 @@ export function groupConsecutiveWorkLogRows(
       continue;
     }
 
+    if (isActivityBundleSourceEvent(row.event)) {
+      const items: ChatActivityBundleItem[] = [];
+      const baseTurnId = activityBundleTurnId(row.event);
+      let cursor = index;
+      while (cursor < rows.length) {
+        const candidate = rows[cursor]!;
+        if (!isActivityBundleSourceEvent(candidate.event)) break;
+        const candidateEvent = candidate.event;
+        const candidateTurnId = activityBundleTurnId(candidateEvent);
+        if (items.length > 0 && baseTurnId !== candidateTurnId) break;
+        items.push({
+          key: candidate.key,
+          timestamp: candidate.timestamp,
+          event: candidateEvent,
+        });
+        cursor += 1;
+      }
+      grouped.push({
+        key: `activity:${row.key}`,
+        timestamp: rows[cursor - 1]!.timestamp,
+        event: {
+          type: "activity_bundle",
+          items,
+          turnId: baseTurnId,
+        },
+      });
+      index = cursor;
+      continue;
+    }
+
     // Group consecutive reasoning events into a single merged reasoning event
     if (row.event.type === "reasoning") {
       let mergedText = (row.event as any).text ?? "";
@@ -1026,6 +1071,18 @@ export function groupConsecutiveWorkLogRows(
   }
 
   return consolidateInterruptedTerminus(grouped);
+}
+
+function isActivityBundleSourceEvent(event: ChatTranscriptRenderEvent): event is ChatActivityBundleItem["event"] {
+  return event.type === "todo_update"
+    || event.type === "subagent_started"
+    || event.type === "subagent_progress"
+    || event.type === "subagent_result"
+    || event.type === "scheduled_work_update";
+}
+
+function activityBundleTurnId(event: ChatActivityBundleItem["event"]): string | null {
+  return "turnId" in event ? event.turnId ?? null : null;
 }
 
 function classifyActivityPhaseRow(

@@ -292,8 +292,8 @@ describe("chatTranscriptRows", () => {
     expect(rows[0]!.event.messageId).toBe("assistant-message-1");
   });
 
-  it("hides subagent lifecycle rows and keeps adjacent assistant text merged", () => {
-    const rows = collapseChatTranscriptEvents([
+  it("renders subagent lifecycle as a compact activity bundle between assistant text", () => {
+    const rows = groupEvents([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -326,12 +326,17 @@ describe("chatTranscriptRows", () => {
       },
     ]);
 
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(3);
     expect(rows[0]!.event.type).toBe("text");
-    if (rows[0]!.event.type !== "text") {
+    expect(rows[1]!.event.type).toBe("activity_bundle");
+    expect(rows[2]!.event.type).toBe("text");
+    if (rows[0]!.event.type !== "text" || rows[1]!.event.type !== "activity_bundle" || rows[2]!.event.type !== "text") {
       throw new Error("Expected a text event");
     }
-    expect(rows[0]!.event.text).toBe("Hello world");
+    expect(rows[0]!.event.text).toBe("Hello");
+    expect(rows[1]!.event.items).toHaveLength(1);
+    expect(rows[1]!.event.items[0]!.event.type).toBe("subagent_started");
+    expect(rows[2]!.event.text).toBe(" world");
   });
 
   it("updates streaming command and file-change entries in place instead of stacking", () => {
@@ -1357,8 +1362,8 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[0]!.event.text).toBe("Part 1. Part 2.");
   });
 
-  it("hides raw subagent_progress rows from the transcript", () => {
-    const rows = collapseChatTranscriptEvents([
+  it("bundles raw subagent progress rows in the grouped transcript", () => {
+    const rows = groupEvents([
       {
         sessionId: "session-1",
         timestamp: "2026-03-17T10:00:00.000Z",
@@ -1380,7 +1385,12 @@ describe("chatTranscriptRows edge cases", () => {
         },
       },
     ]);
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
+    expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
+      "subagent_progress",
+      "subagent_progress",
+    ]);
   });
 
   it("collapses todo_update events within the same turn", () => {
@@ -1410,6 +1420,94 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows).toHaveLength(1);
     if (rows[0]!.event.type !== "todo_update") throw new Error("Expected todo_update");
     expect(rows[0]!.event.items).toHaveLength(2);
+  });
+
+  it("bundles adjacent task, subagent, scheduled work, and workflow status updates by turn", () => {
+    const rows = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "todo_update",
+          turnId: "turn-1",
+          items: [{ id: "task-1", description: "Inspect chat activity", status: "in_progress" }],
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-1",
+          description: "Review transcript grouping",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "scheduled",
+          title: "Follow-up cron",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: {
+          type: "subagent_result",
+          taskId: "workflow-1",
+          taskType: "local_workflow",
+          workflowName: "Quality pass",
+          status: "completed",
+          summary: "Quality pass completed",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "activity_bundle") throw new Error("Expected activity_bundle");
+    expect(rows[0]!.event.turnId).toBe("turn-1");
+    expect(rows[0]!.event.items.map((item) => item.event.type)).toEqual([
+      "todo_update",
+      "subagent_started",
+      "scheduled_work_update",
+      "subagent_result",
+    ]);
+  });
+
+  it("keeps activity bundles separated when turn ids change", () => {
+    const rows = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-1",
+          description: "First turn",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "subagent_started",
+          taskId: "agent-2",
+          description: "Second turn",
+          turnId: "turn-2",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.event.type).toBe("activity_bundle");
+    expect(rows[1]!.event.type).toBe("activity_bundle");
   });
 
   it("batches Claude PreToolUse hook errors into compact work-log groups", () => {
