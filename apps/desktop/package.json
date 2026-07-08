@@ -366,6 +366,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": false,
+      "x64ArchFiles": "**/{claude,codex,opencode,crsqlite.dylib}",
       "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "fileAssociations": [

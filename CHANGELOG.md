@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Fixed hidden configured pairing PIN state across desktop Settings, `ade sync web`, and iOS web-client pairing surfaces.
-- Fixed release runtime archive validation so macOS packaging checks the expected per-architecture runtime paths.
+- Fixed release runtime archive validation and universal macOS packaging inputs so packaging checks expected per-architecture runtime paths and includes the Claude SDK x64 sidecar.
 
 ## [1.2.14] - 2026-07-08
 

@@ -11,7 +11,7 @@ v1.2.15 tightens release automation, fixes web-client pairing state when PINs ar
 
 - **Local-first release flow.** ADE's release skill now encodes the desktop and TestFlight release rules, including no-op detection, per-surface scope checks, patch-only desktop bumps, build-number-only iOS updates, and artifact verification before publication.
 - **Web-client pairing state.** The desktop Settings UI and `ade sync web` now report hidden configured PINs consistently, so paired web-client controls do not imply the PIN is missing just because it is not printed.
-- **Release archive validation.** The release workflow now validates runtime archives with the expected per-architecture paths, reducing false failures during macOS packaging.
+- **Release archive validation.** The release workflow now validates runtime archives with the expected per-architecture paths and seeds the Claude SDK x64 sidecar for universal macOS builds, reducing false failures during packaging.
 
 ---
 

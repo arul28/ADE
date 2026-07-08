@@ -222,6 +222,12 @@ async function seedFromAppBundle(x64AppPath) {
   );
   await copyFromAppBundle(
     x64AppPath,
+    "Contents/Resources/app.asar.unpacked/node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64",
+    "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64",
+    "Claude SDK x64 package",
+  );
+  await copyFromAppBundle(
+    x64AppPath,
     "Contents/Resources/app.asar.unpacked/vendor/crsqlite/darwin-x64",
     "vendor/crsqlite/darwin-x64",
     "crsqlite x64 payload",
@@ -241,6 +247,12 @@ async function seedFromLockfileAndPinnedArtifacts() {
     "node_modules/opencode-darwin-x64",
     "node_modules/opencode-darwin-x64",
     "OpenCode x64 package",
+  );
+  await seedPackageFromResolvedUrl(
+    packageLock,
+    "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64",
+    "node_modules/@anthropic-ai/claude-agent-sdk-darwin-x64",
+    "Claude SDK x64 package",
   );
   await seedCrsqliteDarwinX64();
 }
@@ -262,6 +274,10 @@ async function assertUniversalInputsReady() {
   await assertPathExists(
     path.join(appDir, "node_modules", "opencode-darwin-x64", "bin", "opencode"),
     "x64 OpenCode CLI binary",
+  );
+  await assertPathExists(
+    path.join(appDir, "node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-x64", "claude"),
+    "x64 Claude SDK CLI binary",
   );
   await assertPathExists(
     path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib"),
