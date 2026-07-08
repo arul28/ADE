@@ -83,8 +83,8 @@ struct DictationMicButton: View {
     // Observed at the top level so the transition back to idle is seen even
     // though the idle mic sub-view is removed while the pill is shown. The
     // host collapses its other controls whenever the dictation UI is active —
-    // either actively recording OR finalizing after Done — so the pill never
-    // briefly coexists with the normal cluster.
+    // starting, preparing, recording, or finalizing after Done — so the pill
+    // never briefly coexists with the normal cluster.
     .onChange(of: controller.isRecording) { _, _ in
       publishRecordingState()
     }
@@ -135,7 +135,9 @@ struct DictationMicButton: View {
       RecordingPill(
         elapsedTime: controller.elapsedTime,
         audioLevel: controller.audioLevel,
-        isFinishing: controller.isFinishing || controller.isStarting || controller.isPreparing,
+        isStarting: controller.recordingPillIsStarting,
+        isFinishing: controller.isFinishing,
+        startupLabel: controller.recordingPillStartupLabel,
         onCancel: cancelRecording,
         onDone: finishRecording
       )

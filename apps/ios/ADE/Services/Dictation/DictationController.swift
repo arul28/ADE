@@ -64,6 +64,14 @@ final class DictationController: ObservableObject {
     @Published private(set) var isStarting = false
     @Published private(set) var isPreparing = false
 
+    var recordingPillIsStarting: Bool {
+        isStarting || isPreparing
+    }
+
+    var recordingPillStartupLabel: String {
+        isPreparing ? "Preparing..." : "Starting..."
+    }
+
     private let glossary: VoiceGlossary
 
     // MARK: - Insertion target

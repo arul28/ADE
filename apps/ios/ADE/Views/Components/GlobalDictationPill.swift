@@ -7,9 +7,8 @@ import SwiftUI
 /// and waveform and tap Done / Cancel without returning to the composer.
 ///
 /// It observes the injected app-level `DictationController` and shows itself
-/// whenever a recording is in flight (`isRecording`) or finalizing
-/// (`isFinishing`). It deliberately does not hide based on whether a composer's
-/// own pill is also visible.
+/// whenever startup, recording, or finalizing is in flight. It deliberately
+/// does not hide based on whether a composer's own pill is also visible.
 struct GlobalDictationPill: View {
   @EnvironmentObject private var controller: DictationController
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -24,7 +23,9 @@ struct GlobalDictationPill: View {
         RecordingPill(
           elapsedTime: controller.elapsedTime,
           audioLevel: controller.audioLevel,
-          isFinishing: controller.isFinishing || controller.isStarting || controller.isPreparing,
+          isStarting: controller.recordingPillIsStarting,
+          isFinishing: controller.isFinishing,
+          startupLabel: controller.recordingPillStartupLabel,
           onCancel: { controller.cancelRecording() },
           onDone: { controller.finishRecording(origin: .globalPill) },
           opaque: true
