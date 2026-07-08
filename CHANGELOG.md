@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.15] - 2026-07-08
+
+### Added
+
+- Added the local-first ADE release skill, covering no-op detection, independent desktop and iOS release scope, patch-only desktop bumps, build-number-only TestFlight updates, artifact verification, and recovery rules.
+- Added mobile Work chat image attachments, including attachment trays, kickoff payload support, sync-backed canonical state, and regression coverage.
+
+### Changed
+
+- Improved iOS relay fallback when Tailscale is unavailable, with stronger remote-model decoding and relay-backed connection tests.
+- Improved mobile composer and dictation controls with safer text traits for agent prompts and clearer dictation startup/recording state.
+
+### Fixed
+
+- Fixed hidden configured pairing PIN state across desktop Settings, `ade sync web`, and iOS web-client pairing surfaces.
+- Fixed release runtime archive validation so macOS packaging checks the expected per-architecture runtime paths.
+
 ## [1.2.14] - 2026-07-08
 
 ### Added
@@ -580,7 +597,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.14...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.15...HEAD
+[1.2.15]: https://github.com/arul28/ADE/compare/v1.2.14...v1.2.15
 [1.2.14]: https://github.com/arul28/ADE/compare/v1.2.13...v1.2.14
 [1.2.13]: https://github.com/arul28/ADE/compare/v1.2.12...v1.2.13
 [1.2.12]: https://github.com/arul28/ADE/compare/v1.2.11...v1.2.12

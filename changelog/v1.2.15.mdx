@@ -1,0 +1,23 @@
+---
+title: "v1.2.15"
+description: "Release notes for ADE v1.2.15 - July 8, 2026"
+---
+
+v1.2.15 tightens release automation, fixes web-client pairing state when PINs are hidden, and brings a set of mobile Work improvements: image attachments, relay fallback recovery, dictation startup feedback, and safer text entry.
+
+---
+
+## Desktop and CLI
+
+- **Local-first release flow.** ADE's release skill now encodes the desktop and TestFlight release rules, including no-op detection, per-surface scope checks, patch-only desktop bumps, build-number-only iOS updates, and artifact verification before publication.
+- **Web-client pairing state.** The desktop Settings UI and `ade sync web` now report hidden configured PINs consistently, so paired web-client controls do not imply the PIN is missing just because it is not printed.
+- **Release archive validation.** The release workflow now validates runtime archives with the expected per-architecture paths, reducing false failures during macOS packaging.
+
+---
+
+## iOS
+
+- **Chat image attachments.** Mobile Work chats can attach images from the composer, show attachment trays in new and existing chats, carry attachments through kickoff, and preserve canonical chat state in sync.
+- **Relay fallback without Tailscale.** iOS sync can recover through the relay path when Tailscale is unavailable, with stronger remote-model decoding and regression coverage for relay-backed connection flows.
+- **Composer input polish.** Prompt fields now disable autocorrect where agent commands and triggers need literal text, reducing accidental substitutions in Work, Hub, Linear, and CTO flows.
+- **Dictation startup feedback.** The mobile dictation control now reflects startup and recording state more clearly while the recorder is preparing.
