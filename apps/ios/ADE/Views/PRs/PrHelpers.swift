@@ -508,6 +508,24 @@ struct PrDetailRouteScope: Equatable {
   }
 }
 
+func prDetailWarmEntryMatchesRequestedScope(
+  _ entry: PrDetailWarmEntry,
+  requestedRepoScope: PrDetailRouteScope?
+) -> Bool {
+  guard let requestedRepoScope else { return true }
+  let repoOwner = firstNonEmptyPrRepoValue(entry.pr?.repoOwner, entry.githubItem?.repoOwner)
+  let repoName = firstNonEmptyPrRepoValue(entry.pr?.repoName, entry.githubItem?.repoName)
+  guard let repoOwner, let repoName else { return false }
+  return repoOwner.caseInsensitiveCompare(requestedRepoScope.repoOwner) == .orderedSame
+    && repoName.caseInsensitiveCompare(requestedRepoScope.repoName) == .orderedSame
+}
+
+private func firstNonEmptyPrRepoValue(_ values: String?...) -> String? {
+  values
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .first { !$0.isEmpty }
+}
+
 enum PrNavigationTarget: Equatable {
   case detail(prId: String, laneId: String?, repoScope: PrDetailRouteScope?)
   case github(GitHubPrListItem)

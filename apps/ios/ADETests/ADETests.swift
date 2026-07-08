@@ -6817,6 +6817,65 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testPrWarmEntryMatchesRequestedRepoScope() {
+    let pr = PullRequestListItem(
+      id: "ade-pr",
+      laneId: "lane-ade-pr",
+      laneName: nil,
+      projectId: "project-1",
+      repoOwner: "arul",
+      repoName: "ADE",
+      githubPrNumber: 42,
+      githubUrl: "https://github.com/arul/ADE/pull/42",
+      title: "arul/ADE PR 42",
+      state: "open",
+      baseBranch: "main",
+      headBranch: "feature/42",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 1,
+      deletions: 0,
+      lastSyncedAt: nil,
+      createdAt: "2026-05-14T00:00:00.000Z",
+      updatedAt: "2026-05-14T00:00:00.000Z",
+      adeKind: nil,
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+    let entry = PrDetailWarmEntry(
+      pr: pr,
+      githubItem: nil,
+      snapshot: nil,
+      reviewThreads: [],
+      actionRuns: [],
+      activityEvents: [],
+      deployments: [],
+      aiSummary: nil,
+      groupMembers: [],
+      capabilities: nil,
+      loadedAt: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertTrue(prDetailWarmEntryMatchesRequestedScope(entry, requestedRepoScope: nil))
+    XCTAssertTrue(
+      prDetailWarmEntryMatchesRequestedScope(
+        entry,
+        requestedRepoScope: PrDetailRouteScope(repoOwner: "ARUL", repoName: "ade")
+      )
+    )
+    XCTAssertFalse(
+      prDetailWarmEntryMatchesRequestedScope(
+        entry,
+        requestedRepoScope: PrDetailRouteScope(repoOwner: "elsewhere", repoName: "ADE")
+      )
+    )
+  }
+
   func testPrNavigationTargetUsesGitHubItemWhenNumberRouteHasNoLocalPr() {
     let githubItem = GitHubPrListItem(
       id: "repo-pr-42",

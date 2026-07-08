@@ -237,6 +237,7 @@ describe("prPollingService", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(events.filter((event) => event.type === "pr-notification" && event.kind === "opened")).toHaveLength(0);
+    expect(events.filter((event) => event.type === "prs-updated").length).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps rate-limit backoff ahead of hot wakeups", async () => {

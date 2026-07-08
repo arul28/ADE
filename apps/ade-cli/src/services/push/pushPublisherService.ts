@@ -516,6 +516,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
   };
 
+  const dropTerminalRuns = (): void => {
+    for (const [sessionId, run] of runs) {
+      if (isTerminalPhase(run.phase)) runs.delete(sessionId);
+    }
+  };
+
   const schedulePrActivityExpiry = (nowMs: number): void => {
     if (prExpiryTimer) {
       clearTimeout(prExpiryTimer);
@@ -580,9 +586,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     nowMs: number,
   ): { item: PushRelayLiveActivityItem; commit: () => void } | null => {
     if (deviceIds.length === 0) return null;
-    const allRuns = [...runs.values()];
     prunePrActivities(nowMs);
     schedulePrActivityExpiry(nowMs);
+    if (prActivities.size > 0) dropTerminalRuns();
+    const allRuns = [...runs.values()];
     const allPrActivities = [...prActivities.values()];
     const contentState = buildAgentRunsContentState(allRuns, nowMs, allPrActivities);
     const activeCount = contentState.activeCount;
@@ -647,9 +654,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         liveActivityStarted = false;
         lastLiveActivityFingerprint = null;
         // Once the aggregate ends, drop terminal rows so the next run starts fresh.
-        for (const [sessionId, run] of runs) {
-          if (isTerminalPhase(run.phase)) runs.delete(sessionId);
-        }
+        dropTerminalRuns();
       }
     };
 

@@ -1095,14 +1095,19 @@ struct PrDetailView: View {
   }
 
   private func focusCommitInTimeline(_ commit: PrCommit) {
+    let missingCommitMessage = "That commit is not in the loaded conversation timeline yet."
     let timelineWasMounted = selectedTab == .overview || selectedTab == .activity
     if !timelineWasMounted {
       timelineSectionMounted = false
     }
     selectedTab = .overview
+    pendingTimelineScrollId = nil
     guard let anchorId = timelineAnchorId(for: commit) else {
-      errorMessage = "That commit is not in the loaded conversation timeline yet."
+      errorMessage = missingCommitMessage
       return
+    }
+    if errorMessage == missingCommitMessage {
+      errorMessage = nil
     }
     ADEHaptics.light()
     pendingTimelineScrollId = anchorId
@@ -1412,7 +1417,10 @@ struct PrDetailView: View {
   private func seedFromWarmCacheIfNeeded() {
     guard !hasSeededFromWarmCache, !hasPrDetailData else { return }
     hasSeededFromWarmCache = true
-    guard let entry = syncService.prDetailWarmEntry(for: prId) else { return }
+    guard
+      let entry = syncService.prDetailWarmEntry(for: prId),
+      prDetailWarmEntryMatchesRequestedScope(entry, requestedRepoScope: requestedRepoScope)
+    else { return }
     pr = entry.pr
     githubItem = entry.githubItem
     snapshot = entry.snapshot

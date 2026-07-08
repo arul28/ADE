@@ -453,6 +453,44 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("drops terminal run rows before PR-backed Live Activity updates", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-prs", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    await publisher.start();
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publish.mock.calls[0][0].liveActivity[0].contentState.runs[0].id).toBe("s-1");
+    publish.mockClear();
+
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "status", turnStatus: "completed" } });
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "Actual PR title",
+      laneId: null,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const liveActivity = publish.mock.calls.at(-1)![0].liveActivity[0];
+    expect(liveActivity.event).toBe("update");
+    expect(liveActivity.contentState.prs[0].prNumber).toBe(42);
+    expect(liveActivity.contentState.runs.find((run: { id: string }) => run.id === "s-1")).toBeUndefined();
+    expect(publisher._debug.runs.has("s-1")).toBe(false);
+
+    publisher.dispose();
+  });
+
   it("carries actionable fields: category + sessionId/itemId on the alert, itemId on the waiting LA row, badge count", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();
