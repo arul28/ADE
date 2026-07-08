@@ -996,7 +996,7 @@ export function groupConsecutiveWorkLogRows(
         if (!isActivityBundleSourceEvent(candidate.event)) break;
         const candidateEvent = candidate.event;
         const candidateTurnId = activityBundleTurnId(candidateEvent);
-        if (items.length > 0 && baseTurnId !== candidateTurnId) break;
+        if (items.length > 0 && (!baseTurnId || !candidateTurnId || baseTurnId !== candidateTurnId)) break;
         items.push({
           key: candidate.key,
           timestamp: candidate.timestamp,

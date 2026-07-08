@@ -946,6 +946,13 @@ function activityKindTone(kind: ReturnType<typeof activityBundleKind>): string {
 }
 
 function activityStatusIcon(item: ChatActivityBundleItem): React.ReactNode {
+  if (item.event.type === "todo_update") {
+    const total = item.event.items.length;
+    const completed = item.event.items.filter((task) => task.status === "completed").length;
+    return total > 0 && completed === total
+      ? <CheckCircle size={12} weight="bold" className="text-emerald-300/80" />
+      : <Circle size={10} weight="fill" className="text-sky-300/75" />;
+  }
   const status = activityBundleStatus(item);
   if (status.includes("failed")) return <XCircle size={12} weight="bold" className="text-red-300/80" />;
   if (status.includes("stopped") || status.includes("cancelled")) return <Warning size={12} weight="fill" className="text-amber-300/80" />;

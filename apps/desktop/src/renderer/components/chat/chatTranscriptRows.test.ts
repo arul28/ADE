@@ -1510,6 +1510,39 @@ describe("chatTranscriptRows edge cases", () => {
     expect(rows[1]!.event.type).toBe("activity_bundle");
   });
 
+  it("keeps activity bundles separated when turn ids are missing", () => {
+    const rows = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "todo_update",
+          items: [{ id: "task-1", description: "First unknown turn task", status: "in_progress" }],
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "scheduled_work_update",
+          id: "cron-1",
+          kind: "cron",
+          status: "scheduled",
+          title: "Unknown turn cron",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.event.type).toBe("activity_bundle");
+    expect(rows[1]!.event.type).toBe("activity_bundle");
+    if (rows[0]!.event.type !== "activity_bundle" || rows[1]!.event.type !== "activity_bundle") {
+      throw new Error("Expected activity bundles");
+    }
+    expect(rows[0]!.event.items).toHaveLength(1);
+    expect(rows[1]!.event.items).toHaveLength(1);
+  });
+
   it("batches Claude PreToolUse hook errors into compact work-log groups", () => {
     const grouped = groupEvents([
       {

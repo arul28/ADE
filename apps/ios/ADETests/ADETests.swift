@@ -8927,6 +8927,30 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testWorkTimelineKeepsActivityBundlesSeparatedByTurn() {
+    let raw = """
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"First turn task","status":"in_progress"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"subagent_started","taskId":"agent-1","description":"First turn agent","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":3,"event":{"type":"todo_update","turnId":"turn-2","items":[{"id":"task-2","description":"Second turn task","status":"in_progress"}]}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:03.000Z","sequence":4,"event":{"type":"scheduled_work_update","id":"cron-2","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"Second turn cron","turnId":"turn-2"}}
+    """
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: parseWorkChatTranscript(raw),
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+      return card
+    }
+
+    XCTAssertEqual(activityBundles.count, 2)
+    XCTAssertTrue(activityBundles[0].body?.contains("First turn agent") == true)
+    XCTAssertTrue(activityBundles[1].body?.contains("Second turn cron") == true)
+  }
+
   func testParseWorkChatTranscriptAppliesTranscriptRetractionsByMessageId() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"text","text":"Superseded answer","messageId":"provider-message-1","turnId":"turn-1"}}

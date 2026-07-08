@@ -1481,9 +1481,13 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
   var result: [WorkTimelineEntry] = []
   result.reserveCapacity(entries.count)
   var cluster: [WorkTimelineEntry] = []
+  var clusterTurnId: String?
 
   func flushCluster() {
-    defer { cluster.removeAll(keepingCapacity: true) }
+    defer {
+      cluster.removeAll(keepingCapacity: true)
+      clusterTurnId = nil
+    }
     guard cluster.count > 1 else {
       result.append(contentsOf: cluster)
       return
@@ -1516,7 +1520,14 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
   }
 
   for entry in entries {
-    if workActivityCard(from: entry) != nil {
+    if let card = workActivityCard(from: entry) {
+      let turnId = workActivityCardTurnId(from: card)
+      if !cluster.isEmpty && (clusterTurnId == nil || turnId == nil || clusterTurnId != turnId) {
+        flushCluster()
+      }
+      if cluster.isEmpty {
+        clusterTurnId = turnId
+      }
       cluster.append(entry)
     } else {
       flushCluster()
@@ -1533,6 +1544,19 @@ private func workActivityCard(from entry: WorkTimelineEntry) -> WorkEventCardMod
   case "activity", "todo": return card
   default: return nil
   }
+}
+
+private func workActivityCardId(sessionId: String, turnId: String?, fallback: String) -> String {
+  guard let turnId = normalizedWorkTurnId(turnId) else { return fallback }
+  return "\(fallback):activityTurn:\(sessionId):\(turnId)"
+}
+
+private func workActivityCardTurnId(from card: WorkEventCardModel) -> String? {
+  let parts = card.id.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+  guard let markerIndex = parts.firstIndex(of: "activityTurn"), markerIndex + 2 < parts.count else {
+    return nil
+  }
+  return normalizedWorkTurnId(parts[markerIndex + 2])
 }
 
 private func workActivityCardSummary(_ card: WorkEventCardModel) -> String {
@@ -2031,14 +2055,14 @@ private func eventCard(
         questionModel: questionModel,
         resolution: resolutionByItemId[itemId]
       )
-    case .todoUpdate(let items, _):
+    case .todoUpdate(let items, let turnId):
       let completed = items.filter { $0.lowercased().hasPrefix("completed:") }.count
       let active = items.first { $0.lowercased().hasPrefix("in progress:") }
         ?? items.first { !$0.lowercased().hasPrefix("completed:") }
         ?? items.last
       let progressLabel = items.isEmpty ? "updated" : "\(completed)/\(items.count) complete"
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "todo",
         title: "Task update",
         icon: "checklist",
@@ -2048,10 +2072,10 @@ private func eventCard(
         bullets: items,
         metadata: ["Tasks · \(progressLabel)"]
       )
-    case .subagentStarted(_, _, let agentType, _, let description, let background, let label, _, _, _):
+    case .subagentStarted(_, _, let agentType, _, let description, let background, let label, _, _, let turnId):
       let title = background ? "Background agent started" : "Subagent started"
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "activity",
         title: title,
         icon: "person.2",
@@ -2063,9 +2087,9 @@ private func eventCard(
         bullets: [],
         metadata: ["Agent started"]
       )
-    case .subagentProgress(_, _, let agentType, _, let description, let summary, let toolName, let label, _, _, _):
+    case .subagentProgress(_, _, let agentType, _, let description, let summary, let toolName, let label, _, _, let turnId):
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "activity",
         title: "Subagent running",
         icon: "person.2.wave.2",
@@ -2079,10 +2103,10 @@ private func eventCard(
         bullets: [],
         metadata: ["Agent running"]
       )
-    case .subagentResult(_, _, let agentType, _, let status, let summary, let label, _, _, _):
+    case .subagentResult(_, _, let agentType, _, let status, let summary, let label, _, _, let turnId):
       let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "activity",
         title: "Subagent \(normalized.lowercased())",
         icon: status == "failed" ? "xmark.circle" : status == "stopped" ? "pause.circle" : "checkmark.circle",
@@ -2094,10 +2118,10 @@ private func eventCard(
         bullets: [],
         metadata: ["Agent \(normalized.lowercased())"]
       )
-    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, _, let error):
+    case .scheduledWorkUpdate(_, let kind, let status, _, let title, let summary, let prompt, let reason, let cron, let nextRunAt, _, _, _, _, _, let turnId, let error):
       let normalized = status.replacingOccurrences(of: "_", with: " ").capitalized
       return WorkEventCardModel(
-        id: envelope.id,
+        id: workActivityCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "activity",
         title: kind == "cron" ? "Cron \(normalized.lowercased())" : "Scheduled work \(normalized.lowercased())",
         icon: kind == "cron" ? "calendar.badge.clock" : "clock.arrow.circlepath",
