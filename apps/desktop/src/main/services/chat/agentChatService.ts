@@ -2871,6 +2871,16 @@ function readCursorSdkStructuredErrorText(value: unknown): string | null {
   return lines.length ? lines.join("\n") : null;
 }
 
+function isCursorSdkAgentNotFoundError(error: unknown): boolean {
+  const rawMessage = readErrorMessage(error);
+  const rawDetail = readCursorSdkStructuredErrorText(error) ?? readErrorDetail(error);
+  const errorCode = readErrorCodeString(error);
+  const classification = classifyCursorSdkErrorText(rawMessage, rawDetail, errorCode);
+  if (classification.kind === "not_found") return true;
+  const combined = `${rawMessage}\n${rawDetail ?? ""}\n${errorCode ?? ""}`.toLowerCase();
+  return combined.includes("agent.resume") && combined.includes("not found");
+}
+
 function parseEmbeddedJsonObject(value: string): Record<string, unknown> | null {
   const trimmed = value.trim();
   if (!trimmed.length) return null;
@@ -24045,23 +24055,39 @@ export function createAgentChatService(args: {
     throwIfCursorSetupInterrupted();
     let acquired: Awaited<ReturnType<typeof acquireCursorSdkConnection>> | null = null;
     let released = false;
+    let recoveredMissingCursorSdkAgentId: string | null = null;
+    const acquireArgs = {
+      poolKey,
+      stateKey: cursorSdkStateKeyFor(managed),
+      projectRoot,
+      workspacePath: managed.laneWorktreePath,
+      baseEnv: buildAgentRuntimeEnv(managed),
+      modelSdkId: launchModelSdkId,
+      ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
+      apiKey,
+      agentId: persistedCursorSdkAgentId,
+      agentName: manualSessionTitleForRuntime(managed),
+      sessionId: managed.session.id,
+      policy,
+      ...(cursorOrchestrationMcpServers ? { mcpServers: cursorOrchestrationMcpServers } : {}),
+      logger,
+    };
     try {
-      acquired = await acquireCursorSdkConnection({
-        poolKey,
-        stateKey: cursorSdkStateKeyFor(managed),
-        projectRoot,
-        workspacePath: managed.laneWorktreePath,
-        baseEnv: buildAgentRuntimeEnv(managed),
-        modelSdkId: launchModelSdkId,
-        ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
-        apiKey,
-        agentId: persistedCursorSdkAgentId,
-        agentName: manualSessionTitleForRuntime(managed),
-        sessionId: managed.session.id,
-        policy,
-        ...(cursorOrchestrationMcpServers ? { mcpServers: cursorOrchestrationMcpServers } : {}),
-        logger,
-      });
+      try {
+        acquired = await acquireCursorSdkConnection(acquireArgs);
+      } catch (error) {
+        if (!persistedCursorSdkAgentId || !isCursorSdkAgentNotFoundError(error)) throw error;
+        recoveredMissingCursorSdkAgentId = persistedCursorSdkAgentId;
+        logger.warn("agent_chat.cursor_sdk_resume_agent_missing_recovering", {
+          sessionId: managed.session.id,
+          previousAgentId: persistedCursorSdkAgentId,
+          error: readErrorMessage(error),
+        });
+        acquired = await acquireCursorSdkConnection({
+          ...acquireArgs,
+          agentId: null,
+        });
+      }
       reportProviderRuntimeReady("cursor");
       throwIfCursorSetupInterrupted();
       if (managed.closed) {
@@ -24091,7 +24117,14 @@ export function createAgentChatService(args: {
     }
     const pooled = acquired.pooled;
     const nextCursorSdkAgentId = pooled.agentId?.trim() || null;
-    if (
+    if (recoveredMissingCursorSdkAgentId && nextCursorSdkAgentId) {
+      stageCursorSdkAgentRotationRecovery(managed, recoveredMissingCursorSdkAgentId, nextCursorSdkAgentId);
+      logger.warn("agent_chat.cursor_sdk_agent_recreated_after_missing_resume", {
+        sessionId: managed.session.id,
+        previousAgentId: recoveredMissingCursorSdkAgentId,
+        nextAgentId: nextCursorSdkAgentId,
+      });
+    } else if (
       persistedCursorSdkAgentId
       && nextCursorSdkAgentId
       && nextCursorSdkAgentId !== persistedCursorSdkAgentId

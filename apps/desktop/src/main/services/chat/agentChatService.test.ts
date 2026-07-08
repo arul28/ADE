@@ -8820,6 +8820,59 @@ describe("createAgentChatService", () => {
       expect(postRotationPrompt).toContain("[ADE launch directive]");
     });
 
+    it("recreates the Cursor SDK agent with recovery context when resume state is missing", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the runtime compaction lane crash.",
+      });
+      const firstPooled = mockState.cursorSdkPooled;
+      firstPooled.process.exitCode = 1;
+      mockState.cursorSdkAgentIdForNextAcquire = "cursor-sdk-agent-2";
+      vi.mocked(acquireCursorSdkConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+        mockState.cursorSdkAcquireCalls.push(args);
+        throw Object.assign(
+          new Error("Agent cursor-sdk-agent-1 not found (operation=Agent.resume)"),
+          {
+            code: "agent_not_found",
+            cursorSdk: {
+              code: "agent_not_found",
+              message: "Agent cursor-sdk-agent-1 not found",
+              operation: "Agent.resume",
+            },
+          },
+        );
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Did the SDK resume bug come back?",
+      });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(3);
+      expect(mockState.cursorSdkAcquireCalls[1]).toEqual(
+        expect.objectContaining({ agentId: "cursor-sdk-agent-1" }),
+      );
+      expect(mockState.cursorSdkAcquireCalls[2]).toEqual(
+        expect.objectContaining({ agentId: null }),
+      );
+      const promptText = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(promptText).toContain("Cursor SDK continuity recovery");
+      expect(promptText).toContain("cursor-sdk-agent-1");
+      expect(promptText).toContain("cursor-sdk-agent-2");
+      expect(promptText).toContain("Recent Conversation Tail");
+      expect(promptText).toContain("User: Inspect the runtime compaction lane crash.");
+      expect(promptText).toContain("Did the SDK resume bug come back?");
+    });
+
     it("reports active Droid SDK turns so project switching does not close the chat runtime", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let finishTurn = () => {};

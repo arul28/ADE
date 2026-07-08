@@ -136,7 +136,7 @@ brew install --cask arul28/ade/ade
 
 Or download the latest `.dmg`, drag **ADE.app** into `/Applications`, and open it. Both paths install the same signed + notarized universal app; ADE keeps itself current afterwards through its built-in auto-updater.
 
-Requirements: macOS 13+, git on `PATH`, Node 22+ for headless CLI workflows.
+Requirements: macOS 13+, git on `PATH`, Node 22.13+ for headless CLI workflows.
 
 ### iOS
 
