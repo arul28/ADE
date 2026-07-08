@@ -14387,6 +14387,57 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(toolGroups.first?.count, 3)
   }
 
+  func testBuildWorkTimelineCollapsesReasoningTurnWithGroupedWorkRows() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .reasoning(text: "Cursor thought one.", turnId: "turn-1", itemId: nil, summaryIndex: 0)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .toolCall(tool: "Read", argsText: "{\"path\":\"a.ts\"}", itemId: "t1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:03.000Z",
+        sequence: 3,
+        event: .reasoning(text: "Cursor thought two.", turnId: "turn-1", itemId: nil, summaryIndex: 1)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:04.000Z",
+        sequence: 4,
+        event: .toolCall(tool: "Shell", argsText: "{\"cmd\":\"pwd\"}", itemId: "t2", parentItemId: nil, turnId: "turn-1")
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    let reasoningCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "reasoning" else { return nil }
+      return card
+    }
+    let toolGroups = snapshot.timeline.compactMap { entry -> WorkToolGroupModel? in
+      guard case .toolGroup(let group) = entry.payload else { return nil }
+      return group
+    }
+
+    XCTAssertEqual(reasoningCards.count, 1)
+    XCTAssertEqual(toolGroups.count, 1)
+    XCTAssertTrue(reasoningCards.first?.body?.contains("Cursor thought one.") == true)
+    XCTAssertTrue(reasoningCards.first?.body?.contains("Cursor thought two.") == true)
+    XCTAssertEqual(toolGroups.first?.count, 2)
+  }
+
   func testBuildWorkTimelineWrapsSingleCommandInToolGroup() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(

@@ -26,6 +26,7 @@ import {
   isCursorSdkTransportErrorText,
 } from "./cursorSdkProtocol";
 import {
+  cursorSdkResultWithStreamFailure,
   readCursorSdkRunFailureDetail,
   sdkErrorCode,
   sdkErrorDetail,
@@ -509,7 +510,7 @@ async function sendPrompt(payload: {
       },
     });
   }
-  const result: SdkRunResult = await run.wait();
+  const result: SdkRunResult = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "local");
   const errored = heldErrorEvent != null
     || (result && typeof result === "object" && (result as { status?: unknown }).status === "error");
   const runFailure = errored
@@ -538,6 +539,22 @@ async function sendPrompt(payload: {
     post({
       type: "sdk_event",
       event: heldErrorEvent,
+      runtime: "local",
+      runId: run.id,
+      agentId: run.agentId,
+      ...(sdkRequestId ? { sdkRequestId } : {}),
+      ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
+    });
+  } else if (streamErrorDetail) {
+    post({
+      type: "sdk_event",
+      event: {
+        type: "status",
+        status: "ERROR",
+        message: streamErrorDetail.message ?? "Cursor SDK local stream failed.",
+        ...(runFailure.errorCode ? { adeErrorCode: runFailure.errorCode } : {}),
+        adeErrorDetail: runFailure.errorDetail ?? streamErrorDetail,
+      },
       runtime: "local",
       runId: run.id,
       agentId: run.agentId,
@@ -764,7 +781,7 @@ async function streamCloudRun(args: {
         },
       });
     }
-    const result = await run.wait();
+    const result = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "cloud");
     const errored = result && typeof result === "object" && (result as { status?: unknown }).status === "error";
     const runFailure = errored
       ? await readCursorSdkRunFailureDetail({
@@ -773,6 +790,24 @@ async function streamCloudRun(args: {
           extraDetail: streamErrorDetail,
         })
       : {};
+    if (streamErrorDetail) {
+      post({
+        type: "sdk_event",
+        event: {
+          type: "status",
+          status: "ERROR",
+          message: streamErrorDetail.message ?? "Cursor SDK cloud stream failed.",
+          ...(runFailure.errorCode ? { adeErrorCode: runFailure.errorCode } : {}),
+          adeErrorDetail: runFailure.errorDetail ?? streamErrorDetail,
+        },
+        runtime: "cloud",
+        runId,
+        agentId,
+        requestId,
+        ...(sdkRequestId ? { sdkRequestId } : {}),
+        ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
+      });
+    }
     post({
       type: "run_result",
       result,

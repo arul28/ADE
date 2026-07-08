@@ -108,6 +108,39 @@ function detailTexts(detail: CursorSdkErrorDetail | undefined): string[] {
   ].filter((value): value is string => Boolean(value));
 }
 
+export function cursorSdkStreamFailureDetail(
+  detail: CursorSdkErrorDetail | undefined,
+  runtime: "local" | "cloud",
+): CursorSdkErrorDetail {
+  const fallbackMessage = runtime === "cloud"
+    ? "Cursor SDK cloud stream failed."
+    : "Cursor SDK local stream failed.";
+  return {
+    ...(detail ?? {}),
+    message: detail?.message?.trim() || fallbackMessage,
+    code: detail?.code?.trim() || "stream_error",
+  };
+}
+
+export function cursorSdkResultWithStreamFailure<T>(
+  result: T,
+  detail: CursorSdkErrorDetail | undefined,
+  runtime: "local" | "cloud",
+): T {
+  if (!detail) return result;
+  const record = asRecord(result);
+  if (!record || record.status === "error") return result;
+  const failure = cursorSdkStreamFailureDetail(detail, runtime);
+  return {
+    ...record,
+    status: "error",
+    error: {
+      message: failure.message ?? "Cursor SDK stream failed.",
+      ...(failure.code ? { code: failure.code } : {}),
+    },
+  } as T;
+}
+
 function runResultErrorDetail(result: unknown): CursorSdkErrorDetail | undefined {
   const record = asRecord(result);
   const error = asRecord(record?.error);

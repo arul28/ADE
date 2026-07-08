@@ -1411,7 +1411,7 @@ func collapseActivityPhaseTimelineEntries(_ entries: [WorkTimelineEntry]) -> [Wo
       continue
     }
 
-    let phaseTurnId = activityPhaseTurnId(for: entry)
+    var phaseTurnId = activityPhaseTurnId(for: entry)
     var phase: [WorkTimelineEntry] = [entry]
     var reasoningRows = memberKind == .reasoning ? 1 : 0
     var workRows = memberKind == .work ? 1 : 0
@@ -1421,7 +1421,9 @@ func collapseActivityPhaseTimelineEntries(_ entries: [WorkTimelineEntry]) -> [Wo
     while cursor < entries.endIndex {
       let next = entries[cursor]
       guard let nextKind = activityPhaseMemberKind(for: next) else { break }
-      if activityPhaseTurnId(for: next) != phaseTurnId { break }
+      let nextTurnId = activityPhaseTurnId(for: next)
+      if let existingTurnId = phaseTurnId, let nextTurnId, nextTurnId != existingTurnId { break }
+      if phaseTurnId == nil, let nextTurnId { phaseTurnId = nextTurnId }
       phase.append(next)
       if nextKind == .reasoning { reasoningRows += 1 } else { workRows += 1 }
       cursor = entries.index(after: cursor)
