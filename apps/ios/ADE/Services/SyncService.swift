@@ -515,6 +515,25 @@ func syncReconnectProbeAddresses(
   }
 }
 
+func syncProjectSwitchRelayCandidates(
+  connectionHosts: [String],
+  previousProfile: HostConnectionProfile?,
+  targetHostIdentity: String
+) -> [String] {
+  func dedupeRelayRoutes(_ routes: [String]) -> [String] {
+    var seen = Set<String>()
+    return routes.filter { route in
+      syncIsFullWebSocketRoute(route) && seen.insert(route).inserted
+    }
+  }
+  let advertisedRelayRoutes = dedupeRelayRoutes(connectionHosts)
+  let previousMatchesTarget = previousProfile.map { profile in
+    profile.hostIdentity == targetHostIdentity || profile.lastHostDeviceId == targetHostIdentity
+  } ?? false
+  guard previousMatchesTarget else { return advertisedRelayRoutes }
+  return dedupeRelayRoutes(advertisedRelayRoutes + (previousProfile?.savedRelayCandidates ?? []))
+}
+
 func syncStalePortRecoveryEndpointAttempts(
   addresses: [String],
   ports: [Int]
@@ -2601,12 +2620,22 @@ final class SyncService: ObservableObject {
       return
     }
 
-    let addressCandidates = deduplicatedAddresses(
-      connection.addressCandidates.map(\.host)
-        + (currentAddress.map { [$0] } ?? [])
-        + (activeHostProfile?.savedAddressCandidates ?? [])
+    let connectionHosts = connection.addressCandidates.map(\.host)
+    let relayCandidates = syncProjectSwitchRelayCandidates(
+      connectionHosts: connectionHosts,
+      previousProfile: previousProfile,
+      targetHostIdentity: connection.hostIdentity.deviceId
     )
-    guard !addressCandidates.isEmpty else {
+    let directConnectionHosts = connectionHosts.filter { !syncIsFullWebSocketRoute($0) }
+    let currentDirectAddress = currentAddress.flatMap { address in
+      syncIsFullWebSocketRoute(address) ? nil : address
+    }
+    let addressCandidates = deduplicatedAddresses(
+      directConnectionHosts
+        + (currentDirectAddress.map { [$0] } ?? [])
+        + (activeHostProfile?.savedAddressCandidates ?? []).filter { !syncIsFullWebSocketRoute($0) }
+    )
+    guard !addressCandidates.isEmpty || !relayCandidates.isEmpty else {
       throw NSError(domain: "ADE", code: 25, userInfo: [
         NSLocalizedDescriptionKey: "The machine did not provide an address for that project."
       ])
@@ -2635,7 +2664,7 @@ final class SyncService: ObservableObject {
       pairedDeviceId: resolvedPairedDeviceId,
       lastRemoteDbVersion: 0,
       lastHostDeviceId: connection.hostIdentity.deviceId,
-      lastSuccessfulAddress: addressCandidates.first,
+      lastSuccessfulAddress: addressCandidates.first ?? relayCandidates.first,
       savedAddressCandidates: addressCandidates,
       discoveredLanAddresses: addressCandidates.filter { host in
         guard !host.contains(":") else { return false }
@@ -2643,7 +2672,7 @@ final class SyncService: ObservableObject {
         return !syncIsTailscaleRoute(host)
       },
       tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute),
-      savedRelayCandidates: previousProfile?.savedRelayCandidates
+      savedRelayCandidates: relayCandidates.isEmpty ? nil : relayCandidates
     )
 
     let connectAttemptGeneration = beginConnectAttempt()

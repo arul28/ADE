@@ -1786,6 +1786,48 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testSyncProjectSwitchRelayCandidatesMergeOnlyForSameHost() {
+    let previousProfile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "100.75.20.63",
+      savedAddressCandidates: ["100.75.20.63"],
+      discoveredLanAddresses: [],
+      tailscaleAddress: "100.75.20.63",
+      savedRelayCandidates: ["wss://relay.ade.dev/connect/old"]
+    )
+
+    XCTAssertEqual(
+      syncProjectSwitchRelayCandidates(
+        connectionHosts: [
+          "192.168.1.240",
+          "wss://relay.ade.dev/connect/new",
+        ],
+        previousProfile: previousProfile,
+        targetHostIdentity: "host-1"
+      ),
+      [
+        "wss://relay.ade.dev/connect/new",
+        "wss://relay.ade.dev/connect/old",
+      ]
+    )
+
+    XCTAssertEqual(
+      syncProjectSwitchRelayCandidates(
+        connectionHosts: ["192.168.1.240"],
+        previousProfile: previousProfile,
+        targetHostIdentity: "host-2"
+      ),
+      [],
+      "A project switch to a different host must not inherit the old host's relay URL."
+    )
+  }
+
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
     XCTAssertTrue(
       syncShouldRoamToTailnet(
