@@ -91,6 +91,7 @@ struct WorkPlanRejectFeedbackSection: View {
 
       TextField("Describe what to change...", text: $feedbackText, axis: .vertical)
         .lineLimit(2...4)
+        .adePromptInputTraits()
         .adeInsetField(cornerRadius: 12, padding: 10)
         .disabled(busy)
     }

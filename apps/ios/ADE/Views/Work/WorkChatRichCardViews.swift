@@ -2027,6 +2027,7 @@ struct WorkPlanReviewCard: View {
         .foregroundStyle(ADEColor.textMuted)
       TextField("Describe what to change…", text: $feedbackText, axis: .vertical)
         .lineLimit(2...5)
+        .adePromptInputTraits()
         .adeInsetField(cornerRadius: 12, padding: 10)
         .disabled(busy)
     }

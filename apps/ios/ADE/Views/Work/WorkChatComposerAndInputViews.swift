@@ -724,8 +724,7 @@ struct WorkQueuedSteerRow: View {
       if isEditing {
         TextField("Queued message", text: $draft, axis: .vertical)
           .lineLimit(1...5)
-          .autocorrectionDisabled(false)
-          .textInputAutocapitalization(.sentences)
+          .adePromptInputTraits()
           .adeInsetField(cornerRadius: 12, padding: 10)
           .disabled(busy || !isLive)
 
@@ -1063,8 +1062,7 @@ struct WorkStructuredQuestionCard: View {
       TextField(q.options.isEmpty ? "Response" : "Optional response", text: binding, axis: .vertical)
         .focused($freeformFocused)
         .lineLimit(1...4)
-        .autocorrectionDisabled(false)
-        .textInputAutocapitalization(.sentences)
+        .adePromptInputTraits()
         .adeInsetField(cornerRadius: 14, padding: 12)
         .disabled(busy)
     }

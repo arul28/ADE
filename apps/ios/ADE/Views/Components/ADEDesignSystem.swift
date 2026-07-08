@@ -1332,6 +1332,11 @@ extension View {
     modifier(ADEInsetFieldModifier(cornerRadius: cornerRadius, padding: padding))
   }
 
+  func adePromptInputTraits() -> some View {
+    textInputAutocapitalization(.sentences)
+      .autocorrectionDisabled(false)
+  }
+
   func adeListCard(
     cornerRadius: CGFloat = ADEListRowMetrics.cornerRadius,
     padding: CGFloat = ADEListRowMetrics.padding

@@ -617,7 +617,7 @@ struct HubInlineComposer: View {
           .font(.body)
           .foregroundStyle(ADEColor.textPrimary)
           .tint(ADEColor.accent)
-          .textInputAutocapitalization(.sentences)
+          .adePromptInputTraits()
           .focused($composerFocused)
           .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
 

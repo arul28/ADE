@@ -336,9 +336,10 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
     textView.isScrollEnabled = false
-    textView.autocorrectionType = .no
-    textView.autocapitalizationType = .none
-    textView.spellCheckingType = .no
+    // Keep natural-language prompt traits aligned with `adePromptInputTraits()`.
+    textView.autocorrectionType = .yes
+    textView.autocapitalizationType = .sentences
+    textView.spellCheckingType = .yes
     textView.smartQuotesType = .no
     textView.smartDashesType = .no
     textView.tintColor = UIColor(ADEColor.accent)
@@ -385,6 +386,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     /// keep styled and which to de-chip when they're edited into.
     private var chips: [(range: NSRange, text: String)] = []
     private var placeholderLabel: UILabel?
+    private var triggerInputTraitsActive = false
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
@@ -412,6 +414,19 @@ struct WorkComposerTextView: UIViewRepresentable {
         .foregroundColor: tint,
         .workComposerChipTint: tint,
       ]
+    }
+
+    private func applyPromptInputTraits(protectingTrigger: Bool) {
+      guard let textView else { return }
+      guard triggerInputTraitsActive != protectingTrigger else { return }
+      triggerInputTraitsActive = protectingTrigger
+
+      textView.autocorrectionType = protectingTrigger ? .no : .yes
+      textView.autocapitalizationType = protectingTrigger ? .none : .sentences
+      textView.spellCheckingType = protectingTrigger ? .no : .yes
+      if textView.isFirstResponder {
+        textView.reloadInputViews()
+      }
     }
 
     // MARK: Text sync
@@ -506,12 +521,14 @@ struct WorkComposerTextView: UIViewRepresentable {
     private func detectTrigger() {
       guard let textView else { return }
       guard textView.isFirstResponder else {
+        applyPromptInputTraits(protectingTrigger: false)
         parent.controller.clear()
         return
       }
       let selection = textView.selectedRange
       // Only detect against a collapsed caret; a ranged selection isn't a trigger.
       guard selection.length == 0 else {
+        applyPromptInputTraits(protectingTrigger: false)
         parent.controller.clear()
         return
       }
@@ -519,6 +536,7 @@ struct WorkComposerTextView: UIViewRepresentable {
         in: textView.text as NSString,
         cursor: selection.location
       )
+      applyPromptInputTraits(protectingTrigger: match != nil)
       parent.controller.update(match: match)
     }
 

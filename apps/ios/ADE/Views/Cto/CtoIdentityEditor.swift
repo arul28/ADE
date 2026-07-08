@@ -76,6 +76,7 @@ struct CtoIdentityEditor: View {
           Section {
             TextEditor(text: $localExtension)
               .font(.system(.body))
+              .adePromptInputTraits()
               .frame(minHeight: 140)
           } header: {
             Text("System prompt extension")
