@@ -3411,14 +3411,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return recordChatEventInReplayBuffer(buffer, event);
   }
 
-  function rememberChatEventSent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
+  function chatEventAlreadySent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
+    const key = chatEventDeliveryKey(event);
+    return peer.chatEventIdsSent.get(event.sessionId)?.has(key) === true;
+  }
+
+  function markChatEventSent(peer: PeerState, event: AgentChatEventEnvelope): void {
     const key = chatEventDeliveryKey(event);
     let sent = peer.chatEventIdsSent.get(event.sessionId);
     if (!sent) {
       sent = new Set();
       peer.chatEventIdsSent.set(event.sessionId, sent);
     }
-    if (sent.has(key)) return false;
     sent.add(key);
     if (sent.size > 800) {
       const overflow = sent.size - 800;
@@ -3429,7 +3433,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (removed >= overflow) break;
       }
     }
-    return true;
+  }
+
+  function sendChatEvent(peer: PeerState, event: AgentChatEventEnvelope, seq: number): "sent" | "already-sent" | "failed" {
+    if (chatEventAlreadySent(peer, event)) return "already-sent";
+    const sent = send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
+    if (sent) markChatEventSent(peer, event);
+    return sent ? "sent" : "failed";
   }
 
   async function pumpChatEvents(): Promise<void> {
@@ -3447,13 +3457,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
         const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
         const { events, nextOffset } = await readChatTranscriptEventsSince(transcriptPath, startOffset);
-        if (nextOffset !== startOffset) {
-          peer.chatTranscriptOffsets.set(sessionId, nextOffset);
-        }
+        let allEventsDelivered = true;
         for (const event of events) {
           const seq = recordChatEventSeq(event);
-          if (!rememberChatEventSent(peer, event)) continue;
-          send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
+          if (sendChatEvent(peer, event, seq) === "failed") {
+            allEventsDelivered = false;
+            break;
+          }
+        }
+        if (allEventsDelivered && nextOffset !== startOffset) {
+          peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
       }
     }
@@ -3471,8 +3484,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // events from the transcript pump — never the active project's live
       // broadcast, even when a local session shares the session id.
       if (peer.foreignChatTranscriptPaths.has(event.sessionId)) continue;
-      if (!rememberChatEventSent(peer, event)) continue;
-      send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
+      sendChatEvent(peer, event, seq);
     }
     // A chat lifecycle event for the host project updates its roster status
     // live (other booted scopes are covered by the safety poll + live overlay).
@@ -4768,8 +4780,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           for (const entry of resumePlan.entries) {
             // Skip events already delivered on this connection — TCP ordering
             // guarantees the peer has (or will get) them.
-            if (!rememberChatEventSent(peer, entry.event)) continue;
-            send(peer.ws, "chat_event", { ...entry.event, seq: entry.seq } satisfies SyncChatEventPayload);
+            if (sendChatEvent(peer, entry.event, entry.seq) === "failed") break;
           }
           args.logger.debug("sync_host.chat_subscribe_resumed", {
             sessionId,
@@ -4817,7 +4828,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
         for (const event of events) {
-          rememberChatEventSent(peer, event);
+          markChatEventSent(peer, event);
         }
         break;
       }

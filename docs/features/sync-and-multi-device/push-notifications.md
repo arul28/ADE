@@ -168,7 +168,11 @@ delivery TTLs and the Live Activity's 10-minute lock-screen stale-date.
 - Settings > Push delivery panel shows registration state, token suffix,
   environment, last push received, relay reachability (via
   `push.getStatus`), plus notification/Live-Activity toggles, per-session
-  mutes, and quiet hours.
+  mutes, and quiet hours. Runtime-scoped push commands are never queued:
+  when the paired machine cannot answer live `push.*` commands, the panel
+  keeps the last good relay status, disables manual refresh, and renders a
+  transient "connect to the machine" state instead of persisting the
+  transport miss as a failed registration.
 - Per-session mute is also one tap away in the Work list: the session
   row's context menu (and the open chat's header menu) offers
   "Mute notifications" / "Unmute notifications", and muted rows show a
