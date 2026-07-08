@@ -715,6 +715,7 @@ struct WorkChatSessionView: View {
         composerPlaceholder: composerPlaceholderText,
         canCompose: canCompose,
         canSend: canSend && !composerSettingMutationInFlight,
+        canUploadAttachments: isLive,
         sending: sending && !sendWillQueue,
         settingsMutationInFlight: composerSettingMutationInFlight,
         codexFastModeOverride: pendingCodexFastMode,
@@ -1612,6 +1613,7 @@ private struct WorkChatComposerCard: View {
   let composerPlaceholder: String
   let canCompose: Bool
   let canSend: Bool
+  let canUploadAttachments: Bool
   let sending: Bool
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
@@ -1638,6 +1640,7 @@ private struct WorkChatComposerCard: View {
       composerPlaceholder: composerPlaceholder,
       canCompose: canCompose,
       canSend: canSend,
+      canUploadAttachments: canUploadAttachments,
       sending: sending,
       settingsMutationInFlight: settingsMutationInFlight,
       codexFastModeOverride: codexFastModeOverride,
@@ -1674,6 +1677,7 @@ private struct WorkChatComposerDraftInput: View {
   let composerPlaceholder: String
   let canCompose: Bool
   let canSend: Bool
+  let canUploadAttachments: Bool
   let sending: Bool
   let settingsMutationInFlight: Bool
   let codexFastModeOverride: Bool?
@@ -1784,6 +1788,7 @@ private struct WorkChatComposerDraftInput: View {
                 draftState: draftState,
                 attachments: $inputAttachments,
                 canSend: canSend,
+                canUploadAttachments: canUploadAttachments,
                 sending: sending,
                 accessibilityLabelText: "Stage message",
                 onSend: onSend,
@@ -1797,6 +1802,7 @@ private struct WorkChatComposerDraftInput: View {
               draftState: draftState,
               attachments: $inputAttachments,
               canSend: canSend,
+              canUploadAttachments: canUploadAttachments,
               sending: sending,
               onSend: onSend,
               onSent: onSent
@@ -2084,15 +2090,18 @@ private struct WorkChatComposerSendButton: View {
   @ObservedObject var draftState: WorkChatComposerDraftState
   @Binding var attachments: [WorkChatInputAttachment]
   let canSend: Bool
+  let canUploadAttachments: Bool
   let sending: Bool
   var accessibilityLabelText = "Send message"
   let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
   private var sendEnabled: Bool {
-    canSend
+    let readyAttachments = workChatInputReadyAttachments(attachments)
+    return canSend
       && !workChatInputHasLoadingAttachments(attachments)
-      && (draftState.hasSendableText || !workChatInputReadyAttachments(attachments).isEmpty)
+      && (draftState.hasSendableText || !readyAttachments.isEmpty)
+      && (readyAttachments.isEmpty || canUploadAttachments)
   }
 
   var body: some View {

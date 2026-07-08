@@ -25,7 +25,8 @@ struct WorkSessionRoute: Hashable {
   let openId: UUID = UUID()
   let sessionId: String
   var openingPrompt: String? = nil
-  var openingPromptAlreadySent = false
+  var openingPromptDispatchHandled = false
+  var openingDeliveryState: String? = nil
   var openingAttachments: [AgentChatFileRef] = []
 }
 
@@ -644,7 +645,8 @@ struct WorkRootScreen: View {
         WorkSessionDestinationView(
           sessionId: route.sessionId,
           initialOpeningPrompt: route.openingPrompt,
-          initialOpeningPromptAlreadySent: route.openingPromptAlreadySent,
+          initialOpeningPromptDispatchHandled: route.openingPromptDispatchHandled,
+          initialOpeningDeliveryState: route.openingDeliveryState,
           initialOpeningAttachments: route.openingAttachments,
           initialSession: initialSession,
           initialChatSummary: chatSummaries[route.sessionId],
@@ -668,7 +670,7 @@ struct WorkRootScreen: View {
           preferredLaneId: route.preferredLaneId,
           activeProjectId: syncService.activeProjectId,
           activeProjectRootPath: syncService.activeProjectRootPath,
-          onStarted: { summary, opener, openerAlreadySent, openerAttachments in
+          onStarted: { summary, opener, openerDispatchHandled, openerDeliveryState, openerAttachments in
             let sessionId = summary.sessionId
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
             optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
@@ -682,7 +684,8 @@ struct WorkRootScreen: View {
             fresh.append(WorkSessionRoute(
               sessionId: sessionId,
               openingPrompt: trimmed.isEmpty ? nil : trimmed,
-              openingPromptAlreadySent: openerAlreadySent,
+              openingPromptDispatchHandled: openerDispatchHandled,
+              openingDeliveryState: openerDeliveryState,
               openingAttachments: openerAttachments
             ))
             await Task.yield()

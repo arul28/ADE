@@ -300,7 +300,8 @@ struct WorkSessionDestinationView: View {
 
   let sessionId: String
   let initialOpeningPrompt: String?
-  var initialOpeningPromptAlreadySent = false
+  var initialOpeningPromptDispatchHandled = false
+  var initialOpeningDeliveryState: String? = nil
   var initialOpeningAttachments: [AgentChatFileRef] = []
   let initialSession: TerminalSessionSummary?
   let initialChatSummary: AgentChatSessionSummary?
@@ -1711,7 +1712,7 @@ struct WorkSessionDestinationView: View {
     guard !sending else { return }
     let promptKey = "\(sessionId)|\(prompt)"
     guard handledOpeningPromptKey != promptKey else { return }
-    if initialOpeningPromptAlreadySent {
+    if initialOpeningPromptDispatchHandled {
       handledOpeningPromptKey = promptKey
       return
     }
@@ -1782,8 +1783,8 @@ struct WorkSessionDestinationView: View {
     guard stagedOpeningPromptKey != promptKey else { return }
     stagedOpeningPromptKey = promptKey
     let useSteer = shouldSteerActiveTurn
-    let deliveryState = initialOpeningPromptAlreadySent
-      ? nil
+    let deliveryState = initialOpeningPromptDispatchHandled
+      ? initialOpeningDeliveryState
       : ((sendWillQueueChatMessage || useSteer) ? "queued" : "sending")
     localEchoMessages.append(WorkLocalEchoMessage(
       text: prompt,
@@ -2219,7 +2220,8 @@ extension WorkSessionDestinationView: Equatable {
   static func == (lhs: WorkSessionDestinationView, rhs: WorkSessionDestinationView) -> Bool {
     lhs.sessionId == rhs.sessionId
       && lhs.initialOpeningPrompt == rhs.initialOpeningPrompt
-      && lhs.initialOpeningPromptAlreadySent == rhs.initialOpeningPromptAlreadySent
+      && lhs.initialOpeningPromptDispatchHandled == rhs.initialOpeningPromptDispatchHandled
+      && lhs.initialOpeningDeliveryState == rhs.initialOpeningDeliveryState
       && lhs.initialOpeningAttachments == rhs.initialOpeningAttachments
       && lhs.initialSession == rhs.initialSession
       && lhs.initialChatSummary == rhs.initialChatSummary

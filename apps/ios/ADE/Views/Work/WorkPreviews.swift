@@ -502,7 +502,7 @@ private enum WorkPreviewData {
       preferredLaneId: WorkPreviewData.lane.id,
       activeProjectId: nil,
       activeProjectRootPath: nil,
-      onStarted: { _, _, _, _ in },
+      onStarted: { _, _, _, _, _ in },
       onCliStarted: { _ in },
       onRefreshLanes: {}
     )

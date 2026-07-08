@@ -537,7 +537,7 @@ struct WorkNewChatScreen: View {
   /// while shown.
   let activeProjectId: String?
   let activeProjectRootPath: String?
-  let onStarted: @MainActor (AgentChatSessionSummary, String, Bool, [AgentChatFileRef]) async -> Void
+  let onStarted: @MainActor (AgentChatSessionSummary, String, Bool, String?, [AgentChatFileRef]) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onChatImported: @MainActor (String) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
@@ -568,7 +568,7 @@ struct WorkNewChatScreen: View {
     preferredLaneId: String?,
     activeProjectId: String?,
     activeProjectRootPath: String?,
-    onStarted: @escaping @MainActor (AgentChatSessionSummary, String, Bool, [AgentChatFileRef]) async -> Void,
+    onStarted: @escaping @MainActor (AgentChatSessionSummary, String, Bool, String?, [AgentChatFileRef]) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (String) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void
@@ -1130,16 +1130,23 @@ struct WorkNewChatScreen: View {
         pendingDisplayName: opener
       )
       if attachmentRefs.isEmpty {
-        await onStarted(summary, opener, false, [])
+        await onStarted(summary, opener, false, nil, [])
       } else {
-        _ = try await syncService.sendChatMessage(
+        let delivery = try await syncService.sendChatMessage(
           sessionId: summary.sessionId,
           text: opener,
           attachments: attachmentRefs,
           targetProjectId: targetScope.projectId,
           targetProjectRootPath: targetScope.projectRootPath
         )
-        await onStarted(summary, opener, true, attachmentRefs)
+        let deliveryState: String?
+        switch delivery {
+        case .queued:
+          deliveryState = "queued"
+        case .sent:
+          deliveryState = nil
+        }
+        await onStarted(summary, opener, true, deliveryState, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {
         startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
