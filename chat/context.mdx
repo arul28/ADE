@@ -33,7 +33,9 @@ The transcript persists to disk, so a session survives an app restart. When you 
 
 ## The context window
 
-Long chats eventually fill the model's context window. Providers compact context automatically as it fills, and you'll see a marker in the transcript when they do. When a session gets long:
+Long chats eventually fill the model's context window. Providers compact context automatically as it fills, and ADE shows a marker in the transcript when that happens. Compaction markers are part of the session history: started/completed updates merge together, and the next turn stays attached to the same chat instead of looking like a new conversation.
+
+When a session gets long:
 
 - Continue if the agent is still on track.
 - Ask the agent to summarize the current state.
@@ -46,7 +48,9 @@ Compaction and summaries are useful, but they are not exact memory. Restate any 
 
 ## Recover old context
 
-Use **History** to reopen past transcripts, inspect their tool calls, and recover proof or PR links from earlier sessions. A summary pulled from a finished session is the cleanest way to seed a new one in the same lane.
+Use **History** to reopen past transcripts, inspect their tool calls, and recover proof or PR links from earlier sessions. Claude and Codex provider-native histories can also be imported or forked into ADE when available; after import, future turns use the normal ADE chat transcript, diff, and lane boundaries.
+
+A summary pulled from a finished session is the cleanest way to seed a new one in the same lane.
 
 <CardGroup cols={2}>
   <Card title="Chat capabilities" icon="toolbox" href="/chat/capabilities">
