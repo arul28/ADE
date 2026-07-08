@@ -4,10 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type * as CursorSdkModuleTypes from "@cursor/sdk";
-import type { AgentOptions, ModelSelection, SDKModel, SendOptions } from "@cursor/sdk";
+import type { AgentOptions, LocalAgentStore, ModelSelection, SDKModel, SendOptions } from "@cursor/sdk";
 import type {
+  CursorSdkAgentMode,
   CursorSdkCloudArtifactDescriptor,
   CursorSdkCloudArtifactDownloadResult,
+  CursorSdkErrorDetail,
   CursorSdkCloudFollowupPayload,
   CursorSdkCloudRunStartedResult,
   CursorSdkCloudSendStreamPayload,
@@ -19,7 +21,16 @@ import type {
   CursorSdkWorkerRequest,
   CursorSdkWorkerResponse,
 } from "./cursorSdkProtocol";
-import { isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
+import {
+  isCursorSdkBackoffErrorText,
+  isCursorSdkTransportErrorText,
+} from "./cursorSdkProtocol";
+import {
+  cursorSdkResultWithStreamFailure,
+  readCursorSdkRunFailureDetail,
+  sdkErrorCode,
+  sdkErrorDetail,
+} from "./cursorSdkErrors";
 import {
   allowCursorHook,
   denyCursorHook,
@@ -32,11 +43,14 @@ import { loadCursorSdk } from "../ai/cursorSdkLoader";
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
 type SdkRun = Awaited<ReturnType<SdkAgent["send"]>>;
+type SdkRunResult = Awaited<ReturnType<SdkRun["wait"]>>;
+type DisposableLocalAgentStore = LocalAgentStore & { dispose?: () => Promise<void> | void };
 
 let sdkModule: CursorSdkModule | null = null;
 let initState: CursorSdkWorkerInit | null = null;
 let agent: SdkAgent | null = null;
 let currentRun: SdkRun | null = null;
+let localAgentStore: DisposableLocalAgentStore | null = null;
 let hookServer: net.Server | null = null;
 const hookWaiters = new Map<string, (decision: CursorSdkHookDecision) => void>();
 const cloudRuns = new Map<string, { run: SdkRun; agentId: string }>();
@@ -90,21 +104,7 @@ function errorMessage(error: unknown): string {
 }
 
 function errorCode(error: unknown): string | undefined {
-  const record = error && typeof error === "object" ? error as Record<string, unknown> : null;
-  const json = typeof (record as { toJSON?: () => unknown } | null)?.toJSON === "function"
-    ? (() => {
-        try {
-          const value = (record as { toJSON: () => unknown }).toJSON();
-          return value && typeof value === "object" && !Array.isArray(value)
-            ? value as Record<string, unknown>
-            : null;
-        } catch {
-          return null;
-        }
-      })()
-    : null;
-  const code = record?.code ?? json?.code;
-  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+  return sdkErrorCode(error);
 }
 
 function isAgentBusyError(error: unknown): boolean {
@@ -127,18 +127,15 @@ function isAgentBusyError(error: unknown): boolean {
 }
 
 function isCursorSdkBackoffError(error: unknown): boolean {
-  const message = errorMessage(error).toLowerCase();
-  return message.includes("enhance_your_calm")
-    || message.includes("enhance your calm")
-    || message.includes("too many requests")
-    || message.includes("rate limit")
-    || message.includes("rate_limited")
-    || message.includes("resource exhausted")
-    || message.includes("slow down")
-    || message.includes("back off");
+  return isCursorSdkBackoffErrorText(errorMessage(error)) || isCursorSdkBackoffErrorText(errorCode(error));
 }
 
-function classifyWorkerError(error: unknown): { error: string; errorCode?: string } {
+function classifyWorkerError(error: unknown): {
+  error: string;
+  errorCode?: string;
+  errorDetail?: CursorSdkErrorDetail;
+} {
+  const detailForResponse = sdkErrorDetail(error);
   if (isAgentBusyError(error)) {
     const detail = errorMessage(error);
     const busyMessage = "Cursor agent is already running another task. Wait for that run to finish or cancel it before sending a follow-up.";
@@ -147,6 +144,7 @@ function classifyWorkerError(error: unknown): { error: string; errorCode?: strin
         ? `${busyMessage} (${detail})`
         : busyMessage,
       errorCode: "agent_busy",
+      ...(detailForResponse ? { errorDetail: detailForResponse } : {}),
     };
   }
   if (isCursorSdkBackoffError(error)) {
@@ -156,16 +154,22 @@ function classifyWorkerError(error: unknown): { error: string; errorCode?: strin
         ? `Cursor rate limited this request: ${detail}`
         : "Cursor rate limited this request. Wait a moment and retry.",
       errorCode: "rate_limited",
+      ...(detailForResponse ? { errorDetail: detailForResponse } : {}),
     };
   }
   const detail = errorMessage(error);
   if (isCursorSdkTransportErrorText(detail) || isCursorSdkTransportErrorText(errorCode(error))) {
-    return { error: detail, errorCode: "network" };
+    return {
+      error: detail,
+      errorCode: "network",
+      ...(detailForResponse ? { errorDetail: detailForResponse } : {}),
+    };
   }
   const code = errorCode(error);
   return {
     error: detail,
     ...(code ? { errorCode: code } : {}),
+    ...(detailForResponse ? { errorDetail: detailForResponse } : {}),
   };
 }
 
@@ -176,37 +180,35 @@ function isTerminalErrorStatusEvent(event: unknown): boolean {
   return record?.type === "status" && record?.status === "ERROR";
 }
 
-/**
- * Read the terminal `errorCode` for a finished local run from the SDK run
- * store. The public `Run`/`RunResult` surface drops the store's
- * `error_code` column (`RunRecord.errorCode`), so the only way to recover the
- * real failure reason (e.g. an NGHTTP2 stream reset) is the run store the live
- * `StoreBackedRun` was constructed with. This reaches an internal field, so it
- * is fully guarded — any shape change just yields `undefined` and the caller
- * falls back to the generic message.
- */
-async function readRunErrorCode(run: SdkRun | null): Promise<string | undefined> {
-  if (!run) return undefined;
-  try {
-    const store = (run as unknown as {
-      store?: { getRun?: (agentId: string, runId: string) => Promise<unknown> };
-    }).store;
-    if (!store || typeof store.getRun !== "function") return undefined;
-    const record = await store.getRun(run.agentId, run.id);
-    const code = record && typeof record === "object"
-      ? (record as Record<string, unknown>).errorCode
-      : undefined;
-    return typeof code === "string" && code.trim() ? code.trim() : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 async function getSdk(): Promise<CursorSdkModule> {
   if (!sdkModule) {
     sdkModule = await loadCursorSdk();
   }
   return sdkModule;
+}
+
+async function openLocalAgentStore(init: CursorSdkWorkerInit): Promise<DisposableLocalAgentStore> {
+  const { SqliteLocalAgentStore } = await import("@cursor/sdk/sqlite");
+  return SqliteLocalAgentStore.open({
+    workspaceRef: init.laneRoot,
+    stateRoot: init.stateRoot,
+  });
+}
+
+function envFlag(value: string | undefined): boolean | null {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+}
+
+function shouldUseHttp1ForAgent(env: NodeJS.ProcessEnv = process.env): boolean {
+  return envFlag(env.ADE_CURSOR_SDK_USE_HTTP1_FOR_AGENT) ?? true;
+}
+
+function cursorSdkAgentMode(policy: CursorSdkPermissionPolicy): CursorSdkAgentMode {
+  return policy.chatMode === "agent" ? "agent" : "plan";
 }
 
 function removeSocketIfNeeded(socketPath: string): void {
@@ -329,12 +331,14 @@ function trimIdempotencyKey(value: string | null | undefined): string | undefine
 function buildSendOptions(
   model: ModelSelection | undefined,
   idempotencyKey?: string | null,
+  mode?: CursorSdkAgentMode,
 ): SendOptions | undefined {
   const key = trimIdempotencyKey(idempotencyKey);
-  if (!model && !key) return undefined;
+  if (!model && !key && !mode) return undefined;
   return {
     ...(model ? { model } : {}),
     ...(key ? { idempotencyKey: key } : {}),
+    ...(mode ? { mode } : {}),
   };
 }
 
@@ -393,22 +397,25 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   fs.mkdirSync(init.stateRoot, { recursive: true });
   const hook = ensureCursorSdkUserHook({ userHomeDir: init.userHomeDir });
   await startHookServer(init);
-  const { Agent } = await getSdk();
+  const sdk = await getSdk();
+  const { Agent, Cursor } = sdk;
+  localAgentStore = await openLocalAgentStore(init);
+  const useHttp1ForAgent = shouldUseHttp1ForAgent();
+  Cursor.configure({ local: { store: localAgentStore, useHttp1ForAgent } });
   // Keep these fields aligned with Cursor's TypeScript SDK docs:
-  // local.cwd selects the workspace, platform.stateRoot isolates durable ADE
-  // state, sandboxOptions is terminal policy, and hooks gate tool execution.
+  // local.cwd selects the workspace, local.store isolates durable ADE state,
+  // sandboxOptions is terminal policy, and hooks gate tool execution.
   const agentOptions: AgentOptions = {
     apiKey: init.apiKey?.trim() || undefined,
     model: buildCursorModelSelection(init.modelSdkId, init.modelParams),
+    mode: cursorSdkAgentMode(init.policy),
     name: init.agentName ?? undefined,
     local: {
       cwd: init.laneRoot,
+      store: localAgentStore,
       settingSources: ["all"],
       sandboxOptions: { enabled: false },
-    },
-    platform: {
-      workspaceRef: init.laneRoot,
-      stateRoot: init.stateRoot,
+      enableAgentRetries: true,
     },
     ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
   };
@@ -425,6 +432,9 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       stateRoot: init.stateRoot,
       hookPath: hook.hooksPath,
       hookChanged: hook.changed,
+      localStore: "sqlite",
+      useHttp1ForAgent,
+      mode: agentOptions.mode ?? null,
     },
   });
   post({ type: "ready", agentId: agent.agentId, modelSdkId: init.modelSdkId, transport: "sdk" });
@@ -437,16 +447,25 @@ async function sendPrompt(payload: {
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
   force?: boolean;
+  idempotencyKey?: string | null;
+  mode?: CursorSdkAgentMode;
 }): Promise<unknown> {
   if (!agent || !initState) throw new Error("Cursor SDK worker is not initialized.");
   const message = payload.images?.length
     ? { text: payload.promptText, images: payload.images }
     : payload.promptText;
+  const mode = payload.mode ?? cursorSdkAgentMode(initState.policy);
+  const idempotencyKey = trimIdempotencyKey(payload.idempotencyKey);
   currentRun = await agent.send(message, {
     model: buildCursorModelSelection(payload.modelSdkId, payload.modelParams),
+    mode,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
     local: { force: payload.force === true },
   });
   const runModelParams = normalizeCursorModelParams(payload.modelParams ?? initState.modelParams);
+  const sdkRequestId = typeof currentRun.requestId === "string" && currentRun.requestId.trim()
+    ? currentRun.requestId.trim()
+    : undefined;
   post({
     type: "run_started",
     agentId: currentRun.agentId,
@@ -454,25 +473,94 @@ async function sendPrompt(payload: {
     modelSdkId: payload.modelSdkId ?? initState.modelSdkId,
     ...(runModelParams ? { modelParams: runModelParams } : {}),
     runtime: "local",
+    ...(sdkRequestId ? { sdkRequestId } : {}),
   });
   const run = currentRun;
   // Hold a terminal ERROR status until after `wait()` so we can enrich it with
-  // the run store's real errorCode (the streamed status carries no detail).
+  // the run result/store detail (the streamed status often carries no detail).
   let heldErrorEvent: Record<string, unknown> | null = null;
-  for await (const event of run.stream()) {
-    if (!heldErrorEvent && isTerminalErrorStatusEvent(event)) {
-      heldErrorEvent = { ...(event as unknown as Record<string, unknown>) };
-      continue;
+  let streamErrorDetail: CursorSdkErrorDetail | undefined;
+  try {
+    for await (const event of run.stream()) {
+      if (!heldErrorEvent && isTerminalErrorStatusEvent(event)) {
+        heldErrorEvent = { ...(event as unknown as Record<string, unknown>) };
+        continue;
+      }
+      post({
+        type: "sdk_event",
+        event,
+        runtime: "local",
+        runId: run.id,
+        agentId: run.agentId,
+        ...(sdkRequestId ? { sdkRequestId } : {}),
+      });
     }
-    post({ type: "sdk_event", event, runtime: "local", runId: run.id, agentId: run.agentId });
+  } catch (streamError) {
+    streamErrorDetail = sdkErrorDetail(streamError) ?? { message: errorMessage(streamError) };
+    post({
+      type: "log",
+      level: "warn",
+      message: "Cursor SDK local stream errored mid-iteration.",
+      detail: {
+        runId: run.id,
+        agentId: run.agentId,
+        ...(sdkRequestId ? { sdkRequestId } : {}),
+        error: errorMessage(streamError),
+        errorDetail: streamErrorDetail,
+      },
+    });
   }
-  const result = await run.wait();
+  const result: SdkRunResult = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "local");
   const errored = heldErrorEvent != null
     || (result && typeof result === "object" && (result as { status?: unknown }).status === "error");
-  const runErrorCode = errored ? await readRunErrorCode(run) : undefined;
+  const runFailure = errored
+    ? await readCursorSdkRunFailureDetail({
+        run,
+        result,
+        extraDetail: streamErrorDetail,
+        store: localAgentStore,
+        onStoreReadError: (error, failedRun) => {
+          post({
+            type: "log",
+            level: "warn",
+            message: "Cursor SDK run store error detail read failed.",
+            detail: {
+              runId: failedRun.id,
+              agentId: failedRun.agentId,
+              error: errorMessage(error),
+            },
+          });
+        },
+      })
+    : {};
   if (heldErrorEvent) {
-    if (runErrorCode) heldErrorEvent.adeErrorCode = runErrorCode;
-    post({ type: "sdk_event", event: heldErrorEvent, runtime: "local", runId: run.id, agentId: run.agentId });
+    if (runFailure.errorCode) heldErrorEvent.adeErrorCode = runFailure.errorCode;
+    if (runFailure.errorDetail) heldErrorEvent.adeErrorDetail = runFailure.errorDetail;
+    post({
+      type: "sdk_event",
+      event: heldErrorEvent,
+      runtime: "local",
+      runId: run.id,
+      agentId: run.agentId,
+      ...(sdkRequestId ? { sdkRequestId } : {}),
+      ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
+    });
+  } else if (streamErrorDetail) {
+    post({
+      type: "sdk_event",
+      event: {
+        type: "status",
+        status: "ERROR",
+        message: streamErrorDetail.message ?? "Cursor SDK local stream failed.",
+        ...(runFailure.errorCode ? { adeErrorCode: runFailure.errorCode } : {}),
+        adeErrorDetail: runFailure.errorDetail ?? streamErrorDetail,
+      },
+      runtime: "local",
+      runId: run.id,
+      agentId: run.agentId,
+      ...(sdkRequestId ? { sdkRequestId } : {}),
+      ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
+    });
   }
   post({
     type: "run_result",
@@ -480,7 +568,9 @@ async function sendPrompt(payload: {
     runtime: "local",
     runId: run.id,
     agentId: run.agentId,
-    ...(runErrorCode ? { errorCode: runErrorCode } : {}),
+    ...(sdkRequestId ? { sdkRequestId } : {}),
+    ...(runFailure.errorCode ? { errorCode: runFailure.errorCode } : {}),
+    ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
   });
   currentRun = null;
   return result;
@@ -529,6 +619,17 @@ async function dispose(): Promise<void> {
     }
   }
   agent = null;
+  try {
+    sdkModule?.Cursor.configure({ local: { store: null, useHttp1ForAgent: null } });
+  } catch {
+    // ignore
+  }
+  try {
+    await localAgentStore?.dispose?.();
+  } catch {
+    // ignore
+  }
+  localAgentStore = null;
   if (hookServer) {
     await new Promise<void>((resolve) => hookServer!.close(() => resolve())).catch(() => {});
     hookServer = null;
@@ -572,6 +673,7 @@ function buildCloudCreateOptions(payload: CursorSdkCloudSendStreamPayload): Agen
   if (idempotencyKey) options.idempotencyKey = idempotencyKey;
   const modelSelection = buildCursorModelSelection(payload.modelSdkId, payload.modelParams);
   if (modelSelection) options.model = modelSelection;
+  if (payload.mode) options.mode = payload.mode;
   return options;
 }
 
@@ -583,6 +685,7 @@ function buildCloudResumeOptions(payload: CursorSdkCloudFollowupPayload): Partia
   if (idempotencyKey) options.idempotencyKey = idempotencyKey;
   const modelSelection = buildCursorModelSelection(payload.modelSdkId, payload.modelParams);
   if (modelSelection) options.model = modelSelection;
+  if (payload.mode) options.mode = payload.mode;
   return options;
 }
 
@@ -623,6 +726,9 @@ async function streamCloudRun(args: {
 }): Promise<unknown> {
   const { requestId, agentId, run } = args;
   const runId = run.id;
+  const sdkRequestId = typeof run.requestId === "string" && run.requestId.trim()
+    ? run.requestId.trim()
+    : undefined;
   cloudRuns.set(runId, { run, agentId });
   const statusOff = run.onDidChangeStatus((status) => {
     post({
@@ -632,6 +738,7 @@ async function streamCloudRun(args: {
       runId,
       status,
       requestId,
+      ...(sdkRequestId ? { sdkRequestId } : {}),
     });
   });
   const runModelParams = normalizeCursorModelParams(args.modelParams);
@@ -643,8 +750,10 @@ async function streamCloudRun(args: {
     ...(runModelParams ? { modelParams: runModelParams } : {}),
     runtime: "cloud",
     requestId,
+    ...(sdkRequestId ? { sdkRequestId } : {}),
   });
   try {
+    let streamErrorDetail: CursorSdkErrorDetail | undefined;
     try {
       for await (const event of run.stream()) {
         post({
@@ -654,17 +763,51 @@ async function streamCloudRun(args: {
           runId,
           agentId,
           requestId,
+          ...(sdkRequestId ? { sdkRequestId } : {}),
         });
       }
     } catch (streamError) {
+      streamErrorDetail = sdkErrorDetail(streamError) ?? { message: errorMessage(streamError) };
       post({
         type: "log",
         level: "warn",
         message: "Cursor SDK cloud stream errored mid-iteration",
-        detail: { runId, agentId, error: errorMessage(streamError) },
+        detail: {
+          runId,
+          agentId,
+          ...(sdkRequestId ? { sdkRequestId } : {}),
+          error: errorMessage(streamError),
+          errorDetail: streamErrorDetail,
+        },
       });
     }
-    const result = await run.wait();
+    const result = cursorSdkResultWithStreamFailure(await run.wait(), streamErrorDetail, "cloud");
+    const errored = result && typeof result === "object" && (result as { status?: unknown }).status === "error";
+    const runFailure = errored
+      ? await readCursorSdkRunFailureDetail({
+          run,
+          result,
+          extraDetail: streamErrorDetail,
+        })
+      : {};
+    if (streamErrorDetail) {
+      post({
+        type: "sdk_event",
+        event: {
+          type: "status",
+          status: "ERROR",
+          message: streamErrorDetail.message ?? "Cursor SDK cloud stream failed.",
+          ...(runFailure.errorCode ? { adeErrorCode: runFailure.errorCode } : {}),
+          adeErrorDetail: runFailure.errorDetail ?? streamErrorDetail,
+        },
+        runtime: "cloud",
+        runId,
+        agentId,
+        requestId,
+        ...(sdkRequestId ? { sdkRequestId } : {}),
+        ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
+      });
+    }
     post({
       type: "run_result",
       result,
@@ -672,6 +815,9 @@ async function streamCloudRun(args: {
       runId,
       agentId,
       requestId,
+      ...(sdkRequestId ? { sdkRequestId } : {}),
+      ...(runFailure.errorCode ? { errorCode: runFailure.errorCode } : {}),
+      ...(runFailure.errorDetail ? { errorDetail: runFailure.errorDetail } : {}),
     });
     return { agentId, runId, status: result.status, result } satisfies CursorSdkCloudRunStartedResult & { result: unknown };
   } finally {
@@ -727,7 +873,7 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
     const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
     await validateCloudModelSelection(req.payload.apiKey?.trim() || undefined, modelSelection);
     const cloudAgent = await Agent.create(buildCloudCreateOptions(req.payload));
-    const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey);
+    const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey, req.payload.mode);
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
     const result = await streamCloudRun({
       requestId: req.requestId,
@@ -750,7 +896,7 @@ async function handleCloudRequest(req: CursorSdkWorkerRequest): Promise<unknown>
     const cloudAgent = await Agent.resume(req.payload.agentId, buildCloudResumeOptions(req.payload));
     const modelSelection = buildCursorModelSelection(req.payload.modelSdkId, req.payload.modelParams);
     await validateCloudModelSelection(req.payload.apiKey?.trim() || undefined, modelSelection);
-    const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey);
+    const sendOpts = buildSendOptions(modelSelection, req.payload.idempotencyKey, req.payload.mode);
     const run = await cloudAgent.send(req.payload.promptText, sendOpts);
     const result = await streamCloudRun({
       requestId: req.requestId,

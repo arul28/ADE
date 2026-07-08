@@ -8618,6 +8618,10 @@ describe("createAgentChatService", () => {
         await vi.waitFor(() => {
           expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0);
         });
+        expect(mockState.cursorSdkSendCalls.at(-1)).toMatchObject({
+          mode: "agent",
+          idempotencyKey: expect.stringMatching(new RegExp(`^ade:${session.id}:.+:cursor-local:send$`)),
+        });
         expect(service.hasActiveWorkloads()).toBe(true);
 
         finishTurn();
@@ -8669,6 +8673,46 @@ describe("createAgentChatService", () => {
       expect(errorEvent.event.detail).toContain("NGHTTP2_ENHANCE_YOUR_CALM");
     });
 
+    it("surfaces Cursor SDK transport codes as network failures", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      mockState.cursorSendPromptError = Object.assign(
+        new Error("Cursor SDK send failed: [internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR"),
+        {
+          code: "network",
+          cursorSdk: {
+            message: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+            requestId: "req-cursor-network",
+          },
+        },
+      );
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Trigger Cursor transport failure.",
+      }, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+      expect(errorEvent.event.errorInfo).toMatchObject({
+        category: "network",
+        provider: "Cursor",
+      });
+      expect(errorEvent.event.detail).toContain("req-cursor-network");
+    });
+
     it("reacquires Cursor SDK workers that exited before a follow-up turn", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
       const { service } = createService();
@@ -8695,6 +8739,38 @@ describe("createAgentChatService", () => {
       expect(firstPooled.sendPrompt).toHaveBeenCalledTimes(1);
       expect(mockState.cursorSdkPooled).not.toBe(firstPooled);
       expect(mockState.cursorSdkPooled.sendPrompt).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps Cursor SDK state stable when policy changes require a new worker pool", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+        permissionMode: "edit",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "First Cursor turn.",
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        permissionMode: "full-auto",
+      });
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Follow-up after policy change.",
+      });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+      const firstAcquire = mockState.cursorSdkAcquireCalls[0];
+      const secondAcquire = mockState.cursorSdkAcquireCalls[1];
+      expect(secondAcquire.poolKey).not.toBe(firstAcquire.poolKey);
+      expect(secondAcquire.stateKey).toBe(firstAcquire.stateKey);
     });
 
     it("injects recent ADE context when Cursor SDK resume opens a new agent", async () => {
@@ -8742,6 +8818,59 @@ describe("createAgentChatService", () => {
       });
       const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
       expect(postRotationPrompt).toContain("[ADE launch directive]");
+    });
+
+    it("recreates the Cursor SDK agent with recovery context when resume state is missing", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the runtime compaction lane crash.",
+      });
+      const firstPooled = mockState.cursorSdkPooled;
+      firstPooled.process.exitCode = 1;
+      mockState.cursorSdkAgentIdForNextAcquire = "cursor-sdk-agent-2";
+      vi.mocked(acquireCursorSdkConnection).mockImplementationOnce(async (args: Record<string, unknown>) => {
+        mockState.cursorSdkAcquireCalls.push(args);
+        throw Object.assign(
+          new Error("Agent cursor-sdk-agent-1 not found (operation=Agent.resume)"),
+          {
+            code: "agent_not_found",
+            cursorSdk: {
+              code: "agent_not_found",
+              message: "Agent cursor-sdk-agent-1 not found",
+              operation: "Agent.resume",
+            },
+          },
+        );
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Did the SDK resume bug come back?",
+      });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(3);
+      expect(mockState.cursorSdkAcquireCalls[1]).toEqual(
+        expect.objectContaining({ agentId: "cursor-sdk-agent-1" }),
+      );
+      expect(mockState.cursorSdkAcquireCalls[2]).toEqual(
+        expect.objectContaining({ agentId: null }),
+      );
+      const promptText = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(promptText).toContain("Cursor SDK continuity recovery");
+      expect(promptText).toContain("cursor-sdk-agent-1");
+      expect(promptText).toContain("cursor-sdk-agent-2");
+      expect(promptText).toContain("Recent Conversation Tail");
+      expect(promptText).toContain("User: Inspect the runtime compaction lane crash.");
+      expect(promptText).toContain("Did the SDK resume bug come back?");
     });
 
     it("reports active Droid SDK turns so project switching does not close the chat runtime", async () => {
@@ -23690,6 +23819,7 @@ describe("createAgentChatService", () => {
       expect(sentPayload.repoUrl).toBe("https://github.com/example/repo.git");
       expect(typeof sentPayload.promptText).toBe("string");
       expect(String(sentPayload.idempotencyKey ?? "")).toMatch(new RegExp(`^ade:${session.id}:.+:cursor-cloud:create$`));
+      expect(sentPayload.mode).toBe("agent");
 
       const refreshed = await service.getSessionSummary(session.id);
       expect(refreshed?.cursorCloudAgentId).toBe("cloud-agent-1");
@@ -23781,6 +23911,7 @@ describe("createAgentChatService", () => {
       const followup = mockState.cursorSdkCloudRequests.find((r) => r.type === "cloud.followup");
       expect(followup?.payload.agentId).toBe("cloud-agent-1");
       expect(String(followup?.payload.idempotencyKey ?? "")).toContain(":cursor-cloud:followup");
+      expect(followup?.payload.mode).toBe("agent");
     });
 
     it("surfaces Cursor SDK agent busy conflicts as busy cloud errors", async () => {

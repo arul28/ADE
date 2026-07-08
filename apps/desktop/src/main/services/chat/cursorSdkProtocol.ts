@@ -1,6 +1,25 @@
 export type CursorSdkChatMode = "agent" | "ask" | "plan";
 export type CursorSdkApprovalPolicy = "on-request" | "read-only" | "never";
 export type CursorSdkSandboxMode = "ade" | "cursor-native" | "off";
+export type CursorSdkAgentMode = "agent" | "plan";
+
+export type CursorSdkErrorDetail = {
+  message?: string;
+  code?: string;
+  status?: number;
+  isRetryable?: boolean;
+  requestId?: string;
+  operation?: string;
+  endpoint?: string;
+  name?: string;
+};
+
+export type CursorSdkErrorKind = "auth" | "rate_limit" | "network" | "busy" | "not_found" | "unknown";
+
+export type CursorSdkErrorClassification = {
+  kind: CursorSdkErrorKind;
+  retryable: boolean;
+};
 
 export type CursorSdkPermissionPolicy = {
   chatMode: CursorSdkChatMode;
@@ -63,6 +82,8 @@ export type CursorSdkSendPrompt = {
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
   force?: boolean;
+  idempotencyKey?: string | null;
+  mode?: CursorSdkAgentMode;
 };
 
 export type CursorSdkCloudRepoOverride = {
@@ -77,6 +98,7 @@ export type CursorSdkCloudSendStreamPayload = {
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
   idempotencyKey?: string | null;
+  mode?: CursorSdkAgentMode;
   agentName?: string | null;
   repoUrl: string;
   startingRef?: string | null;
@@ -95,6 +117,7 @@ export type CursorSdkCloudFollowupPayload = {
   modelSdkId?: string | null;
   modelParams?: CursorSdkModelParameterValue[];
   idempotencyKey?: string | null;
+  mode?: CursorSdkAgentMode;
 };
 
 export type CursorSdkCloudRunCancelPayload = {
@@ -208,7 +231,14 @@ export type CursorSdkRuntime = "local" | "cloud";
 
 export type CursorSdkWorkerResponse =
   | { type: "response"; requestId: string; ok: true; result?: unknown }
-  | { type: "response"; requestId: string; ok: false; error: string; errorCode?: string }
+  | {
+      type: "response";
+      requestId: string;
+      ok: false;
+      error: string;
+      errorCode?: string;
+      errorDetail?: CursorSdkErrorDetail;
+    }
   | { type: "ready"; agentId: string; modelSdkId: string; transport: "sdk" }
   | {
       type: "run_started";
@@ -218,6 +248,7 @@ export type CursorSdkWorkerResponse =
       modelParams?: CursorSdkModelParameterValue[];
       runtime?: CursorSdkRuntime;
       requestId?: string;
+      sdkRequestId?: string;
     }
   | {
       type: "sdk_event";
@@ -226,6 +257,8 @@ export type CursorSdkWorkerResponse =
       runId?: string;
       agentId?: string;
       requestId?: string;
+      sdkRequestId?: string;
+      errorDetail?: CursorSdkErrorDetail;
     }
   | {
       type: "run_result";
@@ -234,12 +267,14 @@ export type CursorSdkWorkerResponse =
       runId?: string;
       agentId?: string;
       requestId?: string;
+      sdkRequestId?: string;
       /**
-       * Terminal run error detail read from the SDK run store when a local run
-       * ends in ERROR. The public RunResult drops the store's `errorCode`, so
-       * the worker surfaces it here for logging + classification.
+       * Terminal run error detail read from the SDK run/result/store when a run
+       * ends in ERROR. Cursor stream status events often carry no reason, so the
+       * worker surfaces it here for logging + classification.
        */
       errorCode?: string;
+      errorDetail?: CursorSdkErrorDetail;
     }
   | {
       type: "run_status";
@@ -248,6 +283,7 @@ export type CursorSdkWorkerResponse =
       runId: string;
       status: string;
       requestId?: string;
+      sdkRequestId?: string;
     }
   | { type: "hook_request"; requestId: string; request: CursorSdkHookRequest }
   | { type: "log"; level: "debug" | "info" | "warn" | "error"; message: string; detail?: unknown };
@@ -264,9 +300,62 @@ export function isCursorSdkTransportErrorText(text: string | null | undefined): 
   if (!text) return false;
   const lower = text.toLowerCase();
   return lower.includes("nghttp2")
+    || lower.includes("http/2")
     || lower.includes("econnreset")
     || lower.includes("econnrefused")
     || lower.includes("etimedout")
     || lower.includes("socket hang up")
     || lower.includes("stream closed with error");
+}
+
+export function isCursorSdkBackoffErrorText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return lower.includes("resource_exhausted")
+    || lower.includes("resource exhausted")
+    || lower.includes("rate_limited")
+    || lower.includes("rate limited")
+    || lower.includes("rate limit")
+    || lower.includes("too many requests")
+    || lower.includes("enhance_your_calm")
+    || lower.includes("enhance your calm")
+    || lower.includes("usage limits exceeded")
+    || lower.includes("quota exceeded")
+    || lower.includes("slow down")
+    || lower.includes("back off")
+    || lower.includes("429");
+}
+
+export function classifyCursorSdkErrorText(
+  ...texts: Array<string | null | undefined>
+): CursorSdkErrorClassification {
+  const joined = texts.filter(Boolean).join("\n").toLowerCase();
+  if (!joined) return { kind: "unknown", retryable: false };
+  if (
+    joined.includes("agent_busy")
+    || joined.includes("agent busy")
+    || joined.includes("already has an active run")
+    || joined.includes("active run in progress")
+    || joined.includes("already running another task")
+  ) {
+    return { kind: "busy", retryable: false };
+  }
+  if (isCursorSdkBackoffErrorText(joined)) return { kind: "rate_limit", retryable: true };
+  if (isCursorSdkTransportErrorText(joined)) return { kind: "network", retryable: true };
+  if (
+    joined.includes("agent_not_found")
+    || joined.includes("agent not found")
+    || joined.includes("not found (operation=agent.resume")
+  ) {
+    return { kind: "not_found", retryable: false };
+  }
+  if (
+    joined.includes("unauthorized")
+    || joined.includes("forbidden")
+    || joined.includes("authentication")
+    || joined.includes("invalid api key")
+  ) {
+    return { kind: "auth", retryable: false };
+  }
+  return { kind: "unknown", retryable: false };
 }

@@ -1,6 +1,6 @@
 import type { AgentChatCloudRunStatus, AgentChatEvent, AgentChatRuntime } from "../../../shared/types";
 import { detectCompactionSignalText } from "../../../shared/contextCompaction";
-import { isCursorSdkTransportErrorText } from "./cursorSdkProtocol";
+import { classifyCursorSdkErrorText } from "./cursorSdkProtocol";
 
 const CURSOR_WORKING_ACTIVITY_DETAIL = "Preparing response";
 
@@ -48,6 +48,38 @@ function readStatusDetail(record: SdkMessageRecord): string | null {
     if (text) return text;
   }
   return null;
+}
+
+function errorEventInfo(kind: ReturnType<typeof classifyCursorSdkErrorText>["kind"]):
+  | { category: "rate_limit" | "network" | "busy" | "auth" | "unknown" }
+  | undefined {
+  if (kind === "rate_limit") return { category: "rate_limit" };
+  if (kind === "network") return { category: "network" };
+  if (kind === "busy") return { category: "busy" };
+  if (kind === "auth") return { category: "auth" };
+  return undefined;
+}
+
+function uniqueLines(lines: Array<string | null | undefined>, limit = 4): string | undefined {
+  const out: string[] = [];
+  for (const line of lines) {
+    const trimmed = line?.trim();
+    if (!trimmed || out.includes(trimmed)) continue;
+    out.push(trimmed);
+    if (out.length >= limit) break;
+  }
+  return out.length ? out.join("\n") : undefined;
+}
+
+function cursorSdkErrorMessage(
+  kind: ReturnType<typeof classifyCursorSdkErrorText>["kind"],
+  errorCode: string | null,
+  detail: string | null,
+): string {
+  if (kind === "rate_limit") return "Cursor rate limited this request.";
+  if (kind === "network") return "Cursor SDK stream failed.";
+  if (errorCode) return `Cursor run failed: ${errorCode}`;
+  return detail ?? "Cursor SDK run failed.";
 }
 
 function readNumber(value: unknown): number | null {
@@ -364,21 +396,33 @@ export function mapCursorSdkMessageToChatEvents(
         ];
       }
       if (statusText === "ERROR") {
-        // The streamed ERROR status carries no reason; the worker injects the
-        // run store's real errorCode as `adeErrorCode` after the run settles.
+        // The streamed ERROR status often carries no reason; the worker injects
+        // the run result/store detail after the run settles.
         const errorCode = readString(record.adeErrorCode);
-        const message = errorCode
-          ? `Cursor run failed: ${errorCode}`
-          : detail ?? "Cursor SDK run failed.";
-        const transport = isCursorSdkTransportErrorText(errorCode ?? detail);
+        const errorDetail = asRecord(record.adeErrorDetail);
+        const detailMessage = readString(errorDetail?.message);
+        const detailCode = readString(errorDetail?.code);
+        const detailName = readString(errorDetail?.name);
+        const requestId = readString(errorDetail?.requestId);
+        const classification = classifyCursorSdkErrorText(errorCode, detail, detailMessage, detailCode, detailName);
+        const message = cursorSdkErrorMessage(classification.kind, errorCode, detail);
+        const eventDetail = uniqueLines([
+          detailMessage && detailMessage !== message ? detailMessage : null,
+          detail && detail !== message && detail !== detailMessage ? detail : null,
+          detailCode && detailCode !== errorCode ? `Code: ${detailCode}` : null,
+          requestId ? `Cursor request ID: ${requestId}` : null,
+        ]);
+        const errorInfo = errorEventInfo(classification.kind);
         return [
           ...compactionEvents,
           {
-          type: "error" as const,
-          message,
-          turnId,
-          ...(transport ? { errorInfo: { category: "network" as const } } : {}),
-        }];
+            type: "error" as const,
+            message,
+            turnId,
+            ...(eventDetail ? { detail: eventDetail } : {}),
+            ...(errorInfo ? { errorInfo } : {}),
+          },
+        ];
       }
       return compactionEvents;
     }

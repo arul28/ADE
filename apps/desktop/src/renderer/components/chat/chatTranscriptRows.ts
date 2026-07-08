@@ -1,3 +1,8 @@
+import {
+  collapseActivityPhaseRows,
+  mergeReasoningTextFragments,
+  type ActivityPhaseMergeMeta,
+} from "../../../shared/chatActivityPhase";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types";
 import {
   contextCompactMergeKey,
@@ -1021,6 +1026,101 @@ export function groupConsecutiveWorkLogRows(
   }
 
   return consolidateInterruptedTerminus(grouped);
+}
+
+function classifyActivityPhaseRow(
+  row: ChatTranscriptGroupedEnvelope,
+): { kind: "reasoning" | "work"; turnId: string | null } | null {
+  if (row.event.type === "reasoning") {
+    return { kind: "reasoning", turnId: (row.event as RenderReasoningEvent).turnId ?? null };
+  }
+  if (row.event.type === "work_log_group") {
+    return { kind: "work", turnId: row.event.turnId ?? row.event.entries[0]?.turnId ?? null };
+  }
+  return null;
+}
+
+function mergeActivityPhaseRows(
+  phase: readonly ChatTranscriptGroupedEnvelope[],
+  meta: ActivityPhaseMergeMeta,
+): ChatTranscriptGroupedEnvelope[] {
+  const reasoningRows = phase.filter((row) => row.event.type === "reasoning");
+  const workRows = phase.filter((row) => row.event.type === "work_log_group");
+  const merged: ChatTranscriptGroupedEnvelope[] = [];
+
+  const pushReasoning = () => {
+    if (reasoningRows.length === 0) return;
+    if (reasoningRows.length === 1) {
+      merged.push(reasoningRows[0]!);
+      return;
+    }
+    const first = reasoningRows[0]!;
+    const last = reasoningRows[reasoningRows.length - 1]!;
+    const mergedText = mergeReasoningTextFragments(
+      reasoningRows.map((row) => (row.event as RenderReasoningEvent).text ?? ""),
+    );
+    merged.push({
+      key: `activity-phase-reasoning:${first.key}`,
+      timestamp: last.timestamp,
+      event: {
+        ...(first.event as RenderReasoningEvent),
+        text: mergedText,
+        startTimestamp: (first.event as RenderReasoningEvent).startTimestamp ?? first.timestamp,
+      },
+    });
+  };
+
+  const pushWork = () => {
+    if (workRows.length === 0) return;
+    if (workRows.length === 1) {
+      merged.push(workRows[0]!);
+      return;
+    }
+    const first = workRows[0]!;
+    const last = workRows[workRows.length - 1]!;
+    const entries = workRows.flatMap((row) => (row.event.type === "work_log_group" ? row.event.entries : []));
+    const summary = [...workRows]
+      .reverse()
+      .map((row) => (row.event.type === "work_log_group" ? row.event.summary?.trim() : ""))
+      .find((value) => value && value.length > 0);
+    const toolUseIds = [...new Set(workRows.flatMap((row) => (
+      row.event.type === "work_log_group" ? row.event.toolUseIds ?? [] : []
+    )))];
+    merged.push({
+      key: `activity-phase-work:${first.key}`,
+      timestamp: last.timestamp,
+      event: {
+        type: "work_log_group",
+        entries,
+        turnId: first.event.type === "work_log_group"
+          ? first.event.turnId ?? first.event.entries[0]?.turnId ?? null
+          : null,
+        ...(summary ? { summary } : {}),
+        ...(toolUseIds.length > 0 ? { toolUseIds } : {}),
+      },
+    });
+  };
+
+  if (meta.workFirst) {
+    pushWork();
+    pushReasoning();
+  } else {
+    pushReasoning();
+    pushWork();
+  }
+  return merged;
+}
+
+export function collapseGroupedActivityPhaseRows(
+  rows: ChatTranscriptGroupedEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  return collapseActivityPhaseRows(rows, classifyActivityPhaseRow, mergeActivityPhaseRows);
+}
+
+export function groupChatTranscriptRows(
+  rows: ChatTranscriptRenderEnvelope[],
+): ChatTranscriptGroupedEnvelope[] {
+  return collapseGroupedActivityPhaseRows(groupConsecutiveWorkLogRows(rows));
 }
 
 // Collapse consecutive interrupted/failed status + done rows (parent turn + N subagents)

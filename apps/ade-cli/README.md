@@ -82,7 +82,7 @@ Three ways to put `ade` on a machine:
    npm link            # or: npm pack && npm install -g ./ade-cli-*.tgz
    ```
 
-   Requires Node.js 22 or newer (the headless runtime depends on `node:sqlite`).
+   Requires Node.js 22.13 or newer (the headless runtime depends on `node:sqlite` and the Cursor SDK).
 
 ## Service manager
 

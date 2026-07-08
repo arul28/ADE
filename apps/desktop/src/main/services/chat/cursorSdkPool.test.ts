@@ -113,6 +113,33 @@ class ExitingWithStderrBeforeInitChild extends EventEmitter {
   }
 }
 
+class FailingSendChild extends FakeSdkChild {
+  override send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "send" && message.requestId) {
+      queueMicrotask(() => {
+        this.emit("message", {
+          type: "response",
+          requestId: message.requestId,
+          ok: false,
+          error: "Cursor rate limited this request: [resource_exhausted] Error",
+          errorCode: "rate_limited",
+          errorDetail: {
+            message: "[resource_exhausted] Error",
+            code: "resource_exhausted",
+            status: 429,
+            requestId: "req-cursor-1",
+            operation: "Agent.send",
+            endpoint: "/agent/send",
+            isRetryable: true,
+          },
+        });
+      });
+      return true;
+    }
+    return super.send(message);
+  }
+}
+
 afterEach(() => {
   forkMock.mockReset();
   for (const dir of tempDirs.splice(0)) {
@@ -145,6 +172,24 @@ describe("Cursor SDK pool paths", () => {
       expect(paths.socketPath).toContain(`ade-cursor-sdk-${process.getuid?.() ?? ""}`);
       expect(path.basename(paths.socketPath)).toBe("hook.sock");
     }
+  });
+
+  it("keeps durable SDK state stable while pool-specific socket paths change", () => {
+    const projectRoot = path.join(os.tmpdir(), "ade-project");
+    const first = buildCursorSdkPaths({
+      projectRoot,
+      poolKey: "session-1:composer-2.5:full-auto",
+      stateKey: "session-1:lane-1:state",
+    });
+    const second = buildCursorSdkPaths({
+      projectRoot,
+      poolKey: "session-1:claude-sonnet-5:edit",
+      stateKey: "session-1:lane-1:state",
+    });
+
+    expect(second.stateRoot).toBe(first.stateRoot);
+    expect(second.cacheRoot).toBe(first.cacheRoot);
+    expect(second.socketPath).not.toBe(first.socketPath);
   });
 
   it("builds a worker environment with real HOME parity and no ADE brain ownership metadata", () => {
@@ -294,6 +339,41 @@ describe("Cursor SDK pool paths", () => {
 
     releaseCursorSdkConnection(poolKey, second.generation);
     expect(child.disposeCount).toBe(1);
+  });
+
+  it("preserves structured Cursor SDK worker error metadata on rejected requests", async () => {
+    const child = new FailingSendChild();
+    forkMock.mockReturnValue(child);
+    const poolKey = `test-send-failure:${Date.now()}:${Math.random()}`;
+    const acquired = await acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: {
+        chatMode: "agent" as const,
+        approvalPolicy: "on-request" as const,
+        sandbox: "ade" as const,
+        force: false,
+        hardGuards: true,
+      },
+    });
+
+    await expect(acquired.pooled.sendPrompt({ promptText: "hi" })).rejects.toMatchObject({
+      code: "rate_limited",
+      status: 429,
+      requestId: "req-cursor-1",
+      operation: "Agent.send",
+      endpoint: "/agent/send",
+      isRetryable: true,
+      cursorSdk: {
+        code: "resource_exhausted",
+        requestId: "req-cursor-1",
+      },
+    });
+
+    releaseCursorSdkConnection(poolKey, acquired.generation);
   });
 
   it("does not reuse a worker whose IPC channel has closed", async () => {

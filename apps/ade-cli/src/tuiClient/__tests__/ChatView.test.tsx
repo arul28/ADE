@@ -785,13 +785,13 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    // Typed split: the command group and the file-change group each get their
-    // own collapsible header (in event order). Each single-entry group previews
-    // its call/file inline, so the collapsed headers still carry the signal.
+    // Typed split: tool calls and file changes each get their own collapsible
+    // header. The collapsed tool-call header previews the latest call so live
+    // progress stays visible without stacking every command by default.
     expect(frame).toContain("Tool calls");
     expect(frame).toContain("Files changed");
-    expect(frame).toContain("npm test");
     expect(frame).toContain("npm run typecheck");
+    expect(frame).not.toContain("npm test");
     expect(frame).toContain("auth.ts");
     // The collapsed file header keeps the badge + diff stats format.
     expect(frame).toContain("TS");

@@ -215,6 +215,13 @@ function trimWhitespace(value: string | null | undefined): string | undefined {
   return trimmed.length ? trimmed : undefined;
 }
 
+function readCursorModelId(value: unknown): string {
+  if (!isRecord(value)) return "";
+  if (typeof value.id === "string" && value.id.trim()) return value.id.trim();
+  if (isRecord(value.model) && typeof value.model.id === "string") return value.model.id.trim();
+  return "";
+}
+
 /** Top-level entry point. Dispatches to the right group/sub handler. */
 export async function runCursorCloud(args: Args, outputMode: CursorOutputMode): Promise<CursorCloudExecutionResult> {
   const cleaned = [...args];
@@ -453,7 +460,7 @@ async function runModelsGroup(sub: string, rest: Args, opts: CursorCloudOptions)
       const lines = ["Cursor cloud models"];
       if (!items.length) lines.push("  (none)");
       else for (const m of items) {
-        const id = isRecord(m) && isRecord(m.model) ? String(m.model.id ?? "") : "";
+        const id = readCursorModelId(m);
         const display = isRecord(m) && typeof m.displayName === "string" ? m.displayName : id;
         lines.push(`  ${display}${id && display !== id ? ` (${id})` : ""}`);
       }
@@ -664,8 +671,9 @@ export const CURSOR_CLOUD_HELP: Record<string, string> = {
 
     $ ade cursor cloud models list
 
-  Lists models available for cloud agents. Use the model.id field as --model
-  on "agents create" / "agents resume".
+  Lists models available for cloud agents. Use the top-level id field as
+  --model on "agents create" / "agents resume". Older nested "model.id"
+  rows are still accepted for compatibility.
 `,
   me: `  Cursor Cloud: me
 

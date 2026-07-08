@@ -219,6 +219,54 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
+  it("classifies Cursor resource exhaustion as a rate limit", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "resource_exhausted",
+      adeErrorDetail: {
+        message: "[resource_exhausted] Error",
+        requestId: "req-cursor-1",
+      },
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor rate limited this request.",
+      detail: "[resource_exhausted] Error\nCursor request ID: req-cursor-1",
+      turnId: "turn-1",
+      errorInfo: { category: "rate_limit" },
+    }]);
+  });
+
+  it("classifies Cursor HTTP/2 backoff as a rate limit", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "[internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor rate limited this request.",
+      turnId: "turn-1",
+      errorInfo: { category: "rate_limit" },
+    }]);
+  });
+
+  it("classifies Cursor HTTP/2 internal stream closures as network failures", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      adeErrorDetail: {
+        message: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      },
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor SDK stream failed.",
+      detail: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      turnId: "turn-1",
+      errorInfo: { category: "network" },
+    }]);
+  });
+
   it("classifies transport errorCodes as network so the renderer can offer retry", () => {
     expect(mapCursorSdkMessageToChatEvents({
       type: "status",
@@ -226,7 +274,7 @@ describe("Cursor SDK event mapper", () => {
       adeErrorCode: "[internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
     }, mapperMeta())).toEqual([{
       type: "error",
-      message: "Cursor run failed: [internal] Stream closed with error code NGHTTP2_INTERNAL_ERROR",
+      message: "Cursor SDK stream failed.",
       turnId: "turn-1",
       errorInfo: { category: "network" },
     }]);

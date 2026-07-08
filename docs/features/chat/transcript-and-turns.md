@@ -143,6 +143,18 @@ implements a two-layer transform:
    as a separate row. This keeps the transcript compact when the agent
    runs many tools in a single turn.
 
+3. **Activity phase collapse.** After work-log grouping, contiguous runs
+   of `reasoning` + `work_log_group` rows within the same turn (unbroken
+   by assistant text, user messages, plans, pending inputs, or other hard
+   boundaries) can merge again when the phase is noisy: at least three rows,
+   or at least two reasoning rows, or at least two work groups. The pass
+   emits one merged `Thought` row and one merged `Tool calls (N)` row in
+   chronological first-occurrence order. Simple one-thought + one-tool
+   turns stay as two rows. Shared logic lives in
+   `apps/desktop/src/shared/chatActivityPhase.ts`; desktop wires it through
+   `groupChatTranscriptRows()`, the TUI through `aggregateChatBlocks()`,
+   and iOS through `collapseActivityPhaseTimelineEntries()`.
+
 Each work-log entry carries a `collapseKey` built from `turnId`,
 `logicalItemId` (preferred) or `itemId`, and tool/command identity.
 Streaming updates for the same tool call merge into the existing entry

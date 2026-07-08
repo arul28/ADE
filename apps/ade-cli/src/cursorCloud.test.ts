@@ -1,6 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildCliPlan } from "./cli";
-import { CursorCloudUsageError, parseCursorCloudCommand } from "./cursorCloud";
+import { CursorCloudUsageError, parseCursorCloudCommand, runCursorCloud } from "./cursorCloud";
+
+const cursorModelsListMock = vi.hoisted(() => vi.fn());
+
+vi.mock("@cursor/sdk", () => ({
+  Cursor: {
+    models: {
+      list: (...args: unknown[]) => cursorModelsListMock(...args),
+    },
+  },
+}));
+
+afterEach(() => {
+  cursorModelsListMock.mockReset();
+});
 
 describe("ADE CLI cursor cloud surface", () => {
   it("routes 'cursor cloud' to a cursor-cloud plan", () => {
@@ -61,5 +75,21 @@ describe("parseCursorCloudCommand", () => {
 
   it("rejects an unknown group", () => {
     expect(() => parseCursorCloudCommand(["bogus", "list"])).toThrow(CursorCloudUsageError);
+  });
+});
+
+describe("runCursorCloud", () => {
+  it("renders current Cursor SDK model list entries in text mode", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      { id: "cursor/claude-sonnet-5", displayName: "Claude Sonnet 5" },
+      { model: { id: "legacy/composer" }, displayName: "Legacy Composer" },
+    ]);
+
+    const result = await runCursorCloud(["models", "list"], "text");
+
+    expect(result.exitCode).toBe(0);
+    expect(result.output).toContain("Claude Sonnet 5 (cursor/claude-sonnet-5)");
+    expect(result.output).toContain("Legacy Composer (legacy/composer)");
+    expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: undefined });
   });
 });

@@ -1840,7 +1840,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
   case status(turnStatus: AgentChatTurnStatus, turnId: String?, message: String?)
   case delegationState(contract: RemoteJSONValue, message: String?, turnId: String?)
-  case error(message: String, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
+  case error(message: String, detail: String?, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
   case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?)
   case tokens(turnId: String, itemId: String?, inputTokens: Int?, outputTokens: Int?, cacheReadTokens: Int?, cacheWriteTokens: Int?, contextWindow: Int?)
   case codexTokenUsage(usage: AgentChatCodexThreadTokenUsage, turnId: String?)
@@ -2092,6 +2092,7 @@ extension AgentChatEvent {
     case "error":
       self = .error(
         message: try container.decode(String.self, forKey: .message),
+        detail: try container.decodeIfPresent(String.self, forKey: .detail),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
         itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
         errorInfo: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .errorInfo)

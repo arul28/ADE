@@ -42,4 +42,11 @@ describe("classifyAgentCliError", () => {
       authCommand: "claude auth login",
     });
   });
+
+  it("does not mistake Cursor SDK agent resume misses for a missing Cursor CLI", () => {
+    expect(classifyAgentCliError(
+      "Cursor SDK init failed: Agent agent-5db8305e-086a-4f01-adff-5bfb8420ce32 not found (operation=Agent.resume)",
+      "cursor",
+    )).toBeNull();
+  });
 });

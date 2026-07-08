@@ -79,7 +79,8 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     installCommand: 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash',
     authCommand: "cursor-agent login",
     missingErrorPatterns: [
-      /\bcursor(?:-agent)?\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bcursor-agent\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bcursor\b.*\b(command not found|not recognized|enoent)\b/i,
       /\bspawn\s+cursor(?:-agent)?\s+enoent\b/i,
     ],
     notAuthErrorPatterns: [
@@ -131,7 +132,10 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
   }
 
   if (preferred) {
-    if (/\b(command not found|not recognized|enoent|executable file not found|no such file or directory)\b/i.test(text)) {
+    if (
+      /\b(command not found|not recognized|enoent|executable file not found|no such file or directory)\b/i.test(text)
+      || /\b(?:spawn|exec(?:ute)?|binary|command|executable)\b.*\bnot found\b/i.test(text)
+    ) {
       return toMatch(preferred, "missing");
     }
     if (/\b(not logged in|not authenticated|unauthorized|authentication failed|login required|invalid api key|401|403)\b/i.test(text)) {

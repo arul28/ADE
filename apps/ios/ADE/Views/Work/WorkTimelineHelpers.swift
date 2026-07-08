@@ -1050,7 +1050,7 @@ func buildWorkTimeline(
       deduped.append(entry)
     }
   }
-  return collapseConsecutiveWorkToolEntries(deduped)
+  return collapseActivityPhaseTimelineEntries(collapseConsecutiveWorkToolEntries(deduped))
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
@@ -1058,16 +1058,12 @@ func buildWorkTimeline(
 /// `work_log_group` behavior — one summary row per cluster instead of N
 /// stacked cards that eat the phone viewport.
 ///
-/// Low-signal event cards (reasoning, status, activity, todo, etc.) do NOT
-/// break a cluster — Claude typically emits a reasoning entry between every
-/// two tool calls, and a naive "consecutive" check would prevent any grouping
-/// at all. They are buffered and re-emitted after the cluster so the
-/// narrative order (tools first, then reasoning) stays readable. Hard
-/// boundaries (messages, turn separators, approvals, pending inputs, usage
-/// summaries, turn-end markers, artifacts) flush the cluster so the group never swallows a
-/// different turn's work. Singletons still use the same compact panels so iOS
-/// matches desktop's `Tool calls (1)` / `Files changed (1)` surfaces instead
-/// of falling back to bulky standalone cards.
+/// Low-signal event cards (status, activity, todo, etc.) do NOT break a tool
+/// cluster — Claude and Cursor typically emit reasoning between tool calls, and
+/// treating those as soft breaks keeps one tool group per burst. Hard boundaries
+/// (messages, turn separators, approvals, pending inputs, usage summaries,
+/// turn-end markers, artifacts) flush the cluster so the group never swallows a
+/// different turn's work.
 func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
   var result: [WorkTimelineEntry] = []
   result.reserveCapacity(entries.count)
@@ -1267,22 +1263,216 @@ private func extractCodeChangeFilePath(fromArgsText argsText: String?) -> String
 }
 
 /// Soft-break entries don't end a tool cluster — they get buffered and
-/// re-emitted after the cluster so micro-events (status pings, todo updates,
-/// activity beacons) don't stop grouping. Reasoning is explicitly a HARD
-/// break: it's the narrative beat between tool uses and should visually
-/// separate clusters the same way it does on desktop. All transcript-level
+/// re-emitted after the cluster so micro-events (reasoning, status pings,
+/// todo updates, activity beacons) don't stop grouping. All transcript-level
 /// boundaries (messages, turn separators, usage, pending inputs, artifacts,
 /// completion reports, plans) are hard breaks too.
 private func workToolGroupSoftBreak(_ entry: WorkTimelineEntry) -> Bool {
   guard case .eventCard(let card) = entry.payload else { return false }
   switch card.kind {
-  case "status", "activity", "todo", "notice",
+  case "reasoning", "status", "activity", "todo", "notice",
        "autoApproval", "pendingInputResolved",
        "promptSuggestion", "toolUseSummary":
     return true
   default:
     return false
   }
+}
+
+private func activityPhaseTurnId(for entry: WorkTimelineEntry) -> String? {
+  if case .eventCard(let card) = entry.payload, card.kind == "reasoning" {
+    let parts = card.id.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+    if let turnIndex = parts.firstIndex(of: "turn"), turnIndex + 1 < parts.count {
+      let candidate = parts[turnIndex + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+      if !candidate.isEmpty { return candidate }
+    }
+  }
+  return nil
+}
+
+private enum ActivityPhaseMemberKind {
+  case reasoning
+  case work
+}
+
+private func activityPhaseMemberKind(for entry: WorkTimelineEntry) -> ActivityPhaseMemberKind? {
+  switch entry.payload {
+  case .eventCard(let card) where card.kind == "reasoning":
+    return .reasoning
+  case .toolGroup, .changedFiles:
+    return .work
+  default:
+    return nil
+  }
+}
+
+private func shouldCollapseActivityPhaseTimeline(
+  totalRows: Int,
+  reasoningRows: Int,
+  workRows: Int
+) -> Bool {
+  totalRows >= 3 || reasoningRows >= 2 || workRows >= 2
+}
+
+private func mergeReasoningTimelineEntries(_ entries: [WorkTimelineEntry]) -> WorkTimelineEntry {
+  let cards = entries.compactMap { entry -> WorkEventCardModel? in
+    guard case .eventCard(let card) = entry.payload, card.kind == "reasoning" else { return nil }
+    return card
+  }
+  let first = entries[0]!
+  let last = entries[entries.count - 1]!
+  let mergedBody = cards
+    .compactMap { $0.body?.trimmingCharacters(in: .whitespacesAndNewlines) }
+    .filter { !$0.isEmpty }
+    .joined(separator: "\n\n---\n\n")
+  let anchor = cards.first ?? WorkEventCardModel(
+    id: first.id,
+    kind: "reasoning",
+    title: "Reasoning",
+    icon: "brain.head.profile",
+    tint: .secondary,
+    timestamp: first.timestamp,
+    body: nil,
+    bullets: [],
+    metadata: []
+  )
+  let mergedCard = WorkEventCardModel(
+    id: "activity-phase-reasoning:\(first.id)",
+    kind: anchor.kind,
+    title: anchor.title,
+    icon: anchor.icon,
+    tint: anchor.tint,
+    timestamp: last.timestamp,
+    body: mergedBody.isEmpty ? anchor.body : mergedBody,
+    bullets: anchor.bullets,
+    metadata: anchor.metadata,
+    planSteps: anchor.planSteps,
+    isInProgress: cards.contains(where: \.isInProgress),
+    questionModel: anchor.questionModel,
+    planApprovalModel: anchor.planApprovalModel,
+    resolution: anchor.resolution
+  )
+  return WorkTimelineEntry(
+    id: mergedCard.id,
+    timestamp: last.timestamp,
+    rank: first.rank,
+    payload: .eventCard(mergedCard)
+  )
+}
+
+private func mergeToolGroupTimelineEntries(_ entries: [WorkTimelineEntry]) -> WorkTimelineEntry {
+  let groups = entries.compactMap { entry -> WorkToolGroupModel? in
+    guard case .toolGroup(let group) = entry.payload else { return nil }
+    return group
+  }
+  let first = entries[0]!
+  let merged = WorkToolGroupModel(
+    id: "activity-phase-tools:\(first.id)",
+    members: groups.flatMap(\.members)
+  )
+  return WorkTimelineEntry(
+    id: merged.id,
+    timestamp: entries[entries.count - 1].timestamp,
+    rank: first.rank,
+    payload: .toolGroup(merged)
+  )
+}
+
+private func mergeChangedFilesTimelineEntries(_ entries: [WorkTimelineEntry]) -> WorkTimelineEntry {
+  let groups = entries.compactMap { entry -> WorkChangedFilesGroupModel? in
+    guard case .changedFiles(let group) = entry.payload else { return nil }
+    return group
+  }
+  let first = entries[0]!
+  let merged = WorkChangedFilesGroupModel(
+    id: "activity-phase-files:\(first.id)",
+    files: groups.flatMap(\.files)
+  )
+  return WorkTimelineEntry(
+    id: merged.id,
+    timestamp: entries[entries.count - 1].timestamp,
+    rank: first.rank,
+    payload: .changedFiles(merged)
+  )
+}
+
+/// Collapse alternating reasoning + tool activity into merged rows, mirroring
+/// desktop `collapseGroupedActivityPhaseRows`.
+func collapseActivityPhaseTimelineEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var index = entries.startIndex
+
+  while index < entries.endIndex {
+    let entry = entries[index]
+    guard let memberKind = activityPhaseMemberKind(for: entry) else {
+      result.append(entry)
+      index = entries.index(after: index)
+      continue
+    }
+
+    var phaseTurnId = activityPhaseTurnId(for: entry)
+    var phase: [WorkTimelineEntry] = [entry]
+    var reasoningRows = memberKind == .reasoning ? 1 : 0
+    var workRows = memberKind == .work ? 1 : 0
+    let workFirst = memberKind == .work
+    var cursor = entries.index(after: index)
+
+    while cursor < entries.endIndex {
+      let next = entries[cursor]
+      guard let nextKind = activityPhaseMemberKind(for: next) else { break }
+      let nextTurnId = activityPhaseTurnId(for: next)
+      if let existingTurnId = phaseTurnId, let nextTurnId, nextTurnId != existingTurnId { break }
+      if phaseTurnId == nil, let nextTurnId { phaseTurnId = nextTurnId }
+      phase.append(next)
+      if nextKind == .reasoning { reasoningRows += 1 } else { workRows += 1 }
+      cursor = entries.index(after: cursor)
+    }
+
+    if shouldCollapseActivityPhaseTimeline(
+      totalRows: phase.count,
+      reasoningRows: reasoningRows,
+      workRows: workRows
+    ) {
+      let reasoningEntries = phase.filter { activityPhaseMemberKind(for: $0) == .reasoning }
+      let toolGroupEntries = phase.filter {
+        if case .toolGroup = $0.payload { return true }
+        return false
+      }
+      let changedFilesEntries = phase.filter {
+        if case .changedFiles = $0.payload { return true }
+        return false
+      }
+      let firstWorkEntry = phase.first {
+        if case .toolGroup = $0.payload { return true }
+        if case .changedFiles = $0.payload { return true }
+        return false
+      }
+
+      func appendWorkGroups() {
+        if case .changedFiles = firstWorkEntry?.payload {
+          if !changedFilesEntries.isEmpty { result.append(mergeChangedFilesTimelineEntries(changedFilesEntries)) }
+          if !toolGroupEntries.isEmpty { result.append(mergeToolGroupTimelineEntries(toolGroupEntries)) }
+        } else {
+          if !toolGroupEntries.isEmpty { result.append(mergeToolGroupTimelineEntries(toolGroupEntries)) }
+          if !changedFilesEntries.isEmpty { result.append(mergeChangedFilesTimelineEntries(changedFilesEntries)) }
+        }
+      }
+
+      if workFirst {
+        appendWorkGroups()
+        if !reasoningEntries.isEmpty { result.append(mergeReasoningTimelineEntries(reasoningEntries)) }
+      } else {
+        if !reasoningEntries.isEmpty { result.append(mergeReasoningTimelineEntries(reasoningEntries)) }
+        appendWorkGroups()
+      }
+    } else {
+      result.append(contentsOf: phase)
+    }
+    index = cursor
+  }
+
+  return result
 }
 
 func normalizedWorkLocalEchoText(_ text: String) -> String {
