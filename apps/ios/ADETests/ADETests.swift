@@ -16360,15 +16360,10 @@ final class LinearPaneTests: XCTestCase {
         pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: true, endCursor: "cursor-1")
       ),
       LinearIssueSearchResult(
-        issues: (2...9).map { index in
-          makeIssue(
-            id: "backlog-\(index)",
-            identifier: "ADE-\(index + 1)",
-            title: "Backlog \(index)",
-            stateId: "state-backlog",
-            stateName: "Backlog",
-            stateType: "backlog"
-          )
+        issues: [
+          makeIssue(id: "backlog-1", identifier: "ADE-2", title: "Backlog 1 updated", stateId: "state-backlog", stateName: "Backlog", stateType: "backlog"),
+        ] + (2...9).map { index in
+          makeIssue(id: "backlog-\(index)", identifier: "ADE-\(index + 1)", title: "Backlog \(index)", stateId: "state-backlog", stateName: "Backlog", stateType: "backlog")
         },
         pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: false, endCursor: nil)
       ),
@@ -16386,6 +16381,35 @@ final class LinearPaneTests: XCTestCase {
     XCTAssertEqual(sync.searchArgs.last?.after, "cursor-1")
     XCTAssertEqual(store.groupedIssues.first { $0.title == "Backlog" }?.issues.count, 9)
     XCTAssertFalse(store.hasNextPage)
+  }
+
+  @MainActor
+  func testLinearPaneStoreKeepsOverflowPagingReachableAfterEagerBatchLimit() async {
+    let sync = LinearPaneSyncSpy()
+    sync.searchResults = (1...11).map { index in
+      LinearIssueSearchResult(
+        issues: [makeIssue(id: "i\(index)", identifier: "ADE-\(index)", title: "Issue \(index)")],
+        pageInfo: LinearIssueSearchResultPageInfo(
+          hasNextPage: index < 11,
+          endCursor: index < 11 ? "cursor-\(index)" : nil
+        )
+      )
+    }
+
+    let store = LinearPaneStore(sync: sync)
+    await store.reload()
+
+    XCTAssertEqual(store.issues.count, 10)
+    XCTAssertTrue(store.hasNextPage)
+    XCTAssertEqual(sync.searchArgs.count, 10)
+    XCTAssertEqual(sync.searchArgs.last?.after, "cursor-9")
+
+    await store.loadMore()
+
+    XCTAssertEqual(store.issues.count, 11)
+    XCTAssertFalse(store.hasNextPage)
+    XCTAssertEqual(sync.searchArgs.count, 11)
+    XCTAssertEqual(sync.searchArgs.last?.after, "cursor-10")
   }
 
   func testLinearCompletedGroupsCollapseByDefault() {

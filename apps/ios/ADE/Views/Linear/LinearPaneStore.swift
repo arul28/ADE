@@ -75,6 +75,7 @@ final class LinearPaneStore: ObservableObject {
   @Published private(set) var errorMessage: String?
 
   private let pageSize = 100
+  private let maxPagesPerRequest = 10
   private var endCursor: String?
   private var searchGeneration = 0
   private var reloadTask: Task<Void, Never>?
@@ -220,8 +221,9 @@ final class LinearPaneStore: ObservableObject {
     var cursor = initialCursor
     var pageInfo = LinearIssueSearchResultPageInfo(hasNextPage: true, endCursor: cursor)
     var seenCursors = Set<String>()
+    var pagesLoaded = 0
 
-    while pageInfo.hasNextPage {
+    while pageInfo.hasNextPage && pagesLoaded < maxPagesPerRequest {
       try Task.checkCancellation()
       if let cursor {
         guard seenCursors.insert(cursor).inserted else {
@@ -230,6 +232,7 @@ final class LinearPaneStore: ObservableObject {
         }
       }
       let result = try await sync.searchLinearIssues(currentArgs(after: cursor))
+      pagesLoaded += 1
       loaded = linearMergeIssuePages(loaded, result.issues)
       pageInfo = result.pageInfo
       guard pageInfo.hasNextPage else {
