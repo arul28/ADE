@@ -495,6 +495,14 @@ function createRuntime() {
         responseText: "yes",
       })),
       sendMessage: vi.fn(async () => {}),
+      messageSession: vi.fn(async (args: unknown) => ({
+        sessionId: (args as { sessionId?: string }).sessionId ?? "chat-unknown",
+        kind: (args as { kind?: string }).kind ?? "auto",
+        routedAction: "sendMessage",
+        statusBefore: "idle",
+        awaitingInputBefore: false,
+        delivery: "sent",
+      })),
       interrupt: vi.fn(async () => {}),
       resumeSession: vi.fn(async ({ sessionId }: { sessionId: string }) => ({
         id: sessionId,
@@ -2819,6 +2827,18 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.sendMessage).toHaveBeenCalledWith({
       sessionId: "chat-1",
       text: "own-chat write",
+    });
+
+    const peerMessage = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "messageSession",
+      args: { sessionId: "chat-2", kind: "auto", text: "peer context" },
+    });
+    expect(peerMessage?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.messageSession).toHaveBeenCalledWith({
+      sessionId: "chat-2",
+      kind: "auto",
+      text: "peer context",
     });
   });
 

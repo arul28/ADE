@@ -450,6 +450,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listClaudeSessions",
     "listSessions",
     "listSubagents",
+    "messageSession",
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
@@ -744,6 +745,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Send a user message to a chat session; provider dispatch continues asynchronously.",
       input: "object { sessionId: string, text: string, attachments? }",
       example: "ade actions run chat.sendMessage --input-json '{\"sessionId\":\"chat-123\",\"text\":\"next step\"}'",
+    },
+    messageSession: {
+      description: "Deliver a message to a chat using ADE-normalized routing: auto steers active turns, wakes idle chats, queues non-urgent context, or interrupts and replaces.",
+      input: "object { sessionId: string, text: string, kind?: \"auto\" | \"queue\" | \"wake\" | \"interrupt-replace\", attachments?, contextAttachments?, metadata? }",
+      example: "ade actions run chat.messageSession --input-json '{\"sessionId\":\"chat-123\",\"kind\":\"auto\",\"text\":\"use this context\"}'",
     },
     modelCatalog: {
       description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
@@ -1210,6 +1216,15 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         sessionId,
         note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
       };
+    },
+    messageSession: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.messageSession");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const text = requireNonEmptyString(record.text, "text");
+      if (typeof agentChatService.messageSession !== "function") {
+        throw new Error("Chat messageSession is not available in this runtime.");
+      }
+      return agentChatService.messageSession({ ...record, sessionId, text } as never);
     },
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");

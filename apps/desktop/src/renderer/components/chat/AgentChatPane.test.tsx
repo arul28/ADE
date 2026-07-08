@@ -2496,6 +2496,66 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("keeps active-turn controls when hydrated history starts after the turn-start marker", async () => {
+    const session = buildSession("session-1", { status: "active", awaitingInput: false });
+    installAdeMocks({
+      sessions: [session],
+      eventHistory: {
+        sessionId: session.sessionId,
+        events: [{
+          sessionId: session.sessionId,
+          timestamp: "2026-03-24T05:57:46.000Z",
+          event: {
+            type: "text",
+            text: "Still packaging the release.",
+            turnId: "turn-1",
+          },
+        }],
+        truncated: true,
+        windowTruncated: true,
+        sessionFound: true,
+      },
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByText("Still packaging the release.")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Steer the active turn...")).toBeTruthy();
+    expect(screen.getByLabelText("Stop active turn")).toBeTruthy();
+  });
+
+  it("stops active-turn controls immediately when a terminal event streams", async () => {
+    const session = buildSession("session-1", { status: "active", awaitingInput: false });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [session],
+      transcript: buildStatusStartedTranscript(session.sessionId),
+    });
+
+    renderPane(session);
+
+    expect(await screen.findByPlaceholderText("Steer the active turn...")).toBeTruthy();
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-03-24T05:58:00.000Z",
+        sequence: 2,
+        event: {
+          type: "done",
+          turnId: "turn-1",
+          status: "completed",
+          model: "gpt-5.4",
+          modelId: "openai/gpt-5.4",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText("Steer the active turn...")).toBeNull();
+      expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
+    });
+  });
+
   it("falls back to a normal send when the active-turn marker is stale", async () => {
     const session = buildSession("session-1");
     const { send, steer } = installAdeMocks({

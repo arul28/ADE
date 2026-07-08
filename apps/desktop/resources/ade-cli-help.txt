@@ -29,6 +29,7 @@ _    ____  _____
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -135,6 +136,7 @@ _    ____  _____
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -241,6 +243,7 @@ _    ____  _____
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -658,8 +661,20 @@ _    ____  _____
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
-    $ ade chat send <session> --text "next step"    Send a message
+    $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat message <session> --kind auto --text "status"
+                                                    Deliver via auto | queue | wake | interrupt-replace
+    $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat wait <session> --for idle --timeout-ms 600000
+                                                    Wait for idle, active, awaiting-input, or terminal
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
+    $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
+    $ ade chat goal <session> --status paused       Update a Codex goal status
+    $ ade chat fork <session> --model openai/gpt-5.5
+                                                    Fork full provider history into a new chat
+    $ ade chat rewind-files <session> --message <user-message-id> --dry-run
+                                                    Preview or apply file/context rewind
+    $ ade chat subagents <session> --text           List child agents for a chat
     $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
@@ -744,7 +759,7 @@ _    ____  _____
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
@@ -753,6 +768,7 @@ _    ____  _____
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -928,7 +944,7 @@ _    ____  _____
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
-    $ ade link lane | session | branch | pr | linear-issue
+    $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
@@ -937,6 +953,7 @@ _    ____  _____
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
@@ -1339,6 +1356,7 @@ _    ____  _____
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
+    $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
     $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks

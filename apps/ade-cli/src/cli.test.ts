@@ -1956,6 +1956,127 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("routes chat send through the normalized message primitive", () => {
+    const executePlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "send",
+      "chat-1",
+      "--text",
+      "keep going",
+    ]));
+
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "messageSession",
+        args: {
+          sessionId: "chat-1",
+          text: "keep going",
+          kind: "auto",
+        },
+      },
+    });
+  });
+
+  it("builds chat steer as an explicit steer action", () => {
+    const executePlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "steer",
+      "chat-1",
+      "--text",
+      "use this context",
+    ]));
+
+    expect(executePlan.label).toBe("chat steer");
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "steer",
+        args: {
+          sessionId: "chat-1",
+          text: "use this context",
+        },
+      },
+    });
+  });
+
+  it("builds chat message with an explicit routing kind", () => {
+    const executePlan = expectExecutePlan(buildCliPlan([
+      "chat",
+      "message",
+      "chat-1",
+      "--kind",
+      "interrupt-replace",
+      "--text",
+      "stop and use this direction",
+    ]));
+
+    expect(executePlan.label).toBe("chat message");
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "messageSession",
+        args: {
+          sessionId: "chat-1",
+          text: "stop and use this direction",
+          kind: "interrupt-replace",
+        },
+      },
+    });
+  });
+
+  it("builds chat wait as a bounded state wait", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "wait",
+      "chat-1",
+      "--for",
+      "awaiting-input",
+      "--timeout-ms",
+      "120000",
+      "--poll-interval-ms",
+      "500",
+    ]);
+
+    expect(plan).toMatchObject({
+      kind: "chat-wait",
+      sessionId: "chat-1",
+      waitFor: "awaiting-input",
+      timeoutMs: 120000,
+      pollIntervalMs: 500,
+    });
+  });
+
+  it("parses chat session ids after value flags", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "wait",
+      "--for",
+      "idle",
+      "chat-1",
+    ]);
+
+    expect(plan).toMatchObject({
+      kind: "chat-wait",
+      sessionId: "chat-1",
+      waitFor: "idle",
+    });
+  });
+
+  it("defaults chat wait to idle and accepts a positional wait target", () => {
+    expect(buildCliPlan(["chat", "wait", "chat-1"])).toMatchObject({
+      kind: "chat-wait",
+      sessionId: "chat-1",
+      waitFor: "idle",
+    });
+
+    expect(buildCliPlan(["chat", "wait", "chat-1", "terminal"])).toMatchObject({
+      kind: "chat-wait",
+      sessionId: "chat-1",
+      waitFor: "terminal",
+    });
+  });
+
   it("rejects reasoning effort on legacy agent spawn", () => {
     expect(() =>
       buildCliPlan([
@@ -3496,6 +3617,9 @@ describe("ADE CLI", () => {
     const chatHelp = buildCliPlan(["help", "chat"]);
     expect(chatHelp.kind).toBe("help");
     if (chatHelp.kind !== "help") return;
+    expect(chatHelp.text).toContain("ade chat message <session>");
+    expect(chatHelp.text).toContain("ade chat steer <session>");
+    expect(chatHelp.text).toContain("ade chat wait <session>");
     expect(chatHelp.text).toContain("ade chat read <session>");
     expect(chatHelp.text).toContain("ade new chat --mode cli");
 

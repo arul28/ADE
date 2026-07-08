@@ -414,15 +414,24 @@ imported user/assistant text when the caller did not provide one.
    recreated on the next turn.
 3. `sendMessage({ sessionId, text, attachments? })` via
    `ade.agentChat.send` dispatches a turn. The ADE action bridge exposes
-   the same path as `chat.sendMessage`; `ade chat send` returns an accepted
-   acknowledgement after the service accepts the message, while provider
-   dispatch and event streaming continue asynchronously. `ade chat create
-   --prompt` uses this same follow-up send after the session is created, and
-   `ade chat read <session>` calls `chat.readTranscript` to inspect recent
-   transcript messages for chat sessions only; shell/terminal transcript reads
-   stay on the terminal/session surfaces. When invoked through the generic ADE
-   action bridge by a session-bound non-CTO caller, `chat.sendMessage` and
-   `chat.readTranscript` are scoped to that caller's own chat session.
+   the same low-level path as `chat.sendMessage`, plus
+   `chat.messageSession({ sessionId, text, kind })` as the normalized
+   agent-to-agent primitive. `kind: "auto"` steers active sessions and wakes
+   idle sessions, `queue` always routes through the provider-normalized steer
+   path, `wake` starts a normal turn, and `interrupt-replace` interrupts before
+   sending the replacement. The result reports the routed action and whether a
+   steer was delivered or queued. `ade chat send` uses the auto route, while
+   `ade chat message --kind ...` exposes the explicit primitive. Provider
+   dispatch and event streaming continue asynchronously after acceptance.
+   `ade chat create --prompt` uses this same follow-up send after the session is
+   created, and `ade chat read <session>` calls `chat.readTranscript` to inspect
+   recent transcript messages for chat sessions only; shell/terminal transcript
+   reads stay on the terminal/session surfaces. When invoked through the generic
+   ADE action bridge by a session-bound non-CTO caller, the low-level
+   `chat.sendMessage` and `chat.readTranscript` actions are scoped to that
+   caller's own chat session; `chat.messageSession` is the reviewed peer-control
+   primitive for deliberately messaging another ADE chat through ADE's routing
+   contract.
    Interactive chat sends are not wall-clock bounded by the service; the turn
    runs until the provider
    completes or the user/app interrupts it. The blocking `runSessionTurn`

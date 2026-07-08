@@ -171,6 +171,36 @@ The caller picks the ping `kind` (`queue` / `interrupt-replace` / `wake`) per th
 
 Pick `queue` for non-urgent context drops (worker progress reports, validator pass/fail). Pick `interrupt-replace` for cancellations and high-priority redirects. Pick `wake` only when the target is dormant.
 
+When you need to message an ADE chat through the CLI instead of the orchestration
+tool, check the target first:
+
+```
+ade chat show <session> --text
+ade chat read <session> --limit 20 --text
+```
+
+- General handoff/status/directive: use
+  `ade chat message <session> --kind auto --text "..."`. This is the CLI
+  counterpart to `messageAgent`: ADE wakes idle chats with a normal turn, steers
+  active chats through the provider-normalized steer path, and reports whether
+  the message was sent, delivered, or queued.
+- Active target: use `ade chat steer <session> --text "..."`. This preserves the
+  provider's active-turn semantics (`turn/steer` for Codex, staged steer for
+  Claude, queued boundary delivery for Cursor/Droid/OpenCode).
+- Dormant/idle target: use `ade chat send <session> --text "..."` to start the
+  next turn.
+- Hard redirect/cancel: use `messageAgent({ kind: "interrupt-replace", ... })`
+  when you have orchestration tools; from a plain shell use
+  `ade chat message <session> --kind interrupt-replace --text "..."` or
+  `ade chat interrupt <session>` and then send the replacement instruction.
+- Waiting for a peer: use `ade chat wait <session> --for idle --timeout-ms <ms>`
+  before reading final output; `--for active`, `awaiting-input`, and `terminal`
+  are also available.
+
+Do not use a normal send as a substitute for steering a running chat. It can
+surface as "A turn is already active" inside the target transcript instead of
+being delivered through the provider's steering channel.
+
 ## §9 — Cancellation with smart revert
 
 Lead's `messageAgent({ kind: "interrupt-replace", intent: "cancellation", cancellation: { revert: true | false | "review", reason } })`. The tool also records `agents[target].cancellationRequested = true` in `manifest.json`; running worker bash tools watch that bit and abort.

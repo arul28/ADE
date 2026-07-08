@@ -108,8 +108,32 @@ provider CLI terminal. Both accept lane, provider, model, reasoning effort,
 permission mode, fast/no-fast, and prompt flags. Use `--lane auto` or
 `--auto-create-lane` when the desktop UI would use the auto-create lane row.
 
-Use `ade chat send <session> --text ...` for later messages and
-`ade chat read <session> --text` to confirm recent transcript messages.
+Use `ade chat read <session> --text` to confirm recent transcript messages
+before and after steering another chat.
+
+Use `ade chat show <session> --text` before messaging a chat you do not own:
+
+- If you just need to hand context/directive/status to another chat, prefer
+  `ade chat message <session> --kind auto --text ...`. ADE inspects the target:
+  active turns are steered, idle chats are woken with a new turn, and the result
+  reports the route (`sendMessage`, `steer`, or `interrupt-replace`) plus whether
+  a steer was queued.
+- If `status` is `active` and it is not waiting for user input, use
+  `ade chat steer <session> --text ...`. This routes through the provider's
+  active-turn path: Codex receives `turn/steer`, Claude stages a steer message,
+  and Cursor/Droid/OpenCode queue the message for the next safe boundary.
+- If the chat is idle/dormant, use `ade chat send <session> --text ...` to start
+  the next turn. The CLI also checks the session summary and will steer instead
+  of sending when the target is already active, but prefer the explicit verb
+  when your intent is to steer.
+- If you need to wait for a peer before reading final output, use
+  `ade chat wait <session> --for idle --timeout-ms <ms>` (also supports
+  `active`, `awaiting-input`, and `terminal`).
+- If you need to stop or redirect a running chat, use
+  `ade chat message <session> --kind interrupt-replace --text ...` or, when
+  you need manual control, `ade chat interrupt <session>` first, then
+  `ade chat send ...` with the new instruction. Do not send a second normal turn
+  into an active chat and hope the provider interprets it as steering.
 
 Compatibility commands still exist, but do not teach them as the first choice:
 

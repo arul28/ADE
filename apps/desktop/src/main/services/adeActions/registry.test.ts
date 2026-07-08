@@ -82,9 +82,11 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
+    expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
     expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "messageSession")).toBe(false);
   });
 
   it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
@@ -362,6 +364,10 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(getAdeActionInputContract("chat", "sendMessage")).toMatchObject({
       description: expect.stringContaining("asynchronously"),
     });
+    expect(getAdeActionInputContract("chat", "messageSession")).toMatchObject({
+      description: expect.stringContaining("normalized"),
+      input: expect.stringContaining("interrupt-replace"),
+    });
   });
 
   it("normalizes chat action argument shapes for model discovery, summaries, transcript reads, and sends", async () => {
@@ -380,6 +386,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       options,
     }));
     const sendMessage = vi.fn(async () => undefined);
+    const messageSession = vi.fn(async (args: unknown) => ({ ok: true, args }));
     const runtime = {
       agentChatService: {
         createSession,
@@ -389,6 +396,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
         getChatEventHistory,
         getChatEventHistoryPage,
         sendMessage,
+        messageSession,
       },
     } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
 
@@ -400,6 +408,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       getChatEventHistory?: (args?: unknown) => Promise<unknown>;
       getChatEventHistoryPage?: (args?: unknown) => Promise<unknown>;
       sendMessage?: (args?: unknown) => Promise<unknown>;
+      messageSession?: (args?: unknown) => Promise<unknown>;
     };
 
     await expect(chat.getAvailableModels?.({})).resolves.toEqual([{ id: "any" }]);
@@ -479,6 +488,26 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "next" });
     await expect(chat.sendMessage?.({ sessionId: "chat-1", text: "   " })).rejects.toThrow(/text/);
     expect(sendMessage).toHaveBeenCalledTimes(1);
+
+    await expect(chat.messageSession?.({
+      sessionId: " chat-1 ",
+      text: "status",
+      kind: "queue",
+    })).resolves.toEqual({
+      ok: true,
+      args: {
+        sessionId: "chat-1",
+        text: "status",
+        kind: "queue",
+      },
+    });
+    expect(messageSession).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      text: "status",
+      kind: "queue",
+    });
+    await expect(chat.messageSession?.({ sessionId: "chat-1", text: "" })).rejects.toThrow(/text/);
+    expect(messageSession).toHaveBeenCalledTimes(1);
   });
 
   it("resolves chat fileSearch lanes from getSessionSummary and caches the result", async () => {

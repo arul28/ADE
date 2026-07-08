@@ -157,6 +157,9 @@ import type {
   AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
+  AgentChatMessageSessionArgs,
+  AgentChatMessageSessionKind,
+  AgentChatMessageSessionResult,
   AgentChatCursorModelSource,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
@@ -26405,6 +26408,95 @@ export function createAgentChatService(args: {
     return { steerId, queued: false };
   };
 
+  const normalizeMessageSessionKind = (
+    kind: AgentChatMessageSessionArgs["kind"],
+  ): AgentChatMessageSessionKind => {
+    if (kind == null || kind === "auto") return "auto";
+    if (kind === "queue" || kind === "wake" || kind === "interrupt-replace") return kind;
+    throw new Error(`Unsupported chat message kind: ${String(kind)}`);
+  };
+
+  const messageSession = async ({
+    sessionId,
+    text,
+    kind,
+    attachments = [],
+    contextAttachments = [],
+    metadata,
+  }: AgentChatMessageSessionArgs): Promise<AgentChatMessageSessionResult> => {
+    const managed = ensureManagedSession(sessionId);
+    const normalizedKind = normalizeMessageSessionKind(kind);
+    const statusBefore = managed.session.status;
+    const awaitingInputBefore = hasLivePendingInput(managed);
+    if (awaitingInputBefore) {
+      throw new Error(`${PENDING_INPUT_SEND_BLOCKED_MESSAGE} Use chat.respondToInput for the pending input instead.`);
+    }
+
+    const steerTarget =
+      normalizedKind === "queue" ||
+      (normalizedKind === "auto" && statusBefore === "active");
+    if (steerTarget) {
+      const result = await steer({
+        sessionId,
+        text,
+        attachments,
+        contextAttachments,
+        metadata,
+      });
+      return {
+        sessionId,
+        kind: normalizedKind,
+        routedAction: "steer",
+        statusBefore,
+        awaitingInputBefore,
+        delivery: result.queued ? "queued" : statusBefore === "active" ? "delivered" : "sent",
+        steerId: result.steerId,
+        queued: result.queued,
+      };
+    }
+
+    if (normalizedKind === "interrupt-replace") {
+      await interrupt({ sessionId });
+      await sendMessage(
+        {
+          sessionId,
+          text,
+          attachments,
+          contextAttachments,
+          metadata,
+        },
+        { awaitDispatch: false },
+      );
+      return {
+        sessionId,
+        kind: normalizedKind,
+        routedAction: "interrupt-replace",
+        statusBefore,
+        awaitingInputBefore,
+        delivery: "sent",
+      };
+    }
+
+    await sendMessage(
+      {
+        sessionId,
+        text,
+        attachments,
+        contextAttachments,
+        metadata,
+      },
+      { awaitDispatch: false },
+    );
+    return {
+      sessionId,
+      kind: normalizedKind,
+      routedAction: "sendMessage",
+      statusBefore,
+      awaitingInputBefore,
+      delivery: "sent",
+    };
+  };
+
   const cancelSteer = async ({ sessionId, steerId }: AgentChatCancelSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
@@ -31235,6 +31327,7 @@ export function createAgentChatService(args: {
     suggestLaneNameFromPrompt,
     handoffSession,
     sendMessage,
+    messageSession,
     readTranscript,
     setOrchestrationFields,
     getCodexGoal,
