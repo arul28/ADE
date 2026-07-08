@@ -279,6 +279,42 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(message?.deliveryState)
   }
 
+  func testImageOnlyLocalEchoDedupeIncludesAttachmentIdentity() {
+    let first = AgentChatFileRef(path: "/project/.ade/attachments/first.jpg", type: "image", url: nil)
+    let second = AgentChatFileRef(path: "/project/.ade/attachments/second.jpg", type: "image", url: nil)
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [
+        WorkChatEnvelope(
+          sessionId: "chat-1",
+          timestamp: iso(now),
+          sequence: 1,
+          event: .userMessage(
+            text: "Attached image.",
+            attachments: [first],
+            turnId: nil,
+            steerId: nil,
+            deliveryState: nil,
+            processed: nil
+          )
+        )
+      ],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [
+        WorkLocalEchoMessage(text: "Attached image.", timestamp: iso(now), deliveryState: nil, attachments: [first]),
+        WorkLocalEchoMessage(text: "Attached image.", timestamp: iso(now), deliveryState: nil, attachments: [second]),
+      ]
+    )
+    let visibleUserMessages = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload, message.role == "user" { return message }
+      return nil
+    }
+
+    XCTAssertEqual(visibleUserMessages.count, 2)
+    XCTAssertTrue(visibleUserMessages.contains { $0.attachments == [first] })
+    XCTAssertTrue(visibleUserMessages.contains { $0.attachments == [second] })
+  }
+
   // MARK: - Fixtures
 
   private func makeSession(

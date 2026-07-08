@@ -950,22 +950,21 @@ func buildWorkTimeline(
       }
     : buildWorkChatMessages(from: transcript)
 
-  let pendingSteerTexts = Set(
-    derivePendingWorkSteers(from: transcript).map { normalizedWorkLocalEchoText($0.text) }.filter { !$0.isEmpty }
+  let pendingSteerEchoKeys = Set(
+    derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: nil) }
   )
 
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
     WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
-  let transcriptUserMessageTexts = Set(
+  let transcriptUserMessageEchoKeys = Set(
     messages
       .filter { $0.role.lowercased() == "user" }
-      .map { normalizedWorkLocalEchoText($0.markdown) }
-      .filter { !$0.isEmpty }
+      .compactMap { workLocalEchoDedupeKey(text: $0.markdown, attachments: $0.attachments) }
   )
   let visibleLocalEchoMessages = localEchoMessages.filter { echo in
-    let normalized = normalizedWorkLocalEchoText(echo.text)
-    return !transcriptUserMessageTexts.contains(normalized) && !pendingSteerTexts.contains(normalized)
+    guard let key = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else { return true }
+    return !transcriptUserMessageEchoKeys.contains(key) && !pendingSteerEchoKeys.contains(key)
   }
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in
@@ -1576,6 +1575,15 @@ func normalizedWorkLocalEchoText(_ text: String) -> String {
   text
     .trimmingCharacters(in: .whitespacesAndNewlines)
     .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+}
+
+private func workLocalEchoDedupeKey(text: String, attachments: [AgentChatFileRef]?) -> String? {
+  let normalized = normalizedWorkLocalEchoText(text)
+  guard !normalized.isEmpty else { return nil }
+  let attachmentKey = (attachments ?? [])
+    .map { "\($0.type)|\($0.path)|\($0.url ?? "")" }
+    .joined(separator: "\u{1f}")
+  return "\(normalized)\u{1e}\(attachmentKey)"
 }
 
 func buildWorkCommandCards(from transcript: [WorkChatEnvelope]) -> [WorkCommandCardModel] {
