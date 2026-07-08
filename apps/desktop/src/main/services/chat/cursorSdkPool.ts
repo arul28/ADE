@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkErrorDetail,
@@ -173,6 +174,22 @@ function prependPathDir(env: NodeJS.ProcessEnv, dir: string | null | undefined):
   env[key] = current ? `${dir}${path.delimiter}${current}` : dir;
 }
 
+function prependPathEntries(existing: string | undefined, entries: readonly string[]): string | undefined {
+  const next: string[] = [];
+  const seen = new Set<string>();
+  const add = (entry: string | undefined): void => {
+    const trimmed = entry?.trim();
+    if (!trimmed) return;
+    const key = path.resolve(trimmed);
+    if (seen.has(key)) return;
+    seen.add(key);
+    next.push(trimmed);
+  };
+  for (const entry of entries) add(entry);
+  for (const entry of existing?.split(path.delimiter) ?? []) add(entry);
+  return next.length ? next.join(path.delimiter) : existing;
+}
+
 function prependPathList(existing: string | undefined, root: string | null): string | undefined {
   if (!root) return existing;
   try {
@@ -180,9 +197,7 @@ function prependPathList(existing: string | undefined, root: string | null): str
   } catch {
     return existing;
   }
-  const parts = (existing ?? "").split(path.delimiter).filter(Boolean);
-  if (parts.some((part) => path.resolve(part) === path.resolve(root))) return existing;
-  return [root, ...parts].join(path.delimiter);
+  return prependPathEntries(existing, [root]);
 }
 
 function existingFilePath(candidate: string | null | undefined): string | null {
@@ -244,6 +259,58 @@ function inferAdeCliEntryFromBinDir(binDir: string | null): string | null {
   return existingFilePath(path.resolve(binDir, "..", "cli.cjs"));
 }
 
+function uniqueExistingDirs(candidates: readonly (string | null | undefined)[]): string[] {
+  const dirs: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const dir = existingDirPath(candidate);
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    dirs.push(dir);
+  }
+  return dirs;
+}
+
+function resourcesRootFromAdeCliBinDir(binDir: string | null): string | null {
+  if (!binDir) return null;
+  if (path.basename(binDir) !== "bin") return null;
+  const cliDir = path.dirname(binDir);
+  if (path.basename(cliDir) !== "ade-cli") return null;
+  return path.resolve(cliDir, "..");
+}
+
+function resourcesRootFromAdeCliEntry(cliEntry: string | null): string | null {
+  if (!cliEntry) return null;
+  const cliDir = path.dirname(cliEntry);
+  if (path.basename(cliDir) !== "ade-cli") return null;
+  return path.resolve(cliDir, "..");
+}
+
+function inferPackagedResourcesRoots(env: NodeJS.ProcessEnv): string[] {
+  const processWithResources = process as NodeJS.Process & { resourcesPath?: string };
+  const envBinDir = existingDirPath(env.ADE_CLI_BIN_DIR);
+  const envCliPath = existingFilePath(env.ADE_CLI_PATH);
+  const envCliEntry = existingFilePath(env.ADE_CLI_ENTRY_PATH);
+  const argvCliEntry = existingFilePath(typeof process.argv[1] === "string" ? process.argv[1] : null);
+  return uniqueExistingDirs([
+    processWithResources.resourcesPath,
+    resourcesRootFromAdeCliBinDir(envBinDir),
+    resourcesRootFromAdeCliBinDir(envCliPath ? path.dirname(envCliPath) : null),
+    resourcesRootFromAdeCliEntry(envCliEntry),
+    resourcesRootFromAdeCliEntry(argvCliEntry),
+    path.basename(moduleDir) === "ade-cli" ? path.dirname(moduleDir) : null,
+  ]).filter((resourcesRoot) =>
+    buildPackagedRuntimeNodeModulePaths({ resourcesPath: resourcesRoot }).some((entry) => existingDirPath(entry) != null)
+  );
+}
+
+function applyPackagedCursorSdkNodePath(env: NodeJS.ProcessEnv): void {
+  const entries = inferPackagedResourcesRoots(env).flatMap((resourcesPath) =>
+    buildPackagedRuntimeNodeModulePaths({ resourcesPath })
+  );
+  if (entries.length) env.NODE_PATH = prependPathEntries(env.NODE_PATH, entries);
+}
+
 function applyCurrentAdeCliEnv(
   env: NodeJS.ProcessEnv,
   sourceEnv: NodeJS.ProcessEnv = env,
@@ -263,6 +330,7 @@ function applyCurrentAdeCliEnv(
   const cliEntry = inferAdeCliEntryFromBinDir(binDir) ?? envCliEntry ?? argvCliEntry;
   if (cliEntry) env.ADE_CLI_ENTRY_PATH = cliEntry;
   else delete env.ADE_CLI_ENTRY_PATH;
+  applyPackagedCursorSdkNodePath(env);
   const bundledSkillsRoot = binDir
     ? path.resolve(binDir, "..", "..", "agent-skills")
     : cliEntry

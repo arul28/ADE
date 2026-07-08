@@ -30,6 +30,7 @@ import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/run
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
+import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 
 type LocalRuntimeConnection = {
   client: RuntimeRpcClient;
@@ -61,12 +62,7 @@ type LocalRuntimeConnectionPoolOptions = {
   onRuntimeModeChange?: (mode: "primary" | "isolated") => void;
 };
 
-type LocalRuntimeNodePathOptions = {
-  resourcesPath?: string;
-  platform?: NodeJS.Platform;
-  arch?: NodeJS.Architecture;
-  existingNodePath?: string;
-};
+type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
 const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
@@ -156,31 +152,10 @@ export function buildLocalRuntimeServeArgs(
 }
 
 export function buildLocalRuntimeNodePath(options: LocalRuntimeNodePathOptions = {}): string | undefined {
-  const resourcesPath = options.resourcesPath ?? process.resourcesPath;
-  const platform = options.platform ?? process.platform;
-  const arch = options.arch ?? process.arch;
-  const entries: string[] = [];
-
-  if (resourcesPath) {
-    if (platform === "darwin") {
-      const archAsar = arch === "arm64" ? "app-arm64.asar" : "app-x64.asar";
-      entries.push(
-        path.join(resourcesPath, `${archAsar}.unpacked`, "node_modules"),
-        path.join(resourcesPath, "app.asar.unpacked", "node_modules"),
-        path.join(resourcesPath, archAsar, "node_modules"),
-        path.join(resourcesPath, "app.asar", "node_modules"),
-      );
-    } else {
-      entries.push(
-        path.join(resourcesPath, "app.asar.unpacked", "node_modules"),
-        path.join(resourcesPath, "app.asar", "node_modules"),
-      );
-    }
-  }
-
-  const existingNodePath = options.existingNodePath ?? process.env.NODE_PATH;
-  if (existingNodePath?.trim()) entries.push(existingNodePath);
-  return entries.length ? entries.join(path.delimiter) : undefined;
+  return buildPackagedRuntimeNodePath({
+    ...options,
+    resourcesPath: options.resourcesPath ?? process.resourcesPath,
+  });
 }
 
 export function buildLocalRuntimeNodeEnv(
