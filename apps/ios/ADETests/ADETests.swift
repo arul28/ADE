@@ -6762,7 +6762,59 @@ final class ADETests: XCTestCase {
       githubItems: []
     )
 
-    XCTAssertEqual(target, .detail(prId: "pr_42", laneId: "lane-pr_42"))
+    XCTAssertEqual(target, .detail(prId: "pr_42", laneId: "lane-pr_42", repoScope: nil))
+  }
+
+  func testPrNavigationTargetPreservesRepoScopeForDetailRoute() {
+    func item(id: String, owner: String, repo: String) -> PullRequestListItem {
+      PullRequestListItem(
+        id: id,
+        laneId: "lane-\(id)",
+        laneName: nil,
+        projectId: "project-1",
+        repoOwner: owner,
+        repoName: repo,
+        githubPrNumber: 42,
+        githubUrl: "https://github.com/\(owner)/\(repo)/pull/42",
+        title: "\(owner)/\(repo) PR 42",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/42",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 1,
+        deletions: 0,
+        lastSyncedAt: nil,
+        createdAt: "2026-05-14T00:00:00.000Z",
+        updatedAt: "2026-05-14T00:00:00.000Z",
+        adeKind: nil,
+        linkedGroupId: nil,
+        linkedGroupType: nil,
+        linkedGroupName: nil,
+        linkedGroupPosition: nil,
+        linkedGroupCount: 0,
+        workflowDisplayState: nil,
+        cleanupState: nil
+      )
+    }
+
+    let target = prNavigationTarget(
+      for: PrNavigationRequest(prNumber: 42, repoOwner: "ARUL", repoName: "ade"),
+      pullRequests: [
+        item(id: "api-pr", owner: "elsewhere", repo: "api"),
+        item(id: "ade-pr", owner: "arul", repo: "ADE"),
+      ],
+      githubItems: []
+    )
+
+    XCTAssertEqual(
+      target,
+      .detail(
+        prId: "ade-pr",
+        laneId: "lane-ade-pr",
+        repoScope: PrDetailRouteScope(repoOwner: "ARUL", repoName: "ade")
+      )
+    )
   }
 
   func testPrNavigationTargetUsesGitHubItemWhenNumberRouteHasNoLocalPr() {

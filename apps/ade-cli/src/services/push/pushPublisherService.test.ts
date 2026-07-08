@@ -416,6 +416,43 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("uses the PR title for a PR-only aggregate start when stale CLI rows exist", async () => {
+    const { publisher, publish, cliSessions } = makeHarness();
+    let prCb: (event: PushPrNotification) => void = () => {
+      throw new Error("PR notification source was not attached");
+    };
+    publisher.attachSources("project-prs", {
+      subscribePrNotifications: (cb) => {
+        prCb = cb;
+        return () => {};
+      },
+    });
+    cliSessions.set("cli-1", { title: "stale CLI title", toolType: "claude", chatSessionId: null });
+    await publisher.start();
+
+    publisher.handleCliRuntimeSignal("scope-1", { laneId: "auth-lane", sessionId: "cli-1", runtimeState: "idle" });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publish.mock.calls.every(([payload]) => !payload.liveActivity)).toBe(true);
+    publish.mockClear();
+
+    prCb({
+      kind: "opened",
+      prNumber: 42,
+      prTitle: "Actual PR title",
+      laneId: null,
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const liveActivity = publish.mock.calls[0][0].liveActivity[0];
+    expect(liveActivity.event).toBe("start");
+    expect(liveActivity.alert.title).toBe("PR #42 updated");
+    expect(liveActivity.alert.body).toBe("Actual PR title");
+
+    publisher.dispose();
+  });
+
   it("carries actionable fields: category + sessionId/itemId on the alert, itemId on the waiting LA row, badge count", async () => {
     const { publisher, publish, emit } = makeHarness();
     await publisher.start();

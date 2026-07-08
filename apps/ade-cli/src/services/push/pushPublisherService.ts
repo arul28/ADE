@@ -633,7 +633,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         title: activeCount > 0
           ? (activeCount === 1 && mostRecent ? `${runSubject(mostRecent)} is running` : `${activeCount} agent runs active`)
           : (prActivityCount === 1 && mostRecentPr ? `PR #${mostRecentPr.prNumber} updated` : `${prActivityCount} pull requests updated`),
-        body: mostRecent ? laneTitleLine(mostRecent) : mostRecentPr?.title ?? null,
+        body: activeCount > 0 ? (mostRecent ? laneTitleLine(mostRecent) : null) : mostRecentPr?.title ?? null,
       };
     }
     if (event === "end") {

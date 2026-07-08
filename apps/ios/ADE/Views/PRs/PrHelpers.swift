@@ -495,8 +495,21 @@ func prDetailRouteListItem(
   return candidates.count == 1 ? candidates[0] : nil
 }
 
+struct PrDetailRouteScope: Equatable {
+  let repoOwner: String
+  let repoName: String
+
+  init?(repoOwner: String?, repoName: String?) {
+    let owner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let name = repoName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !owner.isEmpty, !name.isEmpty else { return nil }
+    self.repoOwner = owner
+    self.repoName = name
+  }
+}
+
 enum PrNavigationTarget: Equatable {
-  case detail(prId: String, laneId: String?)
+  case detail(prId: String, laneId: String?, repoScope: PrDetailRouteScope?)
   case github(GitHubPrListItem)
   case unresolved
 }
@@ -527,11 +540,12 @@ func prNavigationTarget(
   case .create:
     return .unresolved
   }
+  let requestedRepoScope = PrDetailRouteScope(repoOwner: requestedRepoOwner, repoName: requestedRepoName)
   guard !prId.isEmpty else { return .unresolved }
 
   guard prId.hasPrefix("github-pr-number:") else {
     let match = pullRequests.first { $0.id == prId }
-    return .detail(prId: prId, laneId: requestLaneId ?? match?.laneId)
+    return .detail(prId: prId, laneId: requestLaneId ?? match?.laneId, repoScope: nil)
   }
 
   let requestedPrNumber = explicitPrNumber ?? syntheticPrNumber(from: prId)
@@ -554,12 +568,14 @@ func prNavigationTarget(
     requestedRepoOwner: requestedRepoOwner,
     requestedRepoName: requestedRepoName
   ) {
-    return .detail(prId: match.id, laneId: requestLaneId ?? match.laneId)
+    let repoScope = requestedRepoScope ?? PrDetailRouteScope(repoOwner: githubItem?.repoOwner, repoName: githubItem?.repoName)
+    return .detail(prId: match.id, laneId: requestLaneId ?? match.laneId, repoScope: repoScope)
   }
 
   if let linkedPrId = githubItem?.linkedPrId?.trimmingCharacters(in: .whitespacesAndNewlines),
      !linkedPrId.isEmpty {
-    return .detail(prId: linkedPrId, laneId: requestLaneId ?? githubItem?.linkedLaneId)
+    let repoScope = requestedRepoScope ?? PrDetailRouteScope(repoOwner: githubItem?.repoOwner, repoName: githubItem?.repoName)
+    return .detail(prId: linkedPrId, laneId: requestLaneId ?? githubItem?.linkedLaneId, repoScope: repoScope)
   }
 
   if let githubItem {

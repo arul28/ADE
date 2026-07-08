@@ -6,6 +6,20 @@ struct PrDetailView: View {
   @EnvironmentObject private var syncService: SyncService
   let prId: String
   let transitionNamespace: Namespace.ID?
+  let requestedRepoOwner: String?
+  let requestedRepoName: String?
+
+  init(
+    prId: String,
+    transitionNamespace: Namespace.ID?,
+    requestedRepoOwner: String? = nil,
+    requestedRepoName: String? = nil
+  ) {
+    self.prId = prId
+    self.transitionNamespace = transitionNamespace
+    self.requestedRepoOwner = requestedRepoOwner
+    self.requestedRepoName = requestedRepoName
+  }
 
   @State private var pr: PullRequestListItem?
   @State private var githubItem: GitHubPrListItem?
@@ -135,6 +149,10 @@ struct PrDetailView: View {
     Self.prNumber(fromRouteId: prId)
   }
 
+  private var requestedRepoScope: PrDetailRouteScope? {
+    PrDetailRouteScope(repoOwner: requestedRepoOwner, repoName: requestedRepoName)
+  }
+
   private var hasPrDetailData: Bool {
     pr != nil || githubItem != nil || snapshot != nil
   }
@@ -196,6 +214,8 @@ struct PrDetailView: View {
     return Self.synthesizePlaceholderPr(
       prId: prId,
       routedPrNumber: routedPrNumber,
+      requestedRepoOwner: requestedRepoScope?.repoOwner,
+      requestedRepoName: requestedRepoScope?.repoName,
       githubItem: githubItem,
       snapshot: snapshot
     )
@@ -204,6 +224,8 @@ struct PrDetailView: View {
   private static func synthesizePlaceholderPr(
     prId: String,
     routedPrNumber: Int?,
+    requestedRepoOwner: String?,
+    requestedRepoName: String?,
     githubItem: GitHubPrListItem?,
     snapshot: PullRequestSnapshot?
   ) -> PullRequestListItem {
@@ -217,8 +239,8 @@ struct PrDetailView: View {
       laneId: "",
       laneName: nil,
       projectId: "",
-      repoOwner: githubItem?.repoOwner ?? "",
-      repoName: githubItem?.repoName ?? "",
+      repoOwner: githubItem?.repoOwner ?? requestedRepoOwner ?? "",
+      repoName: githubItem?.repoName ?? requestedRepoName ?? "",
       githubPrNumber: githubItem?.githubPrNumber ?? routedPrNumber ?? 0,
       githubUrl: githubItem?.githubUrl ?? "",
       title: githubItem?.title ?? routedPrNumber.map { "Pull request #\($0)" } ?? "Pull request",
@@ -254,6 +276,8 @@ struct PrDetailView: View {
       ? Self.synthesizePlaceholderPr(
           prId: prId,
           routedPrNumber: routedPrNumber,
+          requestedRepoOwner: requestedRepoScope?.repoOwner,
+          requestedRepoName: requestedRepoScope?.repoName,
           githubItem: githubItem,
           snapshot: snapshot
         )
@@ -1304,7 +1328,9 @@ struct PrDetailView: View {
         from: listItems,
         prId: prId,
         requestedPrNumber: requestedPrNumber,
-        githubItem: fallbackGitHubItem
+        githubItem: fallbackGitHubItem,
+        requestedRepoOwner: requestedRepoScope?.repoOwner,
+        requestedRepoName: requestedRepoScope?.repoName
       )
       let snapshotPrId = pr?.id ?? (requestedPrNumber == nil ? prId : nil)
       if let snapshotPrId {
@@ -1442,11 +1468,15 @@ struct PrDetailView: View {
   @MainActor
   private func fetchGitHubFallbackItem(requestedPrNumber: Int?) async -> GitHubPrListItem? {
     guard let github = try? await syncService.fetchGitHubPullRequestSnapshot() else { return nil }
+    let routeScope = requestedRepoScope
     return repoScopedGitHubPullRequests(from: github)
       .first {
-        $0.linkedPrId == prId ||
-          $0.id == prId ||
-          (requestedPrNumber != nil && $0.githubPrNumber == requestedPrNumber)
+        let identityMatches = $0.linkedPrId == prId || $0.id == prId
+        let numberMatches = requestedPrNumber != nil && $0.githubPrNumber == requestedPrNumber
+        guard identityMatches || numberMatches else { return false }
+        guard let routeScope else { return true }
+        return $0.repoOwner.caseInsensitiveCompare(routeScope.repoOwner) == .orderedSame
+          && $0.repoName.caseInsensitiveCompare(routeScope.repoName) == .orderedSame
       }
   }
 
