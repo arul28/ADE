@@ -764,6 +764,32 @@ describe("createSyncRemoteCommandService", () => {
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
   });
 
+  it("routes chat.handoff with a trimmed handoff note", async () => {
+    const handoffSession = vi.fn().mockResolvedValue({
+      session: { id: "session-2" },
+      usedFallbackSummary: false,
+    });
+    const { service } = createService({
+      agentChatService: { handoffSession },
+    });
+
+    const result = await service.execute(makePayload("chat.handoff", {
+      sourceSessionId: " session-1 ",
+      targetModelId: " openai/gpt-5.5 ",
+      handoffNote: "  Focus the first pass on the drawer regression.  ",
+    }));
+
+    expect(result).toEqual({
+      session: { id: "session-2" },
+      usedFallbackSummary: false,
+    });
+    expect(handoffSession).toHaveBeenCalledWith(expect.objectContaining({
+      sourceSessionId: "session-1",
+      targetModelId: "openai/gpt-5.5",
+      handoffNote: "Focus the first pass on the drawer regression.",
+    }));
+  });
+
   it("routes github.publishCurrentProject through the GitHub service with validated args", async () => {
     const publishCurrentProject = vi.fn().mockResolvedValue({
       state: "pushed",

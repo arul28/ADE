@@ -641,10 +641,12 @@ function agentChatParallelLaunchStateKey(projectRoot: string, parentLaneId: stri
 }
 
 function parseAgentChatHandoffArgs(value: Record<string, unknown>): AgentChatHandoffArgs {
+  const handoffNote = asTrimmedString(value.handoffNote);
   return {
     ...(value as AgentChatHandoffArgs),
     sourceSessionId: requireString(value.sourceSessionId, "chat.handoff requires sourceSessionId."),
     targetModelId: requireString(value.targetModelId, "chat.handoff requires targetModelId.") as AgentChatHandoffArgs["targetModelId"],
+    ...(handoffNote ? { handoffNote } : {}),
   };
 }
 

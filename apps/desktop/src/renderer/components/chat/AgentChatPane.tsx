@@ -3286,6 +3286,7 @@ export function AgentChatPane({
   const [handoffCursorConfigValues, setHandoffCursorConfigValues] = useState<Record<string, AgentChatCursorConfigValue>>(
     () => ({ ...initialNativeControls.cursorConfigValues }),
   );
+  const [handoffNote, setHandoffNote] = useState("");
   const [parallelChatMode, setParallelChatMode] = useState(false);
   const [parallelModelSlots, setParallelModelSlots] = useState<ParallelModelRowState[]>([]);
   const [parallelConfiguringIndex, setParallelConfiguringIndex] = useState<number | null>(null);
@@ -5694,6 +5695,7 @@ export function AgentChatPane({
       setHandoffDroidPermissionMode(droidPermissionMode);
       setHandoffCursorModeId(cursorModeId);
       setHandoffCursorConfigValues({ ...cursorConfigValues });
+      setHandoffNote("");
     }
     prevHandoffOpenRef.current = chatActionsHandoffActive;
     // Intentional: one-shot on open; avoid resetting the handoff form when underlying composer state changes while the menu is open.
@@ -7976,10 +7978,12 @@ export function AgentChatPane({
     stageTimerIds.push(window.setTimeout(() => patchHandoffJob("sending-handoff"), 1500));
     try {
       const resolvedHandoffPermissionMode = handoffNativePermissionMode ?? selectedSession?.permissionMode;
+      const trimmedHandoffNote = handoffNote.trim();
       const result = await window.ade.agentChat.handoff({
         sourceSessionId: selectedSessionId,
         targetModelId: handoffModelId,
         mode,
+        ...(trimmedHandoffNote ? { handoffNote: trimmedHandoffNote } : {}),
         reasoningEffort: handoffReasoningEffort,
         ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
           ? { fastMode: handoffFastMode }
@@ -7995,6 +7999,7 @@ export function AgentChatPane({
         cursorConfigValues: handoffCursorConfigValues,
       });
       notifySessionCreated(result.session, { source: "handoff" });
+      setHandoffNote("");
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
@@ -8025,6 +8030,7 @@ export function AgentChatPane({
     handoffCursorModeId,
     handoffDroidPermissionMode,
     handoffModelId,
+    handoffNote,
     handoffNativePermissionMode,
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
@@ -9428,6 +9434,17 @@ export function AgentChatPane({
             : "Fork keeps the complete Claude transcript through the SDK. Brief sends a summary as the first message."
           : "Create opens the new work chat and sends the handoff summary as its first message."}
       </div>
+      <label className="mt-3 block space-y-1">
+        <span className="font-sans text-[10px] font-medium uppercase tracking-[0.12em] text-muted-fg/45">Handoff note</span>
+        <textarea
+          value={handoffNote}
+          onChange={(event) => setHandoffNote(event.target.value)}
+          rows={3}
+          maxLength={4000}
+          placeholder="Optional extra instructions for the new model"
+          className="min-h-[72px] w-full resize-y rounded-md border border-white/[0.08] bg-black/20 px-2.5 py-2 font-sans text-[11px] leading-4 text-fg/80 outline-none transition-colors placeholder:text-muted-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_32%,transparent)]"
+        />
+      </label>
       <div className="mt-3 flex items-center justify-end gap-2">
         {handoffSupportsFullHistoryFork ? (
           <>
