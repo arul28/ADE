@@ -352,8 +352,11 @@ jobs:
       - name: Smoke test ADE runtime binary
         run: |
           apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
-          tar -tzf apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz | grep -q '^\./node_modules/'
-          if tar -tzf apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz | grep -Eq '^\./node_modules/opencode-(darwin|linux|windows)-'; then
+          archive="apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz"
+          archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
+          tar -tzf "$archive" > "$archive_listing"
+          grep -q '^\./node_modules/' "$archive_listing"
+          if grep -Eq '^\./node_modules/opencode-(darwin|linux|windows)-' "$archive_listing"; then
             echo "Unexpected duplicate OpenCode platform package in native runtime archive"
             exit 1
           fi
