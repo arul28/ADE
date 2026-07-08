@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ArrowSquareOut, ArrowsClockwise, CheckCircle, X } from "@phosphor-icons/react";
-import type { AutoUpdateSnapshot } from "../../../shared/types";
+import { ArrowSquareOut, ArrowsClockwise, CheckCircle, WarningCircle, X } from "@phosphor-icons/react";
+import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 
@@ -17,6 +17,9 @@ const EMPTY_UPDATE_SNAPSHOT: AutoUpdateSnapshot = {
   recentlyInstalled: null,
 };
 
+const RUNTIME_SKEW_REFRESH_MS = 15_000;
+type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
+
 function versionLabel(version: string | null): string {
   return version ? `v${version}` : "the latest update";
 }
@@ -26,8 +29,24 @@ function progressLabel(progressPercent: number | null): string | null {
   return `${Math.max(0, Math.min(100, Math.round(progressPercent)))}%`;
 }
 
+function activeRuntimeVersionSkew(value: RuntimeVersionSkew | null | undefined): RuntimeVersionSkew | null {
+  if (!value || value.state === "none") return null;
+  return value;
+}
+
+function runtimeSkewTitle(skew: RuntimeVersionSkew): string {
+  if (skew.message?.trim()) return skew.message;
+  if (skew.state === "runtime_newer") {
+    const runtime = skew.runtimeVersion ? ` v${skew.runtimeVersion}` : "";
+    const app = skew.appVersion ? ` v${skew.appVersion}` : "";
+    return `The ADE brain${runtime} is newer than this desktop app${app}. Update ADE desktop before using this machine brain.`;
+  }
+  return "The ADE desktop app and ADE brain are out of sync.";
+}
+
 export function AutoUpdateControl() {
   const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_UPDATE_SNAPSHOT);
+  const [runtimeSkew, setRuntimeSkew] = useState<RuntimeVersionSkew | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [installRequested, setInstallRequested] = useState(false);
 
@@ -58,6 +77,42 @@ export function AutoUpdateControl() {
     return () => {
       cancelled = true;
       unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    let inFlight = false;
+
+    const refresh = () => {
+      if (cancelled || inFlight) return;
+      inFlight = true;
+      void window.ade.app.getInfo()
+        .then((info) => {
+          if (cancelled) return;
+          setRuntimeSkew(activeRuntimeVersionSkew(info.localRuntime?.versionSkew));
+        })
+        .catch(() => {
+          if (!cancelled) setRuntimeSkew(null);
+        })
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+
+    refresh();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, RUNTIME_SKEW_REFRESH_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
@@ -108,6 +163,18 @@ export function AutoUpdateControl() {
       });
   }, [snapshot.version]);
 
+  const handleSkewUpdateCheck = useCallback(() => {
+    setSnapshot((current) => current.status === "idle"
+      ? { ...current, status: "checking", error: null }
+      : current);
+    void window.ade.updateCheckForUpdates()
+      .catch(() => {
+        setSnapshot((current) => current.status === "checking"
+          ? { ...current, status: "idle" }
+          : current);
+      });
+  }, []);
+
   const effectiveStatus = installRequested && snapshot.status === "ready"
     ? "installing"
     : snapshot.status;
@@ -120,6 +187,8 @@ export function AutoUpdateControl() {
   const releaseNotesUrl = snapshot.recentlyInstalled?.releaseNotesUrl ?? null;
   const installedVersion = snapshot.recentlyInstalled?.version ?? null;
   const releaseNotesDisplayUrl = releaseNotesUrl?.replace(/^https?:\/\//, "") ?? null;
+  const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
+  const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator;
 
   function indicatorTitle(): string {
     switch (effectiveStatus) {
@@ -136,6 +205,23 @@ export function AutoUpdateControl() {
 
   return (
     <>
+      {showRuntimeSkewIndicator && runtimeSkew ? (
+        <button
+          type="button"
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "border border-amber-300/45 bg-amber-400/15 text-[11px] font-medium text-amber-100",
+            "shadow-[0_0_18px_rgba(245,158,11,0.18)] transition-colors duration-150 hover:bg-amber-400/22",
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          onClick={handleSkewUpdateCheck}
+          title={`${runtimeSkewTitle(runtimeSkew)} Check for ADE desktop updates.`}
+        >
+          <WarningCircle size={12} weight="fill" />
+          <span>Update required</span>
+        </button>
+      ) : null}
+
       {shouldShowIndicator ? (
         <button
           type="button"

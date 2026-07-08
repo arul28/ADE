@@ -38,6 +38,12 @@ enum RemoteConnectionState: String {
   }
 }
 
+enum SyncHostCompatibilityMode: String {
+  case unknown
+  case limited
+  case full
+}
+
 enum SyncTransportHealth: String, Equatable {
   case disconnected
   case connecting
@@ -1487,6 +1493,8 @@ final class SyncService: ObservableObject {
   /// rather than parsing a localized message. Cleared whenever a fresh pairing
   /// attempt begins or a connection succeeds.
   @Published private(set) var lastPairingErrorCode: String?
+  @Published private(set) var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
+  @Published private(set) var hostCompatibilityMissingActions: [String] = []
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var chatEventNotificationRevision = 0
@@ -4192,6 +4200,8 @@ final class SyncService: ObservableObject {
     cancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
+    hostCompatibilityMode = .unknown
+    hostCompatibilityMissingActions = []
     hostName = activeHostProfile?.hostName
     latestRemoteDbVersion = 0
     resetOutboundCursorStateForActiveProject()
@@ -9168,6 +9178,16 @@ final class SyncService: ObservableObject {
       }
       return (try? decode(actions, as: [SyncRemoteCommandDescriptor].self)) ?? []
     }()
+    if let compatibility = features?["mobileCompatibility"] as? [String: Any] {
+      let mode = (compatibility["mode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      hostCompatibilityMode = mode == "full" ? .full : .limited
+      hostCompatibilityMissingActions = compatibility["missingActions"] as? [String] ?? []
+    } else {
+      hostCompatibilityMode = .limited
+      hostCompatibilityMissingActions = commandDescriptors.map(\.action).isEmpty
+        ? ["commandRouting"]
+        : ["mobileCompatibility"]
+    }
     if supportsProjectCatalog,
        let projects = payload["projects"],
        let catalog = try? decode(["projects": projects], as: MobileProjectCatalogPayload.self) {
@@ -11283,6 +11303,16 @@ extension SyncService {
   }
 
   private func performCommandRequestSafe(action: String, args: [String: Any]) async throws -> Any {
+    guard supportsRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "This action is not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
     let commandId = makeRequestId()
     if canSendLiveRequests() {
       do {

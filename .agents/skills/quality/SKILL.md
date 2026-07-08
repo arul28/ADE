@@ -73,8 +73,9 @@ Apply both reference files:
    unfinished research.
 2. **`references/ade-review-rules.md`** — ADE-specific correctness: runtime-backed
    null services on bypassed IPC routes, daemon action-domain wiring, cr-sqlite
-   CRR constraints, IPC/preload/shared/renderer contract drift, fast-tier
-   loading, Node/test-env gotchas, worktree path discipline.
+   CRR constraints, mobile-host compatibility, IPC/preload/shared/renderer
+   contract drift, fast-tier loading, Node/test-env gotchas, worktree path
+   discipline.
 
 Return prioritized findings. Mark each fix **unambiguous + behavior-preserving**
 (synthesis may auto-apply) or **needs human judgment** (synthesis surfaces it).

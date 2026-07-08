@@ -34,6 +34,13 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
         localRuntime: {
           connectionState: client.getStatus().state === "connected" ? "connected" : "idle",
           runtimeMode: "primary",
+          versionSkew: {
+            state: "none",
+            appVersion: "web",
+            runtimeVersion: null,
+            message: null,
+            updatedAt: new Date(0).toISOString(),
+          },
           serviceInstall: {
             state: "installed",
             attempted: true,

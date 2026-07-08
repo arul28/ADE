@@ -38,6 +38,26 @@ that machine's projects. `siteId` remains an internal per-project
 database/runtime detail and must not be used as the visible identity of
 a saved machine.
 
+## Host version compatibility
+
+ADE Mobile treats the machine connection as the recovery path for updates, so a
+new mobile app must still connect to older brains. The phone reads
+`features.mobileCompatibility` from `hello_ok` when a host advertises it:
+`full` means every required mobile command is present, while `limited` means the
+phone remains connected but gates missing host actions locally. Older brains
+omit the feature entirely; iOS interprets that as a legacy limited connection,
+not as a handshake failure.
+
+Unsupported actions fail before they are queued or sent with a user-facing
+"update ADE on the machine" message. This keeps an auto-updated phone usable for
+the one action users need most: seeing that the host is behind and triggering a
+host update path that the older brain still supports.
+
+The Settings machine card mirrors this state through
+`SettingsConnectionHeader`: connected limited hosts show a compact "Machine
+update recommended" warning while staying connected, so users can still browse
+available state and recover the host.
+
 ## Project layout
 
 > The same Xcode project also ships `apps/ios/ADE/Debug/ADEInspectorKit/`,
@@ -203,6 +223,7 @@ apps/ios/
 │   │   │                            #   (pair a browser: QR + link + PIN via
 │   │   │                            #   sync.getWebPairingInfo),
 │   │   │                            # SettingsConnectionHeader,
+│   │   │                            #   host compatibility warning banner,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
 │   │   │                            # SettingsVoiceInputSection

@@ -296,6 +296,11 @@ Step 3: Inspect iOS equivalents
   service, or workflow names.
 - If the branch adds or changes a host/mobile contract, update Swift Codable
   models and iOS tests as needed.
+- If the branch touches sync hello features, remote command descriptors, host
+  update flows, or any command ADE Mobile invokes, verify the compatibility
+  contract: new iOS builds must still connect to older brains in limited mode,
+  missing `features.mobileCompatibility` must not fail the handshake, and
+  unsupported actions must be gated locally before queue/send.
 - If the branch changes user-facing behavior that iOS already exposes, update
   the SwiftUI view using native iOS controls and existing ADE design patterns.
 - If the change is not applicable to iOS, explain why in the report.
@@ -305,6 +310,8 @@ Step 4: Apply required iOS updates
 - Prefer existing SwiftUI patterns and native controls.
 - Preserve Dynamic Type, VoiceOver labels, and 44x44 tap targets.
 - Add or update targeted tests in `apps/ios/ADETests` for contract changes.
+- For mobile-host compatibility, include tests for both a legacy host that omits
+  `mobileCompatibility` and a host/action path that is explicitly unsupported.
 
 Step 5: Validate what you touched
 - At minimum: `xcrun swiftc -parse <changed swift files>` when a full Xcode

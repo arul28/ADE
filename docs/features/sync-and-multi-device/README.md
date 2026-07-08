@@ -76,6 +76,22 @@ The older terms "brain" and "host" still appear in code, schema, and
 protocol types. In the current product vocabulary, they refer to the
 same thing: the runtime that is the current **sync authority**.
 
+## Mobile compatibility contract
+
+Mobile clients must be able to connect to older and newer ADE brains long enough
+to show update state and invoke supported commands. The sync hello is therefore
+additive: new host features are optional, and a missing feature puts the phone
+in a limited mode instead of failing the WebSocket connection.
+
+The shared contract lives in
+`apps/desktop/src/shared/syncMobileCompatibility.ts`. The brain advertises
+`features.mobileCompatibility` with a contract version, required mobile command
+actions, and any missing actions. iOS treats an omitted feature as a legacy
+limited host, preserves the connection, gates unsupported remote actions before
+queueing/sending them, and shows update guidance from the host state. When a new
+mobile release adds required host behavior, update the shared contract and the
+iOS compatibility tests in the same branch.
+
 ## What syncs, what does not
 
 | Data category | Sync mechanism | Devices |
@@ -218,7 +234,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   runtime-scoped project action envelopes (browse/open/create/clone/
   list GitHub repos/default parent directory/forget), project-id alias
   matching between the machine catalog id and the hosted DB id, per-IP pairing rate
-  limiter, and the Tailscale Serve / mDNS
+  limiter, mobile compatibility advertisement (`features.mobileCompatibility`
+  derived from the shared required-action contract), and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
   `desktop`, `daemon`, or `remote`. It also owns the all-projects session

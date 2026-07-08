@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowCircleUp, ArrowsClockwise, CheckCircle } from "@phosphor-icons/react";
+import { ArrowCircleUp, ArrowsClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
@@ -19,6 +19,7 @@ const valueStyle: React.CSSProperties = {
 
 type RuntimeServiceInstallState = NonNullable<AppInfo["localRuntime"]>["serviceInstall"]["state"];
 type RuntimeServiceHealthState = NonNullable<AppInfo["localRuntime"]>["serviceHealth"]["state"];
+type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
 
 function runtimeServiceLabel(state: RuntimeServiceInstallState): string {
   switch (state) {
@@ -60,6 +61,28 @@ function runtimeServiceHealthColor(state: RuntimeServiceHealthState): string {
     case "unsupported": return COLORS.warning;
     default: return COLORS.textMuted;
   }
+}
+
+function runtimeVersionSkewLabel(state: RuntimeVersionSkew["state"]): string {
+  switch (state) {
+    case "runtime_newer": return "Desktop update required";
+    case "runtime_older": return "Runtime update required";
+    case "build_mismatch": return "Build mismatch";
+    case "role_mismatch": return "Role mismatch";
+    case "unknown": return "Version mismatch";
+    default: return "In sync";
+  }
+}
+
+function runtimeVersionSkewMessage(skew: RuntimeVersionSkew): string {
+  if (skew.message?.trim()) return skew.message;
+  if (skew.state === "runtime_newer") {
+    return "The ADE brain on this machine is newer than the desktop app. Update ADE desktop before using this machine brain.";
+  }
+  if (skew.state === "runtime_older") {
+    return "The ADE brain on this machine is older than the desktop app. Update the ADE brain service and reconnect.";
+  }
+  return "The ADE desktop app and ADE brain service are out of sync.";
 }
 
 function formatRuntimeTimestamp(value: string | null): string | null {
@@ -152,6 +175,9 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
   const isDev = !info.isPackaged;
   const updateAvailable = Boolean(latest?.updateAvailable) && !isDev;
   const releasedAgo = formatReleasedAgo(latest?.publishedAt ?? null);
+  const runtimeSkew = !info.localRuntime?.versionSkew || info.localRuntime.versionSkew.state === "none"
+    ? null
+    : info.localRuntime.versionSkew;
 
   let pill: React.ReactNode = null;
   if (isDev) {
@@ -240,8 +266,40 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
               <span style={inlineBadge(runtimeServiceHealthColor(info.localRuntime.serviceHealth.state))}>
                 {runtimeServiceHealthLabel(info.localRuntime.serviceHealth.state)}
               </span>
+              {runtimeSkew ? (
+                <span style={inlineBadge(COLORS.warning)}>
+                  {runtimeVersionSkewLabel(runtimeSkew.state)}
+                </span>
+              ) : null}
             </div>
           </div>
+          {runtimeSkew ? (
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "flex-start",
+                padding: "9px 10px",
+                borderRadius: 8,
+                border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
+                background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                color: COLORS.warning,
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                lineHeight: 1.45,
+              }}
+            >
+              <WarningCircle size={15} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} />
+              <div style={{ display: "grid", gap: 4, minWidth: 0 }}>
+                <span>{runtimeVersionSkewMessage(runtimeSkew)}</span>
+                {(runtimeSkew.appVersion || runtimeSkew.runtimeVersion) ? (
+                  <span style={{ fontFamily: MONO_FONT, color: COLORS.textMuted, overflowWrap: "anywhere" }}>
+                    Desktop {runtimeSkew.appVersion ?? "unknown"} · Brain {runtimeSkew.runtimeVersion ?? "unknown"}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           {!embedded && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
               {info.localRuntime.serviceHealth.path ?? info.localRuntime.serviceInstall.path ? (

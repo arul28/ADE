@@ -33,6 +33,13 @@ export type LocalRuntimeStatus = {
    * "primary".
    */
   runtimeMode: "primary" | "isolated";
+  versionSkew: {
+    state: "none" | "runtime_newer" | "runtime_older" | "build_mismatch" | "role_mismatch" | "unknown";
+    appVersion: string | null;
+    runtimeVersion: string | null;
+    message: string | null;
+    updatedAt: string | null;
+  };
   serviceInstall: {
     state: LocalRuntimeServiceInstallState;
     attempted: boolean;

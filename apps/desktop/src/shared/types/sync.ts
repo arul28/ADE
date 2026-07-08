@@ -277,6 +277,16 @@ export type SyncFeatureFlags = {
     supportedActions: string[];
     actions: SyncRemoteCommandDescriptor[];
   };
+  /**
+   * Additive host/mobile product contract. Older hosts omit this field; clients
+   * must still keep the connection alive and enter limited mode.
+   */
+  mobileCompatibility?: {
+    contractVersion: number;
+    mode: "full" | "limited";
+    requiredActions: string[];
+    missingActions: string[];
+  };
 };
 
 export type SyncHelloPayload = {
