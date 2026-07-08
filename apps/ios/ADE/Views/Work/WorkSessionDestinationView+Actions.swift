@@ -79,7 +79,12 @@ extension WorkSessionDestinationView {
       case .queued(let steerId):
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
         if let steerId {
-          upsertOptimisticPendingSteer(id: steerId, text: text, timestamp: echo.timestamp)
+          upsertOptimisticPendingSteer(
+            id: steerId,
+            text: text,
+            timestamp: echo.timestamp,
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+          )
         }
       case .sent:
         updateLocalEchoDeliveryState(echoId: echoId, deliveryState: nil)
@@ -151,6 +156,7 @@ extension WorkSessionDestinationView {
         optimisticPendingSteers[index] = WorkPendingSteerModel(
           id: steerId,
           text: trimmed,
+          attachments: optimisticPendingSteers[index].attachments,
           turnId: optimisticPendingSteers[index].turnId,
           timestamp: workDateFormatter.string(from: Date())
         )

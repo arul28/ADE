@@ -951,7 +951,7 @@ func buildWorkTimeline(
     : buildWorkChatMessages(from: transcript)
 
   let pendingSteerEchoKeys = Set(
-    derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: nil) }
+    derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) }
   )
 
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in

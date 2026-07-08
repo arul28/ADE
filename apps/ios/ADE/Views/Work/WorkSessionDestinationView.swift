@@ -1858,9 +1858,14 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func upsertOptimisticPendingSteer(id: String, text: String, timestamp: String) {
+  func upsertOptimisticPendingSteer(
+    id: String,
+    text: String,
+    timestamp: String,
+    attachments: [AgentChatFileRef]? = nil
+  ) {
     let turnId = latestActiveTurnId(from: transcript)
-    let model = WorkPendingSteerModel(id: id, text: text, turnId: turnId, timestamp: timestamp)
+    let model = WorkPendingSteerModel(id: id, text: text, attachments: attachments, turnId: turnId, timestamp: timestamp)
     if let index = optimisticPendingSteers.firstIndex(where: { $0.id == id }) {
       optimisticPendingSteers[index] = model
     } else {
@@ -1908,7 +1913,7 @@ struct WorkSessionDestinationView: View {
   func reconcileLocalEchoMessages() {
     guard !localEchoMessages.isEmpty else { return }
     let pendingSteerKeys = Set(
-      derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: nil) }
+      derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) }
     )
     localEchoMessages.removeAll { echo in
       guard let echoKey = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else {
