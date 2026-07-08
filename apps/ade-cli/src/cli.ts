@@ -198,6 +198,12 @@ type FormatterId =
   | "external-sessions"
   | "sync-web";
 
+type ChatWaitTarget =
+  | "idle"
+  | "active"
+  | "awaiting-input"
+  | "terminal";
+
 type CliPlan =
   | { kind: "help"; text: string }
   | { kind: "static"; value: unknown; formatter?: FormatterId }
@@ -236,6 +242,13 @@ type CliPlan =
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] }
   | { kind: "skill"; rest: string[] }
+  | {
+      kind: "chat-wait";
+      sessionId: string;
+      waitFor: ChatWaitTarget;
+      timeoutMs: number;
+      pollIntervalMs: number;
+    }
   | { kind: "github-app-login"; maxWaitSec: number | null };
 
 type CliConnection = {
@@ -1499,7 +1512,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.5 --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
-    $ ade chat send <session> --text "next step"    Send a message
+    $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat message <session> --kind auto --text "status"
+                                                    Deliver via auto | queue | wake | interrupt-replace
+    $ ade chat steer <session> --text "context"     Steer/queue context into an active turn
+    $ ade chat wait <session> --for idle --timeout-ms 600000
+                                                    Wait for idle, active, awaiting-input, or terminal
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
     $ ade chat goal <session> --status paused       Update a Codex goal status
@@ -2680,6 +2698,56 @@ function readJsonPayloadOption(
 function requireValue(value: string | null, label: string): string {
   if (value && value.trim().length > 0) return value.trim();
   throw new CliUsageError(`${label} is required.`);
+}
+
+function normalizeChatMessageKind(value: string | null): "auto" | "queue" | "wake" | "interrupt-replace" {
+  const normalized = (value ?? "auto").trim().toLowerCase();
+  if (normalized === "auto") return "auto";
+  if (normalized === "queue" || normalized === "steer") return "queue";
+  if (normalized === "wake" || normalized === "send") return "wake";
+  if (
+    normalized === "interrupt-replace" ||
+    normalized === "interrupt" ||
+    normalized === "replace"
+  ) {
+    return "interrupt-replace";
+  }
+  throw new CliUsageError(
+    "chat message --kind must be auto, queue, wake, or interrupt-replace.",
+  );
+}
+
+function normalizeChatWaitTarget(value: string | null): ChatWaitTarget {
+  const normalized = (value ?? "idle").trim().toLowerCase();
+  if (normalized === "idle" || normalized === "done" || normalized === "complete") return "idle";
+  if (normalized === "active" || normalized === "running") return "active";
+  if (
+    normalized === "awaiting-input" ||
+    normalized === "awaiting_input" ||
+    normalized === "input" ||
+    normalized === "blocked"
+  ) {
+    return "awaiting-input";
+  }
+  if (
+    normalized === "terminal" ||
+    normalized === "ended" ||
+    normalized === "failed" ||
+    normalized === "interrupted"
+  ) {
+    return "terminal";
+  }
+  throw new CliUsageError(
+    "chat wait --for must be idle, active, awaiting-input, or terminal.",
+  );
+}
+
+function chatWaitTargetMatches(summary: JsonObject, waitFor: ChatWaitTarget): boolean {
+  const status = asString(summary.status);
+  if (waitFor === "idle") return status === "idle";
+  if (waitFor === "active") return status === "active" && summary.awaitingInput !== true;
+  if (waitFor === "awaiting-input") return summary.awaitingInput === true;
+  return status === "failed" || status === "interrupted" || status === "completed" || summary.endedAt != null;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -6254,7 +6322,7 @@ function buildChatPlan(args: string[]): CliPlan {
   const sessionId =
     readValue(args, ["--session", "--session-id"]) ??
     (sub !== "create" && sub !== "list" && !linearSessionSub
-      ? firstPositional(args)
+      ? firstStandalonePositional(args)
       : null);
   const withSession = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
@@ -6590,21 +6658,94 @@ function buildChatPlan(args: string[]): CliPlan {
       readValue(args, ["--text", "--message"]) ?? args.join(" "),
       "message text",
     );
+    const targetSession = requireValue(sessionId, "sessionId");
+    const messageArgs = withSession({
+      sessionId: targetSession,
+      text: sendText,
+      kind: "auto",
+      ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+    });
     return {
       kind: "execute",
       label: "chat send",
       steps: [
+        actionStep("result", "chat", "messageSession", messageArgs),
+      ],
+    };
+  }
+  if (sub === "message" || sub === "tell" || sub === "notify") {
+    const imageUrl = readValue(args, ["--image-url"]);
+    const kindFlag = readValue(args, ["--kind", "--delivery"]);
+    const queueFlag = readFlag(args, ["--queue", "--steer"]);
+    const wakeFlag = readFlag(args, ["--wake"]);
+    const interruptFlag = readFlag(args, ["--interrupt", "--replace"]);
+    const selectedKinds = [
+      kindFlag,
+      queueFlag ? "queue" : null,
+      wakeFlag ? "wake" : null,
+      interruptFlag ? "interrupt-replace" : null,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0);
+    if (selectedKinds.length > 1) {
+      throw new CliUsageError("Use only one of --kind, --queue, --wake, or --interrupt.");
+    }
+    const messageText = requireValue(
+      readValue(args, ["--text", "--message"]) ?? args.join(" "),
+      "message text",
+    );
+    return {
+      kind: "execute",
+      label: "chat message",
+      steps: [
         actionStep(
           "result",
           "chat",
-          "sendMessage",
+          "messageSession",
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
-            text: sendText,
+            text: messageText,
+            kind: normalizeChatMessageKind(selectedKinds[0] ?? null),
             ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
           }),
         ),
       ],
+    };
+  }
+  if (sub === "steer") {
+    const imageUrl = readValue(args, ["--image-url"]);
+    const steerText = requireValue(
+      readValue(args, ["--text", "--message"]) ?? args.join(" "),
+      "message text",
+    );
+    return {
+      kind: "execute",
+      label: "chat steer",
+      steps: [
+        actionStep(
+          "result",
+          "chat",
+          "steer",
+          withSession({
+            sessionId: requireValue(sessionId, "sessionId"),
+            text: steerText,
+            ...(imageUrl ? { attachments: [{ type: "image-url", url: imageUrl, path: imageUrl }] } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "wait" || sub === "watch") {
+    const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
+    const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 2_000) ?? 2_000;
+    if (timeoutMs <= 0) throw new CliUsageError("chat wait --timeout-ms must be greater than zero.");
+    if (pollIntervalMs <= 0) throw new CliUsageError("chat wait --poll-interval-ms must be greater than zero.");
+    return {
+      kind: "chat-wait",
+      sessionId: requireValue(sessionId, "sessionId"),
+      waitFor: normalizeChatWaitTarget(
+        readValue(args, ["--for", "--state", "--until"]) ?? firstStandalonePositional(args),
+      ),
+      timeoutMs,
+      pollIntervalMs,
     };
   }
   if (sub === "interrupt")
@@ -10306,7 +10447,9 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--event",
   "--end-x",
   "--end-y",
+  "--delivery",
   "--file",
+  "--for",
   "--fps",
   "--from",
   "--from-file",
@@ -10316,11 +10459,13 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--icon",
   "--id",
   "--image",
+  "--image-url",
   "--index",
   "--initial-input",
   "--input",
   "--input-json",
   "--input-text",
+  "--interval-ms",
   "--instructions",
   "--kind",
   "--json-input",
@@ -10365,6 +10510,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--process",
   "--process-id",
   "--project-root",
+  "--poll-interval-ms",
   "--prompt",
   "--provider",
   "--pty",
@@ -10414,6 +10560,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--suite",
   "--suite-id",
   "--surface",
+  "--state",
   "--tab",
   "--tab-identifier",
   "--target",
@@ -10429,6 +10576,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--title-query",
   "--udid",
   "--url",
+  "--until",
   "--value",
   "--window-title",
   "--workspace",
@@ -16318,13 +16466,15 @@ function summarizeExecution(args: {
     };
   }
 
-  if (plan.label === "chat send") {
+  if (plan.label === "chat send" || plan.label === "chat steer" || plan.label === "chat message") {
     const raw = unwrapActionEnvelope(values.result);
     if (isRecord(raw)) return raw;
     return {
       ok: true,
       accepted: true,
-      note: "Message accepted by the ADE chat service; provider dispatch continues asynchronously.",
+      note: plan.label === "chat steer"
+        ? "Message accepted by the ADE chat steer path."
+        : "Message accepted by the ADE chat message path; provider dispatch continues asynchronously.",
     };
   }
 
@@ -16707,6 +16857,88 @@ async function executePlan(
   }
 }
 
+async function runChatWaitCommand(
+  plan: CliPlan & { kind: "chat-wait" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(options, { autoRegisterProject: true });
+  } catch (error) {
+    throw new CliExecutionError(
+      "Failed to initialize ADE CLI connection for chat wait.",
+      {
+        cause: error instanceof Error ? error.message : String(error),
+        nextAction:
+          "Verify --project-root points at an ADE project and run ade doctor --json.",
+      },
+    );
+  }
+
+  const startedAt = Date.now();
+  const readSummary = async (): Promise<JsonObject | null> => {
+    const raw = await connection.request("ade/actions/call", {
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "getSessionSummary",
+        argsList: [plan.sessionId],
+      },
+    });
+    const unwrapped = unwrapActionEnvelope(unwrapToolResult(raw));
+    if (unwrapped == null) return null;
+    if (!isRecord(unwrapped)) {
+      throw new CliExecutionError("chat.getSessionSummary returned an unexpected result.", {
+        sessionId: plan.sessionId,
+        result: unwrapped,
+      });
+    }
+    return unwrapped;
+  };
+
+  try {
+    while (true) {
+      const summary = await readSummary();
+      const elapsedMs = Date.now() - startedAt;
+      if (!summary) {
+        const result = {
+          ok: false,
+          error: "session_not_found",
+          sessionId: plan.sessionId,
+          waitFor: plan.waitFor,
+          elapsedMs,
+        };
+        return { output: formatOutput(result, options), exitCode: 1 };
+      }
+      if (chatWaitTargetMatches(summary, plan.waitFor)) {
+        const result = {
+          ok: true,
+          sessionId: plan.sessionId,
+          waitFor: plan.waitFor,
+          elapsedMs,
+          summary,
+        };
+        return { output: formatOutput(result, options), exitCode: 0 };
+      }
+      if (elapsedMs >= plan.timeoutMs) {
+        const result = {
+          ok: false,
+          error: "timed_out",
+          sessionId: plan.sessionId,
+          waitFor: plan.waitFor,
+          timeoutMs: plan.timeoutMs,
+          elapsedMs,
+          summary,
+        };
+        return { output: formatOutput(result, options), exitCode: 1 };
+      }
+      await sleep(Math.min(plan.pollIntervalMs, Math.max(1, plan.timeoutMs - elapsedMs)));
+    }
+  } finally {
+    await connection.close();
+  }
+}
+
 function formatOutput(
   value: unknown,
   options: GlobalOptions,
@@ -16892,6 +17124,9 @@ async function runCli(
           result == null ? "" : formatOutput(result, parsed.options, undefined),
         exitCode: isFailedServiceManagerResult(result) ? 1 : 0,
       };
+    }
+    if (plan.kind === "chat-wait") {
+      return await runChatWaitCommand(plan, parsed.options);
     }
     if (plan.kind === "init") {
       const result = await runInit(plan.targetPath);

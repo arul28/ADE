@@ -1732,6 +1732,32 @@ export type AgentChatSteerResult = {
   queued: boolean;
 };
 
+export type AgentChatMessageSessionKind =
+  | "auto"
+  | "queue"
+  | "wake"
+  | "interrupt-replace";
+
+export type AgentChatMessageSessionArgs = {
+  sessionId: string;
+  text: string;
+  kind?: AgentChatMessageSessionKind;
+  attachments?: AgentChatFileRef[];
+  contextAttachments?: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null | undefined;
+};
+
+export type AgentChatMessageSessionResult = {
+  sessionId: string;
+  kind: AgentChatMessageSessionKind;
+  routedAction: "sendMessage" | "steer" | "interrupt-replace";
+  statusBefore: AgentChatSessionStatus;
+  awaitingInputBefore: boolean;
+  delivery: "sent" | "delivered" | "queued";
+  steerId?: string;
+  queued?: boolean;
+};
+
 export type AgentChatCancelSteerArgs = {
   sessionId: string;
   steerId: string;

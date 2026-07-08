@@ -308,6 +308,8 @@ ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.5 --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # spawned chats default their parent to $ADE_CHAT_SESSION_ID; --parent <session> overrides, --no-parent opts out
 ade chat read session-id --limit 20 --text
+ade chat message session-id --kind auto --text "status/context"
+ade chat wait session-id --for idle --timeout-ms 600000
 ade code
 ade code --embedded
 ade tests run --lane lane-id --suite unit --wait

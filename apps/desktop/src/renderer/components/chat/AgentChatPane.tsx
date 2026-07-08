@@ -978,6 +978,14 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
   };
 }
 
+function chatSummaryIndicatesActiveTurn(summary: AgentChatSessionSummary | null | undefined): boolean {
+  return summary?.status === "active" && summary.awaitingInput !== true;
+}
+
+function chatEventEndsTurn(event: AgentChatEventEnvelope["event"]): boolean {
+  return event.type === "done" || (event.type === "status" && event.turnStatus !== "started");
+}
+
 type AgentChatSessionViewCache = {
   events: AgentChatEventEnvelope[];
   turnActive: boolean;
@@ -5166,11 +5174,16 @@ export function AgentChatPane({
     loadedHistoryRef.current.add(sessionId);
     applyOlderHistoryCursor(sessionId, typeof cached.historyCursor === "number" ? cached.historyCursor : null);
     setEventsBySession((prev) => ({ ...prev, [sessionId]: cached.events }));
-    setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: cached.turnActive }));
+    const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
+      ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
+    setTurnActiveBySession((prev) => ({
+      ...prev,
+      [sessionId]: cached.turnActive || (cached.events.length > 0 && chatSummaryIndicatesActiveTurn(sessionSummary)),
+    }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: cached.pendingInputs }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: cached.pendingSteers }));
     return true;
-  }, [applyOlderHistoryCursor]);
+  }, [applyOlderHistoryCursor, initialSessionSummary]);
 
   const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
     if (options?.force) {
@@ -5265,7 +5278,10 @@ export function AgentChatPane({
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
       applyOlderHistoryCursor(sessionId, historyCursor);
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
-      setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: allowRunningFromSummary ? derived.turnActive : false }));
+      setTurnActiveBySession((prev) => ({
+        ...prev,
+        [sessionId]: derived.turnActive || (merged.length > 0 && allowRunningFromSummary),
+      }));
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
       setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: derived.pendingSteers }));
     } catch {
@@ -5888,9 +5904,13 @@ export function AgentChatPane({
     // after a "done" event.
     let next = eventsBySessionRef.current;
     const touchedSessionIds = new Set<string>();
+    const endingEventSessionIds = new Set<string>();
 
     for (const envelope of queued) {
       const sessionId = envelope.sessionId;
+      if (chatEventEndsTurn(envelope.event)) {
+        endingEventSessionIds.add(sessionId);
+      }
       const sessionEvents = next === eventsBySessionRef.current
         ? (eventsBySessionRef.current[sessionId] ?? [])
         : (next[sessionId] ?? []);
@@ -5922,6 +5942,12 @@ export function AgentChatPane({
     const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
+      const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
+        ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
+      const keepActiveFromSummary =
+        chatSummaryIndicatesActiveTurn(sessionSummary)
+        && (next[sessionId]?.length ?? 0) > 0
+        && !endingEventSessionIds.has(sessionId);
       const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
         ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
         : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
@@ -5932,7 +5958,7 @@ export function AgentChatPane({
         olderHistoryCursorRef.current[sessionId] ?? null,
         maxEvents,
       );
-      activePatch[sessionId] = derived.turnActive;
+      activePatch[sessionId] = derived.turnActive || keepActiveFromSummary;
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;
     }
@@ -5942,7 +5968,7 @@ export function AgentChatPane({
     setTurnActiveBySession((activePrev) => ({ ...activePrev, ...activePatch }));
     setPendingInputsBySession((pendingPrev) => ({ ...pendingPrev, ...pendingInputPatch }));
     setPendingSteersBySession((steerPrev) => ({ ...steerPrev, ...pendingSteerPatch }));
-  }, [lockSessionId]);
+  }, [initialSessionSummary, lockSessionId]);
 
   const scheduleQueuedEventFlush = useCallback(() => {
     if (eventFlushTimerRef.current != null) return;
