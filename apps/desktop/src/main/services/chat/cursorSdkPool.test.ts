@@ -11,6 +11,7 @@ import {
   releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
 } from "./cursorSdkPool";
+import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
 
 const forkMock = vi.hoisted(() => vi.fn());
 const tempDirs: string[] = [];
@@ -260,6 +261,35 @@ describe("Cursor SDK pool paths", () => {
     expect(env.ADE_CURSOR_SDK_LANE_ROOT).toBe("/repo/.ade/worktrees/lane");
     expect(env.ADE_CURSOR_SDK_SESSION_ID).toBe("session-1");
     expect(env.ADE_CURSOR_SDK_STATE_ROOT).toBe("/repo/.ade/cache/cursor-sdk/hash/state");
+  });
+
+  it("rebuilds packaged NODE_PATH for forked workers launched outside the ADE CLI wrapper", () => {
+    const resourcesRoot = makeTempDir("ade-packaged-resources-");
+    const cliBinDir = path.join(resourcesRoot, "ade-cli", "bin");
+    const appNodeModules = path.join(resourcesRoot, "app.asar.unpacked", "node_modules");
+    fs.mkdirSync(cliBinDir, { recursive: true });
+    fs.mkdirSync(appNodeModules, { recursive: true });
+    const adeCommand = path.join(cliBinDir, process.platform === "win32" ? "ade.cmd" : "ade");
+    fs.writeFileSync(adeCommand, "");
+
+    const env = buildCursorSdkWorkerEnv({
+      baseEnv: {
+        PATH: "/usr/bin",
+        NODE_PATH: "/custom/node_modules",
+        ADE_CLI_BIN_DIR: cliBinDir,
+        ADE_CLI_PATH: adeCommand,
+      },
+      userHomeDir: "/Users/admin",
+      stateRoot: "/repo/.ade/cache/cursor-sdk/hash/state",
+      socketPath: "/tmp/ade-cursor-sdk/socket.sock",
+      workspacePath: "/repo/.ade/worktrees/lane",
+      sessionId: "session-1",
+    });
+
+    expect(env.NODE_PATH?.split(path.delimiter)).toEqual([
+      ...buildPackagedRuntimeNodeModulePaths({ resourcesPath: resourcesRoot }),
+      "/custom/node_modules",
+    ]);
   });
 
   it("normalizes stale ADE CLI metadata to the current command bin dir without exposing CLI internals", () => {
