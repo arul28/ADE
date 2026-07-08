@@ -23,9 +23,9 @@ struct GlobalDictationPill: View {
         RecordingPill(
           elapsedTime: controller.elapsedTime,
           audioLevel: controller.audioLevel,
-          isStarting: controller.isStarting || controller.isPreparing,
+          isStarting: controller.recordingPillIsStarting,
           isFinishing: controller.isFinishing,
-          startupLabel: controller.isPreparing ? "Preparing..." : "Starting...",
+          startupLabel: controller.recordingPillStartupLabel,
           onCancel: { controller.cancelRecording() },
           onDone: { controller.finishRecording(origin: .globalPill) },
           opaque: true

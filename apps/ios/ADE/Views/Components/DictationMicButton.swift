@@ -135,9 +135,9 @@ struct DictationMicButton: View {
       RecordingPill(
         elapsedTime: controller.elapsedTime,
         audioLevel: controller.audioLevel,
-        isStarting: controller.isStarting || controller.isPreparing,
+        isStarting: controller.recordingPillIsStarting,
         isFinishing: controller.isFinishing,
-        startupLabel: controller.isPreparing ? "Preparing..." : "Starting...",
+        startupLabel: controller.recordingPillStartupLabel,
         onCancel: cancelRecording,
         onDone: finishRecording
       )
