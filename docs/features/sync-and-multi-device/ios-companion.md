@@ -684,8 +684,9 @@ older hosts). The runtime returns a `WebPairingInfo`: the web-client pairing URL
 machine name, and relay reachability (`relayEnabled` / `hasRelayCandidate`).
 `pinConfigured == true` with `code == nil` means the hash exists but the
 plaintext is hidden after runtime restart; the sheet renders that state
-separately from "No pairing code set" and tells the user to generate or set a
-new PIN on the machine if they need to display or copy it. The sheet renders a
+separately from "No pairing code set", says the existing PIN still pairs if the
+user knows it, and tells the user to generate or set a new PIN on the machine
+only if they need to display or copy one. The sheet renders a
 QR of the pairing URL, a copyable/shareable link, and the pairing code state as
 three separate panels — the payload carries machine identity, port, address
 candidates, and the relay URL, never the PIN, so the code is shown apart from
@@ -695,8 +696,9 @@ Because the browser is a hosted HTTPS page, it can only reach the machine over a
 `wss://` route: when the machine advertises no relay candidate the sheet warns
 that the browser may only work on the same network (or that no relay route is
 available yet). When no PIN is set it tells the user to set one in ADE on the
-computer; when a PIN is configured but hidden it tells the user to generate or
-set a new one to display/copy it. This is the phone-side mirror of the desktop's
+computer; when a PIN is configured but hidden it says the existing PIN still
+pairs if known and tells the user to generate or set a new one only to
+display/copy it. This is the phone-side mirror of the desktop's
 Settings > Sync web client card.
 
 ### Background App Refresh

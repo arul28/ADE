@@ -658,8 +658,9 @@ is not supported.
   time-expire it, and does not mint a one-shot code. The runtime keeps
   plaintext only in the current process after the user sets/generates
   it (or after legacy migration), so after a restart the host can verify
-  pairings but cannot display or copy the digits until the user
-  generates or sets a new PIN. The phone enters the same digits the user
+  pairings with the existing digits if the user still knows them. It
+  cannot display or copy those digits until the user generates or sets a
+  new PIN. The phone enters the same digits the user
   typed in the machine's Settings > Sync > Phone pairing sheet.
   Failed PIN attempts increment a per-IP counter; after 5 failures
   the runtime rejects further attempts from that IP for 10 minutes
@@ -919,10 +920,11 @@ feature is merged or because a deliberately isolated-port host is running.
   and clears it when they want to stop accepting new pairings. Plaintext is
   process-local and intentionally unrecoverable after restart, so Settings
   and CLI surfaces treat `hasPin() && getPin() == null` as "configured but
-  hidden" and tell the user to generate/set a new PIN if they need to display
-  or copy it. The PIN unlocks generation of a durable per-device secret that
-  the phone stores in its Keychain; subsequent connections use that paired
-  secret, not the PIN.
+  hidden". They still allow pairing with the existing PIN if the user knows
+  it, and tell the user to generate/set a new PIN only if they need to
+  display or copy one. The PIN unlocks generation of a durable per-device
+  secret that the phone stores in its Keychain; subsequent connections use that
+  paired secret, not the PIN.
 - **Rate limiting**: the runtime tracks failed `pairing_request` attempts
   per remote IP. Five failures put that IP into a 10-minute cooldown
   during which new pairing requests are rejected without touching the

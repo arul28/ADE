@@ -756,8 +756,13 @@ describe("ADE CLI", () => {
     });
     const output = formatOutput(result, { text: true } as any, inferFormatter(plan));
     expect(output).toContain("  Code   (PIN configured but hidden after runtime restart)");
+    expect(output).toContain("  Known  Use the existing code if you already know it.");
     expect(output).toContain("  New    ade sync pin generate");
     expect(output).toContain("  Set    ade sync pin set <6-digit-code>");
+    expect(output).toContain(
+      "Open the link and enter the existing code if you know it. " +
+        "Generate or set a new code only if you need ADE to display or copy one.",
+    );
     expect(output).not.toContain("no PIN set");
   });
 

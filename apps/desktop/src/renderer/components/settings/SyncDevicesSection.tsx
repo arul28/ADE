@@ -851,7 +851,9 @@ function WebClientCard({
   if (pinMissing) {
     pairingHelpText = "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section above.";
   } else if (pinHidden) {
-    pairingHelpText = "A PIN is configured but hidden after runtime restart. Generate or set a new PIN above to display or copy it for browser pairing.";
+    pairingHelpText =
+      "A PIN is configured but hidden after runtime restart. If you already know it, the existing PIN still pairs. " +
+      "Generate or set a new PIN above only when you need ADE to display or copy one.";
   }
 
   return (

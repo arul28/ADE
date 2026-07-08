@@ -245,7 +245,8 @@ struct SettingsWebClientPairSheet: View {
       unavailableCodePanel(
         iconName: "lock",
         title: "Pairing code hidden",
-        detail: "A PIN is configured on \(machineName(info)), but ADE cannot display it after the runtime restarts. Generate or set a new PIN on the machine if you need to display or copy it."
+        detail: "A PIN is configured on \(machineName(info)), but ADE cannot display it after the runtime restarts. If you already know it, the existing PIN still pairs. " +
+          "Generate or set a new PIN on the machine only when you need to display or copy one."
       )
     case .notConfigured:
       unavailableCodePanel(

@@ -14524,10 +14524,13 @@ function formatSyncWebPairing(value: unknown): string {
   } else if (info.pinConfigured) {
     codeLines = [
       "  Code   (PIN configured but hidden after runtime restart)",
+      "  Known  Use the existing code if you already know it.",
       "  New    ade sync pin generate",
       "  Set    ade sync pin set <6-digit-code>",
     ];
-    nextStep = "Generate or set a new code on this machine, then run ade sync web again.";
+    nextStep =
+      "Open the link and enter the existing code if you know it. " +
+      "Generate or set a new code only if you need ADE to display or copy one.";
   } else {
     codeLines = ["  Code   (no PIN set — run: ade sync pin generate)"];
     nextStep = "Generate or set a new code on this machine, then run ade sync web again.";
