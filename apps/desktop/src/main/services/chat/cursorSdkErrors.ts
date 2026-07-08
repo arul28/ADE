@@ -1,0 +1,164 @@
+import type { LocalAgentStore } from "@cursor/sdk";
+import type { CursorSdkErrorDetail } from "./cursorSdkProtocol";
+import { classifyCursorSdkErrorText } from "./cursorSdkProtocol";
+
+type CursorSdkRunLike = {
+  agentId: string;
+  id: string;
+  requestId?: unknown;
+  error?: unknown;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function toJsonRecord(value: unknown): Record<string, unknown> | null {
+  const record = asRecord(value);
+  const toJSON = (record as { toJSON?: () => unknown } | null)?.toJSON;
+  if (typeof toJSON !== "function") return null;
+  try {
+    return asRecord(toJSON.call(value));
+  } catch {
+    return null;
+  }
+}
+
+function readStringField(record: Record<string, unknown> | null, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readNumberField(record: Record<string, unknown> | null, key: string): number | undefined {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function readBooleanField(record: Record<string, unknown> | null, key: string): boolean | undefined {
+  const value = record?.[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+export function sdkErrorDetail(error: unknown): CursorSdkErrorDetail | undefined {
+  if (error == null) return undefined;
+  const record = asRecord(error);
+  const json = toJsonRecord(error);
+  const rawMessage = error instanceof Error
+    ? error.message
+    : typeof record?.message === "string"
+      ? record.message
+      : typeof error === "string"
+        ? error
+        : undefined;
+  const code = readStringField(record, "code") ?? readStringField(json, "code");
+  const status = readNumberField(record, "status") ?? readNumberField(json, "status");
+  const isRetryable = readBooleanField(record, "isRetryable") ?? readBooleanField(json, "isRetryable");
+  const requestId = readStringField(record, "requestId") ?? readStringField(json, "requestId");
+  const operation = readStringField(record, "operation") ?? readStringField(json, "operation");
+  const endpoint = readStringField(record, "endpoint") ?? readStringField(json, "endpoint");
+  const detail: CursorSdkErrorDetail = {
+    ...(rawMessage?.trim() ? { message: rawMessage.trim() } : {}),
+    ...(code ? { code } : {}),
+    ...(status != null ? { status } : {}),
+    ...(isRetryable != null ? { isRetryable } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(operation ? { operation } : {}),
+    ...(endpoint ? { endpoint } : {}),
+    ...(error instanceof Error && error.name && error.name !== "Error" ? { name: error.name } : {}),
+  };
+  return Object.keys(detail).length ? detail : undefined;
+}
+
+export function sdkErrorCode(error: unknown): string | undefined {
+  const record = asRecord(error);
+  const json = toJsonRecord(error);
+  const code = record?.code ?? json?.code;
+  return typeof code === "string" && code.trim() ? code.trim() : undefined;
+}
+
+function mergeErrorDetail(
+  ...details: Array<CursorSdkErrorDetail | undefined>
+): CursorSdkErrorDetail | undefined {
+  const merged: CursorSdkErrorDetail = {};
+  for (const detail of details) {
+    if (!detail) continue;
+    if (!merged.message && detail.message) merged.message = detail.message;
+    if (!merged.code && detail.code) merged.code = detail.code;
+    if (merged.status == null && detail.status != null) merged.status = detail.status;
+    if (merged.isRetryable == null && detail.isRetryable != null) merged.isRetryable = detail.isRetryable;
+    if (!merged.requestId && detail.requestId) merged.requestId = detail.requestId;
+    if (!merged.operation && detail.operation) merged.operation = detail.operation;
+    if (!merged.endpoint && detail.endpoint) merged.endpoint = detail.endpoint;
+    if (!merged.name && detail.name) merged.name = detail.name;
+  }
+  return Object.keys(merged).length ? merged : undefined;
+}
+
+function detailTexts(detail: CursorSdkErrorDetail | undefined): string[] {
+  if (!detail) return [];
+  return [
+    detail.message,
+    detail.code,
+    detail.name,
+    detail.operation,
+    detail.endpoint,
+    detail.status != null ? String(detail.status) : undefined,
+  ].filter((value): value is string => Boolean(value));
+}
+
+function runResultErrorDetail(result: unknown): CursorSdkErrorDetail | undefined {
+  const record = asRecord(result);
+  const error = asRecord(record?.error);
+  const message = readStringField(error, "message");
+  const code = readStringField(error, "code");
+  const requestId = readStringField(record, "requestId");
+  const detail: CursorSdkErrorDetail = {
+    ...(message ? { message } : {}),
+    ...(code ? { code } : {}),
+    ...(requestId ? { requestId } : {}),
+  };
+  return Object.keys(detail).length ? detail : undefined;
+}
+
+export async function readCursorSdkRunFailureDetail(args: {
+  run: CursorSdkRunLike | null;
+  result?: unknown;
+  extraDetail?: CursorSdkErrorDetail;
+  store?: LocalAgentStore | null;
+  onStoreReadError?: (error: unknown, run: CursorSdkRunLike) => void;
+}): Promise<{ errorCode?: string; errorDetail?: CursorSdkErrorDetail }> {
+  const { run, result, extraDetail, store, onStoreReadError } = args;
+  const resultDetail = runResultErrorDetail(result);
+  const runErrorDetail = sdkErrorDetail(run?.error);
+  let storeDetail: CursorSdkErrorDetail | undefined;
+  if (run && store) {
+    try {
+      const record = await store.runs.get({ agentId: run.agentId, runId: run.id });
+      if (record) {
+        storeDetail = {
+          ...(record.error?.trim() ? { message: record.error.trim() } : {}),
+          ...(record.requestId?.trim() ? { requestId: record.requestId.trim() } : {}),
+        };
+      }
+    } catch (error) {
+      onStoreReadError?.(error, run);
+    }
+  }
+  const requestDetail: CursorSdkErrorDetail | undefined =
+    typeof run?.requestId === "string" && run.requestId.trim()
+      ? { requestId: run.requestId.trim() }
+      : undefined;
+  const merged = mergeErrorDetail(resultDetail, runErrorDetail, storeDetail, extraDetail, requestDetail);
+  let code = merged?.code?.trim();
+  const classification = classifyCursorSdkErrorText(...detailTexts(merged));
+  if (!code && classification.kind !== "unknown") {
+    code = classification.kind === "rate_limit" ? "rate_limited" : classification.kind;
+  }
+  if (!code && storeDetail?.message) code = storeDetail.message;
+  return {
+    ...(code ? { errorCode: code } : {}),
+    ...(merged ? { errorDetail: merged } : {}),
+  };
+}

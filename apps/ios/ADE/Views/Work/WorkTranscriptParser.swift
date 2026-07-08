@@ -309,7 +309,8 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           steerId: optionalString(eventDict["steerId"])
         )
       case "error":
-        let detailText = optionalString(prettyPrintedJSONString(eventDict["errorInfo"]))
+        let explicitDetail = optionalString(eventDict["detail"])
+        let detailText = explicitDetail ?? optionalString(prettyPrintedJSONString(eventDict["errorInfo"]))
         event = .error(
           message: stringValue(eventDict["message"]),
           detail: detailText,

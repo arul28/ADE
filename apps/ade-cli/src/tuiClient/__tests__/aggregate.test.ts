@@ -58,22 +58,15 @@ describe("aggregateChatBlocks typed groups", () => {
       .filter((b) => b.kind === "tool-calls-group" || b.kind === "files-changed-group")
       .map((b) => b.kind);
 
-    // Tool calls first, then files (file_changes interrupted the run), then a fresh
-    // tool-calls-group continues with the trailing command.
-    expect(groupKinds).toEqual(["tool-calls-group", "files-changed-group", "tool-calls-group"]);
+    // Tool calls first, then files (file_changes interrupted the run). Activity
+    // phase collapse merges the trailing command back into the first tool group.
+    expect(groupKinds).toEqual(["tool-calls-group", "files-changed-group"]);
 
     const toolGroups = blocks.filter((b) => b.kind === "tool-calls-group") as Array<Extract<AggregatedBlock, { kind: "tool-calls-group" }>>;
     const fileGroup = blocks.find((b) => b.kind === "files-changed-group") as Extract<AggregatedBlock, { kind: "files-changed-group" }> | undefined;
 
-    expect(toolGroups[0]!.entries.map((e) => e.tool)).toEqual(["read", "read", "grep"]);
-    // The trailing command event lands in a fresh tool-calls-group as tool="shell".
-    expect(toolGroups[1]!.entries).toHaveLength(1);
-    expect(toolGroups[1]!.entries[0]).toMatchObject({
-      tool: "shell",
-      arg: "npm test",
-      status: "ok",
-      durationMs: 1500,
-    });
+    expect(toolGroups[0]!.entries.map((e) => e.tool)).toEqual(["read", "read", "grep", "shell"]);
+    expect(toolGroups).toHaveLength(1);
 
     expect(fileGroup!.entries).toHaveLength(2);
     expect(fileGroup!.entries[0]).toMatchObject({
@@ -511,6 +504,26 @@ describe("aggregateChatBlocks desktop work-log parity", () => {
     const reasoning = blocks.filter((b) => b.kind === "reasoning") as Extract<AggregatedBlock, { kind: "reasoning" }>[];
     expect(reasoning).toHaveLength(1);
     expect(reasoning[0]).toMatchObject({ text: "part one part two", live: false });
+  });
+
+  it("collapses alternating reasoning and tool bursts into merged activity rows", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "reasoning", text: "First thought.", itemId: "r1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "tool_call", tool: "Read", args: { path: "a.ts" }, itemId: "t1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "reasoning", text: "Second thought.", itemId: "r2", turnId: "turn-1" }),
+      env("2026-01-01T12:00:03.000Z", { type: "tool_call", tool: "Edit", args: { path: "b.ts" }, itemId: "t2", turnId: "turn-1" }),
+      env("2026-01-01T12:00:04.000Z", { type: "reasoning", text: "Third thought.", itemId: "r3", turnId: "turn-1" }),
+      env("2026-01-01T12:00:05.000Z", { type: "tool_call", tool: "Shell", args: { cmd: "pwd" }, itemId: "t3", turnId: "turn-1" }),
+    ];
+    const blocks = aggregate(events);
+    const reasoning = blocks.filter((b) => b.kind === "reasoning") as Extract<AggregatedBlock, { kind: "reasoning" }>[];
+    const toolGroups = blocks.filter((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>[];
+    expect(reasoning).toHaveLength(1);
+    expect(toolGroups).toHaveLength(1);
+    expect(reasoning[0]!.text).toContain("First thought.");
+    expect(reasoning[0]!.text).toContain("Second thought.");
+    expect(reasoning[0]!.text).toContain("Third thought.");
+    expect(toolGroups[0]!.entries).toHaveLength(3);
   });
 });
 

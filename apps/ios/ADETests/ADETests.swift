@@ -2460,6 +2460,32 @@ final class ADETests: XCTestCase {
     }
     XCTAssertEqual(detailObject["summary"], .string("Retry later"))
 
+    let errorJSON = """
+    {
+      "sessionId": "session-error",
+      "timestamp": "2026-03-17T00:01:30.000Z",
+      "event": {
+        "type": "error",
+        "message": "Cursor SDK stream failed.",
+        "detail": "Cursor request ID: req-cursor-1",
+        "errorInfo": { "category": "network", "provider": "Cursor" },
+        "turnId": "turn-error"
+      }
+    }
+    """
+
+    let errorEnvelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(errorJSON.utf8))
+    guard case .error(let errorMessage, let errorDetail, let errorTurnId, _, let errorInfo) = errorEnvelope.event else {
+      return XCTFail("Expected error event.")
+    }
+    XCTAssertEqual(errorMessage, "Cursor SDK stream failed.")
+    XCTAssertEqual(errorDetail, "Cursor request ID: req-cursor-1")
+    XCTAssertEqual(errorTurnId, "turn-error")
+    guard case .object(let errorInfoObject) = errorInfo else {
+      return XCTFail("Expected error info object.")
+    }
+    XCTAssertEqual(errorInfoObject["category"], .string("network"))
+
     let userMessageJSON = """
     {
       "sessionId": "session-3",
@@ -13928,6 +13954,25 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(preserved, attachments)
   }
 
+  func testMakeWorkChatEventPrefersErrorDetailOverErrorInfoJSON() {
+    let mapped = makeWorkChatEvent(
+      from: .error(
+        message: "Cursor SDK stream failed.",
+        detail: "Cursor request ID: req-cursor-1",
+        turnId: "turn-1",
+        itemId: nil,
+        errorInfo: .object(["category": .string("network")])
+      )
+    )
+    guard case .error(let message, let detail, let category, let turnId) = mapped else {
+      return XCTFail("Expected mapped error event")
+    }
+    XCTAssertEqual(message, "Cursor SDK stream failed.")
+    XCTAssertEqual(detail, "Cursor request ID: req-cursor-1")
+    XCTAssertEqual(category, "network")
+    XCTAssertEqual(turnId, "turn-1")
+  }
+
   func testBuildWorkChatMessagesIncludesAttachmentMetadata() {
     let transcript = [
       WorkChatEnvelope(
@@ -14276,6 +14321,70 @@ final class ADETests: XCTestCase {
       if case .toolCard = entry.payload { return true }
       return false
     })
+  }
+
+  func testBuildWorkTimelineCollapsesAlternatingReasoningAndToolBursts() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .reasoning(text: "First thought.", turnId: "turn-1", itemId: "r1", summaryIndex: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .toolCall(tool: "Read", argsText: "{\"path\":\"a.ts\"}", itemId: "t1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:03.000Z",
+        sequence: 3,
+        event: .reasoning(text: "Second thought.", turnId: "turn-1", itemId: "r2", summaryIndex: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:04.000Z",
+        sequence: 4,
+        event: .toolCall(tool: "Edit", argsText: "{\"path\":\"b.ts\"}", itemId: "t2", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:05.000Z",
+        sequence: 5,
+        event: .reasoning(text: "Third thought.", turnId: "turn-1", itemId: "r3", summaryIndex: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:06.000Z",
+        sequence: 6,
+        event: .toolCall(tool: "Shell", argsText: "{\"cmd\":\"pwd\"}", itemId: "t3", parentItemId: nil, turnId: "turn-1")
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    let reasoningCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "reasoning" else { return nil }
+      return card
+    }
+    let toolGroups = snapshot.timeline.compactMap { entry -> WorkToolGroupModel? in
+      guard case .toolGroup(let group) = entry.payload else { return nil }
+      return group
+    }
+
+    XCTAssertEqual(reasoningCards.count, 1)
+    XCTAssertEqual(toolGroups.count, 1)
+    XCTAssertTrue(reasoningCards.first?.body?.contains("First thought.") == true)
+    XCTAssertTrue(reasoningCards.first?.body?.contains("Second thought.") == true)
+    XCTAssertTrue(reasoningCards.first?.body?.contains("Third thought.") == true)
+    XCTAssertEqual(toolGroups.first?.count, 3)
   }
 
   func testBuildWorkTimelineWrapsSingleCommandInToolGroup() {

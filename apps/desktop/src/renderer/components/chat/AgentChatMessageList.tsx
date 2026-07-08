@@ -72,7 +72,7 @@ import {
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncremental,
   formatStructuredValue,
-  groupConsecutiveWorkLogRows,
+  groupChatTranscriptRows,
   readRecord,
   summarizeDiffStats,
   summarizeInlineText,
@@ -4261,7 +4261,7 @@ export function resolveAnchoredChatRowIndex({
 }): number {
   const eventIndex = findAnchoredChatEventIndex({ events, anchorEvent, hasFullHistory });
   if (eventIndex < 0) return -1;
-  const targetRows = groupConsecutiveWorkLogRows(
+  const targetRows = groupChatTranscriptRows(
     collapseChatTranscriptEvents(events.slice(0, eventIndex + 1)),
   );
   const targetRow = targetRows[targetRows.length - 1];
@@ -4432,7 +4432,7 @@ function AgentChatMessageListMain({
     collapseCacheRef.current = { events, rows: nextRows };
     return nextRows;
   }, [events]);
-  const groupedRows = useMemo(() => groupConsecutiveWorkLogRows(rows), [rows]);
+  const groupedRows = useMemo(() => groupChatTranscriptRows(rows), [rows]);
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
   const prevGroupedRowKeysRef = useRef<readonly string[] | null>(null);
   if (prevGroupedRowKeysRef.current !== groupedRowKeys) {

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import type {
   CursorSdkCloudArtifactDescriptor,
+  CursorSdkErrorDetail,
   CursorSdkHookDecision,
   CursorSdkHookRequest,
   CursorSdkModelParameterValue,
@@ -29,8 +30,10 @@ export type CursorSdkRuntimeMeta = {
   runId?: string;
   agentId?: string;
   requestId?: string;
+  sdkRequestId?: string;
   /** Terminal run store errorCode, present on run_result when a run errored. */
   errorCode?: string;
+  errorDetail?: CursorSdkErrorDetail;
 };
 
 export type CursorSdkBridge = {
@@ -311,9 +314,10 @@ export function resolveCursorSdkUserHome(env: NodeJS.ProcessEnv = process.env): 
 export function buildCursorSdkPaths(args: {
   projectRoot: string;
   poolKey: string;
+  stateKey?: string;
   userHomeDir?: string;
 }): { userHomeDir: string; cacheRoot: string; stateRoot: string; socketPath: string } {
-  const keyHash = hashKey(args.poolKey);
+  const keyHash = hashKey(args.stateKey ?? args.poolKey);
   const cacheRoot = path.join(args.projectRoot, ".ade", "cache", "cursor-sdk", keyHash);
   return {
     userHomeDir: args.userHomeDir?.trim() || resolveCursorSdkUserHome(),
@@ -349,6 +353,7 @@ export function buildCursorSdkWorkerEnv(args: {
 
 export async function acquireCursorSdkConnection(args: {
   poolKey: string;
+  stateKey?: string;
   projectRoot: string;
   workspacePath: string;
   baseEnv?: NodeJS.ProcessEnv;
@@ -404,7 +409,11 @@ export async function acquireCursorSdkConnection(args: {
 
 async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSdkConnection>[0]): Promise<CursorSdkPooled> {
   const workerPath = resolveWorkerPath();
-  const paths = buildCursorSdkPaths({ projectRoot: args.projectRoot, poolKey: args.poolKey });
+  const paths = buildCursorSdkPaths({
+    projectRoot: args.projectRoot,
+    poolKey: args.poolKey,
+    stateKey: args.stateKey,
+  });
   fs.mkdirSync(paths.stateRoot, { recursive: true });
   ensurePrivateSocketPath(paths.socketPath);
 
@@ -555,8 +564,25 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
       pending.delete(message.requestId);
       if (message.ok) waiter.resolve(message.result);
       else {
-        const error = new Error(`Cursor SDK ${waiter.type} failed: ${message.error || "unknown error"}`) as Error & { code?: string };
+        const error = new Error(`Cursor SDK ${waiter.type} failed: ${message.error || "unknown error"}`) as Error & {
+          code?: string;
+          status?: number;
+          isRetryable?: boolean;
+          requestId?: string;
+          operation?: string;
+          endpoint?: string;
+          cursorSdk?: CursorSdkErrorDetail;
+        };
         if (message.errorCode) error.code = message.errorCode;
+        if (message.errorDetail) {
+          error.cursorSdk = message.errorDetail;
+          if (message.errorDetail.code && !error.code) error.code = message.errorDetail.code;
+          if (message.errorDetail.status != null) error.status = message.errorDetail.status;
+          if (message.errorDetail.isRetryable != null) error.isRetryable = message.errorDetail.isRetryable;
+          if (message.errorDetail.requestId) error.requestId = message.errorDetail.requestId;
+          if (message.errorDetail.operation) error.operation = message.errorDetail.operation;
+          if (message.errorDetail.endpoint) error.endpoint = message.errorDetail.endpoint;
+        }
         waiter.reject(error);
       }
       return;
@@ -583,6 +609,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
           runId: message.runId,
           agentId: message.agentId,
           requestId: message.requestId,
+          sdkRequestId: message.sdkRequestId,
         },
       );
       return;
@@ -594,6 +621,8 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         runId: message.runId,
         agentId: message.agentId,
         requestId: message.requestId,
+        sdkRequestId: message.sdkRequestId,
+        ...(message.errorDetail ? { errorDetail: message.errorDetail } : {}),
       });
       return;
     }
@@ -604,7 +633,9 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
         runId: message.runId,
         agentId: message.agentId,
         requestId: message.requestId,
+        sdkRequestId: message.sdkRequestId,
         ...(message.errorCode ? { errorCode: message.errorCode } : {}),
+        ...(message.errorDetail ? { errorDetail: message.errorDetail } : {}),
       });
       return;
     }
@@ -616,6 +647,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
           runId: message.runId,
           agentId: message.agentId,
           requestId: message.requestId,
+          sdkRequestId: message.sdkRequestId,
         },
       );
       return;

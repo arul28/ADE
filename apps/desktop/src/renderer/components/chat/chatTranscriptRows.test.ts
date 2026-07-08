@@ -9,6 +9,7 @@ import {
   extractLocalhostUrlsFromText,
   eventHasPayload,
   formatStructuredValue,
+  groupChatTranscriptRows,
   groupConsecutiveWorkLogRows,
   readRecord,
   summarizeDiffStats,
@@ -16,7 +17,7 @@ import {
 } from "./chatTranscriptRows";
 
 function groupEvents(events: AgentChatEventEnvelope[]) {
-  return groupConsecutiveWorkLogRows(collapseChatTranscriptEvents(events));
+  return groupChatTranscriptRows(collapseChatTranscriptEvents(events));
 }
 
 describe("chatTranscriptRows", () => {
@@ -33,7 +34,7 @@ describe("chatTranscriptRows", () => {
     ]);
   });
 
-  it("keeps Claude reasoning blocks split across tool boundaries", () => {
+  it("collapses alternating reasoning and tool bursts into merged activity rows", () => {
     const grouped = groupEvents([
       {
         sessionId: "session-1",
@@ -66,12 +67,81 @@ describe("chatTranscriptRows", () => {
           turnId: "turn-1",
         },
       },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:03.000Z",
+        event: {
+          type: "tool_call",
+          tool: "Read",
+          args: { path: "foo.ts" },
+          itemId: "tool-2",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:04.000Z",
+        event: {
+          type: "reasoning",
+          text: "Third thought.",
+          itemId: "reasoning-3",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:05.000Z",
+        event: {
+          type: "tool_call",
+          tool: "Edit",
+          args: { path: "bar.ts" },
+          itemId: "tool-3",
+          turnId: "turn-1",
+        },
+      },
     ]);
 
-    expect(grouped).toHaveLength(3);
+    expect(grouped).toHaveLength(2);
     expect(grouped[0]!.event.type).toBe("reasoning");
     expect(grouped[1]!.event.type).toBe("work_log_group");
-    expect(grouped[2]!.event.type).toBe("reasoning");
+    if (grouped[0]!.event.type === "reasoning") {
+      expect(grouped[0]!.event.text).toContain("First thought.");
+      expect(grouped[0]!.event.text).toContain("Second thought.");
+      expect(grouped[0]!.event.text).toContain("Third thought.");
+    }
+    if (grouped[1]!.event.type === "work_log_group") {
+      expect(grouped[1]!.event.entries).toHaveLength(3);
+    }
+  });
+
+  it("keeps a simple thought + tool pair as separate rows", () => {
+    const grouped = groupEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "reasoning",
+          text: "First thought.",
+          itemId: "reasoning-1",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "tool_call",
+          tool: "functions.exec_command",
+          args: { cmd: "pwd" },
+          itemId: "tool-1",
+          turnId: "turn-1",
+        },
+      },
+    ]);
+
+    expect(grouped).toHaveLength(2);
+    expect(grouped[0]!.event.type).toBe("reasoning");
+    expect(grouped[1]!.event.type).toBe("work_log_group");
   });
 
   it("collapses Claude and Codex tool lifecycles into one work-log entry", () => {

@@ -362,15 +362,17 @@ import {
   evaluateCursorSdkHook,
   resolveCursorSdkPolicy,
 } from "./cursorSdkPolicy";
-import type {
-  CursorSdkCloudArtifactDescriptor,
-  CursorSdkCloudArtifactDownloadResult,
-  CursorSdkCloudFollowupPayload,
-  CursorSdkCloudRunStartedResult,
-  CursorSdkCloudSendStreamPayload,
-  CursorSdkHookDecision,
-  CursorSdkHookRequest,
-  CursorSdkPermissionPolicy,
+import {
+  classifyCursorSdkErrorText,
+  type CursorSdkAgentMode,
+  type CursorSdkCloudArtifactDescriptor,
+  type CursorSdkCloudArtifactDownloadResult,
+  type CursorSdkCloudFollowupPayload,
+  type CursorSdkCloudRunStartedResult,
+  type CursorSdkCloudSendStreamPayload,
+  type CursorSdkHookDecision,
+  type CursorSdkHookRequest,
+  type CursorSdkPermissionPolicy,
 } from "./cursorSdkProtocol";
 import type {
   DroidSdkAskUserRequest,
@@ -2824,12 +2826,49 @@ function readErrorStatusCode(value: unknown): number | null {
   const record = value as Record<string, unknown>;
   if (typeof record.status === "number") return record.status;
   if (typeof record.statusCode === "number") return record.statusCode;
+  const cursorSdk = record.cursorSdk;
+  if (cursorSdk && typeof cursorSdk === "object" && !Array.isArray(cursorSdk)) {
+    const nested = cursorSdk as Record<string, unknown>;
+    if (typeof nested.status === "number") return nested.status;
+  }
   const data = record.data;
   if (!data || typeof data !== "object" || Array.isArray(data)) return null;
   const nested = data as Record<string, unknown>;
   if (typeof nested.status === "number") return nested.status;
   if (typeof nested.statusCode === "number") return nested.statusCode;
   return null;
+}
+
+function readErrorCodeString(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.code === "string" && record.code.trim()) return record.code.trim();
+  const cursorSdk = record.cursorSdk;
+  if (cursorSdk && typeof cursorSdk === "object" && !Array.isArray(cursorSdk)) {
+    const nested = cursorSdk as Record<string, unknown>;
+    if (typeof nested.code === "string" && nested.code.trim()) return nested.code.trim();
+  }
+  const data = record.data;
+  if (data && typeof data === "object" && !Array.isArray(data)) {
+    const nested = data as Record<string, unknown>;
+    if (typeof nested.code === "string" && nested.code.trim()) return nested.code.trim();
+  }
+  return null;
+}
+
+function readCursorSdkStructuredErrorText(value: unknown): string | null {
+  if (!value || typeof value !== "object") return null;
+  const cursorSdk = (value as Record<string, unknown>).cursorSdk;
+  if (!cursorSdk || typeof cursorSdk !== "object" || Array.isArray(cursorSdk)) return null;
+  const record = cursorSdk as Record<string, unknown>;
+  const lines = uniqueNonEmpty([
+    typeof record.message === "string" ? record.message : null,
+    typeof record.code === "string" ? `Code: ${record.code}` : null,
+    typeof record.requestId === "string" ? `Cursor request ID: ${record.requestId}` : null,
+    typeof record.operation === "string" ? `Operation: ${record.operation}` : null,
+    typeof record.endpoint === "string" ? `Endpoint: ${record.endpoint}` : null,
+  ], 5);
+  return lines.length ? lines.join("\n") : null;
 }
 
 function parseEmbeddedJsonObject(value: string): Record<string, unknown> | null {
@@ -2912,15 +2951,21 @@ function classifyProviderHostError(
   error: unknown,
   providerLabel: string,
   modelDisplayName: string,
+  options: { cursorSdk?: boolean } = {},
 ): {
   message: string;
   detail?: string;
   errorInfo: { category: ChatErrorCategory; provider?: string; model?: string };
 } {
   const rawMessage = readErrorMessage(error);
-  const rawDetail = readErrorDetail(error);
+  const structuredCursorDetail = readCursorSdkStructuredErrorText(error);
+  const rawDetail = structuredCursorDetail ?? readErrorDetail(error);
   const statusCode = readErrorStatusCode(error);
-  const combinedLower = `${rawMessage}\n${rawDetail ?? ""}`.toLowerCase();
+  const errorCode = readErrorCodeString(error);
+  const combinedLower = `${rawMessage}\n${rawDetail ?? ""}\n${errorCode ?? ""}`.toLowerCase();
+  const cursorClassification = options.cursorSdk
+    ? classifyCursorSdkErrorText(rawMessage, rawDetail, errorCode)
+    : { kind: "unknown" as const, retryable: false };
 
   const payload = readErrorPayload(error);
   const payloadDetail = trimLine(
@@ -2934,6 +2979,7 @@ function classifyProviderHostError(
 
   if (
     statusCode === 429
+    || cursorClassification.kind === "rate_limit"
     || combinedLower.includes("rate limit")
     || combinedLower.includes("rate_limited")
     || combinedLower.includes("429")
@@ -2946,7 +2992,7 @@ function classifyProviderHostError(
   ) {
     const rateLimitDetail = rawDetail || rawMessage;
     return {
-      message: `Rate limited by ${providerLabel}. The runtime should recover automatically, but you may want to retry with a different model.`,
+      message: `Rate limited by ${providerLabel}. Wait a moment and retry, or switch to a different model if this keeps happening.`,
       ...(rateLimitDetail ? { detail: rateLimitDetail } : {}),
       errorInfo: { category: "rate_limit", provider: providerLabel, model: modelDisplayName },
     };
@@ -2955,6 +3001,7 @@ function classifyProviderHostError(
   if (
     statusCode === 401
     || statusCode === 403
+    || cursorClassification.kind === "auth"
     || combinedLower.includes("unauthorized")
     || combinedLower.includes("forbidden")
     || combinedLower.includes("authentication failed")
@@ -2987,7 +3034,15 @@ function classifyProviderHostError(
   }
 
   if (
-    combinedLower.includes("timeout")
+    cursorClassification.kind === "network"
+    || errorCode === "network"
+    || errorCode === "transport"
+    || combinedLower.includes("nghttp2")
+    || combinedLower.includes("http/2")
+    || combinedLower.includes("stream closed with error")
+    || (options.cursorSdk && combinedLower.includes("internal_error"))
+    || (options.cursorSdk && combinedLower.includes("internal error"))
+    || combinedLower.includes("timeout")
     || combinedLower.includes("timed out")
     || combinedLower.includes("econnrefused")
     || combinedLower.includes("enotfound")
@@ -3310,6 +3365,7 @@ function classifyCursorSdkChatError(
     error,
     args.cloud ? "Cursor Cloud" : "Cursor",
     args.modelDisplayName ?? "Cursor SDK",
+    { cursorSdk: true },
   );
 }
 
@@ -22869,6 +22925,14 @@ export function createAgentChatService(args: {
     buildOrchestrationSessionContext(managed) ? "orchestration-mcp" : "standard",
   ].join(":");
 
+  const cursorSdkStateKeyFor = (managed: ManagedChatSession): string => [
+    "sdk-state",
+    CURSOR_SDK_AGENT_PROTOCOL_VERSION,
+    managed.session.id,
+    managed.session.laneId,
+    managed.laneWorktreePath,
+  ].join(":");
+
   const resolveCursorSdkModelParamsForSession = (
     session: Pick<AgentChatSession, "reasoningEffort" | "fastMode">,
     modelSdkId: string,
@@ -22891,6 +22955,14 @@ export function createAgentChatService(args: {
     turnId: string,
     operation: "create" | "followup",
   ): string => `ade:${managed.session.id}:${turnId}:cursor-cloud:${operation}`;
+
+  const cursorLocalIdempotencyKey = (
+    managed: ManagedChatSession,
+    turnId: string,
+  ): string => `ade:${managed.session.id}:${turnId}:cursor-local:send`;
+
+  const cursorSdkModeForPolicy = (policy: CursorSdkPermissionPolicy): CursorSdkAgentMode =>
+    policy.chatMode === "agent" ? "agent" : "plan";
 
   const normalizeCursorSdkToolName = (name: string): string =>
     name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -23789,7 +23861,9 @@ export function createAgentChatService(args: {
           sessionId: managed.session.id,
           runId: meta.runId ?? null,
           agentId: meta.agentId ?? null,
+          sdkRequestId: meta.sdkRequestId ?? meta.errorDetail?.requestId ?? null,
           errorCode: meta.errorCode,
+          errorDetail: meta.errorDetail ?? null,
         });
       }
       if (meta?.runtime === "cloud" && meta.runId) {
@@ -23974,6 +24048,7 @@ export function createAgentChatService(args: {
     try {
       acquired = await acquireCursorSdkConnection({
         poolKey,
+        stateKey: cursorSdkStateKeyFor(managed),
         projectRoot,
         workspacePath: managed.laneWorktreePath,
         baseEnv: buildAgentRuntimeEnv(managed),
@@ -24190,6 +24265,8 @@ export function createAgentChatService(args: {
         modelSdkId: runtime.modelSdkId,
         ...(modelParams?.length ? { modelParams } : {}),
         force: policy.force,
+        idempotencyKey: cursorLocalIdempotencyKey(managed, turnId),
+        mode: cursorSdkModeForPolicy(policy),
       });
 
       persistDeliveredLaneDirectiveKey(managed, args.laneDirectiveKey);
@@ -24537,6 +24614,7 @@ export function createAgentChatService(args: {
     let runStartedRunId: string | null = null;
     try {
       let result: unknown;
+      const sdkMode = cursorSdkModeForPolicy(runtime.sdkPolicy ?? resolveCursorSdkPolicy(managed.session));
       if (isFollowUp && managed.session.cursorCloudAgentId) {
         const modelParams = runtime.modelSdkId
           ? resolveCursorSdkModelParamsForSession(managed.session, runtime.modelSdkId)
@@ -24546,6 +24624,7 @@ export function createAgentChatService(args: {
           agentId: managed.session.cursorCloudAgentId,
           promptText,
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "followup"),
+          mode: sdkMode,
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),
         };
@@ -24564,6 +24643,7 @@ export function createAgentChatService(args: {
           promptText,
           repoUrl,
           idempotencyKey: cursorCloudIdempotencyKey(managed, turnId, "create"),
+          mode: sdkMode,
           ...(manualAgentName ? { agentName: manualAgentName } : {}),
           ...(runtime.modelSdkId ? { modelSdkId: runtime.modelSdkId } : {}),
           ...(modelParams?.length ? { modelParams } : {}),

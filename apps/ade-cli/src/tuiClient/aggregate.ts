@@ -1,3 +1,8 @@
+import {
+  collapseActivityPhaseRows,
+  mergeReasoningTextFragments,
+  type ActivityPhaseMergeMeta,
+} from "../../../desktop/src/shared/chatActivityPhase";
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
@@ -921,7 +926,99 @@ export function aggregateChatBlocks(args: {
   }
 
   if (args.maxBlocks && blocks.length > args.maxBlocks) {
-    return blocks.slice(-args.maxBlocks);
+    return collapseAggregatedActivityPhaseBlocks(blocks.slice(-args.maxBlocks));
   }
-  return blocks;
+  return collapseAggregatedActivityPhaseBlocks(blocks);
+}
+
+function classifyAggregatedActivityBlock(
+  block: AggregatedBlock,
+): { kind: "reasoning" | "work"; turnId: string | null } | null {
+  if (block.kind === "reasoning") {
+    return { kind: "reasoning", turnId: block.turnId };
+  }
+  if (block.kind === "tool-calls-group" || block.kind === "files-changed-group") {
+    return { kind: "work", turnId: block.turnId };
+  }
+  return null;
+}
+
+function mergeAggregatedActivityPhase(
+  phase: readonly AggregatedBlock[],
+  meta: ActivityPhaseMergeMeta,
+): AggregatedBlock[] {
+  const reasoningBlocks = phase.filter((block): block is Extract<AggregatedBlock, { kind: "reasoning" }> => block.kind === "reasoning");
+  const toolGroups = phase.filter((block): block is Extract<AggregatedBlock, { kind: "tool-calls-group" }> => block.kind === "tool-calls-group");
+  const fileGroups = phase.filter((block): block is Extract<AggregatedBlock, { kind: "files-changed-group" }> => block.kind === "files-changed-group");
+  const merged: AggregatedBlock[] = [];
+
+  const pushReasoning = () => {
+    if (reasoningBlocks.length === 0) return;
+    if (reasoningBlocks.length === 1) {
+      merged.push(reasoningBlocks[0]!);
+      return;
+    }
+    const first = reasoningBlocks[0]!;
+    merged.push({
+      ...first,
+      id: `activity-phase-reasoning:${first.id}`,
+      text: mergeReasoningTextFragments(reasoningBlocks.map((block) => block.text)),
+      live: reasoningBlocks.some((block) => block.live),
+    });
+  };
+
+  const pushToolGroups = () => {
+    if (toolGroups.length === 0) return;
+    if (toolGroups.length === 1) {
+      merged.push(toolGroups[0]!);
+      return;
+    }
+    const first = toolGroups[0]!;
+    merged.push({
+      ...first,
+      id: `activity-phase-tools:${first.id}`,
+      entries: toolGroups.flatMap((block) => block.entries),
+      live: toolGroups.some((block) => block.live),
+    });
+  };
+
+  const pushFileGroups = () => {
+    if (fileGroups.length === 0) return;
+    if (fileGroups.length === 1) {
+      merged.push(fileGroups[0]!);
+      return;
+    }
+    const first = fileGroups[0]!;
+    merged.push({
+      ...first,
+      id: `activity-phase-files:${first.id}`,
+      entries: fileGroups.flatMap((block) => block.entries),
+      live: fileGroups.some((block) => block.live),
+    });
+  };
+
+  const firstWorkBlock = phase.find((block) => block.kind === "tool-calls-group" || block.kind === "files-changed-group");
+
+  const pushWork = () => {
+    if (firstWorkBlock?.kind === "files-changed-group") {
+      pushFileGroups();
+      pushToolGroups();
+    } else {
+      pushToolGroups();
+      pushFileGroups();
+    }
+  };
+
+  if (meta.workFirst) {
+    pushWork();
+    pushReasoning();
+  } else {
+    pushReasoning();
+    pushWork();
+  }
+  return merged;
+}
+
+export function collapseAggregatedActivityPhaseBlocks(blocks: AggregatedBlock[]): AggregatedBlock[] {
+  return collapseActivityPhaseRows(blocks, classifyAggregatedActivityBlock, mergeAggregatedActivityPhase);
 }

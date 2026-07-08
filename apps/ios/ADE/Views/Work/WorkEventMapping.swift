@@ -173,8 +173,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   // thread selection up from the transcript), which is out of scope here.
   case .systemNotice(let noticeKind, let message, let detail, let turnId, let steerId):
     return .systemNotice(kind: noticeKind.rawValue, message: message, detail: prettyPrintedRemoteJSONValue(detail), turnId: turnId, steerId: steerId)
-  case .error(let message, let turnId, _, let errorInfo):
-    let detailText = prettyPrintedRemoteJSONValue(errorInfo)
+  case .error(let message, let detail, let turnId, _, let errorInfo):
+    let detailText = detail ?? prettyPrintedRemoteJSONValue(errorInfo)
     return .error(message: message, detail: detailText, category: workErrorCategory(message: message, detail: detailText), turnId: turnId)
   case .done(let turnId, let status, let model, let modelId, let usage, let costUsd):
     var parts = [status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized]
