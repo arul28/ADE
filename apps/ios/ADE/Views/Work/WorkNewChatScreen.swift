@@ -1010,6 +1010,7 @@ struct WorkNewChatScreen: View {
     // Track whether we created the lane so we can clean it up if the session
     // launch fails immediately afterwards (desktop parity).
     let targetLaneId: String
+    let targetLaneForScope: LaneSummary?
     var createdLaneId: String?
     var autoCreatedFallbackName: String?
     if isAutoCreateLane {
@@ -1023,6 +1024,7 @@ struct WorkNewChatScreen: View {
           description: opener.isEmpty ? "" : String(opener.prefix(280))
         )
         targetLaneId = lane.id
+        targetLaneForScope = lane
         createdLaneId = lane.id
         autoCreatedFallbackName = laneName
         await onRefreshLanes()
@@ -1035,8 +1037,9 @@ struct WorkNewChatScreen: View {
       }
     } else {
       targetLaneId = selectedLaneId
+      targetLaneForScope = lanes.first { $0.id == selectedLaneId }
     }
-    let targetScope = lanes.first { $0.id == targetLaneId }
+    let targetScope = targetLaneForScope
       .map { workShellProjectScope(for: $0, projects: syncService.projects) }
       ?? WorkProjectCommandScope(projectId: nil, projectRootPath: nil)
 
