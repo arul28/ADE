@@ -13,6 +13,10 @@ This is a **local-first release flow**. GitHub Releases remain the public
 artifact host for Electron updater, but this Mac can be the release machine for
 Apple signing, notarization, GitHub asset upload, and TestFlight upload.
 
+A **preflight** is a cheap check that runs before expensive build/upload work.
+Use preflights to catch release blockers while fixes can still be committed
+without burning a notarization, TestFlight upload, or build number.
+
 ## Hard Rules
 
 - **No-op is valid.** If no relevant product code changed, do not create a
@@ -29,6 +33,13 @@ Apple signing, notarization, GitHub asset upload, and TestFlight upload.
   and App Clip after signing is fixed.
 - **Do not publish broken updater metadata.** Before making a desktop release
   public/latest, verify `latest-mac.yml` references assets that exist.
+- **Do not discover obvious release blockers after upload.** Preflight desktop
+  runtime/x64 readiness and iOS App Clip packaging metadata before starting the
+  expensive phase.
+- **Explain fallbacks before using them.** Local build/publish is the preferred
+  path. If switching to GitHub Actions or remote artifacts, first report exactly
+  what local prerequisite failed, what remote job/artifact will supply, and how
+  the final updater/TestFlight verification remains unchanged.
 - **Do not wait forever on Apple.** If notarization or TestFlight processing
   exceeds its normal window by a lot, preserve state, retry only the failed
   phase, or stop with a clear recovery command.
@@ -81,6 +92,10 @@ overlap. If the lock is held by a live process, exit cleanly.
 
 ## Phase 0: Preflight
 
+Keep this phase read-only except for the `.ade/release` state/lock files. Do
+not edit release docs, bump versions, create tags, or upload artifacts until the
+relevant preflights pass or a fallback is explicitly chosen.
+
 1. Sync repository state:
 
    ```bash
@@ -112,6 +127,53 @@ overlap. If the lock is held by a live process, exit cleanly.
 
    `release:mac:local` reads `.env.local` itself. Do not print secret values
    while checking signing/notarization setup.
+
+6. For desktop releases, preflight local readiness before creating the
+   changelog/tag:
+
+   ```bash
+   npm --prefix apps/desktop run materialize:runtime-resources
+   npm --prefix apps/desktop run validate:runtime-resources
+   node apps/desktop/scripts/require-macos-release-secrets.cjs
+   ```
+
+   Also check the local x64 sidecar inputs that `release:mac:local` expects on
+   Apple Silicon:
+
+   ```bash
+   test -x apps/desktop/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex
+   test -x apps/desktop/node_modules/opencode-darwin-x64/bin/opencode
+   test -f apps/desktop/vendor/crsqlite/darwin-x64/crsqlite.dylib
+   ```
+
+   If these fail, run `npm --prefix apps/desktop run prepare:mac:universal`.
+   If they still fail, do not burn a full local release attempt. Use a remote
+   x64 artifact fallback or fix the sidecar materialization first.
+
+7. For iOS releases, preflight App Clip packaging metadata before archiving:
+
+   ```bash
+   xcodebuild -showBuildSettings \
+     -project apps/ios/ADE.xcodeproj \
+     -scheme ADE \
+     -configuration Release \
+     -json > .ade/tmp/ios-release-build-settings.json
+   ```
+
+   Confirm from the JSON/build settings:
+
+   - `ADE`, `ADEWidgets`, and `ADEClip` targets are present in the `ADE` scheme.
+   - `ADEClip` Release `IPHONEOS_DEPLOYMENT_TARGET` matches the parent app
+     baseline when Apple requires it. Current known-good value is `26.0`.
+   - `ADEClip` has `ASSETCATALOG_COMPILER_APPICON_NAME=AppIcon`.
+   - `ADEClip/Info.plist` includes valid App Clip store metadata, supported
+     interface orientations, and device family values accepted by App Store
+     validation.
+   - `apps/ios/ExportOptions.auto.plist` exists; prefer it for local ASC-backed
+     archive/export.
+
+   If any of these fail, fix and commit before archiving. Do not upload an IPA
+   produced from uncommitted project-signing or App Clip metadata changes.
 
 ## Phase 1: Detect Release Scope
 
@@ -237,6 +299,10 @@ changelog.
 
 ## Phase 4: Desktop Local Build and Publish
 
+Preferred path: build/sign/notarize on this Mac, then upload verified assets to
+GitHub Releases. GitHub Actions is a fallback for missing remote-arch artifacts
+or a broken local prerequisite, not the default happy path.
+
 Preferred local command:
 
 ```bash
@@ -265,6 +331,17 @@ true:
 - the local x64 build succeeds under Rosetta
 - a remote x64 artifact is available and verified
 - the user explicitly approves an arm64-only desktop release
+
+Before starting a GitHub Actions release fallback, print this decision:
+
+```text
+Desktop fallback: using GitHub Actions because <local prerequisite failed>.
+Required output: arm64 ZIP/DMG, x64 ZIP/DMG, latest-mac.yml, runtime assets.
+I will keep the release draft/private until updater metadata verifies.
+```
+
+If the fallback workflow is already running, let it finish instead of starting a
+duplicate run. If retrying, rerun only failed/cancelled jobs when possible.
 
 ### Desktop asset verification
 
@@ -349,7 +426,38 @@ asc xcode export \
   --xcodebuild-flag=-authenticationKeyPath --xcodebuild-flag="$ASC_KEY_PATH" \
   --xcodebuild-flag=-authenticationKeyID --xcodebuild-flag="$ASC_KEY_ID" \
   --xcodebuild-flag=-authenticationKeyIssuerID --xcodebuild-flag="$ASC_ISSUER_ID"
+```
 
+Before upload, unpack and inspect the exported IPA. This is mandatory for App
+Clip releases:
+
+```bash
+TMP_IPA_CHECK="$OUT/ipa-check"
+rm -rf "$TMP_IPA_CHECK"
+mkdir -p "$TMP_IPA_CHECK"
+ditto -x -k "$OUT/ADE.ipa" "$TMP_IPA_CHECK"
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$TMP_IPA_CHECK/Payload/ADE.app/Info.plist"
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$TMP_IPA_CHECK/Payload/ADE.app/Info.plist"
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$TMP_IPA_CHECK/Payload/ADE.app/Info.plist"
+find "$TMP_IPA_CHECK/Payload/ADE.app" -maxdepth 3 -name 'ADEClip.app' -print
+find "$TMP_IPA_CHECK/Payload/ADE.app" -maxdepth 3 -name 'ADEWidgets.appex' -print
+```
+
+Before continuing, inspect `ADEClip.app/Info.plist` too. Continue only if the
+main app, widgets, and App Clip all use the intended marketing version/build
+number and the App Clip bundle has the expected icon/deployment metadata.
+
+Use Apple package validation before upload so metadata errors surface before
+the final upload step:
+
+```bash
+xcrun altool --validate-app --type ios --file "$OUT/ADE.ipa" \
+  --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
+```
+
+Upload only after validation passes:
+
+```bash
 asc builds upload --app 6762759870 --ipa "$OUT/ADE.ipa"
 
 asc builds wait \
