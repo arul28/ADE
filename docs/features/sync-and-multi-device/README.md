@@ -653,10 +653,15 @@ is not supported.
   `KeychainService.tokenAccount`) when the desktop did not bundle a
   fresh credential.
 - **Phone pairing**: user-set **6-digit PIN** stored on the runtime at
-  `~/.ade/secrets/sync-pin.json`. The PIN is owned by the human
-  operator — the runtime does not rotate it, does not time-expire it,
-  and does not mint a one-shot code. The phone enters the same digits
-  the user typed in the machine's Settings > Sync > Phone pairing sheet.
+  `~/.ade/secrets/sync-pin.json` as a PBKDF2 hash. The PIN is owned by
+  the human operator — the runtime does not rotate it, does not
+  time-expire it, and does not mint a one-shot code. The runtime keeps
+  plaintext only in the current process after the user sets/generates
+  it (or after legacy migration), so after a restart the host can verify
+  pairings with the existing digits if the user still knows them. It
+  cannot display or copy those digits until the user generates or sets a
+  new PIN. The phone enters the same digits the user
+  typed in the machine's Settings > Sync > Phone pairing sheet.
   Failed PIN attempts increment a per-IP counter; after 5 failures
   the runtime rejects further attempts from that IP for 10 minutes
   (`PAIR_FAILURE_THRESHOLD = 5`, `PAIR_COOLDOWN_MS = 10 * 60_000` in
@@ -909,13 +914,17 @@ feature is merged or because a deliberately isolated-port host is running.
   device backups — a restored phone re-pairs with the PIN.
 - **Pairing**: two independent paths. Machine-to-machine pairing uses
   the shared bootstrap token from the machine secrets directory.
-  Phone pairing uses a **user-set 6-digit PIN** stored in
-  `~/.ade/secrets/sync-pin.json` on the runtime machine. The runtime never auto-rotates
-  or TTLs the PIN; the user sets it through Settings > Sync and clears
-  it when they want to stop accepting new pairings. The PIN unlocks
-  generation of a durable per-device secret that the phone stores in
-  its Keychain; subsequent connections use that paired secret, not the
-  PIN.
+  Phone pairing uses a **user-set 6-digit PIN** stored as a PBKDF2 hash in
+  `~/.ade/secrets/sync-pin.json` on the runtime machine. The runtime never
+  auto-rotates or TTLs the PIN; the user sets it through Settings > Sync
+  and clears it when they want to stop accepting new pairings. Plaintext is
+  process-local and intentionally unrecoverable after restart, so Settings
+  and CLI surfaces treat `hasPin() && getPin() == null` as "configured but
+  hidden". They still allow pairing with the existing PIN if the user knows
+  it, and tell the user to generate/set a new PIN only if they need to
+  display or copy one. The PIN unlocks generation of a durable per-device
+  secret that the phone stores in its Keychain; subsequent connections use that
+  paired secret, not the PIN.
 - **Rate limiting**: the runtime tracks failed `pairing_request` attempts
   per remote IP. Five failures put that IP into a 10-minute cooldown
   during which new pairing requests are rejected without touching the
@@ -1031,7 +1040,9 @@ feature is merged or because a deliberately isolated-port host is running.
   perpetually pairable by anyone on the network who knows the digits
   (subject to the per-IP rate limiter). Clearing the PIN from
   Settings > Sync is how you stop accepting new pairings; already-paired
-  devices keep their per-device secret and remain connected.
+  devices keep their per-device secret and remain connected. Because
+  only the hash persists, a restarted runtime can report that a PIN is
+  configured but cannot reveal it.
 - **`brain_*` is legacy naming.** In new docs and code comments prefer
   "sync authority" or "machine runtime"; existing database column names
   are kept for compatibility.

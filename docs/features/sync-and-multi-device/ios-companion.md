@@ -645,10 +645,11 @@ yet arrived in the catchup batch.
 
 ### PIN pairing flow
 
-1. User opens Settings > Sync on the machine and sets a 6-digit
-   PIN. The runtime writes the PIN under `~/.ade/secrets` (chmod `0600`)
-   and surfaces it on the Settings > Sync sheet for the duration the
-   user wants to accept pairings.
+1. User opens Settings > Sync on the machine and sets or generates a
+   6-digit PIN. The runtime writes a PBKDF2 hash under `~/.ade/secrets`
+   (chmod `0600`) and keeps the plaintext in process memory only while
+   that runtime is alive, so a restarted machine can still verify
+   pairings but cannot display/copy the digits.
 2. Phone opens Settings > Pairing, either scans the machine QR
    (`SettingsPairingScannerSheet` → `PairingQrPayload.parse`, a v3 smart
    URL carrying machine identity, port, and address candidates — never a
@@ -678,19 +679,27 @@ runtime-scoped `sync.getWebPairingInfo` remote command (gated on
 `supportsRemoteAction("sync.getWebPairingInfo")`, so it stays hidden against
 older hosts). The runtime returns a `WebPairingInfo`: the web-client pairing URL
 (`https://app.ade-app.dev/pair#<payload>`, built host-side with
-`buildWebClientPairUrl(buildPairingQrPayload(...))`), the current 6-digit PIN
-(`code` / `pinConfigured`), the machine name, and relay reachability
-(`relayEnabled` / `hasRelayCandidate`). The sheet renders a QR of the pairing
-URL, a copyable/shareable link, and the pairing code as three separate panels —
-the payload carries machine identity, port, address candidates, and the relay
-URL, never the PIN, so the code is shown apart from the link.
+`buildWebClientPairUrl(buildPairingQrPayload(...))`), the current visible
+6-digit PIN when this runtime still has it (`code` / `pinConfigured`), the
+machine name, and relay reachability (`relayEnabled` / `hasRelayCandidate`).
+`pinConfigured == true` with `code == nil` means the hash exists but the
+plaintext is hidden after runtime restart; the sheet renders that state
+separately from "No pairing code set", says the existing PIN still pairs if the
+user knows it, and tells the user to generate or set a new PIN on the machine
+only if they need to display or copy one. The sheet renders a
+QR of the pairing URL, a copyable/shareable link, and the pairing code state as
+three separate panels — the payload carries machine identity, port, address
+candidates, and the relay URL, never the PIN, so the code is shown apart from
+the link.
 
 Because the browser is a hosted HTTPS page, it can only reach the machine over a
 `wss://` route: when the machine advertises no relay candidate the sheet warns
 that the browser may only work on the same network (or that no relay route is
-available yet), and when no PIN is set it tells the user to set one in ADE on the
-computer. This is the phone-side mirror of the desktop's Settings > Sync web
-client card.
+available yet). When no PIN is set it tells the user to set one in ADE on the
+computer; when a PIN is configured but hidden it says the existing PIN still
+pairs if known and tells the user to generate or set a new one only to
+display/copy it. This is the phone-side mirror of the desktop's
+Settings > Sync web client card.
 
 ### Background App Refresh
 

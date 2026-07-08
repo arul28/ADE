@@ -14515,15 +14515,33 @@ function formatSyncWebPairing(value: unknown): string {
   if (!info.pairingUrl) {
     return "No machine addresses are published yet — is the sync host running? (ade sync status)";
   }
+  const hasVisibleCode = info.pinConfigured && Boolean(info.code);
+  let codeLines: string[];
+  let nextStep: string;
+  if (hasVisibleCode) {
+    codeLines = [`  Code   ${info.code}`];
+    nextStep = "Open the link in any browser and enter the code to pair.";
+  } else if (info.pinConfigured) {
+    codeLines = [
+      "  Code   (PIN configured but hidden after runtime restart)",
+      "  Known  Use the existing code if you already know it.",
+      "  New    ade sync pin generate",
+      "  Set    ade sync pin set <6-digit-code>",
+    ];
+    nextStep =
+      "Open the link and enter the existing code if you know it. " +
+      "Generate or set a new code only if you need ADE to display or copy one.";
+  } else {
+    codeLines = ["  Code   (no PIN set — run: ade sync pin generate)"];
+    nextStep = "Generate or set a new code on this machine, then run ade sync web again.";
+  }
   return [
     "Web client pairing",
     "",
     `  Link   ${info.pairingUrl}`,
-    info.pinConfigured && info.code
-      ? `  Code   ${info.code}`
-      : "  Code   (no PIN set — run: ade sync pin generate)",
+    ...codeLines,
     "",
-    "Open the link in any browser and enter the code to pair.",
+    nextStep,
     "Off your LAN or tailnet? Turn on the relay so the browser can reach this machine:",
     "  ade sync relay enable",
   ].join("\n");
