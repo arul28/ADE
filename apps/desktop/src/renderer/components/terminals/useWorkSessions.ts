@@ -404,7 +404,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   /** Blocks mirror/prune while `sessions` still reflects the previous project after `projectRoot` changes. */
   const pendingProjectSwitchRef = useRef<string | null>(null);
   const projectRootRef = useRef<string | null>(projectRoot);
-  const laneRecoveryRefreshProjectRef = useRef<string | null>(null);
+  const laneRecoveryRefreshKeyRef = useRef<string | null>(null);
   const isWorkRoute = active && (location.pathname === "/work" || location.pathname.startsWith("/work/"));
 
   useEffect(() => {
@@ -453,10 +453,17 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
-  const hasLaneBackedSessions = useMemo(
-    () => sessions.some((session) => Boolean(session.laneId)),
-    [sessions],
-  );
+  const missingSessionLaneIdsSignature = useMemo(() => {
+    if (sessions.length === 0) return "";
+    const knownLaneIds = new Set(lanes.map((lane) => lane.id));
+    const missingLaneIds = new Set<string>();
+    for (const session of sessions) {
+      const laneId = session.laneId?.trim();
+      if (!laneId || knownLaneIds.has(laneId)) continue;
+      missingLaneIds.add(laneId);
+    }
+    return Array.from(missingLaneIds).sort().join("\0");
+  }, [lanes, sessions]);
 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
@@ -965,7 +972,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // upcoming refresh runs silently in the background (no spinner).
     hasLoadedOnceRef.current = cachedSessions != null;
     hasRunningSessionsRef.current = (cachedSessions ?? []).some((s) => s.status === "running");
-    laneRecoveryRefreshProjectRef.current = null;
+    laneRecoveryRefreshKeyRef.current = null;
     appliedQuerySessionIdRef.current = null;
     appliedUrlFilterKeyRef.current = null;
     partiallyAppliedUrlFilterKeyRef.current = null;
@@ -997,13 +1004,14 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;
-    if (lanes.length > 0) {
-      laneRecoveryRefreshProjectRef.current = null;
+    if (pendingProjectSwitchRef.current != null) return;
+    if (!missingSessionLaneIdsSignature) {
+      laneRecoveryRefreshKeyRef.current = null;
       return;
     }
-    if (!hasLaneBackedSessions) return;
-    if (laneRecoveryRefreshProjectRef.current === projectRoot) return;
-    laneRecoveryRefreshProjectRef.current = projectRoot;
+    const recoveryKey = `${projectRoot}:${missingSessionLaneIdsSignature}`;
+    if (laneRecoveryRefreshKeyRef.current === recoveryKey) return;
+    laneRecoveryRefreshKeyRef.current = recoveryKey;
     void refreshLanes({
       includeStatus: false,
       includeSnapshots: false,
@@ -1011,7 +1019,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       includeRebaseSuggestions: false,
       includeAutoRebaseStatus: false,
     }).catch(() => {});
-  }, [hasLaneBackedSessions, isWorkRoute, lanes.length, projectRoot, refreshLanes]);
+  }, [
+    isWorkRoute,
+    missingSessionLaneIdsSignature,
+    projectRoot,
+    refreshLanes,
+  ]);
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;

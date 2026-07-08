@@ -327,6 +327,29 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("lightly refreshes lanes when Work sessions reference a lane missing from cached lane state", async () => {
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      lanes: [{ id: "lane-primary", name: "Primary" }],
+    };
+    listSessionsCachedMock.mockResolvedValue([
+      makeSession("session-1", "lane-mobile"),
+    ]);
+
+    renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(refreshLanesSpy).toHaveBeenCalledWith({
+        includeStatus: false,
+        includeSnapshots: false,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      });
+    });
+    expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("passes permission mode through to tracked CLI launch fields", async () => {
     const { result } = renderHook(() => useWorkSessions());
 
