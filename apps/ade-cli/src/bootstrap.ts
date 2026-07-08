@@ -1151,6 +1151,8 @@ export async function createAdeRuntime(args: {
         prNumber: event.prNumber,
         prTitle: event.prTitle ?? null,
         laneId: event.laneId ?? null,
+        repoOwner: event.repoOwner ?? null,
+        repoName: event.repoName ?? null,
       };
       for (const subscriber of pushPrNotificationSubscribers) {
         try {

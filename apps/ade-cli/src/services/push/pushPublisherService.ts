@@ -86,6 +86,8 @@ export type PushPrNotification = {
   prNumber: number;
   prTitle: string | null;
   laneId: string | null;
+  repoOwner?: string | null;
+  repoName?: string | null;
 };
 
 export type PrLiveActivityState = {
@@ -94,6 +96,8 @@ export type PrLiveActivityState = {
   title: string;
   phase: PrNotificationKind;
   lane: string | null;
+  repoOwner: string | null;
+  repoName: string | null;
   updatedAt: number;
 };
 
@@ -273,6 +277,8 @@ export function buildAgentRunsContentState(
     title: string;
     phase: PrNotificationKind;
     lane: string | null;
+    repoOwner: string | null;
+    repoName: string | null;
     updatedAt: number;
   }>;
 } {
@@ -299,6 +305,8 @@ export function buildAgentRunsContentState(
       title: pr.title,
       phase: pr.phase,
       lane: pr.lane,
+      repoOwner: pr.repoOwner,
+      repoName: pr.repoName,
       updatedAt: Math.floor(pr.updatedAt / 1000),
     })),
   };
@@ -1034,6 +1042,25 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   };
 
   const prActivityId = (scopeKey: string, prNumber: number): string => `pr:${scopeKey}:${prNumber}`;
+  const prDeepLink = (notification: PushPrNotification): string => {
+    const owner = notification.repoOwner?.trim();
+    const repo = notification.repoName?.trim();
+    if (owner && repo) {
+      return `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${notification.prNumber}`;
+    }
+    return `ade://pr/${notification.prNumber}`;
+  };
+  const removePrActivitiesForScope = (scopeKey: string): boolean => {
+    const prefix = `pr:${scopeKey}:`;
+    let removed = false;
+    for (const id of prActivities.keys()) {
+      if (id.startsWith(prefix)) {
+        prActivities.delete(id);
+        removed = true;
+      }
+    }
+    return removed;
+  };
 
   const onPrNotification = (
     scopeKey: string,
@@ -1050,6 +1077,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       title: notification.prTitle?.trim() || `Pull request #${notification.prNumber}`,
       phase: notification.kind,
       lane,
+      repoOwner: notification.repoOwner?.trim() || null,
+      repoName: notification.repoName?.trim() || null,
       updatedAt: now(),
     });
     schedulePrActivityExpiry(now());
@@ -1059,7 +1088,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       sessionId: null,
       dedupeKey: `alert:pr:${scopeKey}:${notification.prNumber}:${notification.kind}`,
       render: () => ({ title: copy.title, body: copy.body }),
-      deepLink: `ade://pr/${notification.prNumber}`,
+      deepLink: prDeepLink(notification),
       threadId: activityId,
       phase: copy.interruptionLevel === "passive" ? "terminal" : "waiting",
       interruptionLevel: copy.interruptionLevel,
@@ -1117,6 +1146,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     for (const [sessionId, run] of runs) {
       if (run.scopeKey === scopeKey) runs.delete(sessionId);
     }
+    const removedPrActivities = removePrActivitiesForScope(scopeKey);
     if (scopes.size === 0) {
       // Nothing attached — stop the flush loop so no timer lingers. The shared
       // instance stays memoized and resumes when a project re-attaches.
@@ -1127,6 +1157,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       prExpiryTimer = null;
       prActivities.clear();
       pendingAlerts = [];
+    } else if (removedPrActivities) {
+      scheduleFlush(false);
     }
   };
 

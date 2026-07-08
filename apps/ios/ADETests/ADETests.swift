@@ -6332,7 +6332,7 @@ final class ADETests: XCTestCase {
       "activeCount": 0,
       "runs": [],
       "prs": [
-        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "updatedAt": 1720000000 }
+        { "id": "pr-42", "prNumber": 42, "title": "Ship mobile PR view", "phase": "merge_ready", "lane": "Mobile PR lane", "repoOwner": "arul28", "repoName": "ADE", "updatedAt": 1720000000 }
       ]
     }
     """.utf8)
@@ -6342,6 +6342,9 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(state.prs[0].prNumber, 42)
     XCTAssertEqual(state.prs[0].resolvedPhase, .mergeReady)
     XCTAssertEqual(state.prs[0].subtitle, "Mobile PR lane")
+    XCTAssertEqual(state.prs[0].repoOwner, "arul28")
+    XCTAssertEqual(state.prs[0].repoName, "ADE")
+    XCTAssertEqual(state.prs[0].deepLinkURL?.absoluteString, "ade://pr/arul28/ADE/42")
   }
 
   @MainActor

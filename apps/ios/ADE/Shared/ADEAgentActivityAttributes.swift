@@ -59,6 +59,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public let title: String
         public let phase: String
         public let lane: String?
+        public let repoOwner: String?
+        public let repoName: String?
         public let updatedAt: Double
 
         public init(
@@ -67,6 +69,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             title: String,
             phase: String,
             lane: String? = nil,
+            repoOwner: String? = nil,
+            repoName: String? = nil,
             updatedAt: Double = 0
         ) {
             self.id = id
@@ -74,11 +78,13 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.title = title
             self.phase = phase
             self.lane = lane
+            self.repoOwner = repoOwner
+            self.repoName = repoName
             self.updatedAt = updatedAt
         }
 
         private enum CodingKeys: String, CodingKey {
-            case id, prNumber, title, phase, lane, updatedAt
+            case id, prNumber, title, phase, lane, repoOwner, repoName, updatedAt
         }
 
         public init(from decoder: Decoder) throws {
@@ -88,6 +94,8 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
             self.title = (try? c.decode(String.self, forKey: .title)) ?? "Pull request"
             self.phase = (try? c.decode(String.self, forKey: .phase)) ?? PullRequestPhase.opened.rawValue
             self.lane = try? c.decodeIfPresent(String.self, forKey: .lane)
+            self.repoOwner = try? c.decodeIfPresent(String.self, forKey: .repoOwner)
+            self.repoName = try? c.decodeIfPresent(String.self, forKey: .repoName)
             self.updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
         }
 
@@ -98,6 +106,25 @@ public struct ADEAgentRunsAttributes: ActivityAttributes {
         public var subtitle: String? {
             let lane = lane?.trimmingCharacters(in: .whitespacesAndNewlines)
             return lane?.isEmpty == false ? lane : nil
+        }
+
+        public var deepLinkURL: URL? {
+            guard prNumber > 0 else { return nil }
+            let owner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let repo = repoName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !owner.isEmpty,
+               !repo.isEmpty,
+               let encodedOwner = owner.addingPercentEncoding(withAllowedCharacters: Self.pathSegmentAllowed),
+               let encodedRepo = repo.addingPercentEncoding(withAllowedCharacters: Self.pathSegmentAllowed) {
+                return URL(string: "ade://pr/\(encodedOwner)/\(encodedRepo)/\(prNumber)")
+            }
+            return URL(string: "ade://pr/\(prNumber)")
+        }
+
+        private static var pathSegmentAllowed: CharacterSet {
+            var allowed = CharacterSet.alphanumerics
+            allowed.insert(charactersIn: "-._~")
+            return allowed
         }
     }
 

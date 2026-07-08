@@ -242,7 +242,7 @@ describe("createPushPublisherService flush", () => {
       },
       resolveLaneName: (laneId: string) => laneId === "lane-42" ? "Mobile PR lane" : laneId,
     });
-    publisher.attachSources("project-b", {
+    const detachProjectB = publisher.attachSources("project-b", {
       subscribePrNotifications: (cb) => {
         secondPrCb = cb;
         return () => {};
@@ -251,14 +251,21 @@ describe("createPushPublisherService flush", () => {
     });
     await publisher.start();
 
-    firstPrCb({ kind: "merged", prNumber: 42, prTitle: "Ship mobile PR view", laneId: "lane-42" });
+    firstPrCb({
+      kind: "merged",
+      prNumber: 42,
+      prTitle: "Ship mobile PR view",
+      laneId: "lane-42",
+      repoOwner: "arul28",
+      repoName: "ADE",
+    });
     await vi.advanceTimersByTimeAsync(2_500);
 
     const payload = publish.mock.calls[0][0];
     expect(payload.notifications[0]).toMatchObject({
       title: "PR #42 merged",
       body: "Ship mobile PR view",
-      deepLink: "ade://pr/42",
+      deepLink: "ade://pr/arul28/ADE/42",
       threadId: "pr:project-a:42",
     });
     expect(payload.liveActivity[0].contentState.prs[0]).toMatchObject({
@@ -267,10 +274,19 @@ describe("createPushPublisherService flush", () => {
       title: "Ship mobile PR view",
       phase: "merged",
       lane: "Mobile PR lane",
+      repoOwner: "arul28",
+      repoName: "ADE",
     });
     expect(payload.liveActivity[0].phase).toBe("running");
 
-    secondPrCb({ kind: "checks_failing", prNumber: 42, prTitle: "Same number, other repo", laneId: "lane-other" });
+    secondPrCb({
+      kind: "checks_failing",
+      prNumber: 42,
+      prTitle: "Same number, other repo",
+      laneId: "lane-other",
+      repoOwner: "other-org",
+      repoName: "other-repo",
+    });
     await vi.advanceTimersByTimeAsync(2_500);
 
     const updatePayload = publish.mock.calls.at(-1)?.[0];
@@ -281,6 +297,8 @@ describe("createPushPublisherService flush", () => {
         title: "Same number, other repo",
         phase: "checks_failing",
         lane: "Other repo lane",
+        repoOwner: "other-org",
+        repoName: "other-repo",
       },
       {
         id: "pr:project-a:42",
@@ -288,8 +306,19 @@ describe("createPushPublisherService flush", () => {
         title: "Ship mobile PR view",
         phase: "merged",
         lane: "Mobile PR lane",
+        repoOwner: "arul28",
+        repoName: "ADE",
       },
     ]);
+
+    detachProjectB();
+    await vi.advanceTimersByTimeAsync(2_500);
+    const detachPayload = publish.mock.calls.at(-1)?.[0];
+    expect(detachPayload?.liveActivity[0].contentState.prs).toHaveLength(1);
+    expect(detachPayload?.liveActivity[0].contentState.prs[0]).toMatchObject({
+      id: "pr:project-a:42",
+      title: "Ship mobile PR view",
+    });
 
     await vi.advanceTimersByTimeAsync(45 * 60 * 1000 + 1_000);
     const endPayload = publish.mock.calls.at(-1)?.[0];

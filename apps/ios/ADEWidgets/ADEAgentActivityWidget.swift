@@ -152,7 +152,7 @@ struct AgentRunsPresentation {
         let target = runs.first(where: { $0.resolvedPhase.needsAttention }) ?? primary
         guard let id = target?.id.trimmingCharacters(in: .whitespacesAndNewlines),
               !id.isEmpty else {
-            if let prNumber = primaryPr?.prNumber, prNumber > 0, let prUrl = URL(string: "ade://pr/\(prNumber)") {
+            if let prUrl = primaryPr?.deepLinkURL {
                 return prUrl
             }
             return workspace
@@ -393,7 +393,7 @@ private struct AgentRunsCountBadge: View {
                 .labelStyle(.titleAndIcon)
                 .foregroundStyle(ADESharedTheme.warningAmber)
         } else {
-            Text("\(presentation.activeCount)")
+            Text("\(presentation.glanceCount)")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundStyle(presentation.tint)
         }
