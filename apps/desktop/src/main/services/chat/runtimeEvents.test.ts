@@ -31,6 +31,9 @@ describe("runtimeEvents", () => {
       agentId: "agent-1",
       parentToolUseId: "parent-1",
       agentType: "explorer",
+      model: "gpt-5.1",
+      reasoningEffort: "high",
+      label: "Sagan",
       description: "scan files",
       background: true,
       turnId: "turn-1",
@@ -39,8 +42,55 @@ describe("runtimeEvents", () => {
       agentId: "agent-1",
       parentToolUseId: "parent-1",
       agentType: "explorer",
+      model: "gpt-5.1",
+      reasoningEffort: "high",
+      label: "Sagan",
       description: "scan files",
       background: true,
+      turnId: "turn-1",
+    });
+  });
+
+  it("round-trips subagent display metadata through the canonical runtime shape", () => {
+    const runtime = agentChatEventToRuntimeEvent({
+      type: "subagent_result",
+      taskId: "task-1",
+      agentId: "agent-1",
+      parentToolUseId: "parent-1",
+      agentType: "reviewer",
+      model: "claude-opus-4-7",
+      reasoningEffort: "medium",
+      label: "Beauvoir",
+      status: "completed",
+      summary: "Done",
+      usage: { totalTokens: 42 },
+      turnId: "turn-1",
+    });
+
+    expect(runtime).toEqual({
+      type: "subagent.completed",
+      agentId: "agent-1",
+      parentToolUseId: "parent-1",
+      agentType: "reviewer",
+      model: "claude-opus-4-7",
+      reasoningEffort: "medium",
+      label: "Beauvoir",
+      status: "completed",
+      summary: "Done",
+      usage: { totalTokens: 42 },
+      turnId: "turn-1",
+    });
+    expect(runtimeEventToAgentChatEvent(runtime!)).toEqual({
+      type: "subagent.completed",
+      agentId: "agent-1",
+      parentToolUseId: "parent-1",
+      agentType: "reviewer",
+      model: "claude-opus-4-7",
+      reasoningEffort: "medium",
+      label: "Beauvoir",
+      status: "completed",
+      summary: "Done",
+      usage: { totalTokens: 42 },
       turnId: "turn-1",
     });
   });

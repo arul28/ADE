@@ -28,6 +28,8 @@ export type ChatSubagentSnapshot = {
   agentId?: string;
   agentType?: string;
   label?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
@@ -157,6 +159,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         label: event.label?.trim() || existing?.label,
+        model: event.model?.trim() || existing?.model,
+        reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
@@ -181,6 +185,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         label: event.label?.trim() || existing?.label,
+        model: event.model?.trim() || existing?.model,
+        reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: event.description?.trim() || existing?.description || "Subagent task",
         status: "running",
@@ -205,6 +211,8 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         agentId: event.agentId ?? existing?.agentId,
         agentType: event.agentType ?? existing?.agentType,
         label: event.label?.trim() || existing?.label,
+        model: event.model?.trim() || existing?.model,
+        reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
         description: existing?.description ?? "Subagent task",
         status: event.status,

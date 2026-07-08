@@ -52,7 +52,6 @@ type AgentOptionsWithAdeMode = AgentOptions & {
   local?: NonNullable<AgentOptions["local"]> & {
     enableAgentRetries?: boolean;
   };
-  platform?: CursorSdkPlatformOptions;
 };
 type SendOptionsWithAdeMode = SendOptions & {
   mode?: CursorSdkAgentMode;
@@ -72,6 +71,10 @@ const CLOUD_MODEL_VALIDATION_TTL_MS = 120_000;
 const activeRequests = new Map<string, CursorSdkWorkerRequest["type"]>();
 const reportedRequests = new Set<string>();
 let unhandledExitScheduled = false;
+
+function asCursorSdkRunStoreLike(store: unknown): CursorSdkRunStoreLike | null {
+  return store && typeof store === "object" ? store as CursorSdkRunStoreLike : null;
+}
 
 function post(message: CursorSdkWorkerResponse): void {
   if (process.send) {
@@ -408,16 +411,15 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
   const hook = ensureCursorSdkUserHook({ userHomeDir: init.userHomeDir });
   await startHookServer(init);
   const sdk = await getSdk();
-  const { Agent } = sdk;
   const platformOptions: CursorSdkPlatformOptions = {
     workspaceRef: init.laneRoot,
     stateRoot: init.stateRoot,
   };
   localAgentPlatform = await sdk.createAgentPlatform(platformOptions);
-  localAgentStore = localAgentPlatform.store;
+  localAgentStore = asCursorSdkRunStoreLike(localAgentPlatform.store);
   const useHttp1ForAgent = shouldUseHttp1ForAgent();
   // Keep these fields aligned with Cursor's TypeScript SDK docs:
-  // local.cwd selects the workspace, platform isolates durable ADE state,
+  // local.cwd selects the workspace, the platform isolates durable ADE state,
   // sandboxOptions is terminal policy, and hooks gate tool execution.
   const agentOptions: AgentOptionsWithAdeMode = {
     apiKey: init.apiKey?.trim() || undefined,
@@ -430,12 +432,11 @@ async function initWorker(init: CursorSdkWorkerInit): Promise<{ agentId: string;
       sandboxOptions: { enabled: false },
       enableAgentRetries: true,
     },
-    platform: platformOptions,
     ...(init.mcpServers ? { mcpServers: init.mcpServers as AgentOptions["mcpServers"] } : {}),
   };
   agent = init.agentId?.trim()
-    ? await Agent.resume(init.agentId.trim(), agentOptions)
-    : await Agent.create(agentOptions);
+    ? await localAgentPlatform.resumeAgent(init.agentId.trim(), agentOptions)
+    : await localAgentPlatform.createAgent(agentOptions);
   post({
     type: "log",
     level: "debug",

@@ -15,6 +15,7 @@ type CursorSdkRunStoreLike = {
       requestId?: string | null;
     } | null | undefined>;
   };
+  getRun?(agentId: string, runId: string): Promise<unknown>;
 };
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -175,13 +176,22 @@ export async function readCursorSdkRunFailureDetail(args: {
   const runErrorDetail = sdkErrorDetail(run?.error);
   let storeDetail: CursorSdkErrorDetail | undefined;
   const readRun = store?.runs?.get;
-  if (run && readRun) {
+  if (run && (readRun || store?.getRun)) {
     try {
-      const record = await readRun.call(store.runs, { agentId: run.agentId, runId: run.id });
+      const record = readRun
+        ? await readRun.call(store?.runs, { agentId: run.agentId, runId: run.id })
+        : await store?.getRun?.(run.agentId, run.id);
       if (record) {
+        const recordData = asRecord(record);
+        const errorMessage =
+          readStringField(recordData, "error")
+          ?? readStringField(recordData, "errorMessage");
+        const errorCode = readStringField(recordData, "errorCode");
+        const requestId = readStringField(recordData, "requestId");
         storeDetail = {
-          ...(record.error?.trim() ? { message: record.error.trim() } : {}),
-          ...(record.requestId?.trim() ? { requestId: record.requestId.trim() } : {}),
+          ...(errorMessage ? { message: errorMessage } : {}),
+          ...(errorCode ? { code: errorCode } : {}),
+          ...(requestId ? { requestId } : {}),
         };
       }
     } catch (error) {
