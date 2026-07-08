@@ -44,7 +44,8 @@ extension WorkSessionDestinationView {
     let echo = WorkLocalEchoMessage(
       text: text,
       timestamp: workDateFormatter.string(from: Date()),
-      deliveryState: initialDeliveryState
+      deliveryState: initialDeliveryState,
+      attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
     )
     let echoId = echo.id
     localEchoMessages.append(echo)

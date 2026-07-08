@@ -25,6 +25,8 @@ struct WorkSessionRoute: Hashable {
   let openId: UUID = UUID()
   let sessionId: String
   var openingPrompt: String? = nil
+  var openingPromptAlreadySent = false
+  var openingAttachments: [AgentChatFileRef] = []
 }
 
 struct WorkDraftChatSession {
@@ -642,6 +644,8 @@ struct WorkRootScreen: View {
         WorkSessionDestinationView(
           sessionId: route.sessionId,
           initialOpeningPrompt: route.openingPrompt,
+          initialOpeningPromptAlreadySent: route.openingPromptAlreadySent,
+          initialOpeningAttachments: route.openingAttachments,
           initialSession: initialSession,
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: nil,
@@ -664,7 +668,7 @@ struct WorkRootScreen: View {
           preferredLaneId: route.preferredLaneId,
           activeProjectId: syncService.activeProjectId,
           activeProjectRootPath: syncService.activeProjectRootPath,
-          onStarted: { summary, opener in
+          onStarted: { summary, opener, openerAlreadySent, openerAttachments in
             let sessionId = summary.sessionId
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
             optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
@@ -675,7 +679,12 @@ struct WorkRootScreen: View {
             // Back goes to the sidebar, not to an empty "Start a new chat"
             // form.
             var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: trimmed.isEmpty ? nil : trimmed))
+            fresh.append(WorkSessionRoute(
+              sessionId: sessionId,
+              openingPrompt: trimmed.isEmpty ? nil : trimmed,
+              openingPromptAlreadySent: openerAlreadySent,
+              openingAttachments: openerAttachments
+            ))
             await Task.yield()
             path = fresh
             Task { @MainActor in

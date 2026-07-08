@@ -300,6 +300,8 @@ struct WorkSessionDestinationView: View {
 
   let sessionId: String
   let initialOpeningPrompt: String?
+  var initialOpeningPromptAlreadySent = false
+  var initialOpeningAttachments: [AgentChatFileRef] = []
   let initialSession: TerminalSessionSummary?
   let initialChatSummary: AgentChatSessionSummary?
   let initialTranscript: [WorkChatEnvelope]?
@@ -1709,6 +1711,10 @@ struct WorkSessionDestinationView: View {
     guard !sending else { return }
     let promptKey = "\(sessionId)|\(prompt)"
     guard handledOpeningPromptKey != promptKey else { return }
+    if initialOpeningPromptAlreadySent {
+      handledOpeningPromptKey = promptKey
+      return
+    }
     if transcript.contains(where: { envelope in
       if case .userMessage(let text, _, _, _, _, _) = envelope.event {
         return text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
@@ -1776,10 +1782,14 @@ struct WorkSessionDestinationView: View {
     guard stagedOpeningPromptKey != promptKey else { return }
     stagedOpeningPromptKey = promptKey
     let useSteer = shouldSteerActiveTurn
+    let deliveryState = initialOpeningPromptAlreadySent
+      ? nil
+      : ((sendWillQueueChatMessage || useSteer) ? "queued" : "sending")
     localEchoMessages.append(WorkLocalEchoMessage(
       text: prompt,
       timestamp: workDateFormatter.string(from: Date()),
-      deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
+      deliveryState: deliveryState,
+      attachments: initialOpeningAttachments.isEmpty ? nil : initialOpeningAttachments
     ))
   }
 
@@ -2209,6 +2219,8 @@ extension WorkSessionDestinationView: Equatable {
   static func == (lhs: WorkSessionDestinationView, rhs: WorkSessionDestinationView) -> Bool {
     lhs.sessionId == rhs.sessionId
       && lhs.initialOpeningPrompt == rhs.initialOpeningPrompt
+      && lhs.initialOpeningPromptAlreadySent == rhs.initialOpeningPromptAlreadySent
+      && lhs.initialOpeningAttachments == rhs.initialOpeningAttachments
       && lhs.initialSession == rhs.initialSession
       && lhs.initialChatSummary == rhs.initialChatSummary
       && workInitialTranscriptSeedRenderSignature(lhs.initialTranscript) == workInitialTranscriptSeedRenderSignature(rhs.initialTranscript)

@@ -1821,7 +1821,7 @@ struct AgentChatEventHistoryPage: Decodable, Equatable {
   var sessionFound: Bool
 }
 
-struct AgentChatFileRef: Codable, Equatable {
+struct AgentChatFileRef: Codable, Equatable, Hashable {
   var path: String
   var type: String
   var url: String? = nil

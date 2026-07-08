@@ -1137,6 +1137,12 @@ func workLocalEchoMessagesRenderSignature(_ messages: [WorkLocalEchoMessage]) ->
     hasher.combine(message.text.hashValue)
     hasher.combine(message.timestamp)
     hasher.combine(message.deliveryState)
+    hasher.combine(message.attachments?.count ?? 0)
+    for attachment in message.attachments ?? [] {
+      hasher.combine(attachment.path)
+      hasher.combine(attachment.type)
+      hasher.combine(attachment.url)
+    }
   }
   return hasher.finalize()
 }

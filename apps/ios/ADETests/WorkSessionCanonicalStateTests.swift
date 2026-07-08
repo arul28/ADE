@@ -248,6 +248,37 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(badge)
   }
 
+  // MARK: - Local echo rendering
+
+  func testLocalEchoTimelinePreservesImageAttachments() {
+    let attachment = AgentChatFileRef(
+      path: "/project/.ade/attachments/mobile-image.jpg",
+      type: "image",
+      url: nil
+    )
+    let echo = WorkLocalEchoMessage(
+      text: "Attached image.",
+      timestamp: iso(now),
+      deliveryState: nil,
+      attachments: [attachment]
+    )
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [echo]
+    )
+    let message = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload { return message }
+      return nil
+    }.first
+
+    XCTAssertEqual(message?.markdown, "Attached image.")
+    XCTAssertEqual(message?.attachments, [attachment])
+    XCTAssertNil(message?.deliveryState)
+  }
+
   // MARK: - Fixtures
 
   private func makeSession(

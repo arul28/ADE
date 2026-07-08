@@ -119,6 +119,12 @@ private func workChatTimelineSnapshotSignature(
     combineLongTextSignature(echo.text, into: &hasher)
     hasher.combine(echo.timestamp)
     combineOptional(echo.deliveryState, into: &hasher)
+    hasher.combine(echo.attachments?.count ?? 0)
+    for attachment in echo.attachments ?? [] {
+      hasher.combine(attachment.path)
+      hasher.combine(attachment.type)
+      combineOptional(attachment.url, into: &hasher)
+    }
   }
 
   return hasher.finalize()
@@ -1022,7 +1028,8 @@ func buildWorkTimeline(
       timestamp: echo.timestamp,
       turnId: nil,
       itemId: nil,
-      deliveryState: echo.deliveryState
+      deliveryState: echo.deliveryState,
+      attachments: echo.attachments
     )
     return WorkTimelineEntry(id: "echo-\(echo.id)", timestamp: echo.timestamp, rank: 3_000 + index, payload: .message(message))
   })

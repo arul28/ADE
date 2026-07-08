@@ -537,7 +537,7 @@ struct WorkNewChatScreen: View {
   /// while shown.
   let activeProjectId: String?
   let activeProjectRootPath: String?
-  let onStarted: @MainActor (AgentChatSessionSummary, String) async -> Void
+  let onStarted: @MainActor (AgentChatSessionSummary, String, Bool, [AgentChatFileRef]) async -> Void
   let onCliStarted: @MainActor (TerminalSessionSummary) async -> Void
   let onChatImported: @MainActor (String) async -> Void
   let onRefreshLanes: @MainActor () async -> Void
@@ -568,7 +568,7 @@ struct WorkNewChatScreen: View {
     preferredLaneId: String?,
     activeProjectId: String?,
     activeProjectRootPath: String?,
-    onStarted: @escaping @MainActor (AgentChatSessionSummary, String) async -> Void,
+    onStarted: @escaping @MainActor (AgentChatSessionSummary, String, Bool, [AgentChatFileRef]) async -> Void,
     onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
     onChatImported: @escaping @MainActor (String) async -> Void = { _ in },
     onRefreshLanes: @escaping @MainActor () async -> Void
@@ -1036,6 +1036,9 @@ struct WorkNewChatScreen: View {
     } else {
       targetLaneId = selectedLaneId
     }
+    let targetScope = lanes.first { $0.id == targetLaneId }
+      .map { workShellProjectScope(for: $0, projects: syncService.projects) }
+      ?? WorkProjectCommandScope(projectId: nil, projectRootPath: nil)
 
     // Lane is ready; the naming/creating banner is done — the composer + nav
     // spinner carry the remaining "starting session" state.
@@ -1097,7 +1100,9 @@ struct WorkNewChatScreen: View {
       }
       let attachmentRefs = try await workChatSaveInputAttachments(
         readyAttachments,
-        syncService: syncService
+        syncService: syncService,
+        targetProjectId: targetScope.projectId,
+        targetProjectRootPath: targetScope.projectRootPath
       )
       let summary = try await syncService.createChatSession(
         laneId: targetLaneId,
@@ -1117,17 +1122,21 @@ struct WorkNewChatScreen: View {
         opencodePermissionMode: wire.opencodePermissionMode,
         droidPermissionMode: wire.droidPermissionMode,
         cursorModeId: wire.cursorModeId,
+        targetProjectId: targetScope.projectId,
+        targetProjectRootPath: targetScope.projectRootPath,
         pendingDisplayName: opener
       )
       if attachmentRefs.isEmpty {
-        await onStarted(summary, opener)
+        await onStarted(summary, opener, false, [])
       } else {
         _ = try await syncService.sendChatMessage(
           sessionId: summary.sessionId,
           text: opener,
-          attachments: attachmentRefs
+          attachments: attachmentRefs,
+          targetProjectId: targetScope.projectId,
+          targetProjectRootPath: targetScope.projectRootPath
         )
-        await onStarted(summary, "")
+        await onStarted(summary, opener, true, attachmentRefs)
       }
       if let createdLaneId, let autoCreatedFallbackName {
         startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
