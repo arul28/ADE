@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.14] - 2026-07-08
+
+### Added
+
+- Added ADE Web pairing and remote browser access for Work, Lanes, Files, and PRs, including `ade sync web`, Settings controls, machine/project selection, and DPoP-backed pairing.
+- Added Claude wake, cron, background-stream, scheduled-work, and retraction activity across desktop, ADE Code, and mobile.
+- Added the ADE brain self-update foundation and documented App Clip provisioning for release operations.
+- Added mobile Linear launch flow, a mobile Shell launcher, and App Clip QR pairing with handoff to the full app.
+
+### Changed
+
+- Improved Codex app-server and Cursor SDK reliability with newer recovery, safety, web-search, subagent, handoff, usage, structured-error, resume-state, and transcript-grouping support.
+- Improved context compaction and transcript rendering with shared lifecycle helpers, event merging by compaction ID, desktop/TUI/iOS parity, and clearer activity rows.
+- Improved search, deeplinks, lane snapshot invalidation, PR freshness, CLI status in Live Activity, attention capsules, and lane PR badges.
+- Improved push and relay operations with per-IP rate limits, daily spend caps, structured logs, clearer notifications, relay-everywhere polish, and fewer toggles.
+- Improved mobile PR details with richer overview/activity surfaces, merge/check/review state, markdown handling, widget updates, and repeat-alert protection.
+- Kept the current mobile marketing version for a build-number-only iOS TestFlight update.
+
+### Fixed
+
+- Fixed web-client project entry, Files results, terminal live streaming, GitHub status refresh, shell chrome, and pairing-screen routing edge cases.
+- Fixed Cursor SDK resume-state recovery, SDK error surfacing, mobile approval consolidation, and CLI Node requirement alignment.
+- Fixed release workflow packaging expectations for per-arch macOS builds and local App Clip signing guidance.
+
 ## [1.2.13] - 2026-07-06
 
 ### Added
@@ -556,7 +580,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.13...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.14...HEAD
+[1.2.14]: https://github.com/arul28/ADE/compare/v1.2.13...v1.2.14
 [1.2.13]: https://github.com/arul28/ADE/compare/v1.2.12...v1.2.13
 [1.2.12]: https://github.com/arul28/ADE/compare/v1.2.11...v1.2.12
 [1.2.11]: https://github.com/arul28/ADE/compare/v1.2.10...v1.2.11

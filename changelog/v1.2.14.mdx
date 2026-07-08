@@ -1,0 +1,29 @@
+---
+title: "v1.2.14"
+description: "Release notes for ADE v1.2.14 - July 8, 2026"
+---
+
+v1.2.14 ships the ADE web client, richer long-running agent activity, clearer compaction and transcript state, and stronger Cursor/Codex recovery on desktop and ADE Code. iOS stays on its current marketing version and gets a build-number-only TestFlight update with the new PR, Linear, Shell, web-pairing, and App Clip flows.
+
+---
+
+## Desktop
+
+- **ADE Web.** ADE can now pair a browser over the same sync backbone as mobile, with PIN plus DPoP pairing, machine and project selection, remote Work/Lanes/Files/PRs access, `ade sync web`, Settings web-client controls, and production/development routing for the web shell.
+- **Long-running agent activity.** Claude chats now surface wake, cron, background-stream, scheduled-work, and retraction events across desktop and ADE Code, with event-driven updates and Chat Info rows instead of silent background state changes.
+- **Codex and Cursor recovery.** The Codex app-server upgrade adds newer safety, web-search, goal, subagent, handoff, rewind, usage, TUI, and mobile support, while Cursor SDK chats now report structured errors, recover missing resume state, and keep activity grouping stable.
+- **Context compaction clarity.** Desktop and ADE Code now render a shared compaction lifecycle, merge started/completed events across turns by compaction ID, and keep transcript rows, summaries, and subagent panels aligned with the backend state.
+- **Search, lanes, and PR freshness.** Universal search, slash badges, lane snapshot invalidation, CLI status in Live Activity, attention capsules, lane PR badges, and instant webhook PR freshness make active work easier to find and trust.
+- **Runtime maintenance.** ADE now has the foundation for brain self-updates, better runtime install handling, updated release-core packaging, and documented App Clip provisioning for future release runs.
+- **Relay guardrails.** Push and relay flows gained per-IP rate limits, daily spend caps, structured logs, clearer notifications, relay-everywhere polish, and fewer user-facing toggles.
+
+---
+
+## iOS
+
+- **PR detail rebuild.** Mobile PRs now have a richer overview and activity view, cleaner merge/check/review state, stronger author identity handling, repeat-alert protection, markdown fixes, widget updates, and a first pass at mobile PR triage parity.
+- **Linear and Shell on mobile.** iOS adds the Linear pane and launch flow, queues Linear chat kickoff correctly, and exposes a mobile Shell launcher that reuses the existing CLI terminal surface while preserving project scoping.
+- **App Clip pairing.** The App Clip can scan ADE's pairing QR, pair instantly, and hand off to the full app with the right connection state.
+- **Work timeline fidelity.** Mobile Work now understands Claude activity, scheduled work, compaction lifecycle rows, richer chat cards, transcript parsing updates, and widget Live Activity state from the same shared contracts as desktop.
+- **Browser pairing from the phone.** iOS can open a "Pair a browser" sheet with the current web-client link, QR, and pairing code, so an already-paired phone can bootstrap ADE Web without going back to desktop Settings.
+- **Build-number-only TestFlight update.** The mobile app keeps the existing marketing version for this release train and only increments the build number before distribution to TestFlight groups.
