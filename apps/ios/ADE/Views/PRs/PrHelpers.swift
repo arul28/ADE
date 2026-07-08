@@ -909,7 +909,7 @@ func normalizePrMarkdownText(_ text: String) -> String {
     .replacingOccurrences(of: "\r\n", with: "\n")
     .replacingOccurrences(of: "\r", with: "\n")
 
-  if normalized.contains("\\n") || normalized.contains("\\r") || normalized.contains("\\t") {
+  if prMarkdownLooksDoubleEscaped(normalized) {
     normalized = normalized
       .replacingOccurrences(of: "\\r\\n", with: "\n")
       .replacingOccurrences(of: "\\n", with: "\n")
@@ -918,6 +918,23 @@ func normalizePrMarkdownText(_ text: String) -> String {
   }
 
   return normalized
+}
+
+private func prMarkdownLooksDoubleEscaped(_ text: String) -> Bool {
+  guard !text.contains("\n"), !text.contains("\r") else { return false }
+  let escapedBreakCount = text.components(separatedBy: "\\n").count - 1
+    + text.components(separatedBy: "\\r").count - 1
+  guard escapedBreakCount >= 2 else { return false }
+  return [
+    "\\n\\n",
+    "\\n#",
+    "\\n- ",
+    "\\n* ",
+    "\\n> ",
+    "\\n```",
+    "\\n1. ",
+    "\\n|",
+  ].contains { text.contains($0) }
 }
 
 private final class PrMarkdownAttributedStringBox: NSObject {

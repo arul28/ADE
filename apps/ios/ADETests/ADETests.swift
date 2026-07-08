@@ -6811,6 +6811,17 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(fallback, prParsedDate("2026-05-14T00:00:00Z"))
   }
 
+  func testPrMarkdownNormalizationOnlyUnescapesDoubleEscapedBodies() {
+    XCTAssertEqual(
+      normalizePrMarkdownText("Summary\\n\\n- item one\\n- item two"),
+      "Summary\n\n- item one\n- item two"
+    )
+    XCTAssertEqual(
+      normalizePrMarkdownText("Inline code `foo\\nbar` should stay literal"),
+      "Inline code `foo\\nbar` should stay literal"
+    )
+  }
+
   func testPrDetailSidecarFetchPolicySkipsLocalRevisionAfterInitialLoad() {
     XCTAssertTrue(shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: false, refreshRemote: false))
     XCTAssertFalse(shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: true, refreshRemote: false))

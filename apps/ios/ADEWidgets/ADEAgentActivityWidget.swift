@@ -149,10 +149,16 @@ struct AgentRunsPresentation {
 
     var destinationURL: URL {
         let workspace = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
+        let attentionRun = runs.first(where: { $0.resolvedPhase.needsAttention })
+        if let id = attentionRun?.id.trimmingCharacters(in: .whitespacesAndNewlines),
+           !id.isEmpty,
+           let url = sessionURL(for: id) {
+            return url
+        }
         if let prUrl = prs.first(where: { $0.resolvedPhase.needsAttention })?.deepLinkURL {
             return prUrl
         }
-        let target = runs.first(where: { $0.resolvedPhase.needsAttention }) ?? primary
+        let target = primary
         guard let id = target?.id.trimmingCharacters(in: .whitespacesAndNewlines),
               !id.isEmpty else {
             if let prUrl = primaryPr?.deepLinkURL {
@@ -160,11 +166,15 @@ struct AgentRunsPresentation {
             }
             return workspace
         }
+        return sessionURL(for: id) ?? workspace
+    }
+
+    private func sessionURL(for id: String) -> URL? {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         guard let encoded = id.addingPercentEncoding(withAllowedCharacters: allowed),
               let url = URL(string: "ade://session/\(encoded)") else {
-            return workspace
+            return nil
         }
         return url
     }
