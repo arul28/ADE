@@ -211,7 +211,8 @@ struct SettingsWebClientPairSheet: View {
 
   @ViewBuilder
   private func codePanel(_ info: WebPairingInfo) -> some View {
-    if let code = pairingCode(info) {
+    switch info.pinState {
+    case .visible(let code):
       VStack(alignment: .leading, spacing: 12) {
         captionHeader("Pairing code")
         HStack(alignment: .center, spacing: 12) {
@@ -240,37 +241,55 @@ struct SettingsWebClientPairSheet: View {
         }
       }
       .webPairPanel()
-    } else {
-      VStack(alignment: .leading, spacing: 12) {
-        HStack(alignment: .top, spacing: 10) {
-          Image(systemName: "lock.slash")
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(ADEColor.warning)
-            .frame(width: 28, height: 28)
-            .background(Circle().fill(ADEColor.warning.opacity(0.14)))
-          VStack(alignment: .leading, spacing: 4) {
-            Text("No pairing code set")
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text("Set a PIN in ADE on the computer, then retry.")
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        }
-
-        Button {
-          Task { await load() }
-        } label: {
-          Label("Retry", systemImage: "arrow.clockwise")
-            .font(.subheadline.weight(.semibold))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-        }
-        .buttonStyle(.glass)
-      }
-      .webPairPanel()
+    case .configuredHidden:
+      unavailableCodePanel(
+        iconName: "lock",
+        title: "Pairing code hidden",
+        detail: "A PIN is configured on \(machineName(info)), but ADE cannot display it after the runtime restarts. Generate or set a new PIN on the machine if you need to display or copy it."
+      )
+    case .notConfigured:
+      unavailableCodePanel(
+        iconName: "lock.slash",
+        title: "No pairing code set",
+        detail: "Set a PIN in ADE on the computer, then retry."
+      )
     }
+  }
+
+  private func unavailableCodePanel(
+    iconName: String,
+    title: String,
+    detail: String
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: iconName)
+          .font(.system(size: 18, weight: .semibold))
+          .foregroundStyle(ADEColor.warning)
+          .frame(width: 28, height: 28)
+          .background(Circle().fill(ADEColor.warning.opacity(0.14)))
+        VStack(alignment: .leading, spacing: 4) {
+          Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(detail)
+            .font(.footnote)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+
+      Button {
+        Task { await load() }
+      } label: {
+        Label("Retry", systemImage: "arrow.clockwise")
+          .font(.subheadline.weight(.semibold))
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 10)
+      }
+      .buttonStyle(.glass)
+    }
+    .webPairPanel()
   }
 
   private func securityLine(_ info: WebPairingInfo) -> some View {
@@ -321,15 +340,6 @@ struct SettingsWebClientPairSheet: View {
   private func machineName(_ info: WebPairingInfo) -> String {
     let trimmed = info.machineName.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? "this machine" : trimmed
-  }
-
-  private func pairingCode(_ info: WebPairingInfo) -> String? {
-    guard info.pinConfigured,
-          let code = info.code?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !code.isEmpty else {
-      return nil
-    }
-    return code
   }
 
   private func spacedCode(_ code: String) -> String {

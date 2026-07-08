@@ -157,6 +157,32 @@ describe("createSyncRemoteCommandService", () => {
     });
   });
 
+  it("returns configured hidden web pairing info when only the PIN hash is available", async () => {
+    const syncPinStore = {
+      getPin: vi.fn(() => null),
+      hasPin: vi.fn(() => true),
+    };
+    const { service } = createService({
+      syncPinStore,
+      getPairingConnectInfo: () => makePairingConnectInfo(),
+      isCloudRelayEnabled: () => false,
+    });
+
+    const result = await service.execute(makePayload("sync.getWebPairingInfo")) as SyncWebPairingInfo;
+
+    expect(result.pairingUrl).toContain("https://app.ade-app.dev/pair#");
+    expect(result).toEqual({
+      pairingUrl: result.pairingUrl,
+      code: null,
+      pinConfigured: true,
+      machineName: "Arul's Mac Studio",
+      relayEnabled: false,
+      hasRelayCandidate: false,
+    });
+    expect(syncPinStore.hasPin).toHaveBeenCalled();
+    expect(syncPinStore.getPin).toHaveBeenCalled();
+  });
+
   it("routes work.resumeCliSession through the durable PTY resume path", async () => {
     const { service, ptyService } = createService();
 

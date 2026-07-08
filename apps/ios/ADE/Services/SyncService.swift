@@ -1433,6 +1433,20 @@ struct WebPairingInfo: Decodable, Equatable {
   let hasRelayCandidate: Bool
 }
 
+enum WebPairingPinState: Equatable {
+  case notConfigured
+  case configuredHidden
+  case visible(String)
+}
+
+extension WebPairingInfo {
+  var pinState: WebPairingPinState {
+    guard pinConfigured else { return .notConfigured }
+    let trimmedCode = code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return trimmedCode.isEmpty ? .configuredHidden : .visible(trimmedCode)
+  }
+}
+
 /// Delivery events for the full-screen terminal. The active screen attaches a
 /// handler per session id and receives hydration snapshots, ordered live
 /// chunks, and process exit without polling `terminalBuffers`.

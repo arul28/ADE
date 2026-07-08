@@ -3912,7 +3912,7 @@ function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistratio
       );
       const connectInfo = requireService(getPairingConnectInfo(), "Sync pairing connect info is not available.");
       const pinConfigured = syncPinStore.hasPin();
-      const code = syncPinStore.getPin();
+      const code = pinConfigured ? syncPinStore.getPin() : null;
       const hasRelayCandidate = connectInfo.addressCandidates.some((candidate) =>
         candidate.kind === "relay" && candidate.host.trim().length > 0);
       return {

@@ -846,6 +846,13 @@ function WebClientCard({
 }) {
   const hasAddresses = (connectInfo?.addressCandidates.length ?? 0) > 0;
   const pinMissing = !pinConfigured;
+  const pinHidden = pinConfigured && !pin;
+  let pairingHelpText = "Open the link, enter the pairing code in the browser, and the browser pairs to this machine.";
+  if (pinMissing) {
+    pairingHelpText = "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section above.";
+  } else if (pinHidden) {
+    pairingHelpText = "A PIN is configured but hidden after runtime restart. Generate or set a new PIN above to display or copy it for browser pairing.";
+  }
 
   return (
     <div style={cardStyle({ display: "grid", gap: 16 })}>
@@ -893,11 +900,7 @@ function WebClientCard({
         <div style={helperTextStyle}>No machine addresses are published yet.</div>
       )}
 
-      <div style={helperTextStyle}>
-        {pinMissing
-          ? "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section above."
-          : "Open the link, enter the pairing code in the browser, and the browser pairs to this machine."}
-      </div>
+      <div style={helperTextStyle}>{pairingHelpText}</div>
     </div>
   );
 }
@@ -926,7 +929,7 @@ function WebPairCode({ pin, pinConfigured }: { pin: string | null; pinConfigured
         style={outlineButton({ justifySelf: "start", height: 30 })}
         onClick={() => void handleCopy()}
         disabled={!pin}
-        title={pin ? undefined : "The PIN is hidden; reveal or set it in the phone pairing section above."}
+        title={pin ? undefined : "The PIN is hidden; generate or set a new PIN in the phone pairing section above."}
       >
         {copied ? "Copied" : "Copy code"}
       </button>
