@@ -1521,6 +1521,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
     $ ade chat goal <session> --status paused       Update a Codex goal status
+    $ ade chat handoff <session> --model openai/gpt-5.5 --note "focus on tests"
+                                                    Start a new chat with an extra handoff note
     $ ade chat fork <session> --model openai/gpt-5.5
                                                     Fork full provider history into a new chat
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
@@ -6845,6 +6847,7 @@ function buildChatPlan(args: string[]): CliPlan {
     const codexApprovalPolicy = readValue(args, ["--codex-approval-policy", "--approval-policy"]);
     const codexSandbox = readValue(args, ["--codex-sandbox", "--sandbox"]);
     const codexConfigSource = readValue(args, ["--codex-config-source", "--config-source"]);
+    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
     return {
       kind: "execute",
       label: mode === "fork" ? "chat fork" : "chat handoff",
@@ -6863,6 +6866,7 @@ function buildChatPlan(args: string[]): CliPlan {
             ...(codexApprovalPolicy !== null ? { codexApprovalPolicy } : {}),
             ...(codexSandbox !== null ? { codexSandbox } : {}),
             ...(codexConfigSource !== null ? { codexConfigSource } : {}),
+            ...(handoffNote !== null ? { handoffNote } : {}),
           }),
         ),
       ],

@@ -3623,7 +3623,7 @@ describe("createAgentChatService", () => {
       }, { timeout: 2000, interval: 50 });
     });
 
-    it("sends Codex brief handoff text before syncing the inherited goal", async () => {
+    it("does not seed Codex brief handoffs as provider goals", async () => {
       const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
@@ -3647,14 +3647,12 @@ describe("createAgentChatService", () => {
       });
 
       expect(result.session.provider).toBe("codex");
-      expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
 
       const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
       const requestMethods = handoffPayloads.map((payload) => String(payload.method ?? ""));
       const turnStartIndex = requestMethods.indexOf("turn/start");
-      const goalSetIndex = requestMethods.indexOf("thread/goal/set");
       expect(turnStartIndex).toBeGreaterThanOrEqual(0);
-      expect(goalSetIndex).toBeGreaterThan(turnStartIndex);
+      expect(requestMethods).not.toContain("thread/goal/set");
 
       const turnStartRequest = handoffPayloads[turnStartIndex] as {
         params?: { input?: Array<{ text?: unknown }> };
@@ -3662,14 +3660,10 @@ describe("createAgentChatService", () => {
       const inputText = turnStartRequest.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(inputText).toContain("This message was injected automatically by ADE during a chat handoff.");
       expect(inputText).toContain("No Machine State Polish");
-
-      const goalSetRequest = handoffPayloads[goalSetIndex] as {
-        params?: { objective?: unknown };
-      };
-      expect(goalSetRequest.params?.objective).toBe("No Machine State Polish");
+      expect(mockState.sessions.get(result.session.id)?.goal ?? null).toBeNull();
     });
 
-    it("keeps Codex brief handoff successful when deferred goal seeding throws", async () => {
+    it("appends an optional user note to a brief handoff prompt", async () => {
       const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
@@ -3681,23 +3675,23 @@ describe("createAgentChatService", () => {
         sessionId: source.id,
         goal: "No Machine State Polish",
       });
-      mockState.codexResponseOverrides.set("thread/goal/set", () => {
-        throw new Error("goal seed unavailable");
-      });
 
       const handoffStart = mockState.codexRequestPayloads.length;
       const result = await service.handoffSession({
         sourceSessionId: source.id,
         targetModelId: "openai/gpt-5.5",
+        handoffNote: "Focus on the collapsed drawer regression before broader cleanup.",
       });
 
       expect(result.session.provider).toBe("codex");
-      expect(mockState.sessions.get(result.session.id)?.goal).toBe("No Machine State Polish");
-      const handoffMethods = mockState.codexRequestPayloads
+      const turnStartRequest = mockState.codexRequestPayloads
         .slice(handoffStart)
-        .map((payload) => String(payload.method ?? ""));
-      expect(handoffMethods).toContain("turn/start");
-      expect(handoffMethods).toContain("thread/goal/set");
+        .find((payload) => payload.method === "turn/start") as {
+          params?: { input?: Array<{ text?: unknown }> };
+        } | undefined;
+      const inputText = turnStartRequest?.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(inputText).toContain("## User handoff note");
+      expect(inputText).toContain("Focus on the collapsed drawer regression before broader cleanup.");
     });
 
     it("forks Codex handoff from the source provider thread without injecting a summary prompt", async () => {
@@ -3723,6 +3717,7 @@ describe("createAgentChatService", () => {
       expect(result.usedFallbackSummary).toBe(false);
       expect(result.session.provider).toBe("codex");
       expect(result.session.threadId).toBe("forked-thread-1");
+      expect(mockState.sessions.get(result.session.id)?.goal ?? null).toBeNull();
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
       const handoffPayloads = mockState.codexRequestPayloads.slice(handoffStart);
       expect(handoffPayloads).toEqual(expect.arrayContaining([
@@ -3733,8 +3728,45 @@ describe("createAgentChatService", () => {
             excludeTurns: true,
           }),
         }),
+        expect.objectContaining({
+          method: "thread/goal/clear",
+          params: expect.objectContaining({
+            threadId: "forked-thread-1",
+          }),
+        }),
       ]));
       expect(handoffPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
+    });
+
+    it("sends only the user note when forking with a handoff note", async () => {
+      const { service } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      mockState.codexResponseOverrides.set("thread/fork", () => ({
+        thread: { id: "forked-thread-1" },
+      }));
+
+      const handoffStart = mockState.codexRequestPayloads.length;
+      await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+        handoffNote: "Start by checking the current test failure, then continue.",
+      });
+
+      const turnStartRequest = mockState.codexRequestPayloads
+        .slice(handoffStart)
+        .find((payload) => payload.method === "turn/start") as {
+          params?: { input?: Array<{ text?: unknown }> };
+        } | undefined;
+      const inputText = turnStartRequest?.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
+      expect(inputText).toContain("Start by checking the current test failure, then continue.");
+      expect(inputText).not.toContain("This message was injected automatically by ADE during a chat handoff.");
     });
 
     it("does not delete files during Codex rewind when git cannot prove the path was absent", async () => {

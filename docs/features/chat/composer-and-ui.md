@@ -196,6 +196,11 @@ and a footer that contains the composer.
   handoff fails. When the selected target stays within Claude or Codex,
   the handoff drawer exposes both **Brief handoff** and **Fork** actions;
   Codex fork carries the app-server thread history through `thread/fork`.
+  The drawer also includes an optional handoff note textarea; blank notes
+  are ignored, brief handoffs append non-empty notes to the hidden handoff
+  prompt, and forks send the note as the first user turn. Codex handoff
+  targets do not inherit ADE session goals or seed app-server goals; forked
+  Codex threads are cleared through the goal RPC before user input is sent.
   The Work sidebar renders the job as a non-selectable placeholder in the
   same lane/status/time groups as real sessions.
   Orchestration model-selection requests use

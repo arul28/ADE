@@ -2296,6 +2296,8 @@ describe("ADE CLI", () => {
       "--reasoning-effort",
       "xhigh",
       "--no-fast",
+      "--note",
+      "Focus on the failing handoff tests first.",
     ]));
     expect(handoff.label).toBe("chat handoff");
     expect(handoff.steps[0]?.params).toEqual({
@@ -2310,6 +2312,7 @@ describe("ADE CLI", () => {
           reasoningEffort: "xhigh",
           fastMode: false,
           codexFastMode: false,
+          handoffNote: "Focus on the failing handoff tests first.",
         },
       },
     });

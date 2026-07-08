@@ -3404,6 +3404,9 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Handoff" }));
     expect(await screen.findByText("Fork keeps the Codex provider thread history. Brief sends a summary as the first message.")).toBeTruthy();
+    fireEvent.change(await screen.findByLabelText("Handoff note"), {
+      target: { value: "Prioritize the drawer regression before broad cleanup." },
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Brief handoff" }));
 
     await waitFor(() => {
@@ -3411,6 +3414,7 @@ describe("AgentChatPane submit recovery", () => {
         sourceSessionId: session.sessionId,
         targetModelId: "openai/gpt-5.4-mini",
         mode: "brief",
+        handoffNote: "Prioritize the drawer regression before broad cleanup.",
         reasoningEffort: "xhigh",
         permissionMode: "default",
         claudePermissionMode: "default",

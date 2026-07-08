@@ -1624,6 +1624,8 @@ export type AgentChatHandoffArgs = {
   sourceSessionId: string;
   targetModelId: ModelId;
   mode?: "brief" | "fork";
+  /** Optional user-authored note appended to the handoff prompt. Blank notes are ignored. */
+  handoffNote?: string | null;
   /**
    * When set (including `null` for "no extra reasoning"), combined with the target
    * model to pick a valid reasoning tier. When omitted, inherits from the source

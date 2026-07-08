@@ -1457,6 +1457,15 @@ function trimLine(value: string | null | undefined): string | null {
   return trimmed.length ? trimmed : null;
 }
 
+function normalizeHandoffNote(value: string | null | undefined): string | null {
+  const note = trimLine(value);
+  if (!note) return null;
+  if (note.length > HANDOFF_NOTE_MAX_CHARS) {
+    throw new Error(HANDOFF_NOTE_TOO_LONG_MESSAGE);
+  }
+  return note;
+}
+
 function uniqueNonEmpty(values: Array<string | null | undefined>, limit = values.length): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -1965,6 +1974,8 @@ const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
 const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
+const HANDOFF_NOTE_MAX_CHARS = 4_000;
+const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4,000 characters.";
 // Idle stream watchdog removed — time-based idle detection produced false
 // positives during long-running tool calls (Agent, Bash, etc.) where no
 // stream events are emitted while the SDK waits for tool results. The user
@@ -8104,15 +8115,24 @@ export function createAgentChatService(args: {
     }
   };
 
-  const buildHandoffPrompt = (brief: string): string => {
+  const buildHandoffPrompt = (brief: string, handoffNote: string | null = null): string => {
     return [
       "This message was injected automatically by ADE during a chat handoff.",
       "You are taking over from a previous ADE work chat that the user is handing off to this new model.",
       "Continue the same task in the same lane. Do not restart discovery from scratch unless the brief below is clearly missing a required detail.",
       "The user will keep discussing the same work in this new chat.",
+      handoffNote ? "Apply the user's handoff note below as the highest-priority instruction for this handoff." : null,
       "",
       brief.trim(),
-    ].join("\n");
+      handoffNote ? ["", "## User handoff note", handoffNote].join("\n") : null,
+    ].filter((line): line is string => line != null).join("\n");
+  };
+
+  const buildHandoffDisplayText = (handoffNote: string | null): string => {
+    return [
+      "Chat handoff from previous session",
+      handoffNote ? `User note: ${handoffNote}` : null,
+    ].filter((line): line is string => line != null).join("\n\n");
   };
 
   const sessionIsManuallyNamed = (managed: ManagedChatSession): boolean => {
@@ -22032,6 +22052,7 @@ export function createAgentChatService(args: {
   const handoffSession = async (args: AgentChatHandoffArgs): Promise<AgentChatHandoffResult> => {
     const sourceId = args.sourceSessionId.trim();
     const targetId = args.targetModelId.trim();
+    const handoffNote = normalizeHandoffNote(args.handoffNote);
     if (!sourceId.length) {
       throw new Error("A source session is required to hand off a chat.");
     }
@@ -22172,43 +22193,40 @@ export function createAgentChatService(args: {
         goal: inheritedGoal,
       });
     };
-    const deferInheritedGoalUntilHandoffDispatch =
-      handoffMode === "brief" && createdManaged.session.provider === "codex";
-    if (!deferInheritedGoalUntilHandoffDispatch) {
+    if (createdManaged.session.provider !== "codex") {
       applyInheritedGoal();
     }
     persistChatState(createdManaged);
 
-    if (handoffMode === "brief") {
+    if (createdManaged.session.provider === "codex" && createdManaged.session.threadId) {
       try {
-        await sendMessage({
-          sessionId: created.id,
-          text: buildHandoffPrompt(brief),
-          displayText: "Chat handoff from previous session",
-          metadata: { kind: "handoff", hideFullPrompt: true },
-          reasoningEffort: targetReasoningEffort,
-          executionMode: createdManaged.session.executionMode ?? null,
-          interactionMode: createdManaged.session.interactionMode ?? null,
-        }, {
-          awaitDispatch: true,
+        const runtime = await ensureCodexSessionRuntime(createdManaged);
+        const threadId = await ensureCodexControlThread(createdManaged, runtime, "handoff goal cleanup");
+        await runtime.request("thread/goal/clear", {
+          threadId,
+        }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+        clearKnownCodexGoal(createdManaged, runtime);
+        persistChatState(createdManaged);
+      } catch (error) {
+        logger.warn("agent_chat.codex_goal_clear_after_handoff_failed", {
+          sessionId: createdManaged.session.id,
+          error: error instanceof Error ? error.message : String(error),
         });
-      } finally {
-        if (deferInheritedGoalUntilHandoffDispatch) {
-          applyInheritedGoal();
-          persistChatState(createdManaged);
-          if (createdManaged.runtime?.kind === "codex") {
-            try {
-              await seedCodexThreadGoalFromSessionGoal(createdManaged, createdManaged.runtime);
-            } catch (error) {
-              logger.warn("agent_chat.codex_goal_seed_after_handoff_failed", {
-                sessionId: createdManaged.session.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-              persistChatState(createdManaged);
-            }
-          }
-        }
       }
+    }
+
+    if (handoffMode === "brief" || handoffNote) {
+      await sendMessage({
+        sessionId: created.id,
+        text: handoffMode === "brief" ? buildHandoffPrompt(brief, handoffNote) : handoffNote!,
+        displayText: handoffMode === "brief" ? buildHandoffDisplayText(handoffNote) : handoffNote!,
+        ...(handoffMode === "brief" ? { metadata: { kind: "handoff", hideFullPrompt: true } } : {}),
+        reasoningEffort: targetReasoningEffort,
+        executionMode: createdManaged.session.executionMode ?? null,
+        interactionMode: createdManaged.session.interactionMode ?? null,
+      }, {
+        awaitDispatch: true,
+      });
     }
 
     return {
