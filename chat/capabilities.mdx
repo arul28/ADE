@@ -60,6 +60,25 @@ Chat agents also get the tools that turn a conversation into shipped work.
 The exact set depends on the session: writes and commands are gated by the permission mode, screenshot capture needs a supported platform, and Linear tools appear only when the integration is connected. The CTO additionally gets operator tools (spawning chats, lanes/PRs/git/tests, durable memory, and Linear reads and updates) that regular chats never see.
 </Note>
 
+## Provider-specific support
+
+Some capabilities depend on the provider runtime behind the chat.
+
+<CardGroup cols={2}>
+  <Card title="Codex goals" icon="bullseye">
+    Codex sessions can keep a visible goal that you set, update, complete, or clear from ADE without turning the goal into prompt text.
+  </Card>
+  <Card title="Claude scheduled work" icon="clock">
+    Claude wake, cron, scheduled-work, and background-stream events render in the transcript and Chat Info surfaces so unattended work stays inspectable.
+  </Card>
+  <Card title="Provider recovery" icon="rotate">
+    Codex and Cursor runtime failures surface as structured recovery cards or errors instead of collapsing into silent transcript gaps.
+  </Card>
+  <Card title="History handoff" icon="code-fork">
+    Claude and Codex sessions can be imported or forked into ADE when provider-native history is available, then continued as lane-scoped chats.
+  </Card>
+</CardGroup>
+
 ## See what an agent can reach
 
 Open the tools panel from the composer to see what a session has available and which actions need your approval before they run.

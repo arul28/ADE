@@ -50,6 +50,12 @@ Codex chats can keep an explicit goal on the session, so a long-running task has
 
 <video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/codex-goals.mp4"></video>
 
+## Follow long-running work
+
+ADE keeps background chat activity visible instead of hiding it inside provider logs. Claude wake, cron, scheduled-work, and background-stream updates appear as activity in the chat timeline and Chat Info surfaces; Codex and Cursor recovery events surface as structured status or error cards when a runtime needs attention.
+
+When a provider compacts context, ADE shows a compaction marker in the transcript and keeps the follow-up turn attached to the same session. You can keep working from the same chat, inspect the earlier turn history, or start a fresh lane-scoped chat with a summary when the task needs a clean reset.
+
 ## See every tool call
 
 Chat is not a black box. As the agent works, ADE streams each step into the transcript so you can follow — and stop — what it does:
@@ -58,12 +64,15 @@ Chat is not a black box. As the agent works, ADE streams each step into the tran
 - Tool calls and shell commands, grouped into an expandable work log so you can read each file edit or command and its result.
 - File changes mirrored into **Files** as a diff, with a per-turn diff summary.
 - Questions when the agent needs a decision instead of guessing — the composer locks until you answer or decline.
+- Goals, scheduled-work updates, context compaction, runtime recovery, and provider-auth cards when the session needs a stateful decision.
 
 Approval gates depend on the session's permission mode: a read-only **plan** mode proposes changes without touching files, while edit and full-auto modes let writes and commands through (with post-hoc review when the session is interactive).
 
 ## The same chat, every surface
 
 Chat sessions are owned by the machine's runtime, not by any one client. A chat you start on the desktop is the same conversation in the terminal and on your phone — the renderer, `ade code`, and the iOS app are all clients of the same session.
+
+Provider-native sessions can also be recovered into ADE when possible. Claude and Codex history imports seed a normal ADE chat, preserving provenance while keeping future turns lane-scoped and visible in the same transcript UI.
 
 <Tabs>
   <Tab title="Desktop">
