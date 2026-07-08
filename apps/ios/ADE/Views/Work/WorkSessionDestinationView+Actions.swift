@@ -20,12 +20,25 @@ func workFilteredQuestionAnswersForSubmit(
 
 extension WorkSessionDestinationView {
   @MainActor
-  func sendMessage(_ text: String) async -> Bool {
+  func sendMessage(_ text: String, attachments inputAttachments: [WorkChatInputAttachment] = []) async -> Bool {
     let useSteer = shouldSteerActiveTurn
     guard !sending || useSteer else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
     guard canSendChatMessages else { return false }
+
+    let attachmentRefs: [AgentChatFileRef]
+    do {
+      attachmentRefs = try await workChatSaveInputAttachments(
+        inputAttachments,
+        syncService: syncService,
+        chatSessionId: sessionId
+      )
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      return false
+    }
 
     let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
     let echo = WorkLocalEchoMessage(
@@ -40,13 +53,25 @@ extension WorkSessionDestinationView {
     do {
       let delivery: SyncChatMessageDelivery
       if useSteer {
-        delivery = try await syncService.steerChatSession(sessionId: sessionId, text: text)
+        delivery = try await syncService.steerChatSession(
+          sessionId: sessionId,
+          text: text,
+          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+        )
       } else {
         do {
-          delivery = try await syncService.sendChatMessage(sessionId: sessionId, text: text)
+          delivery = try await syncService.sendChatMessage(
+            sessionId: sessionId,
+            text: text,
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+          )
         } catch where workChatErrorIndicatesActiveTurn(error) {
           updateLocalEchoDeliveryState(echoId: echoId, deliveryState: "queued")
-          delivery = try await syncService.steerChatSession(sessionId: sessionId, text: text)
+          delivery = try await syncService.steerChatSession(
+            sessionId: sessionId,
+            text: text,
+            attachments: attachmentRefs.isEmpty ? nil : attachmentRefs
+          )
         }
       }
       switch delivery {

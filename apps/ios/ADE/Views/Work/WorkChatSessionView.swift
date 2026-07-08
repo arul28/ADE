@@ -167,7 +167,7 @@ struct WorkChatSessionView: View {
   var inputLockMessage: String? = nil
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?
-  let onSend: @MainActor (String) async -> Bool
+  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onInterrupt: @MainActor () async -> Void
   let onApproveRequest: @MainActor (String, AgentChatApprovalDecision, String?) async -> Void
   let onRespondToQuestion: @MainActor (String, String, AgentChatInputAnswerValue?, String?) async -> Void
@@ -1619,7 +1619,7 @@ private struct WorkChatComposerCard: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onToggleCodexFastMode: ((Bool) -> Void)?
-  let onSend: @MainActor (String) async -> Bool
+  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
   var body: some View {
@@ -1677,7 +1677,7 @@ private struct WorkChatComposerDraftInput: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onToggleCodexFastMode: ((Bool) -> Void)?
-  let onSend: @MainActor (String) async -> Bool
+  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
   @EnvironmentObject private var syncService: SyncService
@@ -1686,20 +1686,30 @@ private struct WorkChatComposerDraftInput: View {
   @State private var contextUsagePresented = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
+  @State private var inputAttachments: [WorkChatInputAttachment] = []
+
+  private var hasSendableDraftOrAttachment: Bool {
+    draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       WorkComposerSuggestionStrip(controller: suggestionController)
         .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
 
+      WorkChatInputAttachmentTray(attachments: $inputAttachments)
+
       WorkChatComposerTextField(
         draftState: draftState,
         controller: suggestionController,
         canCompose: canCompose,
-        placeholder: composerPlaceholder
+        placeholder: composerPlaceholder,
+        onPasteImages: { images in
+          workChatInputPasteImages(images, into: $inputAttachments)
+        }
       )
 
-      if showInterrupt && draftState.hasSendableText {
+      if showInterrupt && hasSendableDraftOrAttachment {
         Text("Message will stage behind the active turn.")
           .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
@@ -1711,6 +1721,11 @@ private struct WorkChatComposerDraftInput: View {
         // Leading controls collapse while dictating so the recording pill can
         // expand into the row without a layout jump.
         if !isDictating {
+          WorkChatAttachmentAddButton(
+            attachments: $inputAttachments,
+            disabled: !canCompose || settingsMutationInFlight
+          )
+
           WorkComposerChipStrip(
             chatSummary: chatSummary,
             settingsMutationInFlight: settingsMutationInFlight,
@@ -1757,10 +1772,11 @@ private struct WorkChatComposerDraftInput: View {
 
         if !isDictating {
           if showInterrupt {
-            if draftState.hasSendableText {
+            if hasSendableDraftOrAttachment {
               stopButton()
               WorkChatComposerSendButton(
                 draftState: draftState,
+                attachments: $inputAttachments,
                 canSend: canSend,
                 sending: sending,
                 accessibilityLabelText: "Stage message",
@@ -1773,6 +1789,7 @@ private struct WorkChatComposerDraftInput: View {
           } else {
             WorkChatComposerSendButton(
               draftState: draftState,
+              attachments: $inputAttachments,
               canSend: canSend,
               sending: sending,
               onSend: onSend,
@@ -2040,6 +2057,7 @@ private struct WorkChatComposerTextField: View {
   @ObservedObject var controller: WorkComposerSuggestionController
   let canCompose: Bool
   let placeholder: String
+  var onPasteImages: (([UIImage]) -> Void)? = nil
   @State private var measuredHeight: CGFloat = 24
 
   var body: some View {
@@ -2048,7 +2066,8 @@ private struct WorkChatComposerTextField: View {
       controller: controller,
       canCompose: canCompose,
       placeholder: placeholder,
-      measuredHeight: $measuredHeight
+      measuredHeight: $measuredHeight,
+      onPasteImages: onPasteImages
     )
     .frame(height: measuredHeight)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2057,14 +2076,17 @@ private struct WorkChatComposerTextField: View {
 
 private struct WorkChatComposerSendButton: View {
   @ObservedObject var draftState: WorkChatComposerDraftState
+  @Binding var attachments: [WorkChatInputAttachment]
   let canSend: Bool
   let sending: Bool
   var accessibilityLabelText = "Send message"
-  let onSend: @MainActor (String) async -> Bool
+  let onSend: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
   let onSent: () -> Void
 
   private var sendEnabled: Bool {
-    canSend && draftState.hasSendableText
+    canSend
+      && !workChatInputHasLoadingAttachments(attachments)
+      && (draftState.hasSendableText || !workChatInputReadyAttachments(attachments).isEmpty)
   }
 
   var body: some View {
@@ -2073,13 +2095,18 @@ private struct WorkChatComposerSendButton: View {
       sending: sending,
       accessibilityLabelText: accessibilityLabelText
     ) {
-      let text = draftState.consumeSendableText()
+      let originalText = draftState.consumeSendableText()
+      let outgoingAttachments = workChatInputReadyAttachments(attachments)
+      let text = workChatOutgoingText(originalText, attachmentCount: outgoingAttachments.count)
+      let restoredAttachments = attachments
+      attachments.removeAll()
       Task { @MainActor in
-        let sent = await onSend(text)
+        let sent = await onSend(text, outgoingAttachments)
         if sent {
           onSent()
         } else {
-          draftState.restoreUnsentText(text)
+          draftState.restoreUnsentText(originalText)
+          attachments = restoredAttachments
         }
       }
     }

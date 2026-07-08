@@ -77,6 +77,8 @@ struct HubInlineComposer: View {
 
   // UI / flow.
   @State private var draft: String = ""
+  @State private var attachments: [WorkChatInputAttachment] = []
+  @State private var composerTextHeight: CGFloat = 28
   @State private var busy: Bool = false
   @State private var errorMessage: String?
   @State private var modelPickerPresented = false
@@ -207,7 +209,12 @@ struct HubInlineComposer: View {
   }
 
   private var canSend: Bool {
-    canStart && !trimmedDraft.isEmpty
+    guard canStart else { return false }
+    if sessionMode != .chat {
+      return !trimmedDraft.isEmpty
+    }
+    return !workChatInputHasLoadingAttachments(attachments)
+      && (!trimmedDraft.isEmpty || !workChatInputReadyAttachments(attachments).isEmpty)
   }
 
   private var isControlsCollapsed: Bool {
@@ -288,6 +295,9 @@ struct HubInlineComposer: View {
     }
     .onChange(of: sessionMode) { _, newMode in
       normalizeSelection(for: newMode)
+      if newMode != .chat {
+        attachments.removeAll()
+      }
     }
     .onChange(of: modelId) { _, newModel in
       if !modelSupportsReasoning(modelId: newModel, provider: provider) {
@@ -603,6 +613,8 @@ struct HubInlineComposer: View {
   /// controls row (model/mode/fast/dictation) beneath the field.
   private var composerCard: some View {
     VStack(alignment: .leading, spacing: 12) {
+      WorkChatInputAttachmentTray(attachments: $attachments)
+
       HStack(alignment: .center, spacing: 10) {
         if !isExpanded {
           Image(systemName: "sparkles")
@@ -611,15 +623,20 @@ struct HubInlineComposer: View {
             .transition(.opacity)
         }
 
-        TextField("Type to vibecode…", text: $draft, axis: .vertical)
-          .textFieldStyle(.plain)
-          .lineLimit(1...6)
-          .font(.body)
-          .foregroundStyle(ADEColor.textPrimary)
-          .tint(ADEColor.accent)
-          .adePromptInputTraits()
-          .focused($composerFocused)
-          .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+        WorkPlainComposerTextView(
+          text: $draft,
+          isFocused: Binding(
+            get: { composerFocused },
+            set: { composerFocused = $0 }
+          ),
+          measuredHeight: $composerTextHeight,
+          placeholder: "Type to vibecode…",
+          acceptsPastedImages: sessionMode == .chat,
+          onPasteImages: { images in
+            workChatInputPasteImages(images, into: $attachments)
+          }
+        )
+        .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
 
         if !isExpanded {
           ADEComposerSendButton(
@@ -637,6 +654,11 @@ struct HubInlineComposer: View {
       if isExpanded {
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
+            WorkChatAttachmentAddButton(
+              attachments: $attachments,
+              disabled: busy || sessionMode != .chat
+            )
+
             ScrollView(.horizontal, showsIndicators: false) {
               WorkComposerControlsRow(
                 provider: provider,
@@ -725,20 +747,26 @@ struct HubInlineComposer: View {
 
   @MainActor
   private func dispatch() {
-    let text = trimmedDraft
+    let outgoingAttachments = workChatInputReadyAttachments(attachments)
+    let text = workChatOutgoingText(draft, attachmentCount: outgoingAttachments.count)
     guard !text.isEmpty else { return }
+    let restoredDraft = draft
+    let restoredAttachments = attachments
     draft = ""
+    attachments.removeAll()
     Task {
-      let started = await submit(opener: text)
+      let started = await submit(opener: text, attachments: outgoingAttachments)
       if !started {
-        draft = text
+        draft = restoredDraft
+        attachments = restoredAttachments
       }
     }
   }
 
   @MainActor
-  private func submit(opener rawOpener: String) async -> Bool {
-    let opener = rawOpener.trimmingCharacters(in: .whitespacesAndNewlines)
+  private func submit(opener rawOpener: String, attachments inputAttachments: [WorkChatInputAttachment]) async -> Bool {
+    let readyAttachments = workChatInputReadyAttachments(inputAttachments)
+    let opener = workChatOutgoingText(rawOpener, attachmentCount: readyAttachments.count)
     guard canStart, !opener.isEmpty, !modelId.isEmpty else { return false }
     guard let project = pickedProject else {
       errorMessage = "Pick a project first."
@@ -811,6 +839,12 @@ struct HubInlineComposer: View {
         )
         sessionId = result.sessionId
       } else {
+        let attachmentRefs = try await workChatSaveInputAttachments(
+          readyAttachments,
+          syncService: syncService,
+          targetProjectId: targetProjectId,
+          targetProjectRootPath: targetProjectRootPath
+        )
         let summary = try await syncService.createChatSession(
           laneId: targetLaneId,
           provider: provider,
@@ -835,6 +869,7 @@ struct HubInlineComposer: View {
         try await syncService.sendChatMessage(
           sessionId: summary.sessionId,
           text: opener,
+          attachments: attachmentRefs.isEmpty ? nil : attachmentRefs,
           targetProjectId: targetProjectId,
           targetProjectRootPath: targetProjectRootPath
         )

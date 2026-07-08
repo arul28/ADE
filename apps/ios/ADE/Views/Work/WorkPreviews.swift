@@ -462,7 +462,7 @@ private enum WorkPreviewData {
       sendWillQueueIsReconnect: false,
       transitionNamespace: nil,
       onOpenLane: {},
-      onSend: { _ in true },
+      onSend: { _, _ in true },
       onInterrupt: {},
       onApproveRequest: { _, _, _ in },
       onRespondToQuestion: { _, _, _, _ in },

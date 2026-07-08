@@ -2395,6 +2395,7 @@ struct SyncChatSubscribeSnapshotPayload: Decodable, Equatable {
 struct AgentChatSteerRequest: Codable, Equatable {
   var sessionId: String
   var text: String
+  var attachments: [AgentChatFileRef]? = nil
 }
 
 struct AgentChatCancelSteerRequest: Codable, Equatable {

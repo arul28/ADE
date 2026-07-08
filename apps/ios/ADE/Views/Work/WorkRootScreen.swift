@@ -675,7 +675,7 @@ struct WorkRootScreen: View {
             // Back goes to the sidebar, not to an empty "Start a new chat"
             // form.
             var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: trimmed))
+            fresh.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: trimmed.isEmpty ? nil : trimmed))
             await Task.yield()
             path = fresh
             Task { @MainActor in

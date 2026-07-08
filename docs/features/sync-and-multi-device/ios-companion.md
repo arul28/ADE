@@ -950,6 +950,21 @@ stored choice. `WorkNewChatScreen` captures the active project id when pushed;
 changes so a hub-created session cannot accidentally launch with the previous
 project's interface mode.
 
+Mobile chat image attachments use the same host-side temp attachment contract as
+desktop. Work and Hub chat composers expose an add-attachment control beside the
+permission/model controls; its menu currently has one action, Attach from camera
+roll, backed by scoped `PhotosPicker` access rather than a full photo-library
+permission. Picked or pasted images stage in `WorkChatInputAttachmentTray` above
+the prompt with thumbnail, loading, and failed states; tapping a staged image
+opens the larger preview sheet with copy and remove actions. The in-session
+`UITextView` composer intercepts pasted `UIPasteboard` images and feeds the same
+tray. Images are normalized to JPEG before upload, saved through
+`chat.saveTempAttachment`, and then sent on `chat.send` / `chat.steer` as
+`AgentChatFileRef` image refs. If a selected asset cannot be loaded yet (for
+example an iCloud-only photo that is not currently available on the phone), the
+tile remains local and shows a recoverable load error instead of sending a
+broken attachment.
+
 ### Shipped
 
 | Tab | Icon | Desktop equivalent | Capabilities |

@@ -1,4 +1,5 @@
 import XCTest
+import UIKit
 @testable import ADE
 
 /// Pure-logic coverage for the cursor-relative trigger detector that mirrors the
@@ -108,5 +109,22 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
   func testOutOfRangeCursorIsNoTrigger() {
     XCTAssertNil(detect("/rev", cursor: 99))
     XCTAssertNil(detect("/rev", cursor: -1))
+  }
+
+  @MainActor
+  func testInputImageAttachmentNormalizesToJPEGDataURL() throws {
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 12)).image { context in
+      UIColor.systemBlue.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 24, height: 12))
+    }
+
+    let attachment = try XCTUnwrap(workChatInputAttachment(from: image, filename: " pasted.png "))
+    XCTAssertEqual(attachment.filename, "pasted.png")
+    XCTAssertEqual(attachment.mimeType, "image/jpeg")
+    XCTAssertTrue(attachment.isReady)
+    XCTAssertTrue((attachment.uploadData?.count ?? 0) > 0)
+    XCTAssertTrue(workChatInputAttachmentDataURL(attachment)?.hasPrefix("data:image/jpeg;base64,") == true)
+    XCTAssertEqual(workChatOutgoingText("", attachmentCount: 1), "Attached image.")
+    XCTAssertEqual(workChatOutgoingText("  hello  ", attachmentCount: 1), "hello")
   }
 }

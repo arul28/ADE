@@ -677,6 +677,7 @@ struct WorkNewChatScreen: View {
           }
 
           laneSelector
+          sessionActionChips
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -705,8 +706,6 @@ struct WorkNewChatScreen: View {
           .padding(.horizontal, 20)
           .padding(.bottom, 6)
       }
-
-      sessionActionChips
 
       composerBar
     }
@@ -852,8 +851,7 @@ struct WorkNewChatScreen: View {
         .disabled(chipsDisabled)
         Spacer(minLength: 0)
       }
-      .padding(.horizontal, 20)
-      .padding(.bottom, 8)
+      .padding(.top, 2)
     }
   }
 
@@ -914,7 +912,7 @@ struct WorkNewChatScreen: View {
       fastModeSupported: fastModeSupported,
       codexFastMode: $codexFastMode,
       onOpenModelPicker: { modelPickerPresented = true },
-      onSubmit: submit(openingMessage:)
+      onSubmit: submit(openingMessage:attachments:)
     )
   }
 
@@ -994,8 +992,9 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
-  private func submit(openingMessage: String) async -> Bool {
-    let opener = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+  private func submit(openingMessage: String, attachments inputAttachments: [WorkChatInputAttachment]) async -> Bool {
+    let readyAttachments = workChatInputReadyAttachments(inputAttachments)
+    let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
     // Anchor the "last time you sent a message" choice — covers the case where
@@ -1096,6 +1095,10 @@ struct WorkNewChatScreen: View {
         busy = false
         return true
       }
+      let attachmentRefs = try await workChatSaveInputAttachments(
+        readyAttachments,
+        syncService: syncService
+      )
       let summary = try await syncService.createChatSession(
         laneId: targetLaneId,
         provider: provider,
@@ -1116,7 +1119,16 @@ struct WorkNewChatScreen: View {
         cursorModeId: wire.cursorModeId,
         pendingDisplayName: opener
       )
-      await onStarted(summary, opener)
+      if attachmentRefs.isEmpty {
+        await onStarted(summary, opener)
+      } else {
+        _ = try await syncService.sendChatMessage(
+          sessionId: summary.sessionId,
+          text: opener,
+          attachments: attachmentRefs
+        )
+        await onStarted(summary, "")
+      }
       if let createdLaneId, let autoCreatedFallbackName {
         startBackgroundLaneNaming(laneId: createdLaneId, opener: opener, fallbackName: autoCreatedFallbackName)
       }
@@ -1281,9 +1293,11 @@ private struct WorkNewChatComposerBar: View {
   let fastModeSupported: Bool
   @Binding var codexFastMode: Bool
   let onOpenModelPicker: () -> Void
-  let onSubmit: @MainActor (String) async -> Bool
+  let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
 
   @State private var draft: String = ""
+  @State private var attachments: [WorkChatInputAttachment] = []
+  @State private var composerTextHeight: CGFloat = 28
   @FocusState private var composerFocused: Bool
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
@@ -1297,7 +1311,12 @@ private struct WorkNewChatComposerBar: View {
   }
 
   private var canSend: Bool {
-    canStart && !trimmedDraft.isEmpty
+    guard canStart else { return false }
+    if sessionMode != .chat {
+      return !trimmedDraft.isEmpty
+    }
+    return !workChatInputHasLoadingAttachments(attachments)
+      && (!trimmedDraft.isEmpty || !workChatInputReadyAttachments(attachments).isEmpty)
   }
 
   private var runtimeOptions: [WorkRuntimeModeOption] {
@@ -1314,30 +1333,48 @@ private struct WorkNewChatComposerBar: View {
 
   @MainActor
   private func dispatch() {
-    let text = trimmedDraft
+    let outgoingAttachments = workChatInputReadyAttachments(attachments)
+    let text = workChatOutgoingText(draft, attachmentCount: outgoingAttachments.count)
+    guard !text.isEmpty else { return }
+    let restoredDraft = draft
+    let restoredAttachments = attachments
     draft = ""
+    attachments.removeAll()
     Task {
-      let started = await onSubmit(text)
+      let started = await onSubmit(text, outgoingAttachments)
       if !started {
-        draft = text
+        draft = restoredDraft
+        attachments = restoredAttachments
       }
     }
   }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      TextField(placeholder, text: $draft, axis: .vertical)
-        .textFieldStyle(.plain)
-        .lineLimit(1...6)
-        .font(.body)
-        .foregroundStyle(ADEColor.textPrimary)
-        .tint(ADEColor.accent)
-        .adePromptInputTraits()
-        .focused($composerFocused)
-        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+      WorkChatInputAttachmentTray(attachments: $attachments)
+
+      WorkPlainComposerTextView(
+        text: $draft,
+        isFocused: Binding(
+          get: { composerFocused },
+          set: { composerFocused = $0 }
+        ),
+        measuredHeight: $composerTextHeight,
+        placeholder: placeholder,
+        acceptsPastedImages: sessionMode == .chat,
+        onPasteImages: { images in
+          workChatInputPasteImages(images, into: $attachments)
+        }
+      )
+      .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
 
       HStack(alignment: .center, spacing: 8) {
         if !isDictating {
+          WorkChatAttachmentAddButton(
+            attachments: $attachments,
+            disabled: busy || sessionMode != .chat
+          )
+
           ScrollView(.horizontal, showsIndicators: false) {
             WorkComposerControlsRow(
               provider: provider,
@@ -1407,6 +1444,11 @@ private struct WorkNewChatComposerBar: View {
     .shadow(color: Color.black.opacity(0.32), radius: 14, y: 6)
     .padding(.horizontal, 16)
     .padding(.bottom, 0)
+    .onChange(of: sessionMode) { _, newMode in
+      if newMode != .chat {
+        attachments.removeAll()
+      }
+    }
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph

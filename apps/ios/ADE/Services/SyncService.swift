@@ -99,6 +99,12 @@ enum SyncChatMessageDelivery: Equatable {
   case queued(steerId: String?)
 }
 
+struct SavedChatTempAttachment: Decodable, Equatable {
+  var path: String
+  var mimeType: String
+  var previewDataUrl: String?
+}
+
 func syncChatMessageDelivery(from response: Any) -> SyncChatMessageDelivery {
   if let response = response as? [String: Any], response["queued"] as? Bool == true {
     return .queued(steerId: response["steerId"] as? String)
@@ -6804,6 +6810,7 @@ final class SyncService: ObservableObject {
   func sendChatMessage(
     sessionId: String,
     text: String,
+    attachments: [AgentChatFileRef]? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws -> SyncChatMessageDelivery {
@@ -6811,9 +6818,22 @@ final class SyncService: ObservableObject {
     // unless the caller already named a target explicitly (e.g. the hub
     // composer creating into a chosen project).
     let scope = chatCommandScope(for: sessionId)
+    var args: [String: Any] = ["sessionId": sessionId, "text": text]
+    if let attachments, !attachments.isEmpty {
+      args["attachments"] = attachments.map { ref in
+        var entry: [String: Any] = [
+          "path": ref.path,
+          "type": ref.type,
+        ]
+        if let url = ref.url, !url.isEmpty {
+          entry["url"] = url
+        }
+        return entry
+      }
+    }
     let response = try await sendCommand(
       action: "chat.send",
-      args: ["sessionId": sessionId, "text": text],
+      args: args,
       disconnectOnTimeout: false,
       timeoutMessage: SyncRequestTimeout.chatSendMessage,
       timeoutNanoseconds: SyncRequestTimeout.chatSendTimeoutNanoseconds,
@@ -6834,15 +6854,53 @@ final class SyncService: ObservableObject {
   }
 
   @discardableResult
-  func steerChatSession(sessionId: String, text: String) async throws -> SyncChatMessageDelivery {
+  func steerChatSession(
+    sessionId: String,
+    text: String,
+    attachments: [AgentChatFileRef]? = nil
+  ) async throws -> SyncChatMessageDelivery {
     let scope = chatCommandScope(for: sessionId)
     let response = try await sendChatCommand(
       action: "chat.steer",
-      payload: AgentChatSteerRequest(sessionId: sessionId, text: text),
+      payload: AgentChatSteerRequest(sessionId: sessionId, text: text, attachments: attachments),
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
     return syncChatMessageDelivery(from: response)
+  }
+
+  func saveChatTempAttachment(
+    dataUrl: String,
+    filename: String,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async throws -> SavedChatTempAttachment {
+    var args: [String: Any] = ["dataUrl": dataUrl]
+    let trimmedFilename = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedFilename.isEmpty {
+      args["filename"] = trimmedFilename
+    }
+    return try await sendDecodableCommand(
+      action: "chat.saveTempAttachment",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: SavedChatTempAttachment.self
+    )
+  }
+
+  func saveChatTempAttachmentForChat(
+    sessionId: String,
+    dataUrl: String,
+    filename: String
+  ) async throws -> SavedChatTempAttachment {
+    let scope = chatCommandScope(for: sessionId)
+    return try await saveChatTempAttachment(
+      dataUrl: dataUrl,
+      filename: filename,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
   }
 
   func cancelChatSteer(sessionId: String, steerId: String) async throws {
