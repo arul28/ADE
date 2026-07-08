@@ -15,9 +15,9 @@ struct LinearIssueListScreen: View {
   @ObservedObject var store: LinearPaneStore
   var onClose: () -> Void = {}
 
-  /// State-group ids the user has collapsed. Collapsed groups keep their header
-  /// (with a filled count) but hide their rows.
-  @State private var collapsedGroups: Set<String> = []
+  /// User overrides for group collapse state. Completed groups collapse by
+  /// default, while all other groups open until the user toggles them.
+  @State private var groupCollapseOverrides: [String: Bool] = [:]
 
   private enum ListContent { case skeletons, failure, empty, issues }
 
@@ -72,7 +72,7 @@ struct LinearIssueListScreen: View {
   @ViewBuilder
   private var issueSections: some View {
     ForEach(store.groupedIssues) { group in
-      let collapsed = collapsedGroups.contains(group.id)
+      let collapsed = groupCollapseOverrides[group.id] ?? linearGroupCollapsedByDefault(stateType: group.stateType)
       Section {
         if !collapsed {
           ForEach(group.issues) { issue in
@@ -85,7 +85,7 @@ struct LinearIssueListScreen: View {
       } header: {
         Button {
           withAnimation(.snappy(duration: 0.2)) {
-            if collapsed { collapsedGroups.remove(group.id) } else { collapsedGroups.insert(group.id) }
+            groupCollapseOverrides[group.id] = !collapsed
           }
         } label: {
           LinearGroupHeader(title: group.title, stateType: group.stateType, count: group.issues.count, collapsed: collapsed)

@@ -16239,6 +16239,29 @@ private actor LinearLaunchSpy {
   func recordCli() { cliLaunches += 1 }
 }
 
+@MainActor
+private final class LinearPaneSyncSpy: LinearPaneSyncing {
+  var linearConnectionStatus: LinearConnectionStatus? = LinearConnectionStatus(connected: true)
+  var searchResults: [LinearIssueSearchResult] = []
+  private(set) var searchArgs: [LinearIssueSearchArgs] = []
+
+  func attachedLinearIssueIds() -> Set<String> { [] }
+
+  func fetchLinearQuickView() async throws -> LinearQuickView {
+    throw LinearTestError.launchFailed
+  }
+
+  func fetchLinearIssuePickerData() async throws -> LinearIssuePickerData {
+    LinearIssuePickerData(projects: [], users: [], states: [])
+  }
+
+  func searchLinearIssues(_ args: LinearIssueSearchArgs) async throws -> LinearIssueSearchResult {
+    searchArgs.append(args)
+    guard !searchResults.isEmpty else { throw LinearTestError.launchFailed }
+    return searchResults.removeFirst()
+  }
+}
+
 final class LinearPaneTests: XCTestCase {
   private func makeIssue(
     id: String = "i1",
@@ -16323,6 +16346,76 @@ final class LinearPaneTests: XCTestCase {
     XCTAssertEqual(linearNormalizedStateType("weird"), "unstarted")
     // Started/completed carry distinct brand hues (not the neutral gray).
     XCTAssertNotEqual(linearStateColor("started"), linearStateColor("backlog"))
+  }
+
+  @MainActor
+  func testLinearPaneStoreLoadsAllPagesWithoutAssignedFilterByDefault() async {
+    let sync = LinearPaneSyncSpy()
+    sync.searchResults = [
+      LinearIssueSearchResult(
+        issues: [
+          makeIssue(id: "started-1", identifier: "ADE-1", title: "Started", stateId: "state-started", stateName: "In Progress", stateType: "started"),
+          makeIssue(id: "backlog-1", identifier: "ADE-2", title: "Backlog 1", stateId: "state-backlog", stateName: "Backlog", stateType: "backlog"),
+        ],
+        pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: true, endCursor: "cursor-1")
+      ),
+      LinearIssueSearchResult(
+        issues: (2...9).map { index in
+          makeIssue(
+            id: "backlog-\(index)",
+            identifier: "ADE-\(index + 1)",
+            title: "Backlog \(index)",
+            stateId: "state-backlog",
+            stateName: "Backlog",
+            stateType: "backlog"
+          )
+        },
+        pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: false, endCursor: nil)
+      ),
+    ]
+
+    let store = LinearPaneStore(sync: sync)
+    XCTAssertFalse(store.assignedToMe)
+
+    await store.reload()
+
+    XCTAssertEqual(store.issues.count, 10)
+    XCTAssertEqual(sync.searchArgs.count, 2)
+    XCTAssertNil(sync.searchArgs.first?.assigneeId)
+    XCTAssertEqual(sync.searchArgs.first?.first, 100)
+    XCTAssertEqual(sync.searchArgs.last?.after, "cursor-1")
+    XCTAssertEqual(store.groupedIssues.first { $0.title == "Backlog" }?.issues.count, 9)
+    XCTAssertFalse(store.hasNextPage)
+  }
+
+  func testLinearCompletedGroupsCollapseByDefault() {
+    XCTAssertTrue(linearGroupCollapsedByDefault(stateType: "completed"))
+    XCTAssertFalse(linearGroupCollapsedByDefault(stateType: "backlog"))
+    XCTAssertFalse(linearGroupCollapsedByDefault(stateType: "started"))
+  }
+
+  func testLinearStatePresetsMatchDesktopIssueBrowser() {
+    XCTAssertNil(LinearPaneStore.StatePreset.all.stateTypes)
+    XCTAssertEqual(LinearPaneStore.StatePreset.active.stateTypes, ["backlog", "unstarted", "started"])
+    XCTAssertEqual(LinearPaneStore.StatePreset.backlog.stateTypes, ["backlog"])
+  }
+
+  @MainActor
+  func testLinearPaneStoreStopsPagingWhenHostOmitsCursor() async {
+    let sync = LinearPaneSyncSpy()
+    sync.searchResults = [
+      LinearIssueSearchResult(
+        issues: [makeIssue(id: "i1", identifier: "ADE-1", title: "Loaded")],
+        pageInfo: LinearIssueSearchResultPageInfo(hasNextPage: true, endCursor: nil)
+      ),
+    ]
+
+    let store = LinearPaneStore(sync: sync)
+    await store.reload()
+
+    XCTAssertEqual(store.issues.count, 1)
+    XCTAssertFalse(store.hasNextPage)
+    XCTAssertEqual(sync.searchArgs.count, 1)
   }
 
   // Launch orchestration contract.

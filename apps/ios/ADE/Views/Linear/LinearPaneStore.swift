@@ -17,6 +17,17 @@ func linearIssueFallbackSearch(identifier: String) -> LinearIssueFallbackSearch 
   LinearIssueFallbackSearch(query: identifier, assignedToMe: false)
 }
 
+@MainActor
+protocol LinearPaneSyncing: AnyObject {
+  var linearConnectionStatus: LinearConnectionStatus? { get }
+  func attachedLinearIssueIds() -> Set<String>
+  func fetchLinearQuickView() async throws -> LinearQuickView
+  func fetchLinearIssuePickerData() async throws -> LinearIssuePickerData
+  func searchLinearIssues(_ args: LinearIssueSearchArgs) async throws -> LinearIssueSearchResult
+}
+
+extension SyncService: LinearPaneSyncing {}
+
 /// Backing store for the global Linear pane: holds the filter selection, drives
 /// the `cto.searchLinearIssues` / picker / quick-view reads, and exposes issues
 /// grouped by workflow state. Active-project scoped (mirrors desktop).
@@ -36,17 +47,19 @@ final class LinearPaneStore: ObservableObject {
     var stateTypes: [String]? {
       switch self {
       case .all: return nil
-      case .active: return ["started", "unstarted"]
-      case .backlog: return ["backlog", "triage"]
+      case .active: return ["backlog", "unstarted", "started"]
+      case .backlog: return ["backlog"]
       }
     }
   }
+
+  static let defaultAssignedToMe = false
 
   enum Phase { case idle, loading, loaded, failed }
 
   // Filters
   @Published var query = ""
-  @Published var assignedToMe = true
+  @Published var assignedToMe = LinearPaneStore.defaultAssignedToMe
   @Published var statePreset: StatePreset = .all
   @Published var projectId: String?
   @Published var priority: Int?
@@ -61,13 +74,13 @@ final class LinearPaneStore: ObservableObject {
   @Published private(set) var hasNextPage = false
   @Published private(set) var errorMessage: String?
 
-  private let pageSize = 50
+  private let pageSize = 100
   private var endCursor: String?
   private var searchGeneration = 0
   private var reloadTask: Task<Void, Never>?
-  private unowned let sync: SyncService
+  private let sync: any LinearPaneSyncing
 
-  init(sync: SyncService) {
+  init(sync: any LinearPaneSyncing) {
     self.sync = sync
   }
 
@@ -96,8 +109,8 @@ final class LinearPaneStore: ObservableObject {
 
   // MARK: Loads
 
-  /// First load when the pane opens: catalog + quick view (for the viewer id the
-  /// assigned-to-me default needs), the attached-issue set, then the first page.
+  /// First load when the pane opens: catalog + quick view, the attached-issue
+  /// set, then every page matching the current filters.
   func start() async {
     refreshAttachedIssueIds()
     await withTaskGroup(of: Void.self) { group in
@@ -147,12 +160,14 @@ final class LinearPaneStore: ObservableObject {
     phase = .loading
     errorMessage = nil
     do {
-      let result = try await sync.searchLinearIssues(currentArgs(after: nil))
+      let result = try await loadAllPages(after: nil)
       guard generation == searchGeneration else { return }
       issues = result.issues
       endCursor = result.pageInfo.endCursor
       hasNextPage = result.pageInfo.hasNextPage
       phase = .loaded
+    } catch is CancellationError {
+      return
     } catch {
       guard generation == searchGeneration else { return }
       issues = []
@@ -166,12 +181,14 @@ final class LinearPaneStore: ObservableObject {
     loadingMore = true
     let generation = searchGeneration
     do {
-      let result = try await sync.searchLinearIssues(currentArgs(after: cursor))
+      let result = try await loadAllPages(after: cursor)
       if generation == searchGeneration {
-        issues.append(contentsOf: result.issues)
+        issues = linearMergeIssuePages(issues, result.issues)
         endCursor = result.pageInfo.endCursor
         hasNextPage = result.pageInfo.hasNextPage
       }
+    } catch is CancellationError {
+      // A newer reload superseded this paging request.
     } catch {
       // Keep what we have; the row-level "Load more" affordance can retry.
     }
@@ -198,6 +215,36 @@ final class LinearPaneStore: ObservableObject {
     return args
   }
 
+  private func loadAllPages(after initialCursor: String?) async throws -> LinearIssueSearchResult {
+    var loaded: [NormalizedLinearIssue] = []
+    var cursor = initialCursor
+    var pageInfo = LinearIssueSearchResultPageInfo(hasNextPage: true, endCursor: cursor)
+    var seenCursors = Set<String>()
+
+    while pageInfo.hasNextPage {
+      try Task.checkCancellation()
+      if let cursor {
+        guard seenCursors.insert(cursor).inserted else {
+          pageInfo = LinearIssueSearchResultPageInfo(hasNextPage: false, endCursor: cursor)
+          break
+        }
+      }
+      let result = try await sync.searchLinearIssues(currentArgs(after: cursor))
+      loaded = linearMergeIssuePages(loaded, result.issues)
+      pageInfo = result.pageInfo
+      guard pageInfo.hasNextPage else {
+        break
+      }
+      guard let nextCursor = pageInfo.endCursor else {
+        pageInfo = LinearIssueSearchResultPageInfo(hasNextPage: false, endCursor: nil)
+        break
+      }
+      cursor = nextCursor
+    }
+
+    return LinearIssueSearchResult(issues: loaded, pageInfo: pageInfo)
+  }
+
 }
 
 /// Rank for ordering workflow-state groups: active work first, closed last.
@@ -205,8 +252,8 @@ func linearStateRank(_ stateType: String) -> Int {
   switch linearNormalizedStateType(stateType) {
   case "started": return 0
   case "unstarted": return 1
-  case "triage": return 2
-  case "backlog": return 3
+  case "backlog": return 2
+  case "triage": return 3
   case "completed": return 4
   case "canceled": return 5
   default: return 6
@@ -240,4 +287,19 @@ func linearGroupIssues(_ issues: [NormalizedLinearIssue]) -> [LinearIssueGroup] 
       if l != r { return l < r }
       return (order.firstIndex(of: lhs.id) ?? 0) < (order.firstIndex(of: rhs.id) ?? 0)
     }
+}
+
+func linearMergeIssuePages(_ current: [NormalizedLinearIssue], _ next: [NormalizedLinearIssue]) -> [NormalizedLinearIssue] {
+  var seen = Set<String>()
+  var merged: [NormalizedLinearIssue] = []
+  merged.reserveCapacity(current.count + next.count)
+  for issue in current + next {
+    guard seen.insert(issue.id).inserted else { continue }
+    merged.append(issue)
+  }
+  return merged
+}
+
+func linearGroupCollapsedByDefault(stateType: String) -> Bool {
+  linearNormalizedStateType(stateType) == "completed"
 }
