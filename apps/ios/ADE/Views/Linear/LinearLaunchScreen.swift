@@ -210,6 +210,7 @@ struct LinearLaunchScreen: View {
       TextEditor(text: $kickoff)
         .font(.subheadline)
         .foregroundStyle(ADEColor.textPrimary)
+        .adePromptInputTraits()
         .frame(minHeight: 120)
         .scrollContentBackground(.hidden)
         .padding(10)

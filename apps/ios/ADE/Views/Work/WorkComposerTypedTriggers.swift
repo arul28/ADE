@@ -336,9 +336,10 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
     textView.isScrollEnabled = false
-    textView.autocorrectionType = .no
-    textView.autocapitalizationType = .none
-    textView.spellCheckingType = .no
+    // Keep natural-language prompt traits aligned with `adePromptInputTraits()`.
+    textView.autocorrectionType = .yes
+    textView.autocapitalizationType = .sentences
+    textView.spellCheckingType = .yes
     textView.smartQuotesType = .no
     textView.smartDashesType = .no
     textView.tintColor = UIColor(ADEColor.accent)

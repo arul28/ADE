@@ -323,8 +323,7 @@ struct WorkNewChatSheet: View {
           GlassSection(title: "Opening prompt") {
             VStack(alignment: .leading, spacing: 8) {
               TextField("Tell the agent what to do", text: $initialMessage, axis: .vertical)
-                .textInputAutocapitalization(.sentences)
-                .autocorrectionDisabled(false)
+                .adePromptInputTraits()
                 .adeInsetField(cornerRadius: 14, padding: 12)
                 .disabled(busy)
 
