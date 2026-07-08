@@ -10792,6 +10792,10 @@ final class SyncService: ObservableObject {
   /// Thin wrapper for the runtime-scoped `push.*` commands used by
   /// `PushNotificationService` / `LiveActivityService`. Runtime-scoped and never
   /// queued — a failed registration is simply retried on the next foreground.
+  var canSendPushCommands: Bool {
+    canSendLiveRequests()
+  }
+
   func sendPushCommand(action: String, args: [String: Any]) async throws -> [String: Any] {
     let response = try await sendCommand(action: action, args: args)
     if let payload = response as? [String: Any] {

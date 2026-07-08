@@ -13,6 +13,8 @@ struct SettingsPushDeliverySnapshot: Equatable {
     var lastRegisteredAt: Date?
     var lastPushReceivedAt: Date?
     var lastError: String?
+    var relayRefreshError: String?
+    var canRefreshRelayStatus = false
 
     var liveActivityTokenPresent = false
 
@@ -144,10 +146,10 @@ struct SettingsPushDeliverySection: View {
 
             refreshButton
 
-            if let error = snapshot.lastError {
-                Text(error)
+            if let inlineStatusMessage {
+                Text(inlineStatusMessage)
                     .font(.caption)
-                    .foregroundStyle(ADESharedTheme.statusFailed)
+                    .foregroundStyle(inlineStatusTint)
                     .padding(.horizontal, 4)
             }
         }
@@ -259,19 +261,19 @@ struct SettingsPushDeliverySection: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 13, weight: .semibold))
                 }
-                Text(pushService.isRefreshingStatus ? "Checking relay…" : "Refresh status")
+                Text(refreshButtonLabel)
                     .font(.subheadline.weight(.medium))
             }
-            .foregroundStyle(ADEColor.purpleAccent)
+            .foregroundStyle(snapshot.canRefreshRelayStatus ? ADEColor.purpleAccent : ADEColor.textSecondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 10)
             .background(
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(ADEColor.purpleAccent.opacity(0.08))
+                    .fill((snapshot.canRefreshRelayStatus ? ADEColor.purpleAccent : ADEColor.textSecondary).opacity(0.08))
             )
         }
         .buttonStyle(ADEScaleButtonStyle())
-        .disabled(pushService.isRefreshingStatus)
+        .disabled(pushService.isRefreshingStatus || !snapshot.canRefreshRelayStatus)
     }
 
     // MARK: - Bindings
@@ -319,6 +321,7 @@ struct SettingsPushDeliverySection: View {
         if snapshot.permissionStatus == .denied { return "bell.slash" }
         switch snapshot.registrationState {
         case .registered: return "bell.badge.fill"
+        case .waitingForMachine: return "wifi.exclamationmark"
         case .registering, .awaitingToken: return "arrow.triangle.2.circlepath"
         case .failed: return "exclamationmark.triangle.fill"
         case .permissionDenied: return "bell.slash"
@@ -332,6 +335,7 @@ struct SettingsPushDeliverySection: View {
         case .registered: return "Registered"
         case .registering: return "Registering…"
         case .awaitingToken: return "Waiting for token"
+        case .waitingForMachine: return "Waiting for machine"
         case .failed: return "Failed"
         case .permissionDenied: return "Permission off"
         case .unsupported: return "Pair a machine first"
@@ -342,6 +346,19 @@ struct SettingsPushDeliverySection: View {
     private var relayValue: String {
         guard snapshot.publisherEnabled else { return "Publisher off" }
         return snapshot.relayApnsConfigured ? "Reachable · APNs key configured" : "Reachable · APNs key missing"
+    }
+
+    private var refreshButtonLabel: String {
+        if pushService.isRefreshingStatus { return "Checking relay…" }
+        return snapshot.canRefreshRelayStatus ? "Refresh status" : "Connect to refresh"
+    }
+
+    private var inlineStatusMessage: String? {
+        snapshot.relayRefreshError ?? snapshot.lastError
+    }
+
+    private var inlineStatusTint: Color {
+        snapshot.relayRefreshError == nil ? ADESharedTheme.statusFailed : ADEColor.warning
     }
 
     // MARK: - Formatting helpers

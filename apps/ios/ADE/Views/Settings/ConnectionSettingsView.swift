@@ -322,6 +322,8 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     snapshot.lastRegisteredAt = diagnostics.lastRegisteredAt
     snapshot.lastPushReceivedAt = diagnostics.lastPushReceivedAt
     snapshot.lastError = diagnostics.lastError
+    snapshot.relayRefreshError = push.relayRefreshError
+    snapshot.canRefreshRelayStatus = boundService?.canSendPushCommands == true
     snapshot.liveActivityTokenPresent = diagnostics.liveActivityPushToStartTokenSuffix != nil
     if let relay = push.relayStatus {
       snapshot.relayResolved = true

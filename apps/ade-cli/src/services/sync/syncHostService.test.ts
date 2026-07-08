@@ -2202,6 +2202,236 @@ describe("chat_subscribe snapshots", () => {
       cleanup();
     }
   });
+
+  it("replays a chat event whose optional live send was backpressured", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-replay.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "chat-replay",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const chatEventEmitter: { current?: (event: AgentChatEventEnvelope) => void } = {};
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 60_000,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-chat-replay",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === "chat-replay" ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn((callback: (event: AgentChatEventEnvelope) => void) => {
+          chatEventEmitter.current = callback;
+          return () => {};
+        }),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: "chat-replay",
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-replay");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-subscribe-initial",
+        payload: { sessionId: "chat-replay" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-subscribe-initial");
+
+      const firstEvent: AgentChatEventEnvelope = {
+        sessionId: "chat-replay",
+        timestamp: "2026-04-23T10:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "first live text" },
+      };
+      chatEventEmitter.current?.(firstEvent);
+      await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as { event?: { text?: string } }).event?.text === "first live text"
+        ),
+        "first live chat event",
+      );
+
+      const secondEvent: AgentChatEventEnvelope = {
+        sessionId: "chat-replay",
+        timestamp: "2026-04-23T10:00:01.000Z",
+        sequence: 2,
+        event: { type: "text", text: "second replay text" },
+      };
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        // `broadcastChatEvent` first checks peer backpressure, then `send`
+        // checks the raw socket. Recreate the race where the peer looked
+        // writable but the optional chat_event send itself was dropped.
+        .mockReturnValueOnce(0)
+        .mockReturnValue(4 * 1024 * 1024);
+      chatEventEmitter.current?.(secondEvent);
+      bufferedAmountSpy.mockRestore();
+      bufferedAmountSpy = null;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(peer.envelopes.filter((envelope) => envelope.type === "chat_event")).toHaveLength(1);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-subscribe-resume",
+        payload: { sessionId: "chat-replay", sinceSeq: 1 },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-subscribe-resume");
+      const replayed = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as { event?: { text?: string } }).event?.text === "second replay text"
+        ),
+        "replayed backpressured chat event",
+      );
+      expect(replayed.payload).toMatchObject({ seq: 2 });
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retries transcript-pump chat events after a backpressured optional send", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "chat-pump.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "chat-pump",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-chat-pump",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === "chat-pump" ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: "chat-pump",
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-pump");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-pump-subscribe",
+        payload: { sessionId: "chat-pump" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-pump-subscribe");
+
+      const pumpedEvent: AgentChatEventEnvelope = {
+        sessionId: "chat-pump",
+        timestamp: "2026-04-23T10:00:02.000Z",
+        sequence: 1,
+        event: { type: "text", text: "pump retry text" },
+      };
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(pumpedEvent)}\n`, "utf8");
+
+      let bufferedAmountReads = 0;
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => {
+          bufferedAmountReads += 1;
+          return bufferedAmountReads === 1 ? 0 : 4 * 1024 * 1024;
+        });
+      await waitForValue(
+        () => bufferedAmountReads >= 2 ? true : undefined,
+        "backpressured transcript chat event send",
+      );
+      bufferedAmountSpy.mockRestore();
+      bufferedAmountSpy = null;
+
+      const delivered = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as { event?: { text?: string } }).event?.text === "pump retry text"
+        ),
+        "retried transcript chat event",
+      );
+      expect(delivered.payload).toMatchObject({ seq: 1 });
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
 });
 
 

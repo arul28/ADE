@@ -21,6 +21,7 @@ final class PushNotificationService: ObservableObject {
     @Published private(set) var prefs: PushPrefs
     @Published private(set) var diagnostics: PushDiagnostics
     @Published private(set) var relayStatus: PushRelayStatus?
+    @Published private(set) var relayRefreshError: String?
     @Published private(set) var isRefreshingStatus = false
 
     // MARK: - Internal state
@@ -42,10 +43,19 @@ final class PushNotificationService: ObservableObject {
 
     private init() {
         let loadedPrefs = Self.loadPrefs(from: defaults, key: prefsKey)
-        let loadedDiagnostics = Self.loadDiagnostics(from: defaults, key: diagnosticsKey)
+        var loadedDiagnostics = Self.loadDiagnostics(from: defaults, key: diagnosticsKey)
+        let migratedTransientFailure = Self.isLiveConnectionRequiredMessage(loadedDiagnostics.lastError)
+            && loadedDiagnostics.registrationStateRaw == PushRegistrationState.failed.rawValue
+        if migratedTransientFailure {
+            loadedDiagnostics.registrationStateRaw = PushRegistrationState.waitingForMachine.rawValue
+            loadedDiagnostics.lastError = nil
+        }
         self.prefs = loadedPrefs
         self.diagnostics = loadedDiagnostics
         self.registrationState = PushRegistrationState(rawValue: loadedDiagnostics.registrationStateRaw) ?? .notDetermined
+        if migratedTransientFailure {
+            persistDiagnostics()
+        }
     }
 
     // MARK: - Enablement
@@ -57,6 +67,7 @@ final class PushNotificationService: ObservableObject {
     func enableIfPaired() async {
         guard SyncService.shared?.hasPairedHost == true else {
             setRegistrationState(.unsupported)
+            relayRefreshError = nil
             return
         }
 
@@ -143,6 +154,11 @@ final class PushNotificationService: ObservableObject {
     private func registerDevice() async {
         guard let sync = SyncService.shared, sync.hasPairedHost else {
             setRegistrationState(.unsupported)
+            relayRefreshError = nil
+            return
+        }
+        guard sync.canSendPushCommands else {
+            setRegistrationWaitingForMachine()
             return
         }
         // Coalesce instead of dropping: a push-to-start / APNs token that arrives
@@ -172,12 +188,21 @@ final class PushNotificationService: ObservableObject {
             do {
                 _ = try await sync.sendPushCommand(action: "push.registerDevice", args: args)
                 setRegistrationState(.registered)
+                relayRefreshError = nil
                 updateDiagnostics { diag in
                     diag.lastRegisteredAt = Date()
                     diag.lastError = nil
                 }
             } catch {
-                setRegistrationState(.failed, error: PushNotificationService.shortError(error))
+                if let message = PushNotificationService.machineUnavailableMessage(
+                    for: error,
+                    fallback: PushNotificationService.machineSetupUnavailableMessage
+                ) {
+                    setRegistrationWaitingForMachine(message: message)
+                } else {
+                    relayRefreshError = nil
+                    setRegistrationState(.failed, error: PushNotificationService.shortError(error))
+                }
             }
         } while registerPending
     }
@@ -206,14 +231,29 @@ final class PushNotificationService: ObservableObject {
 
     private func syncPrefs() async {
         guard let sync = SyncService.shared, sync.hasPairedHost else { return }
+        guard sync.canSendPushCommands else {
+            relayRefreshError = PushNotificationService.machinePrefsUnavailableMessage
+            clearTransientDiagnosticsError()
+            return
+        }
         let args: [String: Any] = [
             "deviceId": sync.deviceId,
             "prefs": prefs.commandPayload,
         ]
         do {
             _ = try await sync.sendPushCommand(action: "push.setPrefs", args: args)
+            relayRefreshError = nil
         } catch {
-            updateDiagnostics { $0.lastError = PushNotificationService.shortError(error) }
+            if let message = PushNotificationService.machineUnavailableMessage(
+                for: error,
+                fallback: PushNotificationService.machinePrefsUnavailableMessage
+            ) {
+                relayRefreshError = message
+                clearTransientDiagnosticsError()
+            } else {
+                relayRefreshError = nil
+                updateDiagnostics { $0.lastError = PushNotificationService.shortError(error) }
+            }
         }
     }
 
@@ -225,8 +265,15 @@ final class PushNotificationService: ObservableObject {
     func refreshStatus() async {
         guard let sync = SyncService.shared, sync.hasPairedHost else {
             relayStatus = nil
+            relayRefreshError = nil
             return
         }
+        guard sync.canSendPushCommands else {
+            relayRefreshError = PushNotificationService.machineRefreshUnavailableMessage
+            clearTransientDiagnosticsError()
+            return
+        }
+        await retryRegistrationIfWaitingForMachine()
         isRefreshingStatus = true
         defer { isRefreshingStatus = false }
         do {
@@ -235,9 +282,27 @@ final class PushNotificationService: ObservableObject {
                 args: ["deviceId": sync.deviceId]
             )
             relayStatus = PushRelayStatus(raw)
+            relayRefreshError = nil
         } catch {
-            relayStatus = nil
-            updateDiagnostics { $0.lastError = PushNotificationService.shortError(error) }
+            if let message = PushNotificationService.machineUnavailableMessage(
+                for: error,
+                fallback: PushNotificationService.machineRefreshUnavailableMessage
+            ) {
+                relayRefreshError = message
+                clearTransientDiagnosticsError()
+            } else {
+                relayRefreshError = nil
+                updateDiagnostics { $0.lastError = PushNotificationService.shortError(error) }
+            }
+        }
+    }
+
+    private func retryRegistrationIfWaitingForMachine() async {
+        guard registrationState == .waitingForMachine else { return }
+        if apnsTokenHex != nil {
+            await registerDevice()
+        } else {
+            await enableIfPaired()
         }
     }
 
@@ -259,6 +324,7 @@ final class PushNotificationService: ObservableObject {
         apnsTokenHex = nil
         liveActivityPushToStartTokenHex = nil
         relayStatus = nil
+        relayRefreshError = nil
         setRegistrationState(.unsupported)
         updateDiagnostics { diag in
             diag.tokenSuffix = nil
@@ -271,9 +337,30 @@ final class PushNotificationService: ObservableObject {
 
     private func setRegistrationState(_ state: PushRegistrationState, error: String? = nil) {
         registrationState = state
+        if error != nil {
+            relayRefreshError = nil
+        }
         updateDiagnostics { diag in
             diag.registrationStateRaw = state.rawValue
             if let error { diag.lastError = error }
+        }
+    }
+
+    private func setRegistrationWaitingForMachine(message: String? = nil) {
+        let resolvedMessage = message ?? PushNotificationService.machineSetupUnavailableMessage
+        registrationState = .waitingForMachine
+        relayRefreshError = resolvedMessage
+        updateDiagnostics { diag in
+            diag.registrationStateRaw = PushRegistrationState.waitingForMachine.rawValue
+            diag.lastError = nil
+        }
+    }
+
+    private func clearTransientDiagnosticsError() {
+        updateDiagnostics { diag in
+            if PushNotificationService.isLiveConnectionRequiredMessage(diag.lastError) {
+                diag.lastError = nil
+            }
         }
     }
 
@@ -318,6 +405,32 @@ final class PushNotificationService: ObservableObject {
         return message.isEmpty ? "\(error)" : message
     }
 
+    nonisolated private static let liveConnectionRequiredMessage = "This action requires a live connection to the machine."
+    nonisolated private static let machineSetupUnavailableMessage = "Connect to the machine to finish push setup."
+    nonisolated private static let machinePrefsUnavailableMessage = "Connect to the machine to sync push settings."
+    nonisolated private static let machineRefreshUnavailableMessage = "Connect to the machine to refresh push delivery."
+
+    nonisolated private static func machineUnavailableMessage(for error: Error, fallback: String) -> String? {
+        if isSyncRequestTimeoutError(error) || isSyncHostUnavailableError(error) {
+            return "The machine did not respond. ADE will retry when it reconnects."
+        }
+        let nsError = error as NSError
+        let message = nsError.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if nsError.domain == "ADE" && nsError.code == 15 && message == liveConnectionRequiredMessage {
+            return fallback
+        }
+        if isLiveConnectionRequiredMessage(message) {
+            return fallback
+        }
+        return nil
+    }
+
+    nonisolated private static func isLiveConnectionRequiredMessage(_ message: String?) -> Bool {
+        let normalized = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized == liveConnectionRequiredMessage
+            || normalized.localizedCaseInsensitiveContains("requires a live connection")
+    }
+
     nonisolated static var apsEnvironment: String {
         #if DEBUG
         return "sandbox"
@@ -344,6 +457,8 @@ enum PushRegistrationState: String, Sendable {
     case awaitingToken
     /// Sending the registration to the brain.
     case registering
+    /// Authorized locally, waiting for a live machine command path.
+    case waitingForMachine
     /// Registered with the brain / relay.
     case registered
     /// Registration or token acquisition failed.

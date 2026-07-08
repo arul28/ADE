@@ -1262,6 +1262,12 @@ struct WorkSessionDestinationView: View {
 
     let now = Date()
     guard force || now.timeIntervalSince(lastEmptyTranscriptHydrationAt) >= 2 else { return }
+    let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
+    let transcriptStatus = workChatTranscriptPreferenceStatus(
+      sessionStatus: status,
+      liveTurnActiveHint: syncService.chatTurnActiveHint(sessionId: sessionId)
+    )
+    guard !(syncService.prefersReducedSyncLoad && transcriptStatus == "active") else { return }
 
     emptyTranscriptHydrationInFlight = true
     lastEmptyTranscriptHydrationAt = now
@@ -1281,6 +1287,7 @@ struct WorkSessionDestinationView: View {
       sessionStatus: status,
       liveTurnActiveHint: syncService.chatTurnActiveHint(sessionId: sessionId)
     )
+    let reducedActiveLiveStream = preferLightweight && transcriptStatus == "active"
 
     if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       let alreadySubscribed = syncService.subscribedChatSessionIds.contains(sessionId)
@@ -1309,7 +1316,9 @@ struct WorkSessionDestinationView: View {
       // Quick looks stay on the chat_subscribe snapshot/tail — the canonical
       // history commands route through the project scope registry and would
       // boot the foreign runtime for a read (the cost this mode exists to avoid).
-      let shouldHydrateCanonicalEventTail = !isCrossProject && (
+      let shouldHydrateCanonicalEventTail = !isCrossProject
+        && !reducedActiveLiveStream
+        && (
         !preferLightweight
         || transcript.isEmpty
         || transcriptStatus != "active"
@@ -1366,7 +1375,9 @@ struct WorkSessionDestinationView: View {
     // Cross-project quick looks never take the command-based fallback fetch —
     // chat.getTranscript routes through the project scope registry and boots
     // the foreign runtime for a read.
-    let shouldFetchFallback = !isCrossProject && (
+    let shouldFetchFallback = !isCrossProject
+      && !reducedActiveLiveStream
+      && (
       forceOpeningTranscriptRefresh
       || needsInitialTailHydration
       || !preferLightweight
