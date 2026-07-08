@@ -248,6 +248,116 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(badge)
   }
 
+  // MARK: - Local echo rendering
+
+  func testLocalEchoTimelinePreservesImageAttachments() {
+    let attachment = AgentChatFileRef(
+      path: "/project/.ade/attachments/mobile-image.jpg",
+      type: "image",
+      url: nil
+    )
+    let echo = WorkLocalEchoMessage(
+      text: "Attached image.",
+      timestamp: iso(now),
+      deliveryState: nil,
+      attachments: [attachment]
+    )
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [echo]
+    )
+    let message = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload { return message }
+      return nil
+    }.first
+
+    XCTAssertEqual(message?.markdown, "Attached image.")
+    XCTAssertEqual(message?.attachments, [attachment])
+    XCTAssertNil(message?.deliveryState)
+  }
+
+  func testImageOnlyLocalEchoDedupeIncludesAttachmentIdentity() {
+    let first = AgentChatFileRef(path: "/project/.ade/attachments/first.jpg", type: "image", url: nil)
+    let second = AgentChatFileRef(path: "/project/.ade/attachments/second.jpg", type: "image", url: nil)
+    XCTAssertNotEqual(
+      workLocalEchoDedupeKey(text: "Attached image.", attachments: [first]),
+      workLocalEchoDedupeKey(text: "Attached image.", attachments: [second])
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: [
+        WorkChatEnvelope(
+          sessionId: "chat-1",
+          timestamp: iso(now),
+          sequence: 1,
+          event: .userMessage(
+            text: "Attached image.",
+            attachments: [first],
+            turnId: nil,
+            steerId: nil,
+            deliveryState: nil,
+            processed: nil
+          )
+        )
+      ],
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [
+        WorkLocalEchoMessage(text: "Attached image.", timestamp: iso(now), deliveryState: nil, attachments: [first]),
+        WorkLocalEchoMessage(text: "Attached image.", timestamp: iso(now), deliveryState: nil, attachments: [second]),
+      ]
+    )
+    let visibleUserMessages = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload, message.role == "user" { return message }
+      return nil
+    }
+
+    XCTAssertEqual(visibleUserMessages.count, 2)
+    XCTAssertTrue(visibleUserMessages.contains { $0.attachments == [first] })
+    XCTAssertTrue(visibleUserMessages.contains { $0.attachments == [second] })
+  }
+
+  func testQueuedImageSteerDedupeIncludesAttachmentIdentity() {
+    let first = AgentChatFileRef(path: "/project/.ade/attachments/first.jpg", type: "image", url: nil)
+    let second = AgentChatFileRef(path: "/project/.ade/attachments/second.jpg", type: "image", url: nil)
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: iso(now),
+        sequence: 1,
+        event: .userMessage(
+          text: "Attached image.",
+          attachments: [first],
+          turnId: nil,
+          steerId: "steer-1",
+          deliveryState: "queued",
+          processed: nil
+        )
+      )
+    ]
+    XCTAssertEqual(derivePendingWorkSteers(from: transcript).first?.attachments, [first])
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: [
+        WorkLocalEchoMessage(text: "Attached image.", timestamp: iso(now), deliveryState: "queued", attachments: [first]),
+        WorkLocalEchoMessage(text: "Attached image.", timestamp: iso(now), deliveryState: "queued", attachments: [second]),
+      ]
+    )
+    let visibleUserMessages = snapshot.timeline.compactMap { entry -> WorkChatMessage? in
+      if case .message(let message) = entry.payload, message.role == "user" { return message }
+      return nil
+    }
+
+    XCTAssertEqual(visibleUserMessages.count, 1)
+    XCTAssertEqual(visibleUserMessages.filter { $0.attachments == [first] }.count, 0)
+    XCTAssertEqual(visibleUserMessages.filter { $0.attachments == [second] }.count, 1)
+  }
+
   // MARK: - Fixtures
 
   private func makeSession(

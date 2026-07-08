@@ -462,7 +462,7 @@ private enum WorkPreviewData {
       sendWillQueueIsReconnect: false,
       transitionNamespace: nil,
       onOpenLane: {},
-      onSend: { _ in true },
+      onSend: { _, _ in true },
       onInterrupt: {},
       onApproveRequest: { _, _, _ in },
       onRespondToQuestion: { _, _, _, _ in },
@@ -502,7 +502,7 @@ private enum WorkPreviewData {
       preferredLaneId: WorkPreviewData.lane.id,
       activeProjectId: nil,
       activeProjectRootPath: nil,
-      onStarted: { _, _ in },
+      onStarted: { _, _, _, _, _ in },
       onCliStarted: { _ in },
       onRefreshLanes: {}
     )

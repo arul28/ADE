@@ -300,6 +300,9 @@ struct WorkSessionDestinationView: View {
 
   let sessionId: String
   let initialOpeningPrompt: String?
+  var initialOpeningPromptDispatchHandled = false
+  var initialOpeningDeliveryState: String? = nil
+  var initialOpeningAttachments: [AgentChatFileRef] = []
   let initialSession: TerminalSessionSummary?
   let initialChatSummary: AgentChatSessionSummary?
   let initialTranscript: [WorkChatEnvelope]?
@@ -1709,6 +1712,10 @@ struct WorkSessionDestinationView: View {
     guard !sending else { return }
     let promptKey = "\(sessionId)|\(prompt)"
     guard handledOpeningPromptKey != promptKey else { return }
+    if initialOpeningPromptDispatchHandled {
+      handledOpeningPromptKey = promptKey
+      return
+    }
     if transcript.contains(where: { envelope in
       if case .userMessage(let text, _, _, _, _, _) = envelope.event {
         return text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
@@ -1776,10 +1783,14 @@ struct WorkSessionDestinationView: View {
     guard stagedOpeningPromptKey != promptKey else { return }
     stagedOpeningPromptKey = promptKey
     let useSteer = shouldSteerActiveTurn
+    let deliveryState = initialOpeningPromptDispatchHandled
+      ? initialOpeningDeliveryState
+      : ((sendWillQueueChatMessage || useSteer) ? "queued" : "sending")
     localEchoMessages.append(WorkLocalEchoMessage(
       text: prompt,
       timestamp: workDateFormatter.string(from: Date()),
-      deliveryState: (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
+      deliveryState: deliveryState,
+      attachments: initialOpeningAttachments.isEmpty ? nil : initialOpeningAttachments
     ))
   }
 
@@ -1847,9 +1858,14 @@ struct WorkSessionDestinationView: View {
   }
 
   @MainActor
-  func upsertOptimisticPendingSteer(id: String, text: String, timestamp: String) {
+  func upsertOptimisticPendingSteer(
+    id: String,
+    text: String,
+    timestamp: String,
+    attachments: [AgentChatFileRef]? = nil
+  ) {
     let turnId = latestActiveTurnId(from: transcript)
-    let model = WorkPendingSteerModel(id: id, text: text, turnId: turnId, timestamp: timestamp)
+    let model = WorkPendingSteerModel(id: id, text: text, attachments: attachments, turnId: turnId, timestamp: timestamp)
     if let index = optimisticPendingSteers.firstIndex(where: { $0.id == id }) {
       optimisticPendingSteers[index] = model
     } else {
@@ -1896,19 +1912,21 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func reconcileLocalEchoMessages() {
     guard !localEchoMessages.isEmpty else { return }
-    let pendingSteerTexts = Set(
-      derivePendingWorkSteers(from: transcript).map { normalizedWorkLocalEchoText($0.text) }
+    let pendingSteerKeys = Set(
+      derivePendingWorkSteers(from: transcript).compactMap { workLocalEchoDedupeKey(text: $0.text, attachments: $0.attachments) }
     )
     localEchoMessages.removeAll { echo in
-      let normalizedEcho = normalizedWorkLocalEchoText(echo.text)
-      if pendingSteerTexts.contains(normalizedEcho) {
+      guard let echoKey = workLocalEchoDedupeKey(text: echo.text, attachments: echo.attachments) else {
+        return false
+      }
+      if pendingSteerKeys.contains(echoKey) {
         return true
       }
       return transcript.contains { envelope in
-        guard case .userMessage(let text, _, _, let steerId, let deliveryState, _) = envelope.event else {
+        guard case .userMessage(let text, let attachments, _, let steerId, let deliveryState, _) = envelope.event else {
           return false
         }
-        guard normalizedWorkLocalEchoText(text) == normalizedEcho else { return false }
+        guard workLocalEchoDedupeKey(text: text, attachments: attachments) == echoKey else { return false }
         if deliveryState == "queued", steerId != nil {
           return false
         }
@@ -2209,6 +2227,9 @@ extension WorkSessionDestinationView: Equatable {
   static func == (lhs: WorkSessionDestinationView, rhs: WorkSessionDestinationView) -> Bool {
     lhs.sessionId == rhs.sessionId
       && lhs.initialOpeningPrompt == rhs.initialOpeningPrompt
+      && lhs.initialOpeningPromptDispatchHandled == rhs.initialOpeningPromptDispatchHandled
+      && lhs.initialOpeningDeliveryState == rhs.initialOpeningDeliveryState
+      && lhs.initialOpeningAttachments == rhs.initialOpeningAttachments
       && lhs.initialSession == rhs.initialSession
       && lhs.initialChatSummary == rhs.initialChatSummary
       && workInitialTranscriptSeedRenderSignature(lhs.initialTranscript) == workInitialTranscriptSeedRenderSignature(rhs.initialTranscript)

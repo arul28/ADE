@@ -296,6 +296,163 @@ final class WorkComposerChipLayoutManager: NSLayoutManager {
 
 // MARK: - Composer text view
 
+private final class WorkComposerPastingTextView: UITextView {
+  var onPasteImages: (([UIImage]) -> Bool)?
+
+  override func paste(_ sender: Any?) {
+    if let image = UIPasteboard.general.image,
+       onPasteImages?([image]) == true {
+      return
+    }
+    super.paste(sender)
+  }
+}
+
+/// Plain UITextView composer for start-chat surfaces that do not need typed
+/// trigger chips but still need multiline sizing and image-paste interception.
+struct WorkPlainComposerTextView: UIViewRepresentable {
+  @Binding var text: String
+  @Binding var isFocused: Bool
+  @Binding var measuredHeight: CGFloat
+  let placeholder: String
+  var acceptsPastedImages = true
+  var onPasteImages: (([UIImage]) -> Void)? = nil
+
+  private var maxHeight: CGFloat {
+    ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * 6) + 8
+  }
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator(self)
+  }
+
+  func makeUIView(context: Context) -> UITextView {
+    let textView = WorkComposerPastingTextView()
+    textView.delegate = context.coordinator
+    textView.backgroundColor = .clear
+    textView.textContainerInset = .zero
+    textView.textContainer.lineFragmentPadding = 0
+    textView.isScrollEnabled = false
+    textView.font = UIFont.preferredFont(forTextStyle: .body)
+    textView.textColor = UIColor(ADEColor.textPrimary)
+    textView.tintColor = UIColor(ADEColor.accent)
+    textView.autocorrectionType = .yes
+    textView.autocapitalizationType = .sentences
+    textView.spellCheckingType = .yes
+    textView.smartQuotesType = .no
+    textView.smartDashesType = .no
+    textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    textView.accessibilityIdentifier = "Work.StartChat.Composer.TextView"
+    textView.onPasteImages = { [weak coordinator = context.coordinator] images in
+      coordinator?.handlePasteImages(images) ?? false
+    }
+
+    context.coordinator.textView = textView
+    context.coordinator.applyPlaceholder(placeholder)
+    if !text.isEmpty { textView.text = text }
+    context.coordinator.updatePlaceholderVisibility()
+    context.coordinator.updateHeight()
+    return textView
+  }
+
+  func updateUIView(_ textView: UITextView, context: Context) {
+    context.coordinator.parent = self
+    if let textView = textView as? WorkComposerPastingTextView {
+      textView.onPasteImages = { [weak coordinator = context.coordinator] images in
+        coordinator?.handlePasteImages(images) ?? false
+      }
+    }
+    if textView.text != text {
+      textView.text = text
+      context.coordinator.updatePlaceholderVisibility()
+    }
+    context.coordinator.applyPlaceholder(placeholder)
+    if isFocused, !textView.isFirstResponder {
+      textView.becomeFirstResponder()
+    } else if !isFocused, textView.isFirstResponder {
+      textView.resignFirstResponder()
+    }
+    context.coordinator.updateHeight()
+  }
+
+  @MainActor
+  final class Coordinator: NSObject, UITextViewDelegate {
+    var parent: WorkPlainComposerTextView
+    weak var textView: UITextView?
+    private var placeholderLabel: UILabel?
+
+    init(_ parent: WorkPlainComposerTextView) {
+      self.parent = parent
+    }
+
+    func textViewDidBeginEditing(_ textView: UITextView) {
+      if !parent.isFocused { parent.isFocused = true }
+    }
+
+    func textViewDidEndEditing(_ textView: UITextView) {
+      if parent.isFocused { parent.isFocused = false }
+    }
+
+    func textViewDidChange(_ textView: UITextView) {
+      if parent.text != textView.text {
+        parent.text = textView.text
+      }
+      updatePlaceholderVisibility()
+      updateHeight()
+    }
+
+    func handlePasteImages(_ images: [UIImage]) -> Bool {
+      guard parent.acceptsPastedImages,
+            let onPasteImages = parent.onPasteImages,
+            !images.isEmpty
+      else { return false }
+      onPasteImages(images)
+      return true
+    }
+
+    func applyPlaceholder(_ text: String) {
+      guard let textView else { return }
+      if placeholderLabel == nil {
+        let label = UILabel()
+        label.numberOfLines = 0
+        label.font = UIFont.preferredFont(forTextStyle: .body)
+        label.textColor = UIColor(ADEColor.textMuted)
+        label.translatesAutoresizingMaskIntoConstraints = false
+        textView.addSubview(label)
+        NSLayoutConstraint.activate([
+          label.leadingAnchor.constraint(equalTo: textView.leadingAnchor),
+          label.trailingAnchor.constraint(lessThanOrEqualTo: textView.trailingAnchor),
+          label.topAnchor.constraint(equalTo: textView.topAnchor),
+        ])
+        placeholderLabel = label
+      }
+      placeholderLabel?.text = text
+      updatePlaceholderVisibility()
+    }
+
+    func updatePlaceholderVisibility() {
+      placeholderLabel?.isHidden = !(textView?.text.isEmpty ?? true)
+    }
+
+    func updateHeight() {
+      guard let textView else { return }
+      let width = textView.bounds.width
+      guard width > 0 else { return }
+      let fitting = textView.sizeThatFits(CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)).height
+      let clamped = min(max(fitting, parent.minHeight), parent.maxHeight)
+      textView.isScrollEnabled = fitting > parent.maxHeight
+      if abs(parent.measuredHeight - clamped) > 0.5 {
+        DispatchQueue.main.async { [weak self] in
+          self?.parent.measuredHeight = clamped
+        }
+      }
+    }
+  }
+
+  var minHeight: CGFloat { 28 }
+}
+
 /// UITextView-backed composer input. SwiftUI's `TextField` exposes neither the
 /// cursor position (needed for cursor-relative trigger detection) nor inline
 /// styled runs (needed for chips), so the composer drops to UIKit here while
@@ -306,6 +463,7 @@ struct WorkComposerTextView: UIViewRepresentable {
   let canCompose: Bool
   let placeholder: String
   @Binding var measuredHeight: CGFloat
+  var onPasteImages: (([UIImage]) -> Void)? = nil
 
   private var maxHeight: CGFloat {
     ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight * 6) + 8
@@ -326,7 +484,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     container.lineFragmentPadding = 0
     layoutManager.addTextContainer(container)
 
-    let textView = UITextView(frame: .zero, textContainer: container)
+    let textView = WorkComposerPastingTextView(frame: .zero, textContainer: container)
     // UITextView retains only the text container of a manually-built TextKit 1
     // stack; keep the storage + layout manager alive on the coordinator or the
     // stack deallocates out from under the view.
@@ -347,6 +505,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.Chat.Composer.TextView"
+    textView.onPasteImages = { [weak coordinator = context.coordinator] images in
+      coordinator?.handlePasteImages(images) ?? false
+    }
 
     context.coordinator.textView = textView
     // Route committed suggestions straight to the live text view.
@@ -365,6 +526,11 @@ struct WorkComposerTextView: UIViewRepresentable {
   func updateUIView(_ textView: UITextView, context: Context) {
     context.coordinator.parent = self
     textView.isEditable = canCompose
+    if let textView = textView as? WorkComposerPastingTextView {
+      textView.onPasteImages = { [weak coordinator = context.coordinator] images in
+        coordinator?.handlePasteImages(images) ?? false
+      }
+    }
     context.coordinator.applyPlaceholder(placeholder)
 
     // Reflect external mutations to the source of truth (dictation insert,
@@ -514,6 +680,13 @@ struct WorkComposerTextView: UIViewRepresentable {
       if textView.markedTextRange == nil {
         detectTrigger()
       }
+    }
+
+    func handlePasteImages(_ images: [UIImage]) -> Bool {
+      guard let onPasteImages = parent.onPasteImages, !images.isEmpty else { return false }
+      onPasteImages(images)
+      parent.controller.clear()
+      return true
     }
 
     // MARK: Detection + commit

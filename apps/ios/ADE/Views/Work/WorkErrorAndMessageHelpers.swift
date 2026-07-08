@@ -1090,6 +1090,7 @@ enum WorkPendingInputItem: Identifiable, Equatable {
 struct WorkPendingSteerModel: Identifiable, Equatable {
   let id: String
   var text: String
+  var attachments: [AgentChatFileRef]? = nil
   let turnId: String?
   let timestamp: String
 }
@@ -1496,10 +1497,16 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var queuedSteerIdsByText: [String: Set<String>] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
-    case .userMessage(let text, _, let turnId, let steerId, let deliveryState, _):
+    case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued", !resolved.contains(steerId) {
         if queue[steerId] == nil { order.append(steerId) }
-        queue[steerId] = WorkPendingSteerModel(id: steerId, text: text, turnId: turnId, timestamp: envelope.timestamp)
+        queue[steerId] = WorkPendingSteerModel(
+          id: steerId,
+          text: text,
+          attachments: attachments,
+          turnId: turnId,
+          timestamp: envelope.timestamp
+        )
         let normalizedText = normalizedQueuedSteerText(text)
         if !normalizedText.isEmpty {
           queuedSteerIdsByText[normalizedText, default: []].insert(steerId)

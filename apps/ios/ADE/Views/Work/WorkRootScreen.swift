@@ -25,6 +25,9 @@ struct WorkSessionRoute: Hashable {
   let openId: UUID = UUID()
   let sessionId: String
   var openingPrompt: String? = nil
+  var openingPromptDispatchHandled = false
+  var openingDeliveryState: String? = nil
+  var openingAttachments: [AgentChatFileRef] = []
 }
 
 struct WorkDraftChatSession {
@@ -642,6 +645,9 @@ struct WorkRootScreen: View {
         WorkSessionDestinationView(
           sessionId: route.sessionId,
           initialOpeningPrompt: route.openingPrompt,
+          initialOpeningPromptDispatchHandled: route.openingPromptDispatchHandled,
+          initialOpeningDeliveryState: route.openingDeliveryState,
+          initialOpeningAttachments: route.openingAttachments,
           initialSession: initialSession,
           initialChatSummary: chatSummaries[route.sessionId],
           initialTranscript: nil,
@@ -664,7 +670,7 @@ struct WorkRootScreen: View {
           preferredLaneId: route.preferredLaneId,
           activeProjectId: syncService.activeProjectId,
           activeProjectRootPath: syncService.activeProjectRootPath,
-          onStarted: { summary, opener in
+          onStarted: { summary, opener, openerDispatchHandled, openerDeliveryState, openerAttachments in
             let sessionId = summary.sessionId
             let trimmed = opener.trimmingCharacters(in: .whitespacesAndNewlines)
             optimisticSessions[sessionId] = makeOptimisticSession(for: summary)
@@ -675,7 +681,13 @@ struct WorkRootScreen: View {
             // Back goes to the sidebar, not to an empty "Start a new chat"
             // form.
             var fresh = NavigationPath()
-            fresh.append(WorkSessionRoute(sessionId: sessionId, openingPrompt: trimmed))
+            fresh.append(WorkSessionRoute(
+              sessionId: sessionId,
+              openingPrompt: trimmed.isEmpty ? nil : trimmed,
+              openingPromptDispatchHandled: openerDispatchHandled,
+              openingDeliveryState: openerDeliveryState,
+              openingAttachments: openerAttachments
+            ))
             await Task.yield()
             path = fresh
             Task { @MainActor in

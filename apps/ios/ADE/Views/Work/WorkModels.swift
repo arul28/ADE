@@ -127,6 +127,7 @@ struct WorkLocalEchoMessage: Identifiable, Equatable {
   let text: String
   let timestamp: String
   var deliveryState: String? = nil
+  var attachments: [AgentChatFileRef]? = nil
 }
 
 struct WorkPendingApprovalModel: Identifiable, Equatable {

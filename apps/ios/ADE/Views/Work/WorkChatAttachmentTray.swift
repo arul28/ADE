@@ -1,10 +1,14 @@
 import SwiftUI
 import ImageIO
+import PhotosUI
 import UIKit
 
 private let workChatRemoteImageMaxBytes = 5 * 1024 * 1024
 private let workChatRemoteImageTimeoutSeconds: TimeInterval = 12
 private let workChatAttachmentPreviewMinimumPixels: CGFloat = 96
+private let workChatInputAttachmentMaxBytes = 10 * 1024 * 1024
+private let workChatInputAttachmentInitialMaxDimension: CGFloat = 2400
+private let workChatInputAttachmentMinimumMaxDimension: CGFloat = 960
 
 private let workChatRemoteImageSession: URLSession = {
   let configuration = URLSessionConfiguration.ephemeral
@@ -41,6 +45,462 @@ func workChatAttachmentAccessibilityLabel(_ attachments: [AgentChatFileRef]) -> 
     return "Attachment: \(names[0])"
   }
   return "\(names.count) attachments: \(names.joined(separator: ", "))"
+}
+
+enum WorkChatInputAttachmentState: Equatable {
+  case loading
+  case ready
+  case failed(String)
+}
+
+struct WorkChatInputAttachment: Identifiable {
+  let id: UUID
+  var image: UIImage?
+  var uploadData: Data?
+  var filename: String
+  var mimeType: String
+  var state: WorkChatInputAttachmentState
+
+  init(
+    id: UUID = UUID(),
+    image: UIImage? = nil,
+    uploadData: Data? = nil,
+    filename: String,
+    mimeType: String = "image/jpeg",
+    state: WorkChatInputAttachmentState
+  ) {
+    self.id = id
+    self.image = image
+    self.uploadData = uploadData
+    self.filename = filename
+    self.mimeType = mimeType
+    self.state = state
+  }
+
+  var isReady: Bool {
+    if case .ready = state { return uploadData != nil }
+    return false
+  }
+
+  var isLoading: Bool {
+    if case .loading = state { return true }
+    return false
+  }
+
+  var errorMessage: String? {
+    if case .failed(let message) = state { return message }
+    return nil
+  }
+}
+
+func workChatOutgoingText(_ text: String, attachmentCount: Int) -> String {
+  let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  if !trimmed.isEmpty { return trimmed }
+  guard attachmentCount > 0 else { return "" }
+  return attachmentCount == 1 ? "Attached image." : "Attached \(attachmentCount) images."
+}
+
+func workChatInputReadyAttachments(_ attachments: [WorkChatInputAttachment]) -> [WorkChatInputAttachment] {
+  attachments.filter(\.isReady)
+}
+
+func workChatInputHasLoadingAttachments(_ attachments: [WorkChatInputAttachment]) -> Bool {
+  attachments.contains(where: \.isLoading)
+}
+
+func workChatInputAttachmentDataURL(_ attachment: WorkChatInputAttachment) -> String? {
+  guard let uploadData = attachment.uploadData else { return nil }
+  return "data:\(attachment.mimeType);base64,\(uploadData.base64EncodedString())"
+}
+
+@MainActor
+func workChatInputAttachment(from image: UIImage, filename: String? = nil, id: UUID = UUID()) -> WorkChatInputAttachment? {
+  guard let encoded = workChatJPEGDataForUpload(image) else { return nil }
+  let cleanedFilename = filename?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let resolvedFilename: String
+  if let cleanedFilename, !cleanedFilename.isEmpty {
+    resolvedFilename = cleanedFilename
+  } else {
+    resolvedFilename = "image-\(id.uuidString.prefix(8)).jpg"
+  }
+  return WorkChatInputAttachment(
+    id: id,
+    image: encoded.image,
+    uploadData: encoded.data,
+    filename: resolvedFilename,
+    state: .ready
+  )
+}
+
+@MainActor
+func workChatInputPasteImages(_ images: [UIImage], into attachments: Binding<[WorkChatInputAttachment]>) {
+  guard !images.isEmpty else { return }
+  var next = attachments.wrappedValue
+  for image in images {
+    let id = UUID()
+    if let attachment = workChatInputAttachment(from: image, filename: "pasted-\(id.uuidString.prefix(8)).jpg", id: id) {
+      next.append(attachment)
+    } else {
+      next.append(WorkChatInputAttachment(
+        id: id,
+        filename: "pasted-\(id.uuidString.prefix(8)).jpg",
+        state: .failed("This image could not be prepared for upload.")
+      ))
+    }
+  }
+  attachments.wrappedValue = next
+}
+
+@MainActor
+func workChatSaveInputAttachments(
+  _ attachments: [WorkChatInputAttachment],
+  syncService: SyncService,
+  chatSessionId: String? = nil,
+  targetProjectId: String? = nil,
+  targetProjectRootPath: String? = nil
+) async throws -> [AgentChatFileRef] {
+  var refs: [AgentChatFileRef] = []
+  for attachment in workChatInputReadyAttachments(attachments) {
+    guard let dataUrl = workChatInputAttachmentDataURL(attachment) else { continue }
+    let saved: SavedChatTempAttachment
+    if let chatSessionId, !chatSessionId.isEmpty {
+      saved = try await syncService.saveChatTempAttachmentForChat(
+        sessionId: chatSessionId,
+        dataUrl: dataUrl,
+        filename: attachment.filename
+      )
+    } else {
+      saved = try await syncService.saveChatTempAttachment(
+        dataUrl: dataUrl,
+        filename: attachment.filename,
+        targetProjectId: targetProjectId,
+        targetProjectRootPath: targetProjectRootPath
+      )
+    }
+    refs.append(AgentChatFileRef(path: saved.path, type: "image"))
+  }
+  return refs
+}
+
+private func workChatJPEGDataForUpload(_ image: UIImage) -> (image: UIImage, data: Data)? {
+  var maxDimension = min(
+    workChatInputAttachmentInitialMaxDimension,
+    max(image.size.width, image.size.height)
+  )
+  let qualities: [CGFloat] = [0.88, 0.76, 0.64, 0.52, 0.40]
+  var attempted = false
+
+  while !attempted || maxDimension >= workChatInputAttachmentMinimumMaxDimension {
+    attempted = true
+    guard let rendered = workChatRenderedJPEGImage(image, maxDimension: maxDimension) else { return nil }
+    for quality in qualities {
+      guard let data = rendered.jpegData(compressionQuality: quality) else { continue }
+      if data.count <= workChatInputAttachmentMaxBytes {
+        return (rendered, data)
+      }
+    }
+    if maxDimension <= workChatInputAttachmentMinimumMaxDimension {
+      break
+    }
+    maxDimension *= 0.75
+  }
+
+  return nil
+}
+
+private func workChatRenderedJPEGImage(_ image: UIImage, maxDimension: CGFloat) -> UIImage? {
+  guard image.size.width > 0, image.size.height > 0 else { return nil }
+  let longest = max(image.size.width, image.size.height)
+  let scale = min(1, maxDimension / longest)
+  let targetSize = CGSize(
+    width: max(1, floor(image.size.width * scale)),
+    height: max(1, floor(image.size.height * scale))
+  )
+  let format = UIGraphicsImageRendererFormat()
+  format.scale = 1
+  format.opaque = true
+  return UIGraphicsImageRenderer(size: targetSize, format: format).image { context in
+    UIColor.white.setFill()
+    context.fill(CGRect(origin: .zero, size: targetSize))
+    image.draw(in: CGRect(origin: .zero, size: targetSize))
+  }
+}
+
+struct WorkChatAttachmentAddButton: View {
+  @Binding var attachments: [WorkChatInputAttachment]
+  var disabled = false
+
+  @State private var pickerPresented = false
+  @State private var pickerItems: [PhotosPickerItem] = []
+
+  var body: some View {
+    Menu {
+      Button {
+        pickerPresented = true
+      } label: {
+        Label("Attach from camera roll", systemImage: "photo.on.rectangle")
+      }
+    } label: {
+      Image(systemName: "plus")
+        .font(.system(size: 14, weight: .bold))
+        .foregroundStyle(disabled ? ADEColor.textMuted.opacity(0.35) : ADEColor.textPrimary)
+        .frame(width: 28, height: 28)
+        .background(ADEColor.surfaceBackground.opacity(disabled ? 0.18 : 0.38), in: Circle())
+        .overlay(Circle().stroke(ADEColor.border.opacity(disabled ? 0.16 : 0.28), lineWidth: 0.6))
+        .contentShape(Circle())
+    }
+    .disabled(disabled)
+    .accessibilityLabel("Add attachment")
+    .accessibilityHint("Shows attachment options.")
+    .photosPicker(
+      isPresented: $pickerPresented,
+      selection: $pickerItems,
+      maxSelectionCount: 0,
+      matching: .images,
+      preferredItemEncoding: .automatic
+    )
+    .onChange(of: pickerItems) { _, newItems in
+      guard !newItems.isEmpty else { return }
+      pickerItems = []
+      Task { await appendPhotoPickerItems(newItems) }
+    }
+  }
+
+  @MainActor
+  private func appendPhotoPickerItems(_ items: [PhotosPickerItem]) async {
+    for item in items {
+      let id = UUID()
+      let fallbackName = "image-\(id.uuidString.prefix(8)).jpg"
+      attachments.append(WorkChatInputAttachment(
+        id: id,
+        filename: fallbackName,
+        state: .loading
+      ))
+      do {
+        guard let data = try await item.loadTransferable(type: Data.self),
+              let image = UIImage(data: data) else {
+          markAttachment(id: id, failed: "This image could not be read.")
+          continue
+        }
+        guard let attachment = workChatInputAttachment(from: image, filename: fallbackName, id: id) else {
+          markAttachment(id: id, failed: "This image is too large to upload.")
+          continue
+        }
+        replaceAttachment(id: id, with: attachment)
+      } catch is CancellationError {
+        attachments.removeAll { $0.id == id }
+      } catch {
+        markAttachment(
+          id: id,
+          failed: "Could not load this image from camera roll. If it is in iCloud, check your connection and try again."
+        )
+      }
+    }
+  }
+
+  @MainActor
+  private func replaceAttachment(id: UUID, with attachment: WorkChatInputAttachment) {
+    guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+    attachments[index] = attachment
+  }
+
+  @MainActor
+  private func markAttachment(id: UUID, failed message: String) {
+    guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+    attachments[index].state = .failed(message)
+  }
+}
+
+struct WorkChatInputAttachmentTray: View {
+  @Binding var attachments: [WorkChatInputAttachment]
+  @State private var expandedAttachment: WorkChatInputAttachment?
+
+  private var attachmentCountLabel: String {
+    let readyCount = attachments.filter(\.isReady).count
+    let loadingCount = attachments.filter(\.isLoading).count
+    if loadingCount > 0 {
+      return loadingCount == 1 ? "Loading image" : "Loading \(loadingCount) images"
+    }
+    if readyCount == 1 { return "1 image attached" }
+    return "\(readyCount) images attached"
+  }
+
+  var body: some View {
+    if !attachments.isEmpty {
+      VStack(alignment: .leading, spacing: 7) {
+        HStack(spacing: 6) {
+          Image(systemName: "photo.on.rectangle")
+            .font(.system(size: 11, weight: .semibold))
+          Text(attachmentCountLabel)
+            .font(.caption2.weight(.semibold))
+          Spacer(minLength: 0)
+        }
+        .foregroundStyle(ADEColor.textMuted)
+
+        ScrollView(.horizontal, showsIndicators: false) {
+          HStack(spacing: 8) {
+            ForEach(attachments) { attachment in
+              WorkChatInputAttachmentThumb(attachment: attachment) {
+                expandedAttachment = attachment
+              } onRemove: {
+                attachments.removeAll { $0.id == attachment.id }
+              }
+            }
+          }
+        }
+      }
+      .padding(.horizontal, 2)
+      .sheet(item: $expandedAttachment) { attachment in
+        WorkChatInputAttachmentPreview(
+          attachment: attachment,
+          onRemove: {
+            attachments.removeAll { $0.id == attachment.id }
+            expandedAttachment = nil
+          }
+        )
+      }
+    }
+  }
+}
+
+private struct WorkChatInputAttachmentThumb: View {
+  let attachment: WorkChatInputAttachment
+  let onOpen: () -> Void
+  let onRemove: () -> Void
+
+  var body: some View {
+    ZStack(alignment: .topTrailing) {
+      Button(action: onOpen) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(ADEColor.surfaceBackground.opacity(0.42))
+            .frame(width: 72, height: 72)
+            .overlay(
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(ADEColor.border.opacity(0.34), lineWidth: 0.8)
+            )
+
+          if let image = attachment.image {
+            Image(uiImage: image)
+              .resizable()
+              .scaledToFill()
+              .frame(width: 72, height: 72)
+              .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+          } else {
+            placeholder
+          }
+        }
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(accessibilityLabel)
+
+      Button(action: onRemove) {
+        Image(systemName: "xmark")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(Color.white)
+          .frame(width: 18, height: 18)
+          .background(Color.black.opacity(0.62), in: Circle())
+      }
+      .buttonStyle(.plain)
+      .padding(4)
+      .accessibilityLabel("Remove image")
+    }
+  }
+
+  @ViewBuilder
+  private var placeholder: some View {
+    switch attachment.state {
+    case .loading:
+      ProgressView()
+        .controlSize(.small)
+        .tint(ADEColor.textSecondary)
+    case .ready:
+      Image(systemName: "photo")
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+    case .failed:
+      VStack(spacing: 4) {
+        Image(systemName: "photo.badge.exclamationmark")
+          .font(.system(size: 17, weight: .semibold))
+        Text("Failed")
+          .font(.system(size: 9, weight: .semibold))
+      }
+      .foregroundStyle(ADEColor.warning)
+    }
+  }
+
+  private var accessibilityLabel: String {
+    switch attachment.state {
+    case .loading:
+      return "Image loading"
+    case .ready:
+      return "Open attached image"
+    case .failed(let message):
+      return "Image failed. \(message)"
+    }
+  }
+}
+
+private struct WorkChatInputAttachmentPreview: View {
+  let attachment: WorkChatInputAttachment
+  let onRemove: () -> Void
+
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationStack {
+      VStack(spacing: 16) {
+        if let image = attachment.image {
+          Image(uiImage: image)
+            .resizable()
+            .scaledToFit()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        } else if attachment.isLoading {
+          ProgressView("Loading image…")
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+          VStack(spacing: 10) {
+            Image(systemName: "photo.badge.exclamationmark")
+              .font(.system(size: 34, weight: .semibold))
+              .foregroundStyle(ADEColor.warning)
+            Text(attachment.errorMessage ?? "This image could not be loaded.")
+              .font(.body)
+              .foregroundStyle(ADEColor.textSecondary)
+              .multilineTextAlignment(.center)
+          }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+      }
+      .padding(16)
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .navigationTitle("Attached image")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .topBarLeading) {
+          Button("Done") { dismiss() }
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
+          Button {
+            if let image = attachment.image {
+              UIPasteboard.general.image = image
+              ADEHaptics.success()
+            }
+          } label: {
+            Label("Copy", systemImage: "doc.on.doc")
+          }
+          .disabled(attachment.image == nil)
+
+          Button(role: .destructive) {
+            onRemove()
+          } label: {
+            Label("Remove", systemImage: "trash")
+          }
+        }
+      }
+    }
+  }
 }
 
 private func workChatAttachmentStableIdentity(_ ref: AgentChatFileRef) -> String {
