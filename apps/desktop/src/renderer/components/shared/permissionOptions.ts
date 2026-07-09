@@ -88,7 +88,7 @@ export function getPermissionOptions(opts: {
     return [
       {
         value: "default",
-        label: "Default",
+        label: "Manual",
         shortDesc: "Prompts before each tool type on first use",
         detail: "Standard behavior. Read operations are free; writes, edits, and Bash commands require your approval on first use per session.",
         allows: ["File reads", "Grep / Glob / LS", "Plan generation"],

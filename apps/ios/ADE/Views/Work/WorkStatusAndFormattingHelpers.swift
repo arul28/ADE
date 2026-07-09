@@ -708,12 +708,55 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
   }
 }
 
+func workRuntimeModeTint(provider: String, mode: String) -> Color {
+  switch provider.lowercased() {
+  case "claude":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "full-auto": return ADEColor.danger
+    case "auto", "edit": return ADEColor.warning
+    default: return ADEColor.success
+    }
+  case "codex":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "full-auto": return ADEColor.danger
+    case "edit": return ADEColor.warning
+    case "config-toml": return ADEColor.textSecondary
+    default: return ADEColor.success
+    }
+  case "opencode":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "full-auto": return ADEColor.danger
+    case "config-toml": return ADEColor.textSecondary
+    default: return ADEColor.warning
+    }
+  case "cursor":
+    switch mode {
+    case "plan": return ADEColor.purpleAccent
+    case "full-auto": return ADEColor.danger
+    default: return ADEColor.success
+    }
+  case "droid", "factory":
+    switch mode {
+    case "auto-high", "full-auto": return ADEColor.danger
+    case "auto-medium", "default": return ADEColor.warning
+    case "agi": return ADEColor.purpleAccent
+    default: return ADEColor.success
+    }
+  default:
+    return workRuntimeModeTint(mode)
+  }
+}
+
 func workRuntimeModeTint(_ mode: String) -> Color {
   switch mode {
   case "full-auto", "auto-high": return ADEColor.danger
-  case "edit", "auto", "ask", "auto-low", "auto-medium", "default": return ADEColor.warning
+  case "edit", "auto", "ask", "auto-low", "auto-medium", "default": return ADEColor.success
   case "agi": return ADEColor.purpleAccent
-  case "plan", "read-only": return ADEColor.accent
+  case "plan": return ADEColor.purpleAccent
+  case "read-only": return ADEColor.success
   default: return ADEColor.textSecondary
   }
 }

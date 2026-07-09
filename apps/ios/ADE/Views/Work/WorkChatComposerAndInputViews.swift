@@ -292,7 +292,7 @@ struct WorkComposerControlsRow: View {
 
   @ViewBuilder
   private var collapsedAccessControl: some View {
-    let tint = workRuntimeModeTint(currentMode)
+    let tint = workRuntimeModeTint(provider: provider, mode: currentMode)
 
     if modeOptions.isEmpty || onSelectMode == nil {
       collapsedDotButton(tint: tint, glyph: nil)
@@ -340,13 +340,13 @@ struct WorkComposerControlsRow: View {
   @ViewBuilder
   private var accessPill: some View {
     if modeOptions.isEmpty || onSelectMode == nil {
-      pillContent(dotColor: workRuntimeModeTint(currentMode), label: modeLabel, showChevron: false)
+      pillContent(dotColor: workRuntimeModeTint(provider: provider, mode: currentMode), label: modeLabel, showChevron: false)
     } else {
       HStack(spacing: 6) {
         ForEach(modeOptions) { option in
           composerOptionChip(
             title: option.title,
-            tint: workRuntimeModeTint(option.id),
+            tint: workRuntimeModeTint(provider: provider, mode: option.id),
             isSelected: option.id == currentMode,
             accessibilityPrefix: "Access mode"
           ) {
