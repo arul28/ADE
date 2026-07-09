@@ -12,6 +12,7 @@ import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
 import { claudeProjectSlugForCwd, slashEscapedCwd } from "./discoveryUtils";
+import { createExternalSessionsService } from "./externalSessionsService";
 
 type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
 const require = createRequire(import.meta.url);
@@ -365,7 +366,7 @@ describe("external session provider discovery", () => {
     const scriptPath = path.join(binDir, "opencode");
     fs.writeFileSync(
       scriptPath,
-      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","created":1783332000000,"updated":1783332060000},{"id":"open-2","directory":"${cwd}","title":"New session - 2026-05-01T17:02:11.923Z","created":1783331000000,"updated":1783331060000}]'\n`,
+      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","created":1783332000000,"updated":1783332060000},{"id":"open-2","directory":"${cwd}","title":"New session - 2026-05-01T17:02:11.923Z","created":1783331000000,"updated":1783331060000},{"id":"open-3","title":"Missing cwd","created":1783330000000,"updated":1783330060000}]'\n`,
       "utf8",
     );
     fs.chmodSync(scriptPath, 0o755);
@@ -374,7 +375,7 @@ describe("external session provider discovery", () => {
 
     const sessions = await discoverOpenCodeSessions({ homeDir, cwd, limit: 10 });
 
-    expect(sessions).toHaveLength(2);
+    expect(sessions).toHaveLength(3);
     expect(sessions[0]).toMatchObject({
       provider: "opencode",
       id: "open-1",
@@ -390,6 +391,51 @@ describe("external session provider discovery", () => {
       title: null,
       preview: null,
       messageCount: null,
+    });
+    expect(sessions[2]).toMatchObject({
+      provider: "opencode",
+      id: "open-3",
+      cwd: null,
+      title: "Missing cwd",
+    });
+
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot: cwd,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => cwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: { warn: vi.fn(), info: vi.fn() },
+    });
+    const scopedSessions = await service.list({
+      providers: ["opencode"],
+      cwd,
+      scope: "project",
+      limit: 10,
+    });
+    expect(scopedSessions.find((session) => session.id === "open-3")).toMatchObject({
+      cwd: fs.realpathSync(cwd),
+      cwdMatchesRequestedLane: true,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: false,
+        fork: true,
+        forkIntoDifferentCwd: false,
+        importToChat: false,
+      },
+    });
+
+    const allSessions = await service.list({ providers: ["opencode"], scope: "all", limit: 10 });
+    expect(allSessions.find((session) => session.id === "open-3")).toMatchObject({
+      cwd: null,
+      capabilities: {
+        resumeInPlace: false,
+        resumeInDifferentCwd: false,
+        fork: false,
+        forkIntoDifferentCwd: false,
+        importToChat: false,
+      },
     });
 
     fs.writeFileSync(scriptPath, "#!/bin/sh\nprintf '%s\\n' 'not-json'\n", "utf8");

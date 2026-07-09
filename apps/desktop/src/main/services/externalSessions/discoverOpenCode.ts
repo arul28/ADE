@@ -25,7 +25,12 @@ export async function discoverOpenCodeSessions(
   const limit = normalizeExternalSessionLimit(args.limit);
   const executable = resolveOpenCodeBinaryPath();
   if (!executable) return [];
-  const cwd = args.cwd?.trim() || args.projectRoot?.trim() || resolveHomeDir(args);
+  const requestedCwd = args.cwd?.trim() || args.projectRoot?.trim() || null;
+  const cwd = requestedCwd ?? resolveHomeDir(args);
+  // OpenCode may omit the directory from `session list` rows. When discovery
+  // is intentionally scoped, the command's requested cwd is the only safe
+  // project association available; unscoped discovery must leave it unknown.
+  const scopedCwdFallback = args.scopeRoots?.length && requestedCwd ? path.resolve(requestedCwd) : null;
   const requestedLimit = args.scopeRoots?.length ? Math.max(limit, 1000) : limit;
   const env: NodeJS.ProcessEnv = { ...process.env, ...(args.env ?? {}), NO_COLOR: "1" };
   delete env.FORCE_COLOR;
@@ -68,7 +73,7 @@ export async function discoverOpenCodeSessions(
     const record = asRecord(row);
     const id = asString(record?.id) ?? asString(record?.sessionID) ?? asString(record?.sessionId);
     if (!record || !id) continue;
-    const rowCwd = asString(record.directory) ?? asString(record.cwd);
+    const rowCwd = asString(record.directory) ?? asString(record.cwd) ?? scopedCwdFallback;
     if (!cwdIsInScope(rowCwd, args.scopeRoots)) continue;
     const title = cleanSessionTitle(asString(record.title)) ?? cleanSessionTitle(asString(record.name));
     const preview = clipExternalSessionText(
