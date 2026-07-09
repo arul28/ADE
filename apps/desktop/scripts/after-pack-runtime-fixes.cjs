@@ -46,7 +46,8 @@ function darwinCrsqliteTargetsForContext(context) {
 
 function darwinPackageArchForContext(context) {
   const appOutDir = String(context?.appOutDir || "");
-  if (/mac-universal/.test(appOutDir) || context?.arch === 4) return null;
+  const appOutDirName = path.basename(appOutDir);
+  if (appOutDirName === "mac-universal" || context?.arch === 4) return null;
   if (/arm64/.test(appOutDir) || context?.arch === 3) return "darwin-arm64";
   return "darwin-x64";
 }
