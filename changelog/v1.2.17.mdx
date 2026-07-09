@@ -1,0 +1,22 @@
+---
+title: "v1.2.17"
+description: "Release notes for ADE v1.2.17 - July 9, 2026"
+---
+
+v1.2.17 restores the macOS desktop updater to per-architecture release assets, polishes chat launch controls, improves terminal file-change review, and brings the redesigned iOS model picker to TestFlight.
+
+---
+
+## Desktop and CLI
+
+- **Per-architecture updater recovery.** The release workflow now builds signed arm64 and x64 macOS artifacts independently, merges their updater manifests, and avoids publishing universal updater ZIPs.
+- **Chat launch control polish.** Permission mode and reasoning effort controls are clearer across chat, PR resolver launch, native launch helpers, and mobile-facing action summaries.
+- **Terminal file-change review.** Terminal-driven file changes now surface a stronger primary action and cleaner supporting state across desktop and ADE Code.
+- **Provider sign-in recovery.** Claude and model-provider prompts share a more direct sign-in path, including empty-state and settings flows.
+
+---
+
+## iOS
+
+- **Model picker redesign.** The Work model picker has a denser, clearer mobile layout with improved provider, permission, and reasoning-effort affordances.
+- **Composer and launch consistency.** Hub, Linear, new-chat, and Work composer surfaces now align around the redesigned picker and updated launch-control summaries.

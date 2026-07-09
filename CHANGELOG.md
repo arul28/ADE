@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.17] - 2026-07-09
+
+### Changed
+
+- Restored the macOS desktop release path to per-architecture arm64 and x64 updater assets instead of universal updater ZIPs.
+- Improved chat permission mode and reasoning effort controls across desktop launch surfaces, PR resolver launch controls, native launch helpers, and mobile-facing action summaries.
+- Redesigned the iOS Work model picker with clearer provider, permission, and reasoning-effort affordances.
+
+### Fixed
+
+- Improved terminal-driven file-change review so the primary action and supporting state are clearer across desktop and ADE Code.
+- Improved provider sign-in recovery from Claude/model empty states and settings flows.
+
 ## [1.2.16] - 2026-07-08
 
 ### Changed
@@ -611,7 +624,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.16...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.17...HEAD
+[1.2.17]: https://github.com/arul28/ADE/compare/v1.2.16...v1.2.17
 [1.2.16]: https://github.com/arul28/ADE/compare/v1.2.15...v1.2.16
 [1.2.15]: https://github.com/arul28/ADE/compare/v1.2.14...v1.2.15
 [1.2.14]: https://github.com/arul28/ADE/compare/v1.2.13...v1.2.14
