@@ -11917,6 +11917,17 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(parsedSourceSessionId, "chat-child")
   }
 
+  func testCodexRecoveryRemainsAvailableInSubagentTranscriptWhenHostSupportsIt() {
+    XCTAssertTrue(workChatCodexRecoveryAvailable(
+      hostSupportsRecovery: true,
+      viewingSubagent: true
+    ))
+    XCTAssertFalse(workChatCodexRecoveryAvailable(
+      hostSupportsRecovery: false,
+      viewingSubagent: true
+    ))
+  }
+
   func testMcpConnectorIdentitySurvivesDecodedAndFallbackToolCards() throws {
     let eventObject: [String: Any] = [
       "type": "tool_call",
