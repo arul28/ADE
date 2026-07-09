@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.18] - 2026-07-09
+
+### Changed
+
+- Carried forward the per-architecture macOS release workflow, chat launch-control polish, terminal file-change review improvements, and redesigned iOS Work model picker from v1.2.17.
+
+### Fixed
+
+- Fixed per-architecture macOS packaging by allowing the after-pack hook to keep the runner-built `cpu-features` native addon when universal staging inputs are absent.
+
 ## [1.2.17] - 2026-07-09
 
 ### Changed
@@ -624,7 +634,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.17...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.18...HEAD
+[1.2.18]: https://github.com/arul28/ADE/compare/v1.2.17...v1.2.18
 [1.2.17]: https://github.com/arul28/ADE/compare/v1.2.16...v1.2.17
 [1.2.16]: https://github.com/arul28/ADE/compare/v1.2.15...v1.2.16
 [1.2.15]: https://github.com/arul28/ADE/compare/v1.2.14...v1.2.15

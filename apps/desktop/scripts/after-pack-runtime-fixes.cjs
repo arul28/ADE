@@ -151,8 +151,16 @@ function replaceCpuFeaturesNativeAddon(runtimeRoot, context) {
     "Release",
     "cpufeatures.node",
   );
-  requireFile(preparedAddonPath, `prepared ${packageArch} cpu-features native addon`);
   requireFile(packagedAddonPath, "packaged cpu-features native addon");
+
+  if (!fs.existsSync(preparedAddonPath)) {
+    console.log(
+      `[afterPack] Keeping packaged cpu-features native addon for ${packageArch}; ` +
+        `no prepared replacement found at ${preparedAddonPath}`,
+    );
+    return;
+  }
+
   fs.copyFileSync(preparedAddonPath, packagedAddonPath);
   console.log(`[afterPack] Replaced cpu-features native addon for ${packageArch}`);
 }

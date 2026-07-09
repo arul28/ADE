@@ -1,0 +1,22 @@
+---
+title: "v1.2.18"
+description: "Release notes for ADE v1.2.18 - July 9, 2026"
+---
+
+v1.2.18 fixes the per-architecture macOS release build and carries forward the `v1.2.17` desktop, CLI, and iOS improvements.
+
+---
+
+## Desktop and CLI
+
+- **Per-architecture updater recovery.** The release workflow builds signed arm64 and x64 macOS artifacts independently, merges their updater manifests, and avoids publishing universal updater ZIPs.
+- **Per-arch packaging fix.** macOS after-pack now keeps the runner-built `cpu-features` native addon when universal staging inputs are absent, allowing native arm64 and x64 builds to complete.
+- **Chat launch control polish.** Permission mode and reasoning effort controls are clearer across chat, PR resolver launch, native launch helpers, and mobile-facing action summaries.
+- **Terminal file-change review.** Terminal-driven file changes now surface a stronger primary action and cleaner supporting state across desktop and ADE Code.
+
+---
+
+## iOS
+
+- **Model picker redesign.** The Work model picker has a denser, clearer mobile layout with improved provider, permission, and reasoning-effort affordances.
+- **Composer and launch consistency.** Hub, Linear, new-chat, and Work composer surfaces now align around the redesigned picker and updated launch-control summaries.
