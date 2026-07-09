@@ -1,6 +1,6 @@
 ---
 name: release
-description: 'Local-first ADE release conductor: detect whether desktop and/or iOS actually changed, bump desktop patch versions, keep iOS marketing versions fixed while bumping build numbers, publish desktop GitHub Releases from this Mac, and distribute TestFlight builds to all beta users.'
+description: 'ADE release conductor: detect whether desktop and/or iOS actually changed, bump desktop patch versions, keep iOS marketing versions fixed while bumping build numbers, ship desktop through the GitHub Actions release workflow, and distribute TestFlight builds to all beta users.'
 ---
 
 # ADE Release Skill
@@ -9,9 +9,11 @@ Use this skill when the user wants to release ADE, automate releases from a
 cron/agent, decide whether a release is needed, publish a desktop release, or
 ship a TestFlight build.
 
-This is a **local-first release flow**. GitHub Releases remain the public
-artifact host for Electron updater, but this Mac can be the release machine for
-Apple signing, notarization, GitHub asset upload, and TestFlight upload.
+This is a **GitHub desktop + local ASC iOS release flow**. Desktop releases
+must use the repository GitHub Actions release workflow so macOS updater assets
+are produced reproducibly as per-arch ZIP/DMG artifacts. This Mac may still run
+checks, create release docs/tags, monitor and recover the workflow, and build
+and upload iOS/TestFlight releases through ASC.
 
 A **preflight** is a cheap check that runs before expensive build/upload work.
 Use preflights to catch release blockers while fixes can still be committed
@@ -31,36 +33,34 @@ without burning a notarization, TestFlight upload, or build number.
 - **Do not omit App Clip in normal releases.** The v1.1.10 build 16 omission was
   an emergency unblock. Normal mobile releases must include the app, widgets,
   and App Clip after signing is fixed.
+- **Desktop release uses GitHub Actions only.** Do not build, sign, notarize, or
+  upload desktop release assets from this Mac unless the user explicitly asks
+  for a one-off manual recovery.
+- **No universal updater ZIPs.** `latest-mac.yml` must reference per-arch
+  `arm64` and `x64` ZIPs. Never publish a `latest-mac.yml` that points to
+  `ADE-*-universal.zip`; v1.2.16 proved that giant universal updater ZIPs can
+  crash Squirrel.Mac during in-app update.
 - **Do not publish broken updater metadata.** Before making a desktop release
-  public/latest, verify `latest-mac.yml` references assets that exist.
-- **Do not discover obvious release blockers after upload.** Preflight desktop
-  runtime/x64 readiness and iOS App Clip packaging metadata before starting the
-  expensive phase.
-- **Explain fallbacks before using them.** Local build/publish is the preferred
-  path. If switching to GitHub Actions or remote artifacts, first report exactly
-  what local prerequisite failed, what remote job/artifact will supply, and how
-  the final updater/TestFlight verification remains unchanged.
-- **Do not wait forever on Apple.** If notarization or TestFlight processing
+  public/latest, verify `latest-mac.yml` references assets that exist and that
+  the expected arm64/x64 DMGs and ZIPs are present.
+- **Do not discover obvious release blockers after upload.** Preflight iOS App
+  Clip packaging metadata before starting the expensive mobile phase.
+- **Do not wait forever.** If GitHub notarization or TestFlight processing
   exceeds its normal window by a lot, preserve state, retry only the failed
-  phase, or stop with a clear recovery command.
+  phase when possible, or stop with a clear recovery command.
 
 ## Machine Notes
 
-This release lane runs on an Apple Silicon Mac (`arm64`). Rosetta is available
-on the intended release machine, so x64 desktop builds are plausible through
-Electron Builder/Rosetta, and ADE already has scripts for x64/per-arch/local
-mac release builds.
+This release lane runs on an Apple Silicon Mac (`arm64`), but desktop release
+artifacts are produced remotely by GitHub Actions. Treat local desktop packaging
+scripts as diagnostic/recovery tools only.
 
-Still verify the output instead of trusting architecture assumptions:
+Desktop updater correctness requires:
 
-- Desktop updater correctness requires `latest-mac.yml` plus the referenced mac
-  ZIP assets.
-- If supporting Intel users, the feed must include an Intel/x64 ZIP as well as
-  arm64. Do not silently publish arm64-only unless the user explicitly accepts
-  dropping Intel updates for that release.
-- If local x64 build fails, use a fallback: reuse a known-good x64 app/ZIP input
-  with `release:mac:local -- --x64-app=... --x64-zip=...`, or run only the x64
-  build on a remote runner and publish locally after verification.
+- `latest-mac.yml`
+- one arm64 ZIP and one x64 ZIP referenced by that file
+- one arm64 DMG and one x64 DMG
+- no universal ZIP in the updater feed
 
 ## State and Locking
 
@@ -73,7 +73,7 @@ mkdir -p .ade/release
 Use a path like:
 
 ```text
-.ade/release/local-release-YYYYMMDD-HHMMSS.json
+.ade/release/release-YYYYMMDD-HHMMSS.json
 ```
 
 Track:
@@ -94,7 +94,7 @@ overlap. If the lock is held by a live process, exit cleanly.
 
 Keep this phase read-only except for the `.ade/release` state/lock files. Do
 not edit release docs, bump versions, create tags, or upload artifacts until the
-relevant preflights pass or a fallback is explicitly chosen.
+relevant preflights pass.
 
 1. Sync repository state:
 
@@ -114,41 +114,28 @@ relevant preflights pass or a fallback is explicitly chosen.
 
    ```bash
    gh auth status
-   asc doctor
-   security find-identity -v -p codesigning
    ```
 
-5. Verify this Mac can sign desktop releases:
+   Do not block a desktop-only release on ASC auth. Run `asc doctor` after scope
+   detection if iOS is in scope.
+
+5. Verify the desktop GitHub release workflow exists:
 
    ```bash
-   test -f apps/desktop/scripts/release-mac-local.mjs
-   test -f apps/desktop/scripts/require-macos-release-secrets.cjs
+   test -f .github/workflows/release.yml
+   test -f .github/workflows/release-core.yml
+   gh workflow view release.yml --repo arul28/ADE
    ```
 
-   `release:mac:local` reads `.env.local` itself. Do not print secret values
-   while checking signing/notarization setup.
+6. For desktop releases, verify the workflow path is the intended one before
+   tagging:
 
-6. For desktop releases, preflight local readiness before creating the
-   changelog/tag:
+   - `.github/workflows/release-core.yml` builds `dist:mac:arm64:signed`.
+   - `.github/workflows/release-core.yml` builds `dist:mac:x64:signed`.
+   - The publish job merges per-arch manifests into one `latest-mac.yml`.
 
-   ```bash
-   npm --prefix apps/desktop run materialize:runtime-resources
-   npm --prefix apps/desktop run validate:runtime-resources
-   node apps/desktop/scripts/require-macos-release-secrets.cjs
-   ```
-
-   Also check the local x64 sidecar inputs that `release:mac:local` expects on
-   Apple Silicon:
-
-   ```bash
-   test -x apps/desktop/node_modules/@openai/codex-darwin-x64/vendor/x86_64-apple-darwin/bin/codex
-   test -x apps/desktop/node_modules/opencode-darwin-x64/bin/opencode
-   test -f apps/desktop/vendor/crsqlite/darwin-x64/crsqlite.dylib
-   ```
-
-   If these fail, run `npm --prefix apps/desktop run prepare:mac:universal`.
-   If they still fail, do not burn a full local release attempt. Use a remote
-   x64 artifact fallback or fix the sidecar materialization first.
+   If the workflow has been changed to publish universal updater ZIPs, stop and
+   fix the workflow before releasing.
 
 7. For iOS releases, preflight App Clip packaging metadata before archiving:
 
@@ -293,90 +280,127 @@ Then run:
 node scripts/validate-docs.mjs
 ```
 
-Commit and land the docs/release metadata on `main` before building artifacts.
-The desktop release tag must point at the final `main` commit that includes the
+Commit and land the docs/release metadata on `main` before tagging. The desktop
+release tag must point at the final `main` commit that includes the
 changelog.
 
-## Phase 4: Desktop Local Build and Publish
+## Phase 4: Desktop GitHub Workflow Release
 
-Preferred path: build/sign/notarize on this Mac, then upload verified assets to
-GitHub Releases. GitHub Actions is a fallback for missing remote-arch artifacts
-or a broken local prerequisite, not the default happy path.
+Do this only if desktop scope is `yes`.
 
-Preferred local command:
+The desktop happy path is GitHub Actions. Do not run local desktop release
+commands such as `release:mac:local`, `dist:mac:universal:signed`,
+`dist:mac:perarch:signed`, or manual `gh release upload` from this Mac.
 
-```bash
-npm --prefix apps/desktop run release:mac:local -- v<VERSION>
-```
+### Create the release tag
 
-This script:
-
-- reads `.env.local` and installed keychain identities
-- can use the installed Developer ID Application identity
-- sets package versions temporarily from `ADE_RELEASE_TAG`
-- builds/signs/notarizes mac artifacts
-- restores `apps/desktop/package.json` and `apps/ade-cli/package.json`
-
-If local x64 inputs are needed, pass them explicitly:
+After release docs are committed on `main`:
 
 ```bash
-npm --prefix apps/desktop run release:mac:local -- v<VERSION> \
-  --x64-app=/path/to/ADE.app \
-  --x64-zip=/path/to/ADE-x64.zip
+git fetch origin --tags --prune
+git status --short
+RELEASE_SHA=$(git rev-parse origin/main)
+git rev-parse --verify "v<VERSION>" >/dev/null && {
+  echo "Tag v<VERSION> already exists"
+  exit 1
+}
+git tag -a "v<VERSION>" "$RELEASE_SHA" -m "ADE v<VERSION>"
+git push origin "v<VERSION>"
 ```
 
-If the local script cannot produce x64, do not publish until one of these is
-true:
+The pushed tag triggers `.github/workflows/release.yml`, which calls
+`.github/workflows/release-core.yml` and creates a draft GitHub Release.
 
-- the local x64 build succeeds under Rosetta
-- a remote x64 artifact is available and verified
-- the user explicitly approves an arm64-only desktop release
+### Find and watch the workflow run
 
-Before starting a GitHub Actions release fallback, print this decision:
-
-```text
-Desktop fallback: using GitHub Actions because <local prerequisite failed>.
-Required output: arm64 ZIP/DMG, x64 ZIP/DMG, latest-mac.yml, runtime assets.
-I will keep the release draft/private until updater metadata verifies.
-```
-
-If the fallback workflow is already running, let it finish instead of starting a
-duplicate run. If retrying, rerun only failed/cancelled jobs when possible.
-
-### Desktop asset verification
-
-Before uploading or publishing, verify:
+Find the run for the pushed tag/SHA:
 
 ```bash
-npm --prefix apps/desktop run validate:mac:artifacts
+gh run list --repo arul28/ADE --workflow release.yml --event push \
+  --json databaseId,headBranch,headSha,status,conclusion,createdAt,url \
+  --limit 20
 ```
 
-Also verify updater references:
+Choose the run whose `headBranch` is `v<VERSION>` or whose `headSha` matches
+`RELEASE_SHA`, then watch it:
 
 ```bash
-grep -oE 'ADE-[^ ]+\.(zip|dmg)' apps/desktop/release/latest-mac.yml | sort -u
+gh run view "$RUN_ID" --repo arul28/ADE --json status,conclusion,url,jobs
+gh run watch "$RUN_ID" --repo arul28/ADE --interval 60
 ```
 
-Every referenced ZIP/DMG must exist in the upload set.
+Expected shape:
 
-### GitHub Release publication
+- runtime/resource jobs run first
+- `arm64 mac release` and `x64 mac release` build/sign/notarize independently
+- `publish-release` merges the per-arch updater manifests and creates the draft
+- `update-brew-tap` runs after publication
 
-1. Create/update a draft release for `v<VERSION>`.
-2. Upload desktop assets.
-3. Upload runtime/installer assets when they are available and part of the
-   release contract.
-4. Verify expected assets and `latest-mac.yml`.
-5. Flip public/latest:
+### Retry policy
 
-   ```bash
-   gh release edit "v<VERSION>" --draft=false --latest
-   ```
+Do not start duplicate full release workflows.
 
-6. Verify:
+If a job fails or is cancelled:
 
-   ```bash
-   gh api repos/arul28/ADE/releases/latest --jq '{tag_name,draft,prerelease,html_url,asset_count:(.assets|length)}'
-   ```
+```bash
+gh run rerun "$RUN_ID" --repo arul28/ADE --failed
+```
+
+If one mac notarization step sits far beyond recent normal history, treat it as
+stuck instead of waiting forever. Recent normal mac notarize/staple time has
+been about 6-8 minutes; use 12-15 minutes as the practical cutoff unless GitHub
+logs show useful progress. Cancel only the stuck run, then rerun failed jobs:
+
+```bash
+gh run cancel "$RUN_ID" --repo arul28/ADE
+gh run rerun "$RUN_ID" --repo arul28/ADE --failed
+```
+
+If GitHub cannot recover after one narrow rerun, stop and report the failing job
+URL/log excerpt. Do not switch to local desktop publishing unless the user
+explicitly authorizes a manual recovery.
+
+### Draft release verification
+
+When the workflow succeeds, the release should still be draft/private. Verify
+the draft before publishing:
+
+```bash
+gh release view "v<VERSION>" --repo arul28/ADE --json tagName,isDraft,url,assets
+rm -rf ".ade/tmp/release-v<VERSION>-verify"
+mkdir -p ".ade/tmp/release-v<VERSION>-verify"
+gh release download "v<VERSION>" --repo arul28/ADE \
+  --pattern latest-mac.yml \
+  --dir ".ade/tmp/release-v<VERSION>-verify" \
+  --clobber
+cat ".ade/tmp/release-v<VERSION>-verify/latest-mac.yml"
+```
+
+Required assets:
+
+- `ADE-<VERSION>-arm64.dmg`
+- `ADE-<VERSION>-arm64.zip`
+- `ADE-<VERSION>-x64.dmg`
+- `ADE-<VERSION>-x64.zip`
+- `latest-mac.yml`
+
+Also verify:
+
+- `latest-mac.yml` references the uploaded arm64 and x64 ZIPs.
+- `latest-mac.yml` does not reference `universal`.
+- no updater ZIP is suspiciously huge; a ZIP over about 900 MB needs human
+  review because Squirrel.Mac can crash while handling oversized updater ZIPs.
+- every `latest-mac.yml` referenced ZIP exists in the release assets.
+
+### Publish public/latest
+
+Only after verification passes:
+
+```bash
+gh release edit "v<VERSION>" --repo arul28/ADE --draft=false --latest
+gh api repos/arul28/ADE/releases/latest \
+  --jq '{tag_name,draft,prerelease,html_url,asset_count:(.assets|length)}'
+```
 
 ## Phase 5: iOS TestFlight Build and Distribution
 
@@ -523,12 +547,15 @@ git push origin "ios-v${MARKETING_VERSION}-build${BUILD_NUMBER}"
 
 Desktop:
 
-- If notarization stalls, do not restart everything. Preserve artifacts and
-  retry only notarization/publish when possible.
-- If GitHub upload is interrupted, inspect existing release assets first, then
-  upload missing assets only.
+- If a GitHub notarization job stalls, do not restart everything. Cancel the
+  stuck run only when it has exceeded the cutoff, then use
+  `gh run rerun --failed`.
+- If the publish job fails after mac artifacts succeeded, inspect the draft
+  release/assets and workflow logs before rerunning anything.
 - If `latest-mac.yml` references a missing asset, keep the release draft/private
   until fixed.
+- If `latest-mac.yml` references a universal ZIP, keep the release draft/private
+  and fix the GitHub workflow. Do not publish the release.
 
 iOS:
 
