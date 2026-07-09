@@ -1,41 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
+  ArrowLeft,
   CaretRight,
   CircleNotch,
   DownloadSimple,
   MagnifyingGlass,
   Warning,
 } from "@phosphor-icons/react";
-import { relativeWhen } from "../../../lib/format";
 import { cn } from "../../ui/cn";
-
-/** Backend timestamps arrive as epoch millis (nullable); format defensively. */
-function formatUpdatedAt(ms: number | null | undefined): string {
-  if (ms == null || !Number.isFinite(ms)) return "";
-  return relativeWhen(new Date(ms).toISOString());
-}
-
-/** Last path segment of a cwd (e.g. the repo/folder name), null when missing. */
-function lastPathSegment(cwd: string | null | undefined): string | null {
-  if (!cwd) return null;
-  const segments = cwd.split("/").filter(Boolean);
-  return segments.length ? (segments[segments.length - 1] ?? null) : null;
-}
-
-/**
- * Heading fallback for sessions the provider couldn't title: the folder name
- * (or a shortened path) plus the relative time, so the row is still
- * identifiable and never collapses onto the preview snippet.
- */
-function fallbackHeading(summary: ExternalSessionSummary): string {
-  const where = lastPathSegment(summary.cwd) ?? shortenCwd(summary.cwd);
-  const when = formatUpdatedAt(summary.updatedAt);
-  return when ? `${where} · ${when}` : where;
-}
 import { LaneDialogShell } from "../../lanes/LaneDialogShell";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { ToolLogo } from "../ToolLogos";
+import { LaneCombobox, type LaneComboboxLane } from "../LaneCombobox";
 import {
   getExternalSessionsApi,
   normalizeListResult,
@@ -50,6 +27,7 @@ import {
   shortenCwd,
   type ImportAffordance,
 } from "./affordances";
+import { formatUpdatedAt, sessionHeading } from "./sessionPresentation";
 
 const PROVIDER_FILTERS: Array<{ id: ExternalSessionProvider | "all"; label: string }> = [
   { id: "all", label: "All" },
@@ -99,6 +77,7 @@ export type ImportSessionBrowserProps = {
   onOpenChange: (open: boolean) => void;
   laneId: string;
   laneName: string;
+  lanes?: LaneComboboxLane[];
   onImported: (summary: ExternalSessionSummary, result: ExternalSessionImportResult) => void;
   /** Navigate to an already-imported ADE session instead of re-importing it. */
   onOpenExisting?: (ref: ImportedSessionRef) => void;
@@ -108,6 +87,8 @@ export function ImportSessionBrowser({
   open,
   onOpenChange,
   laneId,
+  laneName,
+  lanes = [],
   onImported,
   onOpenExisting,
 }: ImportSessionBrowserProps) {
@@ -120,7 +101,15 @@ export function ImportSessionBrowser({
   const [importing, setImporting] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [selectedSession, setSelectedSession] = useState<ExternalSessionSummary | null>(null);
+  const [targetLaneId, setTargetLaneId] = useState(laneId);
   const requestSeq = useRef(0);
+
+  const availableLanes = useMemo<LaneComboboxLane[]>(
+    () => lanes.length ? lanes : [{ id: laneId, name: laneName }],
+    [laneId, laneName, lanes],
+  );
+  const targetLaneName = availableLanes.find((lane) => lane.id === targetLaneId)?.name ?? targetLaneId;
 
   const scope: "project" | "all" = showAllFolders ? "all" : "project";
   const loading = pendingProviders.length > 0;
@@ -146,9 +135,14 @@ export function ImportSessionBrowser({
     await Promise.all(
       providers.map(async (provider) => {
         try {
-          const result = await api.list({ providers: [provider], scope, laneId });
+          const result = await api.list({ providers: [provider], scope, laneId: targetLaneId });
           if (seq !== requestSeq.current) return;
-          setSessions((prev) => mergeSessions(prev, normalizeListResult(result)));
+          const rows = normalizeListResult(result);
+          setSessions((prev) => mergeSessions(prev, rows));
+          setSelectedSession((current) => {
+            if (!current) return null;
+            return rows.find((row) => row.provider === current.provider && row.id === current.id) ?? current;
+          });
         } catch {
           if (seq !== requestSeq.current) return;
           failures += 1;
@@ -165,7 +159,7 @@ export function ImportSessionBrowser({
     if (failures === providers.length) {
       setLoadError("Couldn't load external sessions.");
     }
-  }, [laneId, scope, providerFilter]);
+  }, [providerFilter, scope, targetLaneId]);
 
   // One-shot load whenever the browser opens or the scope changes; no polling.
   useEffect(() => {
@@ -179,7 +173,9 @@ export function ImportSessionBrowser({
     setImporting(null);
     setImportError(null);
     setActiveIndex(0);
-  }, [open]);
+    setSelectedSession(null);
+    setTargetLaneId(laneId);
+  }, [laneId, open]);
 
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -187,7 +183,8 @@ export function ImportSessionBrowser({
       .filter((s) => (providerFilter === "all" ? true : s.provider === providerFilter))
       .filter((s) =>
         q
-          ? (s.title ?? "").toLowerCase().includes(q) || (s.preview ?? "").toLowerCase().includes(q)
+          ? [s.title, s.preview, s.cwd, s.id]
+              .some((value) => value?.toLowerCase().includes(q))
           : true,
       )
       .slice()
@@ -200,7 +197,7 @@ export function ImportSessionBrowser({
 
   const runImport = useCallback(
     async (summary: ExternalSessionSummary, affordance: ImportAffordance) => {
-      if (!affordance.enabled || importing) return;
+      if (!affordance.enabled || importing || loading) return;
       const api = getExternalSessionsApi();
       if (!api) {
         setImportError("Importing sessions isn't available in this window.");
@@ -213,7 +210,7 @@ export function ImportSessionBrowser({
         const result = await api.import({
           provider: summary.provider,
           sessionId: summary.id,
-          laneId,
+          laneId: targetLaneId,
           target: affordance.target,
           mode: affordance.mode,
         });
@@ -227,7 +224,7 @@ export function ImportSessionBrowser({
         setImporting(null);
       }
     },
-    [importing, laneId, onImported, onOpenChange],
+    [importing, loading, onImported, onOpenChange, targetLaneId],
   );
 
   const handleOpenExisting = useCallback(
@@ -240,6 +237,9 @@ export function ImportSessionBrowser({
 
   const onListKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      const target = event.target as HTMLElement;
+      if (target.closest("input,button,select,textarea,[role='combobox']")) return;
+      if (selectedSession) return;
       if (!visible.length) return;
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -250,14 +250,16 @@ export function ImportSessionBrowser({
       } else if (event.key === "Enter") {
         const summary = visible[activeIndex];
         if (!summary) return;
-        const primary = importAffordancesFor(summary).find((a) => a.enabled);
-        if (primary) {
-          event.preventDefault();
-          void runImport(summary, primary);
+        event.preventDefault();
+        const importedRef = readImportedSessionRef(summary);
+        if (summary.alreadyImported && importedRef && onOpenExisting) {
+          handleOpenExisting(importedRef);
+          return;
         }
+        setSelectedSession(summary);
       }
     },
-    [activeIndex, runImport, visible],
+    [activeIndex, handleOpenExisting, onOpenExisting, selectedSession, visible],
   );
 
   return (
@@ -271,8 +273,8 @@ export function ImportSessionBrowser({
       busy={Boolean(importing)}
     >
       <div className="flex h-full min-h-0 flex-col gap-3" onKeyDown={onListKeyDown}>
-        {/* Filters */}
-        <div className="flex shrink-0 flex-col gap-2">
+        {/* Browse filters */}
+        {!selectedSession ? <div className="flex shrink-0 flex-col gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
             {PROVIDER_FILTERS.map((filter) => {
               const selected = providerFilter === filter.id;
@@ -338,7 +340,7 @@ export function ImportSessionBrowser({
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search by title"
+                placeholder="Search sessions"
                 className="h-8 w-full rounded-lg border border-white/[0.06] bg-white/[0.02] pl-8 pr-3 text-[12px] text-fg placeholder:text-muted-fg/50 focus:border-white/[0.14] focus:outline-none"
               />
             </div>
@@ -352,7 +354,7 @@ export function ImportSessionBrowser({
               Show sessions from other folders
             </label>
           </div>
-        </div>
+        </div> : null}
 
         {importError ? (
           <div className="flex shrink-0 items-start gap-2 rounded-lg border border-red-400/20 bg-red-500/[0.06] px-3 py-2 text-[11px] text-red-300">
@@ -361,9 +363,22 @@ export function ImportSessionBrowser({
           </div>
         ) : null}
 
-        {/* List */}
+        {/* Browse list / import review */}
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-          {loading && !sessions.length ? (
+          {selectedSession ? (
+            <ImportSessionDetail
+              summary={selectedSession}
+              lanes={availableLanes}
+              targetLaneId={targetLaneId}
+              targetLaneName={targetLaneName}
+              importingKey={importing}
+              refreshing={loading}
+              onBack={() => setSelectedSession(null)}
+              onTargetLaneChange={setTargetLaneId}
+              onImport={(affordance) => void runImport(selectedSession, affordance)}
+              onOpenExisting={onOpenExisting ? handleOpenExisting : undefined}
+            />
+          ) : loading && !sessions.length ? (
             <CenterState icon={<CircleNotch size={18} className="animate-spin" />} title="Scanning sessions" />
           ) : loadError ? (
             <CenterState
@@ -397,10 +412,8 @@ export function ImportSessionBrowser({
                   key={`${summary.provider}:${summary.id}`}
                   summary={summary}
                   active={index === activeIndex}
-                  importingKey={importing}
                   onActivate={() => setActiveIndex(index)}
-                  onImport={(aff) => void runImport(summary, aff)}
-                  onOpenExisting={onOpenExisting ? handleOpenExisting : undefined}
+                  onSelect={() => setSelectedSession(summary)}
                 />
               ))}
             </ul>
@@ -435,77 +448,16 @@ function CenterState({
 function ImportSessionRow({
   summary,
   active,
-  importingKey,
   onActivate,
-  onImport,
-  onOpenExisting,
+  onSelect,
 }: {
   summary: ExternalSessionSummary;
   active: boolean;
-  importingKey: string | null;
   onActivate: () => void;
-  onImport: (affordance: ImportAffordance) => void;
-  onOpenExisting?: (ref: ImportedSessionRef) => void;
+  onSelect: () => void;
 }) {
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const affordances = useMemo(() => importAffordancesFor(summary), [summary]);
-  // When the backend knows this external session was already imported, offer a
-  // single "Open in ADE" that jumps to the existing session rather than the
-  // per-target "Open as …" re-import actions; the fork actions still stand so
-  // the user can branch a fresh copy.
-  const importedRef =
-    summary.alreadyImported && onOpenExisting ? readImportedSessionRef(summary) : null;
-  // One obvious default per row: the hero chat action if present, otherwise the
-  // first runnable action (the most-likely CLI path for chat-less providers).
-  // For an imported row the "Open in ADE" button is the primary, so no import
-  // affordance should also render as primary.
-  const primaryKind = useMemo(
-    () =>
-      importedRef
-        ? null
-        : (affordances.find((a) => a.hero) ?? affordances.find((a) => a.enabled))?.kind ?? null,
-    [affordances, importedRef],
-  );
-  const chatActions = affordances.filter((a) => a.target === "chat");
-  const cliActions = affordances.filter((a) => a.target === "cli");
-  // For imported rows we drop the "Open" (resume) actions in favor of the single
-  // "Open in ADE" and keep only the fork actions.
-  const forkChatActions = chatActions.filter((a) => a.mode === "fork");
-  const forkCliActions = cliActions.filter((a) => a.mode === "fork");
-
-  // Real provider title when there is one; otherwise a path+time fallback so the
-  // heading is always distinct from the preview snippet.
-  const title = summary.title?.trim();
-  const hasTitle = Boolean(title);
-  const heading = hasTitle ? (title as string) : fallbackHeading(summary);
+  const heading = sessionHeading(summary);
   const preview = summary.preview?.trim();
-
-  // Labels are self-evident (the 2×2 {ADE chat | CLI session} × {Open | Fork}),
-  // so buttons carry no hover-only tooltip — meaning stays visible.
-  const renderAction = (aff: ImportAffordance) => {
-    const busy = importingKey === `${summary.id}:${aff.kind}`;
-    const isPrimary = aff.enabled && aff.kind === primaryKind;
-    return (
-      <button
-        key={aff.kind}
-        type="button"
-        disabled={!aff.enabled || Boolean(importingKey)}
-        onClick={() => onImport(aff)}
-        className={cn(
-          "inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[11.5px] font-medium transition-all disabled:cursor-not-allowed",
-          isPrimary
-            ? "text-[#0F0D14] hover:brightness-110 disabled:opacity-50"
-            : aff.enabled
-              ? "border border-white/[0.1] bg-white/[0.03] text-fg hover:bg-white/[0.07]"
-              : "border border-white/[0.05] bg-transparent text-muted-fg/40",
-        )}
-        style={isPrimary ? { background: "#A78BFA" } : undefined}
-      >
-        {busy ? <CircleNotch size={11} className="animate-spin" /> : null}
-        {aff.label}
-      </button>
-    );
-  };
 
   return (
     <li
@@ -517,7 +469,7 @@ function ImportSessionRow({
           : "border-white/[0.05] bg-white/[0.02] hover:bg-white/[0.035]",
       )}
     >
-      <div className="flex items-start gap-3">
+      <button type="button" onClick={onSelect} className="flex w-full items-start gap-3 text-left">
         <ToolLogo
           toolType={PROVIDER_TOOL_TYPE[summary.provider]}
           size={22}
@@ -549,13 +501,11 @@ function ImportSessionRow({
               <>
                 <span className="text-muted-fg/40">·</span>
                 <span>
-                  {summary.messageCount} msg{summary.messageCount === 1 ? "" : "s"}
+                  {summary.messageCount} prompt{summary.messageCount === 1 ? "" : "s"}
                 </span>
               </>
             ) : null}
-            {/* The path-fallback heading already carries the folder, so only add
-                the cwd chip when a real title occupies the heading. */}
-            {hasTitle && summary.cwd ? (
+            {summary.cwd ? (
               <span
                 className="ml-0.5 max-w-[240px] truncate rounded border border-white/[0.05] bg-white/[0.03] px-1.5 py-px font-mono text-[9.5px] text-muted-fg/60"
                 title={summary.cwd}
@@ -565,69 +515,179 @@ function ImportSessionRow({
             ) : null}
           </div>
 
-          {preview ? (
-            <div className="mt-2">
-              <button
-                type="button"
-                aria-expanded={previewOpen}
-                onClick={() => setPreviewOpen((v) => !v)}
-                className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 text-[10.5px] font-medium text-muted-fg/60 transition-colors hover:text-fg"
-              >
-                <CaretRight
-                  size={10}
-                  weight="bold"
-                  className={cn("transition-transform", previewOpen && "rotate-90")}
-                />
-                Preview
-              </button>
-              {previewOpen ? (
-                <div className="mt-1 max-h-52 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-lg border border-white/[0.05] bg-white/[0.02] px-3 py-2 text-[11px] leading-relaxed text-muted-fg/70">
-                  {preview}
-                </div>
-              ) : null}
-            </div>
+          {preview && preview !== heading ? (
+            <p className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted-fg/70">{preview}</p>
           ) : null}
-
-          {/* Actions — grouped "open as chat" vs "continue as terminal" so the
-              chat/terminal and continue/fork distinctions read at a glance. For
-              already-imported rows a single "Open in ADE" replaces the re-import
-              "Open" actions, with the fork actions still available alongside. */}
-          {importedRef ? (
-            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-              <button
-                type="button"
-                disabled={Boolean(importingKey)}
-                onClick={() => onOpenExisting?.(importedRef)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-full px-3.5 text-[11.5px] font-medium text-[#0F0D14] transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
-                style={{ background: "#A78BFA" }}
-              >
-                Open in ADE
-              </button>
-              {forkChatActions.length || forkCliActions.length ? (
-                <span aria-hidden className="hidden h-4 w-px bg-white/[0.08] sm:block" />
-              ) : null}
-              {forkChatActions.length ? (
-                <div className="flex items-center gap-1.5">{forkChatActions.map(renderAction)}</div>
-              ) : null}
-              {forkCliActions.length ? (
-                <div className="flex items-center gap-1.5">{forkCliActions.map(renderAction)}</div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
-              {chatActions.length ? (
-                <div className="flex items-center gap-1.5">{chatActions.map(renderAction)}</div>
-              ) : null}
-              {chatActions.length && cliActions.length ? (
-                <span aria-hidden className="hidden h-4 w-px bg-white/[0.08] sm:block" />
-              ) : null}
-              {cliActions.length ? (
-                <div className="flex items-center gap-1.5">{cliActions.map(renderAction)}</div>
-              ) : null}
-            </div>
-          )}
         </div>
-      </div>
+        <CaretRight size={16} className="mt-1 shrink-0 text-muted-fg/50" />
+      </button>
     </li>
+  );
+}
+
+function ImportSessionDetail({
+  summary,
+  lanes,
+  targetLaneId,
+  targetLaneName,
+  importingKey,
+  refreshing,
+  onBack,
+  onTargetLaneChange,
+  onImport,
+  onOpenExisting,
+}: {
+  summary: ExternalSessionSummary;
+  lanes: LaneComboboxLane[];
+  targetLaneId: string;
+  targetLaneName: string;
+  importingKey: string | null;
+  refreshing: boolean;
+  onBack: () => void;
+  onTargetLaneChange: (laneId: string) => void;
+  onImport: (affordance: ImportAffordance) => void;
+  onOpenExisting?: (ref: ImportedSessionRef) => void;
+}) {
+  const importedRef = summary.alreadyImported ? readImportedSessionRef(summary) : null;
+  const allAffordances = importAffordancesFor(summary);
+  const available = allAffordances
+    .filter((action) => action.enabled)
+    .filter((action) => !importedRef || action.mode === "fork")
+    .sort((left, right) => {
+      if (!summary.possiblyActive || left.mode === right.mode) return 0;
+      return left.mode === "fork" ? -1 : 1;
+    });
+  const unavailable = allAffordances.filter((action) => !action.enabled);
+  const heading = sessionHeading(summary);
+  const preview = summary.preview?.trim();
+
+  const choose = (affordance: ImportAffordance) => {
+    if (
+      summary.possiblyActive
+      && affordance.mode === "resume"
+      && !window.confirm("This session may still be open elsewhere. Close the other CLI before continuing the original, or create a copy instead. Continue anyway?")
+    ) {
+      return;
+    }
+    onImport(affordance);
+  };
+
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 pb-4">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex w-fit items-center gap-1.5 rounded-full px-2 py-1 text-[11px] text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
+      >
+        <ArrowLeft size={13} /> All sessions
+      </button>
+
+      <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5">
+        <div className="flex items-start gap-3">
+          <ToolLogo toolType={PROVIDER_TOOL_TYPE[summary.provider]} size={28} className="mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-[16px] font-semibold text-fg">{heading}</h3>
+              {summary.alreadyImported ? (
+                <span className="rounded-full bg-emerald-500/[0.1] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-emerald-300">In ADE</span>
+              ) : null}
+              {summary.possiblyActive ? (
+                <span className="rounded-full bg-amber-500/[0.1] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-300">May be open elsewhere</span>
+              ) : null}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-2 text-[11px] text-muted-fg/70">
+              <span>{providerDisplayName(summary.provider)}</span>
+              {formatUpdatedAt(summary.updatedAt) ? <span>· {formatUpdatedAt(summary.updatedAt)}</span> : null}
+              {summary.messageCount != null ? (
+                <span>· {summary.messageCount} prompt{summary.messageCount === 1 ? "" : "s"}</span>
+              ) : null}
+            </div>
+          </div>
+        </div>
+        {preview ? (
+          <div className="mt-4 whitespace-pre-wrap break-words rounded-xl border border-white/[0.06] bg-black/10 px-4 py-3 text-[12px] leading-relaxed text-muted-fg/85">
+            {preview}
+          </div>
+        ) : (
+          <p className="mt-4 text-[11px] text-muted-fg/60">No conversational preview was recoverable for this session.</p>
+        )}
+        <dl className="mt-4 grid gap-2 text-[10.5px] sm:grid-cols-2">
+          <div className="min-w-0"><dt className="text-muted-fg/50">Original folder</dt><dd className="truncate font-mono text-muted-fg/80" title={summary.cwd ?? undefined}>{shortenCwd(summary.cwd, 5)}</dd></div>
+          <div className="min-w-0"><dt className="text-muted-fg/50">Provider session</dt><dd className="truncate font-mono text-muted-fg/80" title={summary.id}>{summary.id}</dd></div>
+        </dl>
+      </section>
+
+      <section className="rounded-2xl border border-white/[0.08] bg-white/[0.025] p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-[12px] font-semibold text-fg">Import into</div>
+            <div className="mt-0.5 text-[10.5px] text-muted-fg/65">Actions update to match the selected lane and provider.</div>
+          </div>
+          <LaneCombobox
+            lanes={lanes}
+            value={targetLaneId}
+            onChange={onTargetLaneChange}
+            variant="pill"
+            aria-label="Import into lane"
+          />
+        </div>
+      </section>
+
+      {importedRef && onOpenExisting ? (
+        <section className="flex items-center justify-between gap-3 rounded-2xl border border-emerald-400/15 bg-emerald-500/[0.04] p-4">
+          <div>
+            <div className="text-[12px] font-semibold text-fg">Already imported</div>
+            <div className="mt-0.5 text-[10.5px] text-muted-fg/70">Open the existing {importedRef.kind === "chat" ? "ADE chat" : "CLI session"}, or create another copy below.</div>
+          </div>
+          <button type="button" onClick={() => onOpenExisting(importedRef)} className="shrink-0 rounded-full bg-emerald-300 px-4 py-2 text-[11px] font-semibold text-[#0F0D14]">Open existing</button>
+        </section>
+      ) : null}
+
+      <section>
+        <div className="mb-2 flex items-center gap-2 text-[12px] font-semibold text-fg">
+          Choose an action for {targetLaneName}
+          {refreshing ? <CircleNotch size={12} className="animate-spin text-muted-fg" /> : null}
+        </div>
+        {summary.possiblyActive ? (
+          <div className="mb-3 flex gap-2 rounded-xl border border-amber-400/15 bg-amber-500/[0.04] px-3 py-2 text-[10.5px] leading-relaxed text-amber-200/80">
+            <Warning size={13} className="mt-px shrink-0" /> Creating a copy is safest while the original may still be open.
+          </div>
+        ) : null}
+        {available.length ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {available.map((affordance) => {
+              const busy = importingKey === `${summary.id}:${affordance.kind}`;
+              return (
+                <button
+                  key={affordance.kind}
+                  type="button"
+                  disabled={Boolean(importingKey) || refreshing}
+                  onClick={() => choose(affordance)}
+                  className="rounded-xl border border-white/[0.09] bg-white/[0.025] p-4 text-left transition-colors hover:border-white/[0.16] hover:bg-white/[0.05] disabled:opacity-50"
+                >
+                  <div className="flex items-center gap-2 text-[12px] font-semibold text-fg">
+                    {busy ? <CircleNotch size={13} className="animate-spin" /> : null}
+                    {affordance.label}
+                  </div>
+                  <p className="mt-1.5 text-[10.5px] leading-relaxed text-muted-fg/70">{affordance.description}</p>
+                  {affordance.hint || affordance.foreignCwd ? (
+                    <p className="mt-2 text-[10px] leading-relaxed text-violet-300/75">
+                      {affordance.hint ?? `Runs in ${shortenCwd(affordance.foreignCwd, 5)}, not ${targetLaneName}.`}
+                    </p>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-4 py-3 text-[11px] leading-relaxed text-muted-fg/70">
+            This provider cannot safely continue or copy the session into {targetLaneName}. Choose the session's original lane or another provider-supported target.
+          </div>
+        )}
+        {unavailable.map((action) => (
+          <p key={action.kind} className="mt-2 text-[10px] text-muted-fg/55">{action.disabledReason}</p>
+        ))}
+      </section>
+    </div>
   );
 }

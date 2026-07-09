@@ -97,6 +97,69 @@ describe("claudeJsonlToChatEvents", () => {
     expect(events[4]!.event).toMatchObject({ type: "tool_result", itemId: "toolu_01", result: "1 failed test" });
   });
 
+  it("filters Claude metadata while preserving real prompts, tool failures, and user-authored syntax", () => {
+    const lines = [
+      JSON.stringify({
+        type: "user",
+        isMeta: true,
+        uuid: "meta-caveat",
+        message: { role: "user", content: "<local-command-caveat>generated caveat</local-command-caveat>" },
+      }),
+      JSON.stringify({
+        type: "user",
+        isMeta: true,
+        uuid: "meta-command",
+        message: { role: "user", content: "<command-name>/model</command-name><command-args>opus</command-args>" },
+      }),
+      JSON.stringify({
+        type: "user",
+        isMeta: true,
+        uuid: "meta-output",
+        message: { role: "user", content: "<local-command-stdout>model changed</local-command-stdout>" },
+      }),
+      JSON.stringify({
+        type: "user",
+        uuid: "real-user",
+        message: { role: "user", content: "this is a test message" },
+      }),
+    ];
+
+    const events = claudeJsonlToChatEvents([
+      ...lines,
+      JSON.stringify({
+        type: "user",
+        uuid: "failed-result",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "toolu_failed", is_error: true, content: "command failed" }],
+        },
+      }),
+      JSON.stringify({
+        type: "user",
+        uuid: "jsx-user",
+        message: {
+          role: "user",
+          content: "Create <Button variant=\"primary\" />. The docs literally say User request: here.",
+        },
+      }),
+    ], baseOptions);
+
+    expect(events.slice(0, 2).map((envelope) => envelope.event)).toEqual([
+      expect.objectContaining({ type: "system_notice" }),
+      expect.objectContaining({ type: "user_message", text: "this is a test message" }),
+    ]);
+    expect(events.at(-2)?.event).toMatchObject({
+      type: "tool_result",
+      itemId: "toolu_failed",
+      status: "failed",
+      result: "command failed",
+    });
+    expect(events.at(-1)?.event).toMatchObject({
+      type: "user_message",
+      text: "Create <Button variant=\"primary\" />. The docs literally say User request: here.",
+    });
+  });
+
   it("caps pathological Claude imports and keeps the newest content messages plus notices", () => {
     const lines = Array.from({ length: 5 }, (_, index) => JSON.stringify({
       type: "user",

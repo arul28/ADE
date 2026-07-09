@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ExternalSessionSummary } from "../../../../desktop/src/shared/types/externalSessions";
 import {
   clampExternalSessionBrowserContent,
+  externalSessionBrowserActions,
   normalizeExternalSessionListResult,
   visibleExternalSessions,
 } from "../externalSessionBrowser";
@@ -72,7 +73,7 @@ describe("externalSessionBrowser helpers", () => {
     });
   });
 
-  it("keeps the extra resume-in-original action available after foreign-folder fork", () => {
+  it("keeps copy actions and resume-in-original without cross-folder chat continuation", () => {
     const content: Extract<RightPaneContent, { kind: "external-session-browser" }> = {
       kind: "external-session-browser",
       laneId: "lane-1",
@@ -100,7 +101,32 @@ describe("externalSessionBrowser helpers", () => {
 
     expect(clampExternalSessionBrowserContent(content)).toMatchObject({
       selectedIndex: 0,
-      actionIndex: 3,
+      actionIndex: 2,
     });
+  });
+
+  it("makes Open existing the default and suppresses Continue for imported sessions", () => {
+    const imported = session({
+      alreadyImported: true,
+      importedSessionRef: { kind: "chat", sessionId: "ade-chat-1" },
+    });
+
+    const actions = externalSessionBrowserActions(imported);
+    expect(actions.map((action) => action.kind)).toEqual([
+      "open-existing",
+      "fork-as-chat",
+      "fork-into-lane",
+    ]);
+    expect(clampExternalSessionBrowserContent({
+      kind: "external-session-browser",
+      laneId: "lane-1",
+      laneLabel: "Lane",
+      providerFilter: "all",
+      query: "",
+      sessions: [imported],
+      loading: false,
+      selectedIndex: 0,
+      actionIndex: 99,
+    })).toMatchObject({ actionIndex: 2 });
   });
 });

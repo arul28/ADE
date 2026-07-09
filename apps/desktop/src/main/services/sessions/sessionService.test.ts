@@ -169,7 +169,7 @@ describe("sessionService resume metadata", () => {
 
     const created = service.get("session-2");
     expect(created?.resumeCommand).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume",
     );
 
     service.setResumeCommand("session-2", "codex resume thread-1");
@@ -189,7 +189,7 @@ describe("sessionService resume metadata", () => {
       },
     });
     expect(resumed?.resumeCommand).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
     );
 
     activeDisposers.push(async () => db.close());
@@ -275,7 +275,7 @@ describe("sessionService resume metadata", () => {
       launch: { permissionMode: "full-auto" },
     });
     expect(resumed?.resumeCommand).toBe(
-      "OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_legacy",
+      "OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode --session ses_legacy",
     );
 
     activeDisposers.push(async () => db.close());

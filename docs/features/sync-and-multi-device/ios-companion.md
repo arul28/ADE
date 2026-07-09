@@ -182,6 +182,10 @@ apps/ios/
 │   │   │                            #   preference shared with Hub),
 │   │   │                            # WorkUsageActivityCarousel (fixed
 │   │   │                            #   cross-client new-chat charts),
+│   │   │                            # WorkImportSessionScreen +
+│   │   │                            #   WorkExternalSessionAffordances
+│   │   │                            #   (provider session browse/details,
+│   │   │                            #   lane picker, Continue/Copy policy),
 │   │   │                            # WorkLanePickerDropdown,
 │   │   │                            # WorkChatRichCardViews (de-glassed
 │   │   │                            #   tool-call / work-log / command /
@@ -993,6 +997,15 @@ example an iCloud-only photo that is not currently available on the phone), the
 tile remains local and shows a recoverable load error instead of sending a
 broken attachment.
 
+Work can also import provider-native Claude, Codex, Cursor, Droid, and OpenCode
+CLI sessions. `WorkImportSessionScreen` first shows a compact searchable list,
+then opens details with `WorkLanePickerDropdown` and the safe Continue/Copy
+actions derived by `WorkExternalSessionAffordances.swift`. Listing and import
+run on the paired host through `work.listExternalSessions` and
+`work.importExternalSession`; the phone never reads provider storage. Import
+results include the persisted chat or terminal summary, which Work caches before
+navigating so replication latency cannot produce a blank destination screen.
+
 ### Shipped
 
 | Tab | Icon | Desktop equivalent | Capabilities |
@@ -1262,7 +1275,7 @@ does not duplicate the full desktop Stats page.
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
-| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
+| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | CTO / Automations / Graph / History tabs | Planned |

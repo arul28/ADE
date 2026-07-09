@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
+import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -2482,7 +2483,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended 'fix failing tests'"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -2528,7 +2529,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
         expect.any(Object),
       );
     });
@@ -2562,7 +2563,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy 'continue legacy thread'"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\""],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -2654,7 +2655,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer 'continue from the visible prompt'"],
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\""],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -2703,7 +2704,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve 'this should not kill the resumed terminal'"],
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\""],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -3012,11 +3013,14 @@ describe("ptyService", () => {
         }));
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         const spawnArgs = spawn.mock.calls.map((call: any[]) => call[1]).flat();
-        expect(spawnArgs.some((line: string) =>
-          line.includes("opencode run --interactive --agent plan --model lmstudio/openai/gpt-oss-20b --variant fast --session ses_abc --replay --replay-limit 40 --")
-          && line.includes("continue from the freeze frame")
-          && line.includes("\"question\":\"allow\"")
-        )).toBe(true);
+        expect(spawnArgs).toContain(buildCanonicalOpenCodeReplayResumeCommand({
+          permissionMode: "plan",
+          model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
+          fastMode: true,
+          resumeTarget: "ses_abc",
+          prompt: "continue from the freeze frame",
+          replayLimit: 40,
+        }));
         expect(mockPty.write).not.toHaveBeenCalledWith("continue from the freeze frame\r");
       } finally {
         if (previous === undefined) {

@@ -166,7 +166,7 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 | `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local ADE runtime when needed, and owns Electron-only services that cannot run inside the runtime. Entry: `main.ts`. |
 | `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window); file APIs are strict once a local/remote runtime is bound, while usage/budget reads only route to runtime for remote-bound windows. During project switches, mutating runtime/sync calls that target the ambiguous active binding are blocked, read-only calls avoid refreshing stale bindings, active remote opens can be awaited before retrying reads, and remote lane preview URLs are localized through desktop-owned TCP forwards. Explicitly targeted work can pass an `OpenProjectBinding` pin through `callPinnedRuntimeAction` to route to the captured project during a switch, used by detached draft launches and rollback. |
 | `apps/desktop/src/renderer/` | React 18 SPA. No Node access, no filesystem access, no direct process/network. Everything goes through `window.ade`. Entry: `main.tsx`. |
-| `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and cross-client chat derivations such as `chatScheduledWork.ts`. Imported by desktop, `apps/ade-cli`, and mobile contract generation paths. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
+| `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and cross-client derivations such as `chatScheduledWork.ts` and `externalSessionAffordances.ts` (the desktop/ADE Code Continue/Copy policy for provider-native imports). Imported by desktop, `apps/ade-cli`, and mobile contract generation paths. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
 | `apps/desktop/src/generated/` | Build-time generated code (e.g., bootstrap SQL snapshots). |
 | `apps/desktop/src/test/` | Shared vitest setup and fixtures. |
 | `apps/desktop/src/types/` | Ambient type declarations. |
@@ -194,7 +194,26 @@ Terminal-native **Work** chat client (Ink 7 + React 19) for agents and power use
 - **Remote mode**: `ade code remote` reads saved desktop remote targets, picks a target/project/session, starts `ade rpc --stdio` over SSH, bridges that stdio stream to a local one-connection socket (`remoteBridge.ts`), and then runs the normal TUI against the bridged endpoint. Compatibility checks that only make sense for local processes (entrypoint build hash and project-root equality) are skipped.
 - **Embedded mode**: `--embedded` / `--headless` runs the shared `apps/ade-cli` services in-process without going through a machine brain. Used when no brain endpoint or manual runtime endpoint is reachable.
 
-Shared chat DTOs are imported from `apps/desktop/src/shared/types/*` (never the renderer barrel) so `npm run typecheck` in `apps/ade-cli` covers both typed commands and the TUI. Entry: `apps/ade-cli/src/tuiClient/cli.tsx` → `apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. The built TUI bundle is intended to run in isolation: tsup bundles its Ink/xterm/highlight dependencies and injects ESM shims for `__dirname` / `__filename`; both `apps/ade-cli/scripts/verify-built-cli.mjs` and the desktop artifact validators smoke-import it and run `runAdeCodeCli(["--help"])`. Provider/model/interface setup is kept in pure helpers (`modelState.ts`, `providerMetadata.ts`, `modelPickerController.ts`) so Chat-vs-CLI availability, Cursor SDK-vs-CLI model filtering, permission presets, Fast Mode, and setup rows stay testable outside the Ink root. Chat Info uses shared derivations for subagents, tasks, and scheduled work, so Claude wakeups/cron/background activity rendered in desktop also appears in ADE Code. The TUI can hand off to a desktop window via the `app/navigate` JSON-RPC method when a desktop client is attached to the same runtime.
+Shared DTOs and cross-client policies are imported from
+`apps/desktop/src/shared/*` (never the renderer barrel) so `npm run typecheck`
+in `apps/ade-cli` covers both typed commands and the TUI. This includes
+`externalSessionAffordances.ts`, which keeps ADE Code's provider-native
+Continue/Copy choices aligned with desktop while `externalSessionBrowser.ts`
+owns TUI-only navigation and the Open-existing action. Entry:
+`apps/ade-cli/src/tuiClient/cli.tsx` →
+`apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. The built TUI
+bundle is intended to run in isolation: tsup bundles its Ink/xterm/highlight
+dependencies and injects ESM shims for `__dirname` / `__filename`; both
+`apps/ade-cli/scripts/verify-built-cli.mjs` and the desktop artifact validators
+smoke-import it and run `runAdeCodeCli(["--help"])`.
+Provider/model/interface setup is kept in pure helpers (`modelState.ts`,
+`providerMetadata.ts`, `modelPickerController.ts`) so Chat-vs-CLI availability,
+Cursor SDK-vs-CLI model filtering, permission presets, Fast Mode, and setup rows
+stay testable outside the Ink root. Chat Info uses shared derivations for
+subagents, tasks, and scheduled work, so Claude wakeups/cron/background activity
+rendered in desktop also appears in ADE Code. The TUI can hand off to a desktop
+window via the `app/navigate` JSON-RPC method when a desktop client is attached
+to the same runtime.
 
 ### 2.4 iOS client (`apps/ios/`)
 
@@ -682,7 +701,17 @@ Enforced rules (from the stability overhaul):
 9. Usage surfaces never block first paint on provider-ledger or GitHub scans. The quota popup reads `ade.usage.getSnapshot` before an explicit refresh; retrospective Stats calls `ade.usage.getAdeStats`, which returns cached expensive sources plus live DB aggregates and refreshes stale sources in the background. An explicit Refresh remains available for a forced recompute.
 10. Persistence callbacks dedupe against the last-saved value: the workspace-graph view-mode persister tracks the last-loaded preference root and skips the immediate write that the load handler's `setViewMode` would otherwise fire.
 
-CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under `apps/desktop/src/shared/` so the desktop renderer, chat launch helpers, ADE CLI action surface, and sync remote-command service share one provider launch contract. Renderer imports go through thin re-export shims under `apps/desktop/src/renderer/`. The mobile launcher path (`work.startCliSession`) uses the same shared helpers on the host side, so iOS CLI launches do not depend on renderer modules.
+CLI-launcher and shell-quoting helpers (`cliLaunch.ts`, `shell.ts`) live under
+`apps/desktop/src/shared/` so the desktop renderer, chat launch helpers, ADE CLI
+action surface, and sync remote-command service share one provider launch
+contract. Resume builders preserve provider-native model/permission state when
+an import supplies no explicit override. `externalSessionAffordances.ts`
+similarly centralizes provider capability-to-action policy for desktop and ADE
+Code. Renderer imports go through thin re-export shims under
+`apps/desktop/src/renderer/`. The mobile launcher path
+(`work.startCliSession`) uses the shared launch helpers on the host side, while
+iOS mirrors the external-import action policy natively in
+`WorkExternalSessionAffordances.swift`.
 
 Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, `pats`), persisted in `localStorage.ade.theme`, applied via `data-theme` on root. Token-based palettes in `apps/desktop/src/renderer/index.css`.
 

@@ -3,37 +3,12 @@ import SwiftUI
 
 private let workImportSessionProviders = ["all", "claude", "codex", "cursor", "droid", "opencode"]
 
-private struct WorkExternalSessionAction: Identifiable {
-  let id: String
-  let title: String
-  let systemImage: String
-  let tint: Color
-  let target: String
-  let mode: String
-  var isPrimary = false
-  var enabled = true
-  let importedSessionRef: ExternalSessionImportedRef?
+private struct WorkPendingExternalSessionImport: Identifiable {
+  let session: ExternalSessionSummary
+  let action: WorkExternalSessionAction
 
-  init(
-    id: String,
-    title: String,
-    systemImage: String,
-    tint: Color,
-    target: String,
-    mode: String,
-    isPrimary: Bool = false,
-    enabled: Bool = true,
-    importedSessionRef: ExternalSessionImportedRef? = nil
-  ) {
-    self.id = id
-    self.title = title
-    self.systemImage = systemImage
-    self.tint = tint
-    self.target = target
-    self.mode = mode
-    self.isPrimary = isPrimary
-    self.enabled = enabled
-    self.importedSessionRef = importedSessionRef
+  var id: String {
+    "\(session.provider):\(session.id):\(action.id)"
   }
 }
 
@@ -41,8 +16,9 @@ struct WorkImportSessionScreen: View {
   @EnvironmentObject var syncService: SyncService
 
   let lane: LaneSummary
+  let lanes: [LaneSummary]
   let onCliImported: @MainActor (TerminalSessionSummary) async -> Void
-  let onChatImported: @MainActor (String) async -> Void
+  let onChatImported: @MainActor (AgentChatSessionSummary) async -> Void
 
   @State private var sessions: [ExternalSessionSummary] = []
   @State private var providerFilter = "all"
@@ -51,9 +27,40 @@ struct WorkImportSessionScreen: View {
   @State private var hasLoaded = false
   @State private var errorMessage: String?
   @State private var importingSessionId: String?
+  @State private var selectedSession: ExternalSessionSummary?
+  @State private var selectedLaneId: String
+  @State private var pendingActiveResume: WorkPendingExternalSessionImport?
+
+  init(
+    lane: LaneSummary,
+    lanes: [LaneSummary],
+    onCliImported: @escaping @MainActor (TerminalSessionSummary) async -> Void,
+    onChatImported: @escaping @MainActor (AgentChatSessionSummary) async -> Void
+  ) {
+    self.lane = lane
+    self.lanes = lanes
+    self.onCliImported = onCliImported
+    self.onChatImported = onChatImported
+    _selectedLaneId = State(initialValue: lane.id)
+  }
+
+  private var selectedLane: LaneSummary {
+    lanes.first(where: { $0.id == selectedLaneId }) ?? lane
+  }
 
   private var queryKey: String {
-    "\(providerFilter)|\(scope)|\(lane.id)"
+    "\(providerFilter)|\(scope)|\(selectedLaneId)"
+  }
+
+  private var pendingActiveResumePresented: Binding<Bool> {
+    Binding(
+      get: { pendingActiveResume != nil },
+      set: { presented in
+        if !presented {
+          pendingActiveResume = nil
+        }
+      }
+    )
   }
 
   private var sortedSessions: [ExternalSessionSummary] {
@@ -64,10 +71,16 @@ struct WorkImportSessionScreen: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      controls
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
-        .padding(.bottom, 8)
+      Group {
+        if selectedSession == nil {
+          controls
+        } else {
+          detailControls
+        }
+      }
+      .padding(.horizontal, 16)
+      .padding(.top, 12)
+      .padding(.bottom, 8)
 
       if let errorMessage {
         Text(errorMessage)
@@ -88,6 +101,44 @@ struct WorkImportSessionScreen: View {
     .adeRootTabBarHidden()
     .task(id: queryKey) {
       await loadSessions()
+    }
+    .alert(
+      "Session may be open elsewhere",
+      isPresented: pendingActiveResumePresented,
+      presenting: pendingActiveResume
+    ) { pending in
+      Button("Continue anyway") {
+        Task { await importSession(pending.session, action: pending.action) }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: { _ in
+      Text("Close the other CLI before continuing the original session, or cancel and create a copy instead.")
+    }
+  }
+
+  @ViewBuilder
+  private var detailControls: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Button {
+        selectedSession = nil
+      } label: {
+        Label("All sessions", systemImage: "chevron.left")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+      }
+      .buttonStyle(.plain)
+
+      HStack {
+        Text("Import into")
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 12)
+        WorkLanePickerDropdown(
+          lanes: lanes,
+          selectedLaneId: $selectedLaneId,
+          showsAutoCreateOption: false
+        )
+      }
     }
   }
 
@@ -117,7 +168,21 @@ struct WorkImportSessionScreen: View {
 
   @ViewBuilder
   private var content: some View {
-    if loading && !hasLoaded {
+    if let selectedSession {
+      ScrollView {
+        WorkImportSessionRow(
+          session: selectedSession,
+          actions: workExternalSessionActions(for: selectedSession),
+          importing: importingSessionId == selectedSession.importIdentity,
+          importDisabled: importingSessionId != nil || loading,
+          onSelectAction: { action in
+            selectAction(action, for: selectedSession)
+          }
+        )
+        .padding(16)
+      }
+      .refreshable { await loadSessions() }
+    } else if loading && !hasLoaded {
       Spacer()
       ProgressView()
         .controlSize(.regular)
@@ -139,15 +204,12 @@ struct WorkImportSessionScreen: View {
     } else {
       List {
         ForEach(sortedSessions, id: \.importIdentity) { session in
-          WorkImportSessionRow(
-            session: session,
-            actions: actions(for: session),
-            importing: importingSessionId == session.importIdentity,
-            importDisabled: importingSessionId != nil,
-            onSelectAction: { action in
-              Task { await importSession(session, action: action) }
-            }
-          )
+          Button {
+            selectedSession = session
+          } label: {
+            WorkImportSessionSummaryRow(session: session)
+          }
+          .buttonStyle(.plain)
           .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
           .listRowSeparator(.hidden)
           .listRowBackground(Color.clear)
@@ -161,169 +223,53 @@ struct WorkImportSessionScreen: View {
     }
   }
 
+  private func selectAction(_ action: WorkExternalSessionAction, for session: ExternalSessionSummary) {
+    if session.possiblyActive,
+       action.mode == "resume",
+       action.importedSessionRef == nil {
+      pendingActiveResume = WorkPendingExternalSessionImport(session: session, action: action)
+      return
+    }
+    Task { await importSession(session, action: action) }
+  }
+
   private func loadSessions() async {
+    let requestedQueryKey = queryKey
+    let requestedLaneId = selectedLane.id
+    let requestedProviderFilter = providerFilter
+    let requestedScope = scope
     loading = true
+    defer {
+      if requestedQueryKey == queryKey {
+        loading = false
+      }
+    }
     errorMessage = nil
     do {
-      let providers = providerFilter == "all" ? nil : [providerFilter]
-      sessions = try await syncService.listExternalSessions(
+      let providers = requestedProviderFilter == "all" ? nil : [requestedProviderFilter]
+      let loadedSessions = try await syncService.listExternalSessions(
         providers: providers,
-        laneId: lane.id,
-        scope: scope,
+        laneId: requestedLaneId,
+        scope: requestedScope,
         limit: 100
       )
+      guard requestedQueryKey == queryKey else { return }
+      sessions = loadedSessions
+      if let current = selectedSession {
+        selectedSession = sessions.first(where: { $0.importIdentity == current.importIdentity })
+      }
       hasLoaded = true
     } catch is CancellationError {
     } catch {
+      guard requestedQueryKey == queryKey else { return }
       errorMessage = error.localizedDescription
       hasLoaded = true
-    }
-    loading = false
-  }
-
-  private func actions(for session: ExternalSessionSummary) -> [WorkExternalSessionAction] {
-    var result: [WorkExternalSessionAction] = []
-    let caps = session.capabilities
-    let cwdMatchesLane = session.cwdMatchesRequestedLane == true
-
-    if caps.importToChat {
-      result.append(WorkExternalSessionAction(
-        id: "open-as-chat",
-        title: "Open as ADE chat",
-        systemImage: "bubble.left.and.bubble.right.fill",
-        tint: ADEColor.accent,
-        target: "chat",
-        mode: "resume",
-        isPrimary: true
-      ))
-      result.append(WorkExternalSessionAction(
-        id: "fork-as-chat",
-        title: "Fork as ADE chat",
-        systemImage: "arrow.triangle.branch",
-        tint: ADEColor.textPrimary,
-        target: "chat",
-        mode: "fork"
-      ))
-    }
-
-    if cwdMatchesLane {
-      if caps.resumeInPlace {
-        result.append(WorkExternalSessionAction(
-          id: "resume-here",
-          title: "Open as CLI session",
-          systemImage: "terminal.fill",
-          tint: ADEColor.textPrimary,
-          target: "cli",
-          mode: "resume"
-        ))
-      }
-      if caps.fork {
-        result.append(WorkExternalSessionAction(
-          id: "fork-into-lane",
-          title: "Fork as CLI session",
-          systemImage: "arrow.triangle.branch",
-          tint: ADEColor.textPrimary,
-          target: "cli",
-          mode: "fork"
-        ))
-      }
-    } else if caps.resumeInDifferentCwd {
-      result.append(WorkExternalSessionAction(
-        id: "resume-here",
-        title: "Open as CLI session",
-        systemImage: "terminal.fill",
-        tint: ADEColor.textPrimary,
-        target: "cli",
-        mode: "resume"
-      ))
-      if caps.forkIntoDifferentCwd {
-        result.append(WorkExternalSessionAction(
-          id: "fork-into-lane",
-          title: "Fork as CLI session",
-          systemImage: "arrow.triangle.branch",
-          tint: ADEColor.textPrimary,
-          target: "cli",
-          mode: "fork"
-        ))
-      }
-    } else {
-      if caps.forkIntoDifferentCwd {
-        result.append(WorkExternalSessionAction(
-          id: "fork-into-lane",
-          title: "Fork as CLI session",
-          systemImage: "arrow.triangle.branch",
-          tint: ADEColor.textPrimary,
-          target: "cli",
-          mode: "fork"
-        ))
-      }
-      if caps.resumeInPlace {
-        result.append(WorkExternalSessionAction(
-          id: "resume-in-place",
-          title: "Open as CLI session",
-          systemImage: "terminal.fill",
-          tint: ADEColor.textPrimary,
-          target: "cli",
-          mode: "resume"
-        ))
-      }
-      if !caps.forkIntoDifferentCwd && !caps.resumeInPlace {
-        result.append(WorkExternalSessionAction(
-          id: "resume-here",
-          title: "Open as CLI session",
-          systemImage: "terminal.fill",
-          tint: ADEColor.textMuted,
-          target: "cli",
-          mode: "resume",
-          enabled: false
-        ))
-      }
-    }
-
-    if let importedRef = importedSessionRef(for: session) {
-      result = result.filter { $0.mode == "fork" }
-      result.insert(WorkExternalSessionAction(
-        id: "open-existing",
-        title: "Open in ADE",
-        systemImage: "arrow.right.circle.fill",
-        tint: ADEColor.accent,
-        target: "existing",
-        mode: "open",
-        isPrimary: true,
-        enabled: true,
-        importedSessionRef: importedRef
-      ), at: 0)
-      return result
-    }
-
-    if !result.contains(where: { $0.isPrimary }), let index = result.firstIndex(where: { $0.enabled }) {
-      result[index].isPrimary = true
-    }
-
-    return result
-  }
-
-  private func importedSessionRef(for session: ExternalSessionSummary) -> ExternalSessionImportedRef? {
-    guard session.alreadyImported, let ref = session.importedSessionRef else { return nil }
-    guard let kind = normalizedImportedSessionKind(ref.kind) else { return nil }
-    let sessionId = ref.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !sessionId.isEmpty else { return nil }
-    return ExternalSessionImportedRef(kind: kind, sessionId: sessionId)
-  }
-
-  private func normalizedImportedSessionKind(_ kind: String) -> String? {
-    let normalized = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    switch normalized {
-    case "chat", "cli":
-      return normalized
-    default:
-      return nil
     }
   }
 
   @MainActor
   private func importSession(_ session: ExternalSessionSummary, action: WorkExternalSessionAction) async {
-    guard importingSessionId == nil else { return }
+    guard importingSessionId == nil, !loading else { return }
     importingSessionId = session.importIdentity
     errorMessage = nil
     if let importedSessionRef = action.importedSessionRef {
@@ -335,16 +281,23 @@ struct WorkImportSessionScreen: View {
       let result = try await syncService.importExternalSession(
         provider: session.provider,
         sessionId: session.id,
-        laneId: lane.id,
+        laneId: selectedLane.id,
         target: action.target,
         mode: action.mode
       )
       if result.kind == "chat", let chatSessionId = result.chatSessionId {
+        let chatSummary: AgentChatSessionSummary
+        if let returnedSummary = result.chatSummary {
+          chatSummary = returnedSummary
+        } else {
+          chatSummary = try await syncService.fetchChatSummary(sessionId: chatSessionId)
+        }
+        syncService.cacheChatSummary(chatSummary)
         ADEHaptics.medium()
-        await onChatImported(chatSessionId)
+        await onChatImported(chatSummary)
       } else if result.kind == "cli", let sessionId = result.sessionId {
         ADEHaptics.medium()
-        await onCliImported(makeTerminalSessionSummary(
+        await onCliImported(result.session ?? makeTerminalSessionSummary(
           sessionId: sessionId,
           ptyId: result.ptyId,
           imported: session,
@@ -370,7 +323,7 @@ struct WorkImportSessionScreen: View {
     ref: ExternalSessionImportedRef,
     action: WorkExternalSessionAction
   ) async {
-    guard let kind = normalizedImportedSessionKind(ref.kind) else {
+    guard let kind = workNormalizedImportedSessionKind(ref.kind) else {
       ADEHaptics.error()
       errorMessage = "The imported session reference is not supported."
       return
@@ -384,14 +337,21 @@ struct WorkImportSessionScreen: View {
 
     ADEHaptics.medium()
     if kind == "chat" {
-      await onChatImported(sessionId)
+      do {
+        let summary = try await syncService.fetchChatSummary(sessionId: sessionId)
+        syncService.cacheChatSummary(summary)
+        await onChatImported(summary)
+      } catch {
+        ADEHaptics.error()
+        errorMessage = "The imported ADE chat is not available yet. \(error.localizedDescription)"
+      }
     } else {
-      await onCliImported(makeTerminalSessionSummary(
-        sessionId: sessionId,
-        ptyId: nil,
-        imported: session,
-        action: action
-      ))
+      if let terminal = await syncService.ensureSessionRowHydrated(sessionId: sessionId) {
+        await onCliImported(terminal)
+      } else {
+        ADEHaptics.error()
+        errorMessage = "The imported CLI session is not available yet. Refresh and try again."
+      }
     }
   }
 
@@ -403,8 +363,8 @@ struct WorkImportSessionScreen: View {
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: sessionId,
-      laneId: lane.id,
-      laneName: lane.name,
+      laneId: selectedLane.id,
+      laneName: selectedLane.name,
       ptyId: ptyId,
       tracked: true,
       pinned: false,
@@ -453,6 +413,7 @@ private struct WorkImportProviderChip: View {
       }
     }
     .buttonStyle(.plain)
+    .accessibilityAddTraits(selected ? .isSelected : [])
   }
 
   @ViewBuilder
@@ -466,6 +427,61 @@ private struct WorkImportProviderChip: View {
   }
 }
 
+private struct WorkImportSessionSummaryRow: View {
+  let session: ExternalSessionSummary
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      WorkProviderBareLogo(
+        provider: session.provider,
+        fallbackSymbol: providerIcon(session.provider),
+        tint: ADEColor.providerChatAccent(for: session.provider),
+        size: 20
+      )
+      .padding(.top, 2)
+
+      VStack(alignment: .leading, spacing: 5) {
+        Text(session.rowHeading)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(2)
+
+        if let preview = session.previewSnippet {
+          Text(preview)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
+        }
+
+        HStack(spacing: 5) {
+          Text(providerDisplayName(session.provider))
+          if let count = session.messageCount {
+            Text("· \(count) \(count == 1 ? "prompt" : "prompts")")
+          }
+          if let cwd = session.trimmedCwd {
+            Text("· \((cwd as NSString).lastPathComponent)")
+              .lineLimit(1)
+          }
+        }
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+      }
+
+      Spacer(minLength: 4)
+      Image(systemName: "chevron.right")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .padding(.top, 4)
+    }
+    .padding(14)
+    .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: ADEListRowMetrics.cornerRadius, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.6)
+    }
+  }
+}
+
 private struct WorkImportSessionRow: View {
   let session: ExternalSessionSummary
   let actions: [WorkExternalSessionAction]
@@ -473,13 +489,10 @@ private struct WorkImportSessionRow: View {
   let importDisabled: Bool
   let onSelectAction: (WorkExternalSessionAction) -> Void
 
-  @State private var previewExpanded = false
+  @State private var previewExpanded = true
 
   private var actionColumns: [GridItem] {
-    [
-      GridItem(.flexible(), spacing: 8),
-      GridItem(.flexible(), spacing: 8)
-    ]
+    [GridItem(.flexible(), spacing: 8)]
   }
 
   private var existingActions: [WorkExternalSessionAction] {
@@ -563,7 +576,7 @@ private struct WorkImportSessionRow: View {
       if let messageCount = session.messageCount {
         Text("·")
           .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-        Text("\(messageCount) \(messageCount == 1 ? "msg" : "msgs")")
+        Text("\(messageCount) \(messageCount == 1 ? "prompt" : "prompts")")
       }
 
       if session.hasRealTitle, let cwd = session.trimmedCwd {
@@ -690,11 +703,15 @@ private struct WorkImportActionButton: View {
           .foregroundStyle(iconColor)
           .frame(width: 14, height: 16)
 
-        Text(action.title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(titleColor)
-          .lineLimit(2)
-          .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 2) {
+          Text(action.title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(titleColor)
+          Text(action.detail)
+            .font(.caption2)
+            .foregroundStyle(action.isPrimary && action.enabled ? Color.white.opacity(0.78) : ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
 
         Spacer(minLength: 0)
       }

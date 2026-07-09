@@ -1834,6 +1834,12 @@ describe("createAgentChatService", () => {
       });
 
       const persisted = readPersistedChatState(result.chatSessionId);
+      expect(result.chatSummary).toMatchObject({
+        sessionId: result.chatSessionId,
+        laneId: "lane-1",
+        provider: "claude",
+        title: "Please inspect the failing test",
+      });
       expect(persisted.sdkSessionId).toBe(externalSessionId);
       expect(persisted.claudeBackgroundResumeSessionId).toBe(externalSessionId);
       expect(persisted.importedFrom).toMatchObject({
@@ -1932,7 +1938,7 @@ describe("createAgentChatService", () => {
         expect(forkedPath).toBeTruthy();
         const forkedRows = fs.readFileSync(forkedPath!, "utf8").trim().split(/\r?\n/u).map((line) => JSON.parse(line));
         expect(forkedRows[0]).toMatchObject({
-          cwd: tmpRoot,
+          cwd: fs.realpathSync(tmpRoot),
           sessionId: persisted.sdkSessionId,
         });
       } finally {

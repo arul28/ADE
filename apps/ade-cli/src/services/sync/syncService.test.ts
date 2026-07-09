@@ -228,10 +228,17 @@ describe("createSyncService", () => {
         importToChat: true,
       },
     }]);
-    const externalSessionsService = {
-      list,
-      importExternalSession: vi.fn(),
-    };
+    const importExternalSession = vi.fn(async (args: { laneId: string }) => ({
+      kind: "chat" as const,
+      chatSessionId: "chat-imported",
+      laneId: args.laneId,
+      chatSummary: {
+        sessionId: "chat-imported",
+        laneId: args.laneId,
+        title: "Persisted imported chat",
+      },
+    }));
+    const externalSessionsService = { list, importExternalSession };
     const service = createService(db, projectRoot, {
       getExternalSessionsService: () => externalSessionsService as any,
     });
@@ -259,6 +266,35 @@ describe("createSyncService", () => {
         scope: "project",
       });
       expect(result).toEqual(await list.mock.results[0]!.value);
+
+      const imported = await service.executeRemoteCommand({
+        commandId: "cmd-2",
+        action: "work.importExternalSession",
+        args: {
+          provider: "claude",
+          sessionId: "session-1",
+          laneId: "lane-1",
+          target: "chat",
+          mode: "fork",
+        },
+      });
+      expect(importExternalSession).toHaveBeenCalledWith({
+        provider: "claude",
+        sessionId: "session-1",
+        laneId: "lane-1",
+        target: "chat",
+        mode: "fork",
+      });
+      expect(imported).toEqual({
+        kind: "chat",
+        chatSessionId: "chat-imported",
+        laneId: "lane-1",
+        chatSummary: {
+          sessionId: "chat-imported",
+          laneId: "lane-1",
+          title: "Persisted imported chat",
+        },
+      });
     } finally {
       await service.dispose();
       db.close();

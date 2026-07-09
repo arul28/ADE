@@ -600,6 +600,7 @@ export function resolveClaudeCliModelForLaunch(model: string | null | undefined)
 }
 
 function permissionModeToClaudeFlag(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
+  if (permissionMode == null) return [];
   if (permissionMode === "full-auto") return ["--dangerously-skip-permissions"];
   if (permissionMode === "edit") return ["--permission-mode", "acceptEdits"];
   if (permissionMode === "auto") return ["--permission-mode", "auto"];
@@ -627,6 +628,7 @@ function droidSettingsJson(args: {
   reasoningEffort?: string | null;
 }): string {
   const sessionDefaultSettings = (() => {
+    if (args.permissionMode == null) return null;
     if (args.permissionMode === "full-auto") return { interactionMode: "auto", autonomyLevel: "high" };
     if (args.permissionMode === "default") return { interactionMode: "auto", autonomyLevel: "medium" };
     if (args.permissionMode === "edit") return { interactionMode: "auto", autonomyLevel: "low" };
@@ -634,7 +636,9 @@ function droidSettingsJson(args: {
   })();
   const model = normalizeDroidCliModel(args.model);
   const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
-  const settings: Record<string, unknown> = { sessionDefaultSettings };
+  const settings: Record<string, unknown> = {
+    ...(sessionDefaultSettings ? { sessionDefaultSettings } : {}),
+  };
   if (model) settings.model = model;
   if (reasoningEffort) settings.reasoningEffort = reasoningEffort;
   if (args.permissionMode === "plan") {
@@ -703,6 +707,7 @@ function buildDroidCommandLine(args: {
 const OPENCODE_INLINE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT";
 
 function openCodePermissionValue(permissionMode: AgentChatPermissionMode | null | undefined): string | Record<string, string> | null {
+  if (permissionMode == null) return null;
   if (permissionMode === "config-toml") return null;
   if (permissionMode === "full-auto") return "allow";
   if (permissionMode === "edit") return { "*": "ask", edit: "allow", question: "allow" };
@@ -861,9 +866,9 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (metadata.provider === "cursor") {
-    const cursorModel = overrides.model !== undefined
-      ? resolveCursorCliModelForLaunch(overrides.model)
-      : resolveCursorCliModelForLaunch(metadata.launch.model);
+    const cursorModel = normalizeCliFlagValue(model)
+      ? resolveCursorCliModelForLaunch(model)
+      : null;
     const parts = [
       "cursor-agent",
       ...permissionModeToCursorFlags(permissionMode),
@@ -879,6 +884,13 @@ export function buildTrackedCliResumeCommand(
   }
 
   if (metadata.provider === "droid") {
+    if (permissionMode == null && !normalizeCliFlagValue(model) && !normalizeCliFlagValue(reasoningEffort)) {
+      const parts = ["droid"];
+      if (targetId) parts.push("--resume", targetId);
+      else parts.push("--resume");
+      if (prompt) parts.push(prompt);
+      return commandArrayToLine(parts);
+    }
     return buildDroidCommandLine({
       permissionMode,
       model,

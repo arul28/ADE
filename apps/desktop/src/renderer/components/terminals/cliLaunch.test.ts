@@ -719,14 +719,14 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "edit" },
-    })).toBe("cursor-agent --model auto --resume chat-99");
+    })).toBe("cursor-agent --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
       targetKind: "session",
       targetId: "chat-99",
       launch: { permissionMode: "full-auto" },
-    })).toBe("cursor-agent --force --model auto --resume chat-99");
+    })).toBe("cursor-agent --force --resume chat-99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "cursor",
@@ -884,7 +884,7 @@ describe("tracked CLI resume helpers", () => {
       targetKind: "session",
       targetId: null,
       launch: { permissionMode: "plan" },
-    })).toBe("cursor-agent --mode plan --model auto --continue");
+    })).toBe("cursor-agent --mode plan --continue");
 
     expect(buildTrackedCliResumeCommand({
       provider: "droid",

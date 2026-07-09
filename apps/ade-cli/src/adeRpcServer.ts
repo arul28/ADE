@@ -2419,6 +2419,21 @@ function isExternalSessionProviderName(value: string | null): value is ExternalS
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
 }
 
+function isUnboundAdeCliCaller(session: SessionState): boolean {
+  // `ade actions run` is a local user-facing escape hatch. Unlike an agent
+  // launched inside Work, it has no chat/run lane binding, so applying the
+  // bound-agent scope here would make the documented external-session actions
+  // unreachable. The caller id is minted by cli.ts for the direct `ade` client.
+  const caller = resolveCallerContext(session);
+  return (caller.role === "agent" || caller.role === "orchestrator")
+    && /^ade-cli:\d+$/.test(caller.callerId ?? "")
+    && !caller.chatSessionId
+    && !caller.runId
+    && !caller.stepId
+    && !caller.attemptId
+    && !caller.ownerId;
+}
+
 function realishPath(filePath: string): string {
   try {
     return fs.realpathSync(filePath);
@@ -3400,7 +3415,7 @@ async function runTool(args: {
         session,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
-    } else if (!callerIsCto && domain === "external-sessions") {
+    } else if (!callerIsCto && domain === "external-sessions" && !isUnboundAdeCliCaller(session)) {
       const externalArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
         const scoped = scopeExternalSessionsListArgs(runtime, session, externalArgs);

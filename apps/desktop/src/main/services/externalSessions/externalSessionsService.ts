@@ -6,6 +6,7 @@ import {
   withCodexNoAltScreen,
 } from "../../../shared/cliLaunch";
 import type {
+  AgentChatImportExternalSessionResult,
   ExternalSessionCapabilities,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
@@ -42,7 +43,7 @@ export interface ExternalChatImporter {
     cwd: string | null;
     fork: boolean;
     title?: string;
-  }): Promise<{ chatSessionId: string }>;
+  }): Promise<AgentChatImportExternalSessionResult>;
 }
 
 export type ImportedChatSessionRef = {
@@ -67,6 +68,7 @@ type LaneServiceLike = {
 
 type SessionServiceLike = {
   list: (args: { limit: number | null }) => TerminalSessionSummary[];
+  get?: (sessionId: string) => TerminalSessionSummary | null;
   listClaudeSessionPointers?: (args?: { laneId?: string; limit?: number }) => Array<{
     sessionId: string;
     chatSessionId?: string | null;
@@ -96,7 +98,7 @@ type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
 };
 
 const PROVIDERS: ExternalSessionProvider[] = ["claude", "codex", "cursor", "droid", "opencode"];
-const UUIDISH_EXTERNAL_SESSION_ID = /^[0-9a-fA-F-]{8,64}$/u;
+const UUID_EXTERNAL_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const CLI_EXTERNAL_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$/u;
 const PROJECT_SCOPE_DISCOVERY_LIMIT = 200;
 
@@ -164,6 +166,20 @@ function realish(filePath: string): string {
   } catch {
     return path.resolve(filePath);
   }
+}
+
+function safeDirectoryExists(filePath: string, cache?: Map<string, boolean>): boolean {
+  const cacheKey = path.resolve(filePath);
+  const cached = cache?.get(cacheKey);
+  if (cached !== undefined) return cached;
+  let exists = false;
+  try {
+    exists = fs.statSync(filePath).isDirectory();
+  } catch {
+    exists = false;
+  }
+  cache?.set(cacheKey, exists);
+  return exists;
 }
 
 function deriveProjectScopeRoots(projectRoot: string): string[] {
@@ -283,7 +299,7 @@ export function validateExternalSessionId(provider: ExternalSessionProvider, id:
     );
   }
   const pattern = provider === "claude" || provider === "codex"
-    ? UUIDISH_EXTERNAL_SESSION_ID
+    ? UUID_EXTERNAL_SESSION_ID
     : CLI_EXTERNAL_SESSION_ID;
   if (!pattern.test(trimmed)) {
     throw new Error(
@@ -401,10 +417,43 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     return startDroidForkProbe();
   };
   void startDroidForkProbe();
-  const capabilitiesFor = (provider: ExternalSessionProvider): ExternalSessionCapabilities => {
-    if (provider !== "droid") return PROVIDER_CAPABILITIES[provider];
-    const fork = droidForkAvailable();
-    return { ...PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
+  const capabilitiesFor = (
+    provider: ExternalSessionProvider,
+    session?: Pick<ExternalSessionDiscoveryRecord, "cwd"> | null,
+    cwdExistenceCache?: Map<string, boolean>,
+  ): ExternalSessionCapabilities => {
+    const base = provider !== "droid"
+      ? PROVIDER_CAPABILITIES[provider]
+      : (() => {
+          const fork = droidForkAvailable();
+          return { ...PROVIDER_CAPABILITIES.droid, fork, forkIntoDifferentCwd: fork };
+        })();
+    if (session === undefined || provider === "codex") return base;
+    const cwd = session?.cwd?.trim() ?? "";
+    const cwdAvailable = cwd.length > 0 && safeDirectoryExists(cwd, cwdExistenceCache);
+    if (cwdAvailable) return base;
+    if (provider === "claude" && cwd.length > 0) {
+      return {
+        ...base,
+        resumeInPlace: false,
+      };
+    }
+    if (provider === "droid") {
+      // Droid forks are created in the destination lane and do not depend on
+      // the source cwd remaining available. Only in-place resume is lost.
+      return {
+        ...base,
+        resumeInPlace: false,
+        resumeInDifferentCwd: false,
+      };
+    }
+    return {
+      resumeInPlace: false,
+      resumeInDifferentCwd: false,
+      fork: false,
+      forkIntoDifferentCwd: false,
+      importToChat: false,
+    };
   };
 
   const discoverByProvider: Record<ExternalSessionProvider, (discoveryArgs: ExternalSessionDiscoveryArgs) => Promise<ExternalSessionDiscoveryRecord[]>> = {
@@ -443,12 +492,14 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           provider,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (providers.length === 1) throw error;
         return [] as ExternalSessionDiscoveryRecord[];
       }
     }));
 
     const imported = await importedSessionRefs(args.sessionService, args.chatImportedRefsProvider, args.logger);
     const activeCutoffMs = Date.now() - 2 * 60_000;
+    const cwdExistenceCache = new Map<string, boolean>();
     const discovered = sortDiscoveryRecords(settled.flat(), discoveryLimit * providers.length);
     const scoped = projectScoped
       ? discovered.filter((session) => isInProjectScope(session.cwd, scopeRoots))
@@ -457,6 +508,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     return scoped
       .map((session): ExternalSessionSummary => {
         const importKey = `${session.provider}:${session.id}`;
+        const importedRef = imported.get(importKey) ?? null;
         return {
           provider: session.provider,
           id: session.id,
@@ -466,20 +518,57 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
           messageCount: session.messageCount,
-          alreadyImported: imported.has(importKey),
-          importedSessionRef: imported.get(importKey) ?? null,
+          alreadyImported: importedRef != null,
+          importedSessionRef: importedRef,
           possiblyActive: typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
           cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
-          capabilities: capabilitiesFor(session.provider),
+          capabilities: capabilitiesFor(session.provider, session, cwdExistenceCache),
         };
       })
       .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
       .slice(0, projectScoped ? limit : scoped.length);
   };
 
-  const findExternalSummary = async (provider: ExternalSessionProvider, sessionId: string): Promise<ExternalSessionSummary | null> => {
-    const sessions = await list({ providers: [provider], scope: "all", limit: MAX_FIND_LIMIT });
-    return sessions.find((session) => session.id === sessionId) ?? null;
+  const findExternalSummary = async (
+    provider: ExternalSessionProvider,
+    sessionId: string,
+    destinationCwd: string,
+  ): Promise<ExternalSessionSummary | null> => {
+    // OpenCode can omit `directory` from list rows. Its CLI scopes the list by
+    // the cwd it runs in, so an exact lookup for a lane-scoped import may use
+    // that resolved destination as the missing row's cwd. Keep other providers
+    // and unscoped browse discovery conservative: their cwd must come from the
+    // provider's own session metadata.
+    const openCodeScopeRoots = provider === "opencode"
+      ? deriveProjectScopeRoots(args.projectRoot)
+      : null;
+    const [session] = await discoverByProvider[provider]({
+      homeDir: args.homeDir,
+      env: args.env,
+      ...(provider === "opencode" ? { cwd: destinationCwd } : {}),
+      projectRoot: args.projectRoot,
+      sessionId,
+      limit: 1,
+      scopeRoots: openCodeScopeRoots,
+      logger: args.logger,
+    });
+    if (!session || session.id !== sessionId) return null;
+    return {
+      provider: session.provider,
+      id: session.id,
+      cwd: session.cwd,
+      title: session.title,
+      preview: session.preview,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      messageCount: session.messageCount,
+      alreadyImported: false,
+      importedSessionRef: null,
+      possiblyActive: typeof session.sourceMtimeMs === "number"
+        && session.sourceMtimeMs >= Date.now() - 2 * 60_000,
+      cwdMatchesRequestedLane: cwdMatches(session.cwd, destinationCwd),
+      capabilities: capabilitiesFor(provider, session),
+    };
   };
 
   const importExternalSession = async (
@@ -490,7 +579,18 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const sessionId = validateExternalSessionId(provider, importArgs.sessionId);
     const laneId = importArgs.laneId.trim();
     const laneCwd = resolveLaneCwd(args.laneService, laneId);
-    const summary = await findExternalSummary(provider, sessionId);
+    if (importArgs.target === "chat") {
+      if (provider !== "claude" && provider !== "codex") {
+        throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
+      }
+      if (!args.chatImporter) {
+        throw new Error("Chat import unavailable: external chat importer is not configured.");
+      }
+    }
+    const summary = await findExternalSummary(provider, sessionId, laneCwd);
+    if (!summary) {
+      throw new Error(`${provider} external session '${sessionId}' was not found or is not resumable.`);
+    }
     const sourceCwd = summary?.cwd ?? null;
     const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
     if (enforceLaneScopeCwd) {
@@ -504,8 +604,17 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       if (provider !== "claude" && provider !== "codex") {
         throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
       }
-      const importer = args.chatImporter;
-      if (!importer) throw new Error("Chat import unavailable: external chat importer is not configured.");
+      const importer = args.chatImporter!;
+      if (!summary.capabilities.importToChat) {
+        throw new Error(`${provider} session '${sessionId}' cannot be imported as an ADE chat.`);
+      }
+      if (
+        provider === "claude"
+        && importArgs.mode === "resume"
+        && cwdMatches(sourceCwd, laneCwd) !== true
+      ) {
+        throw new Error("Claude sessions from another folder must be copied into the target lane; continuing the original across folders is not supported.");
+      }
       const result = await importer.importExternalChatSession({
         provider,
         externalSessionId: sessionId,
@@ -514,7 +623,12 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         fork: importArgs.mode === "fork",
         ...(summary?.title ? { title: summary.title } : {}),
       });
-      return { kind: "chat", chatSessionId: result.chatSessionId, laneId };
+      return {
+        kind: "chat",
+        chatSessionId: result.chatSessionId,
+        laneId,
+        chatSummary: result.chatSummary,
+      };
     }
 
     if (provider === "cursor" && importArgs.mode === "fork") {
@@ -527,6 +641,9 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     let transplantedClaude = false;
 
     if (importArgs.mode === "resume") {
+      if (provider !== "codex" && !summary.capabilities.resumeInPlace) {
+        throw new Error(`${provider} session '${sessionId}' cannot be resumed because its original folder is unavailable.`);
+      }
       if (provider === "codex") {
         runCwd = laneCwd;
       } else {
@@ -534,7 +651,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         runCwd = sourceCwd;
       }
     } else {
-      const canFork = provider === "droid" ? await resolveDroidForkAvailable() : capabilitiesFor(provider).fork;
+      const canFork = provider === "droid" ? await resolveDroidForkAvailable() : summary.capabilities.fork;
       if (!canFork) {
         throw new Error(provider === "droid"
           ? "The installed droid CLI does not support forking (--fork unavailable) — resume the session in its original folder or update droid."
@@ -563,6 +680,9 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         runCwd = laneCwd;
       } else if (provider === "opencode") {
         if (!sourceCwd) throw new Error("OpenCode fork import requires the source session cwd.");
+        if (realish(sourceCwd) !== realish(laneCwd)) {
+          throw new Error("OpenCode sessions cannot be copied into a different lane folder.");
+        }
         metadataTargetId = null;
         runCwd = sourceCwd;
       }
@@ -613,7 +733,14 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       ptyId: created.ptyId,
       adeSessionId: created.sessionId,
     });
-    return { kind: "cli", sessionId: created.sessionId, ptyId: created.ptyId, laneId };
+    const session = args.sessionService.get?.(created.sessionId) ?? undefined;
+    return {
+      kind: "cli",
+      sessionId: created.sessionId,
+      ptyId: created.ptyId,
+      laneId,
+      ...(session ? { session } : {}),
+    };
   };
 
   return {
@@ -622,7 +749,5 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     import: importExternalSession,
   };
 }
-
-const MAX_FIND_LIMIT = 500;
 
 export type ExternalSessionsService = ReturnType<typeof createExternalSessionsService>;
