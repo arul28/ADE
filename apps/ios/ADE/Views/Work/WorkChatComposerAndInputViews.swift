@@ -107,8 +107,8 @@ func workChatComposerSupportsFastMode(_ summary: AgentChatSessionSummary) -> Boo
 }
 
 /// Whether a model (by raw id + provider family) can use the "fast" service
-/// tier. Shared by the in-session and new-chat composers so both surfaces show
-/// the fast-mode lightning toggle for the same models.
+/// tier. Shared by the in-session and new-chat composers so launch payloads
+/// agree with the model picker.
 func workComposerSupportsFastMode(modelId: String, provider: String) -> Bool {
   workComposerFastModeSupported(
     modelId: modelId,
@@ -248,13 +248,13 @@ struct WorkComposerInputBanner: View {
 /// in-session and new-chat composers collapse at the same point.
 let workComposerControlsCollapseThreshold: CGFloat = 360
 
-/// The composer's access/model/fast-mode controls, shared verbatim by the
+/// The composer's access/model controls, shared verbatim by the
 /// in-session composer (`WorkComposerChipStrip`) and the new-chat composer
 /// (`WorkNewChatComposerBar`) so the two surfaces stay visually and
 /// behaviorally identical: a permission/access control (single tone-dot Menu
-/// when space is tight, segmented chips when wide), a model pill, and a
-/// fast-mode lightning toggle. The caller owns width measurement and passes
-/// `isCollapsed` so the GeometryReader can sit on the scroll viewport.
+/// when space is tight, segmented chips when wide) and a model pill. The caller
+/// owns width measurement and passes `isCollapsed` so the GeometryReader can sit
+/// on the scroll viewport.
 struct WorkComposerControlsRow: View {
   let provider: String
   let modelDisplayName: String
@@ -263,18 +263,14 @@ struct WorkComposerControlsRow: View {
   let modeOptions: [WorkRuntimeModeOption]
   let modeLabel: String
   let isCollapsed: Bool
-  let fastModeSupported: Bool
   let fastModeEnabled: Bool
-  let settingsMutationInFlight: Bool
   let onOpenModelPicker: (() -> Void)?
   let onSelectMode: ((String) -> Void)?
-  let onToggleFastMode: ((Bool) -> Void)?
 
   var body: some View {
     HStack(spacing: 8) {
       accessControl
       modelPill
-      fastModeToggle
     }
   }
 
@@ -447,6 +443,11 @@ struct WorkComposerControlsRow: View {
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
         }
+        if fastModeEnabled {
+          Image(systemName: "bolt.fill")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(ADEColor.warning)
+        }
         Image(systemName: "chevron.down")
           .font(.system(size: 9, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
@@ -463,38 +464,10 @@ struct WorkComposerControlsRow: View {
     .disabled(onOpenModelPicker == nil)
     .accessibilityLabel("Model: \(modelDisplayName)\(reasoning.isEmpty ? "" : ", reasoning \(reasoning)"). Tap to switch.")
   }
-
-  @ViewBuilder
-  private var fastModeToggle: some View {
-    if fastModeSupported {
-      Button {
-        onToggleFastMode?(!fastModeEnabled)
-      } label: {
-        Image(systemName: "bolt.fill")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
-          .frame(width: 28, height: 28)
-          .background(
-            Capsule(style: .continuous)
-              .fill(ADEColor.surfaceBackground.opacity(fastModeEnabled ? 0.56 : 0.34))
-          )
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(fastModeEnabled ? ADEColor.warning.opacity(0.38) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
-          )
-      }
-      .buttonStyle(.plain)
-      .disabled(onToggleFastMode == nil || settingsMutationInFlight)
-      .contentShape(Rectangle())
-      .accessibilityLabel("Fast mode \(fastModeEnabled ? "on" : "off"). Tap to turn \(fastModeEnabled ? "off" : "on").")
-      .accessibilityValue(settingsMutationInFlight ? "\(fastModeEnabled ? "On" : "Off"), saving" : (fastModeEnabled ? "On" : "Off"))
-      .accessibilityIdentifier("Work.Chat.Composer.FastModeToggle")
-    }
-  }
 }
 
 /// Compact horizontal strip matching the desktop composer toolbar: small
-/// single-line pills for access, model, fast mode, pending status chips,
+/// single-line pills for access, model, pending status chips,
 /// and nothing else. Reasoning is summarized in the model chip and changed
 /// through the full model picker.
 struct WorkComposerChipStrip: View {
@@ -503,7 +476,6 @@ struct WorkComposerChipStrip: View {
   let codexFastModeOverride: Bool?
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onToggleCodexFastMode: ((Bool) -> Void)?
 
   /// Width below which the access control collapses from the full segmented
   /// chip row to a single dot-only Menu button — mirroring the desktop
@@ -532,12 +504,9 @@ struct WorkComposerChipStrip: View {
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
             modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
             isCollapsed: isCollapsed,
-            fastModeSupported: chatSummary.fastModeSupported,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
-            settingsMutationInFlight: settingsMutationInFlight,
             onOpenModelPicker: onOpenModelPicker,
-            onSelectMode: onSelectRuntimeMode,
-            onToggleFastMode: onToggleCodexFastMode
+            onSelectMode: onSelectRuntimeMode
           )
         }
       }
@@ -1444,9 +1413,6 @@ struct WorkModelSelectionPendingCard: View {
     VStack(alignment: .leading, spacing: 12) {
       header
       selectedModelSummary
-      if shouldShowFastModeToggle {
-        fastModeToggle
-      }
       footer
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
@@ -1455,17 +1421,15 @@ struct WorkModelSelectionPendingCard: View {
         currentModelId: selectedModelId,
         currentProvider: selectedProvider,
         currentReasoningEffort: selectedReasoningEffort,
+        currentCodexFastMode: selectedCodexFastMode,
         availableModelIds: request.availableModelIds,
         isBusy: busy,
-        onSelect: { option, pickedReasoning, provider in
+        onSelect: { option, pickedReasoning, provider, pickedFastMode in
           selectedModel = option
           selectedModelId = option.id
           selectedProvider = provider
           selectedReasoningEffort = pickedReasoning ?? ""
-          if !option.supportsCodexFastMode {
-            selectedCodexFastMode = false
-          }
-          pickerPresented = false
+          selectedCodexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
         }
       )
       .environmentObject(syncService)
@@ -1540,6 +1504,14 @@ struct WorkModelSelectionPendingCard: View {
             Text("·")
             Text(selectedReasoningEffort.capitalized)
           }
+          if selectedCodexFastMode {
+            Text("·")
+            Image(systemName: "bolt.fill")
+              .font(.caption2.weight(.bold))
+              .foregroundStyle(ADEColor.warning)
+              .accessibilityLabel("Fast mode on")
+            Text("Fast")
+          }
         }
         .font(.caption.monospaced())
         .foregroundStyle(ADEColor.textSecondary)
@@ -1563,22 +1535,6 @@ struct WorkModelSelectionPendingCard: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
-  }
-
-  @ViewBuilder
-  private var fastModeToggle: some View {
-    Toggle(isOn: $selectedCodexFastMode) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Fast mode")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("Use the fast service tier for this worker.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .tint(ADEColor.accent)
-    .disabled(busy)
   }
 
   @ViewBuilder
@@ -1614,10 +1570,6 @@ struct WorkModelSelectionPendingCard: View {
       return known
     }
     return selectedModelId.isEmpty ? "No model selected" : selectedModelId
-  }
-
-  private var shouldShowFastModeToggle: Bool {
-    selectedCodexFastMode || selectedModel?.supportsCodexFastMode == true
   }
 
   @MainActor

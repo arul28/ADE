@@ -103,9 +103,10 @@ struct LinearLaunchScreen: View {
         currentModelId: modelId,
         currentProvider: provider,
         currentReasoningEffort: reasoningEffort,
+        currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionType == .cli ? .cli : .chat,
         isBusy: false,
-        onSelect: { option, pickedReasoning, runtimeProvider in
+        onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option
           modelId = option.id
           modelName = option.displayName
@@ -114,10 +115,7 @@ struct LinearLaunchScreen: View {
             : runtimeProvider
           reasoningEffort = pickedReasoning ?? ""
           runtimeMode = workDefaultRuntimeMode(provider: provider)
-          if !fastModeSupported {
-            codexFastMode = false
-          }
-          modelPickerPresented = false
+          codexFastMode = option.supportsCodexFastMode ? pickedFastMode : false
         }
       )
     }
@@ -188,15 +186,6 @@ struct LinearLaunchScreen: View {
         }
       } label: {
         LinearConfigRow(label: "Permissions", value: workRuntimeModeLabel(provider: provider, mode: runtimeMode))
-      }
-
-      if fastModeSupported {
-        Divider().overlay(ADEColor.glassBorder.opacity(0.5))
-        Toggle(isOn: $codexFastMode) {
-          Text("Fast mode").font(.subheadline).foregroundStyle(ADEColor.textPrimary)
-        }
-        .tint(LinearBrand.primary)
-        .padding(.vertical, 4)
       }
     }
     .padding(.horizontal, 14)
