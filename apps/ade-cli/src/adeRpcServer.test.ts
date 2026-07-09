@@ -2474,6 +2474,47 @@ describe("adeRpcServer", () => {
       closeLinearIssueOnMerge: true,
     });
 
+    (fixture.runtime.laneService.list as any).mockResolvedValueOnce([
+      {
+        id: "primary",
+        name: "Primary",
+        laneType: "primary",
+        parentLaneId: null,
+        baseRef: "main",
+        branchRef: "main",
+        archivedAt: null,
+      },
+      {
+        id: "parent-lane",
+        name: "Parent",
+        laneType: "worktree",
+        parentLaneId: null,
+        baseRef: "main",
+        branchRef: "feature/parent",
+        archivedAt: null,
+      },
+      {
+        id: "child-lane",
+        name: "Child",
+        laneType: "worktree",
+        parentLaneId: "parent-lane",
+        baseRef: "main",
+        branchRef: "feature/child",
+        archivedAt: null,
+      },
+    ]);
+    const stackedDefaulted = await callTool(handler, "create_pr_from_lane", {
+      laneId: "child-lane",
+    });
+    expect(stackedDefaulted?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
+      laneId: "child-lane",
+      title: "Child -> Parent",
+      body: "",
+      draft: false,
+      closeLinearIssueOnMerge: true,
+    });
+
     const updateTitle = await callTool(handler, "pr_update_title", { prId: "pr-1", title: "Renamed" });
     expect(updateTitle?.isError).toBeUndefined();
     expect(fixture.runtime.prService.updateTitle).toHaveBeenCalledWith({ prId: "pr-1", title: "Renamed" });

@@ -2064,6 +2064,24 @@ describe("createSyncRemoteCommandService", () => {
       );
     });
 
+    it("work.runQuickCommand preserves startupCommand for visible shell sessions", async () => {
+      await service.execute(makePayload("work.runQuickCommand", {
+        laneId: "lane-1",
+        title: "Claude login",
+        startupCommand: "claude auth login",
+        toolType: "shell",
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-1",
+          title: "Claude login",
+          startupCommand: "claude auth login",
+          tracked: true,
+          toolType: "shell",
+        }),
+      );
+    });
+
     it("work.runQuickCommand throws when startupCommand is missing and toolType is not shell", async () => {
       await expect(service.execute(makePayload("work.runQuickCommand", {
         laneId: "lane-1",

@@ -24,6 +24,7 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
+import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -2040,7 +2041,18 @@ async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBr
     }
   })();
   const sourceName = asOptionalTrimmedString(sourceLane?.name) || laneId;
-  const targetBranch = branchNameForPrTitle(baseBranch || sourceLane?.baseRef || laneInfo?.baseRef || runtime.project?.baseRef || "main");
+  const parentLane = sourceLane?.parentLaneId
+    ? lanes.find((lane) => lane.id === sourceLane.parentLaneId) ?? null
+    : null;
+  const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
+  const stableBaseBranch = sourceLane
+    ? resolveStableLaneBaseBranch({
+        lane: sourceLane,
+        parent: parentLane,
+        primaryBranchRef: primaryLane?.branchRef ?? runtime.project?.baseRef ?? "main",
+      })
+    : laneInfo?.baseRef || runtime.project?.baseRef || "main";
+  const targetBranch = branchNameForPrTitle(baseBranch || stableBaseBranch || laneInfo?.baseRef || runtime.project?.baseRef || "main");
   const targetLane = targetBranch
     ? lanes.find((lane) => lane.id !== laneId && branchNameForPrTitle(lane.branchRef) === targetBranch)
     : null;
