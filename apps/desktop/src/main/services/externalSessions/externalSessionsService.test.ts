@@ -5,6 +5,7 @@ import path from "node:path";
 import { Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSessionSummary, PtyCreateArgs, TerminalSessionSummary } from "../../../shared/types";
+import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { createExternalSessionsService } from "./externalSessionsService";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { claudeProjectSlugForCwd } from "./discoveryUtils";
@@ -621,6 +622,75 @@ describe("externalSessionsService", () => {
     })).resolves.toMatchObject({ kind: "cli", sessionId: "terminal-exact" });
     expect(list).not.toHaveBeenCalled();
     expect(create.mock.calls[0]![0].startupCommand).toContain(`--resume ${targetId}`);
+  });
+
+  it("uses the destination lane scope when an exact OpenCode row omits its cwd", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    const binDir = path.join(root, "bin");
+    const openCodePath = path.join(binDir, "opencode");
+    const id = "open-missing-cwd";
+    fs.mkdirSync(laneCwd, { recursive: true });
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(openCodePath, "#!/bin/sh\n", "utf8");
+    fs.chmodSync(openCodePath, 0o755);
+
+    const previousPath = process.env.PATH;
+    const previousDisableBundled = process.env.ADE_DISABLE_BUNDLED_OPENCODE;
+    process.env.PATH = binDir;
+    process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
+    clearOpenCodeBinaryCache();
+    try {
+      execFileMock.mockImplementation((...callArgs: any[]) => {
+        const callback = callArgs.at(-1) as (error: Error | null, stdout: unknown, stderr: string) => void;
+        callback(null, {
+          stdout: JSON.stringify([{ id, title: "OpenCode without cwd" }]),
+          stderr: "",
+        }, "");
+        return { pid: 123 } as ReturnType<typeof execFile>;
+      });
+      const create = vi.fn(async (_args: PtyCreateArgs) => ({
+        sessionId: "terminal-opencode",
+        ptyId: "pty-opencode",
+        pid: 456,
+      }));
+      const service = createExternalSessionsService({
+        droidForkSupported: true,
+        projectRoot,
+        homeDir,
+        laneService: { getLaneWorktreePath: () => laneCwd },
+        sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+        ptyService: { create },
+        logger: makeLogger(),
+      });
+
+      await expect(service.importExternalSession({
+        provider: "opencode",
+        sessionId: id,
+        laneId: "lane-1",
+        target: "cli",
+        mode: "resume",
+      })).resolves.toEqual({
+        kind: "cli",
+        sessionId: "terminal-opencode",
+        ptyId: "pty-opencode",
+        laneId: "lane-1",
+      });
+
+      expect(execFileMock.mock.calls[0]?.[2]).toMatchObject({ cwd: fs.realpathSync(laneCwd) });
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        cwd: fs.realpathSync(laneCwd),
+        allowExternalCwd: false,
+        startupCommand: `opencode --session ${id}`,
+      }));
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      if (previousDisableBundled === undefined) delete process.env.ADE_DISABLE_BUNDLED_OPENCODE;
+      else process.env.ADE_DISABLE_BUNDLED_OPENCODE = previousDisableBundled;
+      clearOpenCodeBinaryCache();
+    }
   });
 
   it("forks a same-cwd Claude session with the original id in the launch command", async () => {

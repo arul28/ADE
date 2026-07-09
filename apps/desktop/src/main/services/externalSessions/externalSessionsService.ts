@@ -529,14 +529,27 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       .slice(0, projectScoped ? limit : scoped.length);
   };
 
-  const findExternalSummary = async (provider: ExternalSessionProvider, sessionId: string): Promise<ExternalSessionSummary | null> => {
+  const findExternalSummary = async (
+    provider: ExternalSessionProvider,
+    sessionId: string,
+    destinationCwd: string,
+  ): Promise<ExternalSessionSummary | null> => {
+    // OpenCode can omit `directory` from list rows. Its CLI scopes the list by
+    // the cwd it runs in, so an exact lookup for a lane-scoped import may use
+    // that resolved destination as the missing row's cwd. Keep other providers
+    // and unscoped browse discovery conservative: their cwd must come from the
+    // provider's own session metadata.
+    const openCodeScopeRoots = provider === "opencode"
+      ? deriveProjectScopeRoots(args.projectRoot)
+      : null;
     const [session] = await discoverByProvider[provider]({
       homeDir: args.homeDir,
       env: args.env,
+      ...(provider === "opencode" ? { cwd: destinationCwd } : {}),
       projectRoot: args.projectRoot,
       sessionId,
       limit: 1,
-      scopeRoots: null,
+      scopeRoots: openCodeScopeRoots,
       logger: args.logger,
     });
     if (!session || session.id !== sessionId) return null;
@@ -553,7 +566,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       importedSessionRef: null,
       possiblyActive: typeof session.sourceMtimeMs === "number"
         && session.sourceMtimeMs >= Date.now() - 2 * 60_000,
-      cwdMatchesRequestedLane: null,
+      cwdMatchesRequestedLane: cwdMatches(session.cwd, destinationCwd),
       capabilities: capabilitiesFor(provider, session),
     };
   };
@@ -574,7 +587,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         throw new Error("Chat import unavailable: external chat importer is not configured.");
       }
     }
-    const summary = await findExternalSummary(provider, sessionId);
+    const summary = await findExternalSummary(provider, sessionId, laneCwd);
     if (!summary) {
       throw new Error(`${provider} external session '${sessionId}' was not found or is not resumable.`);
     }

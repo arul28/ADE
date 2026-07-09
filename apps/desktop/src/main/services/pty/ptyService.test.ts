@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
+import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
@@ -3012,11 +3013,14 @@ describe("ptyService", () => {
         }));
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         const spawnArgs = spawn.mock.calls.map((call: any[]) => call[1]).flat();
-        expect(spawnArgs.some((line: string) =>
-          line.includes("opencode run --interactive --agent plan --model lmstudio/openai/gpt-oss-20b --variant fast --session ses_abc --replay --replay-limit 40 --")
-          && line.includes("continue from the freeze frame")
-          && line.includes("\"question\":\"allow\"")
-        )).toBe(true);
+        expect(spawnArgs).toContain(buildCanonicalOpenCodeReplayResumeCommand({
+          permissionMode: "plan",
+          model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
+          fastMode: true,
+          resumeTarget: "ses_abc",
+          prompt: "continue from the freeze frame",
+          replayLimit: 40,
+        }));
         expect(mockPty.write).not.toHaveBeenCalledWith("continue from the freeze frame\r");
       } finally {
         if (previous === undefined) {

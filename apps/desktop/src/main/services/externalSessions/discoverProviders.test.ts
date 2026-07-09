@@ -427,6 +427,15 @@ describe("external session provider discovery", () => {
     await expect(discoverOpenCodeSessions({ homeDir, cwd, sessionId: "open-3", limit: 1 })).resolves.toEqual([
       expect.objectContaining({ id: "open-3", cwd: null, title: "Missing cwd" }),
     ]);
+    await expect(discoverOpenCodeSessions({
+      homeDir,
+      cwd,
+      scopeRoots: [cwd],
+      sessionId: "open-3",
+      limit: 1,
+    })).resolves.toEqual([
+      expect.objectContaining({ id: "open-3", cwd: path.resolve(cwd), title: "Missing cwd" }),
+    ]);
 
     const service = createExternalSessionsService({
       droidForkSupported: true,
