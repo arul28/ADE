@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import type {
   AiFeatureKey,
   AiConfig,
@@ -13,11 +12,11 @@ import {
   cardStyle,
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { getModelById, resolveModelAlias, type ProviderFamily } from "../../../shared/modelRegistry";
+import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
-import { createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
+import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
 
 type FeatureInfo = {
   key: AiFeatureKey;
@@ -121,18 +120,7 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
 }
 
 export function AiFeaturesSection() {
-  const navigate = useNavigate();
-  const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
-  }, [navigate]);
-  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
-    if (family !== "anthropic") {
-      openAiProvidersSettings();
-      return;
-    }
-    void createClaudeLoginTerminalInWork({ navigate })
-      .catch(() => openAiProvidersSettings());
-  }, [navigate, openAiProvidersSettings]);
+  const openProviderSignIn = useOpenProviderSignIn();
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

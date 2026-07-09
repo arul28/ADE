@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowSquareOut,
@@ -17,8 +16,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
-import { createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
-import type { ProviderFamily } from "../../../shared/modelRegistry";
+import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
 import type { GitCommitSummary } from "../../../shared/types/git";
 import type { LaneSummary } from "../../../shared/types/lanes";
@@ -264,18 +262,7 @@ function NewReportTab({
   hasGithubToken: boolean;
   onSubmitted: () => void;
 }) {
-  const navigate = useNavigate();
-  const openAiProvidersSettings = useCallback(() => {
-    navigate("/settings?tab=ai#ai-providers");
-  }, [navigate]);
-  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
-    if (family !== "anthropic") {
-      openAiProvidersSettings();
-      return;
-    }
-    void createClaudeLoginTerminalInWork({ navigate })
-      .catch(() => openAiProvidersSettings());
-  }, [navigate, openAiProvidersSettings]);
+  const openProviderSignIn = useOpenProviderSignIn();
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);

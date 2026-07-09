@@ -103,7 +103,7 @@ import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
-import { ChatTurnFileChangesPanel } from "./ChatFileChangesPanel";
+import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -137,14 +137,13 @@ function TurnDiffSummaryFallback({
   threadSummaries: TurnDiffSummary[];
 }) {
   const thread = threadSummaries.length > 0 ? threadSummaries : [turnSummary];
-  const threadFiles = new Set<string>();
-  let threadAdditions = 0;
-  let threadDeletions = 0;
-  for (const summary of thread) {
-    threadAdditions += summary.totalAdditions;
-    threadDeletions += summary.totalDeletions;
-    for (const file of summary.files) threadFiles.add(file.path);
-  }
+  const turnFiles = aggregateFiles([turnSummary]);
+  if (turnFiles.length === 0) return null;
+  const threadFiles = aggregateFiles(thread);
+  const turnAdditions = turnFiles.reduce((sum, file) => sum + file.additions, 0);
+  const turnDeletions = turnFiles.reduce((sum, file) => sum + file.deletions, 0);
+  const threadAdditions = threadFiles.reduce((sum, file) => sum + file.additions, 0);
+  const threadDeletions = threadFiles.reduce((sum, file) => sum + file.deletions, 0);
   return (
     <div className="my-2 w-full max-w-full rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -152,8 +151,8 @@ function TurnDiffSummaryFallback({
           <FileCode size={13} weight="bold" aria-hidden />
           Files changed
         </span>
-        <span>This turn: {formatDiffCounts(turnSummary.files.length, turnSummary.totalAdditions, turnSummary.totalDeletions)}</span>
-        <span>Full thread: {formatDiffCounts(threadFiles.size, threadAdditions, threadDeletions)}</span>
+        <span>This turn: {formatDiffCounts(turnFiles.length, turnAdditions, turnDeletions)}</span>
+        <span>Full thread: {formatDiffCounts(threadFiles.length, threadAdditions, threadDeletions)}</span>
       </div>
     </div>
   );

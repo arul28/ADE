@@ -54,14 +54,14 @@ function statusBadge(status: TurnDiffFile["status"]) {
 
 /* ── Aggregation ── */
 
-type AggregatedFile = TurnDiffFile & {
+export type AggregatedFile = TurnDiffFile & {
   /** The turn whose SHA pair should be used to fetch the diff. */
   beforeSha: string;
   afterSha: string;
   turnIndex: number;
 };
 
-function aggregateFiles(summaries: TurnDiffSummary[]): AggregatedFile[] {
+export function aggregateFiles(summaries: TurnDiffSummary[]): AggregatedFile[] {
   // Summaries arrive in chronological order, so each subsequent turn is the
   // "latest" for any file it touches. We keep the first turn's beforeSha and
   // advance the afterSha/status/stats as later turns amend the same path.
