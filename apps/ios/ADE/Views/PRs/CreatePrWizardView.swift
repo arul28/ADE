@@ -290,6 +290,13 @@ struct CreatePrWizardView: View {
     lastAutoTitle = next
   }
 
+  private func clearLaneScopedDetailsIfChangingSource(from oldLaneId: String, to newLaneId: String) {
+    guard !oldLaneId.isEmpty, !newLaneId.isEmpty, oldLaneId != newLaneId else { return }
+    bodyText = ""
+    labelsInput = ""
+    reviewersInput = ""
+  }
+
   private var canSubmit: Bool {
     if isSubmitting { return false }
     switch createMode {
@@ -396,9 +403,10 @@ struct CreatePrWizardView: View {
         }
         applyDefaultTitleIfUntouched()
       }
-      .onChange(of: selectedLaneId) { _, _ in
+      .onChange(of: selectedLaneId) { oldLaneId, newLaneId in
         // Reset base-branch default when lane changes so the target picker
         // tracks the new lane's recommended base instead of a stale one.
+        clearLaneScopedDetailsIfChangingSource(from: oldLaneId, to: newLaneId)
         baseBranch = defaultTargetBranch
         applyDefaultTitleIfUntouched()
         errorMessage = nil

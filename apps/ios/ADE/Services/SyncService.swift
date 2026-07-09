@@ -5695,7 +5695,7 @@ final class SyncService: ObservableObject {
         "laneId": laneId,
         "title": "Claude login",
         "startupCommand": "claude auth login",
-        "toolType": "run-shell",
+        "toolType": "shell",
         "tracked": true,
         "cols": 100,
         "rows": 28,
