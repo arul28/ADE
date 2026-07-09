@@ -2,6 +2,7 @@ import type { AutomationRuleDraft } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
 import { FLAGSHIP_TEMPLATES } from "../templates/templateData";
+import { templateIconFor } from "../templates/templateIcons";
 
 export function AutomationsEmptyState({
   onUseTemplate,
@@ -20,7 +21,7 @@ export function AutomationsEmptyState({
 
       <div className="mt-3 space-y-2">
         {flagships.map((template) => {
-          const Icon = template.icon;
+          const Icon = templateIconFor(template.id);
           return (
             <button
               key={template.id}

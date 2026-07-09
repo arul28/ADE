@@ -176,6 +176,19 @@ export const WEBHOOK_GATEWAY_TRIGGER_TYPES = [
 
 export type WebhookGatewayTriggerType = (typeof WEBHOOK_GATEWAY_TRIGGER_TYPES)[number];
 
+// Every external-event trigger type must be gateway-gated. `satisfies` above
+// catches invalid names; this catches a github.*/linear.* union member that
+// was never added to the list (the assignment errors while any is missing).
+type ExternalEventTriggerType = Extract<
+  AutomationTriggerType,
+  `github.${string}` | `linear.${string}` | "github-webhook" | "webhook"
+>;
+const WEBHOOK_GATEWAY_COMPLETENESS_CHECK: Record<
+  Exclude<ExternalEventTriggerType, WebhookGatewayTriggerType>,
+  never
+> = {};
+void WEBHOOK_GATEWAY_COMPLETENESS_CHECK;
+
 export function isWebhookGatewayTriggerType(type: AutomationTriggerType | string | null | undefined): type is WebhookGatewayTriggerType {
   return WEBHOOK_GATEWAY_TRIGGER_TYPES.includes(type as WebhookGatewayTriggerType);
 }

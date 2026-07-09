@@ -20,6 +20,34 @@ import {
 
 const DEFAULT_LINEAR_RELAY_POLL_INTERVAL_MS = 45_000;
 const LINEAR_RELAY_PAGE_LIMIT = 500;
+const LINEAR_RELAY_MAX_PAGES_PER_POLL = 20;
+
+type LinearAccessCredentials = {
+  ensureFreshToken: (opts?: { force?: boolean }) => Promise<void>;
+  getToken: () => string | null;
+  getStatus: () => { authMode: string | null };
+};
+
+// Relay auth wants OAuth tokens Bearer-prefixed and API keys raw — shared by
+// the desktop and headless wiring so the branching cannot drift between them.
+export function createLinearAccessTokenGetter(
+  credentials: LinearAccessCredentials,
+): () => Promise<string | null> {
+  return async () => {
+    await credentials.ensureFreshToken();
+    const token = credentials.getToken()?.trim() ?? "";
+    if (!token) return null;
+    if (credentials.getStatus().authMode === "oauth") {
+      return /^bearer\s+/i.test(token) ? token : `Bearer ${token}`;
+    }
+    return token.replace(/^bearer\s+/i, "");
+  };
+}
+
+function parseRelaySequence(cursor: string): number | null {
+  const match = /^seq:(\d+)$/.exec(cursor.trim());
+  return match ? Number(match[1]) : null;
+}
 const LINEAR_WEBHOOK_RESOURCE_TYPES = ["Issue", "Comment", "IssueLabel"];
 const LINEAR_WEBHOOK_LABEL = "ADE automations";
 
@@ -352,40 +380,51 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     }
     if (status.state !== "ready" || !status.organizationId) return;
     const authorization = await requireAuthorization();
-    const cursor = deps.cursorStore.get("linear-relay");
-    const url = new URL(`${status.relayBaseUrl}/linear/orgs/${encodeURIComponent(status.organizationId)}/events`);
-    url.searchParams.set("limit", String(LINEAR_RELAY_PAGE_LIMIT));
-    if (cursor) url.searchParams.set("after", cursor);
-    const response = await fetchImpl(url, {
-      headers: { authorization },
-    });
-    const rawPayload = await response.json().catch(() => null) as unknown;
-    if (!response.ok) {
-      const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
-      throw new Error(detail ?? `Linear relay poll failed (HTTP ${response.status}).`);
-    }
-    const payload = parseRelayEventsResponse(rawPayload);
-    if (payload.cursorExpired) {
-      deps.cursorStore.set({ source: "linear-relay", cursor: payload.nextCursor });
-      setLastError(null);
-      deps.logger.info("automations.linear_relay_cursor_reset", { cursor: payload.nextCursor });
-      return;
-    }
 
-    let newestEventAt: string | null = null;
-    for (const event of [...payload.events].reverse()) {
-      const record = mapRelayEventToRecord(event);
-      persistRecord(record);
-      deps.dispatch(record);
-      if (!newestEventAt || Date.parse(record.createdAt) > Date.parse(newestEventAt)) {
-        newestEventAt = record.createdAt;
+    // Drain full pages within one tick so a backlog larger than one page is
+    // delivered this poll instead of trickling out one page per interval.
+    for (let page = 0; page < LINEAR_RELAY_MAX_PAGES_PER_POLL; page += 1) {
+      const cursor = deps.cursorStore.get("linear-relay");
+      const url = new URL(`${status.relayBaseUrl}/linear/orgs/${encodeURIComponent(status.organizationId)}/events`);
+      url.searchParams.set("limit", String(LINEAR_RELAY_PAGE_LIMIT));
+      if (cursor) url.searchParams.set("after", cursor);
+      const response = await fetchImpl(url, {
+        headers: { authorization },
+      });
+      const rawPayload = await response.json().catch(() => null) as unknown;
+      if (!response.ok) {
+        const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
+        throw new Error(detail ?? `Linear relay poll failed (HTTP ${response.status}).`);
       }
+      const payload = parseRelayEventsResponse(rawPayload);
+      if (payload.cursorExpired) {
+        deps.cursorStore.set({ source: "linear-relay", cursor: payload.nextCursor });
+        setLastError(null);
+        deps.logger.info("automations.linear_relay_cursor_reset", { cursor: payload.nextCursor });
+        return;
+      }
+
+      // Cursored relay pages are oldest-first, fresh reads newest-first; sort
+      // by relay sequence so dispatch order never depends on the read path.
+      const ordered = [...payload.events].sort(
+        (a, b) => (parseRelaySequence(a.cursor) ?? 0) - (parseRelaySequence(b.cursor) ?? 0),
+      );
+      let newestEventAt: string | null = null;
+      for (const event of ordered) {
+        const record = mapRelayEventToRecord(event);
+        persistRecord(record);
+        deps.dispatch(record);
+        if (!newestEventAt || Date.parse(record.createdAt) > Date.parse(newestEventAt)) {
+          newestEventAt = record.createdAt;
+        }
+      }
+      if (payload.nextCursor) {
+        deps.cursorStore.set({ source: "linear-relay", cursor: payload.nextCursor });
+      }
+      if (newestEventAt) deps.db.setJson(LINEAR_RELAY_LAST_EVENT_AT_REF, newestEventAt);
+      setLastError(null);
+      if (payload.events.length < LINEAR_RELAY_PAGE_LIMIT || !payload.nextCursor) return;
     }
-    if (payload.nextCursor) {
-      deps.cursorStore.set({ source: "linear-relay", cursor: payload.nextCursor });
-    }
-    if (newestEventAt) deps.db.setJson(LINEAR_RELAY_LAST_EVENT_AT_REF, newestEventAt);
-    setLastError(null);
   };
 
   const pollNow = async (): Promise<void> => {

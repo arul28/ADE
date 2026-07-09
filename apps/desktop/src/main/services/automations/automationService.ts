@@ -1256,6 +1256,7 @@ export function createAutomationService({
     db.run(`
       create table if not exists automation_scheduled_cleanups (
         id text primary key,
+        project_id text not null,
         rule_id text not null,
         run_id text not null,
         lane_id text not null,
@@ -1264,13 +1265,14 @@ export function createAutomationService({
         status text not null,
         created_at text not null,
         executed_at text,
-        error text
+        error text,
+        foreign key(project_id) references projects(id)
       )
     `);
-    db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(status, due_at)");
+    db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
     // A crash may leave a claimed cleanup behind. Retrying is safe: if the
     // delete completed before the crash, the missing-lane path records success.
-    db.run("update automation_scheduled_cleanups set status = 'scheduled' where status = 'executing'");
+    db.run("update automation_scheduled_cleanups set status = 'scheduled' where status = 'executing' and project_id = ?", [projectId]);
 
   };
 
@@ -1738,8 +1740,11 @@ export function createAutomationService({
     `
       select id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
       from automation_scheduled_cleanups
+      where project_id = ?
       order by due_at asc, created_at asc
+      limit 200
     `,
+    [projectId],
   ).map(toScheduledCleanup);
 
   const scheduleLaneCleanup = (args: {
@@ -1756,10 +1761,10 @@ export function createAutomationService({
     db.run(
       `
         insert into automation_scheduled_cleanups(
-          id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
-        ) values (?, ?, ?, ?, ?, ?, 'scheduled', ?, null, null)
+          id, project_id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
+        ) values (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, null, null)
       `,
-      [id, args.ruleId, args.runId, args.laneId, dueAt, JSON.stringify(options), createdAt],
+      [id, projectId, args.ruleId, args.runId, args.laneId, dueAt, JSON.stringify(options), createdAt],
     );
     return {
       id,
@@ -1801,6 +1806,8 @@ export function createAutomationService({
         ? {
             status: "failed",
             error_message: runRow.error_message ?? errorMessage ?? "Scheduled lane cleanup failed.",
+            // The run completed earlier; the deferred failure is what ends it.
+            ended_at: nowIso(),
           }
         : {}),
     });
@@ -1849,14 +1856,25 @@ export function createAutomationService({
     if (scheduledCleanupSweepRunning) return;
     scheduledCleanupSweepRunning = true;
     try {
+      // Terminal rows are audit detail, not history (runs keep the durable
+      // record) — prune them after 30 days so the table cannot grow unbounded.
+      db.run(
+        `
+          delete from automation_scheduled_cleanups
+          where project_id = ?
+            and status in ('executed', 'failed', 'cancelled')
+            and created_at < ?
+        `,
+        [projectId, new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()],
+      );
       const dueRows = db.all<AutomationScheduledCleanupRow>(
         `
           select id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
           from automation_scheduled_cleanups
-          where status = 'scheduled' and due_at <= ?
+          where project_id = ? and status = 'scheduled' and due_at <= ?
           order by due_at asc, created_at asc
         `,
-        [nowIso()],
+        [projectId, nowIso()],
       );
       for (const row of dueRows) {
         db.run(
@@ -1879,13 +1897,13 @@ export function createAutomationService({
     const id = idRaw.trim();
     if (!id) return false;
     const existing = db.get<{ status: string }>(
-      `select status from automation_scheduled_cleanups where id = ? limit 1`,
-      [id],
+      `select status from automation_scheduled_cleanups where id = ? and project_id = ? limit 1`,
+      [id, projectId],
     );
     if (existing?.status !== "scheduled") return false;
     db.run(
-      `update automation_scheduled_cleanups set status = 'cancelled', executed_at = ?, error = null where id = ? and status = 'scheduled'`,
-      [nowIso(), id],
+      `update automation_scheduled_cleanups set status = 'cancelled', executed_at = ?, error = null where id = ? and project_id = ? and status = 'scheduled'`,
+      [nowIso(), id, projectId],
     );
     return true;
   };

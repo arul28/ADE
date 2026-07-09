@@ -3,6 +3,7 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { cardCls } from "../designTokens";
 import type { AutomationTemplate } from "./templateData";
+import { templateIconFor } from "./templateIcons";
 
 export function TemplateCard({
   template,
@@ -13,7 +14,7 @@ export function TemplateCard({
   onUse: () => void;
   className?: string;
 }) {
-  const Icon = template.icon;
+  const Icon = templateIconFor(template.id);
   return (
     <button
       type="button"

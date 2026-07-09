@@ -31,7 +31,7 @@ export type TriggerSource =
   | "manual";
 
 export type TriggerEvent = {
-  value: string;
+  value: AutomationTrigger["type"];
   label: string;
 };
 
@@ -172,7 +172,7 @@ export function defaultTriggerForSource(source: TriggerSource): AutomationTrigge
     case "linear":
       return { type: "linear.issue_created" };
     case "lane":
-      return { type: LANE_MERGED_TRIGGER_TYPE as AutomationTrigger["type"] };
+      return { type: LANE_MERGED_TRIGGER_TYPE };
     case "git":
       return { type: "git.push" };
     case "file":

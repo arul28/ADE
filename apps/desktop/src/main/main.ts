@@ -149,7 +149,7 @@ import { createAutomationPlannerService } from "./services/automations/automatio
 import { createAutomationSecretService } from "./services/automations/automationSecretService";
 import { createProjectSecretService } from "./services/secrets/projectSecretService";
 import { createAutomationIngressService, createKvIngressCursorStore } from "./services/automations/automationIngressService";
-import { createLinearIngressService } from "./services/automations/linearIngressService";
+import { createLinearAccessTokenGetter, createLinearIngressService } from "./services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import { createReviewService } from "./services/review/reviewService";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
@@ -3165,15 +3165,7 @@ app.whenReady().then(async () => {
           projectId,
           credentialStore: linearCredentialStore,
           getLinearClient: () => linearClient,
-          getLinearAccessToken: async () => {
-            await linearCredentialService.ensureFreshToken();
-            const token = linearCredentialService.getToken()?.trim() ?? "";
-            if (!token) return null;
-            if (linearCredentialService.getStatus().authMode === "oauth") {
-              return /^bearer\s+/i.test(token) ? token : `Bearer ${token}`;
-            }
-            return token.replace(/^bearer\s+/i, "");
-          },
+          getLinearAccessToken: createLinearAccessTokenGetter(linearCredentialService),
           cursorStore: createKvIngressCursorStore(db),
           hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
           dispatch: (record) => {

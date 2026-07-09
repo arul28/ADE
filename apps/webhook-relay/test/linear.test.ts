@@ -82,8 +82,9 @@ class FakeLinearD1Database {
       rows = rows.filter((entry) => entry.event_seq > Number(sequence));
       limit = Number(requestedLimit);
     }
+    const ascending = /order by rowid asc/i.test(sql);
     return [...rows]
-      .sort((left, right) => right.event_seq - left.event_seq)
+      .sort((left, right) => (ascending ? left.event_seq - right.event_seq : right.event_seq - left.event_seq))
       .slice(0, limit)
       .map((entry) => ({
         event_seq: entry.event_seq,
@@ -312,7 +313,9 @@ describe("Linear webhook relay", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ ok: false, reason: "unregistered" });
+    // Response is indistinguishable from an accepted delivery so callers
+    // cannot probe which organizations are registered.
+    expect(await response.json()).toEqual({ ok: true });
     expect(env.DB.events).toHaveLength(0);
   });
 
@@ -373,8 +376,10 @@ describe("Linear webhook relay", () => {
       nextCursor: string;
       cursorExpired: boolean;
     };
-    expect(body.events.map((event) => event.eventId)).toEqual(["delivery-3", "delivery-2"]);
-    expect(body.events[0]?.body).toContain("issue-3");
+    // Cursored reads page oldest-first so a backlog larger than one page
+    // cannot be skipped by a max-seq cursor.
+    expect(body.events.map((event) => event.eventId)).toEqual(["delivery-2", "delivery-3"]);
+    expect(body.events[0]?.body).toContain("issue-2");
     expect(body.nextCursor).toBe("seq:3");
     expect(body.cursorExpired).toBe(false);
     expect(await expired.json()).toEqual(expect.objectContaining({
@@ -382,6 +387,35 @@ describe("Linear webhook relay", () => {
       nextCursor: "seq:3",
     }));
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("drains a backlog larger than one page without skipping events", async () => {
+    const env = makeEnv();
+    stubLinearViewer({ "Bearer lin_oauth_drain": "org-1" });
+    await registerOrganization(env, { token: "Bearer lin_oauth_drain" });
+    for (let index = 1; index <= 3; index += 1) {
+      await handleRequest(
+        await linearWebhookRequest(linearPayload({ data: { id: `issue-${index}` } }), { delivery: `delivery-${index}` }),
+        env,
+      );
+    }
+
+    const seen: string[] = [];
+    let cursor = "seq:0";
+    for (let page = 0; page < 5 && cursor; page += 1) {
+      const response = await handleRequest(
+        new Request(`https://relay.test/linear/orgs/org-1/events?after=${cursor}&limit=1`, {
+          headers: { authorization: "Bearer lin_oauth_drain" },
+        }),
+        env,
+      );
+      const body = await response.json() as { events: Array<{ eventId: string }>; nextCursor: string | null };
+      if (!body.events.length) break;
+      seen.push(...body.events.map((event) => event.eventId));
+      cursor = body.nextCursor ?? "";
+    }
+
+    expect(seen).toEqual(["delivery-1", "delivery-2", "delivery-3"]);
   });
 
   it("prunes Linear events beyond the configured retention window after a write", async () => {

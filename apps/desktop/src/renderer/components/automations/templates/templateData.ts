@@ -4,19 +4,6 @@
  * the gallery; the flagship subset is featured in the empty state.
  */
 
-import {
-  Broom,
-  Bug,
-  ChatCircleText,
-  ClockCounterClockwise,
-  GitPullRequest,
-  Lightning,
-  Sparkle,
-  Tag,
-  TestTube,
-  Warning,
-} from "@phosphor-icons/react";
-import type { ElementType } from "react";
 import type { AutomationRuleDraft } from "../../../../shared/types";
 
 export type AutomationTemplate = {
@@ -26,7 +13,6 @@ export type AutomationTemplate = {
   group: string;
   triggerType: string;
   whatYouConfigure: string[];
-  icon: ElementType;
   isFlagship?: boolean;
   draft: Omit<AutomationRuleDraft, "id">;
 };
@@ -57,7 +43,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Agent workflows",
     triggerType: "schedule",
     whatYouConfigure: ["Schedule", "Agent prompt", "Optional cleanup delay"],
-    icon: Sparkle,
     isFlagship: true,
     draft: {
       ...BASE,
@@ -87,7 +72,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Issue intake",
     triggerType: "linear.issue_created",
     whatYouConfigure: ["Team / project", "Agent prompt", "Model"],
-    icon: Lightning,
     isFlagship: true,
     draft: {
       ...BASE,
@@ -121,7 +105,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Issue intake",
     triggerType: "github.issue_opened",
     whatYouConfigure: ["Repository / labels", "Agent prompt", "Model"],
-    icon: GitPullRequest,
     isFlagship: true,
     draft: {
       ...BASE,
@@ -152,7 +135,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Hygiene",
     triggerType: "lane.merged",
     whatYouConfigure: ["Lane name pattern", "Branch cleanup options"],
-    icon: Broom,
     isFlagship: true,
     draft: {
       ...BASE,
@@ -183,7 +165,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Agent workflows",
     triggerType: "github.pr_opened",
     whatYouConfigure: ["Base branch", "Review prompt", "Model"],
-    icon: GitPullRequest,
     draft: {
       ...BASE,
       name: "PR review session",
@@ -209,7 +190,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Agent workflows",
     triggerType: "github.pr_commented",
     whatYouConfigure: ["Repository", "Reply prompt"],
-    icon: ChatCircleText,
     draft: {
       ...BASE,
       name: "PR comment responder",
@@ -232,7 +212,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Agent workflows",
     triggerType: "schedule",
     whatYouConfigure: ["Schedule", "Brief prompt"],
-    icon: ChatCircleText,
     draft: {
       ...BASE,
       name: "Daily agent brief",
@@ -256,7 +235,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Issue intake",
     triggerType: "github.issue_opened",
     whatYouConfigure: ["Repository / labels", "Triage prompt"],
-    icon: Warning,
     draft: {
       ...BASE,
       name: "Issue triage agent",
@@ -279,7 +257,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Issue intake",
     triggerType: "github.issue_opened",
     whatYouConfigure: ["Repository", "Labels to add"],
-    icon: Tag,
     draft: {
       ...BASE,
       name: "Auto-label new issues",
@@ -326,7 +303,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Issue intake",
     triggerType: "linear.issue_labeled",
     whatYouConfigure: ["Label to watch", "Comment prompt"],
-    icon: Tag,
     draft: {
       ...BASE,
       name: "Linear label triage",
@@ -352,7 +328,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Hygiene",
     triggerType: "schedule",
     whatYouConfigure: ["Schedule", "Idle threshold prompt"],
-    icon: ClockCounterClockwise,
     draft: {
       ...BASE,
       name: "Stale issue closer",
@@ -376,7 +351,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Hygiene",
     triggerType: "git.push",
     whatYouConfigure: ["Branch"],
-    icon: Bug,
     draft: {
       ...BASE,
       name: "Push conflict scan",
@@ -398,7 +372,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "Hygiene",
     triggerType: "github.issue_labeled",
     whatYouConfigure: ["Label", "Welcome prompt"],
-    icon: ChatCircleText,
     draft: {
       ...BASE,
       name: "Label welcome comment",
@@ -424,7 +397,6 @@ export const TEMPLATES: AutomationTemplate[] = [
     group: "CI & tests",
     triggerType: "schedule",
     whatYouConfigure: ["Schedule", "Test suite"],
-    icon: TestTube,
     draft: {
       ...BASE,
       name: "Nightly test sweep",

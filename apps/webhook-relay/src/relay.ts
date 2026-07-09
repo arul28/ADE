@@ -1603,7 +1603,10 @@ async function handleLinearWebhook(request: Request, env: RelayEnv): Promise<Res
     .bind(organizationId)
     .first<LinearOrganizationRow>();
   if (!organization) {
-    return json({ ok: false, reason: "unregistered" });
+    // Indistinguishable from an accepted delivery so unauthenticated callers
+    // cannot probe which organizations have registered ADE ingestion. Nothing
+    // is stored; the registration status endpoint is the debugging surface.
+    return json({ ok: true });
   }
 
   const signature = request.headers.get("linear-signature")?.trim() ?? "";
@@ -1681,12 +1684,16 @@ async function handleListLinearEvents(
   if (after) {
     const sequenceCursor = parseSequenceCursor(after);
     if (sequenceCursor != null) {
+      // Cursored reads page OLDEST-first: with desc ordering a page larger
+      // than `limit` would advance the cursor past rows it never returned,
+      // silently dropping them. Ascending pages + max-seq cursor drain the
+      // backlog without gaps.
       rows = (await env.DB
         .prepare(`
           select rowid as event_seq, event_id, event_type, action, received_at, body
             from linear_events
            where org_id = ? and rowid > ?
-           order by rowid desc
+           order by rowid asc
            limit ?
         `)
         .bind(organizationId, sequenceCursor, limit)
@@ -1702,7 +1709,7 @@ async function handleListLinearEvents(
             select rowid as event_seq, event_id, event_type, action, received_at, body
               from linear_events
              where org_id = ? and rowid > ?
-             order by rowid desc
+             order by rowid asc
              limit ?
           `)
           .bind(organizationId, cursor.event_seq, limit)

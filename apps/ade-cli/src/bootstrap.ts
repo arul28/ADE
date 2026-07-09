@@ -68,7 +68,7 @@ import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
-import { createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
+import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import { createProjectSecretService } from "../../desktop/src/main/services/secrets/projectSecretService";
@@ -1116,16 +1116,7 @@ export async function createAdeRuntime(args: {
           secretsDir: path.join(paths.adeDir, "secrets"),
         }),
         getLinearClient: () => headlessLinearServices.linearClient,
-        getLinearAccessToken: async () => {
-          const credentials = headlessLinearServices.linearCredentialService;
-          await credentials.ensureFreshToken();
-          const token = credentials.getToken()?.trim() ?? "";
-          if (!token) return null;
-          if (credentials.getStatus().authMode === "oauth") {
-            return /^bearer\s+/i.test(token) ? token : `Bearer ${token}`;
-          }
-          return token.replace(/^bearer\s+/i, "");
-        },
+        getLinearAccessToken: createLinearAccessTokenGetter(headlessLinearServices.linearCredentialService),
         cursorStore: createKvIngressCursorStore(db),
         hasEnabledLinearRules: () => automationService?.hasEnabledLinearRules() ?? false,
         dispatch: (record) => {

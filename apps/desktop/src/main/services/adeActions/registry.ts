@@ -145,7 +145,10 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   linear_oauth: ["startSession"],
   github: ["setToken", "clearToken", "startAppUserDeviceAuth", "pollAppUserDeviceAuth", "clearAppUserAuth"],
   update: ["quitAndInstall"],
-  automations: ["setWebhookGatewayPublicUrl"],
+  // Linear webhook lifecycle mutates account-level state (registers/deletes a
+  // webhook against the user's Linear organization), so it stays CTO-only;
+  // status/poll/cleanup reads remain open to agents.
+  automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown"],
   ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],

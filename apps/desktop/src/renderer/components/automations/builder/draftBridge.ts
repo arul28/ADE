@@ -84,6 +84,7 @@ function stepRuntime(step: WorkflowStep): Partial<AutomationAction> {
     ...(step.targetLaneId ? { targetLaneId: step.targetLaneId } : {}),
     ...(step.condition?.trim() ? { condition: step.condition.trim() } : {}),
     ...(step.continueOnFailure ? { continueOnFailure: true } : {}),
+    ...(step.alwaysRun ? { alwaysRun: true } : {}),
     ...(Number.isFinite(step.timeoutMs) ? { timeoutMs: step.timeoutMs } : {}),
     ...(Number.isFinite(step.retry) ? { retry: step.retry } : {}),
   };
