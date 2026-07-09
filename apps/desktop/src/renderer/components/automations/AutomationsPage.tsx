@@ -4,14 +4,14 @@ import type { AutomationRuleDraft } from "../../../shared/types";
 import { RulesTab } from "./RulesTab";
 import { ProductionAutomationsComingSoon } from "./AutomationsComingSoon";
 
-type AppPackagingState = "checking" | "packaged" | "dev";
+type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
 
-function useAppPackagingState(): AppPackagingState {
-  const [state, setState] = useState<AppPackagingState>("checking");
+function useAutomationsAvailabilityState(): AutomationsAvailabilityState {
+  const [state, setState] = useState<AutomationsAvailabilityState>("checking");
 
   useEffect(() => {
     let cancelled = false;
-    let probe: Promise<{ isPackaged: boolean }> | null = null;
+    let probe: Promise<{ isPackaged: boolean; automationsEnabled?: boolean }> | null = null;
     try {
       const getInfo = window.ade?.app?.getInfo;
       probe = typeof getInfo === "function" ? getInfo() : null;
@@ -19,17 +19,20 @@ function useAppPackagingState(): AppPackagingState {
       probe = null;
     }
     if (!probe) {
-      setState("dev");
+      setState("enabled");
       return () => {
         cancelled = true;
       };
     }
     probe.then(
       (info) => {
-        if (!cancelled) setState(info.isPackaged ? "packaged" : "dev");
+        if (cancelled) return;
+        // Older runtimes without the flag fall back to the pre-flag rule.
+        const enabled = info.automationsEnabled ?? !info.isPackaged;
+        setState(enabled ? "enabled" : "disabled");
       },
       () => {
-        if (!cancelled) setState("dev");
+        if (!cancelled) setState("enabled");
       },
     );
     return () => {
@@ -41,7 +44,7 @@ function useAppPackagingState(): AppPackagingState {
 }
 
 export function AutomationsProductionGate({ children }: { children: ReactElement }) {
-  const state = useAppPackagingState();
+  const state = useAutomationsAvailabilityState();
 
   if (state === "checking") {
     return (
@@ -56,7 +59,7 @@ export function AutomationsProductionGate({ children }: { children: ReactElement
     );
   }
 
-  if (state === "packaged") return <ProductionAutomationsComingSoon />;
+  if (state === "disabled") return <ProductionAutomationsComingSoon />;
 
   return children;
 }

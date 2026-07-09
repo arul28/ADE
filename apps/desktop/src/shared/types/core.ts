@@ -61,6 +61,7 @@ export type LocalRuntimeStatus = {
 export type AppInfo = {
   appVersion: string;
   isPackaged: boolean;
+  automationsEnabled: boolean;
   platform: NodeJS.Platform;
   arch: string;
   versions: {

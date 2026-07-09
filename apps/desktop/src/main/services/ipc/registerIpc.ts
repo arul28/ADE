@@ -8,6 +8,7 @@ import type { Server as NetServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { IPC } from "../../../shared/ipc";
+import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
@@ -3466,6 +3467,7 @@ export function registerIpc({
     return {
       appVersion: app.getVersion(),
       isPackaged: app.isPackaged,
+      automationsEnabled: areAutomationsEnabledForPackagedState(app.isPackaged),
       platform: process.platform,
       arch: process.arch,
       versions: {

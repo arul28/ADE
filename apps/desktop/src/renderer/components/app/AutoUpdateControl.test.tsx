@@ -24,6 +24,7 @@ function appInfoWithRuntimeSkew(
   return {
     appVersion: "1.2.0",
     isPackaged: true,
+    automationsEnabled: true,
     platform: "darwin",
     arch: "arm64",
     versions: {

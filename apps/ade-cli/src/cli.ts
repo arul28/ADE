@@ -343,7 +343,7 @@ function isPackagedElectronCliRuntime(): boolean {
 function automationsCliEnabled(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
-  return isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
+  return true;
 }
 
 function internalFeatureUnavailableHelp(title: string, message: string, enableEnv: string): string {

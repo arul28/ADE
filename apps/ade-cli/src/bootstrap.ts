@@ -270,7 +270,7 @@ const currentModulePath =
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
-  return isSourceCheckoutRuntimeModule(currentModulePath);
+  return true;
 }
 
 function resolveCurrentAdeCliEntry(): string | null {
