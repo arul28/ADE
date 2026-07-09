@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Fixed packaged desktop Cursor SDK worker startup by resolving the worker through the packaged Node path and seeding/permitting/pruning arch-specific native payloads for universal macOS packaging, including native addons and install-time shims.
+- Fixed packaged desktop Cursor SDK worker startup by resolving the worker through the packaged Node path and seeding/signing/permitting/pruning arch-specific native payloads for universal macOS packaging, including native addons, runtime archives, and install-time shims.
 - Fixed relay-backed chat streaming backpressure so busy remote sessions are less likely to drop or stall output.
 - Kept App Clip release metadata and deployment settings aligned for App Store validation.
 

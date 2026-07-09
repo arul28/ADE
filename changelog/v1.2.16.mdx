@@ -10,7 +10,7 @@ v1.2.16 improves chat handoff reliability across ADE surfaces, fixes packaged Cu
 ## Desktop and CLI
 
 - **Chat peer messaging parity.** ADE now normalizes chat peer messages, handoff notes, Codex goal state, and subagent activity so desktop, ADE Code, and mobile render the same agent progress and handoff context.
-- **Packaged Cursor SDK startup.** Installed desktop builds now resolve the Cursor SDK worker through the packaged Node path, and universal macOS packaging now seeds, permits, and prunes the arch-specific native payloads needed for Intel updates, including native addons and install-time shims.
+- **Packaged Cursor SDK startup.** Installed desktop builds now resolve the Cursor SDK worker through the packaged Node path, and universal macOS packaging now seeds, signs, permits, and prunes the arch-specific native payloads needed for Intel updates, including native addons, runtime archives, and install-time shims.
 - **Relay chat streaming backpressure.** Relay-backed chat streams now handle downstream pressure more safely, reducing dropped or stalled output during busy remote sessions.
 
 ---

@@ -202,8 +202,9 @@ function buildNotarytoolArgs(zipPath) {
 
 const binary = readFlag("--binary");
 if (!binary) {
-  throw new Error("Usage: node scripts/notarize-static-runtime.mjs --binary=/path/to/ade-darwin-arm64");
+  throw new Error("Usage: node scripts/notarize-static-runtime.mjs --binary=/path/to/ade-darwin-arm64 [--sign-native-only]");
 }
+const signNativeOnly = process.argv.includes("--sign-native-only");
 
 const binaryPath = path.resolve(binary);
 await assertExists(binaryPath, "ADE runtime binary");
@@ -213,6 +214,13 @@ if (process.platform !== "darwin") {
 }
 
 const identity = await findDeveloperIdIdentity();
+
+if (signNativeOnly) {
+  console.log(`[runtime:notarize] Signing native archive payloads for ${binaryPath} with ${identity}`);
+  await signNativeArchiveIfPresent(binaryPath, identity);
+  process.exit(0);
+}
+
 console.log(`[runtime:notarize] Signing ${binaryPath} with ${identity}`);
 await signBinary(binaryPath, identity);
 await signNativeArchiveIfPresent(binaryPath, identity);
