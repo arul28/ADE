@@ -14,9 +14,9 @@ const appDir = path.resolve(scriptDir, "..");
 const releaseDir = path.join(appDir, "release");
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // Per-arch macOS builds carry only their own arch's agent runtimes + remote
-// runtime sidecar (the other arch is pruned in afterPack), so the unpacked
-// payload is roughly half the size of the old universal build.
+// runtime sidecar. Universal builds carry both darwin runtime payloads.
 const DEFAULT_MAX_UNPACKED_BYTES = 1280 * 1024 * 1024;
+const DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES = 1600 * 1024 * 1024;
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -196,13 +196,14 @@ async function assertExecutable(targetPath, description) {
 async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArch) {
   const runtimeRoot = path.join(resourcesPath, "runtime");
   // Per-arch builds bundle ONLY their own darwin sidecar (afterPack prunes the
-  // other arch). The non-matching darwin arch and all linux targets must be absent.
-  const requiredTarget = `darwin-${expectedArch}`;
+  // other arch). Universal builds keep both darwin sidecars.
+  const requiredTargets =
+    expectedArch === "universal" ? ["darwin-arm64", "darwin-x64"] : [`darwin-${expectedArch}`];
   const excludedTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"].filter(
-    (target) => target !== requiredTarget,
+    (target) => !requiredTargets.includes(target),
   );
   await assertPathExists(runtimeRoot, `remote runtime bundle directory for ${description}`);
-  {
+  for (const requiredTarget of requiredTargets) {
     const binaryPath = path.join(runtimeRoot, `ade-${requiredTarget}`);
     const nativeArchivePath = path.join(runtimeRoot, `ade-${requiredTarget}.native.tar.gz`);
     await assertPathExists(binaryPath, `remote runtime binary ${requiredTarget} for ${description}`);
@@ -241,14 +242,20 @@ async function assertBundledOpenCodeRuntime(nodeModulesPath, description, expect
   // excludes the non-target arch's optional native dep). Require just that one;
   // we don't assert the other arch is absent (a harmless extra copy must not fail
   // the release).
-  const binaryPath = path.join(nodeModulesPath, `opencode-darwin-${expectedArch}`, "bin", "opencode");
-  await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
-  await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+  const arches = expectedArch === "universal" ? ["arm64", "x64"] : [expectedArch];
+  for (const arch of arches) {
+    const binaryPath = path.join(nodeModulesPath, `opencode-darwin-${arch}`, "bin", "opencode");
+    await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+    await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+  }
 }
 
 async function assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch) {
-  const dylibPath = path.join(unpackedPath, "vendor", "crsqlite", `darwin-${expectedArch}`, "crsqlite.dylib");
-  await assertPathExists(dylibPath, `bundled cr-sqlite runtime for ${description}`);
+  const arches = expectedArch === "universal" ? ["arm64", "x64"] : [expectedArch];
+  for (const arch of arches) {
+    const dylibPath = path.join(unpackedPath, "vendor", "crsqlite", `darwin-${arch}`, "crsqlite.dylib");
+    await assertPathExists(dylibPath, `bundled cr-sqlite runtime for ${description}`);
+  }
 }
 
 function assertAppAsarContains(appAsarPath, relativePaths, description) {
@@ -378,12 +385,15 @@ async function validateSignedApp(appPath, description) {
   await execFileAsync("spctl", ["-a", "-vvv", "--type", "execute", appPath]);
 }
 
-async function validatePackageHygiene(appPath, description) {
+async function validatePackageHygiene(appPath, description, expectedArch) {
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPaths = await resolveRuntimeUnpackedPaths(resourcesPath);
   const maxAppAsarBytes = readByteLimit("ADE_MAX_APP_ASAR_BYTES", DEFAULT_MAX_APP_ASAR_BYTES);
-  const maxUnpackedBytes = readByteLimit("ADE_MAX_APP_ASAR_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED_BYTES);
+  const maxUnpackedBytes = readByteLimit(
+    "ADE_MAX_APP_ASAR_UNPACKED_BYTES",
+    expectedArch === "universal" ? DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES : DEFAULT_MAX_UNPACKED_BYTES,
+  );
 
   if (unpackedPaths.length === 0) {
     throw new Error(`[release:mac] Missing unpacked runtime payload for ${description}: ${resourcesPath}`);
@@ -451,7 +461,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
     }
   }
   await assertRemoteRuntimeBundle(resourcesPath, description, expectedArch);
-  await validatePackageHygiene(appPath, description);
+  await validatePackageHygiene(appPath, description, expectedArch);
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
   if (!nodePtyAddon) {
@@ -633,6 +643,7 @@ async function validateDmgStapled(dmgPath, description) {
 }
 
 const ARCH_OUTPUT_DIRS = [
+  { arch: "universal", dir: "mac-universal" },
   { arch: "arm64", dir: "mac-arm64" },
   { arch: "x64", dir: "mac" },
 ];
@@ -654,7 +665,7 @@ if (explicitApp) {
 }
 if (archApps.length === 0) {
   throw new Error(
-    `[release:mac] No per-arch app bundles found under ${releaseDir} (looked for mac-arm64/ADE.app and mac/ADE.app)`,
+    `[release:mac] No mac app bundles found under ${releaseDir} (looked for mac-universal/ADE.app, mac-arm64/ADE.app, and mac/ADE.app)`,
   );
 }
 
@@ -663,7 +674,7 @@ for (const { arch, appPath } of archApps) {
   await assertPathExists(appPath, label);
   await validateSignedApp(appPath, label);
   await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), label);
-  await validatePackagedRuntime(appPath, label, arch, { deepSmoke: arch === hostArch });
+  await validatePackagedRuntime(appPath, label, arch, { deepSmoke: arch === "universal" || arch === hostArch });
 }
 
 const latestMacPath = resolveAbsolute(readFlag("--latest")) ?? path.join(releaseDir, "latest-mac.yml");
