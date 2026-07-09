@@ -245,6 +245,7 @@ function buildPlannerSchema(): Record<string, unknown> {
   const baseActionProps = {
     condition: { type: "string" },
     continueOnFailure: { type: "boolean" },
+    alwaysRun: { type: "boolean" },
     timeoutMs: { type: "number" },
     retry: { type: "number" }
   };
@@ -296,6 +297,25 @@ function buildPlannerSchema(): Record<string, unknown> {
               additionalProperties: false,
               properties: { type: { const: "run-command" }, command: { type: "string" }, cwd: { type: "string" }, ...baseActionProps },
               required: ["type", "command"]
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                type: { const: "delete-lane" },
+                afterMinutes: { type: "number" },
+                laneDeleteOptions: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    deleteBranch: { type: "boolean" },
+                    deleteRemoteBranch: { type: "boolean" },
+                    force: { type: "boolean" },
+                  },
+                },
+                ...baseActionProps,
+              },
+              required: ["type"]
             }
           ]
         }
@@ -334,6 +354,7 @@ function buildPlannerPrompt(args: {
     "- file.change",
     "- lane.created",
     "- lane.archived",
+    "- lane.merged",
     "- schedule (requires cron)",
     "- manual",
     "- linear.issue_created",
@@ -345,6 +366,7 @@ function buildPlannerPrompt(args: {
     "- predict-conflicts",
     "- run-tests (requires suite string; use a suite id or name below)",
     "- run-command (requires command string; keep it a single shell command)",
+    "- delete-lane (optionally set afterMinutes; use alwaysRun for finally-style cleanup)",
     "",
     "Known test suites:",
     suiteList || "(none)",
@@ -696,6 +718,7 @@ function normalizeDraft(args: {
       ...(targetLaneId ? { targetLaneId } : {}),
       ...(condition ? { condition } : {}),
       ...(typeof action?.continueOnFailure === "boolean" ? { continueOnFailure: action.continueOnFailure } : {}),
+      ...(typeof action?.alwaysRun === "boolean" ? { alwaysRun: action.alwaysRun } : {}),
       ...(action?.timeoutMs != null ? { timeoutMs: clampNumber(Number(action.timeoutMs), 1000, MAX_TIMEOUT_MS) } : {}),
       ...(action?.retry != null ? { retry: clampNumber(Number(action.retry), 0, 5) } : {})
     } satisfies Partial<AutomationAction>;
@@ -705,6 +728,7 @@ function normalizeDraft(args: {
       type !== "predict-conflicts" &&
       type !== "run-tests" &&
       type !== "run-command" &&
+      type !== "delete-lane" &&
       type !== "ade-action" &&
       type !== "agent-session"
     ) {
@@ -721,6 +745,25 @@ function normalizeDraft(args: {
         laneNameTemplate,
         ...(laneDescriptionTemplate ? { laneDescriptionTemplate } : {}),
         ...(parentLaneId ? { parentLaneId } : {}),
+      });
+      continue;
+    }
+
+    if (type === "delete-lane") {
+      const rawOptions = action?.laneDeleteOptions;
+      const laneDeleteOptions = rawOptions && typeof rawOptions === "object"
+        ? {
+            ...(typeof rawOptions.deleteBranch === "boolean" ? { deleteBranch: rawOptions.deleteBranch } : {}),
+            ...(typeof rawOptions.deleteRemoteBranch === "boolean" ? { deleteRemoteBranch: rawOptions.deleteRemoteBranch } : {}),
+            ...(typeof rawOptions.force === "boolean" ? { force: rawOptions.force } : {}),
+          }
+        : undefined;
+      normalizedActions.push({
+        ...(base as AutomationAction),
+        ...(laneDeleteOptions && Object.keys(laneDeleteOptions).length > 0 ? { laneDeleteOptions } : {}),
+        ...(action?.afterMinutes != null
+          ? { afterMinutes: Math.max(0, Number(action.afterMinutes)) }
+          : {}),
       });
       continue;
     }
@@ -1184,6 +1227,7 @@ export function createAutomationPlannerService({
               suite: safeTrim(a.suite),
               ...(safeTrim(a.condition) ? { condition: safeTrim(a.condition) } : {}),
               ...(typeof a.continueOnFailure === "boolean" ? { continueOnFailure: a.continueOnFailure } : {}),
+              ...(typeof a.alwaysRun === "boolean" ? { alwaysRun: a.alwaysRun } : {}),
               ...(a.timeoutMs != null ? { timeoutMs: Number(a.timeoutMs) } : {}),
               ...(a.retry != null ? { retry: Number(a.retry) } : {})
             };
@@ -1195,6 +1239,7 @@ export function createAutomationPlannerService({
               ...(safeTrim(a.cwd) ? { cwd: safeTrim(a.cwd) } : {}),
               ...(safeTrim(a.condition) ? { condition: safeTrim(a.condition) } : {}),
               ...(typeof a.continueOnFailure === "boolean" ? { continueOnFailure: a.continueOnFailure } : {}),
+              ...(typeof a.alwaysRun === "boolean" ? { alwaysRun: a.alwaysRun } : {}),
               ...(a.timeoutMs != null ? { timeoutMs: Number(a.timeoutMs) } : {}),
               ...(a.retry != null ? { retry: Number(a.retry) } : {})
             };
@@ -1204,6 +1249,11 @@ export function createAutomationPlannerService({
             type,
             ...(safeTrim(a.condition) ? { condition: safeTrim(a.condition) } : {}),
             ...(typeof a.continueOnFailure === "boolean" ? { continueOnFailure: a.continueOnFailure } : {}),
+            ...(typeof a.alwaysRun === "boolean" ? { alwaysRun: a.alwaysRun } : {}),
+            ...(a.afterMinutes != null ? { afterMinutes: Number(a.afterMinutes) } : {}),
+            ...(a.laneDeleteOptions && typeof a.laneDeleteOptions === "object"
+              ? { laneDeleteOptions: a.laneDeleteOptions }
+              : {}),
             ...(a.timeoutMs != null ? { timeoutMs: Number(a.timeoutMs) } : {}),
             ...(a.retry != null ? { retry: Number(a.retry) } : {})
           };

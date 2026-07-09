@@ -583,6 +583,7 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "file.change",
   "lane.created",
   "lane.archived",
+  "lane.merged",
   "schedule",
   "manual",
   "linear.issue_created",
@@ -605,6 +606,7 @@ export const LEGACY_GITHUB_PR_TRIGGER_ALIASES: Readonly<Record<string, Automatio
 
 export type AutomationActionType =
   | "create-lane"
+  | "delete-lane"
   | "agent-session"
   | "predict-conflicts"
   | "run-tests"
@@ -721,8 +723,18 @@ export type AutomationAction = {
   targetLaneId?: string | null;
   condition?: string;
   continueOnFailure?: boolean;
+  /** Run this action even when an earlier non-continuable step failed. */
+  alwaysRun?: boolean;
   timeoutMs?: number;
   retry?: number;
+  /** Options forwarded to laneService.delete by delete-lane actions. */
+  laneDeleteOptions?: {
+    deleteBranch?: boolean;
+    deleteRemoteBranch?: boolean;
+    force?: boolean;
+  };
+  /** Persist the lane cleanup and execute it after this many minutes. */
+  afterMinutes?: number;
   /** Optional model override for agent-session actions inside a built-in chain. */
   modelConfig?: ModelConfig;
   /** Optional fast-mode override for agent-session actions inside a built-in chain. */

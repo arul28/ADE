@@ -6,7 +6,7 @@ There is no autonomous Linear intake pipeline (the CTO's Linear workflow engine 
 
 ## Runtime ownership
 
-The automation rule engine, cron scheduler, file watcher, ingress endpoints (webhook listener, GitHub relay/polling, Linear relay), and built-in action runner all execute inside the ADE runtime (`ade serve`) that owns the project. For local project bindings the local runtime hosts them; for remote project bindings the remote runtime hosts them. The desktop renderer is a view: it edits rules, watches run history, and triggers manual fires through `window.ade.automations`, but it does not own scheduling, ingress, or dispatch state.
+The automation rule engine, cron scheduler, deferred-cleanup sweeper, file watcher, ingress endpoints (webhook listener, GitHub relay/polling, Linear relay), and built-in action runner all execute inside the ADE runtime (`ade serve`) that owns the project. For local project bindings the local runtime hosts them; for remote project bindings the remote runtime hosts them. The desktop renderer is a view: it edits rules, watches run history, and triggers manual fires through `window.ade.automations`, but it does not own scheduling, ingress, or dispatch state.
 
 The ingress service has a reduced **PR-freshness-only mode**. In packaged builds and installed daemons where the automations feature is unavailable, the GitHub relay poll still runs so webhook-driven PR state updates reach `prService.ingestGithubWebhook`, while automation rule dispatch, the local webhook HTTP server, and ingress status/event reporting stay gated on the automations feature being enabled. See `automationIngressService.ts` in the source file map below.
 
@@ -18,10 +18,10 @@ Caveat: GitHub-polling and webhook ingress only work on a runtime that can reach
 
 These services are loaded by the ADE runtime's project scope (and by the desktop main process when it hosts a local project) — the path reflects the source tree, not where the code "runs".
 
-- `automationService.ts` — main service. Rule CRUD, execution dispatch (`agent-session`, `built-in`), cron scheduling (via `node-cron`), file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage.
+- `automationService.ts` — main service. Rule CRUD, execution dispatch (`agent-session`, `built-in`), cron scheduling (via `node-cron`), durable deferred-lane cleanup, lane lifecycle dispatch, file-change watching (via `chokidar`), queue management, run history, confidence scoring, billing codes, ingress cursor storage.
 - `automationPlannerService.ts` — natural-language rule authoring. `parseNaturalLanguage`, `validateDraft`, `saveDraft`, `simulate`. Runs a planner subprocess (Claude or Codex) to turn a free-text brief into an `AutomationRuleDraft`.
 - `automationIngressService.ts` — HTTP webhook ingress (GitHub, custom webhooks) and polling-relay ingress (GitHub relay API). Signature verification for webhooks. `AutomationIngressEventRecord` is the normalized event shape. Accepts `automationService: null` for the **PR-freshness-only mode** described under [Runtime ownership](#runtime-ownership): the relay poll still feeds `prService.ingestGithubWebhook`, but rule dispatch, the local webhook server, and ingress status/event reads are skipped. In that mode the relay cursor is persisted through an injected `ingressCursorStore` — `createKvIngressCursorStore(db)`, which reads/writes `automations.ingress.cursor.<source>` in the kv table — instead of `automationService`'s cursor storage. A missing GitHub App user token puts the hosted relay poll into a quiet 5-minute auth-pending cooldown (relay status `disabled`, a single `automations.github_relay_auth_pending` info log) rather than warning every tick; `pollNow()` bypasses the cooldown.
-- `githubPollingService.ts` — direct GitHub REST polling for the origin repo plus `extraRepos`. Diffs per-poll snapshots of issues/PRs/comments to emit `github.issue_*` and `github.pr_*` trigger events without requiring a webhook or relay. Cursor format is `<slug>=<iso>|<slug>=<iso>` to support multi-repo state in a single stored string; see `readCursor`/`writeCursor` for the legacy-compat parser.
+- `githubPollingService.ts` — direct GitHub REST polling for the origin repo plus `extraRepos`. Each tick first asks `automationService.hasEnabledGithubRules()` (or the injected equivalent) and does no GitHub work unless at least one enabled rule has a canonical `github.*` trigger. Active ticks diff per-poll snapshots of issues/PRs/comments to emit `github.issue_*` and `github.pr_*` events without requiring a webhook or relay. Cursor format is `<slug>=<iso>|<slug>=<iso>` to support multi-repo state in a single stored string; see `readCursor`/`writeCursor` for the legacy-compat parser.
 - `automationSecretService.ts` — secret resolution for automation actions (env-ref style). Referenced as `${env:VAR}` in action config; resolved at execution time.
 
 ### GitHub relay and App
@@ -64,7 +64,7 @@ Each `AutomationRule` carries:
 - `id`, `name`, `description`, `enabled`.
 - `triggers` — one or more trigger descriptors (see `triggers-and-actions.md`). Normalized to a single primary trigger for legacy compatibility.
 - `execution` — which surface launches. `AutomationExecution`:
-  - `{ kind: "agent-session", targetLaneId?, session? }` — launches a scoped AI chat thread, recorded as an automation-only chat. `session` carries optional `title`, `reasoningEffort`, and `codexFastMode` (boolean); `codexFastMode` is forwarded to the chat service only when the resolved provider is Codex and the model supports fast mode, so it is safe to set on a rule that may later switch models.
+  - `{ kind: "agent-session", targetLaneId?, laneMode?, laneNamePreset?, laneNameTemplate?, session? }` — launches a scoped AI chat thread, recorded as an automation-only chat. `laneMode: "create"` creates one lane for the run; its custom name template supports `{{trigger.*}}` plus `{{date}}` (`YYYY-MM-DD`), `{{time}}` (`HH:mm`), and `{{rule.name}}`. `session` carries optional `title`, `reasoningEffort`, and `codexFastMode` (boolean); `codexFastMode` is forwarded to the chat service only when the resolved provider is Codex and the model supports fast mode, so it is safe to set on a rule that may later switch models.
   - `{ kind: "built-in", targetLaneId?, builtIn: { actions: [...] } }` — runs ADE-native deterministic actions (`AutomationAction[]`).
 - `executor` — always `{ mode: "automation-bot" }` (the automation system identifies itself that way in logs).
 - `reviewProfile` — `quick` | `incremental` | `full` | `security` | `release-risk` | `cross-repo-contract`. Drives confidence base and output expectations.
@@ -80,7 +80,7 @@ Each `AutomationRule` carries:
 Automations support two broad trigger classes:
 
 1. **Time-based** — `schedule` with a 5-field cron expression. `computeNextScheduleAt` walks forward in 1-minute steps (bounded at ~1 year) to find the next match using `parseCronPart` for `*`, `*/N`, ranges, and lists.
-2. **Action-based** — `manual`, `git.commit`, `git.push`, `git.pr_opened`, `git.pr_updated`, `git.pr_closed`, `git.pr_merged`, `lane.created`, `lane.archived`, `file.change`, `session-end`, `webhook`, `github-webhook`, various `linear.*` events.
+2. **Action-based** — `manual`, `git.commit`, `git.push`, `git.pr_opened`, `git.pr_updated`, `git.pr_closed`, `git.pr_merged`, `lane.created`, `lane.archived`, `lane.merged`, `file.change`, `session-end`, `webhook`, `github-webhook`, various `linear.*` events.
 
 The `commit` trigger is an alias for `git.commit` (normalized by `normalizeTriggerType`).
 
@@ -102,12 +102,20 @@ Best for lightweight autonomous text-work: reviews, audits, short summaries, sta
 Best for deterministic ADE operations.
 
 - Runs a sequence of `AutomationAction` steps with typed input/output.
-- `AutomationActionType` values: `create-lane` (spawns a new lane and threads it into the rest of the chain), `run-command` (shell), `run-tests`, `predict-conflicts`, `agent-session` (embedded agent step), `ade-action` (see below).
-- Each action may override `targetLaneId` for that step alone; `agent-session` actions additionally accept `modelConfig` and `permissionConfig` overrides that layer on top of the rule's defaults (allowed-tool lists are merged, not replaced). See `triggers-and-actions.md` for the override resolution order.
+- `AutomationActionType` values: `create-lane` (spawns a new lane and threads it into the rest of the chain), `delete-lane` (immediate or deferred cleanup), `run-command` (shell), `run-tests`, `predict-conflicts`, `agent-session` (embedded agent step), `ade-action` (see below).
+- Each action may override `targetLaneId` for that step alone; `agent-session` actions additionally accept `modelConfig` and `permissionConfig` overrides that layer on top of the rule's defaults (allowed-tool lists are merged, not replaced). `alwaysRun: true` gives a trailing action finally semantics after an earlier non-continuable failure; the original failure remains the run's overall status. See `triggers-and-actions.md` for the override resolution order.
 - No separate worker thread.
 - Low overhead; sandboxed to the target lane's worktree via `validateAutomationCwd` and `resolvePathWithinRoot`.
 
 The `ade-action` action type dispatches directly into a main-process domain service through the ADE Actions registry (`apps/desktop/src/main/services/adeActions/registry.ts`). `RunAdeActionConfig` points at a `domain` + `action` on the allowlist (e.g. `pr.addComment`, `linear_sync.runSyncNow`, `issue.close`), with `args` that may embed `{{trigger.*}}` placeholders resolved from the trigger context at dispatch time, or an explicit `resolvers` map for the same. This gives built-in rules typed access to ADE services without writing a shell command or a bespoke tool.
+
+### Lane lifecycle and cleanup
+
+`lane.merged` is emitted when `onPullRequestChanged` observes a PR transition into `merged`. The trigger carries the lane id/name/branch and structured PR number, URL, title, repo, head/base branch, and merged state, so action templates can use both lane and PR context. `notifyLaneMerged` is also public for callers that already have a complete merge notification. A persistent kv marker keyed by project, PR identity, and PR number prevents the same merge from dispatching twice across restarts.
+
+`delete-lane` resolves only an explicit action/rule target, a lane created for the current run, or the trigger lane. It fails instead of guessing when none exists. With `afterMinutes > 0`, the action writes an `automation_scheduled_cleanups` row and succeeds with a scheduled result; otherwise it calls `laneService.delete` immediately with `deleteBranch`, `deleteRemoteBranch`, and `force` options.
+
+The service sweeps due cleanup rows at startup and every 60 seconds. Completed or failed cleanup is appended as another `delete-lane` action result on the originating run, so it remains visible in existing run history; a cleanup failure also leaves that run failed. A lane that is already gone is recorded as a successful no-op. `listScheduledCleanups()` exposes all statuses, and `cancelScheduledCleanup(id)` changes only a still-scheduled row to `cancelled`.
 
 ## Cron scheduling
 
@@ -135,9 +143,11 @@ Automations accept inbound events from four sources (`AutomationIngressSource`):
   - `webhook` events are custom inbound webhooks with optional shared-secret verification.
 - `github-relay` — the default hosted path. A Cloudflare Worker (`apps/webhook-relay/`) receives GitHub App webhooks, verifies the GitHub HMAC signature, and writes each delivery into D1. ADE polls **repo-scoped** Worker routes — `GET /github/repos/:owner/:repo/status` for App-installation/webhook state and `GET /github/repos/:owner/:repo/events?after=<cursor>` for new deliveries. Hosted relay reads use an expiring GitHub App user access token created through GitHub device flow, not the user's general ADE GitHub PAT/OAuth/`gh auth` token. The relay uses that app-limited token only to ask GitHub whether the authenticated user has push/write, maintain, or admin access, and rejects read-only public-repo callers with 403. The same Worker also exposes two repo-scoped webhook-maintenance routes for drift recovery and diagnostics — `POST .../webhook/heal` (admin-gated re-sync of the App's webhook secret) and `GET .../webhook/deliveries` (push-gated, repo-filtered proxy of the App delivery log); see the source file map above. The relay base URL defaults to `DEFAULT_GITHUB_RELAY_API_BASE_URL`. The legacy `automations.githubRelay.apiBaseUrl` + `remoteProjectId` + `accessToken` **project-token** routes (`/projects/:projectId/github/...`) remain for self-hosted relays — chosen only when a non-default base URL plus project id and access token are all set (`shouldUseLegacyGitHubRelayProjectRoute`) and do not require GitHub App user authorization.
 - `linear-relay` — Linear event relay for automation triggers; Linear triggers here are context-only.
-- `github-polling` — `githubPollingService` polls the GitHub REST API directly for the origin repo and any `extraRepos`, diffing per-poll snapshots to synthesize `github.issue_*` / `github.pr_*` events (opened / edited / labeled / closed / commented, and PR merged). No relay or webhook infra required. Cursor is a `<slug>=<iso>|<slug>=<iso>` string stored via `automationService.setIngressCursor({ source: "github-polling" })`; default interval is 30s.
+- `github-polling` — `githubPollingService` polls the GitHub REST API directly for the origin repo and any `extraRepos`, diffing per-poll snapshots to synthesize `github.issue_*` / `github.pr_*` events (opened / edited / labeled / closed / commented, and PR merged). No relay or webhook infra required. Cursor is a `<slug>=<iso>|<slug>=<iso>` string stored via `automationService.setIngressCursor({ source: "github-polling" })`; default interval is 30s, but each tick returns before network access when no enabled rule has a `github.*` trigger.
 
 Ingress events normalize to `AutomationIngressEventRecord` with `source`, `eventKey`, `triggerType`, `summary`, plus `cursor` for relay/polling replay. Matching rules are resolved by `eventKey`-to-rule-id mapping. An optional `repo` filter on a rule's trigger (e.g. `github.issue_opened` with `repo: "owner/name"`) restricts dispatch when multiple repos are polled.
+
+Enabling an externally triggered rule is capability-gated by the paths that can actually fire it. Canonical `github.*` rules need at least one configured GitHub origin for direct polling, a configured relay, a healthy/listening local webhook server, or a ready public gateway. `github-webhook` rules need relay or webhook delivery; custom `webhook` rules need the local server or public gateway. `linear.*` rules require the injected Linear-ingress capability. The enable error points to the corresponding Automations setup instead of requiring ADE Webhook Gateway for every external trigger.
 
 ## Queue and confidence
 
@@ -176,6 +186,8 @@ Automations route outputs based on `outputs.disposition`:
 - **Legacy `trigger` vs `triggers`.** Rules can carry either; the service normalizes via `normalizedRuleTriggers` and `primaryTrigger`. When writing new code read from `rule.triggers`.
 - **`commit` is aliased to `git.commit`** by `normalizeTriggerType`. Rules persisted with `commit` still work but the dispatcher treats them as `git.commit`.
 - **Legacy `git.pr_*` triggers alias to `github.pr_*`.** `LEGACY_GITHUB_PR_TRIGGER_ALIASES` is the authoritative mapping; the canonical names are `github.pr_opened`, `github.pr_updated`, `github.pr_merged`, `github.pr_closed`. Prefer the canonical names in new code and UI.
+- **`lane.merged` is distinct from `github.pr_merged`.** It is lane-scoped, supports the same `namePattern` glob as other lane lifecycle triggers, and uses a persistent per-PR marker. Do not bypass `notifyLaneMerged` with a raw dispatch or the restart-safe dedupe is lost.
+- **Deferred cleanup is attached to the original run.** The sweeper appends an action result instead of creating a second run; history readers must tolerate `actions_total` increasing after the original chain ends.
 - **Polling cursor format is sticky.** `githubPollingService.readCursor` must handle three historical shapes: bare `<iso>` (first-ever poll, legacy), single `<slug>=<iso>` (new single-repo), and multi-repo `<slug>=<iso>|<slug>=<iso>`. Don't simplify the parser without a migration path.
 - **Cron sanity-check before installing.** `cron.validate(expr)` plus the 5-field split is the safety net; otherwise `node-cron` throws.
 - **Webhook secret verification is timing-safe.** Don't refactor `safeCompareSignature` into a plain string compare.

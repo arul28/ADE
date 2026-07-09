@@ -23,6 +23,7 @@ import type {
   AutomationRunListArgs,
   AutomationRunQueueStatus,
   AutomationRunStatus,
+  AutomationScheduledCleanup,
   AutomationToolFamily,
   AutomationTrigger,
   AutomationTriggerType,
@@ -127,13 +128,51 @@ function hasTailscaleFunnelConfig(payload: unknown): boolean {
   return isRecord(payload) && Object.keys(payload).length > 0;
 }
 
-function ruleNeedsWebhookGateway(rule: Pick<AutomationRule, "triggers" | "trigger">): boolean {
+function ruleTriggers(rule: Pick<AutomationRule, "triggers" | "trigger">): AutomationTrigger[] {
   const triggers = Array.isArray(rule.triggers) && rule.triggers.length > 0
     ? rule.triggers
     : rule.trigger
       ? [rule.trigger]
       : [];
-  return triggers.some((trigger) => isWebhookGatewayTriggerType(trigger.type));
+  return triggers;
+}
+
+function ruleNeedsExternalIngress(rule: Pick<AutomationRule, "triggers" | "trigger">): boolean {
+  return ruleTriggers(rule).some((trigger) => isWebhookGatewayTriggerType(trigger.type));
+}
+
+function readGitHubOriginFromConfig(projectRoot: string): string | null {
+  try {
+    const dotGitPath = path.join(projectRoot, ".git");
+    if (!fs.existsSync(dotGitPath)) return null;
+    const dotGitStat = fs.statSync(dotGitPath);
+    let gitDir = dotGitPath;
+    if (dotGitStat.isFile()) {
+      const match = /^gitdir:\s*(.+)\s*$/im.exec(fs.readFileSync(dotGitPath, "utf8"));
+      if (!match?.[1]) return null;
+      gitDir = path.resolve(projectRoot, match[1].trim());
+    }
+    const commonDirFile = path.join(gitDir, "commondir");
+    const commonDir = fs.existsSync(commonDirFile)
+      ? path.resolve(gitDir, fs.readFileSync(commonDirFile, "utf8").trim())
+      : gitDir;
+    for (const configPath of [path.join(gitDir, "config.worktree"), path.join(commonDir, "config"), path.join(gitDir, "config")]) {
+      if (!fs.existsSync(configPath)) continue;
+      const raw = fs.readFileSync(configPath, "utf8");
+      const section = /\[remote\s+"origin"\]([\s\S]*?)(?=\n\s*\[|$)/i.exec(raw)?.[1] ?? "";
+      const url = /^\s*url\s*=\s*(.+?)\s*$/im.exec(section)?.[1]?.trim() ?? "";
+      if (url) return url;
+    }
+  } catch {
+    // Missing or transiently unreadable git metadata means polling is not a
+    // dependable ingress path for enable-gating purposes.
+  }
+  return null;
+}
+
+function hasConfiguredGitHubOrigin(projectRoot: string): boolean {
+  const origin = readGitHubOriginFromConfig(projectRoot);
+  return Boolean(origin && /(^|[/:@])github\.com[/:]/i.test(origin));
 }
 
 /**
@@ -211,6 +250,30 @@ export type TriggerContext = {
   /** Structured Linear payload for `linear.*` triggers. */
   linear?: { issue: TriggerLinearIssueContext };
 };
+
+export type LaneMergedNotification = {
+  laneId: string;
+  laneName: string;
+  branch: string;
+  prNumber: number;
+  prUrl: string;
+  prTitle?: string | null;
+  targetBranch?: string | null;
+  repo?: string | null;
+  author?: string | null;
+};
+
+export function summarizeTrigger(trigger: TriggerContext): string {
+  if (trigger.summary?.trim()) return trigger.summary.trim();
+  if (trigger.triggerType === "lane.merged") {
+    const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
+    const prNumber = trigger.pr?.number;
+    return `Lane merged: ${lane}${typeof prNumber === "number" ? ` (PR #${prNumber})` : ""}`;
+  }
+  if (trigger.triggerType === "lane.created") return `Lane created: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
+  if (trigger.triggerType === "lane.archived") return `Lane archived: ${trigger.laneName ?? trigger.laneId ?? "lane"}`;
+  return trigger.triggerType;
+}
 
 type WatchedFileRoot = {
   key: string;
@@ -308,6 +371,19 @@ type AutomationPendingPublishRow = {
   continuation_kind: string;
   created_at: string;
   resolved_at: string | null;
+};
+
+type AutomationScheduledCleanupRow = {
+  id: string;
+  rule_id: string;
+  run_id: string;
+  lane_id: string;
+  due_at: string;
+  options_json: string;
+  status: string;
+  created_at: string;
+  executed_at: string | null;
+  error: string | null;
 };
 
 type ProjectConfigService = ReturnType<typeof createProjectConfigService>;
@@ -800,6 +876,31 @@ function resolveTemplateString(template: string | undefined | null, trigger: Tri
   }
 }
 
+function formatLaneTemplateClock(date: Date): { date: string; time: string } {
+  const year = String(date.getFullYear()).padStart(4, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hour = String(date.getHours()).padStart(2, "0");
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  return { date: `${year}-${month}-${day}`, time: `${hour}:${minute}` };
+}
+
+export function resolveLaneNameTemplate(
+  template: string | undefined | null,
+  trigger: TriggerContext,
+  ruleName: string,
+  now = new Date(),
+): string {
+  const scheduledAt = trigger.scheduledAt ? new Date(trigger.scheduledAt) : null;
+  const clock = scheduledAt && Number.isFinite(scheduledAt.getTime()) ? scheduledAt : now;
+  const values = formatLaneTemplateClock(clock);
+  const expanded = (template ?? "")
+    .replace(/\{\{\s*date\s*\}\}/g, values.date)
+    .replace(/\{\{\s*time\s*\}\}/g, values.time)
+    .replace(/\{\{\s*rule\.name\s*\}\}/g, () => ruleName);
+  return resolveTemplateString(expanded, trigger);
+}
+
 function deriveQueueStatus(args: {
   current: AutomationRunQueueStatus;
   runStatus: AutomationRunStatus;
@@ -906,6 +1007,8 @@ export function createAutomationService({
   agentChatService,
   budgetCapService,
   adeActionRegistry,
+  linearIngressAvailable,
+  githubPollingAvailable,
   onEvent
 }: {
   db: AdeDb;
@@ -925,6 +1028,10 @@ export function createAutomationService({
    * instances. See `apps/desktop/src/main/services/adeActions/registry.ts`.
    */
   adeActionRegistry?: AutomationAdeActionRegistry | null;
+  /** True when Linear event ingress is connected and able to deliver events. */
+  linearIngressAvailable?: () => boolean;
+  /** True when direct GitHub polling can resolve a configured repository. */
+  githubPollingAvailable?: () => boolean;
   onEvent?: (payload: {
     type: "runs-updated" | "webhook-status-updated" | "ingress-updated";
     automationId?: string;
@@ -939,6 +1046,8 @@ export function createAutomationService({
   let agentChatServiceRef = agentChatService;
   let budgetCapServiceRef = budgetCapService;
   let adeActionRegistryRef: AutomationAdeActionRegistry | null = adeActionRegistry ?? null;
+  let linearIngressAvailableRef = linearIngressAvailable ?? (() => false);
+  let githubPollingAvailableRef = githubPollingAvailable ?? (() => hasConfiguredGitHubOrigin(projectRoot));
   const readWebhookGatewayPublicUrl = (): string | null => {
     try {
       return normalizePublicWebhookUrl(projectConfigService.get().effective.ui?.webhookGatewayPublicUrl ?? null)
@@ -981,6 +1090,8 @@ export function createAutomationService({
   const scheduleTasks = new Map<string, CronTask>();
   const fileWatchers = new Map<string, FSWatcher>();
   const fileChangeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let scheduledCleanupTimer: NodeJS.Timeout | null = null;
+  let scheduledCleanupSweepRunning = false;
   const fileChangeDebounceBatches = new Map<string, {
     root: WatchedFileRoot;
     paths: Set<string>;
@@ -1142,6 +1253,25 @@ export function createAutomationService({
     `);
     db.run("create index if not exists idx_automation_pending_publish_project_run on automation_pending_publish(project_id, run_id)");
 
+    db.run(`
+      create table if not exists automation_scheduled_cleanups (
+        id text primary key,
+        rule_id text not null,
+        run_id text not null,
+        lane_id text not null,
+        due_at text not null,
+        options_json text not null,
+        status text not null,
+        created_at text not null,
+        executed_at text,
+        error text
+      )
+    `);
+    db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(status, due_at)");
+    // A crash may leave a claimed cleanup behind. Retrying is safe: if the
+    // delete completed before the crash, the missing-lane path records success.
+    db.run("update automation_scheduled_cleanups set status = 'scheduled' where status = 'executing'");
+
   };
 
   ensureSchema();
@@ -1241,11 +1371,53 @@ export function createAutomationService({
     return next;
   };
 
+  const capabilityAvailable = (check: () => boolean): boolean => {
+    try {
+      return check() === true;
+    } catch {
+      return false;
+    }
+  };
+
+  const getIngressSetupError = (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">): string | null => {
+    const triggers = ruleTriggers(rule).map((trigger) => normalizeTriggerType(trigger.type));
+    const relayAvailable = ingressStatusRef.githubRelay.configured;
+    const localWebhookAvailable = ingressStatusRef.localWebhook.listening && ingressStatusRef.localWebhook.healthy;
+    const publicGatewayAvailable = ingressStatusRef.webhookGateway.ready;
+
+    if (triggers.some((type) => type.startsWith("linear.")) && !capabilityAvailable(linearIngressAvailableRef)) {
+      return "Connect Linear events in Automations settings.";
+    }
+
+    const hasCanonicalGithubTrigger = triggers.some((type) => type.startsWith("github."));
+    if (
+      hasCanonicalGithubTrigger
+      && !capabilityAvailable(githubPollingAvailableRef)
+      && !relayAvailable
+      && !localWebhookAvailable
+      && !publicGatewayAvailable
+    ) {
+      return "Connect a GitHub repository, configure the GitHub relay, or start the local webhook server in Automations settings.";
+    }
+
+    if (
+      triggers.includes("github-webhook")
+      && !relayAvailable
+      && !localWebhookAvailable
+      && !publicGatewayAvailable
+    ) {
+      return "Configure the GitHub relay or start the local webhook server in Automations settings.";
+    }
+
+    if (triggers.includes("webhook") && !localWebhookAvailable && !publicGatewayAvailable) {
+      return "Start the local webhook server or configure ADE Webhook Gateway in Automations settings.";
+    }
+    return null;
+  };
+
   const assertWebhookGatewayReadyForRule = (rule: Pick<AutomationRule, "name" | "triggers" | "trigger">): void => {
-    if (!ruleNeedsWebhookGateway(rule)) return;
-    if (ingressStatusRef.webhookGateway.ready) return;
-    const ruleName = rule.name?.trim() || "This automation";
-    throw new Error(`${ruleName} needs ADE Webhook Gateway before it can be enabled.`);
+    const setupError = getIngressSetupError(rule);
+    if (setupError) throw new Error(setupError);
   };
 
   const getNextNightShiftPosition = (): number => {
@@ -1536,6 +1708,187 @@ export function createAutomationService({
     `,
     [projectId, runId]
   );
+
+  const normalizeLaneDeleteOptions = (
+    value: AutomationAction["laneDeleteOptions"] | null | undefined,
+  ): NonNullable<AutomationAction["laneDeleteOptions"]> => ({
+    ...(typeof value?.deleteBranch === "boolean" ? { deleteBranch: value.deleteBranch } : {}),
+    ...(typeof value?.deleteRemoteBranch === "boolean" ? { deleteRemoteBranch: value.deleteRemoteBranch } : {}),
+    ...(typeof value?.force === "boolean" ? { force: value.force } : {}),
+  });
+
+  const toScheduledCleanup = (row: AutomationScheduledCleanupRow): AutomationScheduledCleanup => ({
+    id: row.id,
+    ruleId: row.rule_id,
+    runId: row.run_id,
+    laneId: row.lane_id,
+    dueAt: row.due_at,
+    options: normalizeLaneDeleteOptions(
+      safeJsonParse<AutomationAction["laneDeleteOptions"] | null>(row.options_json, null),
+    ),
+    status: row.status === "executing" || row.status === "executed" || row.status === "failed" || row.status === "cancelled"
+      ? row.status
+      : "scheduled",
+    createdAt: row.created_at,
+    executedAt: row.executed_at ?? null,
+    error: row.error ?? null,
+  });
+
+  const listScheduledCleanups = (): AutomationScheduledCleanup[] => db.all<AutomationScheduledCleanupRow>(
+    `
+      select id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
+      from automation_scheduled_cleanups
+      order by due_at asc, created_at asc
+    `,
+  ).map(toScheduledCleanup);
+
+  const scheduleLaneCleanup = (args: {
+    ruleId: string;
+    runId: string;
+    laneId: string;
+    afterMinutes: number;
+    options: AutomationAction["laneDeleteOptions"];
+  }): AutomationScheduledCleanup => {
+    const id = randomUUID();
+    const createdAt = nowIso();
+    const dueAt = new Date(Date.now() + args.afterMinutes * 60_000).toISOString();
+    const options = normalizeLaneDeleteOptions(args.options);
+    db.run(
+      `
+        insert into automation_scheduled_cleanups(
+          id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
+        ) values (?, ?, ?, ?, ?, ?, 'scheduled', ?, null, null)
+      `,
+      [id, args.ruleId, args.runId, args.laneId, dueAt, JSON.stringify(options), createdAt],
+    );
+    return {
+      id,
+      ruleId: args.ruleId,
+      runId: args.runId,
+      laneId: args.laneId,
+      dueAt,
+      options,
+      status: "scheduled",
+      createdAt,
+      executedAt: null,
+      error: null,
+    };
+  };
+
+  const appendScheduledCleanupResult = (
+    cleanup: AutomationScheduledCleanup,
+    status: "succeeded" | "failed",
+    output: string,
+    errorMessage?: string | null,
+  ) => {
+    const runRow = loadRunRow(cleanup.runId);
+    if (!runRow) return;
+    const maxRow = db.get<{ max_index: number | null }>(
+      `select max(action_index) as max_index from automation_action_results where project_id = ? and run_id = ?`,
+      [projectId, cleanup.runId],
+    );
+    const actionId = insertAction(cleanup.runId, Number(maxRow?.max_index ?? -1) + 1, "delete-lane");
+    finishAction({
+      id: actionId,
+      status,
+      output,
+      errorMessage: errorMessage ?? null,
+    });
+    updateRun(cleanup.runId, {
+      actions_total: runRow.actions_total + 1,
+      actions_completed: runRow.actions_completed + 1,
+      ...(status === "failed"
+        ? {
+            status: "failed",
+            error_message: runRow.error_message ?? errorMessage ?? "Scheduled lane cleanup failed.",
+          }
+        : {}),
+    });
+    emit({ type: "runs-updated", automationId: cleanup.ruleId, runId: cleanup.runId });
+  };
+
+  const finishScheduledCleanup = async (cleanup: AutomationScheduledCleanup): Promise<void> => {
+    let status: "executed" | "failed" = "executed";
+    let errorMessage: string | null = null;
+    let output = `Scheduled cleanup ${cleanup.id} deleted lane ${cleanup.laneId}.`;
+    try {
+      const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+      if (!lanes.some((lane) => lane.id === cleanup.laneId)) {
+        output = `Scheduled cleanup ${cleanup.id}: lane ${cleanup.laneId} was already deleted.`;
+      } else {
+        await laneService.delete({ laneId: cleanup.laneId, ...cleanup.options });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/lane not found/i.test(message)) {
+        output = `Scheduled cleanup ${cleanup.id}: lane ${cleanup.laneId} was already deleted.`;
+      } else {
+        status = "failed";
+        errorMessage = message;
+        output = `Scheduled cleanup ${cleanup.id} failed for lane ${cleanup.laneId}: ${message}`;
+      }
+    }
+    const executedAt = nowIso();
+    db.run(
+      `
+        update automation_scheduled_cleanups
+        set status = ?, executed_at = ?, error = ?
+        where id = ? and status = 'executing'
+      `,
+      [status, executedAt, errorMessage, cleanup.id],
+    );
+    appendScheduledCleanupResult(
+      { ...cleanup, status, executedAt, error: errorMessage },
+      status === "failed" ? "failed" : "succeeded",
+      output,
+      errorMessage,
+    );
+  };
+
+  const sweepScheduledCleanups = async (): Promise<void> => {
+    if (scheduledCleanupSweepRunning) return;
+    scheduledCleanupSweepRunning = true;
+    try {
+      const dueRows = db.all<AutomationScheduledCleanupRow>(
+        `
+          select id, rule_id, run_id, lane_id, due_at, options_json, status, created_at, executed_at, error
+          from automation_scheduled_cleanups
+          where status = 'scheduled' and due_at <= ?
+          order by due_at asc, created_at asc
+        `,
+        [nowIso()],
+      );
+      for (const row of dueRows) {
+        db.run(
+          `update automation_scheduled_cleanups set status = 'executing' where id = ? and status = 'scheduled'`,
+          [row.id],
+        );
+        const claimed = db.get<{ status: string }>(
+          `select status from automation_scheduled_cleanups where id = ? limit 1`,
+          [row.id],
+        );
+        if (claimed?.status !== "executing") continue;
+        await finishScheduledCleanup({ ...toScheduledCleanup(row), status: "executing" });
+      }
+    } finally {
+      scheduledCleanupSweepRunning = false;
+    }
+  };
+
+  const cancelScheduledCleanup = (idRaw: string): boolean => {
+    const id = idRaw.trim();
+    if (!id) return false;
+    const existing = db.get<{ status: string }>(
+      `select status from automation_scheduled_cleanups where id = ? limit 1`,
+      [id],
+    );
+    if (existing?.status !== "scheduled") return false;
+    db.run(
+      `update automation_scheduled_cleanups set status = 'cancelled', executed_at = ?, error = null where id = ? and status = 'scheduled'`,
+      [nowIso(), id],
+    );
+    return true;
+  };
 
   const loadQueueItemRow = (queueItemId: string): AutomationQueueItemRow | null => db.get<AutomationQueueItemRow>(
     `
@@ -1879,7 +2232,7 @@ export function createAutomationService({
     }
     if (action.type === "create-lane") {
       const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
-      const rendered = resolveTemplateString(action.laneNameTemplate, trigger);
+      const rendered = resolveLaneNameTemplate(action.laneNameTemplate, trigger, rule.name);
       const renderedClean = rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "";
       const laneName = renderedClean || fallbackName;
       if (!laneName.trim()) {
@@ -1907,6 +2260,45 @@ export function createAutomationService({
           laneName: lane.name,
           branchRef: lane.branchRef,
         }),
+      };
+    }
+    if (action.type === "delete-lane") {
+      const laneId = getConfiguredTargetLaneId(rule, action)
+        ?? loadLaneSetupLaneId(runId)
+        ?? trimToNull(trigger.laneId);
+      if (!laneId) {
+        return {
+          status: "failed",
+          output: "delete-lane requires an explicit target lane, a lane created earlier in the chain, or a trigger lane.",
+        };
+      }
+      const afterMinutes = Number(action.afterMinutes ?? 0);
+      const options = normalizeLaneDeleteOptions(action.laneDeleteOptions);
+      if (!Number.isFinite(afterMinutes) || afterMinutes < 0) {
+        return { status: "failed", output: "delete-lane afterMinutes must be a finite number greater than or equal to zero." };
+      }
+      if (Number.isFinite(afterMinutes) && afterMinutes > 0) {
+        const cleanup = scheduleLaneCleanup({
+          ruleId: rule.id,
+          runId,
+          laneId,
+          afterMinutes,
+          options,
+        });
+        return {
+          status: "succeeded",
+          output: JSON.stringify({
+            status: "scheduled",
+            cleanupId: cleanup.id,
+            laneId,
+            dueAt: cleanup.dueAt,
+          }),
+        };
+      }
+      await laneService.delete({ laneId, ...options });
+      return {
+        status: "succeeded",
+        output: JSON.stringify({ status: "deleted", laneId }),
       };
     }
     if (action.type === "run-tests") {
@@ -2025,7 +2417,12 @@ export function createAutomationService({
         throw new Error(`Configured cwd does not exist: ${configuredCwd || cwd}`);
       }
       const { output, exitCode } = await runCommand({ command, cwd, timeoutMs: action.timeoutMs ?? 5 * 60_000 });
-      if (exitCode !== 0) return { status: "failed", output: output.length ? output : `Command exited with code ${exitCode}` };
+      if (exitCode !== 0) {
+        return {
+          status: "failed",
+          output: `${output}${output ? "\n" : ""}Command exited with code ${exitCode}`,
+        };
+      }
       return { status: "succeeded", output };
     }
     return { status: "skipped", output: `Unknown action type '${action.type}'` };
@@ -2047,10 +2444,12 @@ export function createAutomationService({
     let completed = 0;
     let runStatus: AutomationRunStatus = "succeeded";
     let runError: string | null = null;
+    let aborting = false;
     let finalQueueStatus: AutomationRunQueueStatus = "pending-review";
     try {
       for (let index = 0; index < actions.length; index += 1) {
         const action = actions[index]!;
+        if (aborting && action.alwaysRun !== true) continue;
         const actionId = insertAction(run.id, index, action.type);
         let lastOutput: string | null = null;
         try {
@@ -2075,8 +2474,8 @@ export function createAutomationService({
           completed += 1;
           updateRun(run.id, { actions_completed: completed });
           runStatus = "failed";
-          runError = message;
-          if (!action.continueOnFailure) break;
+          runError = runError ?? message;
+          if (!action.continueOnFailure) aborting = true;
         }
       }
     } finally {
@@ -2135,7 +2534,7 @@ export function createAutomationService({
     const template = preset && preset !== "custom"
       ? presetToTemplate(preset)
       : (rule.execution?.laneNameTemplate ?? "");
-    const rendered = resolveTemplateString(template, trigger);
+    const rendered = resolveLaneNameTemplate(template, trigger, rule.name);
     const fallbackName = trigger.issue?.title ?? trigger.pr?.title ?? trigger.summary ?? rule.name;
     const baseName = (rendered && !/\{\{[^}]+\}\}/.test(rendered) ? rendered : "").trim() || fallbackName.trim();
     if (!baseName) {
@@ -2554,6 +2953,8 @@ export function createAutomationService({
   const dispatchTrigger = async (trigger: TriggerContext) => {
     const rules = listRules().filter((rule) => rule.enabled);
     const { laneBranch, laneName } = await resolveTriggerLaneInfo(trigger);
+    trigger.branch = trigger.branch ?? laneBranch;
+    trigger.laneName = trigger.laneName ?? laneName;
     for (const rule of rules) {
       const matches = rule.triggers.map((candidate) => triggerMatches(candidate, trigger, laneBranch, laneName));
       if (!matches.some(Boolean)) continue;
@@ -2565,6 +2966,49 @@ export function createAutomationService({
         });
       });
     }
+  };
+
+  const notifyLaneMerged = async (args: LaneMergedNotification): Promise<boolean> => {
+    const laneId = args.laneId.trim();
+    const laneName = args.laneName.trim();
+    const branch = args.branch.trim();
+    const prUrl = args.prUrl.trim();
+    if (!laneId || !laneName || !branch || !prUrl || !Number.isFinite(args.prNumber) || args.prNumber <= 0) {
+      throw new Error("notifyLaneMerged requires laneId, laneName, branch, prUrl, and a positive prNumber.");
+    }
+    const prIdentity = args.repo?.trim() || prUrl;
+    const dedupeKey = `automations.lane-merged.v1:${projectId}:${encodeURIComponent(prIdentity)}:${Math.floor(args.prNumber)}`;
+    if (db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [dedupeKey])) {
+      return false;
+    }
+    db.run(
+      `insert into kv(key, value) values (?, ?) on conflict(key) do nothing`,
+      [dedupeKey, nowIso()],
+    );
+    const trigger: TriggerContext = {
+      triggerType: "lane.merged",
+      laneId,
+      laneName,
+      branch,
+      targetBranch: args.targetBranch?.trim() || undefined,
+      repo: args.repo?.trim() || undefined,
+      author: args.author?.trim() || undefined,
+      reason: `pr:${Math.floor(args.prNumber)}`,
+      scheduledAt: nowIso(),
+      pr: {
+        number: Math.floor(args.prNumber),
+        title: args.prTitle?.trim() || laneName,
+        url: prUrl,
+        repo: args.repo?.trim() || undefined,
+        author: args.author?.trim() || undefined,
+        headBranch: branch,
+        baseBranch: args.targetBranch?.trim() || undefined,
+        merged: true,
+      },
+    };
+    trigger.summary = summarizeTrigger(trigger);
+    await dispatchTrigger(trigger);
+    return true;
   };
 
   const clearFileChangeBatch = (key: string) => {
@@ -2694,13 +3138,12 @@ export function createAutomationService({
     const desired = new Set<string>();
     for (const rule of rules) {
       if (!rule.enabled) continue;
-      if (ruleNeedsWebhookGateway(rule) && !ingressStatusRef.webhookGateway.ready) {
-        logger.warn("automations.external_trigger_waiting_for_gateway", {
+      const ingressSetupError = ruleNeedsExternalIngress(rule) ? getIngressSetupError(rule) : null;
+      if (ingressSetupError) {
+        logger.warn("automations.external_trigger_waiting_for_ingress", {
           automationId: rule.id,
-          publicUrl: ingressStatusRef.webhookGateway.publicUrl,
-          status: ingressStatusRef.webhookGateway.status,
+          error: ingressSetupError,
         });
-        continue;
       }
       rule.triggers.forEach((trigger, index) => {
         if (trigger.type !== "schedule") return;
@@ -2886,6 +3329,20 @@ export function createAutomationService({
     return loadIngressEventRow(eventId) ? toIngressEvent(loadIngressEventRow(eventId)!) : null;
   };
 
+  scheduledCleanupTimer = setInterval(() => {
+    void sweepScheduledCleanups().catch((error) => {
+      logger.warn("automations.scheduled_cleanup_sweep_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, 60_000);
+  scheduledCleanupTimer.unref?.();
+  void sweepScheduledCleanups().catch((error) => {
+    logger.warn("automations.scheduled_cleanup_initial_sweep_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+
   syncFromConfig();
   void refreshWebhookGatewayStatus().catch((error) => {
     logger.warn("automations.webhook_gateway_status_failed", {
@@ -2904,6 +3361,44 @@ export function createAutomationService({
 
     bindAdeActionRegistry(registry: AutomationAdeActionRegistry | null) {
       adeActionRegistryRef = registry;
+    },
+
+    setLinearIngressAvailable(check: () => boolean) {
+      linearIngressAvailableRef = check;
+    },
+
+    setGithubPollingAvailable(check: () => boolean) {
+      githubPollingAvailableRef = check;
+    },
+
+    hasEnabledGithubRules(): boolean {
+      return listRules().some((rule) =>
+        rule.enabled
+        && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("github."))
+      );
+    },
+
+    hasEnabledLinearRules(): boolean {
+      return listRules().some((rule) =>
+        rule.enabled
+        && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("linear."))
+      );
+    },
+
+    listScheduledCleanups(): AutomationScheduledCleanup[] {
+      return listScheduledCleanups();
+    },
+
+    cancelScheduledCleanup(id: string): boolean {
+      return cancelScheduledCleanup(id);
+    },
+
+    async runScheduledCleanupSweep(): Promise<void> {
+      await sweepScheduledCleanups();
+    },
+
+    async notifyLaneMerged(args: LaneMergedNotification): Promise<boolean> {
+      return await notifyLaneMerged(args);
     },
 
     list(): AutomationRuleSummary[] {
@@ -3296,6 +3791,30 @@ export function createAutomationService({
           ...baseContext,
           stateTransition,
         });
+        void (async () => {
+          const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+          const laneName = lanes.find((lane) => lane.id === args.pr.laneId)?.name
+            ?? args.pr.headBranch
+            ?? args.pr.title;
+          await notifyLaneMerged({
+            laneId: args.pr.laneId,
+            laneName,
+            branch: args.pr.headBranch,
+            prNumber: args.pr.githubPrNumber,
+            prUrl: args.pr.githubUrl,
+            prTitle: args.pr.title,
+            targetBranch: args.pr.baseBranch,
+            repo: args.pr.repoOwner && args.pr.repoName
+              ? `${args.pr.repoOwner}/${args.pr.repoName}`
+              : null,
+          });
+        })().catch((error) => {
+          logger.warn("automations.lane_merged_dispatch_failed", {
+            laneId: args.pr.laneId,
+            prNumber: args.pr.githubPrNumber,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         return;
       }
       if (args.pr.state === "closed" && args.previousState !== "closed") {
@@ -3368,6 +3887,10 @@ export function createAutomationService({
     },
 
     dispose() {
+      if (scheduledCleanupTimer) {
+        clearInterval(scheduledCleanupTimer);
+        scheduledCleanupTimer = null;
+      }
       for (const task of scheduleTasks.values()) {
         try {
           task.stop();

@@ -70,6 +70,39 @@ export type AutomationActionResult = {
   output: string | null;
 };
 
+export type AutomationScheduledCleanupStatus =
+  | "scheduled"
+  | "executing"
+  | "executed"
+  | "failed"
+  | "cancelled";
+
+export type AutomationLinearIngressStatus = {
+  state: "unconfigured" | "ready" | "error" | "disabled";
+  webhookId: string | null;
+  organizationId: string | null;
+  lastEventAt: string | null;
+  lastError: string | null;
+  relayBaseUrl: string;
+};
+
+export type AutomationScheduledCleanup = {
+  id: string;
+  ruleId: string;
+  runId: string;
+  laneId: string;
+  dueAt: string;
+  options: {
+    deleteBranch?: boolean;
+    deleteRemoteBranch?: boolean;
+    force?: boolean;
+  };
+  status: AutomationScheduledCleanupStatus;
+  createdAt: string;
+  executedAt: string | null;
+  error: string | null;
+};
+
 export type AutomationRuleSummary = AutomationRule & {
   lastRunAt: string | null;
   nextRunAt: string | null;
@@ -256,6 +289,7 @@ export type AutomationDraftActionBase = {
   targetLaneId?: string | null;
   condition?: string;
   continueOnFailure?: boolean;
+  alwaysRun?: boolean;
   timeoutMs?: number;
   retry?: number;
 };
@@ -266,6 +300,11 @@ export type AutomationDraftAction =
       laneNameTemplate?: string;
       laneDescriptionTemplate?: string;
       parentLaneId?: string | null;
+    })
+  | (AutomationDraftActionBase & {
+      type: "delete-lane";
+      laneDeleteOptions?: AutomationAction["laneDeleteOptions"];
+      afterMinutes?: number;
     })
   | (AutomationDraftActionBase & { type: "predict-conflicts" })
   | (AutomationDraftActionBase & { type: "run-tests"; suite: string })

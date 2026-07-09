@@ -489,6 +489,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Deferred lane deletion is machine-local. Replicating a due cleanup could
+  // delete a same-id lane on another machine that did not schedule it.
+  "automation_scheduled_cleanups",
   // Per-device bookkeeping of which remote changes to suppress locally.
   // Syncing it is circular (it describes the sync process itself) and ships
   // rows to phones whose schema may not have the table — a changeset that an
@@ -2178,6 +2181,22 @@ function migrate(db: MigrationDb) {
     )
   `);
   db.run("create index if not exists idx_automation_action_results_project_run on automation_action_results(project_id, run_id)");
+
+  db.run(`
+    create table if not exists automation_scheduled_cleanups (
+      id text primary key,
+      rule_id text not null,
+      run_id text not null,
+      lane_id text not null,
+      due_at text not null,
+      options_json text not null,
+      status text not null,
+      created_at text not null,
+      executed_at text,
+      error text
+    )
+  `);
+  db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(status, due_at)");
 
   // Phase 8+ PR groups (queue / integration).
   db.run(`
