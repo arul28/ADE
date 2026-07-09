@@ -179,7 +179,12 @@ async function verifyDmgBeforeNotarization(dmgPath) {
   // Apple-notarized (notarization would reject an unsigned app). The on-disk
   // source app the dmg was built from verifies reliably.
   const name = path.basename(dmgPath);
-  const archDir = name.includes("arm64") ? "mac-arm64" : "mac";
+  let archDir = "mac";
+  if (name.includes("universal")) {
+    archDir = "mac-universal";
+  } else if (name.includes("arm64")) {
+    archDir = "mac-arm64";
+  }
   const sourceApp = path.join(releaseDir, archDir, "ADE.app");
   await assertPathExists(sourceApp, `source app for ${name} (${archDir}/ADE.app)`);
   await verifyAppSignature(sourceApp, `source app signature before notarizing ${name}`);
