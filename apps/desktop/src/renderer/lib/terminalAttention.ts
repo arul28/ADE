@@ -1,5 +1,5 @@
 import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
-import { canonicalSessionState, type SessionBadge } from "../../shared/sessionCanonicalState";
+import { canonicalSessionState, type CanonicalSessionState, type SessionBadge } from "../../shared/sessionCanonicalState";
 import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
@@ -117,13 +117,7 @@ export function sessionIndicatorState(args: {
   return "ended";
 }
 
-/**
- * The one-word attention capsule for a session row (desktop SessionCard; iOS
- * mirrors the vocabulary). Null for every calm state — rows must not shift
- * layout when no capsule renders. Backed by the shared canonical state module
- * so the capsule, the Live Activity phase, and notifications always agree.
- */
-export function sessionCapsuleBadge(session: {
+type SessionCanonicalUiInput = {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
   runtimeState?: TerminalRuntimeState;
@@ -132,7 +126,9 @@ export function sessionCapsuleBadge(session: {
   lastActivityAt?: string | null;
   exitCode?: number | null;
   nowMs?: number;
-}): SessionBadge | null {
+};
+
+export function sessionCanonicalUiState(session: SessionCanonicalUiInput): CanonicalSessionState {
   return canonicalSessionState({
     status: session.status,
     runtimeState: session.runtimeState ?? null,
@@ -144,7 +140,23 @@ export function sessionCapsuleBadge(session: {
     nowMs: session.nowMs,
     previewSuggestsNeedsInput: runningSessionNeedsAttention,
     isChatTool: isChatToolType,
-  }).badge;
+  });
+}
+
+/**
+ * The one-word attention capsule for a session row (desktop SessionCard; iOS
+ * mirrors the vocabulary). Null for every calm state — rows must not shift
+ * layout when no capsule renders. Backed by the shared canonical state module
+ * so the capsule, the Live Activity phase, and notifications always agree.
+ */
+export function sessionCapsuleBadge(session: SessionCanonicalUiInput): SessionBadge | null {
+  return sessionCanonicalUiState(session).badge;
+}
+
+export function sessionInlineStatusLabel(session: SessionCanonicalUiInput): string | null {
+  const state = sessionCanonicalUiState(session);
+  if (state.phase === "stopped") return "Stopped";
+  return null;
 }
 
 export function sessionNeedsUserInput(args: {
@@ -229,6 +241,12 @@ export function sessionStatusDot(session: {
       label = "Awaiting input";
     }
     return { cls: "rounded-full bg-amber-300", spinning: false, label };
+  }
+  if (session.status === "disposed") {
+    return { cls: "rounded-full bg-red-400", spinning: false, label: "Stopped" };
+  }
+  if (session.status === "failed") {
+    return { cls: "rounded-full bg-red-400", spinning: false, label: "Failed" };
   }
   return { cls: "rounded-full bg-red-400", spinning: false, label: "Ended" };
 }

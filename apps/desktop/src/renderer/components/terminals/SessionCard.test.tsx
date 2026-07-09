@@ -154,6 +154,27 @@ describe("SessionCard attention capsule", () => {
     expect(screen.getByText("Failed")).toBeTruthy();
   });
 
+  it("shows stopped inline text, not a Failed capsule, for a disposed CLI session", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          toolType: "claude",
+          status: "disposed",
+          runtimeState: "killed",
+          exitCode: null,
+          resumeCommand: "claude --resume session-1",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Stopped")).toBeTruthy();
+    expect(screen.getAllByTitle("Stopped")).toHaveLength(2);
+    expect(screen.queryByText("Failed")).toBeNull();
+  });
+
   it("shows a Stale capsule for a long-silent running session", () => {
     render(
       <SessionCard

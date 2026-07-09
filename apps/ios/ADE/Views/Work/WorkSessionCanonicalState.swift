@@ -11,7 +11,7 @@ import SwiftUI
 ///   failed     ⇔ failed
 ///   stale      ⇔ stale
 ///   starting/running ⇔ starting/running
-///   ready/idle/ended have no LA row (terminal or chat-resting states).
+///   ready/idle/stopped/ended have no LA row (terminal or chat-resting states).
 enum CanonicalSessionPhase: Equatable {
   case starting
   case running
@@ -20,6 +20,7 @@ enum CanonicalSessionPhase: Equatable {
   case stale
   case ready
   case idle
+  case stopped
   case ended
 }
 
@@ -46,9 +47,9 @@ struct CanonicalSessionState: Equatable {
 /// "stale" — running but silent. Distinct from the push relay's APNs TTLs and
 /// the Live Activity 10-minute lock-screen dimming: this is the human-facing
 /// "is anything actually happening" bar. Exactly mirrors the desktop
-/// `SESSION_STALE_AFTER_MS` (20 minutes); do not reuse other stale semantics
+/// `SESSION_STALE_AFTER_MS` (3 hours); do not reuse other stale semantics
 /// (e.g. the 7-day chat reclassification in `normalizedWorkChatSessionStatus`).
-let sessionStaleAfterSeconds: TimeInterval = 20 * 60
+let sessionStaleAfterSeconds: TimeInterval = 3 * 60 * 60
 
 private let badgeByKind: [SessionBadgeKind: SessionBadge] = [
   .needsYou: SessionBadge(kind: .needsYou, label: "Needs you"),
@@ -78,10 +79,11 @@ func isWorkChatToolType(_ toolType: String?) -> Bool {
 /// Canonical precedence (highest first), identical to the desktop module:
 ///   1. deterministic needs-input — a pending input item or a "waiting-input"
 ///      runtime (never outvoted by anything below),
-///   2. failed — non-zero exit / killed,
-///   3. stale — status running but silent ≥ `sessionStaleAfterSeconds`,
-///   4. running (incl. the preview heuristic's needs_you upgrade, consulted LAST),
-///   5. resting states — ready (idle chat), idle, ended.
+///   2. stopped — user/system-disposed PTY,
+///   3. failed — non-zero exit / killed,
+///   4. stale — status running but silent ≥ `sessionStaleAfterSeconds`,
+///   5. running (incl. the preview heuristic's needs_you upgrade, consulted LAST),
+///   6. resting states — ready (idle chat), idle, ended.
 func workCanonicalSessionState(
   status: String,
   runtimeState: String? = nil,
@@ -106,7 +108,14 @@ func workCanonicalSessionState(
 
   let ended = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "running"
   if ended {
-    // 2. Failure: a non-clean exit, an explicit "failed" persisted status
+    // 2. Stopped: an explicitly disposed PTY is resumable/closed, not a task
+    // failure. Check before exit/runtime failures because disposed sessions are
+    // currently persisted with runtimeState "killed" and often exitCode 130.
+    if status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "disposed" {
+      return CanonicalSessionState(phase: .stopped, badge: nil)
+    }
+
+    // 3. Failure: a non-clean exit, an explicit "failed" persisted status
     // (spawn/setup failures that die before an exit code), or a killed runtime
     // — all deterministic "failed" signals a terminal-backed session reports.
     if let exitCode, exitCode != 0 {
@@ -123,7 +132,7 @@ func workCanonicalSessionState(
     return CanonicalSessionState(phase: .ended, badge: nil)
   }
 
-  // 3. Stale: running but silent past the threshold.
+  // 4. Stale: running but silent past the threshold.
   if isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds) {
     return CanonicalSessionState(phase: .stale, badge: badgeByKind[.stale])
   }
@@ -136,7 +145,7 @@ func workCanonicalSessionState(
       : CanonicalSessionState(phase: .idle, badge: nil)
   }
 
-  // 4. Preview heuristic LAST: it may only upgrade running → needs_you.
+  // 5. Preview heuristic LAST: it may only upgrade running → needs_you.
   if previewSuggestsNeedsInput(lastOutputPreview) {
     return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
   }
@@ -239,7 +248,7 @@ func workSessionCapsuleBadge(
 /// back to `session.startedAt`), this returns nil when no real activity signal
 /// exists — the iOS `TerminalSessionSummary` carries no desktop-style
 /// `lastActivityAt`, so a plain terminal has no output timestamp. Falling back
-/// to `startedAt` would flag any terminal open >20min as Stale even with output
+/// to `startedAt` would flag any terminal open >3h as Stale even with output
 /// seconds ago; nil disables the check, mirroring the desktop caller which
 /// passes the real `lastActivityAt` or null (never `startedAt`).
 private func workSessionStaleActivityTimestamp(

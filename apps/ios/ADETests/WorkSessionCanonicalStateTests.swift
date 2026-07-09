@@ -3,7 +3,7 @@ import XCTest
 
 /// Table-driven coverage for the Work-tab canonical session vocabulary — the
 /// iOS mirror of desktop `sessionCanonicalState.ts`. Locks the precedence chain,
-/// the exact 20-minute stale boundary, and the no-badge-for-calm-states rule.
+/// the exact 3-hour stale boundary, and the no-badge-for-calm-states rule.
 final class WorkSessionCanonicalStateTests: XCTestCase {
   private let now = Date(timeIntervalSince1970: 1_780_000_000)
 
@@ -38,7 +38,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         runtimeState: "running",
         toolType: "codex",
         pendingInputItemId: "item-1",
-        lastActivityAt: silentFor(30 * 60),
+        lastActivityAt: silentFor(sessionStaleAfterSeconds + 60),
         exitCode: nil
       ),
       Case(
@@ -47,7 +47,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         runtimeState: "waiting-input",
         toolType: "codex",
         pendingInputItemId: nil,
-        lastActivityAt: silentFor(30 * 60),
+        lastActivityAt: silentFor(sessionStaleAfterSeconds + 60),
         exitCode: nil
       ),
       Case(
@@ -86,6 +86,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     }
   }
 
+  func testStoppedDisposedSessionsAreNotFailed() {
+    let disposed = workCanonicalSessionState(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: nil, now: now)
+    XCTAssertEqual(disposed.phase, .stopped)
+    XCTAssertNil(disposed.badge)
+
+    let userStop = workCanonicalSessionState(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130, now: now)
+    XCTAssertEqual(userStop.phase, .stopped)
+    XCTAssertNil(userStop.badge)
+  }
+
   func testFailedOnlyForEndedNonCleanExitOrKilled() {
     // Non-zero exit on an ended session → failed.
     let failedExit = workCanonicalSessionState(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 1, now: now)
@@ -108,8 +118,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(runningWithCode.badge)
   }
 
-  func testStaleBoundaryIsExactlyTwentyMinutes() {
-    // Just under 20 minutes of silence → still running (no capsule).
+  func testStaleBoundaryIsExactlyThreeHours() {
+    // Just under 3 hours of silence → still running (no capsule).
     let justUnder = workCanonicalSessionState(
       status: "running",
       runtimeState: "running",
@@ -240,6 +250,12 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let session = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 130)
     let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
     XCTAssertEqual(badge?.kind, .failed)
+  }
+
+  func testCapsuleBadgeNilForStoppedDisposedSession() {
+    let session = makeSession(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130)
+    let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
+    XCTAssertNil(badge)
   }
 
   func testCapsuleBadgeNilForFreshRunning() {

@@ -33,6 +33,8 @@ describe("canonicalSessionState precedence", () => {
     ["waiting-input wins over stale silence", { runtimeState: "waiting-input", lastActivityAt: silentSince }, "needs_you", "Needs you"],
     ["waiting-input wins even when preview looks calm", { runtimeState: "waiting-input", lastOutputPreview: "compiling..." }, "needs_you", "Needs you"],
     ["pendingInputItemId wins on an ended session", { pendingInputItemId: "i-1", status: "detached", exitCode: 1 }, "needs_you", "Needs you"],
+    ["disposed session is stopped, not failed", { status: "disposed", runtimeState: "killed", exitCode: null }, "stopped", null],
+    ["user-stop signal is stopped, not failed", { status: "disposed", runtimeState: "killed", exitCode: 130 }, "stopped", null],
     ["non-zero exit is failed", { status: "detached", exitCode: 2 }, "failed", "Failed"],
     ["persisted failed status with null exit is failed (spawn failure)", { status: "failed", exitCode: null, runtimeState: "exited" }, "failed", "Failed"],
     ["killed runtime is failed", { status: "detached", runtimeState: "killed", exitCode: null }, "failed", "Failed"],
@@ -57,6 +59,10 @@ describe("canonicalSessionState precedence", () => {
 });
 
 describe("stale boundary", () => {
+  it("uses a three-hour silence threshold", () => {
+    expect(SESSION_STALE_AFTER_MS).toBe(3 * 60 * 60 * 1000);
+  });
+
   it("flips exactly at the threshold, not before", () => {
     const justUnder = new Date(NOW - SESSION_STALE_AFTER_MS + 1_000).toISOString();
     const exactly = new Date(NOW - SESSION_STALE_AFTER_MS).toISOString();

@@ -206,6 +206,30 @@ describe("terminalAttention", () => {
       expect(dot.label).toBe("Ended");
     });
 
+    it("returns a stopped red dot for a disposed session", () => {
+      const dot = sessionStatusDot({
+        status: "disposed",
+        lastOutputPreview: "Stopped by user",
+        runtimeState: "killed",
+        toolType: "codex",
+      });
+      expect(dot.spinning).toBe(false);
+      expect(dot.cls).toContain("red");
+      expect(dot.label).toBe("Stopped");
+    });
+
+    it("returns a failed red dot for an explicit failed status", () => {
+      const dot = sessionStatusDot({
+        status: "failed",
+        lastOutputPreview: "Launch failed",
+        runtimeState: "exited",
+        toolType: "codex",
+      });
+      expect(dot.spinning).toBe(false);
+      expect(dot.cls).toContain("red");
+      expect(dot.label).toBe("Failed");
+    });
+
     it("returns a ready amber dot for a non-running agent chat session", () => {
       const dot = sessionStatusDot({
         status: "completed",
