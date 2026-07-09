@@ -1630,6 +1630,174 @@ describe("sync host handoff over a shared listener", () => {
     }
   });
 
+  it("keeps personal and project chat subscriptions across handoff without restoring foreign quick looks", async () => {
+    const rootA = createTempProjectRoot();
+    const rootB = createTempProjectRoot();
+    const tokenPath = path.join(rootA.projectRoot, "shared-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const personalTranscriptPath = path.join(rootA.projectRoot, "personal.chat.jsonl");
+    const projectTranscriptPath = path.join(rootA.projectRoot, "project.chat.jsonl");
+    const foreignTranscriptPath = path.join(rootA.projectRoot, "foreign.chat.jsonl");
+    const collidingLocalTranscriptPath = path.join(rootB.projectRoot, "foreign.chat.jsonl");
+    for (const transcriptPath of [
+      personalTranscriptPath,
+      projectTranscriptPath,
+      foreignTranscriptPath,
+      collidingLocalTranscriptPath,
+    ]) {
+      fs.writeFileSync(transcriptPath, "", "utf8");
+    }
+    const personalChatScope = {
+      call: vi.fn(),
+      streamEvents: vi.fn(),
+      transcriptPath: vi.fn(async (sessionId: string) =>
+        sessionId === "personal-chat" ? personalTranscriptPath : null
+      ),
+      isTurnActive: vi.fn(async () => false),
+    };
+    let client: WebSocket | null = null;
+    let hostA: ReturnType<typeof createSyncHostService> | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      const hostAArgs = createHandoffHostArgs(rootA.projectRoot, tokenPath, {
+        siteId: "site-a",
+        dbVersion: 0,
+        changes: [],
+      });
+      hostA = createSyncHostService({
+        ...hostAArgs,
+        projectId: "project-a",
+        pollIntervalMs: 100,
+        sharedListener: listener,
+        personalChatScope,
+        sessionService: {
+          ...hostAArgs.sessionService,
+          get: (sessionId: string) => sessionId === "project-chat"
+            ? { id: sessionId, transcriptPath: projectTranscriptPath }
+            : null,
+        },
+        foreignChatProvider: {
+          resolveTranscriptPath: ({ projectId, sessionId }: { projectId?: string | null; sessionId: string }) =>
+            projectId === "foreign-project" && sessionId === "foreign-chat"
+              ? foreignTranscriptPath
+              : null,
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await hostA.waitUntilListening();
+
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes, closeEvents } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+      sendHello(client, hostA.getBootstrapToken());
+      await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "hello_ok from host A",
+      );
+
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "personal-subscribe",
+        payload: { sessionId: "personal-chat", chatScope: "personal" },
+      }));
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "project-subscribe",
+        payload: { sessionId: "project-chat" },
+      }));
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "foreign-subscribe",
+        payload: { sessionId: "foreign-chat", projectId: "foreign-project" },
+      }));
+      await Promise.all([
+        waitForEnvelope(envelopes, "chat_subscribe", "personal-subscribe"),
+        waitForEnvelope(envelopes, "chat_subscribe", "project-subscribe"),
+        waitForEnvelope(envelopes, "chat_subscribe", "foreign-subscribe"),
+      ]);
+
+      await hostA.dispose();
+      hostA = null;
+      const envelopeCountAfterDispose = envelopes.length;
+      const hostBArgs = createHandoffHostArgs(rootB.projectRoot, tokenPath, {
+        siteId: "site-b",
+        dbVersion: 0,
+        changes: [],
+      });
+      hostB = createSyncHostService({
+        ...hostBArgs,
+        projectId: "project-b",
+        pollIntervalMs: 100,
+        sharedListener: listener,
+        personalChatScope,
+        sessionService: {
+          ...hostBArgs.sessionService,
+          get: (sessionId: string) => {
+            if (sessionId === "project-chat") return { id: sessionId, transcriptPath: projectTranscriptPath };
+            if (sessionId === "foreign-chat") return { id: sessionId, transcriptPath: collidingLocalTranscriptPath };
+            return null;
+          },
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await hostB.waitUntilListening();
+
+      const handedOffEnvelopes = () => envelopes.slice(envelopeCountAfterDispose);
+      await waitForValue(
+        () => handedOffEnvelopes().find((envelope) =>
+          envelope.type === "chat_subscribe"
+          && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+        ),
+        "personal chat handoff subscription",
+      );
+      await waitForValue(
+        () => handedOffEnvelopes().find((envelope) =>
+          envelope.type === "chat_subscribe"
+          && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
+        ),
+        "project chat handoff subscription",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(handedOffEnvelopes().some((envelope) =>
+        envelope.type === "chat_subscribe"
+        && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
+      )).toBe(false);
+
+      const personalEvent: AgentChatEventEnvelope = {
+        sessionId: "personal-chat",
+        timestamp: "2026-07-09T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "personal update after handoff" },
+      };
+      fs.appendFileSync(personalTranscriptPath, `${JSON.stringify(personalEvent)}\n`, "utf8");
+      const streamed = await waitForValue(
+        () => handedOffEnvelopes().find((envelope) =>
+          envelope.type === "chat_event"
+          && (envelope.payload as AgentChatEventEnvelope).sessionId === "personal-chat"
+        ),
+        "personal chat event after handoff",
+      );
+      expect(streamed.payload).toMatchObject({
+        sessionId: "personal-chat",
+        event: { type: "text", text: "personal update after handoff" },
+      });
+      expect(closeEvents).toEqual([]);
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await hostA?.dispose();
+      await hostB?.dispose();
+      await listener.close();
+      rootA.cleanup();
+      rootB.cleanup();
+    }
+  });
+
   it("parks a connection that arrives while no host owns the listener and replays its hello to the next host", async () => {
     const root = createTempProjectRoot();
     const tokenPath = path.join(root.projectRoot, "shared-bootstrap-token");

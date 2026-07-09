@@ -367,6 +367,8 @@ type LanePresenceEntry = {
   source: "local" | "remote";
 };
 
+type ChatSubscriptionScope = "project" | "personal" | "foreign-project";
+
 type PeerState = {
   ws: WebSocket;
   metadata: SyncPeerMetadata | null;
@@ -387,14 +389,13 @@ type PeerState = {
   remotePort: number | null;
   subscribedSessionIds: Set<string>;
   subscribedChatSessionIds: Set<string>;
+  chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
   chatTranscriptOffsets: Map<string, number>;
   chatEventIdsSent: Map<string, Set<string>>;
-  // Cross-project "quick look" subscriptions: sessionId -> resolved foreign
-  // transcript path. Present only for sessions in a project OTHER than this
-  // socket's active one; the chat pump tails these paths directly (the local
-  // sessionService has no row for them). Empty in the common single-project
-  // case, so it adds no cost when the feature is unused.
-  foreignChatTranscriptPaths: Map<string, string>;
+  // Subscriptions resolved outside the active project's session service:
+  // machine-scoped personal chats and cross-project quick looks. Scope stays
+  // separate because only personal chats may survive a project-host handoff.
+  resolvedChatTranscriptPaths: Map<string, string>;
   pendingChangesetBatch: PendingChangesetBatch | null;
   // All-projects roster (mobile hub): whether this peer is subscribed, the
   // monotonic seq last sent to THIS peer (per-peer so a peer that skips a
@@ -1942,9 +1943,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remotePort,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
+      chatSubscriptionScopes: new Map(),
       chatTranscriptOffsets: new Map(),
       chatEventIdsSent: new Map(),
-      foreignChatTranscriptPaths: new Map(),
+      resolvedChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
       rosterSubscribed: false,
       rosterSeq: 0,
@@ -2121,19 +2123,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (!Number.isFinite(offset)) continue;
           peer.chatTranscriptOffsets.set(sessionId, Math.max(0, Math.floor(offset)));
         }
-        for (const sessionId of snapshot.subscribedChatSessionIds ?? []) {
+        const handedOffChatSubscriptions = snapshot.chatSubscriptions
+          ?? (snapshot.subscribedChatSessionIds ?? []).map((sessionId) => ({
+            sessionId,
+            scope: "project" as const,
+          }));
+        for (const subscription of handedOffChatSubscriptions) {
+          const { sessionId, scope } = subscription;
+          if (scope === "personal") {
+            const transcriptPath = await args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null;
+            if (!transcriptPath) continue;
+            peer.resolvedChatTranscriptPaths.set(sessionId, transcriptPath);
+          }
           // This host's replay buffers start a fresh seq epoch. Tell the
           // client to drop its stored per-session seq watermark (the
           // documented meaning of a non-resumed chat_subscribe ack) BEFORE
           // re-enabling the subscription — otherwise the first re-streamed
           // events (seq restarting at 1) would be discarded as already-seen.
+          const turnActive = scope === "personal"
+            ? await args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false)
+            : undefined;
           sendRequired(peer, "chat_subscribe", {
             sessionId,
             capturedAt: nowIso(),
             truncated: false,
             events: [],
+            ...(typeof turnActive === "boolean" ? { turnActive } : {}),
           } satisfies SyncChatSubscribeSnapshotPayload);
           peer.subscribedChatSessionIds.add(sessionId);
+          peer.chatSubscriptionScopes.set(sessionId, scope);
         }
         peer.rosterSubscribed = snapshot.rosterSubscribed === true;
         args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
@@ -3461,8 +3479,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       for (const sessionId of peer.subscribedChatSessionIds) {
         // A foreign quick-look session has no local row; tail its resolved
         // transcript path directly. Local sessions resolve via sessionService.
-        const foreignTranscriptPath = peer.foreignChatTranscriptPaths.get(sessionId);
-        const transcriptPath = foreignTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+        const resolvedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
+        const transcriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
         if (!transcriptPath) continue;
 
         const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
@@ -3490,10 +3508,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
-      // A peer whose subscription for this id is a FOREIGN quick-look gets its
-      // events from the transcript pump — never the active project's live
-      // broadcast, even when a local session shares the session id.
-      if (peer.foreignChatTranscriptPaths.has(event.sessionId)) continue;
+      // Personal and foreign-project subscriptions get events from their
+      // resolved transcript paths — never the active project's live broadcast,
+      // even when a local session shares the session id.
+      if (peer.chatSubscriptionScopes.get(event.sessionId) !== "project") continue;
       sendChatEvent(peer, event, seq);
     }
     // A chat lifecycle event for the host project updates its roster status
@@ -4762,13 +4780,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const foreignTranscriptPath = foreignScope.kind === "foreign" ? foreignScope.transcriptPath : null;
         if (foreignScope.kind === "rejected") {
           peer.subscribedChatSessionIds.delete(sessionId);
+          peer.chatSubscriptionScopes.delete(sessionId);
         } else {
           peer.subscribedChatSessionIds.add(sessionId);
+          peer.chatSubscriptionScopes.set(
+            sessionId,
+            personalChatRequested
+              ? "personal"
+              : foreignScope.kind === "foreign"
+                ? "foreign-project"
+                : "project",
+          );
         }
         if (foreignTranscriptPath) {
-          peer.foreignChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
+          peer.resolvedChatTranscriptPaths.set(sessionId, foreignTranscriptPath);
         } else {
-          peer.foreignChatTranscriptPaths.delete(sessionId);
+          peer.resolvedChatTranscriptPaths.delete(sessionId);
         }
 
         const session = foreignScope.kind === "local" ? args.sessionService.get(sessionId) : null;
@@ -4877,9 +4904,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
           peer.subscribedChatSessionIds.delete(sessionId);
+          peer.chatSubscriptionScopes.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
-          peer.foreignChatTranscriptPaths.delete(sessionId);
+          peer.resolvedChatTranscriptPaths.delete(sessionId);
         }
         break;
       }
@@ -5191,6 +5219,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             }
             continue;
           }
+          const chatSubscriptions = [...peer.subscribedChatSessionIds].flatMap((sessionId) => {
+            const scope = peer.chatSubscriptionScopes.get(sessionId) ?? "project";
+            return scope === "foreign-project" ? [] : [{ sessionId, scope }];
+          });
+          const handedOffChatSessionIds = new Set(chatSubscriptions.map(({ sessionId }) => sessionId));
           snapshots.push({
             ws: peer.ws,
             remoteAddress: peer.remoteAddress,
@@ -5202,14 +5235,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             serverDbSiteId: args.db.sync.getSiteId(),
             lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
             subscribedSessionIds: [...peer.subscribedSessionIds],
-            // Foreign quick-look subscriptions do NOT survive the handoff: the
-            // resolved transcript path isn't carried, and restoring the bare
-            // session id would make the pump fall back to a same-id LOCAL
-            // session (the exact fallback the subscribe path fails closed
-            // against). The client re-subscribes with its scope after handoff.
-            subscribedChatSessionIds: [...peer.subscribedChatSessionIds]
-              .filter((sessionId) => !peer.foreignChatTranscriptPaths.has(sessionId)),
-            chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
+            // Project and machine-scoped personal chats survive. A foreign
+            // quick-look does not: restoring its bare session id would make
+            // the new host fall back to a same-id local session. The client
+            // re-subscribes to that project scope after handoff.
+            chatSubscriptions,
+            subscribedChatSessionIds: chatSubscriptions
+              .filter(({ scope }) => scope === "project")
+              .map(({ sessionId }) => sessionId),
+            chatTranscriptOffsets: Object.fromEntries(
+              [...peer.chatTranscriptOffsets]
+                .filter(([sessionId]) => handedOffChatSessionIds.has(sessionId)),
+            ),
             rosterSubscribed: peer.rosterSubscribed,
           });
         }

@@ -128,9 +128,75 @@ function envelopeFromPayload(payload: Record<string, unknown>): AgentChatEventEn
   return null;
 }
 
+function eventKeyPart(value: unknown): string | number | boolean | null {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+    ? value
+    : null;
+}
+
+const eventKeyCache = new WeakMap<AgentChatEventEnvelope, string>();
+
 function eventKey(event: AgentChatEventEnvelope): string {
+  const cached = eventKeyCache.get(event);
+  if (cached) return cached;
+
+  if (typeof event.sequence === "number" && Number.isFinite(event.sequence)) {
+    const sequenceKey = JSON.stringify([event.sessionId, "sequence", event.sequence]);
+    eventKeyCache.set(event, sequenceKey);
+    return sequenceKey;
+  }
+
   const body = event.event as unknown as Record<string, unknown>;
-  return [event.sessionId, event.timestamp, body.type ?? "", body.itemId ?? "", body.messageId ?? ""].join(":");
+  const content = [body.text, body.message, body.summary, body.detail].find((value) => typeof value === "string");
+  let contentFingerprint: string | null = null;
+  if (typeof content === "string") {
+    let hash = 2_166_136_261;
+    for (let index = 0; index < content.length; index += 1) {
+      hash = Math.imul(hash ^ content.charCodeAt(index), 16_777_619);
+    }
+    contentFingerprint = `${content.length}:${(hash >>> 0).toString(36)}`;
+  }
+
+  // Legacy envelopes may not carry a sequence. Include lifecycle and stable
+  // entity identifiers before the coarse timestamp/content fallback so rapid
+  // started/completed events remain distinct while exact replays still dedupe.
+  const fallbackKey = JSON.stringify([
+    event.sessionId,
+    eventKeyPart(body.type),
+    eventKeyPart(body.turnId),
+    eventKeyPart(body.turnStatus),
+    eventKeyPart(body.status),
+    eventKeyPart(body.state),
+    eventKeyPart(body.reviewStatus),
+    eventKeyPart(body.deliveryState),
+    eventKeyPart(body.itemId),
+    eventKeyPart(body.logicalItemId),
+    eventKeyPart(body.messageId),
+    eventKeyPart(body.taskId),
+    eventKeyPart(body.agentId),
+    eventKeyPart(body.runId),
+    eventKeyPart(body.compactionId),
+    eventKeyPart(body.steerId),
+    eventKeyPart(body.stepNumber),
+    eventKeyPart(body.id),
+    eventKeyPart(body.parentItemId),
+    eventKeyPart(body.targetItemId),
+    eventKeyPart(body.threadId),
+    eventKeyPart(body.sourceSessionId),
+    eventKeyPart(body.activity),
+    eventKeyPart(body.kind),
+    eventKeyPart(body.action),
+    eventKeyPart(body.trigger),
+    eventKeyPart(body.updateKind),
+    event.provenance?.messageId ?? null,
+    event.provenance?.providerMessageId ?? null,
+    event.provenance?.attemptId ?? null,
+    event.provenance?.stepKey ?? null,
+    event.timestamp,
+    contentFingerprint,
+  ]);
+  eventKeyCache.set(event, fallbackKey);
+  return fallbackKey;
 }
 
 function mergeEvents(current: AgentChatEventEnvelope[], incoming: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
