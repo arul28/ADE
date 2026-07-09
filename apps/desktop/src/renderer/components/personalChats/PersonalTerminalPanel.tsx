@@ -16,6 +16,12 @@ type TerminalCreateResult = {
   pid: number | null;
 };
 
+const POLL_MORE_DELAY_MS = 0;
+const POLL_ACTIVE_DELAY_MS = 35;
+const POLL_IDLE_DELAY_MS = 75;
+const POLL_ERROR_BASE_DELAY_MS = 200;
+const POLL_ERROR_MAX_DELAY_MS = 2_000;
+
 function terminalResult<T>(response: PersonalChatCallResponse): T {
   return response.result as T;
 }
@@ -57,6 +63,7 @@ export function PersonalTerminalPanel({
     let pollTimer: number | null = null;
     let fitFrame: number | null = null;
     let cursor = 0;
+    let consecutivePollErrors = 0;
     setStatus("starting");
     setError(null);
     lastDimsRef.current = null;
@@ -123,12 +130,17 @@ export function PersonalTerminalPanel({
 
     const poll = async () => {
       if (cancelled || !ptyRef.current) return;
-      let nextDelayMs = 75;
+      let nextDelayMs = POLL_IDLE_DELAY_MS;
       try {
         const result = await personalChatsApi.streamEvents({ cursor, limit: 500 });
         if (cancelled) return;
+        consecutivePollErrors = 0;
         cursor = result.nextCursor ?? cursor;
-        nextDelayMs = result.hasMore ? 0 : result.events.length > 0 ? 35 : 75;
+        nextDelayMs = result.hasMore
+          ? POLL_MORE_DELAY_MS
+          : result.events.length > 0
+            ? POLL_ACTIVE_DELAY_MS
+            : POLL_IDLE_DELAY_MS;
         for (const entry of result.events ?? []) {
           if (entry.category !== "pty") continue;
           const payload = eventRecord(entry.payload);
@@ -146,7 +158,14 @@ export function PersonalTerminalPanel({
           }
         }
       } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+        if (!cancelled) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+          consecutivePollErrors = Math.min(consecutivePollErrors + 1, 5);
+          nextDelayMs = Math.min(
+            POLL_ERROR_MAX_DELAY_MS,
+            POLL_ERROR_BASE_DELAY_MS * 2 ** (consecutivePollErrors - 1),
+          );
+        }
       } finally {
         if (!cancelled) pollTimer = window.setTimeout(poll, nextDelayMs);
       }
