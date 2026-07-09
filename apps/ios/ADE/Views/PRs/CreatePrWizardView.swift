@@ -175,6 +175,14 @@ struct CreatePrWizardView: View {
       ?? "main"
   }
 
+  private func displayNameForTargetBranch(_ branch: String) -> String {
+    let normalizedTarget = normalizedPrBranchName(branch)
+    guard !normalizedTarget.isEmpty else { return "target" }
+    return lanes.first { lane in
+      normalizedPrBranchName(lane.branchRef) == normalizedTarget
+    }?.name ?? normalizedTarget
+  }
+
   private var branchTargetOptions: [PrBranchTargetOption] {
     var targets = [
       PrBranchTargetOption(
@@ -262,13 +270,14 @@ struct CreatePrWizardView: View {
   private var currentDefaultTitle: String {
     let target = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
     let resolvedTarget = target.isEmpty ? defaultTargetBranch : target
+    let targetDisplayName = displayNameForTargetBranch(resolvedTarget)
     switch createMode {
     case .single:
       guard let option = selectedOption else { return "" }
-      return Self.defaultPrTitle(source: option.title, target: resolvedTarget)
+      return Self.defaultPrTitle(source: option.title, target: targetDisplayName)
     case .integration:
       let source = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
-      return Self.defaultPrTitle(source: source.isEmpty ? "Integration" : source, target: resolvedTarget)
+      return Self.defaultPrTitle(source: source.isEmpty ? "Integration" : source, target: targetDisplayName)
     case .queue:
       return ""
     }

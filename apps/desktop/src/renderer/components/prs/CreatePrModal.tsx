@@ -729,11 +729,15 @@ export function CreatePrModal({
     [lanes, normalLaneId],
   );
   const selectedNormalLinearIssue = selectedNormalLane?.linearIssue ?? null;
+  const normalTargetLabel = React.useMemo(() => {
+    const targetBranch = branchNameFromRef(normalBaseBranch.trim() || primaryLane?.branchRef || "main");
+    const targetLane = lanes.find((lane) => branchNameFromRef(lane.branchRef) === targetBranch);
+    return targetLane?.name ?? (targetBranch || "target");
+  }, [lanes, normalBaseBranch, primaryLane?.branchRef]);
   const normalDefaultTitle = React.useMemo(() => {
     if (!selectedNormalLane) return "";
-    const target = normalBaseBranch.trim() || "target";
-    return `${selectedNormalLane.name} -> ${target}`;
-  }, [normalBaseBranch, selectedNormalLane]);
+    return `${selectedNormalLane.name} -> ${normalTargetLabel}`;
+  }, [normalTargetLabel, selectedNormalLane]);
 
   React.useEffect(() => {
     if (!open) return;
