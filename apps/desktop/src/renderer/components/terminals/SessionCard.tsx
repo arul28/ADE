@@ -7,6 +7,7 @@ import {
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
   sessionCapsuleBadge,
+  sessionInlineStatusLabel,
 } from "../../lib/terminalAttention";
 import type { SessionBadge } from "../../../shared/sessionCanonicalState";
 import {
@@ -193,7 +194,7 @@ export const SessionCard = React.memo(function SessionCard({
   // Canonical one-word status capsule (Needs you / Failed / Stale). When the
   // chat-specific "Awaiting you" chip is already showing the same needs-input
   // condition, suppress the capsule so a chat card never doubles up amber pills.
-  const capsuleBadge = sessionCapsuleBadge({
+  const sessionAttentionInput = {
     status: session.status,
     lastOutputPreview: session.lastOutputPreview,
     runtimeState: session.runtimeState,
@@ -201,9 +202,11 @@ export const SessionCard = React.memo(function SessionCard({
     pendingInputItemId: session.pendingInputItemId,
     lastActivityAt: session.lastActivityAt,
     exitCode: session.exitCode,
-  });
+  };
+  const capsuleBadge = sessionCapsuleBadge(sessionAttentionInput);
   const attentionBadge =
     capsuleBadge && !(awaitingUser && capsuleBadge.kind === "needs_you") ? capsuleBadge : null;
+  const inlineStatusLabel = sessionInlineStatusLabel(sessionAttentionInput);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
@@ -374,6 +377,17 @@ export const SessionCard = React.memo(function SessionCard({
                   >
                     <Question size={compact ? 9 : 10} weight="bold" />
                     {compact ? null : "Awaiting you"}
+                  </span>
+                ) : null}
+                {inlineStatusLabel ? (
+                  <span
+                    className={cn(
+                      "shrink-0 font-medium leading-none text-red-300/65",
+                      compact ? "text-[9px]" : "text-[10px]",
+                    )}
+                    title={inlineStatusLabel}
+                  >
+                    {inlineStatusLabel}
                   </span>
                 ) : null}
                 <span

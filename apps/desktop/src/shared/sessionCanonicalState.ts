@@ -11,7 +11,7 @@ import type { TerminalRuntimeState, TerminalSessionStatus, TerminalToolType } fr
  *   failed     ⇔ failed
  *   stale      ⇔ stale
  *   starting/running ⇔ starting/running
- *   ready/idle/ended have no LA row (terminal or chat-resting states).
+ *   ready/idle/stopped/ended have no LA row (terminal or chat-resting states).
  */
 export type CanonicalSessionPhase =
   | "starting"
@@ -19,6 +19,7 @@ export type CanonicalSessionPhase =
   | "needs_you"
   | "failed"
   | "stale"
+  | "stopped"
   | "ready"
   | "idle"
   | "ended";
@@ -43,7 +44,7 @@ export type CanonicalSessionState = {
  * (2h/24h delivery expiry) and the Live Activity stale-date (10min lock-screen
  * dimming): this is the human-facing "is anything actually happening" bar.
  */
-export const SESSION_STALE_AFTER_MS = 20 * 60 * 1000;
+export const SESSION_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
 
 const BADGE_BY_KIND: Record<SessionBadgeKind, SessionBadge> = {
   needs_you: { kind: "needs_you", label: "Needs you" },
@@ -82,10 +83,11 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
  * Canonical precedence (highest first):
  *   1. deterministic needs-input — pendingInputItemId or runtimeState
  *      "waiting-input" (never outvoted by anything below),
- *   2. failed — non-zero exit / killed,
- *   3. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
- *   4. running (incl. the preview heuristic's needs_you upgrade, LAST),
- *   5. resting states — ready (idle chat), idle, ended.
+ *   2. stopped — user/system-disposed PTY,
+ *   3. failed — non-zero exit / killed,
+ *   4. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
+ *   5. running (incl. the preview heuristic's needs_you upgrade, LAST),
+ *   6. resting states — ready (idle chat), idle, ended.
  */
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
@@ -99,7 +101,13 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
 
   const ended = args.status !== "running";
   if (ended) {
-    // 2. Failure: a non-clean exit, an explicit "failed" persisted status
+    // 2. Stopped: an explicitly disposed PTY is resumable/closed, not a task
+    // failure. Keep it badge-free and let the session row's red dot carry the
+    // ended state.
+    if (args.status === "disposed") {
+      return { phase: "stopped", badge: null };
+    }
+    // 3. Failure: a non-clean exit, an explicit "failed" persisted status
     // (spawn/setup failures that die before an exit code), or a killed
     // runtime — all deterministic "failed" signals a terminal-backed session
     // reports.
@@ -117,7 +125,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     return { phase: "ended", badge: null };
   }
 
-  // 3. Stale: running but silent past the threshold.
+  // 4. Stale: running but silent past the threshold.
   if (isSilentPast(args.lastActivityAt, nowMs, SESSION_STALE_AFTER_MS)) {
     return { phase: "stale", badge: BADGE_BY_KIND.stale };
   }
@@ -129,7 +137,7 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     return chat ? { phase: "ready", badge: null } : { phase: "idle", badge: null };
   }
 
-  // 4. Preview heuristic LAST: it may only upgrade running → needs_you.
+  // 5. Preview heuristic LAST: it may only upgrade running → needs_you.
   if (args.previewSuggestsNeedsInput?.(args.lastOutputPreview)) {
     return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
   }

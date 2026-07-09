@@ -149,7 +149,9 @@ Three rows:
 
 1. **Status dot + title + relative time** — `sessionStatusDot()` and
    `primarySessionLabel()` drive these. The relative time comes from
-   `relativeTimeCompact`.
+   `relativeTimeCompact`. Disposed CLI rows render a small inline
+   "Stopped" label immediately before the red status dot rather than an
+   attention capsule.
 2. **Preview line** (conditional) — when the card's lane is mid
    background AI auto-naming (`useLaneNaming(lane.id)` from
    `renderer/state/laneNamingStore.ts` is true), this row instead shows an
@@ -741,7 +743,8 @@ nothing when no delta is available.
   `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType`,
   `isRunOwnedSession`, `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
-  `sessionStatusDot`, `sessionIndicatorState`, `sanitizeTerminalInlineText`.
+  `sessionStatusDot`, `sessionIndicatorState`, `sessionCapsuleBadge`,
+  `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` —
   `listSessionsCached`, `invalidateSessionListCache`.
 - `apps/desktop/src/renderer/lib/chatSessionEvents.ts` —
