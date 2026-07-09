@@ -133,7 +133,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
-import { ClaudeLoginPromptButton, createClaudeLoginTerminal } from "../work/ClaudeLoginPromptButton";
+import { ClaudeLoginPromptButton, createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -3102,14 +3102,11 @@ export function AgentChatPane({
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
   const openClaudeLoginInPrimaryLane = useCallback(async () => {
     try {
-      const terminal = await createClaudeLoginTerminal();
-      window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-        detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
-      }));
+      await createClaudeLoginTerminalInWork({ navigate });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [navigate]);
   const openProviderSignIn = useCallback((family?: ProviderFamily) => {
     if (family === "anthropic") {
       void openClaudeLoginInPrimaryLane();

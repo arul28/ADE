@@ -17,7 +17,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
-import { createClaudeLoginTerminal } from "../work/ClaudeLoginPromptButton";
+import { createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
 import type { ProviderFamily } from "../../../shared/modelRegistry";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
 import type { GitCommitSummary } from "../../../shared/types/git";
@@ -273,15 +273,7 @@ function NewReportTab({
       openAiProvidersSettings();
       return;
     }
-    void createClaudeLoginTerminal()
-      .then((terminal) => {
-        navigate("/work");
-        window.setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-            detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
-          }));
-        }, 80);
-      })
+    void createClaudeLoginTerminalInWork({ navigate })
       .catch(() => openAiProvidersSettings());
   }, [navigate, openAiProvidersSettings]);
   const project = useAppStore((s) => s.project);

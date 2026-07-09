@@ -229,6 +229,31 @@ describe("AgentChatMessageList operator navigation suggestions", () => {
 });
 
 describe("AgentChatMessageList transcript rendering", () => {
+  it("keeps turn file-change summaries visible without a session id", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "turn_diff_summary",
+          turnId: "turn-1",
+          beforeSha: "before",
+          afterSha: "after",
+          files: [
+            { path: "apps/desktop/src/main.ts", additions: 12, deletions: 3, status: "M" },
+            { path: "apps/desktop/src/renderer.tsx", additions: 4, deletions: 1, status: "M" },
+          ],
+          totalAdditions: 16,
+          totalDeletions: 4,
+        },
+      },
+    ]);
+
+    expect(screen.getByText("Files changed")).toBeTruthy();
+    expect(screen.getByText("This turn: 2 files +16 -4")).toBeTruthy();
+    expect(screen.getByText("Full thread: 2 files +16 -4")).toBeTruthy();
+  });
+
   it("renders Codex goal lifecycle rows in user-facing language", () => {
     renderMessageList([
       {

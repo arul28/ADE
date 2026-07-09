@@ -13,6 +13,8 @@ type ClaudeLoginTerminalCreated = RevealTerminalRequest & {
   laneId: string;
 };
 
+type WorkNavigate = (path: string) => void;
+
 async function resolveClaudeLoginLaneId(laneId?: string | null): Promise<string> {
   if (laneId) return laneId;
   const listLanes = window.ade?.lanes?.list;
@@ -55,6 +57,33 @@ export async function createClaudeLoginTerminal({
     ptyId: created.ptyId,
     label: "Claude login",
   };
+}
+
+export function revealTerminalSessionInWork(
+  navigate: WorkNavigate,
+  terminal: { terminalId: string; laneId: string },
+  delayMs = 80,
+): void {
+  navigate("/work");
+  window.setTimeout(() => {
+    window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+      detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
+    }));
+  }, delayMs);
+}
+
+export async function createClaudeLoginTerminalInWork({
+  navigate,
+  laneId,
+  chatSessionId,
+}: {
+  navigate: WorkNavigate;
+  laneId?: string | null;
+  chatSessionId?: string | null;
+}): Promise<ClaudeLoginTerminalCreated> {
+  const terminal = await createClaudeLoginTerminal({ laneId, chatSessionId });
+  revealTerminalSessionInWork(navigate, terminal);
+  return terminal;
 }
 
 function dismissedKey(storageKey: string): string {

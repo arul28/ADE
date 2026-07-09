@@ -124,6 +124,41 @@ type WorkspacePathLocation = {
   startColumn?: number;
 };
 
+function formatDiffCounts(fileCount: number, additions: number, deletions: number): string {
+  const fileLabel = fileCount === 1 ? "file" : "files";
+  return `${fileCount} ${fileLabel} +${additions} -${deletions}`;
+}
+
+function TurnDiffSummaryFallback({
+  turnSummary,
+  threadSummaries,
+}: {
+  turnSummary: TurnDiffSummary;
+  threadSummaries: TurnDiffSummary[];
+}) {
+  const thread = threadSummaries.length > 0 ? threadSummaries : [turnSummary];
+  const threadFiles = new Set<string>();
+  let threadAdditions = 0;
+  let threadDeletions = 0;
+  for (const summary of thread) {
+    threadAdditions += summary.totalAdditions;
+    threadDeletions += summary.totalDeletions;
+    for (const file of summary.files) threadFiles.add(file.path);
+  }
+  return (
+    <div className="my-2 w-full max-w-full rounded-lg border border-white/10 bg-white/[0.035] px-3 py-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/70">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="inline-flex items-center gap-1.5 font-semibold text-fg/85">
+          <FileCode size={13} weight="bold" aria-hidden />
+          Files changed
+        </span>
+        <span>This turn: {formatDiffCounts(turnSummary.files.length, turnSummary.totalAdditions, turnSummary.totalDeletions)}</span>
+        <span>Full thread: {formatDiffCounts(threadFiles.size, threadAdditions, threadDeletions)}</span>
+      </div>
+    </div>
+  );
+}
+
 function readOperatorNavigationSuggestion(value: unknown): OperatorNavigationSuggestion | null {
   const record = readRecord(value);
   if (!record) return null;
@@ -3903,7 +3938,14 @@ function renderEvent(
 
   /* ── Turn diff summary ── */
   if (event.type === "turn_diff_summary") {
-    if (!options?.sessionId) return null;
+    if (!options?.sessionId) {
+      return (
+        <TurnDiffSummaryFallback
+          turnSummary={event}
+          threadSummaries={options?.turnDiffSummaries ?? [event]}
+        />
+      );
+    }
     return (
       <ChatTurnFileChangesPanel
         turnSummary={event}

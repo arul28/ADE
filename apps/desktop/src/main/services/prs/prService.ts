@@ -326,7 +326,7 @@ function branchNameFromRef(ref: string): string {
 }
 
 function defaultPrTitleForLane(lane: LaneSummary, baseBranch: string, lanes: LaneSummary[]): string {
-  const targetLane = lanes.find((entry) => branchNameFromRef(entry.branchRef) === baseBranch);
+  const targetLane = lanes.find((entry) => entry.id !== lane.id && branchNameFromRef(entry.branchRef) === baseBranch);
   const targetName = targetLane?.name?.trim() || baseBranch;
   return `${lane.name} -> ${targetName}`;
 }

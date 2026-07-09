@@ -161,7 +161,7 @@ extension WorkSessionSettingsSheet {
 
   func runtimeCard(option: WorkRuntimeOption, isSelected: Bool) -> some View {
     let tint = workRuntimeModeTint(provider: summary.provider, mode: option.id)
-    VStack(alignment: .leading, spacing: 8) {
+    return VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 10) {
         VStack(alignment: .leading, spacing: 4) {
           Text(option.title)

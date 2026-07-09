@@ -17,7 +17,7 @@ import { getModelById, resolveModelAlias, type ProviderFamily } from "../../../s
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
-import { createClaudeLoginTerminal } from "../work/ClaudeLoginPromptButton";
+import { createClaudeLoginTerminalInWork } from "../work/ClaudeLoginPromptButton";
 
 type FeatureInfo = {
   key: AiFeatureKey;
@@ -130,15 +130,7 @@ export function AiFeaturesSection() {
       openAiProvidersSettings();
       return;
     }
-    void createClaudeLoginTerminal()
-      .then((terminal) => {
-        navigate("/work");
-        window.setTimeout(() => {
-          window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-            detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
-          }));
-        }, 80);
-      })
+    void createClaudeLoginTerminalInWork({ navigate })
       .catch(() => openAiProvidersSettings());
   }, [navigate, openAiProvidersSettings]);
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);

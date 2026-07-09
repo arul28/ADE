@@ -109,7 +109,6 @@ struct CreatePrWizardView: View {
             title: eligibility.laneName,
             branchRef: lanes.first(where: { $0.id == eligibility.laneId })?.branchRef ?? eligibility.laneName,
             defaultBaseBranch: eligibility.defaultBaseBranch,
-            defaultTitle: Self.defaultPrTitle(source: eligibility.laneName, target: eligibility.defaultBaseBranch),
             subtitle: Self.laneProgressSubtitle(for: eligibility)
           )
         }
@@ -120,7 +119,6 @@ struct CreatePrWizardView: View {
         title: lane.name,
         branchRef: lane.branchRef,
         defaultBaseBranch: lane.baseRef,
-        defaultTitle: Self.defaultPrTitle(source: lane.name, target: lane.baseRef),
         subtitle: nil
       )
     }
@@ -138,7 +136,6 @@ struct CreatePrWizardView: View {
       title: lane.name,
       branchRef: lane.branchRef,
       defaultBaseBranch: eligibility?.defaultBaseBranch ?? lane.baseRef,
-      defaultTitle: Self.defaultPrTitle(source: lane.name, target: eligibility?.defaultBaseBranch ?? lane.baseRef),
       subtitle: eligibility.map { Self.laneProgressSubtitle(for: $0) } ?? nil
     )
   }
@@ -403,12 +400,7 @@ struct CreatePrWizardView: View {
         // Reset base-branch default when lane changes so the target picker
         // tracks the new lane's recommended base instead of a stale one.
         baseBranch = defaultTargetBranch
-        lastAutoTitle = ""
-        title = ""
         applyDefaultTitleIfUntouched()
-        bodyText = ""
-        labelsInput = ""
-        reviewersInput = ""
         errorMessage = nil
       }
       .onChange(of: baseBranch) { _, _ in
@@ -1507,7 +1499,6 @@ struct CreatePrLaneOption: Identifiable, Equatable {
   let title: String
   let branchRef: String
   let defaultBaseBranch: String
-  let defaultTitle: String
   let subtitle: String?
 }
 

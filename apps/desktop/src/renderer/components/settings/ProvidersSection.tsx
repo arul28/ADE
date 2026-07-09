@@ -40,7 +40,7 @@ import {
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
-import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
+import { ClaudeLoginPromptButton, revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 type ApiKeySource = "config" | "env" | "store";
@@ -308,12 +308,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
   const pendingRefreshTimerRef = useRef<number | null>(null);
   const revealClaudeLoginTerminalInWork = useCallback((terminal: { terminalId: string; laneId: string }) => {
-    navigate("/work");
-    window.setTimeout(() => {
-      window.dispatchEvent(new CustomEvent("ade:work:select-session", {
-        detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
-      }));
-    }, 80);
+    revealTerminalSessionInWork(navigate, terminal);
   }, [navigate]);
 
   const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }) => {
