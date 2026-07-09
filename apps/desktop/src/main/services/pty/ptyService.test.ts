@@ -2482,7 +2482,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"high\"' --sandbox read-only --ask-for-approval on-request resume thread-ended 'fix failing tests'"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -2528,7 +2528,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
         expect.any(Object),
       );
     });
@@ -2562,7 +2562,7 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy 'continue legacy thread'"],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted resume thread-legacy \"continue legacy thread\""],
         expect.any(Object),
       );
       expect(mockPty.write).not.toHaveBeenCalled();
@@ -2654,7 +2654,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer 'continue from the visible prompt'"],
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-visible-composer \"continue from the visible prompt\""],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
@@ -2703,7 +2703,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         expect(spawn).toHaveBeenCalledWith(
           "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve 'this should not kill the resumed terminal'"],
+          ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-not-ready-preserve \"this should not kill the resumed terminal\""],
           expect.any(Object),
         );
         expect(mockPty.write).not.toHaveBeenCalled();
