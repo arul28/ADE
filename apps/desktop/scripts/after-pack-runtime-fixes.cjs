@@ -44,6 +44,13 @@ function darwinCrsqliteTargetsForContext(context) {
   return [isArm64 ? "darwin-arm64" : "darwin-x64"];
 }
 
+function darwinPackageArchForContext(context) {
+  const appOutDir = String(context?.appOutDir || "");
+  if (/mac-universal/.test(appOutDir) || context?.arch === 4) return null;
+  if (/arm64/.test(appOutDir) || context?.arch === 3) return "darwin-arm64";
+  return "darwin-x64";
+}
+
 function copyDirectoryIfPresent(sourcePath, targetPath) {
   if (!fs.existsSync(sourcePath)) return false;
   fs.rmSync(targetPath, { recursive: true, force: true });
@@ -113,6 +120,32 @@ function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
   }
 
   console.log(`[afterPack] Bundled OpenCode runtime packages: ${copied.join(", ")}`);
+}
+
+function replaceCpuFeaturesNativeAddon(runtimeRoot, context) {
+  const packageArch = darwinPackageArchForContext(context);
+  if (!packageArch) return;
+
+  const preparedAddonPath = path.join(
+    appDir,
+    "node_modules",
+    ".ade-universal",
+    "cpu-features",
+    packageArch,
+    "cpufeatures.node",
+  );
+  const packagedAddonPath = path.join(
+    runtimeRoot,
+    "node_modules",
+    "cpu-features",
+    "build",
+    "Release",
+    "cpufeatures.node",
+  );
+  requireFile(preparedAddonPath, `prepared ${packageArch} cpu-features native addon`);
+  requireFile(packagedAddonPath, "packaged cpu-features native addon");
+  fs.copyFileSync(preparedAddonPath, packagedAddonPath);
+  console.log(`[afterPack] Replaced cpu-features native addon for ${packageArch}`);
 }
 
 function normalizePackageChannel(value) {
@@ -379,6 +412,7 @@ module.exports = async function afterPack(context) {
   pruneUnneededRuntimePayload(runtimeRoot, platform);
   if (platform === "darwin") {
     pruneNonMatchingDarwinRuntimeSidecar(resourcesRoot, context);
+    replaceCpuFeaturesNativeAddon(runtimeRoot, context);
   }
   ensureOpenCodeRuntimePackages(runtimeRoot, platform);
 

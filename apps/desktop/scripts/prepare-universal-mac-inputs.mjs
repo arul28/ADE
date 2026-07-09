@@ -12,6 +12,7 @@ const appDir = path.resolve(scriptDir, "..");
 const packageLockPath = path.join(appDir, "package-lock.json");
 const CRSQLITE_DARWIN_X64_URL =
   "https://github.com/vlcn-io/cr-sqlite/releases/download/v0.16.3/crsqlite-darwin-x86_64.zip";
+const preparedCpuFeaturesRoot = path.join(appDir, "node_modules", ".ade-universal", "cpu-features");
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -40,6 +41,15 @@ async function pathExists(targetPath) {
 async function assertPathExists(targetPath, description) {
   if (!(await pathExists(targetPath))) {
     throw new Error(`[release:mac] Missing ${description}: ${targetPath}`);
+  }
+}
+
+async function assertMachOArch(targetPath, expectedArch, description) {
+  const { stdout } = await execFileAsync("lipo", ["-info", targetPath]);
+  if (!stdout.includes(`architecture: ${expectedArch}`) && !stdout.includes(`are: ${expectedArch}`)) {
+    throw new Error(
+      `[release:mac] Expected ${description} to contain ${expectedArch}, got: ${stdout.trim()}`,
+    );
   }
 }
 
@@ -154,6 +164,48 @@ async function seedCrsqliteDarwinX64() {
     await fs.copyFile(extractedPath, targetPath);
     console.log("[release:mac] Seeded crsqlite x64 payload: vendor/crsqlite/darwin-x64/crsqlite.dylib");
   } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function rebuildCpuFeaturesForArch(npmArch) {
+  await execFileAsync("npm", ["rebuild", "cpu-features"], {
+    cwd: appDir,
+    env: {
+      ...process.env,
+      npm_config_arch: npmArch,
+      npm_config_target_arch: npmArch,
+      npm_config_build_from_source: "true",
+    },
+    maxBuffer: 1024 * 1024 * 10,
+  });
+}
+
+async function seedCpuFeaturesDarwinAddons() {
+  const addonPath = path.join(appDir, "node_modules", "cpu-features", "build", "Release", "cpufeatures.node");
+  await assertPathExists(addonPath, "cpu-features native addon");
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-cpu-features-"));
+  const backupPath = path.join(tempDir, "cpufeatures.node");
+  await fs.copyFile(addonPath, backupPath);
+
+  const archTargets = [
+    { npmArch: "x64", lipoArch: "x86_64", targetName: "darwin-x64" },
+    { npmArch: "arm64", lipoArch: "arm64", targetName: "darwin-arm64" },
+  ];
+
+  try {
+    for (const target of archTargets) {
+      await rebuildCpuFeaturesForArch(target.npmArch);
+      await assertMachOArch(addonPath, target.lipoArch, `${target.targetName} cpu-features native addon`);
+
+      const preparedPath = path.join(preparedCpuFeaturesRoot, target.targetName, "cpufeatures.node");
+      await fs.mkdir(path.dirname(preparedPath), { recursive: true });
+      await fs.copyFile(addonPath, preparedPath);
+      console.log(`[release:mac] Seeded ${target.targetName} cpu-features native addon: ${path.relative(appDir, preparedPath)}`);
+    }
+  } finally {
+    await fs.copyFile(backupPath, addonPath);
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
@@ -319,6 +371,12 @@ async function assertUniversalInputsReady() {
     path.join(appDir, "vendor", "crsqlite", "darwin-x64", "crsqlite.dylib"),
     "x64 crsqlite dylib",
   );
+  const cpuFeaturesX64Addon = path.join(preparedCpuFeaturesRoot, "darwin-x64", "cpufeatures.node");
+  const cpuFeaturesArm64Addon = path.join(preparedCpuFeaturesRoot, "darwin-arm64", "cpufeatures.node");
+  await assertPathExists(cpuFeaturesX64Addon, "x64 cpu-features native addon");
+  await assertMachOArch(cpuFeaturesX64Addon, "x86_64", "x64 cpu-features native addon");
+  await assertPathExists(cpuFeaturesArm64Addon, "arm64 cpu-features native addon");
+  await assertMachOArch(cpuFeaturesArm64Addon, "arm64", "arm64 cpu-features native addon");
   await assertPathExists(path.join(appDir, "node_modules", "node-pty"), "node-pty package");
   const nodePtyAddon = await findNodePtyAddon(path.join(appDir, "node_modules", "node-pty"));
   if (!nodePtyAddon) {
@@ -338,6 +396,7 @@ try {
     await seedFromLockfileAndPinnedArtifacts();
   }
 
+  await seedCpuFeaturesDarwinAddons();
   await assertUniversalInputsReady();
   console.log("[release:mac] Universal macOS source tree now contains the required x64 runtime payloads");
 } finally {
