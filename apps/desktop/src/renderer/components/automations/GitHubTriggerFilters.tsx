@@ -182,7 +182,7 @@ export function GitHubTriggerFilters({
           />
           {isPr ? (
             <label className="space-y-1 block">
-              <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Draft state</span>
+              <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">Draft state</span>
               <select
                 className={INPUT_CLS}
                 style={INPUT_STYLE}
@@ -199,7 +199,7 @@ export function GitHubTriggerFilters({
       ) : null}
 
       {repoInfo ? (
-        <div className="text-[10px] text-[#7E8A9A]">
+        <div className="text-[10px] text-muted-fg/55">
           Using {repoInfo.owner}/{repoInfo.name} for labels and authors. Leave Repository blank to use the project origin.
         </div>
       ) : null}
@@ -220,7 +220,7 @@ function LabeledInput({
 }) {
   return (
     <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</span>
+      <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">{label}</span>
       <input
         className={INPUT_CLS}
         style={INPUT_STYLE}
@@ -245,13 +245,13 @@ function ChipRow({
       {items.map((item) => (
         <span
           key={item}
-          className="inline-flex items-center gap-1 rounded-md border border-[#3B5673] bg-[#122234] px-2 py-0.5 text-[11px] text-[#D8E3F2]"
+          className="inline-flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[11px] text-fg/85"
         >
           {item}
           <button
             type="button"
             onClick={() => onRemove(item)}
-            className="text-[#7E8A9A] hover:text-[#F5FAFF]"
+            className="text-muted-fg/55 hover:text-fg"
             aria-label={`Remove ${item}`}
           >
             ×
@@ -289,8 +289,8 @@ function LabelPicker({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</span>
-        {loading ? <span className="text-[10px] text-[#7E8A9A]">loading…</span> : null}
+        <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">{label}</span>
+        {loading ? <span className="text-[10px] text-muted-fg/55">loading…</span> : null}
       </div>
       <div className="flex gap-2">
         <input
@@ -350,8 +350,8 @@ function AuthorPicker({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">Authors</span>
-        {loading ? <span className="text-[10px] text-[#7E8A9A]">loading…</span> : null}
+        <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">Authors</span>
+        {loading ? <span className="text-[10px] text-muted-fg/55">loading…</span> : null}
       </div>
       <div className="flex gap-2">
         <input

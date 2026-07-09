@@ -88,7 +88,7 @@ function LabeledInput({
 }) {
   return (
     <label className="space-y-1 block">
-      <span className="text-[10px] uppercase tracking-[1px] text-[#8FA1B8]">{label}</span>
+      <span className="text-[10px] uppercase tracking-[1px] text-muted-fg/70">{label}</span>
       <input
         className={INPUT_CLS}
         style={INPUT_STYLE}
@@ -96,7 +96,7 @@ function LabeledInput({
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
       />
-      {hint ? <span className="block text-[10px] leading-snug text-[#6B7A90]">{hint}</span> : null}
+      {hint ? <span className="block text-[10px] leading-snug text-muted-fg/55">{hint}</span> : null}
     </label>
   );
 }

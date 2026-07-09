@@ -1,7 +1,7 @@
 import { type ReactElement, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { AutomationRuleDraft } from "../../../shared/types";
-import { RulesTab } from "./RulesTab";
+import { AutomationsWorkspace } from "./AutomationsWorkspace";
 import { ProductionAutomationsComingSoon } from "./AutomationsComingSoon";
 
 type AutomationsAvailabilityState = "checking" | "disabled" | "enabled";
@@ -48,12 +48,10 @@ export function AutomationsProductionGate({ children }: { children: ReactElement
 
   if (state === "checking") {
     return (
-      <div className="flex h-full min-w-0 flex-col bg-[#0D0F12]">
+      <div className="flex h-full min-w-0 flex-col bg-bg">
         <div className="flex flex-1 flex-col items-center justify-center gap-3">
           <div className="h-4 w-48 animate-pulse rounded-md bg-white/[0.06]" />
-          <div className="font-mono text-[10px] font-bold uppercase tracking-[1px] text-[#7D8794]">
-            Checking automation availability...
-          </div>
+          <div className="text-[11px] font-medium text-muted-fg/60">Checking automation availability…</div>
         </div>
       </div>
     );
@@ -88,7 +86,7 @@ export function AutomationsPage({ active = true }: { active?: boolean } = {}) {
     <AutomationsProductionGate>
       <div className="flex h-full w-full flex-col overflow-hidden bg-bg text-fg" data-testid="automations-page">
         <div className="flex-1 min-h-0 overflow-hidden">
-          <RulesTab
+          <AutomationsWorkspace
             active={active}
             pendingDraft={pendingDraft}
             onDraftConsumed={() => setPendingDraft(null)}
