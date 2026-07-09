@@ -17,6 +17,8 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { createClaudeLoginTerminal } from "../work/ClaudeLoginPromptButton";
+import type { ProviderFamily } from "../../../shared/modelRegistry";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
 import type { GitCommitSummary } from "../../../shared/types/git";
 import type { LaneSummary } from "../../../shared/types/lanes";
@@ -266,6 +268,22 @@ function NewReportTab({
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
+  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
+    if (family !== "anthropic") {
+      openAiProvidersSettings();
+      return;
+    }
+    void createClaudeLoginTerminal()
+      .then((terminal) => {
+        navigate("/work");
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+            detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
+          }));
+        }, 80);
+      })
+      .catch(() => openAiProvidersSettings());
+  }, [navigate, openAiProvidersSettings]);
   const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
@@ -658,7 +676,7 @@ function NewReportTab({
             }}
             surfaceKey="feedback-reporter"
             availableModelIds={availableModelIds}
-            onOpenSignIn={openAiProvidersSettings}
+            onOpenSignIn={openProviderSignIn}
           />
           <ReasoningEffortPicker
             modelId={modelId}

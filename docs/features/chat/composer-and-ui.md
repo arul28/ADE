@@ -481,15 +481,19 @@ other bottom drawer panels.
 
 ## File changes panel
 
-`ChatFileChangesPanel` aggregates `turn_diff_summary` events across the
-session using `aggregateFiles(summaries)`:
+`ChatTurnFileChangesPanel` renders `turn_diff_summary` events inline at
+the bottom of the turn that produced them. The collapsed row shows the
+turn's file count and aggregate insert/delete totals. Expanding it shows
+two nested diff scopes:
 
-- Advances `afterSha` and stats as later turns amend the same file.
-- Renders a compact list with status badges (`A`, `D`, `M`, `R`, `C`)
-  and basename.
-- Clicking a file lazily fetches the diff via
-  `ade.agentChat.getTurnFileDiff` and shows it in `AdeDiffViewer`
-  (compact toolbar hidden).
+- **This turn** — fetches the selected turn diff via
+  `ade.agentChat.getTurnFileDiff`.
+- **Full thread** — aggregates all available turn summaries for the
+  session, advancing `afterSha` and stats as later turns amend the same
+  file, then fetches the combined diff through the same API.
+
+Both scopes render the shared `AdeDiffViewer`; the former bottom-of-chat
+aggregate bar is not mounted on ADE chat surfaces.
 
 ## Rewind files confirmation
 
@@ -613,12 +617,12 @@ checks the existing tab list by `sessionId` / `ptyId` before pushing a
 new entry, and the `AgentChatPane` `revealCreatedTerminal` effect calls
 the same drawer with the recovered `{ terminalId, ptyId, label }`.
 
-`ChatTerminalToggle` is the header button that shows the active tab
-count. The drawer is mounted only when lane tool drawers are visible on
-the chat surface. Work-grid tiles pass `hideLaneToolDrawers` because the
-Work sidebar owns lane-scoped tools there; in that mode the header
-toggle is absent and the pane does not call `ade.terminal.list` just to
-hydrate a hidden drawer.
+The drawer is mounted only when lane tool drawers are visible on the
+chat surface. Work-grid tiles pass `hideLaneToolDrawers` because the
+Work sidebar owns lane-scoped tools there; chat headers no longer expose
+a separate Terminal shortcut. Other chat-owned terminal creation paths
+still reveal the matching drawer tab through the shared
+`revealCreatedTerminal` flow.
 
 ## Pending input card
 

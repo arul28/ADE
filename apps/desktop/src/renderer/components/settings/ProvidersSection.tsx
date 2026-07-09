@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import type {
   AiConfig,
   AiApiKeyVerificationResult,
@@ -39,6 +40,7 @@ import {
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
+import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 type ApiKeySource = "config" | "env" | "store";
@@ -287,6 +289,7 @@ function buildLocalProviderDrafts(
 }
 
 export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefreshOnMount?: boolean }) {
+  const navigate = useNavigate();
   const [status, setStatus] = useState<(AiSettingsStatus & { runtimeConnections?: Record<string, AiRuntimeConnectionStatus> }) | null>(null);
   const [projectConfigSnapshot, setProjectConfigSnapshot] = useState<ProjectConfigSnapshot | null>(null);
   const [storedProviders, setStoredProviders] = useState<string[]>([]);
@@ -304,6 +307,14 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
   const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
   const pendingRefreshTimerRef = useRef<number | null>(null);
+  const revealClaudeLoginTerminalInWork = useCallback((terminal: { terminalId: string; laneId: string }) => {
+    navigate("/work");
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
+      }));
+    }, 80);
+  }, [navigate]);
 
   const refreshStatus = useCallback(async (options?: { force?: boolean; silent?: boolean; refreshOpenCodeInventory?: boolean }) => {
     if (!options?.silent) {
@@ -711,6 +722,16 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               </div>
             </div>
             <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 10 }}>{message}</div>
+            {!isInitialCheckInFlight && availability?.binary.present && !availability.auth.ready ? (
+              <div style={{ display: "flex", marginTop: 10 }}>
+                <ClaudeLoginPromptButton
+                  visible
+                  storageKey="settings:claude-auth"
+                  dismissible={false}
+                  onTerminalCreated={revealClaudeLoginTerminalInWork}
+                />
+              </div>
+            ) : null}
             {credentialSourceDesc && !availability?.auth.ready && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
             {binaryPath && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{binaryPath}</code> : null}
           </section>

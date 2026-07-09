@@ -673,7 +673,7 @@ describe("ModelPicker", () => {
     expect(banner).toBeTruthy();
     expect(banner.getAttribute("data-provider-family")).toBe("anthropic");
     await user.click(banner);
-    expect(onOpenSignIn).toHaveBeenCalledOnce();
+    expect(onOpenSignIn).toHaveBeenCalledWith("anthropic");
     expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
   });
 

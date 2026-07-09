@@ -74,6 +74,7 @@ describe("aggregateChatBlocks typed groups", () => {
       kind: "modify",
       additions: 1,
       deletions: 1,
+      diff: "+added line\n-removed line",
       status: "ok",
     });
     expect(fileGroup!.entries[1]).toMatchObject({

@@ -2035,7 +2035,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(window.ade.pty.create).not.toHaveBeenCalled();
   });
 
-  it("keeps the chat terminal drawer wired when Work hides lane tool drawers", async () => {
+  it("reveals chat terminals without a header terminal shortcut when Work hides lane tool drawers", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const { emitSessionChanged } = installAdeMocks({ sessions: [session] });
     const terminalSession: TerminalSessionDetail = {
@@ -2080,7 +2080,7 @@ describe("AgentChatPane submit recovery", () => {
     );
 
     await screen.findByRole("textbox");
-    expect(await screen.findByRole("button", { name: /(Open|Close) terminal/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /(Open|Close) terminal/i })).toBeNull();
     expect(screen.queryByRole("button", { name: "Open iOS simulator drawer" })).toBeNull();
 
     act(() => {

@@ -76,6 +76,8 @@ type RenderedChatRow = {
    * this id and toggles it in `expandedLineIds` to collapse/expand the group.
    */
   expandableGroupId?: string;
+  /** Click action for rows that open another pane instead of toggling in place. */
+  actionId?: string;
 };
 
 export type ChatTextSelection = {
@@ -92,6 +94,7 @@ export type ChatVisibleSelectionRow = {
    *  RenderedChatRow.expandableGroupId). Lets the click handler toggle the
    *  group without re-deriving block layout. */
   expandableId?: string | null;
+  actionId?: string | null;
 };
 
 // Expansion keys for collapsible work-log groups (tool calls / file changes)
@@ -100,6 +103,11 @@ export type ChatVisibleSelectionRow = {
 export const WORK_GROUP_EXPAND_PREFIX = "workgroup:";
 export function workGroupExpandKey(blockId: string): string {
   return `${WORK_GROUP_EXPAND_PREFIX}${blockId}`;
+}
+
+export const WORK_FILE_DIFF_PREFIX = "workfilediff:";
+export function workFileDiffKey(blockId: string, itemId: string): string {
+  return `${WORK_FILE_DIFF_PREFIX}${encodeURIComponent(blockId)}:${encodeURIComponent(itemId)}`;
 }
 
 function textWidth(value: string): number {
@@ -823,6 +831,8 @@ function fileChangeEntryRow(
     { text: trimmedPath, color: theme.color.t1 },
     { text: "  " },
     { text: stats, color: statsColor },
+    { text: "  " },
+    { text: "diff", color: theme.color.t4 },
   ];
   return {
     id: `${blockId}:${entry.itemId}`,
@@ -830,6 +840,7 @@ function fileChangeEntryRow(
     text: runsPlainText(runs),
     runs,
     rail: null,
+    actionId: workFileDiffKey(blockId, entry.itemId),
   };
 }
 
@@ -1551,6 +1562,7 @@ export function renderChatVisibleSelectionRowsFromRows({
     sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
     text: renderedRowText(row),
     expandableId: row.expandableGroupId ?? null,
+    actionId: row.actionId ?? null,
   }));
 }
 
@@ -1690,6 +1702,7 @@ export function renderChatVisibleSelectionRows({
     sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
     text: renderedRowText(row),
     expandableId: row.expandableGroupId ?? null,
+    actionId: row.actionId ?? null,
   }));
 }
 

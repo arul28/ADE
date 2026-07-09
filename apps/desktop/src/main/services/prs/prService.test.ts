@@ -3277,11 +3277,11 @@ describe("prService.draftDescription", () => {
   const makeAi = (impl?: () => unknown) =>
     ({ draftPrDescription: vi.fn(impl ?? (() => undefined)) }) as any;
 
-  // Regression: the in-chat "AI draft" button (requireAi) must run the real AI
-  // path using the chat's own model even though the stored providerMode is the
-  // default "guest" — providerMode is NOT derived from live CLI auth, so a chat
-  // running on a connected runtime would otherwise be wrongly refused.
-  it("runs the AI path on the chat's model when requireAi is set, even in guest providerMode", async () => {
+  // Regression: explicit AI draft requests (requireAi) must run the real AI
+  // path using the requested model even though the stored providerMode is the
+  // default "guest" — providerMode is NOT derived from live CLI auth, so a
+  // connected runtime would otherwise be wrongly refused.
+  it("runs the AI path on the requested model when requireAi is set, even in guest providerMode", async () => {
     // NB: this file mocks extractFirstJsonObject → null, so parsePrDraftJson
     // always falls back to using the raw model text as the body. We assert the
     // call shape (the regression) and that the AI output reaches the draft.
@@ -3344,6 +3344,43 @@ describe("prService.draftDescription", () => {
 describe("prService.createFromLane", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("defaults omitted PR titles to source lane and target lane names", async () => {
+    const ghService = makeGithubService({
+      apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
+    });
+    const laneService = makeLaneService([
+      makeFakeLane(),
+      makeFakeLane({
+        id: "lane-primary",
+        name: "Primary",
+        laneType: "primary",
+        baseRef: "refs/heads/main",
+        branchRef: "refs/heads/main",
+        parentLaneId: null,
+      }),
+    ]);
+
+    const { service } = buildService({ githubService: ghService, laneService });
+
+    await expect(
+      service.createFromLane({
+        laneId: LANE_ID,
+        body: "description",
+        draft: false,
+        allowDirtyWorktree: true,
+      } as any),
+    ).rejects.toThrow('Failed to create pull request for "my-feature" → "main": stop after payload capture');
+
+    expect(ghService.apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "POST",
+        body: expect.objectContaining({
+          title: "my-feature -> Primary",
+        }),
+      }),
+    );
   });
 
   it("wraps githubService.apiRequest errors with branch context", async () => {

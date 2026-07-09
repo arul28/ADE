@@ -6,7 +6,6 @@ import {
   CircleNotch,
   GitPullRequest,
   LockSimple,
-  Sparkle,
   Warning,
 } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
@@ -15,11 +14,7 @@ import { LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { useAppStore } from "../../state/appStore";
 import type { PrSummary } from "../../../shared/types";
 import { branchNameFromRef, resolveLaneBaseBranch } from "../prs/shared/laneBranchTargets";
-import {
-  buildLinearPrReference,
-  buildLinearPrTitle,
-  ensureLinearPrReference,
-} from "../../../shared/linearMagicWords";
+import { buildLinearPrReference } from "../../../shared/linearMagicWords";
 
 /**
  * Lightweight pull-request creator embedded in the left PR floating pane. A
@@ -30,11 +25,8 @@ import {
  * PR-type selector here — queue/integration live in the full composer ("Open in
  * PRs tab").
  *
- * The "AI draft" button runs ADE's `pr_descriptions` background job (same engine
- * as auto-commit) using the CHAT's active model, and surfaces real failures
- * (`requireAi`) instead of silently returning a template. We deliberately do NOT
- * inject Linear magic words or the "Open in ADE" deeplink footer here — prService
- * owns those trailers on create (idempotently), so the editable fields stay clean.
+ * Linear magic words and the "Open in ADE" deeplink footer are owned by
+ * prService on create (idempotently), so the editable fields stay clean.
  *
  * On success we do NOT navigate: we hand the freshly-created PR up via `onCreated`
  * so ChatPrPane swaps to the live PR-details panel immediately (the subsequent
@@ -51,13 +43,10 @@ const inputBase =
 export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   laneId,
   branchName,
-  chatModelId,
   onCreated,
 }: {
   laneId: string;
   branchName?: string | null;
-  /** The active chat session's model — the AI draft runs on this exact model. */
-  chatModelId?: string | null;
   /**
    * Called the instant `createFromLane` resolves, with the freshly-created PR.
    * The parent swaps to the live PR-details view immediately instead of waiting
@@ -109,7 +98,6 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
-  const [drafting, setDrafting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const targetTouchedRef = useRef(false);
@@ -130,15 +118,16 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     () => (targetLane ? branchNameFromRef(targetLane.branchRef) : defaultBase) || "",
     [targetLane, defaultBase],
   );
+  const defaultTitle = useMemo(() => {
+    const targetName = targetLane?.name?.trim() || resolvedBaseBranch || "target";
+    return `${laneName} -> ${targetName}`;
+  }, [laneName, resolvedBaseBranch, targetLane?.name]);
 
-  // Default the title: Linear-flavored when linked, else lane name / branch.
+  // Default the title to the merge direction until the user types their own.
   useEffect(() => {
     if (titleTouchedRef.current) return;
-    const next = linearIssue
-      ? buildLinearPrTitle(linearIssue)
-      : lane?.name?.trim() || branchName?.trim() || "";
-    if (next) setTitle(next);
-  }, [linearIssue, lane?.name, branchName]);
+    setTitle(defaultTitle);
+  }, [defaultTitle]);
 
   // Seed the body with the Linear reference line when linked (idempotent with
   // prService's server-side linkage, which owns the canonical trailers).
@@ -153,44 +142,11 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       "",
     );
 
-  const handleDraftAI = useCallback(async () => {
-    setDrafting(true);
-    setError(null);
-    try {
-      // Runs the pr_descriptions background job on the chat's active model and
-      // surfaces real failures (requireAi) instead of returning a stub template.
-      const result = await window.ade.prs.draftDescription({
-        laneId,
-        requireAi: true,
-        ...(resolvedBaseBranch ? { baseBranch: resolvedBaseBranch } : {}),
-        ...(chatModelId ? { model: chatModelId } : {}),
-      });
-      const nextTitle =
-        linearIssue && !result.title.includes(linearIssue.identifier)
-          ? buildLinearPrTitle(linearIssue)
-          : result.title;
-      const nextBody = linearIssue
-        ? ensureLinearPrReference(result.body, linearIssue, true, { preserveExisting: false })
-        : result.body;
-      titleTouchedRef.current = true;
-      bodyTouchedRef.current = true;
-      setTitle(nextTitle);
-      setBody(nextBody);
-    } catch (err: unknown) {
-      setError(cleanError(err));
-    } finally {
-      setDrafting(false);
-    }
-  }, [resolvedBaseBranch, laneId, linearIssue, chatModelId]);
-
   const handleCreate = useCallback(async () => {
     setBusy(true);
     setError(null);
     try {
-      const resolvedTitle =
-        linearIssue && !title.trim()
-          ? buildLinearPrTitle(linearIssue)
-          : title.trim() || lane?.name || branchName || "PR";
+      const resolvedTitle = title.trim() || defaultTitle;
       const created = await window.ade.prs.createFromLane({
         laneId,
         title: resolvedTitle,
@@ -214,7 +170,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       setError(cleanError(err));
       setBusy(false);
     }
-  }, [body, branchName, lane?.name, laneId, linearIssue, onCreated, resolvedBaseBranch, title]);
+  }, [body, defaultTitle, laneId, linearIssue, onCreated, resolvedBaseBranch, title]);
 
   // The full composer (queue / integration + multi-lane ordering) lives in the
   // PRs tab; this just hands off with the lane pre-selected.
@@ -223,7 +179,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     navigate(`/prs?${params.toString()}`);
   }, [laneId, navigate]);
 
-  const interactive = !busy && !drafting;
+  const interactive = !busy;
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -232,15 +188,15 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       <div className="flex flex-col gap-1.5">
         <span className={sectionLabel}>Source lane and branch</span>
         <div
-          className="flex min-h-[40px] items-center gap-1.5 rounded-[6px] bg-white/[0.02] px-2 py-1"
+          className="flex min-h-[46px] items-center justify-center gap-1.5 rounded-[6px] bg-white/[0.02] px-2 py-1 text-center"
           style={{ border: "1px solid var(--work-pane-border)" }}
         >
           <LaneLogoMark color={sourceColor} size={12} />
-          <div className="flex min-w-0 flex-1 flex-col leading-[1.2]">
-            <span className="truncate text-[12px] font-semibold" style={{ color: sourceColor }} title={laneName}>
+          <div className="flex min-w-0 flex-initial flex-col items-center leading-[1.2]">
+            <span className="max-w-[190px] truncate text-[12px] font-semibold" style={{ color: sourceColor }} title={laneName}>
               {laneName}
             </span>
-            <span className="mt-0.5 inline-flex min-w-0 items-center gap-1 text-[10px] text-muted-fg/85" title={sourceBranch}>
+            <span className="mt-0.5 inline-flex max-w-[190px] min-w-0 items-center justify-center gap-1 text-[10px] text-muted-fg/85" title={sourceBranch}>
               <BranchIcon size={9} weight="regular" className="shrink-0 opacity-55" />
               <span className="min-w-0 truncate font-mono">{sourceBranch}</span>
             </span>
@@ -268,7 +224,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
 
       {/* Comparison — compact ahead / behind / clean from lane.status. */}
       {lane?.status ? (
-        <div className="flex items-center gap-3 text-[11px]">
+        <div className="flex items-center justify-center gap-4 text-[11px]">
           <span><span className="font-semibold text-fg/85">{lane.status.ahead}</span> <span className="text-fg/40">ahead</span></span>
           <span><span className="font-semibold text-fg/85">{lane.status.behind}</span> <span className="text-fg/40">behind</span></span>
           <span
@@ -282,23 +238,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
 
       {/* Title. */}
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <label htmlFor="chat-pr-title" className={sectionLabel}>Title</label>
-          <button
-            type="button"
-            onClick={() => void handleDraftAI()}
-            disabled={!interactive}
-            title="Draft title & description with AI (uses this chat's model)"
-            className="inline-flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--color-accent)] transition-opacity hover:opacity-80 disabled:opacity-50"
-          >
-            {drafting ? (
-              <CircleNotch size={11} weight="bold" className="animate-spin" />
-            ) : (
-              <Sparkle size={11} weight="fill" />
-            )}
-            {drafting ? "Drafting…" : "AI draft"}
-          </button>
-        </div>
+        <label htmlFor="chat-pr-title" className={sectionLabel}>Title</label>
         <input
           id="chat-pr-title"
           value={title}
@@ -307,7 +247,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
             setTitle(e.target.value);
           }}
           disabled={!interactive}
-          placeholder={lane?.name ?? branchName ?? "Pull request title"}
+          placeholder={defaultTitle}
           className={inputBase}
         />
       </div>

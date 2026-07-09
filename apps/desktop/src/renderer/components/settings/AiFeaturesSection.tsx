@@ -13,10 +13,11 @@ import {
   cardStyle,
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
-import { getModelById, resolveModelAlias } from "../../../shared/modelRegistry";
+import { getModelById, resolveModelAlias, type ProviderFamily } from "../../../shared/modelRegistry";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ChatCircleDots, GitPullRequest, GitCommit, ChatText, type Icon } from "@phosphor-icons/react";
+import { createClaudeLoginTerminal } from "../work/ClaudeLoginPromptButton";
 
 type FeatureInfo = {
   key: AiFeatureKey;
@@ -124,6 +125,22 @@ export function AiFeaturesSection() {
   const openAiProvidersSettings = useCallback(() => {
     navigate("/settings?tab=ai#ai-providers");
   }, [navigate]);
+  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
+    if (family !== "anthropic") {
+      openAiProvidersSettings();
+      return;
+    }
+    void createClaudeLoginTerminal()
+      .then((terminal) => {
+        navigate("/work");
+        window.setTimeout(() => {
+          window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+            detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
+          }));
+        }, 80);
+      })
+      .catch(() => openAiProvidersSettings());
+  }, [navigate, openAiProvidersSettings]);
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -444,7 +461,7 @@ export function AiFeaturesSection() {
                     onChange={(modelId) => void handleModelChange(feature.key, modelId)}
                     surfaceKey={`ai-feature-${feature.key}`}
                     availableModelIds={availableModelIds}
-                    onOpenSignIn={openAiProvidersSettings}
+                    onOpenSignIn={openProviderSignIn}
                     disabled={!enabled}
                   />
                   <ReasoningEffortPicker
@@ -552,7 +569,7 @@ export function AiFeaturesSection() {
                 }}
                 surfaceKey="ai-feature-chat-auto-title"
                 availableModelIds={availableModelIds}
-                onOpenSignIn={openAiProvidersSettings}
+                onOpenSignIn={openProviderSignIn}
                 disabled={!chatAutoTitleEnabled}
               />
               <ReasoningEffortPicker

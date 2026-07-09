@@ -121,7 +121,7 @@ export type ModelPickerContentProps = {
    */
   hidePermissionRail?: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
-  onOpenSignIn?: () => void;
+  onOpenSignIn?: (family?: ProviderFamily) => void;
   allowCliOnlyModels?: boolean;
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
@@ -472,7 +472,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
         const target = visibleModels[focusedIndex];
         if (!target) return;
         if (!isAvailableForUse(target)) {
-          onOpenSignIn?.();
+          onOpenSignIn?.(target.family);
           return;
         }
         recordUsage(target.id);
@@ -734,7 +734,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onToggleFavorite={toggleFavorite}
                         onCopyId={handleCopyId}
                         onSetSurfaceDefault={handleSetSurfaceDefault}
-                        {...(onOpenSignIn ? { onSignIn: onOpenSignIn } : {})}
+                        {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(m.family) } : {})}
                       />
                     </div>
                   );
@@ -770,7 +770,7 @@ function EmptyState({
   opencodeBinaryKnown: boolean;
   refreshingProvider?: AgentChatModelCatalogRefreshProvider | null;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onOpenSignIn?: () => void;
+  onOpenSignIn?: (family?: ProviderFamily) => void;
 }) {
   if (!searchActive && selection !== "favorites" && selection !== "recents") {
     const family = selection.slice("provider:".length) as ProviderFamily;

@@ -365,13 +365,10 @@ function PrDetails({
 export const ChatPrPane = React.memo(function ChatPrPane({
   laneId,
   branchName,
-  chatModelId,
   delta = null,
 }: {
   laneId: string;
   branchName?: string | null;
-  /** The active chat session's model — forwarded to the inline creator's AI draft. */
-  chatModelId?: string | null;
   /** Describes the PR change that triggered this pane's auto-pop (owned by the parent). */
   delta?: ChatPrDelta | null;
   /** Retained for the caller's toggle wiring; the pane no longer renders its own close affordance (the header PR pill toggles it). */
@@ -567,7 +564,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
           <ChatPrInlineCreator
             laneId={laneId}
             branchName={branchName ?? null}
-            chatModelId={chatModelId ?? null}
             onCreated={handleCreated}
           />
         )}

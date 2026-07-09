@@ -20,6 +20,7 @@ struct WorkModelPickerSheet: View {
   let currentCodexFastMode: Bool
   let availableModelIds: [String]?
   let cursorAvailabilityMode: WorkCursorAvailabilityMode
+  let lanes: [LaneSummary]
   let isBusy: Bool
   let onSelect: (WorkModelOption, String?, String, Bool) -> Void
 
@@ -30,6 +31,7 @@ struct WorkModelPickerSheet: View {
     currentCodexFastMode: Bool = false,
     availableModelIds: [String]? = nil,
     cursorAvailabilityMode: WorkCursorAvailabilityMode = .chat,
+    lanes: [LaneSummary] = [],
     isBusy: Bool,
     onSelect: @escaping (WorkModelOption, String?, String, Bool) -> Void
   ) {
@@ -39,6 +41,7 @@ struct WorkModelPickerSheet: View {
     self.currentCodexFastMode = currentCodexFastMode
     self.availableModelIds = availableModelIds
     self.cursorAvailabilityMode = cursorAvailabilityMode
+    self.lanes = lanes
     self.isBusy = isBusy
     self.onSelect = onSelect
     _selectedModelId = State(initialValue: currentModelId)
@@ -58,6 +61,9 @@ struct WorkModelPickerSheet: View {
   @State private var selectedRuntimeProvider: String
   @State private var selectedReasoningEffort: String
   @State private var selectedCodexFastMode: Bool
+  @State private var fallbackLoginLanes: [LaneSummary] = []
+  @State private var claudeLoginBusy = false
+  @State private var claudeLoginError: String?
 
   private var catalog: [WorkModelCatalogGroup] {
     if let liveCatalog {
@@ -113,6 +119,14 @@ struct WorkModelPickerSheet: View {
     return cursorCatalogSourceValue
   }
 
+  private var claudeLoginLane: LaneSummary? {
+    let candidateLanes = lanes.isEmpty ? fallbackLoginLanes : lanes
+    let activeLanes = candidateLanes.filter { $0.archivedAt == nil }
+    return activeLanes.first { $0.laneType == "primary" }
+      ?? activeLanes.first
+      ?? candidateLanes.first
+  }
+
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
@@ -155,7 +169,10 @@ struct WorkModelPickerSheet: View {
               onSelectReasoning: { model, effort in select(reasoningEffort: effort, for: model) },
               onToggleFastMode: { model, enabled in select(fastMode: enabled, for: model) },
               onSelectProviderTab: { selectedProviderTabKey = $0 },
-              onToggleFavorite: { picker.toggleFavorite($0, syncService: syncService) }
+              onToggleFavorite: { picker.toggleFavorite($0, syncService: syncService) },
+              onClaudeLogin: { Task { await openClaudeLoginTerminal() } },
+              isClaudeLoginBusy: claudeLoginBusy,
+              claudeLoginError: claudeLoginError
             )
           }
           Divider().overlay(ADEColor.glassBorder)
@@ -503,6 +520,30 @@ struct WorkModelPickerSheet: View {
     )
   }
 
+  @MainActor
+  private func openClaudeLoginTerminal() async {
+    guard !claudeLoginBusy else { return }
+    claudeLoginBusy = true
+    claudeLoginError = nil
+    defer { claudeLoginBusy = false }
+
+    do {
+      if claudeLoginLane == nil {
+        fallbackLoginLanes = try await syncService.fetchLanes(includeArchived: false)
+      }
+      guard let lane = claudeLoginLane else {
+        claudeLoginError = "No active lane is available."
+        return
+      }
+      let result = try await syncService.startClaudeLoginTerminal(laneId: lane.id)
+      let sessionId = result.session?.id ?? result.sessionId
+      syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: sessionId)
+      dismiss()
+    } catch {
+      claudeLoginError = error.localizedDescription
+    }
+  }
+
   private func select(model: WorkModelOption) {
     guard model.isAvailable else { return }
 
@@ -753,6 +794,9 @@ struct ModelPickerContentPane: View {
   let onToggleFastMode: (WorkModelOption, Bool) -> Void
   let onSelectProviderTab: (String) -> Void
   let onToggleFavorite: (String) -> Void
+  let onClaudeLogin: (() -> Void)?
+  let isClaudeLoginBusy: Bool
+  let claudeLoginError: String?
 
   private var favoritesSet: Set<String> { Set(favorites) }
 
@@ -771,10 +815,22 @@ struct ModelPickerContentPane: View {
     }
   }
 
+  private var showsClaudeLoginAction: Bool {
+    guard onClaudeLogin != nil else { return false }
+    let rows = groupedRows.flatMap(\.models)
+    if case .providerGroup(let key, _) = selection, providerFamilyKey(key) == "claude" {
+      return rows.contains { !$0.isAvailable }
+    }
+    return rows.contains { !$0.isAvailable && providerFamilyKey($0.provider) == "claude" }
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
       providerTabStrip
+      if showsClaudeLoginAction {
+        claudeLoginBanner
+      }
       Divider().overlay(ADEColor.glassBorder)
       if groupedRows.allSatisfy({ $0.models.isEmpty }) {
         emptyState
@@ -804,7 +860,9 @@ struct ModelPickerContentPane: View {
                     onSelect: { onSelect(model) },
                     onSelectReasoning: { effort in onSelectReasoning(model, effort) },
                     onToggleFastMode: { enabled in onToggleFastMode(model, enabled) },
-                    onToggleFavorite: { onToggleFavorite(model.id) }
+                    onToggleFavorite: { onToggleFavorite(model.id) },
+                    onClaudeLogin: onClaudeLogin,
+                    isClaudeLoginBusy: isClaudeLoginBusy
                   )
                 }
               }
@@ -855,6 +913,71 @@ struct ModelPickerContentPane: View {
         tab.models.contains(where: { $0.isAvailable })
       })?.key
       ?? providerTabs.first?.key
+  }
+
+  @ViewBuilder
+  private var claudeLoginBanner: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .center, spacing: 10) {
+        Image(systemName: "terminal.fill")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(providerTint("claude"))
+          .frame(width: 24, height: 24)
+          .background(providerTint("claude").opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        VStack(alignment: .leading, spacing: 2) {
+          Text("Claude is signed out")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("Open a primary-lane terminal to finish Claude Code login.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 8)
+        Button {
+          onClaudeLogin?()
+        } label: {
+          HStack(spacing: 6) {
+            if isClaudeLoginBusy {
+              ProgressView()
+                .controlSize(.small)
+                .tint(ADEColor.textPrimary)
+            } else {
+              Image(systemName: "arrow.right.circle.fill")
+                .font(.caption.weight(.bold))
+            }
+            Text("Login to Claude")
+              .font(.caption.weight(.bold))
+              .lineLimit(1)
+          }
+          .foregroundStyle(ADEColor.textPrimary)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 7)
+          .background(ADEColor.accent.opacity(0.22), in: Capsule())
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(ADEColor.accent.opacity(0.28), lineWidth: 0.6)
+          )
+        }
+        .buttonStyle(.plain)
+        .disabled(isClaudeLoginBusy)
+        .accessibilityLabel("Login to Claude")
+      }
+      if let claudeLoginError, !claudeLoginError.isEmpty {
+        Text(claudeLoginError)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(10)
+    .background(ADEColor.surfaceBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.6)
+    )
+    .padding(.horizontal, 12)
+    .padding(.bottom, 8)
   }
 
   @ViewBuilder
@@ -1000,6 +1123,8 @@ struct ModelPickerListRow: View {
   let onSelectReasoning: (String) -> Void
   let onToggleFastMode: (Bool) -> Void
   let onToggleFavorite: () -> Void
+  let onClaudeLogin: (() -> Void)?
+  let isClaudeLoginBusy: Bool
 
   private var isHighlighted: Bool {
     isSelected
@@ -1016,6 +1141,10 @@ struct ModelPickerListRow: View {
       guard !tier.isEmpty, seen.insert(tier).inserted else { return nil }
       return tier
     }
+  }
+
+  private var showsClaudeLoginAction: Bool {
+    !model.isAvailable && providerFamilyKey(model.provider) == "claude" && onClaudeLogin != nil
   }
 
   var body: some View {
@@ -1047,6 +1176,11 @@ struct ModelPickerListRow: View {
           }
         }
         .padding(.top, style == .detailed ? 8 : 6)
+      }
+
+      if showsClaudeLoginAction {
+        claudeLoginButton
+          .padding(.top, style == .detailed ? 7 : 5)
       }
     }
     .padding(.horizontal, style == .compact ? 10 : 11)
@@ -1106,6 +1240,38 @@ struct ModelPickerListRow: View {
       favoriteButton
     }
     .accessibilityLabel("\(model.displayName)\(isSelected ? ". Selected." : "")")
+  }
+
+  @ViewBuilder
+  private var claudeLoginButton: some View {
+    Button {
+      onClaudeLogin?()
+    } label: {
+      HStack(spacing: 6) {
+        if isClaudeLoginBusy {
+          ProgressView()
+            .controlSize(.small)
+            .tint(ADEColor.textPrimary)
+        } else {
+          Image(systemName: "terminal.fill")
+            .font(.caption.weight(.semibold))
+        }
+        Text("Login to Claude")
+          .font(.caption.weight(.bold))
+          .lineLimit(1)
+      }
+      .foregroundStyle(ADEColor.textPrimary)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 6)
+      .background(ADEColor.accent.opacity(0.18), in: Capsule())
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.24), lineWidth: 0.6)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(isClaudeLoginBusy)
+    .accessibilityLabel("Login to Claude")
   }
 
   @ViewBuilder

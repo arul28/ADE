@@ -79,6 +79,7 @@ import {
   resolveModelDescriptorForProvider,
   type LocalProviderFamily,
   type ModelDescriptor,
+  type ProviderFamily,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
@@ -114,7 +115,6 @@ import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
-import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
@@ -122,7 +122,7 @@ import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./C
 import { QuickRunInlineList } from "../run/QuickRunMenu";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
-import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
+import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveScheduledWorkSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
 import { deriveMissionSnapshot } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
@@ -133,7 +133,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { ChatPrPane } from "./ChatPrPane";
 import { useChatPrAutoPop } from "./useChatPrAutoPop";
-import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
+import { ClaudeLoginPromptButton, createClaudeLoginTerminal } from "../work/ClaudeLoginPromptButton";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { setLaneNaming } from "../../state/laneNamingStore";
@@ -3100,6 +3100,23 @@ export function AgentChatPane({
   const handoffErrorClearTimerRef = useRef<number | null>(null);
   const [deletingChatSessionId, setDeletingChatSessionId] = useState<string | null>(null);
   const [computerUseSnapshot, setComputerUseSnapshot] = useState<ComputerUseOwnerSnapshot | null>(null);
+  const openClaudeLoginInPrimaryLane = useCallback(async () => {
+    try {
+      const terminal = await createClaudeLoginTerminal();
+      window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: terminal.terminalId, laneId: terminal.laneId },
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+  const openProviderSignIn = useCallback((family?: ProviderFamily) => {
+    if (family === "anthropic") {
+      void openClaudeLoginInPrimaryLane();
+      return;
+    }
+    openAiProvidersSettings();
+  }, [openAiProvidersSettings, openClaudeLoginInPrimaryLane]);
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
@@ -3159,14 +3176,6 @@ export function AgentChatPane({
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
   const hasExternalTerminalPane = Boolean(onToggleTerminalPane || onOpenTerminalPane);
-  const effectiveTerminalPaneOpen = hasExternalTerminalPane ? terminalPaneOpen === true : terminalDrawerOpen;
-  const toggleTerminalPanel = useCallback(() => {
-    if (onToggleTerminalPane) {
-      onToggleTerminalPane();
-      return;
-    }
-    setTerminalDrawerOpen((current) => !current);
-  }, [onToggleTerminalPane]);
   const openTerminalPanel = useCallback(() => {
     if (onOpenTerminalPane) {
       onOpenTerminalPane();
@@ -4615,14 +4624,8 @@ export function AgentChatPane({
         tone: "muted",
       });
     }
-    const hasServiceTier = selectedSession?.provider === "codex"
-      && Object.prototype.hasOwnProperty.call(selectedSession, "codexServiceTier");
-    if (hasServiceTier) {
-      const serviceTier = selectedSession?.codexServiceTier?.trim().toLowerCase() || "default";
-      chips.push({ label: `Tier: ${serviceTier}`, tone: serviceTier === "fast" ? "info" : "muted" });
-    }
     return chips;
-  }, [resolvedChips, selectedSession?.codexServiceTier, selectedSession?.provider, selectedSessionImportedProvider]);
+  }, [resolvedChips, selectedSessionImportedProvider]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -9310,7 +9313,7 @@ export function AgentChatPane({
           onChange={setHandoffModelId}
           surfaceKey="chat-handoff"
           {...(handoffAvailableModelIds ? { availableModelIds: handoffAvailableModelIds } : {})}
-          onOpenSignIn={openAiProvidersSettings}
+          onOpenSignIn={openProviderSignIn}
         />
         <ReasoningEffortPicker
           modelId={handoffModelId}
@@ -9786,7 +9789,6 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {chatTerminalVisible ? <ChatTerminalToggle open={effectiveTerminalPaneOpen} onToggle={toggleTerminalPanel} /> : null}
           {headerChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -10045,7 +10047,7 @@ export function AgentChatPane({
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
-            onOpenAiSettings={openAiProvidersSettings}
+            onOpenAiSettings={openProviderSignIn}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
@@ -10814,6 +10816,7 @@ export function AgentChatPane({
                       onRevealChatTerminal={(terminal) => {
                         revealChatTerminal(terminal);
                       }}
+                      turnDiffSummaries={selectedTurnDiffSummaries}
                       onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
                       onApproval={(itemId, decision, responseText, answers) => {
                         void handleApproval(itemId, decision, responseText, answers);
@@ -10825,12 +10828,6 @@ export function AgentChatPane({
                         <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
                         <span className="text-red-400/75">-{sessionDelta.deletions}</span>
                       </div>
-                    ) : null}
-                    {selectedTurnDiffSummaries.length && selectedSessionId ? (
-                      <ChatFileChangesPanel
-                        summaries={selectedTurnDiffSummaries}
-                        sessionId={selectedSessionId}
-                      />
                     ) : null}
                     {appPanelOpen ? (
                       <div className="shrink-0 border-t border-white/[0.06]">
@@ -10855,7 +10852,6 @@ export function AgentChatPane({
                           <ChatPrPane
                             laneId={laneId}
                             branchName={laneGitBranch}
-                            chatModelId={selectedSessionModelId ?? modelId}
                             delta={prPaneDelta}
                             onClose={() => setPrPaneOpen(false)}
                           />,

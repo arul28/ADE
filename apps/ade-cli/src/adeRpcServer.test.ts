@@ -2459,21 +2459,17 @@ describe("adeRpcServer", () => {
       closeLinearIssueOnMerge: true,
     });
 
-    const drafted = await callTool(handler, "create_pr_from_lane", {
+    const defaulted = await callTool(handler, "create_pr_from_lane", {
       laneId: "lane-1",
       baseBranch: "main",
     });
-    expect(drafted?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.draftDescription).toHaveBeenCalledWith({
-      laneId: "lane-1",
-      baseBranch: "main",
-      closeLinearIssueOnMerge: true,
-    });
+    expect(defaulted?.isError).toBeUndefined();
+    expect(fixture.runtime.prService.draftDescription).not.toHaveBeenCalled();
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
       laneId: "lane-1",
       baseBranch: "main",
-      title: "Drafted PR",
-      body: "Drafted body",
+      title: "Lane 1 -> main",
+      body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
     });

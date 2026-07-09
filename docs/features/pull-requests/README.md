@@ -97,7 +97,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state. Consumes create-PR handoff params from either router search or hash search (`create=1`, `sourceLaneId` / `laneId`, `target=primary`) and the `prs.create` dialog bus props, then opens `CreatePrModal` with matching initial values without persisting the one-shot route as the last PR route. |
 | `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible during GitHub rate limits. Workflow queue-state reads tolerate older remote runtimes that do not expose the optional `pr.listQueueStates` action by rendering an empty queue-state set instead of failing the whole PR refresh. |
 | `prsRouteState.ts` | URL ↔ page state mapping plus project-scoped last-route storage. When a project root is known, the PRs tab reads only that project's stored route and does not fall back to the legacy global route from another project. |
-| `CreatePrModal.tsx` | Draft/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. A `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
+| `CreatePrModal.tsx` | Normal/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. Normal PRs default the title to `source lane -> target lane`; a `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. State filter is one of `open` / `closed` / `merged` / `all`. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. The "create lane from PR branch" affordance has been removed — open/closed PRs on branches without a lane no longer offer the preflight + create dialog (`prsPreflightCreateLaneFromPrBranch` / `prsCreateLaneFromPrBranch` IPC channels have been deleted), so creating a lane for an existing PR now goes through the standard lane creation flow. Snapshot rows are mapped through `reconcileLinkedPrState` (using `isTerminalPrState` from `renderer/lib/prState.ts`) into `displayedItems`, so a terminal ADE PR state (merged/closed) overrides a stale non-terminal GitHub row for the same linked PR across the list, filter counts, and selection (see [Terminal-state precedence](#terminal-state-precedence)). |
 | `tabs/QueueTab.tsx` | Merge queue UI showing queued stack members and their landing state. |
@@ -722,8 +722,12 @@ Builder responsibilities:
 The snapshot is read-only; create/merge/close/comment actions go
 through the existing command surface (`prs.createFromLane`,
 `prs.land`, `prs.close`, `prs.addComment`, `prs.rerunChecks`,
-`prs.draftDescription`). The mobile client calls `getMobileSnapshot`
-on open and re-fetches on focus or after a successful mutation.
+`prs.draftDescription`). The mobile create wizard now creates normal
+PRs with `source lane -> target lane` titles and no AI-generated
+title/body step; the explicit `prs.draftDescription` action remains
+available to callers that request PR-description drafting directly.
+The mobile client calls `getMobileSnapshot` on open and re-fetches on
+focus or after a successful mutation.
 
 The mobile PR **detail** screen (`PrDetailView`, a single-column
 adaptation of the desktop Timeline+Rails layout) pulls its per-PR action

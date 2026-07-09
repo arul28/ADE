@@ -254,7 +254,7 @@ describe("CreatePrModal queue workflow", () => {
     expect(targetInput?.value).toBe("main");
   });
 
-  it("defaults single-PR title and body from a linked Linear issue", async () => {
+  it("defaults the single-PR title from the lane target while keeping Linear in the body", async () => {
     const user = userEvent.setup();
     renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
 
@@ -263,7 +263,7 @@ describe("CreatePrModal queue workflow", () => {
 
     await user.click(screen.getByRole("button", { name: /next step/i }));
 
-    expect(screen.getByDisplayValue("ADE-123: Connect Linear issue dropdown")).toBeTruthy();
+    expect(screen.getByDisplayValue("Linear linked lane -> main")).toBeTruthy();
     expect(screen.getByDisplayValue(/Fixes ADE-123/)).toBeTruthy();
     expect(screen.getByText(/PR body will include Fixes ADE-123/i)).toBeTruthy();
 
@@ -273,7 +273,7 @@ describe("CreatePrModal queue workflow", () => {
     expect(createFromLane).toHaveBeenCalledWith(
       expect.objectContaining({
         laneId: "lane-linear",
-        title: "ADE-123: Connect Linear issue dropdown",
+        title: "Linear linked lane -> main",
         body: expect.stringContaining("Fixes ADE-123"),
         closeLinearIssueOnMerge: true,
       }),

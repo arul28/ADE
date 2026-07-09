@@ -43,7 +43,7 @@ import type {
   ChatSurfaceProfile,
   ChatSurfaceMode,
   OperatorNavigationSuggestion,
-  TurnDiffFile,
+  TurnDiffSummary,
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
@@ -103,6 +103,7 @@ import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
+import { ChatTurnFileChangesPanel } from "./ChatFileChangesPanel";
 
 /**
  * Threaded into MarkdownBlock only for Claude-family sessions. When present, a
@@ -187,21 +188,6 @@ function formatFileAction(kind: Extract<AgentChatEvent, { type: "file_change" }>
       return "Created";
     case "delete":
       return "Deleted";
-    default:
-      return "Edited";
-  }
-}
-
-function formatTurnDiffAction(status: TurnDiffFile["status"]): string {
-  switch (status) {
-    case "A":
-      return "Created";
-    case "D":
-      return "Deleted";
-    case "R":
-      return "Renamed";
-    case "C":
-      return "Copied";
     default:
       return "Edited";
   }
@@ -2653,6 +2639,7 @@ function renderEvent(
     runtimeName?: string | null;
     onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
     onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
+    turnDiffSummaries?: TurnDiffSummary[];
     mosaic?: MosaicRenderContext;
   }
 ) {
@@ -3914,36 +3901,15 @@ function renderEvent(
     return null;
   }
 
-  /* ── Turn diff summary (minimal inline indicator — detail lives in bottom Tasks panel) ── */
+  /* ── Turn diff summary ── */
   if (event.type === "turn_diff_summary") {
+    if (!options?.sessionId) return null;
     return (
-      <details className="group rounded-lg border border-white/[0.04] bg-white/[0.02] px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] text-fg/32">
-        <summary className="flex cursor-pointer list-none items-center gap-2 text-left outline-none">
-          <FileCode size={10} />
-          <span>{event.files.length} file{event.files.length !== 1 ? "s" : ""} changed</span>
-          {event.totalAdditions > 0 && <span className="text-emerald-400/50">+{event.totalAdditions}</span>}
-          {event.totalDeletions > 0 && <span className="text-red-400/50">-{event.totalDeletions}</span>}
-          <span className="ml-auto rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*9/14)] text-fg/42 group-open:text-fg/60">
-            View files
-          </span>
-        </summary>
-        <div className="mt-2 space-y-1.5 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/55">
-          {event.files.map((file) => (
-            <div
-              key={`${event.turnId}:${file.path}:${file.status}`}
-              className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-white/[0.05] bg-black/10 px-2.5 py-2"
-            >
-              <span className="font-medium text-fg/72">{formatTurnDiffAction(file.status)}</span>
-              <span className="min-w-0 max-w-full truncate text-fg/58" title={file.path}>{basenamePathLabel(file.path)}</span>
-              {file.additions > 0 ? <span className="text-emerald-300/70">+{file.additions}</span> : null}
-              {file.deletions > 0 || file.status === "D" ? <span className="text-red-300/70">-{file.deletions}</span> : null}
-              <span className="min-w-0 max-w-full truncate font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/34" title={dirnamePathLabel(file.path) ?? ""}>
-                {dirnamePathLabel(file.path) ?? ""}
-              </span>
-            </div>
-          ))}
-        </div>
-      </details>
+      <ChatTurnFileChangesPanel
+        turnSummary={event}
+        threadSummaries={options.turnDiffSummaries ?? [event]}
+        sessionId={options.sessionId}
+      />
     );
   }
 
@@ -4238,6 +4204,7 @@ type EventRowProps = {
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
+  turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   resolvedInputStates?: Map<string, PendingInputResolution>;
@@ -4267,6 +4234,7 @@ const EventRow = React.memo(function EventRow({
   onInsertDraft,
   onRevealChatTerminal,
   onRewindFiles,
+  turnDiffSummaries,
   respondingApprovalIds,
   pendingApprovalIds,
   resolvedInputStates,
@@ -4333,6 +4301,7 @@ const EventRow = React.memo(function EventRow({
             runtimeName,
             onRevealChatTerminal,
             onRewindFiles,
+            turnDiffSummaries,
             mosaic,
           })}
       {envelope.event.type === "done" ? (
@@ -4653,6 +4622,7 @@ function AgentChatMessageListMain({
   onInsertDraft,
   onRevealChatTerminal,
   onRewindFiles,
+  turnDiffSummaries,
   sessionEnded = false,
   hasOlderHistory = false,
   loadingOlderHistory = false,
@@ -4670,6 +4640,7 @@ function AgentChatMessageListMain({
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
+  turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
   laneId?: string | null;
@@ -5437,6 +5408,7 @@ function AgentChatMessageListMain({
           onInsertDraft={onInsertDraft}
           onRevealChatTerminal={onRevealChatTerminal}
           onRewindFiles={onRewindFiles}
+          turnDiffSummaries={turnDiffSummaries}
           respondingApprovalIds={respondingApprovalIds}
           pendingApprovalIds={pendingApprovalIds}
           resolvedInputStates={resolvedInputStates}
@@ -5469,6 +5441,7 @@ function AgentChatMessageListMain({
         onInsertDraft={onInsertDraft}
         onRevealChatTerminal={onRevealChatTerminal}
         onRewindFiles={onRewindFiles}
+        turnDiffSummaries={turnDiffSummaries}
         respondingApprovalIds={respondingApprovalIds}
         pendingApprovalIds={pendingApprovalIds}
         resolvedInputStates={resolvedInputStates}
@@ -5479,7 +5452,7 @@ function AgentChatMessageListMain({
         anchored={anchored}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionEnded, runtimeName, mosaic]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -5519,14 +5492,14 @@ function AgentChatMessageListMain({
 
   return (
     <div className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}>
-      {/* Bound the user-message minimap to the centered chat column (same width as
-          the transcript + composer) so it sits at the column's right edge instead
-          of overextending to the window edge. */}
+      {/* Bound the minimap to the centered chat column, then place it just outside
+          the transcript gutter on wide layouts so it does not stripe the message text. */}
       <div className="pointer-events-none absolute inset-0 z-20 mx-auto w-full max-w-[var(--chat-column,52rem)]">
         <ChatUserMinimap
           displayEntries={minimapDisplayEntries}
           activeDisplayIndex={activeMinimapDisplayIndex}
           onJumpToRow={jumpToRowFromMinimap}
+          placement="outsideRight"
         />
       </div>
       <div

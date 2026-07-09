@@ -1002,6 +1002,16 @@ broken attachment.
 | **CTO** | `brain` | `/cto` | The CTO chat thread rendered inline as the tab body (single persistent session via `CtoSessionDestinationView`), with a top-bar gear opening the settings sheet (identity, read-only Linear status, memory via `cto.getMemory`, re-run setup). |
 | **Settings** | `gearshape` | `/settings` (sync subset) | Pairing — scan the QR (`SettingsPairingScannerSheet`), discover on network, or enter machine details manually — plus PIN entry (`SettingsPinSheet`), appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget, and a **Push delivery** panel (`SettingsPushDeliverySection`: registration/permission state, APNs environment, relay reachability from `push.getStatus`, and notification / Live-Activity / quiet-hours toggles). `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` / `SettingsPushDeliverySnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`, `SettingsPushDeliverySection`) instead of having them reach into `SyncService` directly. |
 
+`WorkModelPickerSheet` shows the same Claude authentication affordance
+as desktop when Claude-family models are unavailable: a compact
+`Login to Claude` action opens a primary-lane terminal by calling
+`SyncService.startClaudeLoginTerminal`, which sends
+`work.runQuickCommand` with `startupCommand: "claude auth login"` and
+`toolType: "run-shell"`, then navigates to the created Work session.
+Call sites with lane context pass their lanes; otherwise the sheet
+fetches the current lane list before reporting that no active lane is
+available.
+
 ### Planned
 
 - Automations, Graph, History tabs.
@@ -1087,8 +1097,11 @@ earlier Mode → Source → Details → Review stepper was removed): a mode
 selector (hidden when the wizard is opened with `singleModeOnly`, e.g.
 from a lane that can only create one PR), a source-branches section,
 and a target-branch picker rendered by `PrTargetBranchPickerDropdown`
-(searchable dropdown over the lane's eligible base branches). Per-mode
-submit handlers route through the sync command surface:
+(searchable dropdown over the lane's eligible base branches). The title
+defaults to `source lane -> target lane`, submit defaults to a normal
+PR (`draft: false`), and the wizard no longer calls the AI PR draft
+flow before submission. Per-mode submit handlers route through the sync
+command surface:
 
 - single → `prs.createFromLane` (via `onCreateSingle` callback)
 - queue → `prs.createQueue` and `prs.startQueueAutomation`, returning

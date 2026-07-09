@@ -73,15 +73,14 @@ struct CreatePrWizardView: View {
   @State private var baseBranch = ""
   @State private var title = ""
   @State private var bodyText = ""
-  @State private var draft = true
+  @State private var draft = false
   @State private var strategy: PrStrategyChoice = .prTarget
   @State private var labelsInput = ""
   @State private var reviewersInput = ""
-  @State private var isGenerating = false
   @State private var isSubmitting = false
   @State private var errorMessage: String?
   @State private var editPresented = false
-  @State private var draftLoadedOnce = false
+  @State private var lastAutoTitle = ""
   // Queue / integration-only state.
   @State private var queueName = ""
   @State private var autoRebase = true
@@ -110,7 +109,7 @@ struct CreatePrWizardView: View {
             title: eligibility.laneName,
             branchRef: lanes.first(where: { $0.id == eligibility.laneId })?.branchRef ?? eligibility.laneName,
             defaultBaseBranch: eligibility.defaultBaseBranch,
-            defaultTitle: eligibility.defaultTitle,
+            defaultTitle: Self.defaultPrTitle(source: eligibility.laneName, target: eligibility.defaultBaseBranch),
             subtitle: Self.laneProgressSubtitle(for: eligibility)
           )
         }
@@ -121,7 +120,7 @@ struct CreatePrWizardView: View {
         title: lane.name,
         branchRef: lane.branchRef,
         defaultBaseBranch: lane.baseRef,
-        defaultTitle: lane.name,
+        defaultTitle: Self.defaultPrTitle(source: lane.name, target: lane.baseRef),
         subtitle: nil
       )
     }
@@ -139,7 +138,7 @@ struct CreatePrWizardView: View {
       title: lane.name,
       branchRef: lane.branchRef,
       defaultBaseBranch: eligibility?.defaultBaseBranch ?? lane.baseRef,
-      defaultTitle: eligibility?.defaultTitle ?? lane.name,
+      defaultTitle: Self.defaultPrTitle(source: lane.name, target: eligibility?.defaultBaseBranch ?? lane.baseRef),
       subtitle: eligibility.map { Self.laneProgressSubtitle(for: $0) } ?? nil
     )
   }
@@ -254,6 +253,37 @@ struct CreatePrWizardView: View {
     return nil
   }
 
+  private static func defaultPrTitle(source: String, target: String) -> String {
+    let sourceName = source.trimmingCharacters(in: .whitespacesAndNewlines)
+    let targetName = target.trimmingCharacters(in: .whitespacesAndNewlines)
+    return "\(sourceName.isEmpty ? "Source lane" : sourceName) -> \(targetName.isEmpty ? "target" : targetName)"
+  }
+
+  private var currentDefaultTitle: String {
+    let target = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedTarget = target.isEmpty ? defaultTargetBranch : target
+    switch createMode {
+    case .single:
+      guard let option = selectedOption else { return "" }
+      return Self.defaultPrTitle(source: option.title, target: resolvedTarget)
+    case .integration:
+      let source = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
+      return Self.defaultPrTitle(source: source.isEmpty ? "Integration" : source, target: resolvedTarget)
+    case .queue:
+      return ""
+    }
+  }
+
+  private func applyDefaultTitleIfUntouched() {
+    let next = currentDefaultTitle
+    guard !next.isEmpty else { return }
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty || title == lastAutoTitle {
+      title = next
+    }
+    lastAutoTitle = next
+  }
+
   private var canSubmit: Bool {
     if isSubmitting { return false }
     switch createMode {
@@ -299,7 +329,7 @@ struct CreatePrWizardView: View {
           switch createMode {
           case .single:
             branchesSection
-            aiTitleSection
+            detailsSection
             strategySection
             stanceSection
             reviewersSection
@@ -317,7 +347,7 @@ struct CreatePrWizardView: View {
             multiLaneSection(mode: .integration)
             targetBranchSection(title: "Target branch")
             integrationSettingsSection
-            aiTitleSection
+            detailsSection
             stanceSection
             reviewersSection
             labelsSection
@@ -358,22 +388,26 @@ struct CreatePrWizardView: View {
         if baseBranch.isEmpty {
           baseBranch = defaultTargetBranch
         }
-        if !draftLoadedOnce, selectedLane != nil, selectedLaneCanCreate {
-          draftLoadedOnce = true
-          Task { await generateDraft(initial: true) }
-        }
+        applyDefaultTitleIfUntouched()
       }
       .onChange(of: selectedLaneId) { _, _ in
         // Reset base-branch default when lane changes so the target picker
         // tracks the new lane's recommended base instead of a stale one.
         baseBranch = defaultTargetBranch
-        title = selectedOption?.defaultTitle ?? ""
+        lastAutoTitle = ""
+        title = ""
+        applyDefaultTitleIfUntouched()
         bodyText = ""
         labelsInput = ""
         reviewersInput = ""
         errorMessage = nil
-        if selectedLaneCanCreate {
-          Task { await generateDraft(initial: false) }
+      }
+      .onChange(of: baseBranch) { _, _ in
+        applyDefaultTitleIfUntouched()
+      }
+      .onChange(of: integrationLaneName) { _, _ in
+        if createMode == .integration {
+          applyDefaultTitleIfUntouched()
         }
       }
       .onChange(of: createMode) { _, newValue in
@@ -382,18 +416,19 @@ struct CreatePrWizardView: View {
         errorMessage = nil
         if newValue == .single {
           // Restore single-mode defaults using the currently selected lane.
-          title = selectedOption?.defaultTitle ?? ""
-          if selectedOption != nil {
-            Task { await generateDraft(initial: false) }
-          }
+          applyDefaultTitleIfUntouched()
         } else {
           // Queue + integration share the multi-select; reset the title input
           // so it doesn't carry over the single-lane suggestion.
           title = ""
+          lastAutoTitle = ""
           bodyText = ""
           // Seed integration name so the form feels started.
           if newValue == .integration && integrationLaneName.isEmpty {
             integrationLaneName = "integration/\(Int(Date().timeIntervalSince1970))"
+          }
+          if newValue == .integration {
+            applyDefaultTitleIfUntouched()
           }
         }
       }
@@ -520,64 +555,24 @@ struct CreatePrWizardView: View {
     }
   }
 
-  // MARK: - AI-drafted title card
+  // MARK: - Details
 
-  private var aiTitleSection: some View {
+  private var detailsSection: some View {
     VStack(spacing: 0) {
-      PrSectionHdr(title: "Title") {
-        HStack(spacing: 4) {
-          Image(systemName: "sparkles")
-            .font(.system(size: 9, weight: .semibold))
-          PrMonoText(text: "sonnet-4.6", color: ADEColor.purpleAccent, size: 10)
-        }
-        .foregroundStyle(ADEColor.purpleAccent)
-      }
+      PrSectionHdr(title: "Details")
 
       VStack(alignment: .leading, spacing: 10) {
-        if isGenerating && title.isEmpty {
-          HStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("Drafting title and body…")
-              .font(.footnote)
-              .foregroundStyle(ADEColor.textSecondary)
-          }
-        } else {
-          Text(title.isEmpty ? "Untitled change" : title)
-            .font(.system(size: 15, weight: .bold))
-            .tracking(-0.15)
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(3)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        Text(title.isEmpty ? currentDefaultTitle : title)
+          .font(.system(size: 15, weight: .bold))
+          .tracking(-0.15)
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(3)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
 
         bodyPreviewCard
 
         HStack(spacing: 6) {
-          Button {
-            Task { await generateDraft(initial: false) }
-          } label: {
-            HStack(spacing: 4) {
-              Image(systemName: "sparkles")
-                .font(.system(size: 10, weight: .semibold))
-              Text("Regenerate")
-                .font(.system(size: 11, weight: .semibold))
-            }
-            .foregroundStyle(ADEColor.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(ADEColor.textPrimary.opacity(0.04))
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(ADEColor.border.opacity(0.5), lineWidth: 0.5)
-            )
-          }
-          .buttonStyle(.plain)
-          .disabled(isGenerating || selectedLane == nil || !selectedLaneCanCreate)
-
           Button {
             editPresented = true
           } label: {
@@ -609,7 +604,7 @@ struct CreatePrWizardView: View {
 
   private var bodyPreviewCard: some View {
     let previewText = bodyText.isEmpty
-      ? "Generate or edit a description to summarize the change."
+      ? "Edit the description to summarize the change."
       : bodyText
     return Text(previewText)
       .font(.system(size: 11.5))
@@ -1056,9 +1051,10 @@ struct CreatePrWizardView: View {
         isSubmitting = false
         return
       }
+      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
       let completed = await onCreateSingle(
         option.id,
-        title.trimmingCharacters(in: .whitespacesAndNewlines),
+        trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle,
         bodyText,
         draft,
         baseBranch.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1101,7 +1097,7 @@ struct CreatePrWizardView: View {
         CreateIntegrationRequest(
           sourceLaneIds: laneIds,
           integrationLaneName: trimmedName,
-          title: trimmedTitle,
+          title: trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle,
           body: bodyText,
           draft: draft,
           baseBranch: targetBranch
@@ -1122,38 +1118,6 @@ struct CreatePrWizardView: View {
   private func refreshCachedLaneOptions() {
     cachedLaneOptions = sourceEligibleLaneOptions
     didCacheLaneOptions = true
-  }
-
-  // MARK: - Draft generation
-
-  @MainActor
-  private func generateDraft(initial: Bool) async {
-    guard selectedLaneCanCreate, let option = selectedOption else { return }
-    isGenerating = true
-    defer { isGenerating = false }
-
-    do {
-      let suggestion: PullRequestDraftSuggestion
-      if syncService.supportsRemoteAction("prs.draftDescription") {
-        suggestion = try await syncService.draftPullRequestDescription(laneId: option.id)
-      } else if let lane = lanes.first(where: { $0.id == option.id }) {
-        let detail = try? await syncService.refreshLaneDetail(laneId: option.id)
-        suggestion = prHeuristicDraft(lane: lane, detail: detail)
-      } else {
-        suggestion = PullRequestDraftSuggestion(title: option.defaultTitle, body: "")
-      }
-
-      // On the initial auto-fetch, don't stomp user edits if they appeared
-      // between the onAppear trigger and the await resolving.
-      if initial && (!title.isEmpty || !bodyText.isEmpty) {
-        return
-      }
-      title = suggestion.title
-      bodyText = suggestion.body
-      errorMessage = nil
-    } catch {
-      errorMessage = error.localizedDescription
-    }
   }
 
   // MARK: - Edit sheet

@@ -132,6 +132,7 @@ import {
 } from "./newLaneForm";
 import {
   ChatView,
+  workFileDiffKey,
   chatScrollMaxOffsetFromSelectableRows,
   hasConversationContent,
   renderChatSelectableRows,
@@ -1130,6 +1131,24 @@ function reparentTargetsForLane(lane: LaneSummary, lanes: LaneSummary[]): LaneSu
       if (leftPrimary !== rightPrimary) return leftPrimary - rightPrimary;
       return left.name.localeCompare(right.name);
     });
+}
+
+function prBranchNameFromRef(ref: string | null | undefined): string {
+  let value = (ref ?? "").trim();
+  value = value.replace(/^refs\/heads\//, "");
+  value = value.replace(/^refs\/remotes\//, "");
+  value = value.replace(/^origin\//, "");
+  return value;
+}
+
+function defaultPrTitleForLane(sourceLane: LaneSummary | null | undefined, lanes: LaneSummary[]): string {
+  const sourceName = sourceLane?.name?.trim() || "Source lane";
+  const targetBranch = prBranchNameFromRef(sourceLane?.baseRef);
+  const targetLane = targetBranch
+    ? lanes.find((lane) => lane.id !== sourceLane?.id && prBranchNameFromRef(lane.branchRef) === targetBranch)
+    : null;
+  const targetName = targetLane?.name?.trim() || targetBranch || "target";
+  return `${sourceName} -> ${targetName}`;
 }
 
 function resolveLaneReference(lanes: LaneSummary[], reference: string): LaneSummary | null {
@@ -4555,6 +4574,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }),
     [activeSession, displayEvents, displayNotices, displayPendingSteers, expandedLineIds],
   );
+  const displayBlocksRef = useRef<AggregatedBlock[]>([]);
+  useEffect(() => {
+    displayBlocksRef.current = displayBlocks;
+  }, [displayBlocks]);
   const displayStreaming = selectedAgentSnapshot ? selectedAgentSnapshot.status === "running" : streaming;
   const displayInterrupted = selectedAgentSnapshot ? false : interrupted && !displayStreaming;
   useEffect(() => {
@@ -9203,7 +9226,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setRightPane({
             kind: "details",
             title: "PR",
-            body: `No PR is linked to this lane yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open <title> to create a draft.`,
+            body: `No PR is linked to this lane yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open to create a pull request.`,
           });
           return;
         }
@@ -9241,12 +9264,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         if (!args) {
+          const defaultTitle = defaultPrTitleForLane(activeLane, lanes);
           openForm({
             kind: "form",
             title: "Open PR",
             command: "pr-open",
             fields: [
-              { name: "title", label: "Title", required: true, placeholder: activeLane?.name ?? "Draft PR" },
+              { name: "title", label: "Title", required: true, placeholder: defaultTitle, initialValue: defaultTitle },
               { name: "body", label: "Body", placeholder: "Optional" },
             ],
           });
@@ -9256,7 +9280,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           laneId,
           title: args,
           body: "",
-          draft: true,
+          draft: false,
         });
         setRightPane({ kind: "details", title: "PR open", body: formatPrSummary(created) });
         return;
@@ -10059,10 +10083,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         laneId,
         title,
         body,
-        draft: true,
+        draft: false,
       });
       setRightPane({ kind: "details", title: "PR open", body: renderObject(created, 24) });
-      addNotice("Created draft PR.", "success");
+      addNotice("Created PR.", "success");
       await refreshState();
     }
 
@@ -11645,10 +11669,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // file changes), if the click landed on one. Mirrors chatPointFromMouse's
   // viewport math but returns the row's expandableId instead of a text point so
   // a plain click can toggle the group's collapse state.
-  const expandableGroupIdFromMouse = useCallback((
+  const chatRowTargetFromMouse = useCallback((
     x: number | null,
     y: number | null,
-  ): string | null => {
+  ): { expandableId: string | null; actionId: string | null } | null => {
     if (x == null || y == null) return null;
     const drawerWidth = resolveDrawerPaneWidth(columns, drawerOpen);
     const textStartColumn = drawerWidth + 2;
@@ -11657,8 +11681,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const bottomRow = topRow + Math.max(1, chatRowBudget) - 1;
     if (x < textStartColumn || x > textEndColumn || y < topRow || y > bottomRow) return null;
     const visibleRow = Math.max(0, Math.min(y - topRow, Math.max(0, chatRowBudget - 1)));
-    return visibleChatSelectionRows[visibleRow]?.expandableId ?? null;
+    const row = visibleChatSelectionRows[visibleRow];
+    if (!row) return null;
+    return {
+      expandableId: row.expandableId ?? null,
+      actionId: row.actionId ?? null,
+    };
   }, [addModeRows, chatRowBudget, chatWrapWidth, columns, drawerOpen, goalBannerRows, visibleChatSelectionRows]);
+
+  const openFileChangeDiffAction = useCallback((actionId: string): boolean => {
+    for (const block of displayBlocksRef.current) {
+      if (block.kind !== "files-changed-group") continue;
+      const selected = block.entries.find((entry) => workFileDiffKey(block.id, entry.itemId) === actionId);
+      if (!selected) continue;
+      const files = block.entries.map((entry) => ({
+        path: entry.path,
+        additions: entry.additions,
+        deletions: entry.deletions,
+        body: entry.diff,
+      }));
+      const title = block.entries.length === 1 ? selected.path : "This turn";
+      setRightPane({ kind: "diff", title, files });
+      setRightOpen(true);
+      lastUserOpenedPaneRef.current = "diff";
+      focusDetailsOnly();
+      return true;
+    }
+    return false;
+  }, [focusDetailsOnly]);
 
   const toggleExpandedLineId = useCallback((lineId: string) => {
     setExpandedLineIds((prev) => {
@@ -11944,13 +11994,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // ▸ Files changed (N)) toggles it open/closed instead of starting a text
         // selection. Shift-click still extends a selection across the header.
         if (!mouse.shift) {
-          const groupId = expandableGroupIdFromMouse(mouse.x, mouse.y);
-          if (groupId) {
+          const chatRowTarget = chatRowTargetFromMouse(mouse.x, mouse.y);
+          if (chatRowTarget?.actionId && openFileChangeDiffAction(chatRowTarget.actionId)) {
+            stopChatSelectionEdgeScroll();
+            chatSelectionAnchorRef.current = null;
+            if (activeSelection) updateChatMouseSelection(null);
+            return;
+          }
+          if (chatRowTarget?.expandableId) {
             stopChatSelectionEdgeScroll();
             chatSelectionAnchorRef.current = null;
             if (activeSelection) updateChatMouseSelection(null);
             focusChat();
-            toggleExpandedLineId(groupId);
+            toggleExpandedLineId(chatRowTarget.expandableId);
             return;
           }
         }

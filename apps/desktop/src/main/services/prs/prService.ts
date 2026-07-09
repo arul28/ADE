@@ -325,6 +325,12 @@ function branchNameFromRef(ref: string): string {
   return branchNameFromLaneRef(ref);
 }
 
+function defaultPrTitleForLane(lane: LaneSummary, baseBranch: string, lanes: LaneSummary[]): string {
+  const targetLane = lanes.find((entry) => branchNameFromRef(entry.branchRef) === baseBranch);
+  const targetName = targetLane?.name?.trim() || baseBranch;
+  return `${lane.name} -> ${targetName}`;
+}
+
 /**
  * Synthetic, stable id for an unmapped GitHub PR (no DB row). Used as the
  * `PrDetail.prId` for coordinate-based fetches so the renderer can key per-PR
@@ -5267,13 +5273,12 @@ export function createPrService({
       };
     };
 
-    // The in-chat "AI draft" button sets requireAi. The chat is already running on
-    // a live runtime, so the coarse stored providerMode — which stays "guest" until
-    // the user explicitly enables subscription mode in Settings → AI Connections,
-    // and is NOT derived from active CLI auth — must NOT gate it. We attempt the
-    // real AI path using the chat's own model and let aiIntegrationService.executeTask
-    // perform the authoritative auth/runtime detection, surfacing a precise error
-    // only when no provider is genuinely reachable.
+    // Explicit AI-draft callers set requireAi. If the caller already has a live
+    // runtime, the coarse stored providerMode — which stays "guest" until the user
+    // enables subscription mode in Settings -> AI Connections, and is NOT derived
+    // from active CLI auth — must NOT gate it. We attempt the real AI path using
+    // the requested model and let aiIntegrationService.executeTask perform the
+    // authoritative auth/runtime detection.
     if (args.requireAi && !aiIntegrationService) {
       throw new Error(
         "AI drafting is unavailable in this mode — open this lane in the desktop app to draft with AI.",
@@ -5383,13 +5388,14 @@ export function createPrService({
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
     }
+    const title = args.title?.trim() || defaultPrTitleForLane(lane, baseBranch, allLanes);
     if (!args.skipBranchPush) {
       await pushLaneBranchForPr(lane, headBranch);
     }
 
     const repo = await githubService.getRepoOrThrow();
     const closeLinearIssueOnMerge = args.closeLinearIssueOnMerge !== false;
-    const linearAdjustedBody = applyLinearPrLinkage(args.body, lane, closeLinearIssueOnMerge);
+    const linearAdjustedBody = applyLinearPrLinkage(args.body ?? "", lane, closeLinearIssueOnMerge);
     // Append the branded "Open in ADE" footer (branch link only at this point;
     // we'll PATCH the PR body with the PR-number-aware variant once we know it).
     const prBody = ensureAdeDeeplinkFooter(linearAdjustedBody, {
@@ -5404,7 +5410,7 @@ export function createPrService({
         method: "POST",
         path: `/repos/${repo.owner}/${repo.name}/pulls`,
         body: {
-          title: args.title,
+          title,
           head: headBranch,
           base: baseBranch,
           body: prBody,

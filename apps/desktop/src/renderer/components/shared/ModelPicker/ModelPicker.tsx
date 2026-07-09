@@ -38,7 +38,7 @@ export type ModelPickerProps = {
   filter?: (model: ModelDescriptor) => boolean;
   models?: readonly ModelDescriptor[];
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onOpenSignIn?: () => void;
+  onOpenSignIn?: (family?: ProviderFamily) => void;
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   constrainToAvailableModelIds?: boolean;
   fastModeActive?: boolean;
@@ -265,9 +265,9 @@ export const ModelPicker = memo(function ModelPicker({
     setOpen(false);
   }, []);
 
-  const handleOpenSignIn = useCallback(() => {
+  const handleOpenSignIn = useCallback((family?: ProviderFamily) => {
     setOpen(false);
-    onOpenSignIn?.();
+    onOpenSignIn?.(family);
   }, [onOpenSignIn]);
 
   const triggerFastSupported =

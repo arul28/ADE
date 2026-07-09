@@ -1241,7 +1241,7 @@ export function AgentChatComposer({
   onEditSteer?: (steerId: string, text: string) => void;
   onDispatchSteerInline?: (steerId: string) => void;
   onDispatchSteerInterrupt?: (steerId: string) => void;
-  onOpenAiSettings?: () => void;
+  onOpenAiSettings?: (family?: ProviderFamily) => void;
   onOpenLinearSettings?: () => void;
   launchPromptClipboardEnabled?: boolean;
   launchPromptClipboardNoticeEnabled?: boolean;

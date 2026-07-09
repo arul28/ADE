@@ -1,5 +1,5 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { DotsThreeVertical, Info, StopCircle, Terminal } from "@phosphor-icons/react";
+import { DotsThreeVertical, Info, StopCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
@@ -127,39 +127,6 @@ function SessionInfoButton({
   );
 }
 
-function SessionTerminalButton({
-  open = false,
-  onToggleTerminalPane,
-}: {
-  open?: boolean;
-  onToggleTerminalPane?: () => void;
-}) {
-  return (
-    <SmartTooltip
-      content={{
-        label: open ? "Close terminal panel" : "Open terminal panel",
-        description: "Open attached shell terminals for this CLI session.",
-      }}
-    >
-      <button
-        type="button"
-        className={cn(
-          WORK_SURFACE_HEADER_ACTION_BASE,
-          open
-            ? "border-violet-400/22 bg-violet-500/10 px-1.5 text-violet-100/80"
-            : cn(WORK_SURFACE_HEADER_ACTION_IDLE, "px-1.5"),
-        )}
-        onClick={onToggleTerminalPane}
-        aria-label={open ? "Close terminal panel" : "Open terminal panel"}
-        aria-pressed={open}
-        disabled={!onToggleTerminalPane}
-      >
-        <Terminal size={13} weight={open ? "fill" : "regular"} />
-      </button>
-    </SmartTooltip>
-  );
-}
-
 function SessionActionsButton({
   session,
   onContextMenu,
@@ -210,22 +177,17 @@ export function CliSurfaceTrailingActions({
   onInfoClick,
   onContextMenu,
   onStopRunningSession,
-  onToggleTerminalPane,
-  terminalPaneOpen = false,
 }: {
   session: TerminalSessionSummary;
   stopping?: boolean;
   onInfoClick?: SessionMouseHandler;
   onContextMenu?: SessionMouseHandler;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
-  onToggleTerminalPane?: () => void;
-  terminalPaneOpen?: boolean;
 }) {
   return (
     <>
       <StopSessionButton session={session} stopping={stopping} onStopRunningSession={onStopRunningSession} />
       <SessionRunMenu session={session} />
-      <SessionTerminalButton open={terminalPaneOpen} onToggleTerminalPane={onToggleTerminalPane} />
       <SessionInfoButton session={session} onInfoClick={onInfoClick} />
       <SessionActionsButton session={session} onContextMenu={onContextMenu} />
     </>
@@ -284,8 +246,6 @@ export function CliSessionWorkSurfaceHeader({
   sessionsPaneCount,
   onToggleToolsPane,
   toolsPaneOpen,
-  onToggleTerminalPane,
-  terminalPaneOpen,
   onTogglePrPane,
   prPaneOpen,
 }: {
@@ -301,8 +261,6 @@ export function CliSessionWorkSurfaceHeader({
   sessionsPaneCount?: number;
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
-  onToggleTerminalPane?: () => void;
-  terminalPaneOpen?: boolean;
   /** When set, the PR pill toggles the floating PR pane over the terminal
    * instead of opening the inline slide-out menu. */
   onTogglePrPane?: () => void;
@@ -364,8 +322,6 @@ export function CliSessionWorkSurfaceHeader({
             onInfoClick={onInfoClick}
             onContextMenu={onContextMenu}
             onStopRunningSession={onStopRunningSession}
-            onToggleTerminalPane={onToggleTerminalPane}
-            terminalPaneOpen={terminalPaneOpen}
           />
         </>
       }

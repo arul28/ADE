@@ -325,6 +325,7 @@ struct HubInlineComposer: View {
         currentReasoningEffort: reasoningEffort,
         currentCodexFastMode: codexFastMode,
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
+        lanes: lanesForPickedProject.map { $0.asLaneSummary() },
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider, pickedFastMode in
           selectedModelOption = option

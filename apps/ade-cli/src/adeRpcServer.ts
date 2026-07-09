@@ -979,7 +979,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "create_pr_from_lane",
-    description: "Create a PR from a lane branch. Drafts a title/body from ADE context when omitted. Returns GitHub and ADE PR URLs when available.",
+    description: "Create a PR from a lane branch. When omitted, the title defaults to \"source lane -> target lane\" and the body is empty. Returns GitHub and ADE PR URLs when available.",
     inputSchema: {
       type: "object",
       required: ["laneId"],
@@ -2017,6 +2017,35 @@ function resolveLaneWorktreePath(runtime: AdeRuntime, laneId: string | null | un
     // Ignore lane lookup failures and use the runtime fallback.
   }
   return null;
+}
+
+function branchNameForPrTitle(ref: string | null | undefined): string {
+  let value = (ref ?? "").trim();
+  value = value.replace(/^refs\/heads\//, "");
+  value = value.replace(/^refs\/remotes\//, "");
+  value = value.replace(/^origin\//, "");
+  return value;
+}
+
+async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBranch?: string | null): Promise<string> {
+  const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+  const sourceLane = lanes.find((lane) => lane.id === laneId) ?? null;
+  const laneInfo = (() => {
+    try {
+      return typeof runtime.laneService.getLaneBaseAndBranch === "function"
+        ? runtime.laneService.getLaneBaseAndBranch(laneId)
+        : null;
+    } catch {
+      return null;
+    }
+  })();
+  const sourceName = asOptionalTrimmedString(sourceLane?.name) || laneId;
+  const targetBranch = branchNameForPrTitle(baseBranch || sourceLane?.baseRef || laneInfo?.baseRef || runtime.project?.baseRef || "main");
+  const targetLane = targetBranch
+    ? lanes.find((lane) => lane.id !== laneId && branchNameForPrTitle(lane.branchRef) === targetBranch)
+    : null;
+  const targetName = asOptionalTrimmedString(targetLane?.name) || targetBranch || "target";
+  return `${sourceName} -> ${targetName}`;
 }
 
 function buildAdeInlineGuidanceForLane(laneWorktreePath: string | null | undefined): string {
@@ -4469,15 +4498,8 @@ async function runTool(args: {
     let title = asOptionalTrimmedString(toolArgs.title);
     let body = typeof toolArgs.body === "string" ? toolArgs.body : null;
     const closeLinearIssueOnMerge = asBoolean(toolArgs.closeLinearIssueOnMerge, true);
-    if (!title || body == null) {
-      const draft = await prSvc.draftDescription({
-        laneId,
-        ...(baseBranch ? { baseBranch } : {}),
-        ...(closeLinearIssueOnMerge ? { closeLinearIssueOnMerge } : {}),
-      });
-      title = title || asOptionalTrimmedString(draft.title) || `PR for ${laneId}`;
-      body = body ?? asOptionalTrimmedString(draft.body) ?? "";
-    }
+    if (!title) title = await defaultPrTitleForLane(runtime, laneId, baseBranch);
+    if (body == null) body = "";
     const draft = asBoolean(toolArgs.draft, false);
     const pr = await prSvc.createFromLane({
       laneId,

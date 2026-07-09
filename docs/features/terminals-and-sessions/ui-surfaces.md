@@ -216,9 +216,9 @@ Branches on `session.toolType`:
 
 - chat tool types → `AgentChatPane` for the matching chat session
 - PTY sessions → `TerminalView` wired to the session's `ptyId`
-- running tracked agent CLI sessions add the Terminal button in their work
-  header, opening the Work sidebar's Terminal tab with that CLI session as
-  the owner
+- lane-scoped terminal tools are opened from the Work sidebar's
+  Terminal tab; tracked agent CLI sessions no longer add a separate
+  Terminal shortcut in their work header
 
 When a tile is suspended (grid layout where the tile is not visible),
 it renders a static preview card instead of mounting the terminal.

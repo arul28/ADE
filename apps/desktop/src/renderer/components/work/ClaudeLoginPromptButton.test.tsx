@@ -65,6 +65,7 @@ describe("ClaudeLoginPromptButton", () => {
       });
     });
     expect(onRevealTerminal).toHaveBeenCalledWith({
+      laneId: "lane-1",
       terminalId: "terminal-claude-login",
       ptyId: "pty-claude-login",
       label: "Claude login",
